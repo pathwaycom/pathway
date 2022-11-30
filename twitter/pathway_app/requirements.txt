@@ -1,0 +1,3 @@
+https://public-pathway-releases.s3.eu-central-1.amazonaws.com/966431ef6ba6a12e926eb43954ec9882/pathway-0.1.0-cp310-cp310-manylinux_2_12_x86_64.manylinux2010_x86_64.whl
+textblob
+geopy

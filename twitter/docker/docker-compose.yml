@@ -1,0 +1,57 @@
+version: "3.8"
+services:
+  postgres:
+    container_name: postgres_container
+    image: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - ../postgres_schema.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ../showcase_app/frontend/
+      args:
+        API_PORT: "${API_PORT}"
+        MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
+    ports:
+      - ${FRONTEND_PORT}:80
+    depends_on:
+      - api
+
+  api:
+    build: ../showcase_app/backend/
+    ports:
+      - ${API_PORT}:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  pelias_geocoder:
+    build:
+      context: .
+      dockerfile: ./geocoder.Dockerfile
+    healthcheck:
+      test: curl --fail http://localhost:3000 || exit 1
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "${PELIAS_GEOCODER_PORT}:3000"
+
+  pathway_app:
+    build: ../pathway_app/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pelias_geocoder:
+        condition: service_healthy

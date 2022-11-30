@@ -1,0 +1,25 @@
+.mapboxgl-ctrl-attrib-inner::before {
+    content: "Powered by";
+    background-size: 90px 18px;
+    display: inline-block;
+    background-image: url(https://pathway.com/wp-content/themes/sandbox/images/logo-black.svg);
+    height: 20px;
+    width: 145px;
+    background-repeat: no-repeat;
+    background-position: right;
+}
+
+.timeonmap {
+    top: 0;
+    left: 0;
+    position: absolute;
+    pointer-events: none;
+    z-index: 2;
+    padding: 20px;
+    opacity: 0.7;
+}
+
+html,
+body {
+    font-family: "Source Sans Pro", sans-serif;
+}
