@@ -1,0 +1,2 @@
+kafka-python
+tweepy

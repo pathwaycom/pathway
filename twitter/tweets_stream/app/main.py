@@ -1,87 +1,29 @@
 import argparse
+import datetime
 import json
 import os
-import shutil
 
 import tweepy
 from kafka import KafkaProducer
 
-bearer_token = os.environ["TWITTER_API_TOKEN"]
+BEARER_TOKEN = os.environ["TWITTER_API_TOKEN"]
 
-
-class Writer:
-    """
-    The class receives data from Twitter and accumulates this data in a temporary
-    buffer. When the buffer reaches capacity, the data is written to the specific
-    dataset folder.
-    """
-
-    def __init__(self, folder_name, capacity, limit):
-        self._folder_name = folder_name
-        self._capacity = capacity
-        self._limit = limit
-
-        self._total_written = 0
-        self._total_written_to_file = 0
-        self._current_seq_id = 0
-
-        if os.path.exists(folder_name):
-            shutil.rmtree(folder_name)
-        os.mkdir(folder_name)
-
-        self._file = open(".tempfile", "w")
-
-    def write(self, json_data):
-        json.dump(json_data, self._file)
-        self._file.write("\n")
-
-        self._total_written += 1
-        self._total_written_to_file += 1
-        if self._total_written_to_file == self._capacity:
-            # Close file
-            self._file.write("*COMMIT*\n")
-            self._file.close()
-            self._total_written_to_file = 0
-            self._current_seq_id += 1
-
-            # Copy to folder
-            filename = os.path.join(
-                self._folder_name, str(self._current_seq_id) + ".txt"
-            )
-            print("Starting a new file:", filename)
-            shutil.move(".tempfile", filename)
-
-            # Reopen file for writing
-            self._file = open(".tempfile", "w")
-
-        if self._total_written == self._limit:
-            self._file.write("*FINISH*")
-            self._file.close()
-
-            self._current_seq_id += 1
-            filename = os.path.join(
-                self._folder_name, str(self._current_seq_id) + ".txt"
-            )
-            print("Copying the final part:", filename)
-            shutil.move(".tempfile", filename)
-            exit(0)
-
-    def close(self):
-        self._file.close()
+COMMIT_MESSAGE = "*COMMIT*"
+FINISH_MESSAGE = "*FINISH*"
 
 
 class KafkaWriter:
-    def __init__(self, capacity, limit):
-        self._capacity = capacity
+    def __init__(self, max_batch_size, max_batch_lifetime_sec, limit):
+        self._max_batch_size = max_batch_size
+        self._max_batch_lifetime = datetime.timedelta(max_batch_lifetime_sec)
         self._limit = limit
 
         self._total_written = 0
         self._total_written_after_commit = 0
+        self._last_commit_at = None
         self._current_seq_id = 0
 
-        self._producer = KafkaProducer(
-            bootstrap_servers=["kafka:" + os.environ["KAFKA_PORT"]]
-        )
+        self._producer = KafkaProducer(bootstrap_servers=["kafka:9092"])
 
     def write(self, json_data):
         self._producer.send(
@@ -90,13 +32,22 @@ class KafkaWriter:
             partition=0,
         )
 
+        if not self._last_commit_at:
+            self._last_commit_at = datetime.datetime.now()
+
         self._total_written += 1
         self._total_written_after_commit += 1
-        if self._total_written_after_commit == self._capacity:
-            print("Sending a commit message. Sequential No: ", self._current_seq_id)
+        batch_exists_for = datetime.datetime.now() - self._last_commit_at
+
+        size_limit_reached = self._total_written_after_commit == self._max_batch_size
+        duration_limit_reached = batch_exists_for >= self._max_batch_lifetime
+
+        if size_limit_reached or duration_limit_reached:
+            self._last_commit_at = datetime.datetime.now()
+            print("Sending a commit message. Sequential No:", self._current_seq_id)
             self._producer.send(
                 "test_0",
-                "*COMMIT*".encode("utf-8"),
+                COMMIT_MESSAGE.encode("utf-8"),
                 partition=0,
             )
             self._total_written_after_commit = 0
@@ -106,7 +57,7 @@ class KafkaWriter:
             print("Sending finish command")
             self._producer.send(
                 "test_0",
-                "*FINISH*".encode("utf-8"),
+                FINISH_MESSAGE.encode("utf-8"),
                 partition=0,
             )
             self._producer.close()
@@ -116,13 +67,14 @@ class KafkaWriter:
         self._producer.close()
 
 
-writer = KafkaWriter(20, 501)
-
-
 class IDPrinter(tweepy.StreamingClient):
+    def __init__(self, writer):
+        super().__init__(BEARER_TOKEN)
+        self._writer = writer
+
     def on_response(self, response):
         if response.data.geo:
-            writer.write(
+            self._writer.write(
                 {
                     "type": "geo-tagged",
                     "tweet": response.data.data,
@@ -136,7 +88,7 @@ class IDPrinter(tweepy.StreamingClient):
             len(response.includes["users"]) > 0
             and response.includes["users"][0].location
         ):
-            writer.write(
+            self._writer.write(
                 {
                     "type": "user-location",
                     "tweet": response.data.data,
@@ -147,7 +99,7 @@ class IDPrinter(tweepy.StreamingClient):
                 },
             )
         else:
-            writer.write(
+            self._writer.write(
                 {
                     "type": "no-location",
                     "tweet": response.data.data,
@@ -162,12 +114,25 @@ class IDPrinter(tweepy.StreamingClient):
         print(errors)
 
 
+def construct_writer(args):
+    return KafkaWriter(
+        max_batch_size=args.max_batch_size,
+        max_batch_lifetime_sec=args.max_batch_lifetime_seconds,
+        limit=args.tweets_limit,
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Twitter showcase tweets downloader")
     parser.add_argument("--rule", type=str, required=True)
+    parser.add_argument("--max-batch-size", type=int, default=100)
+    parser.add_argument("--max-batch-lifetime-seconds", type=int, default=90)
+    parser.add_argument("--tweets-limit", type=int, default=1000)
     args = parser.parse_args()
 
-    printer = IDPrinter(bearer_token)
+    writer = construct_writer(args)
+
+    printer = IDPrinter(writer)
     print("Starting streaming to files...")
     try:
         rules = printer.get_rules()

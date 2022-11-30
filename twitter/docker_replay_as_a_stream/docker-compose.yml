@@ -37,9 +37,7 @@ services:
         condition: service_healthy
 
   pelias_geocoder:
-    build:
-      context: .
-      dockerfile: ../docker/geocoder.Dockerfile
+    build: ../geocoder/
     healthcheck:
       test: [ "CMD", "nc", "-vz", "localhost", "3000" ]
       interval: 10s
@@ -55,8 +53,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-#      kafka:
-#        condition: service_healthy
     volumes:
       - app-volume:/shared-volume
 
@@ -64,7 +60,6 @@ services:
     build: ../dataset_replay
     depends_on:
       - postgres
-#      - kafka
       - pathway_app
     volumes:
       - app-volume:/shared-volume

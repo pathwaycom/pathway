@@ -37,9 +37,7 @@ services:
         condition: service_healthy
 
   pelias_geocoder:
-    build:
-      context: .
-      dockerfile: ./geocoder.Dockerfile
+    build: ../geocoder/
     healthcheck:
       test: curl --fail http://localhost:3000 || exit 1
       interval: 3s

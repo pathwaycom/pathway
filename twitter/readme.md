@@ -5,8 +5,8 @@ At the top level of the repository, you will find three directories containing t
 3. `/showcase_app` - the web page with results visualization (frontend and backend). The backend takes data from the snapshot which is maintained by the app in Pathway.
 
 You will also find ready to go setup for two possible deployments of the demo
-* `/docker` - contains a docker-compose file for running a simple example, with the complete input dataset being replayed all at once;
-* `/docker-replayer` - contains the docker-compose file for running an example with dataset streaming, demonstrating how the stream is processed by the Pathway engine in the Pathway app.
+* `/docker_replay_all_at_once` - contains a docker-compose file for running a simple example, with the complete input dataset being replayed all at once;
+* `/docker_replay_as_a_stream` - contains the docker-compose file for running an example with dataset streaming, demonstrating how the stream is processed by the Pathway engine in the Pathway app.
 ## How to run this example?
 
 In order to run this example, you need docker-compose.
