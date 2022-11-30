@@ -103,4 +103,17 @@ def add_geolocation(tweet_pairs: pw.Table[TweetPairs]) -> pw.Table:
         .select(coord_to=geocoded_locations.geocoded)
         .unsafe_promise_same_universe_as(tweet_pairs)
     )
-    return tweet_pairs + coord_from + coord_to
+
+    def is_good_location(geolocated) -> bool:
+        return geolocated not in [e.value for e in GeolocatorInvalidFlags]
+
+    coord_from_is_good = coord_from.select(
+        is_good=pw.apply(is_good_location, coord_from.coord_from)
+    )
+    coord_to_is_good = coord_to.select(
+        is_good=pw.apply(is_good_location, coord_to.coord_to)
+    )
+    tweet_pair_is_good = tweet_pairs.select(
+        is_good=coord_from_is_good.is_good & coord_to_is_good.is_good
+    )
+    return tweet_pairs + coord_from + coord_to + tweet_pair_is_good

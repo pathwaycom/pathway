@@ -39,6 +39,7 @@ if __name__ == "__main__":
     current_batch_size = 0
     file_sequential_number = 0
     current_buffer = open(temp_storage_file, "w")
+
     for timestamp, row in dataset:
         if last_streamed_timestamp:
             delta = (timestamp - last_streamed_timestamp).total_seconds() / args.speed

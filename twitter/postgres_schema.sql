@@ -17,7 +17,7 @@ DROP TABLE IF EXISTS grouped;
 CREATE TABLE grouped (
     tweet_to_author_id TEXT NOT NULL,
     time_bucket BIGINT NOT NULL,
-    tweet_to_sentiment FLOAT NOT NULL,
+    tweet_from_sentiment FLOAT NOT NULL,
     author_from_magic_influence FLOAT NOT NULL,
     responses_count BIGINT NOT NULL,
     close_count BIGINT NOT NULL,

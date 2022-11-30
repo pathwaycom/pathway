@@ -139,7 +139,7 @@ def compute_aggs_per_author_and_timewindow(tweet_pairs):
     ).reduce(
         tweet_to_author_id=tweet_pairs.tweet_to_author_id,
         time_bucket=tweet_pairs.time_bucket,
-        tweet_to_sentiment=pw.reducers.sum(tweet_pairs.tweet_to_sentiment),
+        tweet_from_sentiment=pw.reducers.sum(tweet_pairs.tweet_from_sentiment),
         author_from_magic_influence=pw.reducers.sum(
             tweet_pairs.author_from_magic_influence
         ),
@@ -219,7 +219,7 @@ def _filter_out_locations_by_closeness_step(
     # sum all statistics for referenced authors (ignore time)
     referenced_authors_total_stats = grouped.groupby(grouped.tweet_to_author_id).reduce(
         tweet_to_author_id=grouped.tweet_to_author_id,
-        tweet_to_sentiment=pw.reducers.sum(grouped.tweet_to_sentiment),
+        tweet_from_sentiment=pw.reducers.sum(grouped.tweet_from_sentiment),
         author_from_magic_influence=pw.reducers.sum(
             grouped.author_from_magic_influence
         ),
@@ -234,7 +234,7 @@ def _filter_out_locations_by_closeness_step(
         == author_meta.tweet_to_author_id,
     ).select(
         referenced_authors_total_stats.tweet_to_author_id,
-        referenced_authors_total_stats.tweet_to_sentiment,
+        referenced_authors_total_stats.tweet_from_sentiment,
         referenced_authors_total_stats.author_from_magic_influence,
         referenced_authors_total_stats.responses_count,
         referenced_authors_total_stats.close_count,
@@ -257,7 +257,6 @@ def filter_out_locations_by_closeness(tweet_pairs: pw.Table, author_meta: pw.Tab
 
     Underlying idea is that if the user does not have retweets in a close area, then his location is probably faulty.
     """
-    tweet_pairs += tweet_pairs.select(is_good=True)
     return pw.iterate(
         lambda tweet_pairs, author_meta: dict(
             tweet_pairs=_filter_out_locations_by_closeness_step(

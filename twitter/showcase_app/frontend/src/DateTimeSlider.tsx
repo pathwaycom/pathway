@@ -19,11 +19,13 @@ const Input = styled(MuiInput)`
 
 interface DateTimeSliderProps {
     onChangeCallback: (start: number, end: number) => void
+    timeZone: string,
     time_min?: number,
-    time_max?: number
+    time_max?: number,
+    autoUpdateSlider: boolean
 }
 
-export default function DateTimeSlider({ onChangeCallback, time_min, time_max }: DateTimeSliderProps) {
+export default function DateTimeSlider({ onChangeCallback, timeZone, time_min, time_max, autoUpdateSlider }: DateTimeSliderProps) {
     const [timeWindow, setTimeWindow] = React.useState<number>(30 * 60)
     const [value, setValue] = React.useState<number[]>(
         [time_min, time_min + timeWindow],
@@ -39,19 +41,25 @@ export default function DateTimeSlider({ onChangeCallback, time_min, time_max }:
             const clamped = Math.min(newValue[0], time_max - timeWindow);
             setValue([clamped, clamped + timeWindow]);
         } else {
-            const clamped = Math.max(newValue[1], timeWindow);
+            const clamped = Math.max(newValue[1], time_min + timeWindow);
             setValue([clamped - timeWindow, clamped]);
         }
-    }, [timeWindow]);
+    }, [timeWindow, time_min, time_max]);
 
     const throttledValue = useThrottle<number[]>(value, 200)
+
+    useEffect(() => {
+        if (autoUpdateSlider) {
+            setValue([time_max - timeWindow, time_max]);
+        }
+    }, [time_max, autoUpdateSlider, timeWindow])
 
     useEffect(() => {
         onChangeCallback(throttledValue[0], throttledValue[1])
     }, [throttledValue])
 
     const valuetext = (value: number) => {
-        return moment.unix(value).tz('America/Los_Angeles').format("YYYY-MM-DD, h:mm:ss a")
+        return moment.unix(value).tz(timeZone).format("YYYY-MM-DD, h:mm:ss a")
     }
 
     return (

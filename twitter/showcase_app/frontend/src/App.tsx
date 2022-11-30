@@ -21,22 +21,18 @@ import Box from '@mui/material/Box';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
 import moment from 'moment-timezone';
 import { fetchImpactData, GroupedTweetData, fetchStats, Stats } from "./api";
+import { Backdrop, CircularProgress } from "@mui/material";
+import { isEmpty } from "lodash";
 
 const MAPBOX_ACCESS_TOKEN = process.env.MAPBOX_TOKEN
 
 const theme = createTheme({
     palette: {
         primary: {
-            //   light: '#757ce8',
             main: '#0808F9',
-            //   dark: '#002884',
-            //   contrastText: '#fff',
         },
         secondary: {
-            //   light: '#ff7961',
             main: '#ff4f00',
-            //   dark: '#ba000d',
-            //   contrastText: '#000',
         },
     },
 });
@@ -59,6 +55,11 @@ export default function App() {
     const [referencedData, setReferencedData] = useState([])
     const [sizeIndicator, setSizeIndicator] = useState('responses')
 
+    const timeZone = useMemo(() => {
+        // return 'America/Los_Angeles'
+        // return 'UTC'
+        return moment.tz.guess()
+    }, [])
 
     const fetchReferences = async (author_username: string, timestamp: number[]) => {
         // const response = await fetch(`${BACKEND_HOST}:${BACKEND_PORT}/referenced?author_username=${author_username}&start=${timestamp[0]}&end=${timestamp[1]}`)
@@ -78,7 +79,6 @@ export default function App() {
         setTotalTweets(totalTweets)
         const processedData = rawData.flatMap((row, idx: number) => {
             const importanceVal = sizeIndicator === 'responses' ? row.total_responses : row.total_magic_influence
-            // const sizeVal = importanceVal
             const sizeVal = sizeIndicator === 'responses' ? row.responses_count : row.magic_influence
             const common = {
                 ...row,
@@ -86,14 +86,11 @@ export default function App() {
                 author_username: row.author_username,
                 width: 1,
                 coordinates: row.coord_shifted.slice(1, -1).split(',').map((x: any) => Number(x)),
-                // kind: 'positive',
                 kind: row.mean_sentiment > 0 ? GeofenceKind.positive : row.mean_sentiment == 0 ? GeofenceKind.neutral : GeofenceKind.negative,
                 importance: importanceVal,
                 name: "TEST",
                 confidence: "certain",
-                // visible: sizeVal > 0,
                 visible: true,
-                // size: sizeVal === 0 ? 0 : Math.log(sizeVal) * sizeFactor,
                 size: sizeVal,
                 tooltip: {
                     html: tooltipAdvanced ? `
@@ -128,7 +125,6 @@ export default function App() {
                 coordinates: [...row.coordinates, KINDS[row.kind].zIndex * 10],
             }
         ))
-        console.log(processedData)
         return processedData
     }, [rawData, sizeIndicator, tooltipAdvanced, timestamp])
 
@@ -206,79 +202,91 @@ export default function App() {
         }
     };
 
-    return (
-        <ThemeProvider theme={theme}>
-            <div>
-                <h2>Twitter showcase</h2>
-                <h3>Fetched tag: TODO</h3>
-                <p>Legend:
-                    <span style={{ backgroundColor: `rgba(${KINDS['positive'].color}`, marginLeft: 10 }}>positive sentiment</span>
-                    <span style={{ backgroundColor: `rgba(${KINDS['neutral'].color}`, marginLeft: 10 }}>neutral sentiment</span>
-                    <span style={{ backgroundColor: `rgba(${KINDS['negative'].color}`, marginLeft: 10, marginRight: 50 }}>negative sentiment</span>
-                    Text on a circle represents the number of accounts in this area (zoom in to explore). Hover on a circle to get more information.
-                </p>
-                <div style={{ display: 'flex' }}>
-                    <div style={{ height: 400, width: '50%', padding: 10, position: 'relative' }}>
-                        <Map
-                            initialViewState={{
-                                latitude: 30,
-                                longitude: 0,
-                                zoom: 2
-                            }}
-                            mapStyle="mapbox://styles/mapbox/light-v9"
-                            mapboxAccessToken={MAPBOX_ACCESS_TOKEN}
-                        >
-                            <DeckGLOverlay
-                                layers={[referencedLayerLines, referencedLayer, ...layers]}
-                                getTooltip={({ object }: any) => object?.tooltip}
-                                onHover={(info: any, event: any) => { setSelectedAuthor(info?.object?.author_username) }}
-                                onClick={(info: any, event: any) => { setSelectedLocation(info?.object?.coord_to) }}
-                            />
-                            <NavigationControl />
-                        </Map>
-                        <div className='timeonmap'>{moment.unix(timestamp[1]).tz('America/Los_Angeles').format("YYYY-MM-DD, h:mm:ss a")}</div>
-                    </div>
-                    <div style={{ height: 400, width: '50%', padding: 10 }}>
-                        <TwitterTable filterLocation={selectedLocation} data={impactData.filter(row => row.kind == 'neutral')} />  {/* this filter here is a hack, it does not filter rows*/}
-                    </div>
-                </div>
-                <h3>Processed tweets: {totalTweets}</h3>
+    const [autoUpdateSlider, setAutoUpdateSlider] = useState(true)
 
-                <DateTimeSlider onChangeCallback={sliderChange} time_min={stats?.min_time_bucket ?? moment.utc("2022-08-29 7:40 am").unix()} time_max={stats?.max_time_bucket ?? moment.utc("2022-08-29 9:10 am").unix()} />
-                <h3>Viz options:</h3>
-                Size indicator:
-                <ToggleButtonGroup
-                    color="primary"
-                    value={sizeIndicator}
-                    exclusive
-                    onChange={handleSizeIndicatorChange}
-                    aria-label="Platform"
-                    size="small"
-                >
-                    <ToggleButton value="responses">Responses</ToggleButton>
-                    <ToggleButton value="influence">Influence</ToggleButton>
-                </ToggleButtonGroup>
-                <br />
-                Size factor:
-                <Box sx={{ width: 300 }}>
-                    <Slider
-                        value={sizeFactor}
-                        onChange={(e, newVal) => setSizeFactor(newVal as number)}
-                        min={0.1}
-                        max={4}
-                        marks={true}
-                        step={0.1}
-                        valueLabelDisplay="auto"
-                    />
-                </Box>
-                <br />
-                <FormGroup>
-                    <FormControlLabel control={<Switch checked={showNumbers} onChange={() => setShowNumbers(!showNumbers)} defaultChecked />} label="Show numbers" />
-                </FormGroup>
-                <FormGroup>
-                    <FormControlLabel control={<Switch checked={tooltipAdvanced} onChange={() => setTooltipAdvanced(!tooltipAdvanced)} defaultChecked />} label="Advanced tooltip" />
-                </FormGroup>
+    return <ThemeProvider theme={theme}>
+        <div>
+            <Backdrop
+                sx={{ color: '#fff', zIndex: (theme) => theme.zIndex.drawer + 1 }}
+                open={stats?.total_tweets == undefined}
+            >
+                <CircularProgress color="inherit" />
+            </Backdrop>
+
+            <h2>Twitter showcase</h2>
+            <p>Legend:
+                <span style={{ backgroundColor: `rgba(${KINDS['positive'].color}`, marginLeft: 10 }}>positive sentiment</span>
+                <span style={{ backgroundColor: `rgba(${KINDS['neutral'].color}`, marginLeft: 10 }}>neutral sentiment</span>
+                <span style={{ backgroundColor: `rgba(${KINDS['negative'].color}`, marginLeft: 10, marginRight: 50 }}>negative sentiment</span>
+                Text on a circle represents the number of accounts in this area (zoom in to explore). Hover on a circle to get more information.
+            </p>
+            <p>Time zone: {timeZone}</p>
+            <div style={{ display: 'flex' }}>
+                <div style={{ height: 400, width: '50%', padding: 10, position: 'relative' }}>
+                    <Map
+                        initialViewState={{
+                            latitude: 30,
+                            longitude: 0,
+                            zoom: 2
+                        }}
+                        mapStyle="mapbox://styles/mapbox/light-v9"
+                        mapboxAccessToken={MAPBOX_ACCESS_TOKEN}
+                    >
+                        <DeckGLOverlay
+                            layers={[referencedLayerLines, referencedLayer, ...layers]}
+                            getTooltip={({ object }: any) => object?.tooltip}
+                            onHover={(info: any, event: any) => { setSelectedAuthor(info?.object?.author_username) }}
+                            onClick={(info: any, event: any) => { setSelectedLocation(info?.object?.coord_to) }}
+                        />
+                        <NavigationControl />
+                    </Map>
+                    <div className='timeonmap'>{moment.unix(timestamp[1]).tz(timeZone).format("YYYY-MM-DD, h:mm:ss a")}</div>
+                </div>
+                <div style={{ height: 400, width: '50%', padding: 10 }}>
+                    <TwitterTable filterLocation={selectedLocation} data={impactData.filter(row => row.kind == 'neutral')} />  {/* this filter here is a hack, it does not filter rows*/}
+                </div>
             </div>
-        </ThemeProvider>
-    );
+            <h3>Good pairs of tweets in selected time: {totalTweets}</h3>
+            <DateTimeSlider autoUpdateSlider={autoUpdateSlider} timeZone={timeZone} onChangeCallback={sliderChange} time_min={stats?.min_time_bucket ?? 0} time_max={(stats?.max_time_bucket ?? 0) + 59} />
+            <h3>Total fetched tweets: {stats?.total_tweets}</h3>
+            <h3>Total good pairs of tweets: {stats?.total_tweetpairs_good}</h3>
+            <h3>Viz options:</h3>
+            Size indicator:
+            <ToggleButtonGroup
+                color="primary"
+                value={sizeIndicator}
+                exclusive
+                onChange={handleSizeIndicatorChange}
+                aria-label="Platform"
+                size="small"
+            >
+                <ToggleButton value="responses">Responses</ToggleButton>
+                <ToggleButton value="influence">Influence</ToggleButton>
+            </ToggleButtonGroup>
+            <br />
+            Size factor:
+            <Box sx={{ width: 300 }}>
+                <Slider
+                    value={sizeFactor}
+                    onChange={(e, newVal) => setSizeFactor(newVal as number)}
+                    min={0.1}
+                    max={4}
+                    marks={true}
+                    step={0.1}
+                    valueLabelDisplay="auto"
+                />
+            </Box>
+            <br />
+            <FormGroup>
+                <FormControlLabel control={<Switch checked={showNumbers} onChange={() => setShowNumbers(!showNumbers)} defaultChecked />} label="Show numbers" />
+            </FormGroup>
+            <FormGroup>
+                <FormControlLabel control={<Switch checked={tooltipAdvanced} onChange={() => setTooltipAdvanced(!tooltipAdvanced)} defaultChecked />} label="Advanced tooltip" />
+            </FormGroup>
+            <FormGroup>
+                <FormControlLabel control={<Switch checked={autoUpdateSlider} onChange={() => setAutoUpdateSlider(!autoUpdateSlider)} defaultChecked />} label="Auto update slider (streaming)" />
+            </FormGroup>
+
+        </div>
+    </ThemeProvider>
 }

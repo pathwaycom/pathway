@@ -25,7 +25,9 @@ export interface GroupedTweetData {
 
 export interface Stats {
     min_time_bucket: number,
-    max_time_bucket: number
+    max_time_bucket: number,
+    total_tweetpairs_good: number,
+    total_tweets: number
 }
 
 export async function fetchImpactData(start: number, end: number): Promise<RawData> {
