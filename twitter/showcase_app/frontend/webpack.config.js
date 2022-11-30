@@ -9,6 +9,7 @@ module.exports = {
         path: path.resolve(__dirname, 'dist'),
         filename: 'main.js',
         publicPath: '/',
+        assetModuleFilename: "assets/[name][ext]",
     },
     devServer: {
         historyApiFallback: true
@@ -30,8 +31,12 @@ module.exports = {
             },
             {
                 test: /\.(png|j?g|svg|gif)?$/,
-                use: 'file-loader'
-            }
+                include: path.resolve(__dirname, "src"),
+                type: "asset/resource",
+                generator: {
+                    filename: "assets/[name][ext]",
+                },
+            },
         ]
     },
     resolve: {

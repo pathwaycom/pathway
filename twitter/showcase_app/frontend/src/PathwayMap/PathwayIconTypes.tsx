@@ -1,5 +1,6 @@
 type RGBAColor = [number, number, number, number];
 import { values } from "lodash";
+import "../assets/circle.png"
 
 export const NavalColors = {
     zero: "#3A748A",

@@ -9,7 +9,7 @@ type RGBAColor = [number, number, number, number];
 const DEFAULT_HIGHLIGHT_COLOR: RGBAColor = [143, 215, 227, 180]
 const DEFAULT_SELECTION_COLOR: RGBAColor = [30, 225, 137, 220]
 
-const ICON_URL_PREFIX = ''
+const ICON_URL_PREFIX = 'assets/'
 const SIZE_SCALE = 2 / 3 // https://deck.gl/docs/upgrade-guide#upgrading-from-deckgl-v84-to-v85
 
 interface PathwayIconProps extends CompositeLayerProps<GeofenceIconData> {

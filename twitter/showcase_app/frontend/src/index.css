@@ -1,10 +1,11 @@
 .mapboxgl-ctrl-attrib-inner::before {
     content: "Powered by";
-    background-size: 90px 18px;
+    background-size: 61px 18px;
     display: inline-block;
-    background-image: url(https://pathway.com/wp-content/themes/sandbox/images/logo-black.svg);
+    background-image: url("assets/pathway-logo.png");
     height: 20px;
-    width: 145px;
+    width: 130px;
+    margin-right: 5px;
     background-repeat: no-repeat;
     background-position: right;
 }
