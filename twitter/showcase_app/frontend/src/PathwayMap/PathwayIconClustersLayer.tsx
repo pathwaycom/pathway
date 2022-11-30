@@ -183,9 +183,10 @@ export default class PathwayIconClustersLayer<DataT> extends CompositeLayer<PPro
                 id: `${this.props.id}-clusters`,
                 data: this.state.dataForCurrentZ,
                 transitions: {
-                    getPosition: { duration: TRANSITION_DURATION, easing: easeInOutCubic, type: "interpolation" },
-                    getSize: { duration: TRANSITION_DURATION, easing: easeInOutCubic, type: "interpolation" },
-                    getColor: { duration: TRANSITION_DURATION, easing: easeInOutCubic, type: "interpolation" },
+                    // animations disabled due to jumping in streaming mode
+                    // getPosition: { duration: TRANSITION_DURATION, easing: easeInOutCubic, type: "interpolation" },
+                    // getSize: { duration: TRANSITION_DURATION, easing: easeInOutCubic, type: "interpolation" },
+                    // getColor: { duration: TRANSITION_DURATION, easing: easeInOutCubic, type: "interpolation" },
                 },
                 staticSelectedIndices: this.props.staticSelectedIndices,
                 selectedIndices: this.props.selectedIndices,
