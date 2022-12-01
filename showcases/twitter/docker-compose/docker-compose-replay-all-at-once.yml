@@ -19,7 +19,7 @@ services:
 
   web:
     build:
-      context: ../showcase_app/frontend/
+      context: ../services/frontend/
       args:
         API_PORT: "${API_PORT}"
         MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
@@ -29,7 +29,7 @@ services:
       - api
 
   api:
-    build: ../showcase_app/backend/
+    build: ../services/api/
     ports:
       - ${API_PORT}:8000
     depends_on:
@@ -37,7 +37,7 @@ services:
         condition: service_healthy
 
   pelias_geocoder:
-    build: ../geocoder/
+    build: ../services/geocoder/
     healthcheck:
       test: curl --fail http://localhost:3000 || exit 1
       interval: 3s
@@ -47,7 +47,7 @@ services:
       - "${PELIAS_GEOCODER_PORT}:3000"
 
   pathway_app:
-    build: ../pathway_app/
+    build: ../services/pathway-app/
     depends_on:
       postgres:
         condition: service_healthy
