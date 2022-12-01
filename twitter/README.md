@@ -1,3 +1,11 @@
+# Realtime Twitter Analysis App with Pathway
+
+An example usage of Pathway, the programming framework for handling streaming data updates.
+The application allows for streaming twitter data on a given topic, performs sentiment analysis and visualizes the results.
+
+See [the corresponding page at pathway.com](https://pathway.com/developers/showcases/twitter) for a high-level description.
+
+---
 
 At the top level of the repository, you will find three directories containing the demo application logic - ordered from left to right according to the flow of data:
 1. `/dataset_replay` - a helper app which allows for the replay (simulation) of a dataset of tweets, sending the prepared dataset in portions to kafka or to the filesystem;
