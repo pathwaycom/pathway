@@ -61,7 +61,7 @@ def get_data_table(dataset_path, poll_new_objects):
             "session.timeout.ms": "60000",
             "enable.auto.commit": "true",
         }
-        return pw.io.kafka.read_raw(rdkafka_settings, ["test_0"])
+        return pw.io.kafka.read(rdkafka_settings, ["test_0"], format="raw")
 
 
 if __name__ == "__main__":
