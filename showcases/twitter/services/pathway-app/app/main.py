@@ -99,4 +99,4 @@ if __name__ == "__main__":
         primary_key=["tweet_from_id", "tweet_to_id"],
     )
 
-    RustpyBuilder(parse_graph.G).build_and_run()
+    RustpyBuilder(parse_graph.G).run_outputs()
