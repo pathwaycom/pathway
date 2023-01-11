@@ -7,7 +7,7 @@ CREATE TABLE author_meta (
     coord_shifted TEXT NOT NULL,
     total_responses BIGINT NOT NULL,
     total_magic_influence FLOAT NOT NULL,
-    time INTEGER NOT NULL,
+    time BIGINT NOT NULL,
     diff INTEGER NOT NULL,
 
     PRIMARY KEY (tweet_to_author_id)
@@ -23,7 +23,7 @@ CREATE TABLE grouped (
     close_count BIGINT NOT NULL,
     medium_count BIGINT NOT NULL,
     far_count BIGINT NOT NULL,
-    time INTEGER NOT NULL,
+    time BIGINT NOT NULL,
     diff INTEGER NOT NULL,
 
     PRIMARY KEY (tweet_to_author_id, time_bucket)
@@ -52,7 +52,7 @@ CREATE TABLE tweet_pairs (
     tweet_to_sentiment FLOAT NOT NULL,
     author_from_magic_influence FLOAT NOT NULL,
     is_good BOOLEAN NOT NULL,
-    time INTEGER NOT NULL,
+    time BIGINT NOT NULL,
     diff INTEGER NOT NULL,
 
     PRIMARY KEY (tweet_from_id, tweet_to_id)
