@@ -47,7 +47,10 @@ services:
       - "${PELIAS_GEOCODER_PORT}:3000"
 
   pathway_app:
-    build: ../services/pathway-app/
+    build:
+      context: ../services/pathway-app/
+      args:
+        PATHWAY_INDEX_URL: "${PATHWAY_INDEX_URL}"
     depends_on:
       postgres:
         condition: service_healthy

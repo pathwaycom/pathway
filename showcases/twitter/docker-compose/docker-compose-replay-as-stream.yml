@@ -50,6 +50,8 @@ services:
     build:
       context: ../services/pathway-app/
       dockerfile: use_streaming.Dockerfile
+      args:
+        PATHWAY_INDEX_URL: "${PATHWAY_INDEX_URL}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,4 +67,4 @@ services:
       - app-volume:/shared-volume
 
 volumes:
-     app-volume:
+  app-volume:

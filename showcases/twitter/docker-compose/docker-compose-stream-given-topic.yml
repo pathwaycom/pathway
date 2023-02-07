@@ -75,6 +75,8 @@ services:
     build:
       context: ../services/pathway-app/
       dockerfile: use_kafka.Dockerfile
+      args:
+        PATHWAY_INDEX_URL: "${PATHWAY_INDEX_URL}"
     depends_on:
       postgres:
         condition: service_healthy

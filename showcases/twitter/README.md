@@ -24,10 +24,11 @@ You will also find ready to go setup for three possible deployments of the demo 
 In order to run this example, you need docker-compose.
 
 1. Navigate `./docker-compose` directory. It contains docker-compose files for the examples;
-2. If you have previously ran the example, it may be a good idea to shut down the running example. It can be done with `docker-compose -f <name_of_example's_docker-compose-file> --env-file settings.env down -v`
-3. Now you can start the example! It's as simple as `docker-compose -f <name_of_example's_docker-compose-file> --env-file settings.env up --build`
-4. In order to see the results and progress, you need to ensure that `API_PORT` and `FRONTEND_PORT` from the config `settings.env` are available.
-5. Now you can navigate to `http://localhost:${FRONTEND_PORT}` in your browser and see the progress.
+2. Edit the `settings.env` file, in particular paste your `PATHWAY_INDEX_URL` which you can obtain after registering at https://pathway.com/developers/documentation/introduction/installation-and-first-steps
+3. If you have previously ran the example, it may be a good idea to shut down the running example. It can be done with `docker-compose -f <name_of_example's_docker-compose-file> --env-file settings.env down -v`
+4. Now you can start the example! It's as simple as `docker-compose -f <name_of_example's_docker-compose-file> --env-file settings.env up --build`
+5. In order to see the results and progress, you need to ensure that `API_PORT` and `FRONTEND_PORT` from the config `settings.env` are available.
+6. Now you can navigate to `http://localhost:${FRONTEND_PORT}` in your browser and see the progress.
 ## How to analyze tweets on a given topic in real-time?
 
 In docker-compose directory, you can find the file `docker-compose-stream-given-topic.yml`. This is the file you need to use in order to stream the given topic. The streamer itself is placed within `services/tweets-streamer` folder. In its [Dockerfile](https://github.com/pathwaycom/pathway-examples/blob/main/showcases/twitter/services/tweets-streamer/Dockerfile#L6), you can provide a topic, on which the real-time data fetching should take place. Then it is parsed within the [streamer app code](https://github.com/pathwaycom/pathway-examples/blob/main/showcases/twitter/services/tweets-streamer/app/main.py#L127) and used in the requests to Tweepy. The realtime stream of tweets is then passed to Pathway engine through Kafka.
