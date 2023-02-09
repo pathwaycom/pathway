@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS values (
+    value integer NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sum_table (
+    id SERIAL PRIMARY KEY,
+    sum BIGINT NOT NULL,
+    time BIGINT NOT NULL,
+    diff SMALLINT NOT NULL
+);

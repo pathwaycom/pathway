@@ -1,0 +1,51 @@
+version: "3.7"
+services:
+  postgres:
+    container_name: db_tuto_postgres
+    image: debezium/postgres:13
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=values_db
+      - PGPASSWORD=password
+    volumes:
+      - ./sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./sql/update_db.sh:/update_db.sh
+  zookeeper:
+    container_name: db_tuto_zookeeper
+    image: confluentinc/cp-zookeeper:5.5.3
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+  kafka:
+    container_name: db_tuto_kafka
+    image: confluentinc/cp-enterprise-kafka:5.5.3
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9991
+    ports:
+    - 9092:9092
+  debezium:
+    container_name: db_tuto_debezium
+    image: debezium/connect:1.4
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+    volumes:
+      - ./debezium/connector.sh:/kafka/connector.sh
+    depends_on: [kafka]
+    ports:
+      - 8083:8083
+  pathway:
+    container_name: db_tuto_pathway
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on: [kafka, postgres]
