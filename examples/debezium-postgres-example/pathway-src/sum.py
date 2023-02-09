@@ -1,5 +1,6 @@
-import pathway as pw
 import time
+
+import pathway as pw
 
 # Debezium settings
 input_rdkafka_settings = {
