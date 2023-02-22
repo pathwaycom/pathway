@@ -20,7 +20,7 @@ import Slider from '@mui/material/Slider';
 import Box from '@mui/material/Box';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
 import moment from 'moment-timezone';
-import { fetchImpactData, GroupedTweetData, fetchStats, Stats } from "./api";
+import { fetchImpactData, GroupedTweetData, fetchStats, Stats, fetchReferences, ReferenceData } from "./api";
 import { Backdrop, CircularProgress } from "@mui/material";
 import { isEmpty } from "lodash";
 
@@ -52,7 +52,7 @@ export default function App() {
     const [selectedAuthor, setSelectedAuthor] = useState()
     const [selectedLocation, setSelectedLocation] = useState()
     const [timestamp, setTimestamp] = useState([0, 0])
-    const [referencedData, setReferencedData] = useState([])
+    const [referencedData, setReferencedData] = useState<any[]>([])
     const [sizeIndicator, setSizeIndicator] = useState('responses')
 
     const timeZone = useMemo(() => {
@@ -61,10 +61,15 @@ export default function App() {
         return moment.tz.guess()
     }, [])
 
-    const fetchReferences = async (author_username: string, timestamp: number[]) => {
-        // const response = await fetch(`${BACKEND_HOST}:${BACKEND_PORT}/referenced?author_username=${author_username}&start=${timestamp[0]}&end=${timestamp[1]}`)
-        // const fetchedData = await response.json()
-        // setReferencedData(fetchedData.data)
+    const fetchReferencesData = async (author_username: string, timestamp: number[]) => {
+        const data = await fetchReferences(author_username, timestamp)
+        const processedData = data.data.map((row) => ({
+            ...row,
+            coord_from: row.coord_from.slice(1, -1).split(',').map((x: any) => Number(x)),
+            coord_to_shifted: row.coord_shifted.slice(1, -1).split(',').map((x: any) => Number(x))
+        }))
+
+        setReferencedData(processedData)
     }
 
     const updateImpactData = async (start: number, end: number) => {
@@ -131,7 +136,7 @@ export default function App() {
 
     useEffect(() => {
         if (selectedAuthor) {
-            fetchReferences(selectedAuthor, timestamp)
+            fetchReferencesData(selectedAuthor, timestamp)
         } else {
             setReferencedData([])
         }

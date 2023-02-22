@@ -1,4 +1,4 @@
-FROM python:3.10
+FROM --platform=linux/x86_64 python:3.10
 ARG PATHWAY_INDEX_URL
 RUN status_code=$(curl --write-out %{http_code} --silent --output /dev/null $PATHWAY_INDEX_URL) &&\
     if [ "${status_code}" -gt "399" ]; then \
