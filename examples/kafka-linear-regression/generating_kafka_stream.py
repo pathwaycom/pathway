@@ -10,6 +10,7 @@ topic = "linear-regression"
 
 random.seed(0)
 
+
 # function that creates a floating number close in value to i
 def get_value(i):
     return i + (2 * random.random() - 1) / 10
