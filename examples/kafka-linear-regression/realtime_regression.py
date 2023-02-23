@@ -42,6 +42,7 @@ statistics_table = t.reduce(
     sum_x_square=pw.reducers.sum(t.x_square),
 )
 
+
 # compute estimation of a and b // perform linear regression
 def compute_a(sum_x, sum_y, sum_x_square, sum_x_y, count):
     d = count * sum_x_square - sum_x * sum_x
