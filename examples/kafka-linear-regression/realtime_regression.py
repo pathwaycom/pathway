@@ -1,5 +1,6 @@
-import pathway as pw
 import os
+
+import pathway as pw
 
 # import kafka clusters setting from upstash
 rdkafka_settings = {
@@ -8,16 +9,16 @@ rdkafka_settings = {
     "sasl.mechanism": "SCRAM-SHA-256",
     "group.id": "$GROUP_NAME",
     "session.timeout.ms": "6000",
-    "sasl.username": os.environ['UPSTASH_KAFKA_USER'],
-    "sasl.password": os.environ['UPSTASH_KAFKA_PASS'],
+    "sasl.username": os.environ["UPSTASH_KAFKA_USER"],
+    "sasl.password": os.environ["UPSTASH_KAFKA_PASS"],
 }
 
 # use kafka connector to read the kafka stream
 t = pw.kafka.read(
     rdkafka_settings,
     topic_names=["linear-regression"],
-    value_columns=["x","y"],
-    format="csv",
+    value_columns=["x", "y"],
+    format="json",
     autocommit_duration_ms=1000,
     types={"x": pw.Type.INT, "y": pw.Type.FLOAT},
 )
@@ -49,12 +50,14 @@ def compute_a(sum_x, sum_y, sum_x_square, sum_x_y, count):
     else:
         return (sum_y * sum_x_square - sum_x * sum_x_y) / d
 
+
 def compute_b(sum_x, sum_y, sum_x_square, sum_x_y, count):
     d = count * sum_x_square - sum_x * sum_x
     if d == 0:
         return 0
     else:
         return (count * sum_x_y - sum_x * sum_y) / d
+
 
 # apply linear regression to input table
 results_table = statistics_table.select(
@@ -67,5 +70,3 @@ pw.csv.write(results_table, "regression_output_stream.csv")
 
 # run the pipeline
 pw.run()
-
-
