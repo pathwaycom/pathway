@@ -2,15 +2,20 @@ import os
 
 import pathway as pw
 
-# import kafka clusters setting from upstash
+# set kafka credentials (from upstash)
+kafka_endpoint = "talented-cow-10356-eu1-kafka.upstash.io:9092"
+kafka_user = os.environ["UPSTASH_KAFKA_USER"]
+kafka_pass = os.environ["UPSTASH_KAFKA_PASS"]
+
+# define kafka cluster settings
 rdkafka_settings = {
-    "bootstrap.servers": "talented-cow-10356-eu1-kafka.upstash.io:9092",
+    "bootstrap.servers": kafka_endpoint,
     "security.protocol": "sasl_ssl",
     "sasl.mechanism": "SCRAM-SHA-256",
     "group.id": "$GROUP_NAME",
     "session.timeout.ms": "6000",
-    "sasl.username": os.environ["UPSTASH_KAFKA_USER"],
-    "sasl.password": os.environ["UPSTASH_KAFKA_PASS"],
+    "sasl.username": kafka_user,
+    "sasl.password": kafka_pass,
 }
 
 # use kafka connector to read the kafka stream

@@ -16,13 +16,19 @@ def get_value(i):
     return i + (2 * random.random() - 1) / 10
 
 
+# set kafka credentials
+kafka_endpoint = "talented-cow-10356-eu1-kafka.upstash.io:9092"
+kafka_user = os.environ["UPSTASH_KAFKA_USER"]
+kafka_pass = os.environ["UPSTASH_KAFKA_PASS"]
+
+
 # generate input stream using creds from upstash
 producer = KafkaProducer(
-    bootstrap_servers=["talented-cow-10356-eu1-kafka.upstash.io:9092"],
+    bootstrap_servers=[kafka_endpoint],
     sasl_mechanism="SCRAM-SHA-256",
     security_protocol="SASL_SSL",
-    sasl_plain_username=os.environ["UPSTASH_KAFKA_USER"],
-    sasl_plain_password=os.environ["UPSTASH_KAFKA_PASS"],
+    sasl_plain_username=kafka_user,
+    sasl_plain_password=kafka_pass,
 )
 
 # send Kafka messages with i (x) and float close to i (y)
