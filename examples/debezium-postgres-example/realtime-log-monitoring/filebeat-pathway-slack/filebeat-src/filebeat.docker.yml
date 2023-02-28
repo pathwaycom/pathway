@@ -1,0 +1,17 @@
+filebeat.inputs:
+- type: filestream
+  id: my-logs
+  paths:
+    - /input_stream/*
+
+filebeat.config.modules:
+  path: /usr/share/filebeat/modules.d/
+  reload.enable: false
+
+
+output.kafka:
+  enabled: true
+  hosts: ["kafka:9092"]
+  topic: "logs"
+  group_id: 1
+  ssl.enabled: false
