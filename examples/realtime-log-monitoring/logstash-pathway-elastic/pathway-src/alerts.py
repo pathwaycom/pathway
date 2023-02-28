@@ -57,7 +57,7 @@ pw.elasticsearch.write(
     t_alert,
     "http://elasticsearch:9200",
     auth=pw.elasticsearch.ElasticSearchAuth.basic("elastic", "password"),
-    index_name="alerts_logs",
+    index_name="alerts",
 )
 
 # We launch the computation.
