@@ -51,7 +51,7 @@ t_alert = t_alert.select(
 )
 t_alert = t_alert.select(pw.this.alert)
 
-time.sleep(15)
+time.sleep(10)
 
 pw.elasticsearch.write(
     t_alert,

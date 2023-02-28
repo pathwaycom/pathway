@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 
 import requests
@@ -73,5 +74,6 @@ def on_alert_event(row, time, is_addition):
 
 pw.subscribe(t_alert, on_alert_event)
 
+time.sleep(10)
 # We launch the computation.
 pw.run()
