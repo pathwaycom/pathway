@@ -16,10 +16,7 @@ The logs are processed as follows (in `./pathway-src/alerts.py`):
  3. We only keep the messages of the last X seconds (X=1s by default). Here the current time is the timestamp of the last log.
  4. If there are more than Y messages (Y=5 by default), we output alert=True.
 
-How to install the project:
- 1. Clone the repo
- 2. Update the pathway link in `./pathway-src/Dockerfile`
- 3. Update the ID and token of the Slack channel in `./pathway-src/alerts.py`
+To install the project, you only need to clone the repository.
 
 How to launch the project:
  1. `make` in the root repo. It will start all the four containers

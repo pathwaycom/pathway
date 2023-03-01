@@ -16,8 +16,7 @@ The logs are processed as follows (in `./pathway-src/alerts.py`):
 
 How to install the project:
  1. Clone the repo
- 2. Update the pathway link in `./pathway-src/Dockerfile`
- 3. Update the ID and token of the Slack channel in `./pathway-src/alerts.py`
+ 2. Update the ID and token of the Slack channel in `./pathway-src/alerts.py`
 
 How to launch the project:
  1. `make` in the root repo. It will start all the four containers
