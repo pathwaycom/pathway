@@ -29,6 +29,7 @@ producer = KafkaProducer(
     security_protocol="SASL_SSL",
     sasl_plain_username=kafka_user,
     sasl_plain_password=kafka_pass,
+    api_version=(0, 10, 2),
 )
 
 # send Kafka messages with i (x) and float close to i (y)
