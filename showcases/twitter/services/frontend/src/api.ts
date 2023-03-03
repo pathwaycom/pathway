@@ -23,6 +23,10 @@ export interface GroupedTweetData {
 }
 
 
+export interface ReferenceData {
+    data: any[]
+}
+
 export interface Stats {
     min_time_bucket: number,
     max_time_bucket: number,
@@ -40,7 +44,7 @@ export async function fetchStats(): Promise<Stats> {
     return await response.json()
 }
 
-// export async function fetchReferences(author_username: string, timestamp: number): Promise<GroupedTweetData[]> {
-//     const response = await fetch(`${BACKEND_HOST}:${BACKEND_PORT}/referenced?author_username=${author_username}&start=${timestamp[0]}&end=${timestamp[1]}`)
-//     return await response.json()
-// }
+export async function fetchReferences(author_username: string, timestamp: number[]): Promise<ReferenceData> {
+    const response = await fetch(`${API_HOST}:${API_PORT}/referenced?author_to_username=${author_username}&start=${timestamp[0]}&end=${timestamp[1]}`)
+    return await response.json()
+}

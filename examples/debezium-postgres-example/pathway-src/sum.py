@@ -28,13 +28,13 @@ t = pw.debezium.read(
     input_rdkafka_settings,
     topic_name="postgres.public.values",
     value_columns=["value"],
+    types={"value": pw.Type.INT},
     autocommit_duration_ms=100,
 )
 t = t.debug("t")
 print(t)
 
 # # We compute the sum (this part is independent of the connectors).
-t = t.select(value=pw.apply_with_type(int, int, t.value))
 t = t.reduce(sum=pw.reducers.sum(t.value))
 
 # print(t)

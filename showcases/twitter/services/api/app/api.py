@@ -20,10 +20,10 @@ app.add_middleware(
 ctx = {}
 
 
-def run_sql(sql):
+def run_sql(sql, params=[]):
     """Runs sql against database."""
     cursor = ctx["connection"].cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute(sql)
+    cursor.execute(sql, params)
     results = cursor.fetchall()
     return results
 
@@ -47,7 +47,7 @@ async def startup_event():
 @app.get("/impact", tags=["impact"])
 async def read_impact(start: int, end: int) -> dict:
     """Read aggregated statistics regarding impact of popular twitter authors."""
-    sql = f"""
+    sql = """
     SELECT
         author_meta.tweet_to_author_id,
         author_meta.author_username,
@@ -74,7 +74,7 @@ async def read_impact(start: int, end: int) -> dict:
             SUM(close_count) as close_count
         FROM grouped
         WHERE
-            time_bucket >= {start} AND time_bucket < {end}
+            time_bucket >= %s AND time_bucket < %s
             AND diff = 1
         GROUP BY tweet_to_author_id
     ) as agg
@@ -85,7 +85,7 @@ async def read_impact(start: int, end: int) -> dict:
 
     """
 
-    return {"data": run_sql(sql)}
+    return {"data": run_sql(sql, [start, end])}
 
 
 @app.get("/stats", tags=["stats"])
@@ -108,5 +108,32 @@ async def read_stats() -> dict:
         )
     SELECT * FROM grouped_all_stats, all_tweets_stats
     """
-
     return run_sql(sql)[0]
+
+
+@app.get("/referenced", tags=["referenced"])
+async def read_referenced(author_to_username: str, start: int, end: int) -> dict:
+    sql = """
+    SELECT
+        author_meta.author_location,
+        author_meta.coord_to,
+        author_meta.coord_shifted,
+        tweet_pairs.coord_from,
+        tweet_pairs.tweet_from_author_location
+    FROM author_meta
+    LEFT JOIN tweet_pairs
+    ON tweet_pairs.tweet_to_author_id = author_meta.tweet_to_author_id
+    WHERE
+        author_meta.diff = 1
+        AND
+        tweet_pairs.diff = 1
+        AND
+        author_meta.author_username = %s
+        AND
+        extract(epoch from tweet_pairs.tweet_from_created_at::timestamp) >= %s
+        AND
+        extract(epoch from tweet_pairs.tweet_from_created_at::timestamp) < %s
+        AND
+        tweet_pairs.is_good=true
+    """
+    return {"data": run_sql(sql, [author_to_username, start, end])}
