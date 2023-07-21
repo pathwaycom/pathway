@@ -1,0 +1,20 @@
+language: rust
+sudo: required
+rust:
+- stable
+script:
+- cargo build
+- cargo test
+- cargo bench
+- cargo doc
+after_success: |
+  [ $TRAVIS_BRANCH = master ] &&
+  [ $TRAVIS_PULL_REQUEST = false ] &&
+  cargo install mdbook &&
+  (cd mdbook; mdbook build) &&
+  sudo pip install ghp-import &&
+  ghp-import -n mdbook/book &&
+  git push -fq https://${GH_TOKEN}@github.com/${TRAVIS_REPO_SLUG}.git gh-pages
+env:
+  global:
+    secure: d8tbB97FfXlLwGfzal2h/J2H7GdeR0dHBznqPfb/VxNPHevLJPtkD1Tnsqcs0/9w4piqmbKDzVWPAUXCA5Pg1e3f3pBqmgi12SYvzcFIHI1LLLbjF144S9vNNXhXc0IQE0bnaadX24A1JgRmmJJRt28qZnPxcCNdSJfrqV95h9Q=

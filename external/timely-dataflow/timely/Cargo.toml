@@ -1,0 +1,39 @@
+[package]
+
+name = "timely"
+version = "0.12.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+readme = "../README.md"
+edition = "2018"
+
+description = "A low-latency data-parallel dataflow system in Rust"
+
+# These URLs point to more information about the repository
+documentation = "https://docs.rs/timely/"
+homepage = "https://github.com/TimelyDataflow/timely-dataflow"
+repository = "https://github.com/TimelyDataflow/timely-dataflow.git"
+keywords = ["timely", "dataflow"]
+license = "MIT"
+
+[features]
+default = ["getopts"]
+bincode = ["timely_communication/bincode"]
+columnation = ["timely_container/columnation"]
+getopts = ["getopts-dep", "timely_communication/getopts"]
+
+[dependencies]
+getopts-dep = { package = "getopts", version = "0.2.14", optional = true }
+serde = "1.0"
+serde_derive = "1.0"
+abomonation = "0.7.3"
+abomonation_derive = "0.5"
+timely_bytes = { path = "../bytes", version = "0.12" }
+timely_logging = { path = "../logging", version = "0.12" }
+timely_communication = { path = "../communication", version = "0.12", default-features = false }
+timely_container = { path = "../container", version = "0.12" }
+crossbeam-channel = "0.5.0"
+futures-util = "0.3"
+
+[dev-dependencies]
+# timely_sort="0.1.6"
+rand = { version = "0.8", features = ["small_rng"] }

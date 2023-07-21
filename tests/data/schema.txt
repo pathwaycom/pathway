@@ -1,0 +1,2 @@
+key,bool,int,float,string
+id,true,5,6.4,hkadhsfk

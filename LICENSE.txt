@@ -1,0 +1,93 @@
+License:
+    BSL 1.1
+    
+Licensor:
+    NavAlgo SAS
+    
+Licensed Work:
+    Pathway
+    
+    Releases of Pathway covered by this License contain a copy of this License
+    as their license file, and are made available by the Licensor at
+    pathway.com, github.com/pathwaycom/, and by way of other distribution
+    channels.
+    The Licensed Work is © 2023 NavAlgo SAS
+    
+Additional Use Grant:
+    The Licensor grants you (the licensee) additional rights to the Licensed
+    Work, whereby you are entitled to run the Licensed Work in production
+    use, at no cost, subject to all of the following conditions: 
+    (a) in a single installation of the Licensed Work you may run the Licensed
+    Work on only one machine, physical or virtual, and without exceeding the
+    number of worker threads and processes allowed by the configuration of the
+    software runner of the distribution; and 
+    (b) the additional right to use granted herein applies to the exclusion
+    of use of any modified or derivative Licensed Work, as well as to the
+    exclusion of use of the Licensed Work for a Stream Data Processing
+    Service; and 
+    (c) the production use of modified Licensed Work is permitted only where
+    the modifications of the Licensed Work are indispensable to fix bugs or
+    vulnerabilities which might otherwise alter the scope of functionalities
+    of the Licensed Work, as described in API documentation available at
+    https://pathway.com/developers/documentation/api-docs/pathway; and
+    (d) this entire License including its Additional Use Grant shall remain
+    in full force and effect for any use under this Additional Use Grant,
+    thus covering the Licensed Work and also binding any and all users of
+    the Licensed Work. 
+    A “Stream Data Processing Service” is defined as any offering that allows
+    third parties (other than your employees or individual contractors) to
+    access the functionality of the Licensed Work by performing an action
+    directly or indirectly that causes the deployment, creation, or change to
+    the structure of a running computation graph of Pathway on any machine.
+    For the sake of clarity, a Stream Data Processing Service would include
+    providers of infrastructure services, such as cloud services, hosting
+    services, data center services and similarly situated third parties
+    (including affiliates of such entities) that would offer the Licensed
+    Work, possibly in connection with a broader service offering, to their
+    customers or subscribers.
+ 
+Change Date:
+    Change date is four years from the date of code merge into the main
+    release branch of Pathway in the GitHub repo (and in no case earlier
+    than July 20, 2027). Please see GitHub commit history for exact
+    dates.
+    
+Change License:
+    Apache License, Version 2.0, as published by the Apache Foundation.
+    
+    
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited 
+production use.
+
+Effective on the Change Date, or the fifth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and the rights granted in the paragraph
+above terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase
+a commercial license from the Licensor, its affiliated entities, or 
+authorized resellers, or you must refrain from using the Licensed Work.
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work and the Change Date may
+vary for each version of the Licensed Work released by Licensor.
+You must conspicuously display this License on each original or modified
+copy of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this License). TO THE EXTENT PERMITTED BY
+APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON AN “AS IS” BASIS. LICENSOR
+HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS, EXPRESS OR IMPLIED,
+INCLUDING (WITHOUT LIMITATION) WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, NON-INFRINGEMENT, AND TITLE.

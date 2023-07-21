@@ -1,0 +1,53 @@
+[package]
+
+name = "differential-dataflow"
+version = "0.12.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+
+description = "An incremental data-parallel dataflow platform"
+
+# These URLs point to more information about the repository
+documentation = "https://docs.rs/differential-dataflow"
+homepage = "https://github.com/TimelyDataflow/differential-dataflow"
+repository = "https://github.com/TimelyDataflow/differential-dataflow.git"
+keywords = ["differential", "dataflow"]
+license = "MIT AND BUSL-1.1"
+readme = "README.md"
+autoexamples = true
+
+[workspace]
+members = [".", "dogsdogsdogs"]
+
+[dev-dependencies]
+bincode = "1.3.1"
+rdkafka = "0.24"
+indexmap = "1.0.1"
+rand="0.4"
+byteorder="1"
+itertools="^0.7"
+serde_json = "1.0"
+graph_map = "0.1"
+
+[dependencies]
+serde = "1.0"
+serde_derive = "1.0"
+abomonation = "0.7"
+abomonation_derive = "0.5"
+timely = { path = "../timely-dataflow/timely", default-features = false }
+fnv="1.0.2"
+
+[features]
+default = ["timely/getopts"]
+columnation = ["timely/columnation"]
+
+[[example]]
+name = "columnation"
+required-features = ["columnation"]
+
+[profile.release]
+opt-level = 3
+debug = true
+rpath = false
+lto = true
+debug-assertions = false
+codegen-units = 4

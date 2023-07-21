@@ -1,0 +1,19 @@
+[package]
+name = "dogsdogsdogs"
+version = "0.1.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+license = "MIT"
+
+[dependencies]
+abomonation = "0.7"
+abomonation_derive = "0.5"
+timely = { git = "https://github.com/TimelyDataflow/timely-dataflow", default-features = false }
+differential-dataflow = { path = "../", default-features = false }
+serde = "1"
+serde_derive = "1"
+
+[dev-dependencies]
+graph_map = "0.1"
+
+[features]
+default = ["timely/getopts"]

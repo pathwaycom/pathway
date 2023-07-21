@@ -1,0 +1,13 @@
+[package]
+name = "timely_bytes"
+version = "0.12.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+edition = "2018"
+
+description = "Disjoint mutable byte slices from a common allocation"
+
+documentation = "https://docs.rs/timely/"
+homepage = "https://github.com/TimelyDataflow/timely-dataflow"
+repository = "https://github.com/TimelyDataflow/timely-dataflow.git"
+keywords = ["timely", "dataflow", "bytes"]
+license = "MIT"

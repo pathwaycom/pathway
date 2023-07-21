@@ -1,0 +1,50 @@
+[[disallowed-methods]]
+path = "differential_dataflow::operators::Count::count"
+reason = "use crate::dataflow::operators::MaybeTotal::count instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::Threshold::distinct"
+reason = "use crate::dataflow::operators::MaybeTotal::distinct instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::arrange::arrangement::Arrange::arrange"
+reason = "use crate::dataflow::operators::ArrangeWithTypes::arrange instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::arrange::arrangement::Arrange::arrange_named"
+reason = "use crate::dataflow::operators::ArrangeWithTypes::arrange_named instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::arrange::arrangement::Arrange::arrange_core"
+reason = "use crate::dataflow::operators::ArrangeWithTypes::arrange_named instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::arrange::arrangement::ArrangeBySelf::arrange_by_self"
+reason = "use crate::dataflow::operators::ArrangeWithTypes::arrange instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::arrange::arrangement::ArrangeByKey::arrange_by_key"
+reason = "use crate::dataflow::operators::ArrangeWithTypes::arrange instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::collection::Collection::map"
+reason = "use crate::dataflow::operators::MapWrapped::map_ex or map_named instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::join::Join::join_map"
+reason = "use differential_dataflow::operators::join::JoinCore::join_core instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::join::Join::join"
+reason = "use differential_dataflow::operators::join::JoinCore::join_core instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::join::Join::antijoin"
+reason = "use differential_dataflow::operators::join::JoinCore::join_core instead"
+
+[[disallowed-methods]]
+path = "differential_dataflow::operators::join::Join::semijoin"
+reason = "use differential_dataflow::operators::join::JoinCore::join_core instead"
+
+# we do not export a Rust API yet
+avoid-breaking-exported-api = false

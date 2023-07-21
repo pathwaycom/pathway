@@ -1,0 +1,5 @@
+# When not to use Differential Dataflow
+
+Differential dataflow is not magic. As you change your inputs, differential dataflow re-traces the computation to the best of its ability, and it will do work proportional to how much your *computation* has changed. Even if you feel that the results are qualitatively similar, the path required to reach these results may have changed substantially, and there is nothing differential dataflow will do other than re-play the computation wherever the inputs have changed.
+
+To maintain its computations, differential dataflow tracks how your computation evolved. In many cases this is fine, but it is not hard to produce computations whose history is much larger than the amount of state at any one point in time. In these cases, differential dataflow may have a surprisingly large memory footprint.

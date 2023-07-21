@@ -1,0 +1,9 @@
+[package]
+name = "doop"
+version = "0.1.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+
+[dependencies]
+indexmap = "1.0.1"
+timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
+differential-dataflow = { path = "../" }

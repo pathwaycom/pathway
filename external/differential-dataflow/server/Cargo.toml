@@ -1,0 +1,20 @@
+[package]
+name = "dd_server"
+version = "0.1.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+
+[dependencies.differential-dataflow]
+path="../"
+
+[dependencies]
+rand="0.3.13"
+libloading="*"
+timely = { git = "https://github.com/TimelyDataflow/timely-dataflow" }
+
+#[workspace]
+#members = [
+#    "dataflows/random_graph",
+#    "dataflows/degr_dist",
+#    "dataflows/neighborhood",
+#    "dataflows/reachability"
+#]

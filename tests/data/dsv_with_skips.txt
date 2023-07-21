@@ -1,0 +1,3 @@
+seq_id,key,value,number
+1,some_key,some_value,
+2,,some_value,1

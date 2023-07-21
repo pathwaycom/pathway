@@ -1,0 +1,2 @@
+{"name": "John", "pet": {"animal": "dog", "name": "Alice", "measurements": [200, 400, 600]}}
+{"name": "Jack", "pet": {"animal": "cat", "name": "Bob", "measurements": [100, 200, 300]}}

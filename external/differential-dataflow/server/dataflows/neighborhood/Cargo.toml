@@ -1,0 +1,11 @@
+[package]
+name = "neighborhood"
+version = "0.1.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+
+[dependencies]
+differential-dataflow = { path = "../../../" }
+dd_server = { path = "../../" }
+
+[lib]
+crate-type = ["dylib"]

@@ -1,0 +1,1 @@
+{"a": "abc", "float": 1.23, "int_positive": 50, "int_negative": -60, "string": "hello", "array": ["world", 1, -4, 7.38, []], "bool_true": true, "bool_false": false}

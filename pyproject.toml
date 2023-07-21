@@ -1,0 +1,45 @@
+[build-system]
+requires = ["maturin>=0.14,<0.15"]
+build-backend = "maturin"
+
+[project]
+name = "pathway"
+requires-python = ">=3.8"
+description = "Pathway is a data processing framework which takes care of streaming data updates for you."
+readme = "README.md"
+classifiers = [
+    "License :: Other/Proprietary License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+    "aiohttp >= 3.8.4",
+    "click >= 8.1",
+    "numpy >= 1.21",
+    "pandas >= 1.3",
+    "scikit-learn >= 1.0",
+    "sqlglot == 10.6.1",
+    "numba >= 0.56; python_version < '3.11'",
+    "pyarrow >= 10.0.0",
+    "requests >= 2.31.0",
+    "python-sat >= 0.1.8.dev",
+    "beartype >= 0.14.0",
+    "rich >= 12.6.0",
+    "diskcache >= 5.2.1"
+]
+
+[project.urls]
+"Homepage" = "https://pathway.com/"
+"Documentation" = "https://pathway.com/developers/"
+"Troubleshooting" = "https://pathway.com/troubleshooting/"
+
+[project.scripts]
+pathway = "pathway.cli:main"
+
+[tool.maturin]
+python-source = "python"
+module-name = "pathway.engine"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+norecursedirs = ["integration_tests"]

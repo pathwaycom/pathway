@@ -1,0 +1,28 @@
+[package]
+name = "timely_communication"
+version = "0.12.0"
+authors = ["Frank McSherry <fmcsherry@me.com>"]
+description = "Communication layer for timely dataflow"
+edition = "2018"
+
+# These URLs point to more information about the repository
+
+documentation = "https://docs.rs/timely/"
+homepage = "https://github.com/TimelyDataflow/timely-dataflow"
+repository = "https://github.com/TimelyDataflow/timely-dataflow.git"
+keywords = ["timely", "dataflow"]
+license = "MIT"
+
+[features]
+default = ["getopts"]
+
+[dependencies]
+getopts = { version = "0.2.14", optional = true }
+bincode = { version = "1.0", optional = true }
+serde_derive = "1.0"
+serde = "1.0"
+abomonation = "0.7"
+abomonation_derive = "0.5"
+timely_bytes = { path = "../bytes", version = "0.12" }
+timely_logging = { path = "../logging", version = "0.12" }
+crossbeam-channel = "0.5.0"

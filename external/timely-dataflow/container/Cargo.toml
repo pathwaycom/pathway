@@ -1,0 +1,10 @@
+[package]
+name = "timely_container"
+version = "0.12.0"
+edition = "2018"
+description = "Container abstractions for Timely"
+license = "MIT"
+
+[dependencies]
+columnation = { git = "https://github.com/frankmcsherry/columnation", optional = true }
+serde = { version = "1.0"}

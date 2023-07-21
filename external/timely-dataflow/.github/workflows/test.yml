@@ -1,0 +1,18 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v3
+    - run: rustup update 1.60 --no-self-update && rustup default 1.60
+    - run: cargo build
+    - name: test mdBook
+      # rustdoc doesn't build dependencies, so it needs to run after `cargo build`,
+      # but its dependency search gets confused if there are multiple copies of any
+      # dependency in target/debug/deps, so it needs to run before `cargo test` et al.
+      # clutter target/debug/deps with multiple copies of things.
+      run: for file in $(find mdbook -name '*.md'); do rustdoc --test $file  -L ./target/debug/deps; done
+    - run: cargo test
