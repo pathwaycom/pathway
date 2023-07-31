@@ -10,8 +10,8 @@ from pathway.tests.utils import T
 def test_column_reference():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(t.pet) == "<table1>.pet"
@@ -20,8 +20,8 @@ def test_column_reference():
 def test_column_ix():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(t.ix[t.age].pet) == "<table1>.ix(<table1>.age).pet"
@@ -30,8 +30,8 @@ def test_column_ix():
 def test_column_binary_op():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(t.pet + t.age) == "(<table1>.pet + <table1>.age)"
@@ -52,8 +52,8 @@ def test_column_binary_op():
 def test_2_args():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     tt = t.copy()
@@ -63,8 +63,8 @@ def test_2_args():
 def test_3_args():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     tt = t.copy()
@@ -77,8 +77,8 @@ def test_3_args():
 def test_column_unary_op():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(-t.pet) == "(-<table1>.pet)"
@@ -88,8 +88,8 @@ def test_column_unary_op():
 def test_reducer():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(pw.reducers.min(t.pet)) == "pathway.reducers.min(<table1>.pet)"
@@ -110,8 +110,8 @@ def test_reducer():
 def test_apply():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert (
@@ -123,8 +123,8 @@ def test_apply():
 def test_cast():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(pw.cast(int, t.pet)) == "pathway.cast(int, <table1>.pet)"
@@ -134,8 +134,8 @@ def test_cast():
 def test_declare_type():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert (
@@ -150,8 +150,8 @@ def test_declare_type():
 def test_coalesce():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert (
@@ -163,8 +163,8 @@ def test_coalesce():
 def test_require():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert (
@@ -175,8 +175,8 @@ def test_require():
 def test_if_else():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert (
@@ -188,8 +188,8 @@ def test_if_else():
 def test_pointer():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(t.pointer_from(4)) == "<table1>.pointer_from(4)"
@@ -231,8 +231,8 @@ def test_method_call():
 def test_3_args_with_info():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     tt = t.copy()
@@ -247,8 +247,8 @@ def test_3_args_with_info():
 def test_make_tuple():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert (
@@ -260,8 +260,8 @@ def test_make_tuple():
 def test_sequence_get():
     t = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
         """
     )
     assert repr(t.owner.get(2, "x")) == "(<table1>.owner).get(2, 'x')"

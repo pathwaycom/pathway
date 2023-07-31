@@ -13,7 +13,8 @@ from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
-    construct_input_data_format,
+    construct_connector_properties,
+    construct_schema_and_data_format,
     need_poll_new_objects,
 )
 
@@ -219,7 +220,7 @@ def read(
             persistent_id=persistent_id,
         )
 
-    data_format = construct_input_data_format(
+    schema, data_format = construct_schema_and_data_format(
         format,
         schema=schema,
         csv_settings=csv_settings,
@@ -229,9 +230,17 @@ def read(
         types=types,
         default_values=default_values,
     )
-
+    properties = construct_connector_properties(
+        schema_properties=schema.properties(),
+        commit_duration_ms=autocommit_duration_ms,
+    )
     return table_from_datasource(
-        datasource.GenericDataSource(data_storage, data_format, autocommit_duration_ms),
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            connector_properties=properties,
+            _schema=schema,
+        ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
 

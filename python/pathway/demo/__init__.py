@@ -3,7 +3,7 @@
 Typical use:
 
 >>> pw.demo.replay_csv("./input_stream.csv", value_columns=["name", "age"])
-Table{'name': <class 'object'>, 'age': <class 'object'>}
+Table{'name': typing.Any, 'age': typing.Any}
 """
 # Copyright © 2023 Pathway
 

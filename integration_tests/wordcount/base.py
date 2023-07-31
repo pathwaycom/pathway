@@ -2,10 +2,8 @@
 
 # Copyright © 2023 Pathway
 
-import argparse
 import json
 import os
-import pathlib
 import random
 import shutil
 import subprocess
@@ -23,7 +21,9 @@ def ensure_no_pstorage_present(pstorage_path):
         shutil.rmtree(pstorage_path)
 
 
-def check_output_correctness(latest_input_file, input_path, output_path):
+def check_output_correctness(
+    latest_input_file, input_path, output_path, interrupted_run=False
+):
     input_word_counts = {}
     new_file_lines = set()
     distinct_new_words = set()
@@ -57,61 +57,76 @@ def check_output_correctness(latest_input_file, input_path, output_path):
     n_rows = 0
     n_old_lines = 0
     output_word_counts = {}
-    with open(output_path, "r") as f:
-        is_first_row = True
-        word_column_index = None
-        count_column_index = None
-        for row in f:
-            n_rows += 1
-            if is_first_row:
-                column_names = row.strip().split(",")
-                for col_idx, col_name in enumerate(column_names):
-                    if col_name == "word":
-                        word_column_index = col_idx
-                    elif col_name == "count":
-                        count_column_index = col_idx
-                is_first_row = False
-                assert word_column_index is not None
-                assert count_column_index is not None
-                continue
+    try:
+        with open(output_path, "r") as f:
+            is_first_row = True
+            word_column_index = None
+            count_column_index = None
+            for row in f:
+                n_rows += 1
+                if is_first_row:
+                    column_names = row.strip().split(",")
+                    for col_idx, col_name in enumerate(column_names):
+                        if col_name == "word":
+                            word_column_index = col_idx
+                        elif col_name == "count":
+                            count_column_index = col_idx
+                    is_first_row = False
+                    assert (
+                        word_column_index is not None
+                    ), "'word' is absent in CSV header"
+                    assert (
+                        count_column_index is not None
+                    ), "'count' is absent in CSV header"
+                    continue
 
-            tokens = row.strip().split(",")
-            word = tokens[word_column_index].strip('"')
-            count = tokens[count_column_index]
-            output_word_counts[word] = int(count)
+                tokens = row.strip().split(",")
+                word = tokens[word_column_index].strip('"')
+                count = tokens[count_column_index]
+                output_word_counts[word] = int(count)
 
-            if (word, int(count)) not in new_file_lines:
-                n_old_lines += 1
+                if (word, int(count)) not in new_file_lines:
+                    n_old_lines += 1
+    except FileNotFoundError:
+        if interrupted_run:
+            return False
+        raise
 
     assert len(input_word_counts) >= len(
         output_word_counts
-    ), "Input size: {} Output size: {}".format(
+    ), "There are some new words on the output. Input dict: {} Output dict: {}".format(
         len(input_word_counts), len(output_word_counts)
     )
 
-    for word, count in output_word_counts.items():
-        assert (
-            input_word_counts.get(word) == count
-        ), "Word: {} Output: {} Input: {}".format(
-            word, count, input_word_counts.get(word)
-        )
+    for word, output_count in output_word_counts.items():
+        if interrupted_run:
+            assert input_word_counts.get(word) >= output_count
+        else:
+            assert (
+                input_word_counts.get(word) == output_count
+            ), "Word: {} Output count: {} Input count: {}".format(
+                word, output_count, input_word_counts.get(word)
+            )
 
-    assert (
-        n_old_lines < DEFAULT_INPUT_SIZE / 10
-    ), "Output contains too many old lines: {} while 1/10 of the input size is {}".format(
-        n_old_lines, DEFAULT_INPUT_SIZE / 10
-    )
-    assert n_rows >= len(
-        distinct_new_words
-    ), "Output contains only {} lines, while there should be at least {}".format(
-        n_rows, len(distinct_new_words)
-    )
+    if not interrupted_run:
+        assert (
+            n_old_lines < DEFAULT_INPUT_SIZE / 10
+        ), "Output contains too many old lines: {} while 1/10 of the input size is {}".format(
+            n_old_lines, DEFAULT_INPUT_SIZE / 10
+        )
+        assert n_rows >= len(
+            distinct_new_words
+        ), "Output contains only {} lines, while there should be at least {}".format(
+            n_rows, len(distinct_new_words)
+        )
 
     print("  Total rows on the output:", n_rows)
     print("  Total old lines:", n_old_lines)
 
+    return input_word_counts == output_word_counts
 
-def get_pw_program_run_time(n_cpus, input_path, output_path, pstorage_path, mode):
+
+def start_pw_computation(n_cpus, input_path, output_path, pstorage_path, mode):
     pw_wordcount_path = "/".join(
         os.path.abspath(__file__).split("/")[:-1]
     ) + "/pw_wordcount.py --input {} --output {} --pstorage {} --n-cpus {} --mode {}".format(
@@ -122,8 +137,12 @@ def get_pw_program_run_time(n_cpus, input_path, output_path, pstorage_path, mode
     command = "taskset --cpu-list {} python {}".format(cpu_list, pw_wordcount_path)
     run_args = command.split()
 
+    return subprocess.Popen(run_args)
+
+
+def get_pw_program_run_time(n_cpus, input_path, output_path, pstorage_path, mode):
     time_start = time.time()
-    popen = subprocess.Popen(run_args)
+    popen = start_pw_computation(n_cpus, input_path, output_path, pstorage_path, mode)
     try:
         needs_polling = mode == STREAMING_MODE_NAME
         while needs_polling:
@@ -156,6 +175,19 @@ def get_pw_program_run_time(n_cpus, input_path, output_path, pstorage_path, mode
             )
 
     return time.time() - time_start
+
+
+def run_pw_program_suddenly_terminate(
+    n_cpus, input_path, output_path, pstorage_path, min_work_time, max_work_time
+):
+    popen = start_pw_computation(
+        n_cpus, input_path, output_path, pstorage_path, STATIC_MODE_NAME
+    )
+    try:
+        wait_time = random.uniform(min_work_time, max_work_time)
+        time.sleep(wait_time)
+    finally:
+        popen.kill()
 
 
 def reset_runtime(inputs_path, pstorage_path):
@@ -227,7 +259,6 @@ def do_test_persistent_wordcount(n_backfilling_runs, n_cpus, tmp_path, mode):
     inputs_path = tmp_path / "inputs"
     output_path = tmp_path / "table.csv"
 
-    run_times = []
     reset_runtime(inputs_path, pstorage_path)
     for n_run in range(n_backfilling_runs):
         print("Run {}: generating input".format(n_run))
@@ -238,50 +269,47 @@ def do_test_persistent_wordcount(n_backfilling_runs, n_cpus, tmp_path, mode):
             n_cpus, inputs_path, output_path, pstorage_path, mode
         )
         print("Run {}: pathway time elapsed {}".format(n_run, elapsed))
-        run_times.append(elapsed)
 
         print("Run {}: checking output correctness".format(n_run))
         check_output_correctness(latest_input_name, inputs_path, output_path)
         print("Run {}: finished".format(n_run))
 
 
-def test_persistent_wordcount_streaming_1_core(tmp_path: pathlib.Path):
-    do_test_persistent_wordcount(3, 1, tmp_path, STREAMING_MODE_NAME)
+def do_test_failure_recovery_static(
+    n_backfilling_runs, n_cpus, tmp_path, min_work_time, max_work_time
+):
+    pstorage_path = tmp_path / "pstorage"
+    inputs_path = tmp_path / "inputs"
+    output_path = tmp_path / "table.csv"
+    reset_runtime(inputs_path, pstorage_path)
 
+    finished = False
+    input_file_name = generate_next_input(inputs_path)
+    for n_run in range(n_backfilling_runs):
+        print("Run {}: generating input".format(n_run))
 
-def test_persistent_wordcount_streaming_2_cores(tmp_path: pathlib.Path):
-    do_test_persistent_wordcount(3, 2, tmp_path, STREAMING_MODE_NAME)
+        print("Run {}: running pathway program".format(n_run))
+        run_pw_program_suddenly_terminate(
+            n_cpus,
+            inputs_path,
+            output_path,
+            pstorage_path,
+            min_work_time,
+            max_work_time,
+        )
 
+        finished_in_this_run = check_output_correctness(
+            input_file_name, inputs_path, output_path, interrupted_run=True
+        )
+        if finished_in_this_run:
+            finished = True
 
-def test_persistent_wordcount_streaming_4_cores(tmp_path: pathlib.Path):
-    do_test_persistent_wordcount(3, 4, tmp_path, STREAMING_MODE_NAME)
-
-
-def test_persistent_wordcount_static_1_core(tmp_path: pathlib.Path):
-    do_test_persistent_wordcount(3, 1, tmp_path, STATIC_MODE_NAME)
-
-
-def test_persistent_wordcount_static_2_cores(tmp_path: pathlib.Path):
-    do_test_persistent_wordcount(3, 2, tmp_path, STATIC_MODE_NAME)
-
-
-def test_persistent_wordcount_static_4_cores(tmp_path: pathlib.Path):
-    do_test_persistent_wordcount(3, 4, tmp_path, STATIC_MODE_NAME)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Simple persistence test")
-    parser.add_argument("--n-backfilling-runs", type=int, default=0)
-    parser.add_argument("--n-cpus", type=int, default=1, choices=[1, 2, 4])
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=[STATIC_MODE_NAME, STREAMING_MODE_NAME],
-        default=STREAMING_MODE_NAME,
-    )
-
-    args = parser.parse_args()
-
-    do_test_persistent_wordcount(
-        args.n_backfilling_runs, args.n_cpus, pathlib.Path("./"), args.mode
-    )
+    if finished:
+        print("The program finished during one of interrupted runs")
+    else:
+        elapsed = get_pw_program_run_time(
+            n_cpus, inputs_path, output_path, pstorage_path, STATIC_MODE_NAME
+        )
+        print("Time elapsed for non-interrupted run:", elapsed)
+        print("Checking correctness at the end")
+        check_output_correctness(input_file_name, inputs_path, output_path)

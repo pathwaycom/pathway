@@ -1,13 +1,14 @@
 # Copyright © 2023 Pathway
 
+import dataclasses
 import warnings
-from typing import Any, Dict, List, Optional, Set, Type
+from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
+import pathway.internals as pw
 from pathway.internals import api
 from pathway.internals._io_helpers import _form_value_fields
 from pathway.internals.api import PathwayType
-from pathway.internals.dtype import _is_optional, _strip_optional  # type:ignore
-from pathway.internals.schema import Schema
+from pathway.internals.schema import ColumnDefinition, Schema, SchemaProperties
 
 SUPPORTED_INPUT_MODES: Set[str] = set(
     [
@@ -18,7 +19,6 @@ SUPPORTED_INPUT_MODES: Set[str] = set(
 
 STREAMING_MODE_NAME = "streaming"
 
-
 _DATA_FORMAT_MAPPING = {
     "csv": "dsv",
     "plaintext": "identity",
@@ -26,6 +26,13 @@ _DATA_FORMAT_MAPPING = {
     "raw": "identity",
 }
 
+_PATHWAY_TYPE_MAPPING: Dict[PathwayType, Any] = {
+    PathwayType.INT: int,
+    PathwayType.BOOL: bool,
+    PathwayType.FLOAT: float,
+    PathwayType.STRING: str,
+    PathwayType.ANY: Any,
+}
 
 SUPPORTED_INPUT_FORMATS: Set[str] = set(
     [
@@ -37,13 +44,8 @@ SUPPORTED_INPUT_FORMATS: Set[str] = set(
 )
 
 
-_TYPE_MAPPING = {
-    Any: api.PathwayType.ANY,
-    int: api.PathwayType.INT,
-    str: api.PathwayType.STRING,
-    float: api.PathwayType.FLOAT,
-    bool: api.PathwayType.BOOL,
-}
+class RawDataSchema(pw.Schema):
+    data: Any
 
 
 def get_data_format_type(format: str, supported_formats: Set[str]):
@@ -111,6 +113,35 @@ class CsvParserSettings:
         )
 
 
+def _compat_schema(
+    value_columns: Optional[List[str]],
+    primary_key: Optional[List[str]],
+    types: Optional[Dict[str, api.PathwayType]],
+    default_values: Optional[Dict[str, Any]],
+):
+    columns: Dict[str, ColumnDefinition] = {
+        name: pw.column_definition(primary_key=True) for name in primary_key or {}
+    }
+    columns.update(
+        {
+            name: pw.column_definition()
+            for name in (value_columns or {})
+            if name not in columns
+        }
+    )
+    if types is not None:
+        for name, dtype in types.items():
+            columns[name] = dataclasses.replace(
+                columns[name], dtype=_PATHWAY_TYPE_MAPPING.get(dtype, Any)
+            )
+    if default_values is not None:
+        for name, default_value in default_values.items():
+            columns[name] = dataclasses.replace(
+                columns[name], default_value=default_value
+            )
+    return pw.schema_builder(columns=columns)
+
+
 def _read_schema(
     *,
     schema: Optional[Type[Schema]],
@@ -118,7 +149,7 @@ def _read_schema(
     primary_key: Optional[List[str]],
     types: Optional[Dict[str, api.PathwayType]],
     default_values: Optional[Dict[str, Any]],
-):
+) -> Type[Schema]:
     kwargs = locals()
     deprecated_kwargs = ["value_columns", "primary_key", "types", "default_values"]
 
@@ -132,29 +163,18 @@ def _read_schema(
                     DeprecationWarning,
                     stacklevel=2,
                 )
-        return (value_columns, primary_key, types, default_values)
+        schema = _compat_schema(
+            primary_key=primary_key,
+            value_columns=value_columns,
+            types=types,
+            default_values=default_values,
+        )
     else:
         for name in deprecated_kwargs:
             if kwargs[name] is not None:
                 raise ValueError(f"cannot use `schema` and `{name}`")
 
-    # XXX fix mapping schema types to PathwayType
-    def _unoptionalize(dtype):
-        if _is_optional(dtype):
-            return _strip_optional(dtype)
-        else:
-            return dtype
-
-    types = {
-        name: _TYPE_MAPPING[_unoptionalize(dtype)]
-        for name, dtype in schema.as_dict().items()
-    }
-    return (
-        schema.column_names(),
-        schema.primary_key_columns(),
-        types,
-        schema.default_values(),
-    )
+    return schema
 
 
 def read_schema(
@@ -164,32 +184,25 @@ def read_schema(
     primary_key: Optional[List[str]],
     types: Optional[Dict[str, api.PathwayType]],
     default_values: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    (value_columns, primary_key, types, default_values) = _read_schema(
+) -> Tuple[Type[Schema], Dict[str, Any]]:
+    schema = _read_schema(
         schema=schema,
         value_columns=value_columns,
         primary_key=primary_key,
         types=types,
         default_values=default_values,
     )
-    if value_columns is None:
-        raise ValueError("cannot determine input schema columns")
-    value_fields = _form_value_fields(
-        id_fields=primary_key,
-        value_fields=value_columns,
-        schema_types=types,
-        default_values=default_values,
-    )
-    return dict(
+    value_fields = _form_value_fields(schema)
+    return schema, dict(
         # There is a distinction between an empty set of columns denoting
         # the primary key and None. If any (including empty) set of keys if provided,
         # then it will be used to compute the primary key.
-        key_field_names=primary_key or None,
+        key_field_names=schema.primary_key_columns(),
         value_fields=value_fields,
     )
 
 
-def construct_input_data_format(
+def construct_schema_and_data_format(
     format: str,
     *,
     schema: Optional[Type[Schema]] = None,
@@ -199,7 +212,7 @@ def construct_input_data_format(
     primary_key: Optional[List[str]] = None,
     types: Optional[Dict[str, PathwayType]] = None,
     default_values: Optional[Dict[str, Any]] = None,
-):
+) -> Tuple[Type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
     if data_format_type == "identity":
@@ -218,35 +231,36 @@ def construct_input_data_format(
                     "Unexpected argument for plaintext format: {}".format(param)
                 )
 
-        return api.DataFormat(
+        return RawDataSchema, api.DataFormat(
             format_type=data_format_type,
-            key_field_names=["key"],
+            key_field_names=None,
             value_fields=[api.ValueField("data", PathwayType.ANY)],
         )
-    else:
-        schema_definition = read_schema(
-            schema=schema,
-            value_columns=value_columns,
-            primary_key=primary_key,
-            types=types,
-            default_values=default_values,
+    schema, api_schema = read_schema(
+        schema=schema,
+        value_columns=value_columns,
+        primary_key=primary_key,
+        types=types,
+        default_values=default_values,
+    )
+    if data_format_type == "dsv":
+        if json_field_paths is not None:
+            raise ValueError("Unexpected argument for csv format: json_field_paths")
+        return schema, api.DataFormat(
+            **api_schema,
+            format_type=data_format_type,
+            delimiter=",",
         )
-        if data_format_type == "dsv":
-            if json_field_paths is not None:
-                raise ValueError("Unexpected argument for csv format: json_field_paths")
-            return api.DataFormat(
-                **schema_definition,
-                format_type=data_format_type,
-                delimiter=",",
-            )
-        elif data_format_type == "jsonlines":
-            if csv_settings is not None:
-                raise ValueError("Unexpected argument for json format: csv_settings")
-            return api.DataFormat(
-                **schema_definition,
-                format_type=data_format_type,
-                column_paths=json_field_paths,
-            )
+    elif data_format_type == "jsonlines":
+        if csv_settings is not None:
+            raise ValueError("Unexpected argument for json format: csv_settings")
+        return schema, api.DataFormat(
+            **api_schema,
+            format_type=data_format_type,
+            column_paths=json_field_paths,
+        )
+    else:
+        raise ValueError(f"data format `{format}` not supported")
 
 
 def construct_s3_data_storage(
@@ -275,3 +289,15 @@ def construct_s3_data_storage(
             poll_new_objects=poll_new_objects,
             persistent_id=persistent_id,
         )
+
+
+def construct_connector_properties(
+    schema_properties: SchemaProperties = SchemaProperties(),
+    commit_duration_ms: Optional[int] = None,
+    unsafe_trusted_ids: bool = False,
+):
+    return api.ConnectorProperties(
+        commit_duration_ms=commit_duration_ms,
+        unsafe_trusted_ids=unsafe_trusted_ids,
+        append_only=schema_properties.append_only,
+    )

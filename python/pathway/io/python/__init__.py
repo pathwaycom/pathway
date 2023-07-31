@@ -12,7 +12,12 @@ from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import get_data_format_type, read_schema
+from pathway.io._utils import (
+    RawDataSchema,
+    construct_connector_properties,
+    get_data_format_type,
+    read_schema,
+)
 
 SUPPORTED_INPUT_FORMATS: Set[str] = set(
     [
@@ -152,39 +157,38 @@ def read(
 
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
-    if format == "raw":
+    if data_format_type == "identity":
         if primary_key:
             raise ValueError("raw format must not be used with primary_key property")
         if value_columns:
             raise ValueError("raw format must not be used with value_columns property")
-        data_format = api.DataFormat(
-            format_type=data_format_type,
-            key_field_names=["key"],
-            value_fields=[api.ValueField("data", PathwayType.ANY)],
-        )
-    else:
-        schema_definition = read_schema(
-            schema=schema,
-            value_columns=value_columns,
-            primary_key=primary_key,
-            types=types,
-            default_values=default_values,
-        )
-        data_format = api.DataFormat(
-            **schema_definition,
-            format_type=data_format_type,
-        )
+        schema = RawDataSchema
 
+    schema, api_schema = read_schema(
+        schema=schema,
+        value_columns=value_columns,
+        primary_key=primary_key,
+        types=types,
+        default_values=default_values,
+    )
+    data_format = api.DataFormat(
+        **api_schema,
+        format_type=data_format_type,
+    )
     data_storage = api.DataStorage(
         storage_type="python",
         python_subject=api.PythonSubject(start=subject.start, read=subject._read),
     )
-
+    properties = construct_connector_properties(
+        schema_properties=schema.properties(),
+        commit_duration_ms=autocommit_duration_ms,
+    )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            commit_frequency_ms=autocommit_duration_ms,
+            connector_properties=properties,
+            _schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

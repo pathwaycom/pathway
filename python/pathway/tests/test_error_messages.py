@@ -94,15 +94,15 @@ def test_groupby_extrakwargs():
 def test_groupby_extraargs():
     t = T(
         """
-            | shard |  t | tt |  v
-        1   | 0     |  1 |  1 |  10
-        2   | 0     |  2 |  2 |  1
-        3   | 0     |  4 |  4 |  3
-        4   | 0     |  8 |  8 |  2
-        5   | 0     |  9 |  9 |  4
-        6   | 0     |  10|  10|  8
-        7   | 1     |  1 |  1 |  9
-        8   | 1     |  2 |  2 |  16
+        shard |  t | tt |  v
+        0     |  1 |  1 |  10
+        0     |  2 |  2 |  1
+        0     |  4 |  4 |  3
+        0     |  8 |  8 |  2
+        0     |  9 |  9 |  4
+        0     |  10|  10|  8
+        1     |  1 |  1 |  9
+        1     |  2 |  2 |  16
     """
     )
 
@@ -175,15 +175,15 @@ def test_join_args():
 def test_session_simple():
     t = T(
         """
-            | shard |  t |  v
-        1   | 0     |  1 |  10
-        2   | 0     |  2 |  1
-        3   | 0     |  4 |  3
-        4   | 0     |  8 |  2
-        5   | 0     |  9 |  4
-        6   | 0     |  10|  8
-        7   | 1     |  1 |  9
-        8   | 1     |  2 |  16
+        shard |  t |  v
+        0     |  1 |  10
+        0     |  2 |  1
+        0     |  4 |  3
+        0     |  8 |  2
+        0     |  9 |  4
+        0     |  10|  8
+        1     |  1 |  9
+        1     |  2 |  16
     """
     )
 
@@ -229,10 +229,10 @@ def _assert_error_trace(error_type: Type):
 def test_traceback_expression():
     input = T(
         """
-            | v
-        1   | 1
-        2   | 2
-        3   | 3
+        v
+        1
+        2
+        3
         """
     )
 
@@ -245,10 +245,10 @@ def test_traceback_expression():
 def test_traceback_rust_expression():
     input = T(
         """
-            | foo | bar
-        1   | 1   | a
-        2   | 2   | b
-        3   | 3   | c
+        foo | bar
+        1   | a
+        2   | b
+        3   | c
         """
     )
 
@@ -281,10 +281,10 @@ def test_traceback_async_apply():
 def test_traceback_context_column():
     input = T(
         """
-            | v
-        1   | 1
-        2   | 2
-        3   | 3
+        v
+        1
+        2
+        3
         """
     )
 
@@ -305,9 +305,9 @@ def test_traceback_iterate():
 
     input = T(
         """
-            | val
-        1   | foo
-        2   | bar
+        val
+        foo
+        bar
         """
     ).with_columns(val=pw.declare_type(int, pw.this.val))
 
@@ -488,9 +488,9 @@ def test_groupby_reduce_bad_column():
     ):
         purchases = T(
             """
-        | purchase_id | user_id |  email            | amount
-     1  | 1           | 1       | user1@example.com | 15
-     2  | 2           | 2       | user2@example.com | 18
+        purchase_id | user_id |  email            | amount
+        1           | 1       | user1@example.com | 15
+        2           | 2       | user2@example.com | 18
         """
         )
 
@@ -508,9 +508,9 @@ def test_filter_bad_expression():
     ):
         t_input = T(
             """
-            | request_uri | timestamp
-         1  | /home       | 1633024800
-         2  | /about      | 1633024860
+         request_uri | timestamp
+         /home       | 1633024800
+         /about      | 1633024860
             """
         )
 
@@ -524,10 +524,10 @@ def test_expressions_display_warning_when_evalution_in_python():
     file_name = os.path.basename(__file__)
     t1 = T(
         """
-      | i | b
-    1 | 4 | True
-    2 | 3 | False
-    3 | 0 | False
+    i | b
+    4 | True
+    3 | False
+    0 | False
     """
     )
 
@@ -552,9 +552,9 @@ def test_expressions_display_warning_when_evalution_in_python():
 def test_method_in_pathway_this():
     t1 = pw.debug.table_from_markdown(
         """
-      | join
-    1 |   2
-    2 |  12
+    join
+      2
+     12
     """
     )
     with pytest.raises(
@@ -569,9 +569,11 @@ def test_method_in_pathway_this():
 
 def test_table_getitem():
     tab = T(
-        """a
+        """
+            a
             1
-            2"""
+            2
+        """
     )
 
     with pytest.raises(
@@ -595,11 +597,11 @@ def test_from_columns():
 def test_groupby():
     left = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
-    3 |  2   | Alice   | 8
-    4 |  1   | Bob     | 7
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
+     2   | Alice   | 8
+     1   | Bob     | 7
     """
     ).with_columns(pet=pw.this.pointer_from(pw.this.pet))
 
@@ -610,7 +612,7 @@ def test_groupby():
 
     expected = T(
         """
-            | pet | agesum
+          | pet | agesum
         1 | 1   | 26
         2 | 2   | 8
         """
@@ -701,10 +703,10 @@ def test_fatten():
 def test_slices_1():
     tab = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
 

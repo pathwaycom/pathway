@@ -1,9 +1,9 @@
 [package]
 name = "pathway"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 publish = false
-rust-version = "1.69"
+rust-version = "1.71.0"
 license = "BUSL-1.1"
 
 [lib]

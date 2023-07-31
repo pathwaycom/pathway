@@ -8,11 +8,11 @@ import pytest
 
 import pathway as pw
 from pathway.internals.schema import Schema
+from pathway.io._utils import _compat_schema
 
 
 def assert_same_schema(left: Type[Schema], right: Type[Schema]):
-    assert left.__name__ == right.__name__
-    assert left.__columns__ == right.__columns__
+    assert left == right and left.__name__ == right.__name__
 
 
 def test_schema_type_inconsistency_error():
@@ -27,6 +27,17 @@ def test_schema_column_definition_error():
 
         class TestSchema(pw.Schema):
             a: int = 1
+
+
+def test_schema_no_annotation():
+    with pytest.raises(
+        ValueError, match=r"definitions of columns a, c lack type annotation.*"
+    ):
+
+        class TestSchema(pw.Schema):
+            a = pw.column_definition()
+            b: int = pw.column_definition()
+            c = pw.column_definition()
 
 
 def test_schema_override_column_name():
@@ -54,3 +65,60 @@ def test_schema_builder():
         c: Any
 
     assert_same_schema(schema, FooSchema)
+
+
+def test_schema_eq():
+    class A(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: str = pw.column_definition(default_value="foo")
+
+    class B(pw.Schema):
+        b: str = pw.column_definition(default_value="foo")
+        a: int = pw.column_definition(primary_key=True)
+
+    class C(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: str = pw.column_definition(default_value="foo")
+        c: int
+
+    class D(pw.Schema):
+        a: int = pw.column_definition()
+        b: str = pw.column_definition(default_value="foo")
+
+    class E(pw.Schema):
+        a: str = pw.column_definition(primary_key=True)
+        b: str = pw.column_definition(default_value="foo")
+
+    class F(pw.Schema, append_only=True):
+        a: int = pw.column_definition(primary_key=True)
+        b: str = pw.column_definition(default_value="foo")
+
+    class Same(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: str = pw.column_definition(default_value="foo")
+
+    schema_from_builder = pw.schema_builder(
+        columns={
+            "a": pw.column_definition(primary_key=True, dtype=int),
+            "b": pw.column_definition(default_value="foo", dtype=str),
+        },
+        name="Foo",
+    )
+    compat_schema = _compat_schema(
+        value_columns=["a", "b"],
+        primary_key=["a"],
+        default_values={"b": "foo"},
+        types={
+            "a": pw.Type.INT,
+            "b": pw.Type.STRING,
+        },
+    )
+
+    assert A != B, "column order should match"
+    assert A != C, "column count should match"
+    assert A != D, "column properties should match"
+    assert A != E, "column types should match"
+    assert A != F, "schema properties should match"
+    assert A == Same
+    assert A == schema_from_builder
+    assert A == compat_schema

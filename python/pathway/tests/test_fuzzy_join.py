@@ -67,7 +67,7 @@ def test_fuzzy_match_simple():
     )
 
 
-def test_fuzzy_match_same_features(parse_graph_teardown):
+def test_fuzzy_match_same_features():
     features = T(
         """
       | weight
@@ -369,7 +369,7 @@ def test_smart_large_heavy_light():
     expected = T(
         """
     left | right | weight
-    ab | ab    | 0.404762
+      ab | ab    | 0.404762
     """,
     )
     assert_table_equality_wo_index(
@@ -410,9 +410,9 @@ def test_fuzzy_match_tables():
         ret,
         T(
             """
-   left   right  weight
-     20  twenty     0.5
-     10     ten     0.5
+   left |  right | weight
+     20 | twenty |    0.5
+     10 |    ten |    0.5
     """,
         ),
     )

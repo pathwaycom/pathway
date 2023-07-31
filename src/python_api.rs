@@ -1079,6 +1079,47 @@ impl PyExpression {
     }
 
     #[staticmethod]
+    fn ptr_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
+        Self::new(
+            Arc::new(Expression::Bool(BoolExpression::PtrGe(
+                lhs.inner.clone(),
+                rhs.inner.clone(),
+            ))),
+            lhs.gil || rhs.gil,
+        )
+    }
+    #[staticmethod]
+    fn ptr_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
+        Self::new(
+            Arc::new(Expression::Bool(BoolExpression::PtrGt(
+                lhs.inner.clone(),
+                rhs.inner.clone(),
+            ))),
+            lhs.gil || rhs.gil,
+        )
+    }
+    #[staticmethod]
+    fn ptr_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
+        Self::new(
+            Arc::new(Expression::Bool(BoolExpression::PtrLe(
+                lhs.inner.clone(),
+                rhs.inner.clone(),
+            ))),
+            lhs.gil || rhs.gil,
+        )
+    }
+    #[staticmethod]
+    fn ptr_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
+        Self::new(
+            Arc::new(Expression::Bool(BoolExpression::PtrLt(
+                lhs.inner.clone(),
+                rhs.inner.clone(),
+            ))),
+            lhs.gil || rhs.gil,
+        )
+    }
+
+    #[staticmethod]
     fn eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
         Self::new(
             Arc::new(Expression::Bool(BoolExpression::Eq(
@@ -1677,16 +1718,6 @@ impl PathwayType {
 
     #[classattr]
     pub const FLOAT: Type = Type::Float;
-
-    pub fn get_python_schema_type(&self, py: Python) -> Py<PyType> {
-        match self.0 {
-            Type::Int => PyInt::type_object(py).into(),
-            Type::Bool => PyBool::type_object(py).into(),
-            Type::Float => PyFloat::type_object(py).into(),
-            Type::String => PyString::type_object(py).into(),
-            Type::Any => py.eval("object()", None, None).unwrap().get_type().into(),
-        }
-    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "MonitoringLevel")]
@@ -2195,7 +2226,7 @@ impl Scope {
         self_: &PyCell<Self>,
         data_source: &PyCell<DataStorage>,
         data_format: &PyCell<DataFormat>,
-        commit_duration_ms: Option<u64>,
+        properties: ConnectorProperties,
     ) -> PyResult<Table> {
         let py = self_.py();
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(py)?;
@@ -2204,7 +2235,9 @@ impl Scope {
         let (universe_handle, column_handles) = self_.borrow().graph.connector_table(
             reader_impl,
             parser_impl,
-            commit_duration_ms.map(time::Duration::from_millis),
+            properties
+                .commit_duration_ms
+                .map(time::Duration::from_millis),
             parallel_readers,
         )?;
 
@@ -4067,6 +4100,36 @@ impl EvalProperties {
 
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Clone)]
+pub struct ConnectorProperties {
+    #[pyo3(get)]
+    commit_duration_ms: Option<u64>,
+    #[allow(unused)]
+    #[pyo3(get)]
+    unsafe_trusted_ids: bool,
+    #[allow(unused)]
+    #[pyo3(get)]
+    append_only: bool,
+}
+
+#[pymethods]
+impl ConnectorProperties {
+    #[new]
+    #[pyo3(signature = (
+        commit_duration_ms = None,
+        unsafe_trusted_ids = false,
+        append_only = false
+    ))]
+    fn new(commit_duration_ms: Option<u64>, unsafe_trusted_ids: bool, append_only: bool) -> Self {
+        Self {
+            commit_duration_ms,
+            unsafe_trusted_ids,
+            append_only,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Clone)]
 pub struct PyTrace {
     line: String,
     file_name: String,
@@ -4211,6 +4274,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<DataFormat>()?;
     m.add_class::<PythonSubject>()?;
 
+    m.add_class::<ConnectorProperties>()?;
     m.add_class::<EvalProperties>()?;
     m.add_class::<PyTrace>()?;
 

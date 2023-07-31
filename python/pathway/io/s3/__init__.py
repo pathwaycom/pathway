@@ -12,8 +12,9 @@ from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
-    construct_input_data_format,
+    construct_connector_properties,
     construct_s3_data_storage,
+    construct_schema_and_data_format,
     need_poll_new_objects,
 )
 
@@ -195,7 +196,6 @@ def read(
     ...     schema=InputSchema,
     ... )
     """
-
     data_storage = construct_s3_data_storage(
         path=path,
         rust_engine_s3_settings=aws_s3_settings.settings,
@@ -205,15 +205,23 @@ def read(
         persistent_id=persistent_id,
     )
 
-    data_format = construct_input_data_format(
+    schema, data_format = construct_schema_and_data_format(
         format,
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
     )
-
+    properties = construct_connector_properties(
+        schema_properties=schema.properties(),
+        commit_duration_ms=autocommit_duration_ms,
+    )
     return table_from_datasource(
-        datasource.GenericDataSource(data_storage, data_format, autocommit_duration_ms),
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            _schema=schema,
+            connector_properties=properties,
+        ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
 
@@ -302,15 +310,23 @@ def read_from_digital_ocean(
         persistent_id=persistent_id,
     )
 
-    data_format = construct_input_data_format(
+    schema, data_format = construct_schema_and_data_format(
         format,
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
     )
-
+    properties = construct_connector_properties(
+        schema_properties=schema.properties(),
+        commit_duration_ms=autocommit_duration_ms,
+    )
     return table_from_datasource(
-        datasource.GenericDataSource(data_storage, data_format, autocommit_duration_ms),
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            connector_properties=properties,
+            _schema=schema,
+        ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
 
@@ -397,15 +413,22 @@ def read_from_wasabi(
         csv_settings=csv_settings,
         persistent_id=persistent_id,
     )
-
-    data_format = construct_input_data_format(
+    schema, data_format = construct_schema_and_data_format(
         format,
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
     )
-
+    properties = construct_connector_properties(
+        schema_properties=schema.properties(),
+        commit_duration_ms=autocommit_duration_ms,
+    )
     return table_from_datasource(
-        datasource.GenericDataSource(data_storage, data_format, autocommit_duration_ms),
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            connector_properties=properties,
+            _schema=schema,
+        ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

@@ -122,6 +122,10 @@ pub enum BoolExpression {
     StringGe(Arc<Expression>, Arc<Expression>),
     PtrEq(Arc<Expression>, Arc<Expression>),
     PtrNe(Arc<Expression>, Arc<Expression>),
+    PtrLe(Arc<Expression>, Arc<Expression>),
+    PtrLt(Arc<Expression>, Arc<Expression>),
+    PtrGe(Arc<Expression>, Arc<Expression>),
+    PtrGt(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveEq(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveNe(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveLt(Arc<Expression>, Arc<Expression>),
@@ -413,6 +417,18 @@ impl BoolExpression {
             }
             Self::PtrNe(lhs, rhs) => {
                 Ok(lhs.eval_as_pointer(values)? != rhs.eval_as_pointer(values)?)
+            }
+            Self::PtrLe(lhs, rhs) => {
+                Ok(lhs.eval_as_pointer(values)? <= rhs.eval_as_pointer(values)?)
+            }
+            Self::PtrLt(lhs, rhs) => {
+                Ok(lhs.eval_as_pointer(values)? < rhs.eval_as_pointer(values)?)
+            }
+            Self::PtrGe(lhs, rhs) => {
+                Ok(lhs.eval_as_pointer(values)? >= rhs.eval_as_pointer(values)?)
+            }
+            Self::PtrGt(lhs, rhs) => {
+                Ok(lhs.eval_as_pointer(values)? > rhs.eval_as_pointer(values)?)
             }
             Self::DateTimeNaiveEq(lhs, rhs) => {
                 Ok(lhs.eval_as_date_time_naive(values)? == rhs.eval_as_date_time_naive(values)?)

@@ -1,4 +1,4 @@
-use log::{error, warn};
+use log::{error, info, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -70,6 +70,7 @@ pub enum Entry {
 impl<Timestamp> Connector<Timestamp>
 where
     Timestamp: TimelyTimestamp + Default + From<u64>,
+    u64: From<Timestamp>,
 {
     /*
         The implementation for pull model of data acquisition: we explicitly inquiry the source about the newly
@@ -109,7 +110,7 @@ where
             input_session.flush();
         }
 
-        new_timestamp
+        self.current_timestamp.clone().into()
     }
 
     pub fn rewind_from_disk_snapshot(
@@ -126,22 +127,36 @@ where
             .lock()
             .unwrap()
             .last_finalized_timestamp();
-        if threshold_time == 0 {
-            return;
-        }
 
+        info!("Persistent rewind allowed up to logical time {threshold_time}");
         if let Ok(mut snapshot_reader) = snapshot_reader {
+            if threshold_time == 0 {
+                info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
+                if let Err(e) = snapshot_reader.truncate() {
+                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                }
+                return;
+            }
+            let mut entries_read = 0;
             loop {
                 let entry_read = snapshot_reader.read();
                 let Ok(entry_read) = entry_read else { break };
                 match entry_read {
-                    SnapshotEvent::Finished => break,
+                    SnapshotEvent::Finished => {
+                        info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
+                        break;
+                    }
                     SnapshotEvent::AdvanceTime(new_time) => {
                         if new_time > threshold_time {
+                            if let Err(e) = snapshot_reader.truncate() {
+                                error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                            }
+                            info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {entries_read} entries");
                             break;
                         }
                     }
                     SnapshotEvent::Insert(_, _) | SnapshotEvent::Remove(_, _) => {
+                        entries_read += 1;
                         let send_res = sender.send(Entry::Snapshot(entry_read));
                         if let Err(e) = send_res {
                             error!("Failed to send rewind entry: {e}");
@@ -202,6 +217,7 @@ where
                 .lock()
                 .unwrap()
                 .frontier_for(persistent_id);
+            info!("Seek the data source to the frontier {frontier:?}");
             if let Err(e) = reader.seek(&frontier) {
                 error!("Failed to seek to frontier: {e}");
             }
@@ -393,7 +409,16 @@ where
                 ReadResult::Finished => {}
                 ReadResult::NewSource => {
                     parser.on_new_source_started();
-                    self.advance_time(input_sessions, universe_session);
+
+                    let parsed_entries = vec![ParsedEvent::AdvanceTime];
+                    self.on_parsed_data(
+                        parsed_entries,
+                        input_sessions,
+                        universe_session,
+                        values_to_key,
+                        snapshot_writer,
+                        connector_monitor,
+                    );
                 }
                 ReadResult::Data(reader_context, maybe_offset) => {
                     let mut parsed_entries = match parser.parse(&reader_context) {
@@ -433,7 +458,15 @@ where
             },
             Entry::RewindFinishSentinel => {
                 *backfilling_finished = true;
-                self.advance_time(input_sessions, universe_session);
+                let parsed_entries = vec![ParsedEvent::AdvanceTime];
+                self.on_parsed_data(
+                    parsed_entries,
+                    input_sessions,
+                    universe_session,
+                    values_to_key,
+                    snapshot_writer,
+                    connector_monitor,
+                );
             }
             Entry::Snapshot(snapshot) => match snapshot {
                 SnapshotEvent::Insert(key, value) => {

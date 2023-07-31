@@ -14,8 +14,9 @@ from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
     check_deprecated_kwargs,
+    construct_connector_properties,
+    construct_schema_and_data_format,
     need_poll_new_objects,
-    read_schema,
 )
 from pathway.io.s3 import AwsS3Settings
 
@@ -157,20 +158,24 @@ def read(
         poll_new_objects=poll_new_objects,
         persistent_id=persistent_id,
     )
-
-    schema_definition = read_schema(
+    schema, data_format = construct_schema_and_data_format(
+        format="csv",
         schema=schema,
         value_columns=value_columns,
         primary_key=id_columns,
         types=types,
         default_values=default_values,
     )
-    data_format = api.DataFormat(
-        **schema_definition,
-        format_type="dsv",
-        delimiter=",",
+    properties = construct_connector_properties(
+        schema_properties=schema.properties(),
+        commit_duration_ms=autocommit_duration_ms,
     )
     return table_from_datasource(
-        datasource.GenericDataSource(data_storage, data_format, autocommit_duration_ms),
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            connector_properties=properties,
+            _schema=schema,
+        ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

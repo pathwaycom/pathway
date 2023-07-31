@@ -344,6 +344,88 @@ def test_csv_default_values(tmp_path: pathlib.Path):
     )
 
 
+def test_csv_skip_column(tmp_path: pathlib.Path):
+    data = """
+        k | a   | b
+        1 | foo | a
+        2 | bar | b
+        3 | baz | c
+    """
+    input_path = str(tmp_path / "input.csv")
+    write_csv(input_path, data)
+    table = pw.io.csv.read(
+        input_path,
+        schema=pw.schema_builder(
+            columns={
+                "k": pw.column_definition(primary_key=True, dtype=int),
+                "b": pw.column_definition(dtype=str),
+            }
+        ),
+        mode="static",
+    )
+    assert_table_equality(
+        table,
+        T(
+            """
+            k   | b
+            1   | a
+            2   | b
+            3   | c
+            """,
+            id_from=["k"],
+        ),
+    )
+
+
+def test_id_hashing_across_connectors(tmp_path: pathlib.Path):
+    csv_data = """
+        key | value
+        1   | foo
+        2   | bar
+        3   | baz
+    """
+    write_csv(tmp_path / "input.csv", csv_data)
+
+    json_data = """
+        {"key": 1, "value": "foo"}
+        {"key": 2, "value": "bar"}
+        {"key": 3, "value": "baz"}
+    """
+    write_lines(tmp_path / "input.json", json_data)
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next_json({"key": 1, "value": "foo"})
+            self.next_json({"key": 2, "value": "bar"})
+            self.next_json({"key": 3, "value": "baz"})
+
+    table_csv = pw.io.csv.read(
+        str(tmp_path / "input.csv"),
+        id_columns=["key"],
+        value_columns=["value"],
+        types={"key": pw.Type.INT, "value": pw.Type.STRING},
+        mode="static",
+    )
+    table_json = pw.io.jsonlines.read(
+        str(tmp_path / "input.json"),
+        primary_key=["key"],
+        value_columns=["value"],
+        types={"key": pw.Type.INT, "value": pw.Type.STRING},
+        mode="static",
+    )
+    table_py = pw.io.python.read(
+        subject=TestSubject(),
+        primary_key=["key"],
+        value_columns=["value"],
+        types={"key": pw.Type.INT, "value": pw.Type.STRING},
+    )
+    table_static = T(csv_data, id_from=["key"])
+
+    assert_table_equality(table_static, table_json)
+    assert_table_equality(table_static, table_py)
+    assert_table_equality(table_static, table_csv)
+
+
 def test_json_default_values(tmp_path: pathlib.Path):
     data = """
         {"k": "a", "b": 1, "c": "foo" }
@@ -391,7 +473,8 @@ def test_deprecated_schema_compatiblity(tmp_path: pathlib.Path):
         a: str = pw.column_definition(primary_key=True)
         b: int = pw.column_definition(primary_key=True)
         c: int = pw.column_definition(default_value=0)
-        d = pw.column_definition()
+        d: Any = pw.column_definition()
+        e: Any
 
     table1 = pw.io.csv.read(
         str(input_path),
@@ -401,12 +484,23 @@ def test_deprecated_schema_compatiblity(tmp_path: pathlib.Path):
     table2 = pw.io.csv.read(
         str(input_path),
         id_columns=["a", "b"],
-        value_columns=["c", "d"],
-        types={"a": pw.Type.STRING, "b": pw.Type.INT, "c": pw.Type.INT},
+        value_columns=[
+            "a",
+            "c",
+            "d",
+            "e",
+        ],
+        types={
+            "a": pw.Type.STRING,
+            "b": pw.Type.INT,
+            "c": pw.Type.INT,
+            "d": pw.Type.ANY,
+        },
         default_values={"c": 0},
         mode="static",
     )
 
+    assert table1.schema == table2.schema
     assert_table_equality(table1, table2)
 
 
@@ -617,6 +711,28 @@ def test_async_transformer_disk_cache(tmp_path: pathlib.Path):
     assert counter.call_count == 3
 
 
+def test_fs_raw(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    write_lines(input_path, "foo\nbar\nbaz")
+
+    table = pw.io.fs.read(str(input_path), format="raw", mode="static").update_types(
+        data=str
+    )
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+            data
+            foo
+            bar
+            baz
+        """,
+        ),
+    )
+    pw.debug.compute_and_print(table)
+
+
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
 def test_csv_directory(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
@@ -790,3 +906,16 @@ def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
         get_number_of_lines_checker(output_path, 5, ("data",), ("data",)),
         30,
     ), get_stream_test_folder_contents(tmp_path)
+
+
+def test_pathway_type_mapping():
+    import inspect
+
+    from pathway.internals.api import PathwayType
+    from pathway.io._utils import _PATHWAY_TYPE_MAPPING
+
+    assert all(
+        t in _PATHWAY_TYPE_MAPPING
+        for _, t in inspect.getmembers(PathwayType)
+        if isinstance(t, PathwayType)
+    )

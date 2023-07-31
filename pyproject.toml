@@ -19,7 +19,7 @@ dependencies = [
     "pandas >= 1.3",
     "scikit-learn >= 1.0",
     "sqlglot == 10.6.1",
-    "numba >= 0.56; python_version < '3.11'",
+    "numba >= 0.56",
     "pyarrow >= 10.0.0",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",
@@ -30,6 +30,7 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://pathway.com/"
+"Source code" = "https://github.com/pathwaycom/pathway/"
 "Documentation" = "https://pathway.com/developers/"
 "Troubleshooting" = "https://pathway.com/troubleshooting/"
 
@@ -41,5 +42,11 @@ python-source = "python"
 module-name = "pathway.engine"
 features = ["pyo3/extension-module"]
 
-[tool.pytest.ini_options]
-norecursedirs = ["integration_tests"]
+[tool.mypy]
+python_version = "3.10"
+exclude = ["target", "examples", "python/pathway/tests", "integration_tests"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pathway"
+ignore_missing_imports = true

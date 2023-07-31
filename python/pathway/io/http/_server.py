@@ -65,7 +65,7 @@ class RestServerSubject(io.python.ConnectorSubject):
 
         self._add(id, data)
         response = await self._fetch_response(id, event)
-        # self._remove(id, data)
+        self._remove(id, data)
         return web.json_response(status=200, data=response)
 
     async def _fetch_response(self, id, event) -> Any:
@@ -107,7 +107,7 @@ def rest_connector(
         def on_change(
             key: BasePointer, row: Dict[str, Any], time: int, is_addition: bool
         ):
-            if is_addition is False:
+            if not is_addition:
                 return
 
             task = tasks.get(key, None)

@@ -40,6 +40,12 @@ class EvalProperties:
     trace: Optional[PyTrace] = None
     dtype: Optional[DType] = None
 
+@dataclasses.dataclass(frozen=True)
+class ConnectorProperties:
+    commit_duration_ms: Optional[int] = None
+    unsafe_trusted_ids: Optional[bool] = False
+    append_only: Optional[bool] = False
+
 class Column:
     """A Column holds data and conceptually is a Dict[Universe elems, dt]
 
@@ -185,6 +191,14 @@ class Expression:
     def ptr_eq(lhs: Expression, rhs: Expression) -> Expression: ...
     @staticmethod
     def ptr_ne(lhs: Expression, rhs: Expression) -> Expression: ...
+    @staticmethod
+    def ptr_lt(lhs: Expression, rhs: Expression) -> Expression: ...
+    @staticmethod
+    def ptr_le(lhs: Expression, rhs: Expression) -> Expression: ...
+    @staticmethod
+    def ptr_gt(lhs: Expression, rhs: Expression) -> Expression: ...
+    @staticmethod
+    def ptr_ge(lhs: Expression, rhs: Expression) -> Expression: ...
     @staticmethod
     def eq(lhs: Expression, rhs: Expression) -> Expression: ...
     @staticmethod
@@ -498,7 +512,7 @@ class Scope:
         self,
         data_source: DataStorage,
         data_format: DataFormat,
-        commit_duration_ms: Optional[int],
+        properties: ConnectorProperties,
     ) -> Table: ...
     @staticmethod
     def table(universe: Universe, columns: List[Column]) -> Table: ...

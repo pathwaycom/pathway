@@ -361,7 +361,11 @@ impl DsvParser {
         }
         if line_has_enough_tokens {
             let key = match &self.key_column_indices {
-                Some(indices) => Some(Self::values_by_indices(tokens, indices, &HashMap::new())?),
+                Some(indices) => Some(Self::values_by_indices(
+                    tokens,
+                    indices,
+                    &self.indexed_schema,
+                )?),
                 None => None,
             };
             let parsed_tokens =

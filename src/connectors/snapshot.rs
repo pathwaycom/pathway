@@ -1,7 +1,8 @@
 use log::error;
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, ErrorKind as IoErrorKind, Write};
+use std::fs::OpenOptions;
+use std::io::{BufReader, BufWriter, ErrorKind as IoErrorKind, Seek, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +25,13 @@ pub enum Event {
 #[allow(clippy::module_name_repetitions)]
 pub trait SnapshotReader {
     fn read(&mut self) -> Result<Event, ReadError>;
+
+    /// This method will be called after the snapshot is read until the last entry, which can be
+    /// processed.
+    ///
+    /// It must ensure that no further data is present in the snapshot so that when it gets appended,
+    /// the unused data is not written next to the non-processed tail.
+    fn truncate(&mut self) -> Result<(), ReadError>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -101,37 +109,69 @@ impl SnapshotReader for LocalBinarySnapshotReader {
         }
         Ok(Event::Finished)
     }
+
+    fn truncate(&mut self) -> Result<(), ReadError> {
+        if let Some(ref mut reader) = &mut self.reader {
+            let stable_position = reader.stream_position()?;
+            let file_path = Path::new(&self.root_path)
+                .join(format!("{}", self.times_advanced[self.next_file_idx - 1]));
+            let file = OpenOptions::new().append(true).open(file_path)?;
+            file.set_len(stable_position)?;
+        }
+
+        for unreachable_part in &self.times_advanced[self.next_file_idx..] {
+            let snapshot_file_to_remove =
+                Path::new(&self.root_path).join(format!("{unreachable_part}"));
+            std::fs::remove_file(snapshot_file_to_remove)?;
+        }
+
+        Ok(())
+    }
 }
 
 pub struct LocalBinarySnapshotWriter {
-    writer: BufWriter<std::fs::File>,
+    root_path: PathBuf,
+    lazy_writer: Option<BufWriter<std::fs::File>>,
 }
 
 impl LocalBinarySnapshotWriter {
     pub fn new(path: &Path) -> Result<LocalBinarySnapshotWriter, WriteError> {
         ensure_directory(path)?;
 
-        let current_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Failed to get the current timestamp.")
-            .as_millis();
-
         Ok(Self {
-            writer: BufWriter::new(File::create(path.join(format!("{current_timestamp}")))?),
+            root_path: path.to_owned(),
+            lazy_writer: None,
         })
     }
 }
 
 impl SnapshotWriter for LocalBinarySnapshotWriter {
     fn write(&mut self, event: &Event) -> Result<(), WriteError> {
-        serialize_into(&mut self.writer, &event).map_err(|e| match *e {
+        let writer = {
+            if let Some(lazy_writer) = &mut self.lazy_writer {
+                lazy_writer
+            } else {
+                let current_timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Failed to get the current timestamp.")
+                    .as_millis();
+                let path = self.root_path.join(format!("{current_timestamp}"));
+
+                self.lazy_writer = Some(BufWriter::new(File::create(path)?));
+                self.lazy_writer.as_mut().unwrap()
+            }
+        };
+
+        serialize_into(writer, &event).map_err(|e| match *e {
             BincodeError::Io(io_error) => WriteError::Io(*Box::new(io_error)),
             _ => WriteError::Bincode(*e),
         })
     }
 
     fn flush(&mut self) -> Result<(), WriteError> {
-        self.writer.flush()?;
+        if let Some(writer) = &mut self.lazy_writer {
+            writer.flush()?;
+        }
         Ok(())
     }
 }

@@ -9,9 +9,10 @@ from typing import Any, Optional, Type
 import pandas as pd
 
 from pathway.internals import api
-from pathway.internals.schema import Schema, schema_from_pandas, schema_from_types
+from pathway.internals.schema import Schema, schema_from_pandas
 
 
+@dataclass(frozen=True)
 class DataSource(ABC):
     @property
     @abstractmethod
@@ -36,14 +37,12 @@ class PandasDataSource(StaticDataSource):
 class GenericDataSource(DataSource):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
-    commit_frequency_ms: Any
+    _schema: Type[Schema]
+    connector_properties: api.ConnectorProperties = api.ConnectorProperties()
 
     @property
     def schema(self) -> Type[Schema]:
-        schema_types = {}
-        for value_field in self.dataformat.value_fields:
-            schema_types[value_field.name] = value_field.type_.get_python_schema_type()
-        return schema_from_types(None, **schema_types)
+        return self._schema
 
 
 @dataclass(frozen=True)

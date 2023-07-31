@@ -52,7 +52,6 @@ class TypeInterpreter(ExpressionVisitor):
     def eval_binary_op(self, expression: expr.ColumnBinaryOpExpression) -> DType:
         left_dtype = self.eval_expression(expression._left)
         right_dtype = self.eval_expression(expression._right)
-
         if (
             dtype_and_handler := get_binary_operators_mapping(
                 expression._operator, left_dtype, right_dtype
@@ -255,7 +254,7 @@ class TypeInterpreter(ExpressionVisitor):
             raise AttributeError(
                 f"Column of type {dtypes[0]} has no attribute {expression._name}{with_arguments}."
             )
-        return expression._return_type_fun(dtypes)
+        return DType(expression._return_type_fun(dtypes))
 
 
 class JoinTypeInterpreter(TypeInterpreter):

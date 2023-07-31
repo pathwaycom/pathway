@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections import ChainMap
 from dataclasses import dataclass
 from functools import lru_cache
@@ -22,7 +23,6 @@ import pandas as pd
 from pathway.internals import trace
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.dtype import DType, NoneType, dtype_issubclass
-from pathway.internals.helpers import StableSet
 from pathway.internals.runtime_type_check import runtime_type_check
 
 if TYPE_CHECKING:
@@ -139,16 +139,11 @@ def _create_column_definitions(schema: SchemaMetaclass):
     annotations = get_type_hints(schema, localns=localns)
     fields = _cls_fields(schema)
 
-    column_names = StableSet((*annotations.keys(), *fields.keys()))
     columns = {}
 
-    for name in column_names:
-        if name in annotations:
-            dtype = DType(annotations[name])
-        else:
-            dtype = DType(Any)
-
-        column = fields.get(name, ColumnDefinition(dtype=dtype))
+    for name, annotation in annotations.items():
+        dtype = DType(annotation)
+        column = fields.pop(name, column_definition(dtype=dtype))
 
         if not isinstance(column, ColumnDefinition):
             raise ValueError(
@@ -158,28 +153,45 @@ def _create_column_definitions(schema: SchemaMetaclass):
         name = column.name or name
 
         if column.dtype is None:
-            column.dtype = dtype
-
-        if dtype != DType(Any) and dtype != column.dtype:
+            column = dataclasses.replace(column, dtype=dtype)
+        elif dtype != column.dtype:
             raise TypeError(
                 f"type annotation of column `{name}` does not match column definition"
             )
 
         columns[name] = column
 
+    if fields:
+        names = ", ".join(fields.keys())
+        raise ValueError(f"definitions of columns {names} lack type annotation")
+
     return columns
+
+
+@dataclass(frozen=True)
+class SchemaProperties:
+    append_only: bool = False
 
 
 class SchemaMetaclass(type):
     __columns__: Dict[str, ColumnDefinition]
+    __properties__: SchemaProperties
 
     @trace.trace_user_frame
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, append_only=False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+
         self.__columns__ = _create_column_definitions(self)
+        self.__properties__ = SchemaProperties(append_only=append_only)
 
     def __or__(self, other: Type[Schema]) -> Type[Schema]:  # type: ignore
         return schema_add(self, other)  # type: ignore
+
+    def properties(self) -> SchemaProperties:
+        return self.__properties__
+
+    def columns(self) -> Dict[str, ColumnDefinition]:
+        return dict(self.__columns__)
 
     def column_names(self) -> list[str]:
         return list(self.as_dict().keys())
@@ -196,7 +208,7 @@ class SchemaMetaclass(type):
         ]
         return pkey_fields if pkey_fields else None
 
-    def default_values(self) -> Mapping[str, Any]:
+    def default_values(self) -> Dict[str, Any]:
         return {
             name: column.default_value
             for name, column in self.__columns__.items()
@@ -243,6 +255,17 @@ class SchemaMetaclass(type):
         )
         return res
 
+    def _as_tuple(self):
+        return (self.__properties__, tuple(self.__columns__.items()))
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, SchemaMetaclass):
+            return self._as_tuple() == other._as_tuple()
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self._as_tuple())
+
 
 class Schema(metaclass=SchemaMetaclass):
     """Base class to inherit from when creating schemas.
@@ -268,6 +291,9 @@ class Schema(metaclass=SchemaMetaclass):
     {'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, 'foo': <class 'int'>}
     """
 
+    def __init_subclass__(cls, /, append_only: bool = False, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+
 
 def _schema_builder(_name: str, _dict: dict[str, Any]) -> Type[Schema]:
     return SchemaMetaclass(_name, (Schema,), _dict)  # type: ignore
@@ -290,7 +316,7 @@ class _Undefined:
 _no_default_value_marker = _Undefined()
 
 
-@dataclass
+@dataclass(frozen=True)
 class ColumnDefinition:
     primary_key: bool = False
     default_value: Optional[Any] = _no_default_value_marker
@@ -365,6 +391,12 @@ def schema_builder(
     if name is None:
         name = "custom_schema(" + str(list(columns.keys())) + ")"
 
-    __dict: Dict[str, Any] = {"__metaclass__": SchemaMetaclass, **columns}
+    __annotations = {name: c.dtype or Any for name, c in columns.items()}
+
+    __dict: Dict[str, Any] = {
+        "__metaclass__": SchemaMetaclass,
+        "__annotations__": __annotations,
+        **columns,
+    }
 
     return _schema_builder(name, __dict)

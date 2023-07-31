@@ -157,7 +157,7 @@ impl<T: ExchangeData> Sequencer<T> {
                         }
 
                         let mut activator_borrow = activator_source.borrow_mut();
-                        let mut activator = activator_borrow.as_mut().unwrap();
+                        let activator = activator_borrow.as_mut().unwrap();
 
                         if let Some(t) = activator.catchup_until {
                             if capability.time().less_than(&t) {
@@ -190,7 +190,7 @@ impl<T: ExchangeData> Sequencer<T> {
 
                     if let Some(last) = recvd.last() {
                         let mut activator_borrow = activator_sink.borrow_mut();
-                        let mut activator = activator_borrow.as_mut().unwrap();
+                        let activator = activator_borrow.as_mut().unwrap();
 
                         activator.catchup_until = Some((last.0).0);
                         activator.activate();

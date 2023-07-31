@@ -128,7 +128,7 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                 materialized_table = self.scope.connector_table(
                     datasource.datastorage,
                     datasource.dataformat,
-                    datasource.commit_frequency_ms,
+                    datasource.connector_properties,
                 )
                 self.state.set_table(table, materialized_table)
         elif isinstance(datasource, EmptyDataSource):

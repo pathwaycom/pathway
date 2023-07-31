@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Type
 
-from pathway.internals import api
-from pathway.internals.helpers import StableSet
+from pathway.internals import api, schema
+from pathway.internals.dtype import _is_optional, _strip_optional  # type:ignore
 from pathway.internals.table import Table
+
+_TYPE_MAPPING = {
+    Any: api.PathwayType.ANY,
+    int: api.PathwayType.INT,
+    str: api.PathwayType.STRING,
+    float: api.PathwayType.FLOAT,
+    bool: api.PathwayType.BOOL,
+}
 
 
 def _format_output_value_fields(table: Table) -> List[api.ValueField]:
@@ -17,19 +25,25 @@ def _format_output_value_fields(table: Table) -> List[api.ValueField]:
     return value_fields
 
 
-def _form_value_fields(
-    id_fields: Optional[List[str]],
-    value_fields: Optional[List[str]],
-    schema_types: Optional[Dict[str, api.PathwayType]],
-    default_values: Optional[Dict[str, Any]],
-) -> List[api.ValueField]:
-    all_field_names = StableSet((id_fields or []) + (value_fields or []))
-    schema_types = schema_types or {}
-    default_values = default_values or {}
+def _form_value_fields(schema: Type[schema.Schema]) -> List[api.ValueField]:
+    schema.default_values()
+    default_values = schema.default_values()
     result = []
 
-    for f in all_field_names:
-        simple_type = schema_types.get(f, api.PathwayType.ANY)
+    # XXX fix mapping schema types to PathwayType
+    def _unoptionalize(dtype):
+        if _is_optional(dtype):
+            return _strip_optional(dtype)
+        else:
+            return dtype
+
+    types = {
+        name: _TYPE_MAPPING.get(_unoptionalize(dtype), api.PathwayType.ANY)
+        for name, dtype in schema.as_dict().items()
+    }
+
+    for f in schema.column_names():
+        simple_type = types.get(f, api.PathwayType.ANY)
         value_field = api.ValueField(f, simple_type)
         if f in default_values:
             value_field.set_default(default_values[f])

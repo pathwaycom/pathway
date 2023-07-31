@@ -590,7 +590,7 @@ class DateTimeNamespace:
 
         if contains_timezone:
             fun = api.Expression.date_time_utc_strptime
-            return_type = DateTimeUtc
+            return_type: type = DateTimeUtc
         else:
             fun = api.Expression.date_time_naive_strptime
             return_type = DateTimeNaive

@@ -4,10 +4,9 @@
 <p align="center">
         <img src="https://img.shields.io/badge/OS-Linux-green" alt="Linux"/>
         <img src="https://img.shields.io/badge/OS-macOS-green" alt="macOS"/>
-    <a href="LICENSE.txt">
+    <a href="https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt">
         <img src="https://img.shields.io/badge/license-BSL-green" alt="License: BSL"/></a>
                      <a href="https://github.com/pathwaycom/pathway/graphs/contributors">
-        <img src="https://img.shields.io/github/contributors/pathwaycom/pathway" alt="Contributors"/></a>
       <br>
     <a href="https://discord.gg/pathway">
         <img src="https://img.shields.io/discord/1042405378304004156?logo=discord"
@@ -113,7 +112,7 @@ In addition to Pathway's built-in dashboard, you can [use Prometheus](https://pa
 See also: **[Pathway Developer Resources](https://pathway.com/developers/)** webpage (including API Docs).
 
 ### Videos about Pathway
-▶️ Building an LLM Application without a vector database (coming soon) - by [Jan Chorowski](https://scholar.google.com/citations?user=Yc94070AAAAJ)
+[▶️ Building an LLM Application without a vector database](https://www.youtube.com/watch?v=kcrJSk00duw) - by [Jan Chorowski](https://scholar.google.com/citations?user=Yc94070AAAAJ) (7min 56s)
 
 [▶️ Linear regression on a Kafka Stream](https://vimeo.com/805069039) - by [Richard Pelgrim](https://twitter.com/richardpelgrim) (7min 53s)
 
@@ -193,7 +192,7 @@ Pathway is made to run in a "clean" Linux/MacOS + Python environment. When insta
 
 ## License
 
-Pathway is distributed on a [BSL 1.1 License](LICENSE.txt) which allows for unlimited non-commercial use, as well as use of the Pathway package [for most commercial purposes](https://pathway.com/license/), free of charge. Code in this repository automatically converts to Open Source (Apache 2.0 License) after 4 years. Some [public repos](https://github.com/pathwaycom) which are complementary to this one (examples, libraries, connectors, etc.) are licensed as Open Source, under the MIT license.
+Pathway is distributed on a [BSL 1.1 License](https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt) which allows for unlimited non-commercial use, as well as use of the Pathway package [for most commercial purposes](https://pathway.com/license/), free of charge. Code in this repository automatically converts to Open Source (Apache 2.0 License) after 4 years. Some [public repos](https://github.com/pathwaycom) which are complementary to this one (examples, libraries, connectors, etc.) are licensed as Open Source, under the MIT license.
 
 
 ## Contribution guidelines

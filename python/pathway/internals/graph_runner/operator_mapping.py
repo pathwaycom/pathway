@@ -85,6 +85,10 @@ _binary_operators_mapping: BinaryOperatorMapping = {
     (operator.mul, int, str): (str, api.Expression.str_lmul),
     (operator.eq, Pointer, Pointer): (bool, api.Expression.ptr_eq),
     (operator.ne, Pointer, Pointer): (bool, api.Expression.ptr_ne),
+    (operator.lt, Pointer, Pointer): (bool, api.Expression.ptr_lt),
+    (operator.le, Pointer, Pointer): (bool, api.Expression.ptr_le),
+    (operator.gt, Pointer, Pointer): (bool, api.Expression.ptr_gt),
+    (operator.ge, Pointer, Pointer): (bool, api.Expression.ptr_ge),
     (operator.eq, DateTimeNaive, DateTimeNaive): (
         bool,
         api.Expression.date_time_naive_eq,

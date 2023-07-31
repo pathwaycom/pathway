@@ -16,9 +16,9 @@ def plural(n, singular, plural):
     return f"{n} {plural}"
 
 
+@click.group
 @click.version_option(version=pw.__version__, prog_name="pathway")
-@click.group()
-def cli():
+def cli() -> None:
     pass
 
 

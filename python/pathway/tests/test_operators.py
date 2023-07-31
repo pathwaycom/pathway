@@ -636,7 +636,7 @@ def test_string_mul(reverse_columns: bool):
     _check_pandas_pathway_return_the_same(df, operator.mul, dtypes, str)
 
 
-def test_pointer():
+def test_pointer_eq():
     t = T(
         """
        | true_id | false_id
@@ -663,6 +663,60 @@ def test_pointer():
     2  | True | False | False | True
     3  | True | False | False | True
     """
+    )
+    assert_table_equality(res, expected)
+
+
+def test_pointer_order():
+    t = T(
+        """
+    ptrA | ptrB | ptrC
+       1 |   11 |   21
+       2 |   12 |   22
+       3 |   13 |   23
+       4 |   14 |   24
+       5 |   15 |   25
+    """
+    ).with_columns(
+        ptrA=pw.this.pointer_from(pw.this.ptrA),
+        ptrB=pw.this.pointer_from(pw.this.ptrB),
+        ptrC=pw.this.pointer_from(pw.this.ptrC),
+    )
+    res = t.select(
+        a1=(t.ptrA < t.ptrB) == (t.ptrA <= t.ptrB),
+        a2=(t.ptrA > t.ptrB) == (t.ptrA >= t.ptrB),
+        a3=(t.ptrB < t.ptrC) == (t.ptrB <= t.ptrC),
+        a4=(t.ptrB > t.ptrC) == (t.ptrB >= t.ptrC),
+        a5=(t.ptrA < t.ptrC) == (t.ptrA <= t.ptrC),
+        a6=(t.ptrA > t.ptrC) == (t.ptrA >= t.ptrC),
+        b1=(t.ptrA < t.ptrB) != (t.ptrA > t.ptrB),
+        b2=(t.ptrA < t.ptrC) != (t.ptrA > t.ptrC),
+        b3=(t.ptrB < t.ptrC) != (t.ptrB > t.ptrC),
+        # <= below on bools is -> implies
+        c1=((t.ptrA < t.ptrB) & (t.ptrB < t.ptrC)) <= (t.ptrA < t.ptrC),
+        c2=((t.ptrA < t.ptrC) & (t.ptrC < t.ptrB)) <= (t.ptrA < t.ptrB),
+        c3=((t.ptrB < t.ptrA) & (t.ptrA < t.ptrC)) <= (t.ptrB < t.ptrC),
+        c4=((t.ptrB < t.ptrC) & (t.ptrC < t.ptrA)) <= (t.ptrB < t.ptrA),
+        c5=((t.ptrC < t.ptrA) & (t.ptrA < t.ptrB)) <= (t.ptrC < t.ptrB),
+        c6=((t.ptrC < t.ptrB) & (t.ptrB < t.ptrA)) <= (t.ptrC < t.ptrA),
+    )
+
+    expected = t.select(
+        a1=True,
+        a2=True,
+        a3=True,
+        a4=True,
+        a5=True,
+        a6=True,
+        b1=True,
+        b2=True,
+        b3=True,
+        c1=True,
+        c2=True,
+        c3=True,
+        c4=True,
+        c5=True,
+        c6=True,
     )
     assert_table_equality(res, expected)
 

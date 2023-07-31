@@ -43,24 +43,24 @@ from pathway.tests.utils import (
     "unexpected",
     [
         """
-            | foo
-        1   | 1
+        foo
+        1
         """,
         """
-            | foo   | bar
-        1   | 42    | 42
+        foo   | bar
+        42    | 42
         """,
         """
-            | bar   | foo
-        1   | 1     | 1
+        bar   | foo
+        1     | 1
         """,
     ],
 )
 def test_assert_table_unexpected_columns(asserter, unexpected):
     input = T(
         """
-            | foo   | bar
-        1   | 1     | 1
+        foo   | bar
+        1     | 1
         """
     )
 
@@ -71,9 +71,9 @@ def test_assert_table_unexpected_columns(asserter, unexpected):
 def test_input_operator():
     input = T(
         """
-            | foo
-        1   | 1
-        2   | 2
+        foo
+        1
+        2
         """
     )
 
@@ -81,9 +81,9 @@ def test_input_operator():
         input,
         T(
             """
-                | foo
-            1   | 1
-            2   | 2
+            foo
+            1
+            2
             """
         ),
     )
@@ -162,9 +162,9 @@ def test_select_arithmetic_with_const():
 def test_select_values():
     t1 = T(
         """
-    | lower | upper
-    1  | a     | A
-    2  | b     | B
+    lower | upper
+    a     | A
+    b     | B
     """
     )
 
@@ -173,9 +173,9 @@ def test_select_values():
         res,
         T(
             """
-    | foo   | bar
-    1  | alpha | beta
-    2  | alpha | beta
+    foo   | bar
+    alpha | beta
+    alpha | beta
         """
         ),
     )
@@ -184,14 +184,14 @@ def test_select_values():
 def test_select_column_different_universe():
     foo = T(
         """
-        | col
+       | col
     1  | a
     2  | b
     """
     )
     bar = T(
         """
-            | col
+           | col
         3  | a
         4  | b
         5  | c
@@ -204,9 +204,9 @@ def test_select_column_different_universe():
 def test_select_const_expression():
     input = T(
         """
-            | foo | bar
-        1   | 1   | 3
-        2   | 2   | 4
+        foo | bar
+        1   | 3
+        2   | 4
         """
     )
 
@@ -216,9 +216,9 @@ def test_select_const_expression():
         result,
         T(
             """
-            | a
-        1   | 42
-        2   | 42
+        a
+        42
+        42
         """
         ),
     )
@@ -227,9 +227,9 @@ def test_select_const_expression():
 def test_select_simple_expression():
     input = T(
         """
-            | foo | bar
-        1   | 1   | 3
-        2   | 2   | 4
+        foo | bar
+        1   | 3
+        2   | 4
         """
     )
 
@@ -239,9 +239,9 @@ def test_select_simple_expression():
         result,
         T(
             """
-                | a
-            1   | 4
-            2   | 6
+            a
+            4
+            6
             """
         ),
     )
@@ -516,12 +516,12 @@ def test_select_bool_binary():
 def test_broadcasting_singlerow():
     table = T(
         """
-    | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
-    3 |  2   | Alice   | 8
-    4 |  1   | Bob     | 7
-    5 |  0   | Eve     | 10
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
+     2   | Alice   | 8
+     1   | Bob     | 7
+     0   | Eve     | 10
         """
     )
 
@@ -530,12 +530,12 @@ def test_broadcasting_singlerow():
 
     expected = T(
         """
-    | newval
-    1 | 1
-    2 | 1
-    3 | 1
-    4 | 1
-    5 | 1
+    newval
+     1
+     1
+     1
+     1
+     1
         """
     )
     assert_table_equality(returned, expected)
@@ -738,7 +738,7 @@ def test_ix_ref_with_primary_keys():
 def test_select_universes():
     t1 = T(
         """
-        | col
+       | col
     1  | a
     2  | b
     3  | c
@@ -747,7 +747,7 @@ def test_select_universes():
 
     t2 = T(
         """
-        | col
+       | col
     2  | 1
     3  | 1
     """
@@ -757,7 +757,7 @@ def test_select_universes():
         t2.select(t1.col),
         T(
             """
-        | col
+       | col
     2  | b
     3  | c
     """
@@ -771,7 +771,7 @@ def test_select_universes():
 def test_select_op_universes():
     t1 = T(
         """
-        | col
+       | col
     1  | 11
     2  | 12
     3  | 13
@@ -780,7 +780,7 @@ def test_select_op_universes():
 
     t2 = T(
         """
-        | col
+       | col
     2  | 1
     3  | 1
     """
@@ -790,7 +790,7 @@ def test_select_op_universes():
         t2.select(col=t1.col + t2.col),
         T(
             """
-        | col
+       | col
     2  | 13
     3  | 14
     """
@@ -825,15 +825,15 @@ def test_select_column_ix_args():
 def test_concat():
     t1 = T(
         """
-        | lower | upper
-    1  | a     | A
-    2  | b     | B
+    lower | upper
+    a     | A
+    b     | B
     """
     )
     t2 = T(
         """
-        | lower | upper
-    1  | c     | C
+    lower | upper
+    c     | C
     """
     )
 
@@ -854,7 +854,7 @@ def test_concat():
 def test_concat_unsafe():
     t1 = T(
         """
-        | lower | upper
+       | lower | upper
     1  | a     | A
     2  | b     | B
     """
@@ -883,7 +883,7 @@ def test_concat_unsafe():
 def test_concat_unsafe_collision():
     t1 = T(
         """
-        | lower | upper
+       | lower | upper
     1  | a     | A
     2  | b     | B
     """
@@ -1007,10 +1007,10 @@ def test_flatten_explode(mul: int, dtype: Any):
 def test_flatten_incorrect_type():
     t = T(
         """
-         | a | other
-      0  | 1 | -1
-      1  | 2 | -2
-      2  | 3 | -3
+      a | other
+      1 | -1
+      2 | -2
+      3 | -3
     """
     )
     with pytest.raises(
@@ -1023,26 +1023,26 @@ def test_flatten_incorrect_type():
 def test_from_columns():
     first = T(
         """
-    | pet | owner | age
-    1 |  1  | Alice | 10
-    2 |  1  | Bob   | 9
-    3 |  2  | Alice | 8
+    pet | owner | age
+     1  | Alice | 10
+     1  | Bob   | 9
+     2  | Alice | 8
     """
     )
     second = T(
         """
-    | foo | aux | baz
-    1 | a   | 70  | a
-    2 | b   | 80  | c
-    3 | c   | 90  | b
+    foo | aux | baz
+    a   | 70  | a
+    b   | 80  | c
+    c   | 90  | b
     """
     ).with_universe_of(first)
     expected = T(
         """
-    | pet | foo
-    1 | 1   | a
-    2 | 1   | b
-    3 | 2   | c
+    pet | foo
+    1   | a
+    1   | b
+    2   | c
         """
     )
     assert_table_equality(pw.Table.from_columns(first.pet, second.foo), expected)
@@ -1051,10 +1051,10 @@ def test_from_columns():
 def test_from_columns_collision():
     first = T(
         """
-    | pet | owner | age
-    1 |  1  | Alice | 10
-    2 |  1  | Bob   | 9
-    3 |  2  | Alice | 8
+    pet | owner | age
+     1  | Alice | 10
+     1  | Bob   | 9
+     2  | Alice | 8
     """
     )
     with pytest.raises(ValueError):
@@ -1064,7 +1064,7 @@ def test_from_columns_collision():
 def test_from_columns_mismatched_keys():
     first = T(
         """
-    | pet | owner | age
+      | pet | owner | age
     1 |  1  | Alice | 10
     2 |  1  | Bob   | 9
     3 |  2  | Alice | 8
@@ -1072,7 +1072,7 @@ def test_from_columns_mismatched_keys():
     )
     second = T(
         """
-    | foo | aux | baz
+      | foo | aux | baz
     1 | a   | 70  | a
     2 | b   | 80  | c
     4 | c   | 90  | b
@@ -1085,17 +1085,17 @@ def test_from_columns_mismatched_keys():
 def test_rename_columns_1():
     old = T(
         """
-      | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
     """
     )
 
     expected = T(
         """
-       |  owner  | animal | winters
-    1  | Alice   |  1     | 10
-    2  | Bob     |  1     | 9
+    owner   | animal | winters
+    Alice   |  1     | 10
+    Bob     |  1     | 9
     """
     )
     new = old.rename_columns(animal=old.pet, winters=old.age)
@@ -1105,16 +1105,16 @@ def test_rename_columns_1():
 def test_rename_columns_2():
     old = T(
         """
-      | pet | age
-    1 |  1  | 10
-    2 |  1  | 9
+    pet | age
+     1  | 10
+     1  | 9
     """
     )
     expected = T(
         """
-      | age | pet
-    1 |  1  | 10
-    2 |  1  | 9
+    age | pet
+     1  | 10
+     1  | 9
     """
     )
     new = old.rename_columns(age="pet", pet="age")
@@ -1124,17 +1124,17 @@ def test_rename_columns_2():
 def test_rename_by_dict():
     old = T(
         """
-        | t0  |  t1  | t2
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
+    t0  |  t1  | t2
+     1   | Alice   | 10
+     1   | Bob     | 9
     """
     )
 
     expected = T(
         """
-        |  col_0  | col_1 | col_2
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
+    col_0  | col_1   | col_2
+       1   | Alice   | 10
+       1   | Bob     | 9
     """
     )
     new = old.rename_by_dict({f"t{i}": f"col_{i}" for i in range(3)})
@@ -1144,9 +1144,9 @@ def test_rename_by_dict():
 def test_rename_with_dict():
     old = T(
         """
-        | t0  |  t1  | t2
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
+    t0   |  t1     | t2
+     1   | Alice   | 10
+     1   | Bob     | 9
     """
     )
     mapping = {f"t{i}": f"col_{i}" for i in range(3)}
@@ -1158,9 +1158,9 @@ def test_rename_with_dict():
 def test_rename_with_kwargs():
     old = T(
         """
-        | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
     """
     )
 
@@ -1172,9 +1172,9 @@ def test_rename_with_kwargs():
 def test_rename_columns_unknown_column_name():
     old = T(
         """
-    | pet |  owner  | age
-    1 |  1  | Alice   | 10
-    2 |  1  | Bob     | 9
+    pet |  owner  | age
+     1  | Alice   | 10
+     1  | Bob     | 9
     """
     )
     with pytest.raises(Exception):
@@ -1184,19 +1184,19 @@ def test_rename_columns_unknown_column_name():
 def test_drop_columns():
     old = T(
         """
-    | pet | owner | age | weight
-    1 | 1   | Bob   | 11  | 7
-    2 | 1   | Eve   | 10  | 11
-    3 | 2   | Eve   | 15  | 13
+    pet | owner | age | weight
+    1   | Bob   | 11  | 7
+    1   | Eve   | 10  | 11
+    2   | Eve   | 15  | 13
     """
     )
     new = old.without(old.pet, old.age, pw.this.owner)
     expected = T(
         """
-    | weight
-    1 | 7
-    2 | 11
-    3 | 13
+    weight
+    7
+    11
+    13
     """
     )
     assert_table_equality(new, expected)
@@ -1291,7 +1291,7 @@ def test_reindex():
     )
     t2 = T(
         """
-        | new_id
+       | new_id
     1  | 2
     2  | 3
     3  | 4
@@ -1512,10 +1512,10 @@ def test_iterate_with_limit(limit):
 def test_apply():
     a = T(
         """
-            | foo
-        1   | 1
-        2   | 2
-        3   | 3
+        foo
+        1
+        2
+        3
         """
     )
 
@@ -1528,10 +1528,10 @@ def test_apply():
         result,
         T(
             """
-                | ret
-            1   | 2
-            2   | 3
-            3   | 4
+            ret
+            2
+            3
+            4
             """
         ),
     )
@@ -1540,10 +1540,10 @@ def test_apply():
 def test_apply_inspect_wrapped_signature():
     a = T(
         """
-            | foo
-        1   | 1
-        2   | 2
-        3   | 3
+        foo
+        1
+        2
+        3
         """
     )
 
@@ -1564,10 +1564,10 @@ def test_apply_inspect_wrapped_signature():
         result,
         T(
             """
-                | ret
-            1   | 2
-            2   | 3
-            3   | 4
+            ret
+            2
+            3
+            4
             """
         ),
     )
@@ -1576,10 +1576,10 @@ def test_apply_inspect_wrapped_signature():
 def test_apply_consts():
     a = T(
         """
-            | foo
-        1   | 1
-        2   | 2
-        3   | 3
+        foo
+        1
+        2
+        3
         """
     )
 
@@ -1592,10 +1592,10 @@ def test_apply_consts():
         result,
         T(
             """
-                | ret
-            1 | 2
-            2 | 2
-            3 | 2
+            ret
+            2
+            2
+            2
             """
         ),
     )
@@ -1604,18 +1604,18 @@ def test_apply_consts():
 def test_apply_more_args():
     a = T(
         """
-            | foo
-        1 | 1
-        2 | 2
-        3 | 3
+        foo
+        1
+        2
+        3
         """
     )
     b = T(
         """
-            | bar
-        1 | 2
-        2 | -1
-        3 | 4
+        bar
+        2
+        -1
+        4
         """
     ).with_universe_of(a)
 
@@ -1628,10 +1628,10 @@ def test_apply_more_args():
         result,
         T(
             """
-                | ret
-            1 | 3
-            2 | 1
-            3 | 7
+            ret
+            3
+            1
+            7
             """
         ),
     )
@@ -1641,18 +1641,18 @@ def test_apply_more_args():
 def test_numba_apply():
     a = T(
         """
-            | foo
-        1 | 1
-        2 | 2
-        3 | 3
+        foo
+        1
+        2
+        3
         """,
     )
     b = T(
         """
-            | bar
-        1 | 2
-        2 | -1
-        3 | 4
+        bar
+        2
+        -1
+        4
         """,
     ).with_universe_of(a)
 
@@ -1668,10 +1668,10 @@ def test_numba_apply():
         result,
         T(
             """
-                | ret
-            1 | 3
-            2 | 1
-            3 | 7
+            ret
+            3
+            1
+            7
             """,
         ),
     )
@@ -1681,18 +1681,18 @@ def test_numba_apply():
 def test_numba_apply_lambda():
     a = T(
         """
-            | foo
-        1 | 1
-        2 | 2
-        3 | 3
+        foo
+        1
+        2
+        3
         """,
     )
     b = T(
         """
-            | bar
-        1 | 2
-        2 | -1
-        3 | 4
+        bar
+        2
+        -1
+        4
         """,
     ).with_universe_of(a)
 
@@ -1705,10 +1705,10 @@ def test_numba_apply_lambda():
         result,
         T(
             """
-                | ret
-            1 | 3
-            2 | 1
-            3 | 7
+            ret
+            3
+            1
+            7
             """,
         ),
     )
@@ -1718,18 +1718,18 @@ def test_numba_apply_lambda():
 def test_numba_composite():
     a = T(
         """
-            | foo
-        1 | 1
-        2 | 2
-        3 | 3
+        foo
+        1
+        2
+        3
         """,
     )
     b = T(
         """
-            | bar
-        1 | 2
-        2 | -1
-        3 | 4
+        bar
+        2
+        -1
+        4
         """,
     ).with_universe_of(a)
 
@@ -1742,10 +1742,10 @@ def test_numba_composite():
         result,
         T(
             """
-              | ret
-            1 | 3
-            2 | 1
-            3 | 7
+            ret
+            3
+            1
+            7
             """,
         ),
     )
@@ -1755,10 +1755,10 @@ def test_numba_composite():
 def test_numba_more_signatures():
     a = T(
         """
-            | foo
-        1 | 1
-        2 | 2
-        3 | 3
+        foo
+        1
+        2
+        3
         """,
     )
 
@@ -1768,10 +1768,10 @@ def test_numba_more_signatures():
         result,
         T(
             """
-                | ret
-            1 | 1.5
-            2 | 2.5
-            3 | 3.5
+            ret
+            1.5
+            2.5
+            3.5
             """,
         ),
     )
@@ -1803,9 +1803,9 @@ def test_apply_incompatible_keys():
 def test_apply_wrong_number_of_args():
     a = T(
         """
-            | foo
-        1 | 1
-        2 | 2
+        foo
+        1
+        2
         """
     )
 
@@ -1825,10 +1825,10 @@ def test_apply_async():
 
     input = pw.debug.table_from_markdown(
         """
-            | a
-        1   | 1
-        2   | 2
-        3   | 3
+        a
+        1
+        2
+        3
         """
     )
 
@@ -1838,10 +1838,10 @@ def test_apply_async():
         result,
         T(
             """
-              | ret
-            1 | 2
-            2 | 3
-            3 | 4
+            ret
+            2
+            3
+            4
             """,
         ),
     )
@@ -1856,10 +1856,10 @@ def test_apply_async_more_args():
 
     input = pw.debug.table_from_markdown(
         """
-            | a | b  | c
-        1   | 1 | 10 | 100
-        2   | 2 | 20 | 200
-        3   | 3 | 30 | 300
+        a | b  | c
+        1 | 10 | 100
+        2 | 20 | 200
+        3 | 30 | 300
         """
     )
 
@@ -1869,10 +1869,10 @@ def test_apply_async_more_args():
         result,
         T(
             """
-              | ret
-            1 | 111
-            2 | 222
-            3 | 333
+            ret
+            111
+            222
+            333
             """,
         ),
     )
@@ -1887,10 +1887,10 @@ def test_apply_async_wrong_args():
 
     input = pw.debug.table_from_markdown(
         """
-            | a | b  | c
-        1   | 1 | 10 | 100
-        2   | 2 | 20 | 200
-        3   | 3 | 30 | 300
+        a | b  | c
+        1 | 10 | 100
+        2 | 20 | 200
+        3 | 30 | 300
         """
     )
 
@@ -1901,10 +1901,10 @@ def test_apply_async_wrong_args():
             result,
             T(
                 """
-                | ret
-                1 | 111
-                2 | 222
-                3 | 333
+                ret
+                111
+                222
+                333
                 """,
             ),
         )
@@ -1913,10 +1913,10 @@ def test_apply_async_wrong_args():
 def test_apply_async_coerce_async():
     a = T(
         """
-            | foo
-        1   | 1
-        2   | 2
-        3   | 3
+        foo
+        1
+        2
+        3
         """
     )
 
@@ -1929,10 +1929,10 @@ def test_apply_async_coerce_async():
         result,
         T(
             """
-                | ret
-            1   | 2
-            2   | 3
-            3   | 4
+            ret
+            2
+            3
+            4
             """
         ),
     )
@@ -1951,19 +1951,19 @@ def test_apply_async_disk_cache(tmp_path: pathlib.Path):
 
     input = T(
         """
-            | foo
-        1   | 1
-        2   | 2
-        3   | 3
+        foo
+        1
+        2
+        3
         """
     )
     result = input.select(ret=pw.apply_async(inc, pw.this.foo))
     expected = T(
         """
-            | ret
-        1   | 2
-        2   | 3
-        3   | 4
+        ret
+        2
+        3
+        4
         """
     )
 
@@ -1984,10 +1984,10 @@ def test_udf_async():
 
     input = pw.debug.table_from_markdown(
         """
-            | a
-        1   | 1
-        2   | 2
-        3   | 3
+        a
+        1
+        2
+        3
         """
     )
 
@@ -1997,10 +1997,10 @@ def test_udf_async():
         result,
         T(
             """
-              | ret
-            1 | 2
-            2 | 3
-            3 | 4
+            ret
+            2
+            3
+            4
             """,
         ),
     )
@@ -2019,19 +2019,19 @@ def test_udf_async_options(tmp_path: pathlib.Path):
 
     input = T(
         """
-            | foo
-        1   | 1
-        2   | 2
-        3   | 3
+        foo
+        1
+        2
+        3
         """
     )
     result = input.select(ret=inc(pw.this.foo))
     expected = T(
         """
-            | ret
-        1   | 2
-        2   | 3
-        3   | 4
+        ret
+        2
+        3
+        4
         """
     )
 
@@ -2289,10 +2289,10 @@ def test_join_default():
 def test_join_self():
     input = T(
         """
-            | foo   | bar
-        1   | 1     | 1
-        2   | 1     | 2
-        3   | 1     | 3
+        foo   | bar
+        1     | 1
+        1     | 2
+        1     | 3
         """
     )
     with pytest.raises(Exception):
@@ -2302,14 +2302,14 @@ def test_join_self():
 def test_join_select_no_columns():
     left = T(
         """
-            | a
+           | a
         1  | 1
         2  | 2
         """
     )
     right = T(
         """
-            | b
+           | b
         1  | foo
         2  | bar
         """
@@ -2531,11 +2531,11 @@ def test_ix_self_select():
 def test_groupby_simplest():
     left = T(
         """
-        | pet  |  owner  | age
-    1 | dog  | Alice   | 10
-    2 | dog  | Bob     | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
+    pet  |  owner  | age
+    dog  | Alice   | 10
+    dog  | Bob     | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
     """
     )
 
@@ -2545,9 +2545,9 @@ def test_groupby_simplest():
         left_res,
         T(
             """
-          | pet
-        1 | dog
-        2 | cat
+        pet
+        dog
+        cat
     """
         ),
     )
@@ -2556,11 +2556,11 @@ def test_groupby_simplest():
 def test_groupby_singlecol():
     left = T(
         """
-        | pet  |  owner  | age
-    1 | dog  | Alice   | 10
-    2 | dog  | Bob     | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
+    pet  |  owner  | age
+    dog  | Alice   | 10
+    dog  | Bob     | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
     """
     )
 
@@ -2570,9 +2570,9 @@ def test_groupby_singlecol():
         left_res,
         T(
             """
-          | pet  | ageagg
-        1 | dog  | 26
-        2 | cat  | 8
+        pet  | ageagg
+        dog  | 26
+        cat  | 8
     """
         ),
     )
@@ -2581,15 +2581,15 @@ def test_groupby_singlecol():
 def test_groupby_int_sum():
     left = T(
         """
-      | owner   | val
-    1 | Alice   | 1
-    2 | Alice   | -1
-    3 | Bob     | 0
-    4 | Bob     | 0
-    5 | Charlie | 1
-    6 | Charlie | 0
-    7 | Dee     | 5
-    8 | Dee     | 5
+    owner   | val
+    Alice   | 1
+    Alice   | -1
+    Bob     | 0
+    Bob     | 0
+    Charlie | 1
+    Charlie | 0
+    Dee     | 5
+    Dee     | 5
     """
     )
 
@@ -2601,11 +2601,11 @@ def test_groupby_int_sum():
         left_res,
         T(
             """
-          | owner   | val
-        1 | Alice   | 0
-        2 | Bob     | 0
-        3 | Charlie | 1
-        4 | Dee     | 10
+        owner   | val
+        Alice   | 0
+        Bob     | 0
+        Charlie | 1
+        Dee     | 10
     """
         ),
     )
@@ -2614,13 +2614,13 @@ def test_groupby_int_sum():
 def test_groupby_filter_singlecol():
     left = T(
         """
-        | pet  |  owner  | age
-      1 | dog  | Alice   | 10
-      2 | dog  | Bob     | 9
-      3 | cat  | Alice   | 8
-      4 | dog  | Bob     | 7
-      5 | cat  | Alice   | 6
-      6 | dog  | Bob     | 5
+      pet  |  owner  | age
+      dog  | Alice   | 10
+      dog  | Bob     | 9
+      cat  | Alice   | 8
+      dog  | Bob     | 7
+      cat  | Alice   | 6
+      dog  | Bob     | 5
     """
     )
 
@@ -2634,9 +2634,9 @@ def test_groupby_filter_singlecol():
         left_res,
         T(
             """
-          | pet  | ageagg
-        1 | dog  | 26
-        2 | cat  | 8
+        pet  | ageagg
+        dog  | 26
+        cat  | 8
     """
         ),
     )
@@ -2645,7 +2645,7 @@ def test_groupby_filter_singlecol():
 def test_groupby_universes():
     left = T(
         """
-        | pet  |  owner
+      | pet  |  owner
     1 | dog  | Alice
     2 | dog  | Bob
     3 | cat  | Alice
@@ -2655,7 +2655,7 @@ def test_groupby_universes():
 
     left_prim = T(
         """
-        | age
+      | age
     1 | 10
     2 | 9
     3 | 8
@@ -2666,7 +2666,7 @@ def test_groupby_universes():
 
     left_bis = T(
         """
-        | age
+      | age
     1 | 10
     2 | 9
     3 | 8
@@ -2682,9 +2682,9 @@ def test_groupby_universes():
         left_res,
         T(
             """
-        | pet  | ageagg
-    1 | dog  | 26
-    2 | cat  | 8
+    pet  | ageagg
+    dog  | 26
+    cat  | 8
     """
         ),
     )
@@ -2696,11 +2696,11 @@ def test_groupby_universes():
 def test_groupby_reducer_on_expression():
     left = T(
         """
-        | pet  |  owner  | age
-    1 | dog  | Alice   | 10
-    2 | dog  | Bob     | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
+    pet  |  owner  | age
+    dog  | Alice   | 10
+    dog  | Bob     | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
     """
     )
 
@@ -2712,9 +2712,9 @@ def test_groupby_reducer_on_expression():
         left_res,
         T(
             """
-        | pet  | ageagg
-    1 | dog  | 14
-    2 | cat  | 16
+    pet  | ageagg
+    dog  | 14
+    cat  | 16
     """
         ),
     )
@@ -2723,11 +2723,11 @@ def test_groupby_reducer_on_expression():
 def test_groupby_expression_on_reducers():
     left = T(
         """
-        | pet  |  owner  | age
-    1 | dog  | Alice   | 10
-    2 | dog  | Bob     | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
+    pet  |  owner  | age
+    dog  | Alice   | 10
+    dog  | Bob     | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
     """
     )
 
@@ -2739,9 +2739,9 @@ def test_groupby_expression_on_reducers():
         left_res,
         T(
             """
-        | pet  | ageagg
-    1 | dog  | 33
-    2 | cat  | 16
+    pet  | ageagg
+    dog  | 33
+    cat  | 16
     """
         ),
     )
@@ -2750,9 +2750,9 @@ def test_groupby_expression_on_reducers():
 def test_groupby_reduce_no_columns():
     input = T(
         """
-            | a
-        1  | 1
-        2  | 2
+        a
+        1
+        2
         """
     )
 
@@ -2762,8 +2762,8 @@ def test_groupby_reduce_no_columns():
         ret,
         T(
             """
-                | col
-            1   | 42
+            col
+            42
             """
         ),
     )
@@ -2772,11 +2772,11 @@ def test_groupby_reduce_no_columns():
 def test_groupby_mutlicol():
     left = T(
         """
-        | pet  |  owner  | age
-    1 | dog  | Alice   | 10
-    2 | dog  | Bob     | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
+    pet  |  owner  | age
+    dog  | Alice   | 10
+    dog  | Bob     | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
     """
     )
 
@@ -2788,10 +2788,10 @@ def test_groupby_mutlicol():
         left_res,
         T(
             """
-        | pet  |  owner  | ageagg
-    1 | dog  | Alice   | 10
-    2 | dog  | Bob     | 16
-    3 | cat  | Alice   | 8
+    pet  |  owner  | ageagg
+    dog  | Alice   | 10
+    dog  | Bob     | 16
+    cat  | Alice   | 8
     """
         ),
     )
@@ -2800,11 +2800,11 @@ def test_groupby_mutlicol():
 def test_groupby_mix_key_val():
     left = T(
         """
-        | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
-    3 |  2   | Alice   | 8
-    4 |  1   | Bob     | 7
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
+     2   | Alice   | 8
+     1   | Bob     | 7
     """
     )
 
@@ -2814,32 +2814,28 @@ def test_groupby_mix_key_val():
 
     right = T(
         """
-            | pet | ageagg
-        1 | 1   |      8
-        2 | 2   |     10
+        pet | ageagg
+        1   |      8
+        2   |     10
         """
     )
-    # right_res = right.with_id_from(right.pet)
-
-    # assert_table_equality(left_res, right_res)
-
     assert_table_equality_wo_index(left_res, right)
 
 
 def test_groupby_mix_key_val2():
     left = T(
         """
-        | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
-    3 |  2   | Alice   | 8
-    4 |  1   | Bob     | 7
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
+     2   | Alice   | 8
+     1   | Bob     | 7
     """
     )
 
     right = T(
         """
-            | pet | ageagg
+          | pet | ageagg
         1 | 1   |      8
         2 | 2   |     10
         """
@@ -2864,19 +2860,19 @@ def test_groupby_mix_key_val2():
 def test_groupby_key_expressions():
     left = T(
         """
-        | pet  |  owner  | age
-    1 |  1   | Alice   | 10
-    2 |  1   | Bob     | 9
-    3 |  2   | Alice   | 8
-    4 |  1   | Bob     | 7
+    pet  |  owner  | age
+     1   | Alice   | 10
+     1   | Bob     | 9
+     2   | Alice   | 8
+     1   | Bob     | 7
     """
     )
 
     right = T(
         """
-            | pet  | pet2
-        1 | 1    | 1
-        2 | 2    | 2
+        pet  | pet2
+        1    | 1
+        2    | 2
         """
     )
     res = right.with_id_from(right.pet)
@@ -2890,7 +2886,7 @@ def test_groupby_key_expressions():
 def test_groupby_setid():
     left = T(
         """
-        | pet  |  owner  | age
+      | pet  |  owner  | age
     1 |  1   | Alice   | 10
     2 |  1   | Bob     | 9
     3 |  2   | Alice   | 8
@@ -2905,7 +2901,7 @@ def test_groupby_setid():
 
     expected = T(
         """
-            | pet | agesum
+          | pet | agesum
         1 | 1   | 26
         2 | 2   | 8
         """
@@ -2938,9 +2934,9 @@ def test_groupby_similar_tables():
 
     expected = T(
         """
-            | pet | agemin | agemax
-        1   | cat | 8      | 8
-        2   | dog | 7      | 10
+        pet | agemin | agemax
+        cat | 8      | 8
+        dog | 7      | 10
         """,
         id_from=["pet"],
     )
@@ -2952,13 +2948,13 @@ def test_groupby_similar_tables():
 def test_argmin_argmax_tie():
     table = T(
         """
-        |  name   | age
-      2 | Alice   |  18
-      1 | Charlie |  18
-      3 | Bob     |  18
-      4 | David   |  19
-      5 | Erin    |  19
-      6 | Frank   |  20
+       name   | age
+      Charlie |  18
+      Alice   |  18
+      Bob     |  18
+      David   |  19
+      Erin    |  19
+      Frank   |  20
     """,
         unsafe_trusted_ids=True,
     )
@@ -2971,10 +2967,10 @@ def test_argmin_argmax_tie():
 
     expected = T(
         """
-          | age |     min |     max
-        1 |  18 | Charlie | Charlie
-        2 |  19 | David   | David
-        3 |  20 | Frank   | Frank
+        age |     min |     max
+         18 | Charlie | Charlie
+         19 | David   | David
+         20 | Frank   | Frank
         """
     )
 
@@ -2984,11 +2980,11 @@ def test_argmin_argmax_tie():
 def test_avg_reducer():
     t1 = T(
         """
-      |  owner  | age
-    1 | Alice   | 10
-    2 | Bob     | 5
-    3 | Alice   | 20
-    4 | Bob     | 10
+    owner   | age
+    Alice   | 10
+    Bob     | 5
+    Alice   | 20
+    Bob     | 10
     """
     )
     res = t1.groupby(pw.this.owner).reduce(
@@ -2997,9 +2993,9 @@ def test_avg_reducer():
 
     expected = T(
         """
-        | owner | avg
-    1 |  Alice  | 15
-    2 |  Bob    | 7.5
+     owner  | avg
+     Alice  | 15
+     Bob    | 7.5
     """
     )
     assert_table_equality_wo_index(res, expected)
@@ -3413,13 +3409,13 @@ def test_with_columns_ids_dont_match():
 def test_groupby_ix():
     tab = T(
         """
-          | grouper | val | output
-        0 |       0 |   1 |    abc
-        1 |       0 |   2 |    def
-        2 |       1 |   1 |    ghi
-        3 |       1 |   2 |    jkl
-        4 |       2 |   1 |    mno
-        5 |       2 |   2 |    pqr
+        grouper | val | output
+              0 |   1 |    abc
+              0 |   2 |    def
+              1 |   1 |    ghi
+              1 |   2 |    jkl
+              2 |   1 |    mno
+              2 |   2 |    pqr
         """,
     ).with_columns(grouper=pw.this.pointer_from(pw.this.grouper))
     res = tab.groupby(id=tab.grouper).reduce(
@@ -3917,7 +3913,7 @@ def test_having_empty():
 def test_join_desugaring_assign_id():
     left = T(
         """
-                col | on
+              | col | on
             1 | a   | 11
             2 | b   | 12
             3 | c   | 13
@@ -3925,7 +3921,7 @@ def test_join_desugaring_assign_id():
     )
     right = T(
         """
-                col | on
+              | col | on
             1 | d   | 12
             2 | e   | 13
             3 | f   | 14
@@ -3938,7 +3934,7 @@ def test_join_desugaring_assign_id():
         joined_lr,
         T(
             """
-        | lcol | rcol
+          | lcol | rcol
         1 |    b |    d
         2 |    c |    e
     """
@@ -4193,18 +4189,18 @@ def test_if_else():
 def test_join_filter_1():
     left = T(
         """
-                val
-            1 | 10
-            2 | 11
-            3 | 12
+            val
+            10
+            11
+            12
         """
     )
     right = T(
         """
-                val
-            1 | 10
-            2 | 11
-            3 | 12
+            val
+            10
+            11
+            12
         """,
     )
     joined = (
@@ -4228,34 +4224,34 @@ def test_join_filter_1():
 def test_join_filter_2():
     tA = T(
         """
-                 A
-            1 | 10
-            2 | 11
-            3 | 12
+             A
+            10
+            11
+            12
         """
     )
     tB = T(
         """
-                 B
-            1 | 10
-            2 | 11
-            3 | 12
+             B
+            10
+            11
+            12
         """
     )
     tC = T(
         """
-                 C
-            1 | 10
-            2 | 11
-            3 | 12
+             C
+            10
+            11
+            12
         """
     )
     tD = T(
         """
-                 D
-            1 | 10
-            2 | 11
-            3 | 12
+             D
+            10
+            11
+            12
         """
     )
 
@@ -4288,18 +4284,18 @@ def test_join_filter_2():
 def test_outerjoin_filter_1():
     left = T(
         """
-                val
-            1 | 10
-            2 | 11
-            3 | 12
+            val
+            10
+            11
+            12
         """
     )
     right = T(
         """
-                val
-            1 | 11
-            2 | 12
-            3 | 13
+            val
+            11
+            12
+            13
         """,
     )
     joined = (
@@ -4326,18 +4322,18 @@ def test_outerjoin_filter_1():
 def test_outerjoin_filter_2():
     left = T(
         """
-                val
-            1 | 10
-            2 | 11
-            3 | 12
+            val
+            10
+            11
+            12
         """
     )
     right = T(
         """
-                val
-            1 | 11
-            2 | 12
-            3 | 13
+            val
+            11
+            12
+            13
         """,
     )
     joined = (
@@ -4361,18 +4357,18 @@ def test_outerjoin_filter_2():
 def test_join_reduce_1():
     left = T(
         """
-                a
-            1 | 10
-            2 | 11
-            3 | 12
+            a
+            10
+            11
+            12
         """
     )
     right = T(
         """
-                b
-            1 | 11
-            2 | 12
-            3 | 13
+            b
+            11
+            12
+            13
         """,
     )
     result = left.join(right).reduce(col=pw.reducers.count())
@@ -4388,18 +4384,18 @@ def test_join_reduce_1():
 def test_join_reduce_2():
     left = T(
         """
-                a
-            1 | 10
-            2 | 11
-            3 | 12
+            a
+            10
+            11
+            12
         """
     )
     right = T(
         """
-                b
-            1 | 11
-            2 | 12
-            3 | 13
+            b
+            11
+            12
+            13
         """,
     )
     result = left.join(right).reduce(col=pw.reducers.sum(pw.left.a * pw.right.b))
@@ -4417,20 +4413,20 @@ def test_join_reduce_2():
 def test_join_groupby_1():
     left = T(
         """
-              | a  | lcol
-            1 | 10 |    1
-            2 | 11 |    1
-            3 | 12 |    2
-            4 | 13 |    2
+            a  | lcol
+            10 |    1
+            11 |    1
+            12 |    2
+            13 |    2
         """
     )
     right = T(
         """
-              | b  | rcol
-            1 | 11 |    1
-            2 | 12 |    1
-            3 | 13 |    2
-            4 | 14 |    2
+            b  | rcol
+            11 |    1
+            12 |    1
+            13 |    2
+            14 |    2
         """,
     )
     result = (
@@ -4453,20 +4449,20 @@ def test_join_groupby_1():
 def test_join_groupby_2():
     left = T(
         """
-                a  |  col
-            1 | 10 |    1
-            2 | 11 |    1
-            3 | 12 |    2
-            4 | 13 |    2
+            a  |  col
+            10 |    1
+            11 |    1
+            12 |    2
+            13 |    2
         """
     )
     right = T(
         """
-                b  |  col
-            1 | 11 |    1
-            2 | 12 |    1
-            3 | 13 |    2
-            4 | 14 |    2
+            b  |  col
+            11 |    1
+            12 |    1
+            13 |    2
+            14 |    2
         """,
     )
     result = (
@@ -4487,18 +4483,18 @@ def test_join_groupby_2():
 def test_join_filter_reduce():
     left = T(
         """
-                a
-            1 | 10
-            2 | 11
-            3 | 12
+            a
+            10
+            11
+            12
         """
     )
     right = T(
         """
-                b
-            1 | 11
-            2 | 12
-            3 | 13
+            b
+            11
+            12
+            13
         """,
     )
     result = (
@@ -4542,10 +4538,10 @@ def test_make_tuple():
 def test_sequence_get_unchecked_fixed_length():
     t1 = T(
         """
-      | i | s
-    1 | 4 | xyz
-    2 | 3 | abc
-    3 | 7 | d
+    i | s
+    4 | xyz
+    3 | abc
+    7 | d
     """
     )
 
@@ -4558,10 +4554,10 @@ def test_sequence_get_unchecked_fixed_length():
 def test_sequence_get_unchecked_fixed_length_dynamic_index_1():
     t1 = T(
         """
-      | i | s   | a
-    1 | 4 | xyz | 0
-    2 | 3 | abc | 1
-    3 | 7 | d   | 0
+    i | s   | a
+    4 | xyz | 0
+    3 | abc | 1
+    7 | d   | 0
     """
     )
 
@@ -4573,18 +4569,18 @@ def test_sequence_get_unchecked_fixed_length_dynamic_index_1():
 def test_sequence_get_unchecked_fixed_length_dynamic_index_2():
     t1 = T(
         """
-      | a | b | c
-    1 | 4 | 1 | 0
-    2 | 3 | 2 | 1
-    3 | 7 | 3 | 1
+    a | b | c
+    4 | 1 | 0
+    3 | 2 | 1
+    7 | 3 | 1
     """
     )
     expected = T(
         """
-      | r
-    1 | 4
-    2 | 2
-    3 | 3
+    r
+    4
+    2
+    3
     """
     )
 
@@ -4597,18 +4593,18 @@ def test_sequence_get_unchecked_fixed_length_dynamic_index_2():
 def test_sequence_get_checked_fixed_length_dynamic_index():
     t1 = T(
         """
-      | a | b | c
-    1 | 4 | 1 | 0
-    2 | 3 | 2 | 1
-    3 | 7 | 3 | 1
+    a | b | c
+    4 | 1 | 0
+    3 | 2 | 1
+    7 | 3 | 1
     """
     )
     expected = T(
         """
-      | r
-    1 | 4
-    2 | 2
-    3 | 3
+    r
+    4
+    2
+    3
     """
     )
 
@@ -4626,18 +4622,18 @@ def _create_tuple(n: int) -> Tuple[int, ...]:
 def test_sequence_get_unchecked_variable_length():
     t1 = T(
         """
-      | a
-    1 | 3
-    2 | 4
-    3 | 5
+    a
+    3
+    4
+    5
     """
     )
     expected = T(
         """
-      | x | y
-    1 | 1 | 3
-    2 | 2 | 3
-    3 | 3 | 3
+    x | y
+    1 | 3
+    2 | 3
+    3 | 3
     """
     )
 
@@ -4650,18 +4646,18 @@ def test_sequence_get_unchecked_variable_length():
 def test_sequence_get_unchecked_variable_length_untyped():
     t1 = T(
         """
-      | a
-    1 | 3
-    2 | 4
-    3 | 5
+    a
+    3
+    4
+    5
     """
     )
     expected = T(
         """
-      | x | y
-    1 | 1 | 3
-    2 | 2 | 3
-    3 | 3 | 3
+    x | y
+    1 | 3
+    2 | 3
+    3 | 3
     """
     )
 
@@ -4674,18 +4670,18 @@ def test_sequence_get_unchecked_variable_length_untyped():
 def test_sequence_get_checked_variable_length():
     t1 = T(
         """
-      | a
-    1 | 1
-    2 | 2
-    3 | 3
+    a
+    1
+    2
+    3
     """
     )
     expected = T(
         """
-      | x | y
-    1 |   | 1
-    2 | 1 | 1
-    3 | 2 | 1
+    x | y
+      | 1
+    1 | 1
+    2 | 1
     """
     )
 
@@ -4698,10 +4694,10 @@ def test_sequence_get_checked_variable_length():
 def test_sequence_get_unchecked_variable_length_errors():
     t1 = T(
         """
-      | a
-    1 | 1
-    2 | 2
-    3 | 5
+    a
+    1
+    2
+    5
     """
     )
 
@@ -4714,10 +4710,10 @@ def test_sequence_get_unchecked_variable_length_errors():
 def test_sequence_get_unchecked_fixed_length_errors():
     t1 = T(
         """
-      | a | b
-    1 | 4 | 10
-    2 | 3 | 9
-    3 | 7 | 8
+    a | b
+    4 | 10
+    3 | 9
+    7 | 8
     """
     )
 
@@ -4738,18 +4734,18 @@ def test_sequence_get_checked_fixed_length_errors():
     file_name = os.path.basename(__file__)
     t1 = T(
         """
-      | a | b  |  c
-    1 | 4 | 10 | abc
-    2 | 3 | 9  | def
-    3 | 7 | 8  | xx
+    a | b  |  c
+    4 | 10 | abc
+    3 | 9  | def
+    7 | 8  | xx
     """
     )
     expected = T(
         """
-      |  c
-    1 | abc
-    2 | def
-    3 | xx
+     c
+    abc
+    def
+    xx
     """
     )
 
@@ -4889,12 +4885,12 @@ def test_sequence_get_from_1d_ndarray_out_of_bounds(dtype, index):
 def test_unique():
     left = T(
         """
-      | pet  |  owner  | age
-    1 | dog  | Bob     | 10
-    2 | cat  | Alice   | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
-    5 | foo  | Charlie | 6
+    pet  |  owner  | age
+    dog  | Bob     | 10
+    cat  | Alice   | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
+    foo  | Charlie | 6
     """
     )
 
@@ -4919,12 +4915,12 @@ def test_unique():
 def test_any():
     left = T(
         """
-      | pet  |  owner  | age
-    1 | dog  | Bob     | 10
-    2 | cat  | Alice   | 9
-    3 | cat  | Alice   | 8
-    4 | dog  | Bob     | 7
-    5 | foo  | Charlie | 6
+    pet  |  owner  | age
+    dog  | Bob     | 10
+    cat  | Alice   | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
+    foo  | Charlie | 6
     """
     )
 
@@ -4955,18 +4951,18 @@ def test_any():
 def test_slices_1():
     left = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
     right = T(
         """
-                col | on
-            1 | d   | 12
-            2 | e   | 13
-            3 | f   | 14
+            col | on
+            d   | 12
+            e   | 13
+            f   | 14
         """,
     )
     res = left.join(right, left.on == right.on).select(
@@ -4986,18 +4982,18 @@ c      | 13    | e      | 13
 def test_slices_2():
     left = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
     right = T(
         """
-                col | on
-            1 | d   | 12
-            2 | e   | 13
-            3 | f   | 14
+            col | on
+            d   | 12
+            e   | 13
+            f   | 14
         """,
     )
     res = left.join(right, left.on == right.on).select(
@@ -5017,18 +5013,18 @@ c      | 13    | e      | 13
 def test_slices_3():
     left = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
     right = T(
         """
-                col | on
-            1 | d   | 12
-            2 | e   | 13
-            3 | f   | 14
+            col | on
+            d   | 12
+            e   | 13
+            f   | 14
         """,
     )
     res = left.join(right, left.on == right.on).select(
@@ -5048,18 +5044,18 @@ on | col2
 def test_slices_4():
     left = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
     right = T(
         """
-                col | on
-            1 | d   | 12
-            2 | e   | 13
-            3 | f   | 14
+            col | on
+            d   | 12
+            e   | 13
+            f   | 14
         """,
     )
     res = left.join(right, left.on == right.on).select(
@@ -5079,18 +5075,18 @@ on | col2
 def test_slices_5():
     left = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
     right = T(
         """
-                col | on
-            1 | d   | 12
-            2 | e   | 13
-            3 | f   | 14
+            col | on
+            d   | 12
+            e   | 13
+            f   | 14
         """,
     )
     res = left.join(right, left.on == right.on).select(
@@ -5110,18 +5106,18 @@ on | col2
 def test_slices_6():
     left = T(
         """
-                col | on
-            1 | a   | 11
-            2 | b   | 12
-            3 | c   | 13
+            col | on
+            a   | 11
+            b   | 12
+            c   | 13
         """
     )
     right = T(
         """
-                col | on
-            1 | d   | 12
-            2 | e   | 13
-            3 | f   | 14
+            col | on
+            d   | 12
+            e   | 13
+            f   | 14
         """,
     )
     res = left.join(right, left.on == right.on).select(

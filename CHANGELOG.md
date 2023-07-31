@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2023-07-31
+
+### Changed
+
+- Immediately forget queries in REST connector.
+- Make type annotations mandatory in `Schema`.
+
+### Fixed
+
+- Fixed IDs coming from CSV source.
+- Fixed indices of dataframes from pandas transformer.
+
 ## [0.2.0] - 2023-07-20
 
 ### Added

@@ -24,8 +24,8 @@ def test_bucketer_euclidean():
     L = 7  # number of ORs
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=5, L=L, A=3)
 
-    data = pd.DataFrame({"data": [[1, 2, 3], [4, 5, 6]]})
-    data = T(data, format="pandas", unsafe_trusted_ids=True)
+    data_df = pd.DataFrame({"data": [[1, 2, 3], [4, 5, 6]]})
+    data = T(data_df, format="pandas", unsafe_trusted_ids=True)
     data += data.select(buckets=apply(bucketer, data.data))
     res_pd = table_to_pandas(data)
     assert len(res_pd["buckets"].iloc[0]) == L
@@ -36,8 +36,8 @@ def test_bucketer_cosine():
     L = 7  # number of ORs
     bucketer = generate_cosine_lsh_bucketer(d=3, M=5, L=L)
 
-    data = pd.DataFrame({"data": [[1, 2, 3], [4, 5, 6]]})
-    data = T(data, format="pandas", unsafe_trusted_ids=True)
+    data_df = pd.DataFrame({"data": [[1, 2, 3], [4, 5, 6]]})
+    data = T(data_df, format="pandas", unsafe_trusted_ids=True)
     data += data.select(buckets=apply(bucketer, data.data))
     res_pd = table_to_pandas(data)
     assert len(res_pd["buckets"].iloc[0]) == L
@@ -46,8 +46,8 @@ def test_bucketer_cosine():
 def test_lsh():
     """Verifies that close points are mapped together and distant ones - apart."""
     L = 3  # number of ORs
-    data = pd.DataFrame({"data": [[1, 2, 3], [1.02, 2.01, 3.03], [4, 5, 6]]})
-    data = T(data, format="pandas", unsafe_trusted_ids=True)
+    data_df = pd.DataFrame({"data": [[1, 2, 3], [1.02, 2.01, 3.03], [4, 5, 6]]})
+    data = T(data_df, format="pandas", unsafe_trusted_ids=True)
 
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=5, L=L, A=3)
     flat_data = lsh(data, bucketer, origin_id="data_id")
@@ -65,8 +65,8 @@ def test_lsh():
 def test_lsh_bucketing():
     """Verifies that bucketing is properly indexed."""
     L = 3  # number of ORs
-    data = pd.DataFrame({"data": [[1, 2, 3], [1.02, 2.01, 3.03], [4, 5, 6]]})
-    data = T(data, format="pandas", unsafe_trusted_ids=True)
+    data_df = pd.DataFrame({"data": [[1, 2, 3], [1.02, 2.01, 3.03], [4, 5, 6]]})
+    data = T(data_df, format="pandas", unsafe_trusted_ids=True)
 
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=5, L=L, A=3)
     flat_data = lsh(data, bucketer, origin_id="data_id")
@@ -85,7 +85,7 @@ def test_lsh_bucketing():
 
 
 def test_aknn_flat():
-    data = pd.DataFrame(
+    data_df = pd.DataFrame(
         {
             "data": [
                 np.array([9, 9, 9]),
@@ -99,9 +99,9 @@ def test_aknn_flat():
             ]
         }
     )
-    data = T(data, format="pandas")
+    data = T(data_df, format="pandas")
     # data = T(data, format="pandas", unsafe_trusted_ids=True)
-    queries = pd.DataFrame(
+    queries_df = pd.DataFrame(
         {
             "data": [
                 np.array([11.5, 11.5, 11.5]),
@@ -112,7 +112,7 @@ def test_aknn_flat():
             "k": [2, 1, 1, 1],
         }
     )
-    queries = T(queries, format="pandas")
+    queries = T(queries_df, format="pandas")
     # queries = T(queries, format="pandas", unsafe_trusted_ids=True)
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=7, L=5, A=10)
     result = k_approximate_nearest_neighbors_flat(data, queries, bucketer)
@@ -135,7 +135,7 @@ def test_aknn_flat():
 
 
 def test_knn_classifier_flat():
-    data = pd.DataFrame(
+    data_df = pd.DataFrame(
         {
             "data": [
                 np.array([9, 9, 9], dtype=np.float64),
@@ -149,10 +149,10 @@ def test_knn_classifier_flat():
             ]
         }
     )
-    data = T(data, format="pandas", unsafe_trusted_ids=True)
-    labels = pd.DataFrame({"label": [1, 1, 1, -1, -1, -1, 0, 0, 0]})
-    labels = T(labels, format="pandas", unsafe_trusted_ids=True)
-    queries = pd.DataFrame(
+    data = T(data_df, format="pandas", unsafe_trusted_ids=True)
+    labels_df = pd.DataFrame({"label": [1, 1, 1, -1, -1, -1, 0, 0, 0]})
+    labels = T(labels_df, format="pandas", unsafe_trusted_ids=True)
+    queries_df = pd.DataFrame(
         {
             "data": [
                 np.array([11, 11, 11], dtype=np.float64),
@@ -162,7 +162,7 @@ def test_knn_classifier_flat():
             "k": [3, 3, 3],
         }
     )
-    queries = T(queries, format="pandas", unsafe_trusted_ids=True)
+    queries = T(queries_df, format="pandas", unsafe_trusted_ids=True)
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=7, L=5, A=10)
     result = knn_classifier_flat(data, labels, queries, bucketer)
 
@@ -181,7 +181,7 @@ def test_knn_classifier_flat():
 
 
 def test_clustering_via_lsh():
-    data = pd.DataFrame(
+    data_df = pd.DataFrame(
         {
             "data": [
                 np.array([9, 9, 9]),
@@ -195,7 +195,7 @@ def test_clustering_via_lsh():
             ]
         }
     )
-    data = T(data, format="pandas", unsafe_trusted_ids=True)
+    data = T(data_df, format="pandas", unsafe_trusted_ids=True)
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=7, L=5, A=10)
     result = clustering_via_lsh(data, bucketer, k=3)
 

@@ -3026,7 +3026,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                                 prober_persistent_storage
                                     .lock()
                                     .unwrap()
-                                    .accept_finalized_timestamp(output_time);
+                                    .accept_finalized_timestamp(output_time - 1);
                             } else {
                                 info!("Closing persistent metadata storage");
                                 prober_persistent_storage

@@ -37,7 +37,7 @@ def test_unsafe_promise_universe_is_subset_of():
     )
     t2 = T(
         """
-        | col
+       | col
     2  | 1
     3  | 1
     """
@@ -49,7 +49,7 @@ def test_unsafe_promise_universe_is_subset_of():
 def test_unsafe_promise_universes_are_pairwise_disjoint():
     t1 = T(
         """
-        | lower | upper
+       | lower | upper
     1  | a     | A
     2  | b     | B
     """
@@ -67,7 +67,7 @@ def test_unsafe_promise_universes_are_pairwise_disjoint():
 def test_left_join():
     t1 = T(
         """
-        | lower | upper
+       | lower | upper
     1  | a     | A
     2  | b     | B
     3  | c     | C
@@ -89,7 +89,7 @@ def test_left_join():
 def test_right_join():
     t1 = T(
         """
-        | lower | upper
+       | lower | upper
     1  | a     | A
     2  | b     | B
     3  | c     | C
@@ -111,7 +111,7 @@ def test_right_join():
 def test_outer_join():
     t1 = T(
         """
-        | lower | upper
+       | lower | upper
     1  | a     | A
     2  | b     | B
     3  | c     | C
