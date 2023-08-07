@@ -131,10 +131,6 @@ def knn_lsh_generic_classifier_train(
                 ids = pw.input_attribute()
 
                 @pw.output_attribute
-                def query_id_output(self):
-                    return self.query_id
-
-                @pw.output_attribute
                 def knns_ids(self):
                     querypoint = self.data
                     for id_candidate in self.ids:
@@ -159,23 +155,18 @@ def knn_lsh_generic_classifier_train(
 
         knn_result = compute_knns_transformer(  # type: ignore
             training_data=data, flattened=flattened
-        ).flattened.select(pw.this.knns_ids, query_id=pw.this.query_id_output)
+        ).flattened.select(pw.this.knns_ids, flattened.query_id)
 
         # return knn_result
 
-        knn_result_with_empty_results = queries.select(query_id=queries.id)
-        knn_result_with_empty_results = knn_result_with_empty_results.join_left(
-            knn_result, knn_result_with_empty_results.query_id == knn_result.query_id
-        ).select(knn_result_with_empty_results.query_id, knn_result.knns_ids)
+        knn_result_with_empty_results = queries.join_left(
+            knn_result, queries.id == knn_result.query_id
+        ).select(knn_result.knns_ids, query_id=queries.id)
 
-        def _replace_default_value(knn):
-            if knn is None:
-                return ()
-            return knn
-
-        knn_result_with_empty_results = knn_result_with_empty_results.select(
-            pw.this.query_id,
-            knns_ids=pw.apply(_replace_default_value, pw.this.knns_ids),
+        knn_result_with_empty_results = knn_result_with_empty_results.with_columns(
+            knns_ids=pw.declare_type(
+                knn_result.schema["knns_ids"], pw.coalesce(pw.this.knns_ids, ())
+            ),
         )
         # return knn_result
         return knn_result_with_empty_results
@@ -206,9 +197,11 @@ def knn_lsh_classify(knn_model, data_labels, queries, k):
 
     # resultA = process_knn_no_transformers(data_labels, knns)
     # resultB = process_knn_two_transformers(data_labels, knns)
-    result = take_majority_label(
-        labels=data_labels, knn_table=knns  # type: ignore
-    ).knn_table.with_id(knns.query_id)
+    result = (
+        take_majority_label(labels=data_labels, knn_table=knns)  # type: ignore
+        .knn_table.with_id(knns.query_id)
+        .update_types(predicted_label=data_labels.schema["label"])
+    )
 
     return result
 

@@ -22,12 +22,7 @@ from pathway.stdlib.indexing.sorting import (
     prefix_sum_oracle,
     sort_from_index,
 )
-from pathway.tests.utils import (
-    T,
-    assert_table_equality,
-    assert_table_equality_wo_index,
-    assert_table_equality_wo_index_types,
-)
+from pathway.tests.utils import T, assert_table_equality, assert_table_equality_wo_index
 
 
 def test_argmin():
@@ -42,7 +37,7 @@ def test_argmin():
         """,
     )
     r = t.reduce(key=reducers.argmin(t.hash))
-    assert_table_equality_wo_index_types(
+    assert_table_equality_wo_index(
         r,
         T(
             """
@@ -366,7 +361,8 @@ def test_prefix_sum_oracle2():
     result = filter_cmp_helper(
         filter_val=query.select(
             val=items.ix(
-                oracle.ix_ref(query.instance).prefix_sum_upperbound(query.query)
+                oracle.ix_ref(query.instance).prefix_sum_upperbound(query.query),
+                optional=True,
             ).key
         ).with_id_from(
             query.instance,

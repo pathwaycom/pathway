@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pathway"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 description = "Pathway is a data processing framework which takes care of streaming data updates for you."
 readme = "README.md"
 classifiers = [
@@ -43,7 +43,7 @@ module-name = "pathway.engine"
 features = ["pyo3/extension-module"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 exclude = ["target", "examples", "python/pathway/tests", "integration_tests"]
 ignore_missing_imports = true
 

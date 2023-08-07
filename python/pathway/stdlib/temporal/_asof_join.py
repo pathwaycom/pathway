@@ -47,7 +47,7 @@ def _build_groups(t: pw.Table, dir_next: bool) -> pw.Table:
         - peer_diff: id of next/prev element in the table with a different group
     """
 
-    def proc(cur_id, cur, peer_id, peer):
+    def proc(cur_id, cur, peer_id, peer) -> pw.Pointer:
         if peer is None:
             return cur_id
         if cur[-1] != peer[-1]:  # check if the same side of a join
@@ -74,7 +74,7 @@ def _build_groups(t: pw.Table, dir_next: bool) -> pw.Table:
     )
 
     def merge_ccs(data):
-        data <<= data.select(group_repr=data.ix(data.group_repr).group_repr)
+        data <<= data.select(data.ix(data.group_repr).group_repr)
         return dict(data=data)
 
     group_table = pw.iterate(merge_ccs, data=succ_table).data
@@ -317,7 +317,9 @@ class AsofJoinResult(DesugaringContext):
 
             reqs_with_default = [req for req in reqs if req.default is not None]
             reqs_wo_default = [req for req in reqs if req.default is None]
-            m_with_peer = m_self.filter(m_self.peer_elem.is_not_none())
+            m_with_peer = m_self.filter(m_self.peer_elem.is_not_none()).update_types(
+                peer_elem=pw.Pointer
+            )
 
             res_default = m_self.select(
                 **{req.output_name: req.default for req in reqs_with_default}

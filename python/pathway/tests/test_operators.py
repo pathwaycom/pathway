@@ -4,7 +4,7 @@ import copy
 import datetime
 import itertools
 import operator
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any, Callable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -1034,3 +1034,172 @@ def test_datetime_utc_sub_const(const: Any) -> None:
     table_pd = table_from_pandas(df_new)
 
     assert_table_equality(table_pw, table_pd)
+
+
+def run_matrix_multiplcation(
+    pairs: List[Tuple[np.ndarray, np.ndarray]], dtype: type
+) -> None:
+    pairs_T = list(zip(*pairs))
+    a = [a_i.astype(dtype) for a_i in pairs_T[0]]
+    b = [b_i.astype(dtype) for b_i in pairs_T[1]]
+    t = table_from_pandas(
+        pd.DataFrame({"a": a, "b": b, "i": list(range(len(a)))})
+    ).update_types(a=np.ndarray, b=np.ndarray)
+    res = t.select(pw.this.i, c=t.a @ t.b)
+    res_pd = table_to_pandas(res).sort_values(by="i")["c"]
+    expected = [a_i @ b_i for a_i, b_i in zip(a, b)]
+    for res_i, exp_i in zip(res_pd, expected):
+        if dtype == float:
+            assert np.isclose(res_i, exp_i, rtol=1e-15, atol=0.0).all()
+        else:
+            assert (res_i == exp_i).all()
+        assert res_i.shape == exp_i.shape
+
+
+@pytest.mark.parametrize("dtype", [int, float])
+def test_matrix_multiplication_2d_by_2d(dtype: type) -> None:
+    np.random.seed(42)
+    r = np.random.randn
+    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+        (r(3, 3), r(3, 3)),
+        (r(4, 2), r(2, 3)),
+        (r(4, 1), r(1, 4)),
+        (r(1, 3), r(3, 1)),
+        (r(0, 4), r(4, 5)),
+        (r(0, 0), r(0, 1)),
+        (r(0, 0), r(0, 0)),
+        (r(0, 2), r(2, 0)),
+        (np.array([[1, 2], [3, 4], [5, 6]]), np.array([[1, 2], [3, 4]])),
+    ]
+    run_matrix_multiplcation(pairs, dtype)
+
+
+@pytest.mark.parametrize("dtype", [int, float])
+def test_matrix_multiplication_2d_by_1d(dtype: type) -> None:
+    np.random.seed(42)
+    r = np.random.randn
+    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+        (r(3, 3), r(3)),
+        (r(4, 2), r(2)),
+        (r(4, 4), r(4)),
+        (r(1, 3), r(3)),
+        (r(4, 0), r(0)),
+        (r(0, 2), r(2)),
+        (np.array([[1, 2], [3, 4], [5, 6]]), np.array([1, 2])),
+    ]
+    run_matrix_multiplcation(pairs, dtype)
+
+
+@pytest.mark.parametrize("dtype", [int, float])
+def test_matrix_multiplication_1d_by_2d(dtype: type) -> None:
+    np.random.seed(42)
+    r = np.random.randn
+    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+        (r(3), r(3, 3)),
+        (r(2), r(2, 3)),
+        (r(2), r(2, 4)),
+        (r(3), r(3, 1)),
+        (r(0), r(0, 3)),
+        (r(3), r(3, 0)),
+        (np.array([1, 2]), np.array([[1, 2], [3, 4]])),
+    ]
+    run_matrix_multiplcation(pairs, dtype)
+
+
+@pytest.mark.parametrize("dtype", [int, float])
+def test_matrix_multiplication_1d_by_1d(dtype: type) -> None:
+    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+        (np.ones(2), np.ones(2)),
+        (np.ones(3), np.ones(3)),
+        (np.ones(4), np.ones(4)),
+        (np.ones(0), np.ones(0)),
+        (np.array([1, 2]), np.array([1, 2])),
+    ]
+    run_matrix_multiplcation(pairs, dtype)
+
+
+@pytest.mark.xfail(reason="Multidimensional matrix multiplication not supported")
+@pytest.mark.parametrize("dtype", [int, float])
+def test_matrix_multiplication_multidimensional(dtype: type) -> None:
+    np.random.seed(42)
+    r = np.random.randn
+    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+        (r(3, 4, 5), r(3, 5, 6)),
+        (r(4, 5), r(3, 5, 6)),
+        (r(3, 4, 5), r(5, 6)),
+        (r(1, 4, 5), r(3, 5, 6)),
+        (r(3, 4, 5), r(1, 5, 6)),
+        (r(3), r(1, 2, 3, 4)),
+        (r(1, 2, 3, 4), r(4)),
+        (r(5, 1, 5, 2, 3), r(1, 5, 5, 3, 2)),
+        (r(1, 0), r(0, 1)),
+        (r(2, 0), r(0, 5)),
+        (r(4, 5), r(0, 3, 5, 6)),
+        (r(0, 4), r(4, 0)),
+    ]
+    run_matrix_multiplcation(pairs, dtype)
+
+
+@pytest.mark.parametrize(
+    "a,b",
+    [
+        (np.zeros((4, 5)), np.zeros((4, 5))),
+        (np.zeros((2, 3)), np.zeros((4, 2))),
+        (np.zeros((4, 5)), np.zeros(())),
+        (np.zeros(3), np.zeros(())),
+        (np.zeros((2, 3)), np.zeros(2)),
+        (np.zeros((3)), np.zeros((2, 3))),
+        (np.zeros(()), np.zeros(1)),
+        (np.zeros(()), np.zeros((1, 2))),
+    ],
+)
+def test_matrix_multiplication_errors_on_shapes_mismatch(a, b) -> None:
+    t = table_from_pandas(pd.DataFrame({"a": [a], "b": [b]})).update_types(
+        a=np.ndarray, b=np.ndarray
+    )
+    t.select(c=t.a @ t.b)
+    with pytest.raises(ValueError):
+        run_all()
+
+
+@pytest.mark.xfail(reason="Optional[int] vs float is not yet supported")
+def test_optional_int_vs_float():
+    table = T(
+        """
+    a | b
+    1 | 1.0
+      | 2.0
+    3 | 3.5
+    """
+    )
+    result = table.select(resA=table.a == table.b, resB=table.a != table.b)
+    expected = T(
+        """
+    resA  | resB
+    True  | False
+    False | True
+    False | True
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+def test_int_vs_optional_float():
+    table = T(
+        """
+    a | b
+    1 | 1.0
+    2 |
+    3 | 3.5
+    """
+    )
+    result = table.select(resA=table.a == table.b, resB=table.a != table.b)
+    expected = T(
+        """
+    resA  | resB
+    True  | False
+    False | True
+    False | True
+    """
+    )
+    assert_table_equality(result, expected)

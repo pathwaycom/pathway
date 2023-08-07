@@ -361,7 +361,7 @@ impl From<Duration> for Value {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone)]
-enum SimpleType {
+pub enum SimpleType {
     None,
     Bool,
     Int,
@@ -383,12 +383,17 @@ pub enum Type {
     Bool,
     Int,
     Float,
+    Pointer,
     String,
+    DateTimeNaive,
+    DateTimeUtc,
+    Duration,
+    Array,
 }
 
 impl Value {
     #[must_use]
-    fn simple_type(&self) -> SimpleType {
+    pub fn simple_type(&self) -> SimpleType {
         match self {
             Self::None => SimpleType::None,
             Self::Bool(_) => SimpleType::Bool,

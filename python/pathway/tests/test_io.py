@@ -919,3 +919,66 @@ def test_pathway_type_mapping():
         for _, t in inspect.getmembers(PathwayType)
         if isinstance(t, PathwayType)
     )
+
+
+def test_json_optional_values(tmp_path: pathlib.Path):
+    data = """
+{"k": "a", "v": 1}
+{"k": "b", "v": 2, "w": 512}
+    """
+    input_path = tmp_path / "input.csv"
+    write_lines(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: str = pw.column_definition(primary_key=True)
+        v: int = pw.column_definition(default_value=0)
+        w: int = pw.column_definition(default_value=1024)
+
+    table = pw.io.jsonlines.read(
+        str(input_path),
+        schema=InputSchema,
+        mode="static",
+    )
+
+    assert_table_equality(
+        table,
+        T(
+            """
+                k | v | w
+                a | 1 | 1024
+                b | 2 | 512
+            """
+        ).with_id_from(pw.this.k),
+    )
+
+
+def test_json_optional_values_with_paths(tmp_path: pathlib.Path):
+    data = """
+{"k": "a", "v": 1}
+{"k": "b", "v": 2, "w": 512}
+    """
+    input_path = tmp_path / "input.csv"
+    write_lines(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: str = pw.column_definition(primary_key=True)
+        v: int = pw.column_definition(default_value=0)
+        w: int = pw.column_definition(default_value=1024)
+
+    table = pw.io.jsonlines.read(
+        str(input_path),
+        schema=InputSchema,
+        mode="static",
+        json_field_paths={"w": "/q/w/e/r/t/y/u"},
+    )
+
+    assert_table_equality(
+        table,
+        T(
+            """
+                k | v | w
+                a | 1 | 1024
+                b | 2 | 1024
+            """
+        ).with_id_from(pw.this.k),
+    )

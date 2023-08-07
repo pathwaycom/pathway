@@ -10,7 +10,7 @@ from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
 # DO NOT MODIFY THIS WITHOUT MODIFYING the following file:
-# public/website3/content/2.developers/6.tutorials/.event_stream_processing_time_between_occurences/article.py # noqa E501
+# public/website3/content/2.developers/6.tutorials/.event_stream_processing_time_between_occurrences/article.py # noqa E501
 def get_differences(events):
     sorted_events = pw.indexing.sort_from_index(
         **pw.indexing.build_sorted_index(
@@ -19,7 +19,7 @@ def get_differences(events):
     )
 
     differences = events.having(sorted_events.prev).select(
-        delta=events.timestamp - events.ix(sorted_events.prev).timestamp
+        delta=events.timestamp - pw.this.timestamp
     )
     return sorted_events, differences
 

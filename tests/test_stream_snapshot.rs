@@ -165,7 +165,11 @@ fn test_buffer_scenario() -> eyre::Result<()> {
         .create_snapshot_writer(42)
         .expect("Failed to create snapshot writer");
 
-    tracker.lock().unwrap().accept_finalized_timestamp(1);
+    let mock_sink_id = tracker.lock().unwrap().register_sink();
+    tracker
+        .lock()
+        .unwrap()
+        .accept_finalized_timestamp(mock_sink_id, Some(1));
 
     let event1 =
         SnapshotEvent::Insert(Key::random(), vec![Value::Int(1), Value::Float(2.3.into())]);
@@ -182,7 +186,10 @@ fn test_buffer_scenario() -> eyre::Result<()> {
     buffer.write(&event2).unwrap();
     buffer.write(&SnapshotEvent::AdvanceTime(2)).unwrap();
     buffer.flush().unwrap();
-    tracker.lock().unwrap().accept_finalized_timestamp(2);
+    tracker
+        .lock()
+        .unwrap()
+        .accept_finalized_timestamp(mock_sink_id, Some(2));
 
     assert_eq!(
         read_persistent_buffer_full(&test_storage_path, 42),
@@ -200,12 +207,18 @@ fn test_buffer_scenario() -> eyre::Result<()> {
         vec![event1.clone(), event2.clone()]
     );
 
-    tracker.lock().unwrap().accept_finalized_timestamp(5);
+    tracker
+        .lock()
+        .unwrap()
+        .accept_finalized_timestamp(mock_sink_id, Some(5));
     assert_eq!(
         read_persistent_buffer_full(&test_storage_path, 42),
         vec![event1.clone(), event2.clone()]
     );
-    tracker.lock().unwrap().accept_finalized_timestamp(10);
+    tracker
+        .lock()
+        .unwrap()
+        .accept_finalized_timestamp(mock_sink_id, Some(10));
     assert_eq!(
         read_persistent_buffer_full(&test_storage_path, 42),
         vec![event1.clone(), event2.clone()]
@@ -214,7 +227,10 @@ fn test_buffer_scenario() -> eyre::Result<()> {
     buffer.write(&SnapshotEvent::AdvanceTime(11)).unwrap();
     buffer.flush().unwrap();
 
-    tracker.lock().unwrap().accept_finalized_timestamp(12);
+    tracker
+        .lock()
+        .unwrap()
+        .accept_finalized_timestamp(mock_sink_id, Some(12));
     assert_eq!(
         read_persistent_buffer_full(&test_storage_path, 42),
         vec![
@@ -224,7 +240,10 @@ fn test_buffer_scenario() -> eyre::Result<()> {
             event4.clone()
         ]
     );
-    tracker.lock().unwrap().accept_finalized_timestamp(15);
+    tracker
+        .lock()
+        .unwrap()
+        .accept_finalized_timestamp(mock_sink_id, Some(15));
     assert_eq!(
         read_persistent_buffer_full(&test_storage_path, 42),
         vec![event1, event2, event3, event4]
@@ -239,6 +258,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
     let test_storage_path = test_storage.into_path();
 
     let tracker = create_persistency_manager(&test_storage_path, true);
+    let mock_sink_id = tracker.lock().unwrap().register_sink();
 
     let event1 =
         SnapshotEvent::Insert(Key::random(), vec![Value::Int(1), Value::Float(2.3.into())]);
@@ -258,7 +278,10 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         buffer.write(&SnapshotEvent::AdvanceTime(1)).unwrap();
         buffer.flush().unwrap();
 
-        tracker.lock().unwrap().accept_finalized_timestamp(2);
+        tracker
+            .lock()
+            .unwrap()
+            .accept_finalized_timestamp(mock_sink_id, Some(2));
         assert_eq!(
             read_persistent_buffer_full(&test_storage_path, 42),
             vec![event1.clone()]
@@ -276,7 +299,10 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         buffer.write(&SnapshotEvent::AdvanceTime(2)).unwrap();
         buffer.flush().unwrap();
 
-        tracker.lock().unwrap().accept_finalized_timestamp(3);
+        tracker
+            .lock()
+            .unwrap()
+            .accept_finalized_timestamp(mock_sink_id, Some(3));
         assert_eq!(
             read_persistent_buffer_full(&test_storage_path, 42),
             vec![event1, event2]

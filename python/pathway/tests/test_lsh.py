@@ -7,7 +7,7 @@ import pandas as pd
 
 from pathway.debug import table_to_pandas
 from pathway.stdlib.ml.classifiers import knn_lsh_classifier_train, knn_lsh_classify
-from pathway.tests.utils import T, assert_table_equality_wo_types
+from pathway.tests.utils import T, assert_table_equality
 
 
 def test_aknn():
@@ -73,7 +73,7 @@ def test_knn_classifier():
     lsh_index = knn_lsh_classifier_train(data, L=5, type="euclidean", d=3, M=8, A=10)
     result = knn_lsh_classify(lsh_index, labels, queries, k=3)
 
-    assert_table_equality_wo_types(
+    assert_table_equality(
         result,
         T(
             """

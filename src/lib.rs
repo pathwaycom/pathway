@@ -12,6 +12,7 @@ pub mod persistence;
 pub mod python_api;
 
 mod fs_helpers;
+mod mat_mul;
 mod pipe;
 
 #[cfg(not(feature = "standard-allocator"))]

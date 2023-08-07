@@ -15,13 +15,25 @@ pub trait MaybeTotalScope: Scope<Timestamp = Self::MaybeTotalTimestamp> {
     where
         T: TraceReader<Val = (), Time = Self::Timestamp> + Clone + 'static,
         T::Key: Data,
-        T::R: Semigroup;
+        T::R: Semigroup,
+    {
+        // This is a safe default, override this method if you can implement it better
+
+        #[allow(clippy::disallowed_methods)]
+        operators::Count::count(arranged)
+    }
 
     fn distinct<T>(arranged: &Arranged<Self, T>) -> Collection<Self, T::Key, isize>
     where
         T: TraceReader<Val = (), Time = Self::Timestamp> + Clone + 'static,
         T::Key: Data,
-        T::R: Semigroup;
+        T::R: Semigroup,
+    {
+        // This is a safe default, override this method if you can implement it better
+
+        #[allow(clippy::disallowed_methods)]
+        operators::Threshold::distinct(arranged)
+    }
 }
 
 impl<'a, S> MaybeTotalScope for Child<'a, S, u64>
@@ -56,24 +68,4 @@ where
     T2: Timestamp + Lattice,
 {
     type MaybeTotalTimestamp = Self::Timestamp;
-
-    fn count<T>(arranged: &Arranged<Self, T>) -> Collection<Self, (T::Key, T::R), isize>
-    where
-        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
-        T::Key: Data,
-        T::R: Semigroup,
-    {
-        #[allow(clippy::disallowed_methods)]
-        operators::Count::count(arranged)
-    }
-
-    fn distinct<T>(arranged: &Arranged<Self, T>) -> Collection<Self, T::Key, isize>
-    where
-        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
-        T::Key: Data,
-        T::R: Semigroup,
-    {
-        #[allow(clippy::disallowed_methods)]
-        operators::Threshold::distinct(arranged)
-    }
 }

@@ -29,12 +29,16 @@ def _strip_optional(input_type):
     return left
 
 
-def _sanitize_type(input_type):
-    if input_type is api.BasePointer or get_origin(input_type) is api.Pointer:
+def sanitize_type(input_type):
+    if (
+        input_type is api.BasePointer
+        or input_type is api.Pointer
+        or get_origin(input_type) is api.Pointer
+    ):
         return api.Pointer
     elif sys.version_info >= (3, 10) and isinstance(input_type, NewType):
         # NewType is a class starting from Python 3.10
-        return _sanitize_type(input_type.__supertype__)
+        return sanitize_type(input_type.__supertype__)
     elif isinstance(input_type, str):
         return Any  # TODO: input_type is annotation for class
     elif get_origin(input_type) is get_origin(
@@ -42,7 +46,7 @@ def _sanitize_type(input_type):
     ):  # for some weird reason get_origin(Callable) == collections.abc.Callable
         return Callable
     elif _is_optional(input_type):
-        return _sanitize_type(_strip_optional(input_type))
+        return sanitize_type(_strip_optional(input_type))
     else:
         return input_type
 
@@ -50,8 +54,10 @@ def _sanitize_type(input_type):
 def dtype_issubclass(left: DType, right: DType):
     if _is_optional(left) and not _is_optional(right):
         return False
-    left_ = _sanitize_type(left)
-    right_ = _sanitize_type(right)
+    if left == NoneType:
+        return _is_optional(right) or right == NoneType
+    left_ = sanitize_type(left)
+    right_ = sanitize_type(right)
     if right_ is Any:
         return True
     elif left_ is Any:

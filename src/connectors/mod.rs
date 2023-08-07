@@ -118,10 +118,10 @@ where
         persistent_storage: &Arc<Mutex<SimplePersistencyManager>>,
         sender: &Sender<Entry>,
     ) {
-        let snapshot_reader = persistent_storage
+        let snapshot_readers = persistent_storage
             .lock()
             .unwrap()
-            .create_snapshot_reader(persistent_id);
+            .create_snapshot_readers(persistent_id);
 
         let threshold_time = persistent_storage
             .lock()
@@ -129,37 +129,39 @@ where
             .last_finalized_timestamp();
 
         info!("Persistent rewind allowed up to logical time {threshold_time}");
-        if let Ok(mut snapshot_reader) = snapshot_reader {
-            if threshold_time == 0 {
-                info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
-                if let Err(e) = snapshot_reader.truncate() {
-                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                }
-                return;
-            }
-            let mut entries_read = 0;
-            loop {
-                let entry_read = snapshot_reader.read();
-                let Ok(entry_read) = entry_read else { break };
-                match entry_read {
-                    SnapshotEvent::Finished => {
-                        info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
-                        break;
+        if let Ok(snapshot_readers) = snapshot_readers {
+            for mut snapshot_reader in snapshot_readers {
+                if threshold_time == 0 {
+                    info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
+                    if let Err(e) = snapshot_reader.truncate() {
+                        error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
                     }
-                    SnapshotEvent::AdvanceTime(new_time) => {
-                        if new_time > threshold_time {
-                            if let Err(e) = snapshot_reader.truncate() {
-                                error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                            }
-                            info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {entries_read} entries");
+                    return;
+                }
+                let mut entries_read = 0;
+                loop {
+                    let entry_read = snapshot_reader.read();
+                    let Ok(entry_read) = entry_read else { break };
+                    match entry_read {
+                        SnapshotEvent::Finished => {
+                            info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
                             break;
                         }
-                    }
-                    SnapshotEvent::Insert(_, _) | SnapshotEvent::Remove(_, _) => {
-                        entries_read += 1;
-                        let send_res = sender.send(Entry::Snapshot(entry_read));
-                        if let Err(e) = send_res {
-                            error!("Failed to send rewind entry: {e}");
+                        SnapshotEvent::AdvanceTime(new_time) => {
+                            if new_time > threshold_time {
+                                if let Err(e) = snapshot_reader.truncate() {
+                                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                                }
+                                info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {entries_read} entries");
+                                break;
+                            }
+                        }
+                        SnapshotEvent::Insert(_, _) | SnapshotEvent::Remove(_, _) => {
+                            entries_read += 1;
+                            let send_res = sender.send(Entry::Snapshot(entry_read));
+                            if let Err(e) = send_res {
+                                error!("Failed to send rewind entry: {e}");
+                            }
                         }
                     }
                 }
@@ -205,49 +207,61 @@ where
         }
     }
 
-    pub fn rewind_data_source(
+    pub fn read_snapshot(
         reader: &mut dyn Reader,
-        persistent_storage: &Arc<Mutex<SimplePersistencyManager>>,
-        sender: &Sender<Entry>,
-    ) {
-        if let Some(persistent_id) = reader.persistent_id() {
-            Self::rewind_from_disk_snapshot(persistent_id, persistent_storage, sender);
-
-            let frontier = persistent_storage
-                .lock()
-                .unwrap()
-                .frontier_for(persistent_id);
-            info!("Seek the data source to the frontier {frontier:?}");
-            if let Err(e) = reader.seek(&frontier) {
-                error!("Failed to seek to frontier: {e}");
-            }
-        }
-    }
-
-    pub fn do_read_updates(
-        reader: Box<dyn ReaderBuilder>,
         persistent_storage: &Option<Arc<Mutex<SimplePersistencyManager>>>,
         sender: &Sender<Entry>,
-        main_thread: &Thread,
     ) {
-        // Step 1. Build the actual reader
-        let mut reader = reader.build().expect("building the reader failed");
-
-        // Step 2. Rewind the data source
+        // Rewind the data source
         if let Some(persistent_storage) = persistent_storage {
-            Self::rewind_data_source(&mut *reader, persistent_storage, sender);
+            if let Some(persistent_id) = reader.persistent_id() {
+                Self::rewind_from_disk_snapshot(persistent_id, persistent_storage, sender);
+
+                let frontier = persistent_storage
+                    .lock()
+                    .unwrap()
+                    .frontier_for(persistent_id);
+
+                info!("Seek the data source to the frontier {frontier:?}");
+                if let Err(e) = reader.seek(&frontier) {
+                    error!("Failed to seek to frontier: {e}");
+                }
+            }
         }
 
-        // Step 3. Report that rewind has finished, so that autocommits start to work
+        // Report that rewind has finished, so that autocommits start to work
         {
             let send_res = sender.send(Entry::RewindFinishSentinel);
             if let Err(e) = send_res {
                 panic!("Failed to switch from persisted to realtime: {e}");
             }
         }
+    }
 
-        // Step 4. Read realtime updates
-        Self::read_realtime_updates(&mut *reader, sender, main_thread);
+    pub fn snapshot_writer(
+        reader: &dyn ReaderBuilder,
+        persistent_storage: &Option<Arc<Mutex<SimplePersistencyManager>>>,
+    ) -> Option<Box<dyn SnapshotWriter>> {
+        if let Some(persistent_id) = reader.persistent_id() {
+            if let Some(persistent_storage) = &persistent_storage {
+                match persistent_storage
+                    .lock()
+                    .unwrap()
+                    .create_snapshot_writer(persistent_id)
+                {
+                    Ok(storage) => Some(storage),
+                    Err(e) => {
+                        error!("Failed to create persistent storage writer ({e})");
+                        None
+                    }
+                }
+            } else {
+                warn!("Persistent ID {persistent_id} specified for a data source but persistent storage is not configured");
+                None
+            }
+        } else {
+            None
+        }
     }
 
     #[allow(clippy::type_complexity)]
@@ -261,6 +275,7 @@ where
         mut values_to_key: impl FnMut(Option<Vec<Value>>) -> Key + 'static,
         persistent_storage: Option<Arc<Mutex<SimplePersistencyManager>>>,
         connector_id: usize,
+        realtime_reader_needed: bool,
     ) -> (
         Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
         std::thread::JoinHandle<DynResult<()>>,
@@ -279,27 +294,7 @@ where
         );
         let reader_name = reader.name(connector_id);
 
-        let mut snapshot_writer = {
-            if let Some(persistent_storage) = &persistent_storage {
-                if let Some(persistent_id) = reader.persistent_id() {
-                    match persistent_storage
-                        .lock()
-                        .unwrap()
-                        .create_snapshot_writer(persistent_id)
-                    {
-                        Ok(storage) => Some(storage),
-                        Err(e) => {
-                            error!("Failed to create persistent storage writer ({e})");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
+        let mut snapshot_writer = Self::snapshot_writer(reader.as_ref(), &persistent_storage);
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
@@ -311,7 +306,11 @@ where
                     main_thread.unpark();
                 });
 
-                Self::do_read_updates(reader, &persistent_storage, &sender, &main_thread);
+                let mut reader = reader.build().expect("building the reader failed");
+                Self::read_snapshot(&mut *reader, &persistent_storage, &sender);
+                if realtime_reader_needed {
+                    Self::read_realtime_updates(&mut *reader, &sender, &main_thread);
+                }
 
                 Ok(())
             })

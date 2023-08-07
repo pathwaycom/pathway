@@ -557,3 +557,15 @@ def test_more_asof_full():
     """
         ),
     )
+
+
+def test_asof_joins_typing_on():
+    left_table = pw.Table.empty(timestamp=int, col=int)
+    right_table = pw.Table.empty(timestamp=int, col=str)
+    with pytest.raises(expected_exception=RuntimeError):
+        left_table.asof_join_outer(
+            right_table,
+            left_table.timestamp,
+            right_table.timestamp,
+            left_table.col == right_table.col,
+        )

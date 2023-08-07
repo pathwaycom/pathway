@@ -3,7 +3,7 @@
 
 use arcstr::ArcStr;
 use log::warn;
-use ndarray::{ArrayD, Axis};
+use ndarray::{ArrayD, Axis, LinalgScalar};
 use num_integer::Integer;
 use ordered_float::OrderedFloat;
 use std::ops::{Deref, Range};
@@ -16,6 +16,7 @@ use smallvec::SmallVec;
 use super::error::{DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
 use super::{Error, Key, Value};
+use crate::mat_mul::mat_mul;
 
 #[derive(Debug)]
 pub enum Expressions {
@@ -92,6 +93,7 @@ pub enum AnyExpression {
     MakeTuple(Expressions),
     TupleGetItemChecked(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     TupleGetItemUnchecked(Arc<Expression>, Arc<Expression>),
+    MatMul(Arc<Expression>, Arc<Expression>),
 }
 
 #[derive(Debug)]
@@ -126,6 +128,12 @@ pub enum BoolExpression {
     PtrLt(Arc<Expression>, Arc<Expression>),
     PtrGe(Arc<Expression>, Arc<Expression>),
     PtrGt(Arc<Expression>, Arc<Expression>),
+    BoolEq(Arc<Expression>, Arc<Expression>),
+    BoolNe(Arc<Expression>, Arc<Expression>),
+    BoolLe(Arc<Expression>, Arc<Expression>),
+    BoolLt(Arc<Expression>, Arc<Expression>),
+    BoolGe(Arc<Expression>, Arc<Expression>),
+    BoolGt(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveEq(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveNe(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveLt(Arc<Expression>, Arc<Expression>),
@@ -328,6 +336,23 @@ fn get_array_element(
     }
 }
 
+fn mat_mul_wrapper<T>(lhs: &ArrayD<T>, rhs: &ArrayD<T>) -> DynResult<Value>
+where
+    T: LinalgScalar,
+    Value: From<ArrayD<T>>,
+{
+    if let Some(result) = mat_mul(&lhs.view(), &rhs.view()) {
+        Ok(result.into())
+    } else {
+        let msg = format!(
+            "can't multiply arrays of shapes {:?} and {:?}",
+            lhs.shape(),
+            rhs.shape()
+        );
+        Err(DynError::from(Error::ValueError(msg)))
+    }
+}
+
 impl AnyExpression {
     pub fn eval(&self, values: &[Value]) -> DynResult<Value> {
         match self {
@@ -364,6 +389,21 @@ impl AnyExpression {
                     Ok(entry)
                 } else {
                     Err(DynError::from(Error::IndexOutOfBounds))
+                }
+            }
+            Self::MatMul(lhs, rhs) => {
+                let lhs_val = lhs.eval(values)?;
+                let rhs_val = rhs.eval(values)?;
+                match (lhs_val, rhs_val) {
+                    (Value::FloatArray(lhs), Value::FloatArray(rhs)) => mat_mul_wrapper(&lhs, &rhs),
+                    (Value::IntArray(lhs), Value::IntArray(rhs)) => mat_mul_wrapper(&lhs, &rhs),
+                    (lhs_val, rhs_val) => {
+                        let lhs_type = lhs_val.simple_type();
+                        let rhs_type = rhs_val.simple_type();
+                        Err(DynError::from(Error::ValueError(format!(
+                            "can't perform matrix multiplication on {lhs_type:?} and {rhs_type:?}",
+                        ))))
+                    }
                 }
             }
         }
@@ -430,6 +470,12 @@ impl BoolExpression {
             Self::PtrGt(lhs, rhs) => {
                 Ok(lhs.eval_as_pointer(values)? > rhs.eval_as_pointer(values)?)
             }
+            Self::BoolEq(lhs, rhs) => Ok(lhs.eval_as_bool(values)? == rhs.eval_as_bool(values)?),
+            Self::BoolNe(lhs, rhs) => Ok(lhs.eval_as_bool(values)? != rhs.eval_as_bool(values)?),
+            Self::BoolLe(lhs, rhs) => Ok(lhs.eval_as_bool(values)? <= rhs.eval_as_bool(values)?),
+            Self::BoolLt(lhs, rhs) => Ok(!(lhs.eval_as_bool(values)?) & rhs.eval_as_bool(values)?),
+            Self::BoolGe(lhs, rhs) => Ok(lhs.eval_as_bool(values)? >= rhs.eval_as_bool(values)?),
+            Self::BoolGt(lhs, rhs) => Ok(lhs.eval_as_bool(values)? & !(rhs.eval_as_bool(values)?)),
             Self::DateTimeNaiveEq(lhs, rhs) => {
                 Ok(lhs.eval_as_date_time_naive(values)? == rhs.eval_as_date_time_naive(values)?)
             }

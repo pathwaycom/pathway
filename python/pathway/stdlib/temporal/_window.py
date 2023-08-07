@@ -79,11 +79,13 @@ class _SessionWindow(Window):
             _pw_window=pw.if_else(
                 sel_key.next_key.is_not_none(),
                 pw.if_else(
-                    self._merge(target.key, sel_key.next_key), target.next, target.id
+                    self._merge(target.key, sel_key.next_key),
+                    target.next,
+                    target.id,
                 ),
                 target.id,
-            )
-        )
+            ),
+        ).update_types(_pw_window=pw.Pointer)
 
         def merge_ccs(data):
             data <<= data.select(_pw_window=data.ix(data._pw_window)._pw_window)
@@ -321,13 +323,12 @@ class _SlidingWindow(Window):
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
         )
-        from pathway.internals.type_interpreter import TypeInterpreter
+        from pathway.internals.type_interpreter import eval_type
 
-        type_interpreter = TypeInterpreter()
         target = target.update_types(
-            _pw_shard=type_interpreter.eval_expression(shard),  # type: ignore
-            _pw_window_start=type_interpreter.eval_expression(key),
-            _pw_window_end=type_interpreter.eval_expression(key),
+            _pw_shard=eval_type(shard),  # type: ignore
+            _pw_window_start=eval_type(key),
+            _pw_window_end=eval_type(key),
         )
         return target.groupby(
             target._pw_window,
@@ -346,9 +347,8 @@ class _SlidingWindow(Window):
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
     ) -> temporal.WindowJoinResult:
-        from pathway.internals.type_interpreter import TypeInterpreter
+        from pathway.internals.type_interpreter import eval_type
 
-        type_interpreter = TypeInterpreter()
         check_joint_types(
             {
                 "left_time_expression": (left_time_expression, TimeEventType),
@@ -368,8 +368,8 @@ class _SlidingWindow(Window):
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
         ).update_types(
-            _pw_window_start=type_interpreter.eval_expression(left_time_expression),
-            _pw_window_end=type_interpreter.eval_expression(left_time_expression),
+            _pw_window_start=eval_type(left_time_expression),
+            _pw_window_end=eval_type(left_time_expression),
         )
 
         right_window = right.select(
@@ -381,8 +381,8 @@ class _SlidingWindow(Window):
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
         ).update_types(
-            _pw_window_start=type_interpreter.eval_expression(right_time_expression),
-            _pw_window_end=type_interpreter.eval_expression(right_time_expression),
+            _pw_window_start=eval_type(right_time_expression),
+            _pw_window_end=eval_type(right_time_expression),
         )
 
         for cond in on:

@@ -46,7 +46,7 @@ class Parent(pw.Schema):
 
 
 class Candidate(pw.Schema):
-    candidate: Optional[pw.Pointer[Node]]
+    candidate: pw.Pointer[Node]
 
 
 class Instance(pw.Schema):
@@ -129,14 +129,18 @@ def build_sorted_index(nodes: pw.Table[Key | Instance]) -> SortedIndex:
         parent=None,
     )
 
-    result_nonull_left = result.filter(result.left.is_not_none())
+    result_nonull_left = result.filter(result.left.is_not_none()).update_types(
+        left=pw.Pointer
+    )
     result <<= (
         result_nonull_left.select(parent=result_nonull_left.id)
         .with_id(result_nonull_left.left)
         .promise_universe_is_subset_of(result)
     )
 
-    result_nonull_right = result.filter(result.right.is_not_none())
+    result_nonull_right = result.filter(result.right.is_not_none()).update_types(
+        right=pw.Pointer
+    )
 
     result <<= (
         result_nonull_right.select(parent=result_nonull_right.id)
@@ -491,7 +495,7 @@ def filter_smallest_k(
     pw.universes.promise_is_subset_of(ks, oracle)
     # root is pked with instance, ks also
     res = ks.select(res=oracle.prefix_sum_upperbound(ks.k))
-    validres = res.filter(res.res.is_not_none())
+    validres = res.filter(res.res.is_not_none()).update_types(res=pw.Pointer)
     validres = validres.select(res=getattr(table.ix(validres.res), colname))
     res <<= res.filter(res.res.is_none()).select(res=math.inf)
     res <<= validres

@@ -4,8 +4,10 @@ import dataclasses
 import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple, Type
 
+import numpy as np
+
 import pathway.internals as pw
-from pathway.internals import api
+from pathway.internals import api, datetime_types
 from pathway.internals._io_helpers import _form_value_fields
 from pathway.internals.api import PathwayType
 from pathway.internals.schema import ColumnDefinition, Schema, SchemaProperties
@@ -32,6 +34,11 @@ _PATHWAY_TYPE_MAPPING: Dict[PathwayType, Any] = {
     PathwayType.FLOAT: float,
     PathwayType.STRING: str,
     PathwayType.ANY: Any,
+    PathwayType.POINTER: api.Pointer,
+    PathwayType.DATE_TIME_NAIVE: datetime_types.DateTimeNaive,
+    PathwayType.DATE_TIME_UTC: datetime_types.DateTimeUtc,
+    PathwayType.DURATION: datetime_types.Duration,
+    PathwayType.ARRAY: np.ndarray,
 }
 
 SUPPORTED_INPUT_FORMATS: Set[str] = set(

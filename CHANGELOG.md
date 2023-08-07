@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2023-08-07
+
+### Added
+
+- `@` (matrix multiplication) operator.
+
+### Changed
+
+- Python version 3.10 or later is now required.
+- Type checking is now more strict.
+
 ## [0.2.1] - 2023-07-31
 
 ### Changed

@@ -15,6 +15,7 @@ from typing import (
     Tuple,
     Type,
     cast,
+    get_origin,
 )
 
 import pathway.internals.column as clmn
@@ -24,10 +25,11 @@ from pathway.internals.dtype import unoptionalize
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import ExpressionVisitor
 from pathway.internals.graph_runner.operator_mapping import (
-    get_binary_operators_mapping,
+    get_binary_expression,
     get_binary_operators_mapping_optionals,
     get_cast_operators_mapping,
-    get_unary_operators_mapping,
+    get_unary_expression,
+    tuple_handling_operators,
 )
 from pathway.internals.graph_runner.scope_context import ScopeContext
 
@@ -175,11 +177,9 @@ class RowwiseEvaluator(
         arg = self.eval_expression(expression._expr, eval_state=eval_state)
         operand_dtype = self.expression_type(expression._expr)
         if (
-            dtype_and_handler := get_unary_operators_mapping(
-                operator_fun, operand_dtype
-            )
+            result_expression := get_unary_expression(arg, operator_fun, operand_dtype)
         ) is not None:
-            return dtype_and_handler[1](arg)
+            return result_expression
 
         return api.Expression.apply(operator_fun, arg)
 
@@ -189,31 +189,37 @@ class RowwiseEvaluator(
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         operator_fun = expression._operator
-        left = self.eval_expression(expression._left, eval_state=eval_state)
-        right = self.eval_expression(expression._right, eval_state=eval_state)
+        left_expression = expression._left
+        right_expression = expression._right
 
-        left_dtype = self.expression_type(expression._left)
-        right_dtype = self.expression_type(expression._right)
+        left_dtype = self.expression_type(left_expression)
+        right_dtype = self.expression_type(right_expression)
 
-        if left_dtype == int and right_dtype == float:
+        # TODO: casting of Optional[int] to Optional[float]
+        if left_dtype == int and right_dtype in [float, Optional[float]]:
             left_dtype = float
-            left = api.Expression.int_to_float(left)
-        if left_dtype == float and right_dtype == int:
+            left_expression = expr.CastExpression(left_dtype, left_expression)
+        if left_dtype in [float, Optional[float]] and right_dtype == int:
             right_dtype = float
-            right = api.Expression.int_to_float(right)
+            right_expression = expr.CastExpression(right_dtype, right_expression)
+
+        left = self.eval_expression(left_expression, eval_state=eval_state)
+        right = self.eval_expression(right_expression, eval_state=eval_state)
 
         if (
-            dtype_and_handler := get_binary_operators_mapping(
+            result_expression := get_binary_expression(
+                left,
+                right,
                 operator_fun,
                 left_dtype,
                 right_dtype,
             )
         ) is not None:
-            return dtype_and_handler[1](left, right)
+            return result_expression
 
         left_dtype_unoptionalized, right_dtype_unoptionalized = unoptionalize(
-            self.expression_type(expression._left),
-            self.expression_type(expression._right),
+            left_dtype,
+            right_dtype,
         )
 
         if (
@@ -224,26 +230,42 @@ class RowwiseEvaluator(
             return dtype_and_handler[1](left, right)
 
         if (
-            dtype_and_handler := get_binary_operators_mapping(
-                operator_fun, left_dtype_unoptionalized, right_dtype_unoptionalized
+            result_expression := get_binary_expression(
+                left,
+                right,
+                operator_fun,
+                left_dtype_unoptionalized,
+                right_dtype_unoptionalized,
             )
         ) is not None:
-            return dtype_and_handler[1](left, right)
+            return result_expression
 
         operator_symbol = getattr(
             expression._operator, "_symbol", expression._operator.__name__
         )
 
         expression_info = get_expression_info(expression)
-        warnings.warn(
-            f"Pathway does not natively support operator {operator_symbol} "
-            + f"on types ({left_dtype}, {right_dtype}). "
-            + "It refers to the following expression:\n"
-            + expression_info
-            + "The evaluation will be performed in Python, which may slow down your computations. "
-            + "Try specifying the types or expressing the computation differently.",
-        )
-        return api.Expression.apply(operator_fun, left, right)
+        if (
+            get_origin(left_dtype) == get_origin(Tuple)
+            and get_origin(right_dtype) == get_origin(Tuple)
+            and expression._operator in tuple_handling_operators
+        ):
+            warnings.warn(
+                f"Pathway does not natively support operator {operator_symbol} "
+                + "on Tuple types. "
+                + "It refers to the following expression:\n"
+                + expression_info
+                + "The evaluation will be performed in Python, which may slow down your computations. "
+                + "Try specifying the types or expressing the computation differently.",
+            )
+            return api.Expression.apply(operator_fun, left, right)
+        else:
+            raise RuntimeError(
+                f"Pathway does not support using binary operator {expression._operator.__name__}"
+                + f" on columns of types {left_dtype}, {right_dtype}."
+                + "It refers to the following expression:\n"
+                + expression_info
+            )
 
     def eval_const(
         self,
@@ -315,13 +337,13 @@ class RowwiseEvaluator(
         )
         if key[0] == key[1]:
             return arg
-        if (handler := get_cast_operators_mapping(*key)) is not None:
-            return handler(arg)
+        if (result_expression := get_cast_operators_mapping(arg, *key)) is not None:
+            return result_expression
 
         key = unoptionalize(key[0], key[1])
 
-        if (handler := get_cast_operators_mapping(*key)) is not None:
-            return handler(arg)
+        if (result_expression := get_cast_operators_mapping(arg, *key)) is not None:
+            return result_expression
 
         raise RuntimeError(
             f"Pathway doesn't support type conversion between {key[0]} and {key[1]}"

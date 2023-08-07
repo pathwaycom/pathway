@@ -111,7 +111,7 @@ def _pandas_transformer(
         flattened = applied.flatten(pw.this.all_cols)
         output = unpack_col(
             flattened.all_cols, pw.this._id, *output_schema.column_names()
-        )
+        ).update_types(_id=pw.Pointer)
         output = output.with_id(output._id).without(output._id)
 
     if output_universe_arg_index is not None:

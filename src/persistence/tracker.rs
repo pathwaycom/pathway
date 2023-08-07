@@ -1,5 +1,7 @@
-use log::error;
+use itertools::Itertools;
+use log::{error, info, warn};
 use std::collections::HashMap;
+use std::fs;
 use std::io::Error as IoError;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -20,14 +22,14 @@ pub trait PersistencyManager {
         storage_type: &StorageType,
         source: Arc<Mutex<HashMap<u64, OffsetAntichain>>>,
     );
-    fn accept_finalized_timestamp(&mut self, timestamp: u64);
-    fn on_output_finished(&mut self);
+    fn register_sink(&mut self) -> usize;
+    fn accept_finalized_timestamp(&mut self, sink_id: usize, timestamp: Option<u64>);
     fn frontier_for(&self, persistent_id: PersistentId) -> OffsetAntichain;
 
-    fn create_snapshot_reader(
+    fn create_snapshot_readers(
         &self,
         persistent_id: u128,
-    ) -> Result<Box<dyn SnapshotReader>, ReadError>;
+    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError>;
 
     fn create_snapshot_writer(
         &mut self,
@@ -42,25 +44,33 @@ pub enum StreamStorageConfig {
 pub struct PersistenceManagerConfig {
     stream_storage: StreamStorageConfig,
     worker_id: usize,
+    total_workers: usize,
 }
 
 impl PersistenceManagerConfig {
-    pub fn new(stream_storage: StreamStorageConfig, worker_id: usize) -> Self {
+    pub fn new(
+        stream_storage: StreamStorageConfig,
+        worker_id: usize,
+        total_workers: usize,
+    ) -> Self {
         Self {
             stream_storage,
             worker_id,
+            total_workers,
         }
     }
 
-    pub fn create_snapshot_reader(
+    pub fn create_snapshot_readers(
         &self,
         persistent_id: u128,
-    ) -> Result<Box<dyn SnapshotReader>, ReadError> {
+    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError> {
         match &self.stream_storage {
             StreamStorageConfig::Filesystem(root_path) => {
-                Ok(Box::new(LocalBinarySnapshotReader::new(
-                    &self.snapshot_root_path(root_path, persistent_id)?,
-                )?))
+                let mut result: Vec<Box<dyn SnapshotReader>> = Vec::new();
+                for path in self.assigned_snapshot_paths(root_path, persistent_id)? {
+                    result.push(Box::new(LocalBinarySnapshotReader::new(&path)?));
+                }
+                Ok(result)
             }
         }
     }
@@ -72,13 +82,13 @@ impl PersistenceManagerConfig {
         match &self.stream_storage {
             StreamStorageConfig::Filesystem(root_path) => {
                 Ok(Box::new(LocalBinarySnapshotWriter::new(
-                    &self.snapshot_root_path(root_path, persistent_id)?,
+                    &self.snapshot_writer_path(root_path, persistent_id)?,
                 )?))
             }
         }
     }
 
-    fn snapshot_root_path(
+    fn snapshot_writer_path(
         &self,
         root_path: &Path,
         persistent_id: u128,
@@ -86,8 +96,55 @@ impl PersistenceManagerConfig {
         ensure_directory(root_path)?;
         ensure_directory(&root_path.join("streams"))?;
         ensure_directory(&root_path.join(format!("streams/{}", self.worker_id)))?;
-
         Ok(root_path.join(format!("streams/{}/{persistent_id}/", self.worker_id)))
+    }
+
+    fn assigned_snapshot_paths(
+        &self,
+        root_path: &Path,
+        persistent_id: u128,
+    ) -> Result<Vec<PathBuf>, IoError> {
+        ensure_directory(root_path)?;
+
+        let streams_dir = root_path.join("streams");
+        ensure_directory(&streams_dir)?;
+
+        let mut assigned_paths = Vec::new();
+        let paths = fs::read_dir(&streams_dir)?;
+        for entry in paths.flatten() {
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                let dir_name = if let Some(name) = entry.file_name().to_str() {
+                    name.to_string()
+                } else {
+                    error!("Failed to parse block folder name: {entry:?}");
+                    continue;
+                };
+
+                let earlier_worker_id: usize = match dir_name.parse() {
+                    Ok(worker_id) => worker_id,
+                    Err(e) => {
+                        error!("Could not parse worker id from snapshot directory {entry:?}. Error details: {e}");
+                        continue;
+                    }
+                };
+
+                if earlier_worker_id % self.total_workers != self.worker_id {
+                    continue;
+                }
+                if earlier_worker_id != self.worker_id {
+                    info!("Assigning snapshot from the former worker {earlier_worker_id} to worker {} due to reduced number of worker threads", self.worker_id);
+                }
+
+                let snapshot_path =
+                    streams_dir.join(format!("{earlier_worker_id}/{persistent_id}"));
+                assigned_paths.push(snapshot_path);
+            } else {
+                warn!("Unexpected object in snapshot directory: {entry:?}");
+            }
+        }
+
+        Ok(assigned_paths)
     }
 }
 
@@ -95,7 +152,7 @@ type FrontierByTimeForInputSources = Vec<(PersistentId, Arc<Mutex<HashMap<u64, O
 pub struct SimplePersistencyManager {
     metadata_storage: Box<dyn MetadataStorage>,
     config: PersistenceManagerConfig,
-
+    sink_threshold_times: Vec<Option<u64>>,
     input_sources: FrontierByTimeForInputSources,
 }
 
@@ -108,6 +165,7 @@ impl SimplePersistencyManager {
             metadata_storage,
             config,
             input_sources: Vec::new(),
+            sink_threshold_times: Vec::new(),
         }
     }
 
@@ -123,6 +181,14 @@ impl PersistencyManager for SimplePersistencyManager {
         storage_type: &StorageType,
         source: Arc<Mutex<HashMap<u64, OffsetAntichain>>>,
     ) {
+        assert!(
+            !self
+                .input_sources
+                .iter()
+                .map(|(x, _y)| x)
+                .contains(&persistent_id),
+            "Same persistent_id belongs to more than one data source: {persistent_id}"
+        );
         self.input_sources.push((persistent_id, source));
         self.metadata_storage
             .register_input_source(persistent_id, storage_type);
@@ -132,7 +198,12 @@ impl PersistencyManager for SimplePersistencyManager {
         self.metadata_storage.frontier_for(persistent_id)
     }
 
-    fn accept_finalized_timestamp(&mut self, finalized_timestamp: u64) {
+    fn register_sink(&mut self) -> usize {
+        self.sink_threshold_times.push(Some(0));
+        self.sink_threshold_times.len() - 1
+    }
+
+    fn accept_finalized_timestamp(&mut self, sink_id: usize, reported_timestamp: Option<u64>) {
         /*
             This method updates the frontiers of the data sources to the further
             ones, corresponding to the newly closed timestamp. It happens when all data
@@ -140,6 +211,9 @@ impl PersistencyManager for SimplePersistencyManager {
 
             When the program is restarted, it results in not outputting this data again.
         */
+
+        self.sink_threshold_times[sink_id] = reported_timestamp;
+        let finalized_timestamp = self.globally_finalized_timestamp();
         if finalized_timestamp < self.last_finalized_timestamp() {
             error!("Time isn't in the increasing order. Got advancement to {finalized_timestamp} while last advanced timestamp was {}", self.last_finalized_timestamp());
             return;
@@ -196,23 +270,11 @@ impl PersistencyManager for SimplePersistencyManager {
             .accept_finalized_timestamp(finalized_timestamp);
     }
 
-    fn on_output_finished(&mut self) {
-        let mut last_timestamp = self.last_finalized_timestamp();
-        for (_, input_source) in &self.input_sources {
-            for (seen_timestamp, _) in input_source.lock().unwrap().iter() {
-                if last_timestamp < *seen_timestamp {
-                    last_timestamp = *seen_timestamp;
-                }
-            }
-        }
-        self.accept_finalized_timestamp(last_timestamp);
-    }
-
-    fn create_snapshot_reader(
+    fn create_snapshot_readers(
         &self,
         persistent_id: u128,
-    ) -> Result<Box<dyn SnapshotReader>, ReadError> {
-        self.config.create_snapshot_reader(persistent_id)
+    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError> {
+        self.config.create_snapshot_readers(persistent_id)
     }
 
     fn create_snapshot_writer(
@@ -220,5 +282,28 @@ impl PersistencyManager for SimplePersistencyManager {
         persistent_id: u128,
     ) -> Result<Box<dyn SnapshotWriter>, WriteError> {
         self.config.create_snapshot_writer(persistent_id)
+    }
+}
+
+impl SimplePersistencyManager {
+    pub fn globally_finalized_timestamp(&self) -> u64 {
+        let min_sink_timestamp = self.sink_threshold_times.iter().flatten().min();
+        if let Some(min_sink_timestamp) = min_sink_timestamp {
+            *min_sink_timestamp
+        } else {
+            let mut last_timestamp = self.last_finalized_timestamp();
+            for (_, input_source) in &self.input_sources {
+                let local_last_timestamp = *input_source
+                    .lock()
+                    .unwrap()
+                    .keys()
+                    .max()
+                    .unwrap_or(&last_timestamp);
+                if last_timestamp < local_last_timestamp {
+                    last_timestamp = local_last_timestamp;
+                }
+            }
+            last_timestamp
+        }
     }
 }

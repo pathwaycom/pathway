@@ -19,7 +19,7 @@ use crate::persistence::tracker::{
 use std::any::type_name;
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -1281,7 +1281,7 @@ impl<S: MaybeTotalScope> KeyWithTupleArranged<S> {
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
 impl<S: MaybeTotalScope> DataflowGraphInner<S> {
     fn new(scope: S, error_reporter: ErrorReporter, ignore_asserts: bool) -> Self {
-        let persistent_storage = Self::construct_persistent_storage(scope.index());
+        let persistent_storage = Self::construct_persistent_storage(scope.index(), scope.peers());
         Self {
             scope,
             universes: Arena::new(),
@@ -1319,7 +1319,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         self.scope.peers()
     }
 
-    fn construct_persistent_storage(worker_id: usize) -> PersistentStorage {
+    fn construct_persistent_storage(worker_id: usize, total_workers: usize) -> PersistentStorage {
         let persistent_storage_path = std::env::var("PATHWAY_PERSISTENT_STORAGE").ok()?;
 
         let storage = FileSystemMetadataStorage::new(
@@ -1334,6 +1334,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             PersistenceManagerConfig::new(
                 StreamStorageConfig::Filesystem(persistent_storage_path.into()),
                 worker_id,
+                total_workers,
             ),
         )));
         Some(persistency_manager)
@@ -2967,6 +2968,11 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
     }
 }
 
+enum OutputEvent {
+    Commit(Option<u64>),
+    Batch(Vec<((Key, Tuple), u64, isize)>),
+}
+
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
 impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
     fn connector_table(
@@ -2991,7 +2997,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             column_values.push(column_collection);
         }
 
-        if self.scope.index() < parallel_readers {
+        let realtime_reader_needed = self.scope.index() < parallel_readers;
+        let persisted_table = reader.persistent_id().is_some() && self.persistent_storage.is_some();
+
+        if realtime_reader_needed || persisted_table {
             let persistent_id = reader.persistent_id();
             let reader_storage_type = reader.storage_type();
 
@@ -3015,34 +3024,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 },
                 self.persistent_storage.clone(),
                 self.connector_monitors.len(),
+                realtime_reader_needed,
             );
 
-            if self.pollers.is_empty() {
-                if let Some(persistent_storage) = &mut self.persistent_storage {
-                    let prober_persistent_storage = persistent_storage.clone();
-                    self.attach_prober(
-                        Box::new(move |prober_stats| {
-                            if let Some(output_time) = prober_stats.output_stats.time {
-                                prober_persistent_storage
-                                    .lock()
-                                    .unwrap()
-                                    .accept_finalized_timestamp(output_time - 1);
-                            } else {
-                                info!("Closing persistent metadata storage");
-                                prober_persistent_storage
-                                    .lock()
-                                    .unwrap()
-                                    .on_output_finished();
-                            }
-                        }),
-                        false,
-                        false,
-                    )
-                    .expect("Failed to start closed timestamps tracker");
-                }
-            }
             self.pollers.push(poller);
-
             self.connector_threads.push(input_thread_handle);
             if let Some(persistent_storage) = &mut self.persistent_storage {
                 if let Some(persistent_id) = persistent_id {
@@ -3079,6 +3064,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
     ) -> Result<()> {
         let output_columns = self.tuples(universe_handle, column_handles)?;
         let single_threaded = data_sink.single_threaded();
+
         let (sender, receiver) = mpsc::channel();
 
         let output = output_columns
@@ -3092,11 +3078,20 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 output
             }
         };
+
         inspect_output
-            .inspect_batch(move |_time, batch| {
-                sender
-                    .send(batch.to_vec())
-                    .expect("output connection failed");
+            .inspect_core(move |event| match event {
+                Ok((_time, data)) => {
+                    sender
+                        .send(OutputEvent::Batch(data.to_vec()))
+                        .expect("output report failed");
+                }
+                Err(frontier) => {
+                    assert!(frontier.len() <= 1);
+                    if let Err(e) = sender.send(OutputEvent::Commit(frontier.first().copied())) {
+                        warn!("Failed to report time advancement: {e}");
+                    }
+                }
             })
             .probe_with(&mut self.output_probe);
 
@@ -3107,15 +3102,19 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 data_formatter.short_description()
             );
 
-            let has_persistent_storage = self.persistent_storage.is_some();
+            let output_persistent_storage = self.persistent_storage.clone();
+            let sink_id = output_persistent_storage
+                .as_ref()
+                .map(|storage| storage.lock().unwrap().register_sink());
 
             let output_joiner_handle = Builder::new()
                 .name(thread_name)
                 .spawn(move || loop {
                     match receiver.recv() {
-                        Ok(batch) => {
+                        Ok(OutputEvent::Batch(batch)) => {
                             for ((key, values), time, diff) in batch {
-                                if time == ARTIFICIAL_TIME_ON_REWIND_START && has_persistent_storage
+                                if time == ARTIFICIAL_TIME_ON_REWIND_START
+                                    && output_persistent_storage.is_some()
                                 {
                                     // Ignore entries, which had been written before
                                     continue;
@@ -3126,6 +3125,23 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                                 data_sink.write(formatted).map_err(DynError::from)?;
                             }
                             data_sink.flush().map_err(DynError::from)?;
+                        }
+                        Ok(OutputEvent::Commit(t)) => {
+                            if let Some(output_persistent_storage) = &output_persistent_storage {
+                                output_persistent_storage
+                                    .lock()
+                                    .unwrap()
+                                    .accept_finalized_timestamp(
+                                        sink_id.expect(
+                                            "undefined sink_id while using persistent storage",
+                                        ),
+                                        t.map(|x| max(x, 1) - 1),
+                                    );
+                            }
+
+                            if t.is_none() {
+                                break Ok(());
+                            }
                         }
                         Err(mpsc::RecvError) => break Ok(()),
                     }
@@ -3149,6 +3165,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
+        let sink_id = self
+            .persistent_storage
+            .as_ref()
+            .map(|m| m.lock().unwrap().register_sink());
+        let persistent_storage = self.persistent_storage.clone();
         self.tuples(universe_handle, column_handles)?
             .as_collection()
             .inner
@@ -3162,7 +3183,19 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                                 .unwrap_with_reporter(&error_reporter);
                         }
                     }
-                    if input.frontier().is_empty() {
+
+                    let time_processed = input.frontier().frontier().first().copied();
+                    if let Some(persistent_storage) = &persistent_storage {
+                        persistent_storage
+                            .lock()
+                            .unwrap()
+                            .accept_finalized_timestamp(
+                                sink_id.expect("sink id must be assigned"),
+                                time_processed,
+                            );
+                    }
+
+                    if time_processed.is_none() {
                         on_end().unwrap_with_reporter(&error_reporter);
                     }
                 });

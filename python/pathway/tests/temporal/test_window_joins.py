@@ -1000,3 +1000,16 @@ window_start | window_end | count
         """
     )
     assert_table_equality_wo_index(matched_data, expected)
+
+
+def test_window_joins_typing_on():
+    left_table = pw.Table.empty(timestamp=int, col=int)
+    right_table = pw.Table.empty(timestamp=int, col=str)
+    with pytest.raises(expected_exception=RuntimeError):
+        left_table.window_join(
+            right_table,
+            left_table.timestamp,
+            right_table.timestamp,
+            pw.temporal.sliding(hop=50, duration=100),
+            left_table.col == right_table.col,
+        )

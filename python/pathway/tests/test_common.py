@@ -961,7 +961,6 @@ def test_flatten_multidimensional(dtype: Any):
 def test_flatten_string():
     df = pd.DataFrame({"string": ["abc", "defoimkm", "xyz"], "other": [0, 1, 2]})
     t1 = pw.debug.table_from_pandas(df)
-    t1 = t1.update_types(string=str)
     t1 = t1.flatten(t1.string)
     df_expected = pd.DataFrame({"string": list("abcdefoimkmxyz")})
     expected = table_from_pandas(df_expected)
@@ -1375,10 +1374,9 @@ def test_column_fixpoint():
     assert_table_equality(ret, expected_ret)
 
 
-# FIXME: uses pointer != float due to annotated return type of min_int
 def test_rows_fixpoint():
     def min_id_remove(iterated: pw.Table):
-        min_id_table = iterated.reduce(min_id=pw.reducers.min_int(iterated.id))
+        min_id_table = iterated.reduce(min_id=pw.reducers.min(iterated.id))
         iterated = iterated.filter(
             iterated.id != min_id_table.ix(min_id_table.pointer_from()).min_id
         )
@@ -1409,10 +1407,9 @@ def test_rows_fixpoint():
     assert_table_equality_wo_index(ret, expected_ret)
 
 
-# FIXME: uses pointer != float due to annotated return type of min_int
 def test_rows_fixpoint_needs_iterate_universe():
     def min_id_remove(iterated: pw.Table):
-        min_id_table = iterated.reduce(min_id=pw.reducers.min_int(iterated.id))
+        min_id_table = iterated.reduce(min_id=pw.reducers.min(iterated.id))
         iterated = iterated.filter(
             iterated.id != min_id_table.ix(min_id_table.pointer_from()).min_id
         )
@@ -3430,7 +3427,7 @@ def test_groupby_ix():
           5 | pqr
         """,
     ).with_columns(col=tab.pointer_from(pw.this.col))
-    assert_table_equality_wo_types(res, expected)
+    assert_table_equality(res, expected)
 
 
 def test_groupby_foreign_column():
@@ -4104,8 +4101,6 @@ def test_cast(from_: List, to_: List):
     def move_to_pathway_with_the_right_type(list: List, dtype: Any):
         df = pd.DataFrame({"a": list}, dtype=dtype)
         table = table_from_pandas(df)
-        if dtype == str:
-            table = table.update_types(a=str)
         return table
 
     table = move_to_pathway_with_the_right_type(from_, from_dtype)
@@ -4756,10 +4751,10 @@ def test_sequence_get_checked_fixed_length_errors():
             re.escape(
                 "Index 2 out of range for a tuple of type typing.Tuple[int, int]."
             )
-            + " It refers to the following expression:\n"
-            + re.escape("(<table1>.tup).get(2, <table1>.c),\n")
+            + " It refers to the following expression:\n\t"
+            + re.escape("(<table1>.tup).get(2, <table1>.c)\n")
             + rf"called in .*{file_name}.*\n"
-            + "with tables:\n"
+            + "with tables:\n\t"
             + r"<table1> created in .*\n"
             + re.escape("Consider using just the default value without .get().")
         ),

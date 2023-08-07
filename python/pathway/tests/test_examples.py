@@ -196,7 +196,7 @@ def test_linked_list_forward():
     8       | 0
     8       | 2
         """,
-    ).with_columns(node_id=nodes.pointer_from(this.node_id, optional=True))
+    ).with_columns(node_id=nodes.pointer_from(this.node_id))
     ret = queries.select(result=linked_list.ix(queries.node_id).forward(queries.steps))
     expected = T(
         """

@@ -160,7 +160,9 @@ def multiapply_all_rows(
 
     applied = reduced.select(ids_and_res=pw.apply(fun_wrapped, reduced.ids_and_cols))
     flatted = applied.flatten(pw.this.ids_and_res)
-    result = unpack_col(flatted.ids_and_res, "idd", *result_col_names)
+    result = unpack_col(flatted.ids_and_res, "idd", *result_col_names).update_types(
+        idd=pw.Pointer
+    )
     result = result.with_id(result.idd).without(result.idd)
     return result.with_universe_of(table)
 

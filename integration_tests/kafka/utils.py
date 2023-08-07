@@ -25,9 +25,9 @@ class KafkaTestContext:
         self._create_topic(self.input_topic)
         self._create_topic(self.output_topic)
 
-    def _create_topic(self, name: str) -> None:
+    def _create_topic(self, name: str, num_partitions: int = 1) -> None:
         self._admin.create_topics(
-            [NewTopic(name=name, num_partitions=1, replication_factor=1)]
+            [NewTopic(name=name, num_partitions=num_partitions, replication_factor=1)]
         )
 
     def _delete_topic(self, name: str) -> None:
@@ -39,6 +39,10 @@ class KafkaTestContext:
         else:
             (key, value) = str(uuid4()), message
         self._producer.send(self.input_topic, key=key.encode(), value=value.encode())
+
+    def set_input_topic_partitions(self, num_partitions: int):
+        self._delete_topic(self._input_topic)
+        self._create_topic(self._input_topic, num_partitions)
 
     def fill(self, messages: Iterable[Union[str, Tuple[str, str]]]) -> None:
         for msg in messages:

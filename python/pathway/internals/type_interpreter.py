@@ -12,13 +12,20 @@ from pathway.internals import _reducers
 from pathway.internals import expression as expr
 from pathway.internals.api import Pointer
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
-from pathway.internals.dtype import DType, dtype_issubclass, types_lca, unoptionalize
+from pathway.internals.dtype import (
+    DType,
+    dtype_issubclass,
+    sanitize_type,
+    types_lca,
+    unoptionalize,
+)
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import ExpressionVisitor
 from pathway.internals.graph_runner.operator_mapping import (
     get_binary_operators_mapping,
     get_binary_operators_mapping_optionals,
     get_unary_operators_mapping,
+    tuple_handling_operators,
 )
 from pathway.internals.shadows import inspect
 
@@ -40,11 +47,9 @@ class TypeInterpreter(ExpressionVisitor):
         operator_fun = expression._operator
         operand_dtype = self.eval_expression(expression._expr)
         if (
-            dtype_and_handler := get_unary_operators_mapping(
-                operator_fun, operand_dtype
-            )
+            dtype := get_unary_operators_mapping(operator_fun, operand_dtype)
         ) is not None:
-            return dtype_and_handler[0]
+            return dtype
         sig = inspect.signature(expression._operator)
         _test_type(sig.parameters["expr"].annotation, operand_dtype)
         return sig.return_annotation
@@ -52,36 +57,61 @@ class TypeInterpreter(ExpressionVisitor):
     def eval_binary_op(self, expression: expr.ColumnBinaryOpExpression) -> DType:
         left_dtype = self.eval_expression(expression._left)
         right_dtype = self.eval_expression(expression._right)
+        return self._eval_binary_op(
+            left_dtype, right_dtype, expression._operator, expression
+        )
+
+    def _eval_binary_op(
+        self,
+        left_dtype: DType,
+        right_dtype: DType,
+        operator: Any,
+        expression: expr.ColumnExpression,
+    ) -> DType:
+        # TODO: casting of Optional[int] to int
+        if left_dtype == int and right_dtype in [float, Optional[float]]:
+            left_dtype = DType(float)
+        if left_dtype in [float, Optional[float]] and right_dtype == int:
+            right_dtype = DType(float)
         if (
-            dtype_and_handler := get_binary_operators_mapping(
-                expression._operator, left_dtype, right_dtype
-            )
+            dtype := get_binary_operators_mapping(operator, left_dtype, right_dtype)
         ) is not None:
-            return DType(dtype_and_handler[0])
+            return DType(dtype)
 
         left_dtype, right_dtype = unoptionalize(left_dtype, right_dtype)
 
         if (
             dtype_and_handler := get_binary_operators_mapping_optionals(
-                expression._operator, left_dtype, right_dtype
+                operator, left_dtype, right_dtype
             )
         ) is not None:
             return DType(dtype_and_handler[0])
 
         # I mean it.
         if (
-            dtype_and_handler := get_binary_operators_mapping(
-                expression._operator, left_dtype, right_dtype
-            )
+            dtype := get_binary_operators_mapping(operator, left_dtype, right_dtype)
         ) is not None:
-            return Optional[dtype_and_handler[0]]  # I also mean it.
+            return DType(Optional[dtype])  # I also mean it.
 
-        sig = inspect.signature(expression._operator)
-        # TODO: never do a fallback
-        return sig.return_annotation
+        if (
+            get_origin(left_dtype) == get_origin(Tuple)
+            and get_origin(right_dtype) == get_origin(Tuple)
+            and operator in tuple_handling_operators
+        ):
+            left_args = get_args(left_dtype)
+            right_args = get_args(right_dtype)
+            if len(left_args) == len(right_args):
+                results = tuple(
+                    self._eval_binary_op(left_arg, right_arg, operator, expression)
+                    for left_arg, right_arg in zip(left_args, right_args)
+                )
+                return DType(Tuple[results])
+        expression_info = get_expression_info(expression)
         raise RuntimeError(
-            f"Pathway does not support using binary operator {expression._operator.__name__}"
-            + f" on columns of types {left_dtype}, {right_dtype}"
+            f"Pathway does not support using binary operator {operator.__name__}"
+            + f" on columns of types {left_dtype}, {right_dtype}.\n"
+            + "It refers to the following expression:\n"
+            + expression_info
         )
 
     def eval_const(self, expression: expr.ColumnConstExpression) -> DType:
@@ -141,9 +171,18 @@ class TypeInterpreter(ExpressionVisitor):
         return ret
 
     def eval_ix(self, expression: expr.ColumnIxExpression) -> DType:
+        key_dtype = self.eval_expression(expression._keys_expression)
         if expression._optional:
+            if not dtype_issubclass(key_dtype, DType(Optional[Pointer])):
+                raise RuntimeError(
+                    f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
+                )
             return DType(Optional[expression._column.dtype])
         else:
+            if sanitize_type(key_dtype) != Pointer:
+                raise RuntimeError(
+                    f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
+                )
             return expression._column.dtype
 
     def eval_pointer(self, expression: expr.PointerExpression) -> DType:

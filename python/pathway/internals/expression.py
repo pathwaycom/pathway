@@ -172,6 +172,12 @@ class ColumnExpression(OperatorInput, ABC):
     def __rxor__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.xor)
 
+    def __matmul__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+        return ColumnBinaryOpExpression(self, other, operator.matmul)
+
+    def __rmatmul__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+        return ColumnBinaryOpExpression(other, self, operator.matmul)
+
     def __neg__(self) -> ColumnUnaryOpExpression:
         return ColumnUnaryOpExpression(self, operator.neg)
 
@@ -596,7 +602,17 @@ class CoalesceExpression(ColumnExpression):
     def __init__(self, *args: ColumnExpressionOrValue):
         super().__init__()
         assert len(args) > 0
-        self._args = tuple(_wrap_arg(arg) for arg in args)
+
+        def _test_for_none(arg):
+            if arg is None:
+                return True
+            if isinstance(arg, ColumnConstExpression):
+                return arg._val is None
+            return False
+
+        self._args = tuple(_wrap_arg(arg) for arg in args if not _test_for_none(arg))
+        if self._args == ():
+            self._args = (_wrap_arg(None),)
         self._deps = self._args
 
 

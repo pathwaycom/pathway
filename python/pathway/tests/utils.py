@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import multiprocessing
+import os
 import pathlib
 import platform
 import re
@@ -147,6 +148,9 @@ def wait_result_with_checker(checker, timeout_sec, target=run):
                 break
         except Exception:
             pass
+
+    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
+        time.sleep(3.0)  # allow a little gap to persist state
 
     p.terminate()
     p.join()

@@ -23,7 +23,7 @@ from typing import (
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
 from pathway.internals import groupby, thisclass, universes
-from pathway.internals.api import BasePointer, Pointer, ref_scalar
+from pathway.internals.api import Pointer
 from pathway.internals.arg_handlers import (
     arg_handler,
     groupby_handler,
@@ -36,7 +36,7 @@ from pathway.internals.decorators import (
     table_to_datasink,
 )
 from pathway.internals.desugaring import combine_args_kwargs, desugar
-from pathway.internals.dtype import DType
+from pathway.internals.dtype import DType, sanitize_type
 from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.ix import IxIndexer
 from pathway.internals.join import Joinable
@@ -48,6 +48,7 @@ from pathway.internals.schema import Schema, schema_from_columns, schema_from_ty
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
 from pathway.internals.trace import trace_user_frame
+from pathway.internals.type_interpreter import eval_type
 from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
@@ -1162,11 +1163,7 @@ class Table(
         ^... | 10  | Alice | 1   | False       | True
         """
         # new_index should be a column, so a little workaround
-        from pathway.internals.common import apply_with_type
-
-        new_index = self.select(
-            ref_column=apply_with_type(ref_scalar, BasePointer, *args)
-        ).ref_column
+        new_index = self.select(ref_column=self.pointer_from(*args)).ref_column
         if all(isinstance(arg, expr.ColumnReference) for arg in args):
             args_typed: Tuple[expr.ColumnReference] = args  # type: ignore
             pk_columns = {arg.name: self._eval(arg) for arg in args_typed}
@@ -1186,6 +1183,11 @@ class Table(
         pk_columns: dict[str, clmn.ColumnWithExpression] = {},
     ) -> Table:
         self._validate_expression(new_index)
+        index_type = eval_type(new_index)
+        if sanitize_type(index_type) != Pointer:
+            raise RuntimeError(
+                f"Pathway supports reindexing Tables with Pointer type only. The type used was {index_type}."
+            )
         reindex_column = self._eval(new_index)
         assert self._universe == reindex_column.universe
 

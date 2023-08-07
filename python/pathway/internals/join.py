@@ -38,6 +38,7 @@ from pathway.internals.join_mode import JoinMode
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.shadows import operator as op
 from pathway.internals.table_like import TableLike
+from pathway.internals.type_interpreter import eval_type
 from pathway.internals.universe import Universe
 
 
@@ -954,6 +955,7 @@ def validate_shape(cond: expr.ColumnExpression) -> expr.ColumnBinaryOpExpression
 def validate_join_condition(
     cond: expr.ColumnExpression, left: Table, right: Table
 ) -> Tuple[expr.ColumnReference, expr.ColumnReference, expr.ColumnBinaryOpExpression]:
+    eval_type(cond)
     cond = validate_shape(cond)
     cond_left = cast(expr.ColumnReference, cond._left)
     cond_right = cast(expr.ColumnReference, cond._right)

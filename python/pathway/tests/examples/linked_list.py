@@ -40,6 +40,8 @@ class linked_list_transformer:
 
 def reverse_linked_list(nodes: pw.Table) -> pw.Table:
     reversed = (
-        nodes.filter(nodes.next.is_not_none()).select(next=nodes.id).with_id(nodes.next)
+        nodes.filter(nodes.next.is_not_none())
+        .select(next=nodes.id)
+        .with_id(nodes.update_types(next=pw.Pointer[Node]).next)
     )
     return nodes.select(next=None).update_rows(reversed)

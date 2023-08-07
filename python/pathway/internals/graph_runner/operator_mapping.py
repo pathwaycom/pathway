@@ -1,25 +1,25 @@
-# Copyright © 2023 Pathway
+from typing import Any, Callable, Mapping, Optional, Tuple
 
-from typing import Any, Callable, Mapping, Tuple
+import numpy as np
 
 from pathway.internals import api
 from pathway.internals.api import Pointer
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
-from pathway.internals.dtype import NoneType
+from pathway.internals.dtype import DType, NoneType
 from pathway.internals.shadows import operator
 
 UnaryOperator = Callable[[Any], Any]
 ApiUnaryOperator = Callable[[api.Expression], api.Expression]
 UnaryOperatorMapping = Mapping[
     Tuple[UnaryOperator, Any],
-    Tuple[type, ApiUnaryOperator],
+    type,
 ]
 
 BinaryOperator = Callable[[Any, Any], Any]
 ApiBinaryOperator = Callable[[api.Expression, api.Expression], api.Expression]
 BinaryOperatorMapping = Mapping[
     Tuple[BinaryOperator, Any, Any],
-    Tuple[type, ApiBinaryOperator],
+    type,
 ]
 
 OptionalMapping = Mapping[
@@ -27,11 +27,51 @@ OptionalMapping = Mapping[
     Tuple[type, ApiBinaryOperator],
 ]
 
+_unary_operators_to_engine: Mapping[UnaryOperator, api.UnaryOperator] = {
+    operator.inv: api.UnaryOperator.INV,
+    operator.neg: api.UnaryOperator.NEG,
+}
+
+_binary_operators_to_engine: Mapping[BinaryOperator, api.BinaryOperator] = {
+    operator.and_: api.BinaryOperator.AND,
+    operator.or_: api.BinaryOperator.OR,
+    operator.xor: api.BinaryOperator.XOR,
+    operator.eq: api.BinaryOperator.EQ,
+    operator.ne: api.BinaryOperator.NE,
+    operator.lt: api.BinaryOperator.LT,
+    operator.le: api.BinaryOperator.LE,
+    operator.gt: api.BinaryOperator.GT,
+    operator.ge: api.BinaryOperator.GE,
+    operator.add: api.BinaryOperator.ADD,
+    operator.sub: api.BinaryOperator.SUB,
+    operator.mul: api.BinaryOperator.MUL,
+    operator.floordiv: api.BinaryOperator.FLOOR_DIV,
+    operator.truediv: api.BinaryOperator.TRUE_DIV,
+    operator.mod: api.BinaryOperator.MOD,
+    operator.pow: api.BinaryOperator.POW,
+    operator.lshift: api.BinaryOperator.LSHIFT,
+    operator.rshift: api.BinaryOperator.RSHIFT,
+    operator.matmul: api.BinaryOperator.MATMUL,
+}
+
+_types_to_engine: Mapping[Any, api.PathwayType] = {
+    bool: api.PathwayType.BOOL,
+    int: api.PathwayType.INT,
+    float: api.PathwayType.FLOAT,
+    Pointer: api.PathwayType.POINTER,
+    str: api.PathwayType.STRING,
+    DateTimeNaive: api.PathwayType.DATE_TIME_NAIVE,
+    DateTimeUtc: api.PathwayType.DATE_TIME_UTC,
+    Duration: api.PathwayType.DURATION,
+    np.ndarray: api.PathwayType.ARRAY,
+}
+
+
 _unary_operators_mapping: UnaryOperatorMapping = {
-    (operator.inv, bool): (bool, api.Expression.not_),
-    (operator.neg, int): (int, api.Expression.int_neg),
-    (operator.neg, float): (float, api.Expression.float_neg),
-    (operator.neg, Duration): (Duration, api.Expression.duration_neg),
+    (operator.inv, bool): bool,
+    (operator.neg, int): int,
+    (operator.neg, float): float,
+    (operator.neg, Duration): Duration,
 }
 
 
@@ -39,157 +79,133 @@ def get_unary_operators_mapping(op, operand_dtype, default=None):
     return _unary_operators_mapping.get((op, operand_dtype), default)
 
 
+def get_unary_expression(expr, op, expr_dtype, default=None):
+    op_engine = _unary_operators_to_engine.get(op)
+    expr_dtype_engine = _types_to_engine.get(expr_dtype)
+    if op_engine is None or expr_dtype_engine is None:
+        return default
+    expression = api.Expression.unary_expression(expr, op_engine, expr_dtype_engine)
+    return expression if expression is not None else default
+
+
 _binary_operators_mapping: BinaryOperatorMapping = {
-    (operator.and_, bool, bool): (bool, api.Expression.and_),
-    (operator.or_, bool, bool): (bool, api.Expression.or_),
-    (operator.xor, bool, bool): (bool, api.Expression.xor),
-    (operator.eq, int, int): (bool, api.Expression.int_eq),
-    (operator.ne, int, int): (bool, api.Expression.int_ne),
-    (operator.lt, int, int): (bool, api.Expression.int_lt),
-    (operator.le, int, int): (bool, api.Expression.int_le),
-    (operator.gt, int, int): (bool, api.Expression.int_gt),
-    (operator.ge, int, int): (bool, api.Expression.int_ge),
-    (operator.add, int, int): (int, api.Expression.int_add),
-    (operator.sub, int, int): (int, api.Expression.int_sub),
-    (operator.mul, int, int): (int, api.Expression.int_mul),
-    (operator.floordiv, int, int): (int, api.Expression.int_floor_div),
-    (operator.truediv, int, int): (float, api.Expression.int_true_div),
-    (operator.mod, int, int): (int, api.Expression.int_mod),
-    (operator.pow, int, int): (int, api.Expression.int_pow),
-    (operator.lshift, int, int): (int, api.Expression.int_lshift),
-    (operator.rshift, int, int): (int, api.Expression.int_rshift),
-    (operator.and_, int, int): (int, api.Expression.int_and),
-    (operator.or_, int, int): (int, api.Expression.int_or),
-    (operator.xor, int, int): (int, api.Expression.int_xor),
-    (operator.eq, float, float): (bool, api.Expression.float_eq),
-    (operator.ne, float, float): (bool, api.Expression.float_ne),
-    (operator.lt, float, float): (bool, api.Expression.float_lt),
-    (operator.le, float, float): (bool, api.Expression.float_le),
-    (operator.gt, float, float): (bool, api.Expression.float_gt),
-    (operator.ge, float, float): (bool, api.Expression.float_ge),
-    (operator.add, float, float): (float, api.Expression.float_add),
-    (operator.sub, float, float): (float, api.Expression.float_sub),
-    (operator.mul, float, float): (float, api.Expression.float_mul),
-    (operator.floordiv, float, float): (float, api.Expression.float_floor_div),
-    (operator.truediv, float, float): (float, api.Expression.float_true_div),
-    (operator.mod, float, float): (float, api.Expression.float_mod),
-    (operator.pow, float, float): (float, api.Expression.float_pow),
-    (operator.eq, str, str): (bool, api.Expression.str_eq),
-    (operator.ne, str, str): (bool, api.Expression.str_ne),
-    (operator.lt, str, str): (bool, api.Expression.str_lt),
-    (operator.le, str, str): (bool, api.Expression.str_le),
-    (operator.gt, str, str): (bool, api.Expression.str_gt),
-    (operator.ge, str, str): (bool, api.Expression.str_ge),
-    (operator.add, str, str): (str, api.Expression.str_add),
-    (operator.mul, str, int): (str, api.Expression.str_rmul),
-    (operator.mul, int, str): (str, api.Expression.str_lmul),
-    (operator.eq, Pointer, Pointer): (bool, api.Expression.ptr_eq),
-    (operator.ne, Pointer, Pointer): (bool, api.Expression.ptr_ne),
-    (operator.lt, Pointer, Pointer): (bool, api.Expression.ptr_lt),
-    (operator.le, Pointer, Pointer): (bool, api.Expression.ptr_le),
-    (operator.gt, Pointer, Pointer): (bool, api.Expression.ptr_gt),
-    (operator.ge, Pointer, Pointer): (bool, api.Expression.ptr_ge),
-    (operator.eq, DateTimeNaive, DateTimeNaive): (
-        bool,
-        api.Expression.date_time_naive_eq,
-    ),
-    (operator.ne, DateTimeNaive, DateTimeNaive): (
-        bool,
-        api.Expression.date_time_naive_ne,
-    ),
-    (operator.lt, DateTimeNaive, DateTimeNaive): (
-        bool,
-        api.Expression.date_time_naive_lt,
-    ),
-    (operator.le, DateTimeNaive, DateTimeNaive): (
-        bool,
-        api.Expression.date_time_naive_le,
-    ),
-    (operator.gt, DateTimeNaive, DateTimeNaive): (
-        bool,
-        api.Expression.date_time_naive_gt,
-    ),
-    (operator.ge, DateTimeNaive, DateTimeNaive): (
-        bool,
-        api.Expression.date_time_naive_ge,
-    ),
-    (operator.sub, DateTimeNaive, DateTimeNaive): (
-        Duration,
-        api.Expression.date_time_naive_sub,
-    ),
-    (operator.add, DateTimeNaive, Duration): (
-        DateTimeNaive,
-        api.Expression.date_time_naive_add_duration,
-    ),
-    (operator.sub, DateTimeNaive, Duration): (
-        DateTimeNaive,
-        api.Expression.date_time_naive_sub_duration,
-    ),
-    (operator.eq, DateTimeUtc, DateTimeUtc): (
-        bool,
-        api.Expression.date_time_utc_eq,
-    ),
-    (operator.ne, DateTimeUtc, DateTimeUtc): (
-        bool,
-        api.Expression.date_time_utc_ne,
-    ),
-    (operator.lt, DateTimeUtc, DateTimeUtc): (
-        bool,
-        api.Expression.date_time_utc_lt,
-    ),
-    (operator.le, DateTimeUtc, DateTimeUtc): (
-        bool,
-        api.Expression.date_time_utc_le,
-    ),
-    (operator.gt, DateTimeUtc, DateTimeUtc): (
-        bool,
-        api.Expression.date_time_utc_gt,
-    ),
-    (operator.ge, DateTimeUtc, DateTimeUtc): (
-        bool,
-        api.Expression.date_time_utc_ge,
-    ),
-    (operator.sub, DateTimeUtc, DateTimeUtc): (
-        Duration,
-        api.Expression.date_time_utc_sub,
-    ),
-    (operator.add, DateTimeUtc, Duration): (
-        DateTimeUtc,
-        api.Expression.date_time_utc_add_duration,
-    ),
-    (operator.sub, DateTimeUtc, Duration): (
-        DateTimeUtc,
-        api.Expression.date_time_utc_sub_duration,
-    ),
-    (operator.eq, Duration, Duration): (bool, api.Expression.duration_eq),
-    (operator.ne, Duration, Duration): (bool, api.Expression.duration_ne),
-    (operator.lt, Duration, Duration): (bool, api.Expression.duration_lt),
-    (operator.le, Duration, Duration): (bool, api.Expression.duration_le),
-    (operator.gt, Duration, Duration): (bool, api.Expression.duration_gt),
-    (operator.ge, Duration, Duration): (bool, api.Expression.duration_ge),
-    (operator.add, Duration, Duration): (Duration, api.Expression.duration_add),
-    (operator.add, Duration, DateTimeNaive): (
-        DateTimeNaive,
-        api.Expression.duration_add_date_time_naive,
-    ),
-    (operator.add, Duration, DateTimeUtc): (
-        DateTimeUtc,
-        api.Expression.duration_add_date_time_utc,
-    ),
-    (operator.sub, Duration, Duration): (Duration, api.Expression.duration_sub),
-    (operator.mul, Duration, int): (Duration, api.Expression.duration_mul_by_int),
-    (operator.mul, int, Duration): (Duration, api.Expression.int_mul_by_duration),
-    (operator.floordiv, Duration, int): (Duration, api.Expression.duration_div_by_int),
-    (operator.floordiv, Duration, Duration): (int, api.Expression.duration_floor_div),
-    (operator.truediv, Duration, Duration): (float, api.Expression.duration_true_div),
-    (operator.mod, Duration, Duration): (Duration, api.Expression.duration_mod),
+    (operator.and_, bool, bool): bool,
+    (operator.or_, bool, bool): bool,
+    (operator.xor, bool, bool): bool,
+    (operator.eq, int, int): bool,
+    (operator.ne, int, int): bool,
+    (operator.lt, int, int): bool,
+    (operator.le, int, int): bool,
+    (operator.gt, int, int): bool,
+    (operator.ge, int, int): bool,
+    (operator.eq, bool, bool): bool,
+    (operator.ne, bool, bool): bool,
+    (operator.lt, bool, bool): bool,
+    (operator.le, bool, bool): bool,
+    (operator.gt, bool, bool): bool,
+    (operator.ge, bool, bool): bool,
+    (operator.add, int, int): int,
+    (operator.sub, int, int): int,
+    (operator.mul, int, int): int,
+    (operator.floordiv, int, int): int,
+    (operator.truediv, int, int): float,
+    (operator.mod, int, int): int,
+    (operator.pow, int, int): int,
+    (operator.lshift, int, int): int,
+    (operator.rshift, int, int): int,
+    (operator.and_, int, int): int,
+    (operator.or_, int, int): int,
+    (operator.xor, int, int): int,
+    (operator.eq, float, float): bool,
+    (operator.ne, float, float): bool,
+    (operator.lt, float, float): bool,
+    (operator.le, float, float): bool,
+    (operator.gt, float, float): bool,
+    (operator.ge, float, float): bool,
+    (operator.add, float, float): float,
+    (operator.sub, float, float): float,
+    (operator.mul, float, float): float,
+    (operator.floordiv, float, float): float,
+    (operator.truediv, float, float): float,
+    (operator.mod, float, float): float,
+    (operator.pow, float, float): float,
+    (operator.eq, str, str): bool,
+    (operator.ne, str, str): bool,
+    (operator.lt, str, str): bool,
+    (operator.le, str, str): bool,
+    (operator.gt, str, str): bool,
+    (operator.ge, str, str): bool,
+    (operator.add, str, str): str,
+    (operator.mul, str, int): str,
+    (operator.mul, int, str): str,
+    (operator.eq, Pointer, Pointer): bool,
+    (operator.ne, Pointer, Pointer): bool,
+    (operator.lt, Pointer, Pointer): bool,
+    (operator.le, Pointer, Pointer): bool,
+    (operator.gt, Pointer, Pointer): bool,
+    (operator.ge, Pointer, Pointer): bool,
+    (operator.eq, DateTimeNaive, DateTimeNaive): bool,
+    (operator.ne, DateTimeNaive, DateTimeNaive): bool,
+    (operator.lt, DateTimeNaive, DateTimeNaive): bool,
+    (operator.le, DateTimeNaive, DateTimeNaive): bool,
+    (operator.gt, DateTimeNaive, DateTimeNaive): bool,
+    (operator.ge, DateTimeNaive, DateTimeNaive): bool,
+    (operator.sub, DateTimeNaive, DateTimeNaive): Duration,
+    (operator.add, DateTimeNaive, Duration): DateTimeNaive,
+    (operator.sub, DateTimeNaive, Duration): DateTimeNaive,
+    (operator.eq, DateTimeUtc, DateTimeUtc): bool,
+    (operator.ne, DateTimeUtc, DateTimeUtc): bool,
+    (operator.lt, DateTimeUtc, DateTimeUtc): bool,
+    (operator.le, DateTimeUtc, DateTimeUtc): bool,
+    (operator.gt, DateTimeUtc, DateTimeUtc): bool,
+    (operator.ge, DateTimeUtc, DateTimeUtc): bool,
+    (operator.sub, DateTimeUtc, DateTimeUtc): Duration,
+    (operator.add, DateTimeUtc, Duration): DateTimeUtc,
+    (operator.sub, DateTimeUtc, Duration): DateTimeUtc,
+    (operator.eq, Duration, Duration): bool,
+    (operator.ne, Duration, Duration): bool,
+    (operator.lt, Duration, Duration): bool,
+    (operator.le, Duration, Duration): bool,
+    (operator.gt, Duration, Duration): bool,
+    (operator.ge, Duration, Duration): bool,
+    (operator.add, Duration, Duration): Duration,
+    (operator.add, Duration, DateTimeNaive): DateTimeNaive,
+    (operator.add, Duration, DateTimeUtc): DateTimeUtc,
+    (operator.sub, Duration, Duration): Duration,
+    (operator.mul, Duration, int): Duration,
+    (operator.mul, int, Duration): Duration,
+    (operator.floordiv, Duration, int): Duration,
+    (operator.floordiv, Duration, Duration): int,
+    (operator.truediv, Duration, Duration): float,
+    (operator.mod, Duration, Duration): Duration,
+    (operator.matmul, np.ndarray, np.ndarray): np.ndarray,
+}
+
+tuple_handling_operators = {
+    operator.eq,
+    operator.ne,
+    operator.le,
+    operator.lt,
+    operator.ge,
+    operator.gt,
 }
 
 
-def get_binary_operators_mapping(
-    op, left, right, default=None
-) -> Tuple[type, ApiBinaryOperator]:
-    return _binary_operators_mapping.get((op, left, right), default)
+def get_binary_operators_mapping(op, left, right, default=None) -> DType:
+    return DType(_binary_operators_mapping.get((op, left, right), default))
+
+
+def get_binary_expression(left, right, op, left_dtype, right_dtype, default=None):
+    op_engine = _binary_operators_to_engine.get(op)
+    left_dtype_engine = _types_to_engine.get(left_dtype)
+    right_dtype_engine = _types_to_engine.get(right_dtype)
+    if op_engine is None or left_dtype_engine is None or right_dtype_engine is None:
+        return default
+
+    expression = api.Expression.binary_expression(
+        left, right, op_engine, left_dtype_engine, right_dtype_engine
+    )
+    return expression if expression is not None else default
 
 
 _binary_operators_mapping_optionals: OptionalMapping = {
@@ -205,26 +221,12 @@ def get_binary_operators_mapping_optionals(op, left, right, default=None):
         return default
 
 
-_cast_operators_mapping: Mapping[
-    Tuple[Any, Any],
-    Callable[[api.Expression], api.Expression],
-] = {
-    (int, float): api.Expression.int_to_float,
-    (int, bool): api.Expression.int_to_bool,
-    (int, str): api.Expression.int_to_str,
-    (float, int): api.Expression.float_to_int,
-    (float, bool): api.Expression.float_to_bool,
-    (float, str): api.Expression.float_to_str,
-    (bool, int): api.Expression.bool_to_int,
-    (bool, float): api.Expression.bool_to_float,
-    (bool, str): api.Expression.bool_to_str,
-    (str, int): api.Expression.str_to_int,
-    (str, float): api.Expression.str_to_float,
-    (str, bool): api.Expression.str_to_bool,
-}
-
-
 def get_cast_operators_mapping(
-    source_type, target_type, default=None
-) -> Callable[[api.Expression], api.Expression]:
-    return _cast_operators_mapping.get((source_type, target_type), default)
+    expr, source_type, target_type, default=None
+) -> Optional[api.Expression]:
+    source_type_engine = _types_to_engine.get(source_type)
+    target_type_engine = _types_to_engine.get(target_type)
+    if source_type_engine is None or target_type_engine is None:
+        return default
+    expression = api.Expression.cast(expr, source_type_engine, target_type_engine)
+    return expression if expression is not None else default

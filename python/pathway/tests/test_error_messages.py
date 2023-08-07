@@ -236,10 +236,8 @@ def test_traceback_expression():
         """
     )
 
-    input.select(ret=pw.this.v <= "foo")  # cause
-
-    with _assert_error_trace(TypeError):
-        run_all()
+    with _assert_error_trace(RuntimeError):
+        input.select(ret=pw.this.v <= "foo")  # cause
 
 
 def test_traceback_rust_expression():
@@ -275,22 +273,6 @@ def test_traceback_async_apply():
     input.select(ret=pw.apply_async(inc, pw.this.foo))  # cause
 
     with _assert_error_trace(ValueError):
-        run_all()
-
-
-def test_traceback_context_column():
-    input = T(
-        """
-        v
-        1
-        2
-        3
-        """
-    )
-
-    input.filter(pw.this.v <= "foo")  # cause
-
-    with _assert_error_trace(TypeError):
         run_all()
 
 
@@ -518,35 +500,6 @@ def test_filter_bad_expression():
             last_timestamp=pw.reducers.max(t_input.timestamp)
         )
         t_input.filter(t_input.timestamp >= last_timestamp.last_timestamp - 3600)
-
-
-def test_expressions_display_warning_when_evalution_in_python():
-    file_name = os.path.basename(__file__)
-    t1 = T(
-        """
-    i | b
-    4 | True
-    3 | False
-    0 | False
-    """
-    )
-
-    with pytest.warns(
-        UserWarning,
-        match=(
-            "Pathway does not natively support operator == "
-            + re.escape("on types (<class 'int'>, <class 'bool'>). ")
-            + "It refers to the following expression:\n"
-            + re.escape("(<table1>.i == <table1>.b),\n")
-            + rf"called in .*{file_name}.*\n"
-            + "with tables:\n"
-            + r"<table1> created in .*\n"
-            + "The evaluation will be performed in Python, which may slow down your "
-            + "computations. Try specifying the types or expressing the computation differently."
-        ),
-    ):
-        t1.select(a=pw.this.i == pw.this.b)
-        run_all()
 
 
 def test_method_in_pathway_this():

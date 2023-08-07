@@ -74,6 +74,9 @@ pub enum ParseError {
 
     #[error("received removal event without a key")]
     RemovalEventWithoutKey,
+
+    #[error("parsing {0:?} from an external datasource is not supported")]
+    UnparsableType(Type),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -231,6 +234,7 @@ fn parse_with_type(raw_value: &str, schema: &InnerSchemaField) -> Result<Value, 
         Type::Float => Ok(Value::Float(raw_value.parse().map_err(|e| {
             ParseError::SchemaNotSatisfied(raw_value.to_string(), "float", Box::new(e))
         })?)),
+        _ => Err(ParseError::UnparsableType(schema.type_)),
     }
 }
 

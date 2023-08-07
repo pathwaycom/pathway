@@ -59,14 +59,16 @@ def _propose_clusters(
     that removing v from C changes the sum of degrees in C.
     """
     # set up degree penalties for all clusters
-    dummy_penalties = clustering.groupby(id=clustering.c).reduce(unscaled_penalty=0.0)
+    placeholder_penalties = clustering.groupby(id=clustering.c).reduce(
+        unscaled_penalty=0.0
+    )
     # compute cluster penalties (sums of degrees)
     real_penalties = (
         edges.select(edges.weight, cu=clustering.ix(edges.u).c)
         .groupby(id=pw.this.cu)
         .reduce(unscaled_penalty=pw.reducers.sum(pw.this.weight))
     )
-    cluster_penalties = dummy_penalties.update_rows(real_penalties)
+    cluster_penalties = placeholder_penalties.update_rows(real_penalties)
 
     # degrees of vertices are needed to compute  louvain objective function
     vertex_degrees = edges.groupby(id=edges.v).reduce(
@@ -85,10 +87,10 @@ def _propose_clusters(
     # # add no-weight edges from each vertex to its cluster
     # # they change nothing in the objective function, and allow us to
     # # handle clusters with no incoming edges
-    dummy_edges = clustering.select(u=clustering.id, vc=clustering.c, weight=0.0)
+    placeholder_edges = clustering.select(u=clustering.id, vc=clustering.c, weight=0.0)
     # compute edges vertex-cluster out of the set of input edges
     vertex_cluster_edges = pw.Table.concat_reindex(
-        dummy_edges,
+        placeholder_edges,
         edges.with_columns(vc=clustering.ix(edges.v).c).without(edges.v),
     ).select(*(pw.this))
 

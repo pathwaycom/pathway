@@ -1504,3 +1504,10 @@ def test_leftjoin_chain_assign_id():
         """
         ),
     )
+
+
+def test_joins_typing_on():
+    left_table = pw.Table.empty(col=int)
+    right_table = pw.Table.empty(col=str)
+    with pytest.raises(expected_exception=RuntimeError):
+        left_table.join(right_table, left_table.col == right_table.col)

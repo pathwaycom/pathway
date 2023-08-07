@@ -150,7 +150,7 @@ class ExpressionFormatter(ExpressionVisitor):
 
 def get_expression_info(expression: expr.ColumnExpression) -> str:
     printer = ExpressionFormatter()
-    expression_str = f"{printer.eval_expression(expression)},\n"
+    expression_str = f"\t{printer.eval_expression(expression)}\n"
     expression_info = ""
 
     frame = expression._trace.user_frame
@@ -159,7 +159,7 @@ def get_expression_info(expression: expr.ColumnExpression) -> str:
 
     tabnames = printer.print_table_infos()
     if tabnames != "":
-        tabnames = "with tables:\n" + tabnames + "\n"
+        tabnames = "with tables:\n\t" + tabnames + "\n"
 
     return expression_str + expression_info + tabnames
 

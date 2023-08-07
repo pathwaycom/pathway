@@ -125,11 +125,7 @@ def test_page_rank_zero_outdegree_nodes():
 
 
 def test_page_rank_one_node_edge_case():
-    edges = T(
-        """
-            u | v
-        """,
-    )
+    edges = pw.Table.empty(u=pw.Pointer, v=pw.Pointer)
     res = pagerank(edges, 50)
     assert_table_equality(res, pw.Table.empty(rank=int))
 

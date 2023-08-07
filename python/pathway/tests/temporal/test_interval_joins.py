@@ -813,9 +813,6 @@ def test_interval_join_expressions(join_type: pw.JoinMode) -> None:
         """
     )
 
-    left = left.update_types(sth=NoneType)
-    right = right.update_types(sth=NoneType)
-
     if join_type in [pw.JoinMode.LEFT, pw.JoinMode.OUTER]:
         expected = expected.concat_reindex(left)
     if join_type in [pw.JoinMode.RIGHT, pw.JoinMode.OUTER]:
@@ -1128,3 +1125,16 @@ def test_incorrect_args_specific():
         t1.interval_join(t2, t1.t, t2.t, pw.temporal.interval(-1, 2))
 
     assert str(error.value)[: len(expected_error_message)] == expected_error_message
+
+
+def test_interval_joins_typing_on():
+    left_table = pw.Table.empty(timestamp=int, col=int)
+    right_table = pw.Table.empty(timestamp=int, col=str)
+    with pytest.raises(expected_exception=RuntimeError):
+        left_table.interval_join(
+            right_table,
+            left_table.timestamp,
+            right_table.timestamp,
+            pw.temporal.interval(-1, 2),
+            left_table.col == right_table.col,
+        )

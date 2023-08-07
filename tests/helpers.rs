@@ -46,27 +46,16 @@ pub fn full_cycle_read(
 
     let main_thread = thread::current();
     let (sender, receiver) = mpsc::channel();
-    Connector::<u64>::do_read_updates(reader, persistent_storage, &sender, &main_thread);
+    let mut snapshot_writer =
+        Connector::<u64>::snapshot_writer(reader.as_ref(), persistent_storage);
+
+    let mut reader = reader.build().expect("building the reader failed");
+    Connector::<u64>::read_snapshot(&mut *reader, persistent_storage, &sender);
+    Connector::<u64>::read_realtime_updates(&mut *reader, &sender, &main_thread);
     let result = get_entries_in_receiver(receiver);
 
     let has_persistent_storage = persistent_storage.is_some();
     let mut frontier = OffsetAntichain::new();
-
-    let mut snapshot_writer = {
-        if has_persistent_storage {
-            maybe_persistent_id.map(|persistent_id| {
-                persistent_storage
-                    .as_ref()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .create_snapshot_writer(persistent_id)
-                    .unwrap()
-            })
-        } else {
-            None
-        }
-    };
 
     let mut new_parsed_entries = Vec::new();
     let mut snapshot_entries = Vec::new();
@@ -120,12 +109,21 @@ pub fn full_cycle_read(
 
     if maybe_persistent_id.is_some() && has_persistent_storage {
         offsets.lock().unwrap().insert(1, frontier);
-        persistent_storage
+
+        let last_sink_id = persistent_storage
             .clone()
             .unwrap()
             .lock()
             .unwrap()
-            .accept_finalized_timestamp(2);
+            .register_sink();
+        for sink_id in 0..=last_sink_id {
+            persistent_storage
+                .clone()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .accept_finalized_timestamp(sink_id, Some(2));
+        }
     }
 
     FullReadResult {
@@ -171,7 +169,7 @@ pub fn create_persistency_manager(
         .expect("Storage creation failed");
     Arc::new(Mutex::new(SimplePersistencyManager::new(
         Box::new(storage),
-        PersistenceManagerConfig::new(StreamStorageConfig::Filesystem(fs_path.to_path_buf()), 0),
+        PersistenceManagerConfig::new(StreamStorageConfig::Filesystem(fs_path.to_path_buf()), 0, 1),
     )))
 }
 

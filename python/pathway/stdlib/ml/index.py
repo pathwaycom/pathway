@@ -61,6 +61,7 @@ class KNNIndex:
 
         docs = (
             knns_ids.flatten(pw.this.knns_ids, pw.this.query_id)
+            .update_types(knns_ids=pw.Pointer)
             .select(*pw.this, doc=self.embeddings.ix(pw.this.knns_ids).doc)
             .groupby(pw.this.query_id)
             .reduce(pw.this.query_id, result=pw.reducers.sorted_tuple(pw.this.doc))

@@ -3,13 +3,15 @@
 import json
 import os
 import pathlib
+import random
 
 import pandas as pd
 from utils import KafkaTestContext
 
 import pathway as pw
+from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import wait_result_with_checker
+from pathway.tests.utils import wait_result_with_checker, write_lines
 
 
 def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):
@@ -270,3 +272,94 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         ),
         10,
     )
+
+
+def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
+    """
+    Note: this is the light version of more comprehensive persistent computation tests,
+    which are in wordcount.
+
+    The main purpose of this test is to check that the recovery process from Kafka
+    also works and does not produce any weird effects.
+    """
+
+    def generate_wordcount_input(n_words, n_word_repetitions):
+        input = []
+        for word_idx in range(n_words):
+            word = "word_{}".format(word_idx)
+            input += [word] * n_word_repetitions
+        random.shuffle(input)
+        return input
+
+    class WordcountChecker:
+        def __init__(self, n_words, n_word_repetitions):
+            self.n_words = n_words
+            self.n_word_repetitions = n_word_repetitions
+
+        def __call__(self):
+            completed_words = set()
+            for raw_entry in kafka_context.read_output_topic():
+                entry = json.loads(raw_entry.value)
+                assert 0 <= entry["count"] <= self.n_word_repetitions
+                if entry["count"] == self.n_word_repetitions:
+                    completed_words.add(entry["data"])
+            return len(completed_words) == self.n_words
+
+    class WordcountProgram:
+        def __init__(self, reader_method, *reader_args, **reader_kwargs):
+            self.reader_method = reader_method
+            self.reader_args = reader_args
+            self.reader_kwargs = reader_kwargs
+
+        def __call__(self):
+            G.clear()
+            words = self.reader_method(*self.reader_args, **self.reader_kwargs)
+            result = words.groupby(words.data).reduce(
+                words.data,
+                count=pw.reducers.count(),
+            )
+            pw.io.kafka.write(
+                result,
+                rdkafka_settings=kafka_context.default_rdkafka_settings(),
+                topic_name=kafka_context.output_topic,
+            )
+            pw.run(monitoring_level=MonitoringLevel.NONE)
+
+    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(tmp_path / "PStorage")
+    try:
+        kafka_context.set_input_topic_partitions(24)
+        n_kafka_runs = 5
+        for run_seq_id in range(n_kafka_runs):
+            if run_seq_id % 2 == 1:
+                os.environ["PATHWAY_THREADS"] = str(4)
+            else:
+                os.environ["PATHWAY_THREADS"] = str(8)
+            kafka_context.fill(generate_wordcount_input(1000, 50))
+            assert wait_result_with_checker(
+                checker=WordcountChecker(1000, 50 * (run_seq_id + 1)),
+                timeout_sec=30,
+                target=WordcountProgram(
+                    pw.io.kafka.read,
+                    rdkafka_settings=kafka_context.default_rdkafka_settings(),
+                    topic=kafka_context.input_topic,
+                    format="raw",
+                    autocommit_duration_ms=5,
+                    persistent_id=1,
+                ),
+            )
+
+        # Change the data format: it used to be Kafka, but now we can switch to a file
+        input_file_path = tmp_path / "file_input"
+        write_lines(input_file_path, "\n".join(generate_wordcount_input(1000, 50)))
+        assert wait_result_with_checker(
+            checker=WordcountChecker(1000, 50 * (n_kafka_runs + 1)),
+            timeout_sec=30,
+            target=WordcountProgram(
+                pw.io.plaintext.read,
+                str(input_file_path),
+                autocommit_duration_ms=5,
+                persistent_id=1,
+            ),
+        )
+    finally:
+        del os.environ["PATHWAY_THREADS"]

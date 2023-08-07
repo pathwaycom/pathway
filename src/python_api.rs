@@ -482,6 +482,115 @@ impl PyReducer {
     pub const ANY: Reducer = Reducer::Any;
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum UnaryOperator {
+    Inv,
+    Neg,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BinaryOperator {
+    And,
+    Or,
+    Xor,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    FloorDiv,
+    TrueDiv,
+    Mod,
+    Pow,
+    Lshift,
+    Rshift,
+    MatMul,
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "UnaryOperator")]
+pub struct PyUnaryOperator(UnaryOperator);
+
+#[pymethods]
+impl PyUnaryOperator {
+    #[classattr]
+    pub const INV: UnaryOperator = UnaryOperator::Inv;
+    #[classattr]
+    pub const NEG: UnaryOperator = UnaryOperator::Neg;
+}
+
+impl<'source> FromPyObject<'source> for UnaryOperator {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyUnaryOperator>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for UnaryOperator {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyUnaryOperator(self).into_py(py)
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "BinaryOperator")]
+pub struct PyBinaryOperator(BinaryOperator);
+
+#[pymethods]
+impl PyBinaryOperator {
+    #[classattr]
+    pub const AND: BinaryOperator = BinaryOperator::And;
+    #[classattr]
+    pub const OR: BinaryOperator = BinaryOperator::Or;
+    #[classattr]
+    pub const XOR: BinaryOperator = BinaryOperator::Xor;
+    #[classattr]
+    pub const EQ: BinaryOperator = BinaryOperator::Eq;
+    #[classattr]
+    pub const NE: BinaryOperator = BinaryOperator::Ne;
+    #[classattr]
+    pub const LT: BinaryOperator = BinaryOperator::Lt;
+    #[classattr]
+    pub const LE: BinaryOperator = BinaryOperator::Le;
+    #[classattr]
+    pub const GT: BinaryOperator = BinaryOperator::Gt;
+    #[classattr]
+    pub const GE: BinaryOperator = BinaryOperator::Ge;
+    #[classattr]
+    pub const ADD: BinaryOperator = BinaryOperator::Add;
+    #[classattr]
+    pub const SUB: BinaryOperator = BinaryOperator::Sub;
+    #[classattr]
+    pub const MUL: BinaryOperator = BinaryOperator::Mul;
+    #[classattr]
+    pub const FLOOR_DIV: BinaryOperator = BinaryOperator::FloorDiv;
+    #[classattr]
+    pub const TRUE_DIV: BinaryOperator = BinaryOperator::TrueDiv;
+    #[classattr]
+    pub const MOD: BinaryOperator = BinaryOperator::Mod;
+    #[classattr]
+    pub const POW: BinaryOperator = BinaryOperator::Pow;
+    #[classattr]
+    pub const LSHIFT: BinaryOperator = BinaryOperator::Lshift;
+    #[classattr]
+    pub const RSHIFT: BinaryOperator = BinaryOperator::Rshift;
+    #[classattr]
+    pub const MATMUL: BinaryOperator = BinaryOperator::MatMul;
+}
+
+impl<'source> FromPyObject<'source> for BinaryOperator {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyBinaryOperator>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for BinaryOperator {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyBinaryOperator(self).into_py(py)
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen, name = "Expression")]
 pub struct PyExpression {
     inner: Arc<Expression>,
@@ -494,7 +603,7 @@ impl PyExpression {
     }
 }
 
-macro_rules! unary_operator {
+macro_rules! unary_op {
     ($expression:path,$e:expr) => {
         Self::new(
             Arc::new(Expression::from($expression($e.inner.clone()))),
@@ -503,7 +612,7 @@ macro_rules! unary_operator {
     };
 }
 
-macro_rules! binary_operator {
+macro_rules! binary_op {
     ($expression:path,$lhs:expr,$rhs:expr) => {
         Self::new(
             Arc::new(Expression::from($expression(
@@ -560,1075 +669,401 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    fn not_(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::Not(expr.inner.clone()))),
-            expr.gil,
-        )
+    fn unary_expression(
+        expr: &PyExpression,
+        operator: UnaryOperator,
+        expr_dtype: Type,
+    ) -> Option<Self> {
+        match (operator, expr_dtype) {
+            (UnaryOperator::Inv, Type::Bool) => Some(unary_op!(BoolExpression::Not, expr)),
+            (UnaryOperator::Neg, Type::Int) => Some(unary_op!(IntExpression::Neg, expr)),
+            (UnaryOperator::Neg, Type::Float) => Some(unary_op!(FloatExpression::Neg, expr)),
+            (UnaryOperator::Neg, Type::Duration) => Some(unary_op!(DurationExpression::Neg, expr)),
+            (_, _) => None,
+        }
     }
 
+    #[allow(clippy::too_many_lines)]
     #[staticmethod]
-    fn and_(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::And(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn or_(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::Or(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn xor(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::Xor(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IntEq(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IntNe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IntLt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IntLe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IntGt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IntGe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_neg(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Neg(expr.inner.clone()))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_add(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Add(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_sub(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Sub(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_mul(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Mul(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_floor_div(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::FloorDiv(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_true_div(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::IntTrueDiv(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_mod(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Mod(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_pow(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Pow(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_lshift(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Lshift(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_rshift(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Rshift(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_and(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::And(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_or(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Or(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_xor(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::Xor(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::FloatEq(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::FloatNe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::FloatLt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::FloatLe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::FloatGt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::FloatGe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_neg(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::Neg(expr.inner.clone()))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_add(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::Add(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_sub(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::Sub(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_mul(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::Mul(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_floor_div(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::FloorDiv(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_true_div(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::TrueDiv(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_mod(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::Mod(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_pow(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::Pow(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::StringEq(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::StringNe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::StringLt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::StringLe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::StringGt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::StringGe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_add(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::String(StringExpression::Add(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_rmul(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::String(StringExpression::Mul(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_lmul(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::String(StringExpression::Mul(
-                rhs.inner.clone(),
-                lhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn ptr_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::PtrEq(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn ptr_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::PtrNe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn ptr_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::PtrGe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-    #[staticmethod]
-    fn ptr_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::PtrGt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-    #[staticmethod]
-    fn ptr_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::PtrLe(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
-    }
-    #[staticmethod]
-    fn ptr_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::PtrLt(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
+    fn binary_expression(
+        lhs: &PyExpression,
+        rhs: &PyExpression,
+        operator: BinaryOperator,
+        left_dtype: Type,
+        right_dtype: Type,
+    ) -> Option<Self> {
+        type Tp = Type;
+        type Op = BinaryOperator;
+        type AnyE = AnyExpression;
+        type BoolE = BoolExpression;
+        type IntE = IntExpression;
+        type FloatE = FloatExpression;
+        type StringE = StringExpression;
+        type DurationE = DurationExpression;
+        match (operator, left_dtype, right_dtype) {
+            (Op::And, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::And, lhs, rhs)),
+            (Op::Or, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::Or, lhs, rhs)),
+            (Op::Xor, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::Xor, lhs, rhs)),
+            (Op::Eq, Tp::Int, Tp::Int) => Some(binary_op!(BoolE::IntEq, lhs, rhs)),
+            (Op::Ne, Tp::Int, Tp::Int) => Some(binary_op!(BoolE::IntNe, lhs, rhs)),
+            (Op::Lt, Tp::Int, Tp::Int) => Some(binary_op!(BoolE::IntLt, lhs, rhs)),
+            (Op::Le, Tp::Int, Tp::Int) => Some(binary_op!(BoolE::IntLe, lhs, rhs)),
+            (Op::Gt, Tp::Int, Tp::Int) => Some(binary_op!(BoolE::IntGt, lhs, rhs)),
+            (Op::Ge, Tp::Int, Tp::Int) => Some(binary_op!(BoolE::IntGe, lhs, rhs)),
+            (Op::Eq, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::BoolEq, lhs, rhs)),
+            (Op::Ne, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::BoolNe, lhs, rhs)),
+            (Op::Lt, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::BoolLt, lhs, rhs)),
+            (Op::Le, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::BoolLe, lhs, rhs)),
+            (Op::Gt, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::BoolGt, lhs, rhs)),
+            (Op::Ge, Tp::Bool, Tp::Bool) => Some(binary_op!(BoolE::BoolGe, lhs, rhs)),
+            (Op::Add, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Add, lhs, rhs)),
+            (Op::Sub, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Sub, lhs, rhs)),
+            (Op::Mul, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Mul, lhs, rhs)),
+            (Op::FloorDiv, Tp::Int, Tp::Int) => Some(binary_op!(IntE::FloorDiv, lhs, rhs)),
+            (Op::TrueDiv, Tp::Int, Tp::Int) => Some(binary_op!(FloatE::IntTrueDiv, lhs, rhs)),
+            (Op::Mod, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Mod, lhs, rhs)),
+            (Op::Pow, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Pow, lhs, rhs)),
+            (Op::Lshift, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Lshift, lhs, rhs)),
+            (Op::Rshift, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Rshift, lhs, rhs)),
+            (Op::And, Tp::Int, Tp::Int) => Some(binary_op!(IntE::And, lhs, rhs)),
+            (Op::Or, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Or, lhs, rhs)),
+            (Op::Xor, Tp::Int, Tp::Int) => Some(binary_op!(IntE::Xor, lhs, rhs)),
+            (Op::Eq, Tp::Float, Tp::Float) => Some(binary_op!(BoolE::FloatEq, lhs, rhs)),
+            (Op::Ne, Tp::Float, Tp::Float) => Some(binary_op!(BoolE::FloatNe, lhs, rhs)),
+            (Op::Lt, Tp::Float, Tp::Float) => Some(binary_op!(BoolE::FloatLt, lhs, rhs)),
+            (Op::Le, Tp::Float, Tp::Float) => Some(binary_op!(BoolE::FloatLe, lhs, rhs)),
+            (Op::Gt, Tp::Float, Tp::Float) => Some(binary_op!(BoolE::FloatGt, lhs, rhs)),
+            (Op::Ge, Tp::Float, Tp::Float) => Some(binary_op!(BoolE::FloatGe, lhs, rhs)),
+            (Op::Add, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::Add, lhs, rhs)),
+            (Op::Sub, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::Sub, lhs, rhs)),
+            (Op::Mul, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::Mul, lhs, rhs)),
+            (Op::FloorDiv, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::FloorDiv, lhs, rhs)),
+            (Op::TrueDiv, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::TrueDiv, lhs, rhs)),
+            (Op::Mod, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::Mod, lhs, rhs)),
+            (Op::Pow, Tp::Float, Tp::Float) => Some(binary_op!(FloatE::Pow, lhs, rhs)),
+            (Op::Eq, Tp::String, Tp::String) => Some(binary_op!(BoolE::StringEq, lhs, rhs)),
+            (Op::Ne, Tp::String, Tp::String) => Some(binary_op!(BoolE::StringNe, lhs, rhs)),
+            (Op::Lt, Tp::String, Tp::String) => Some(binary_op!(BoolE::StringLt, lhs, rhs)),
+            (Op::Le, Tp::String, Tp::String) => Some(binary_op!(BoolE::StringLe, lhs, rhs)),
+            (Op::Gt, Tp::String, Tp::String) => Some(binary_op!(BoolE::StringGt, lhs, rhs)),
+            (Op::Ge, Tp::String, Tp::String) => Some(binary_op!(BoolE::StringGe, lhs, rhs)),
+            (Op::Add, Tp::String, Tp::String) => Some(binary_op!(StringE::Add, lhs, rhs)),
+            (Op::Mul, Tp::String, Tp::Int) => Some(binary_op!(StringE::Mul, lhs, rhs)),
+            (Op::Mul, Tp::Int, Tp::String) => Some(binary_op!(StringE::Mul, rhs, lhs)),
+            (Op::Eq, Tp::Pointer, Tp::Pointer) => Some(binary_op!(BoolE::PtrEq, lhs, rhs)),
+            (Op::Ne, Tp::Pointer, Tp::Pointer) => Some(binary_op!(BoolE::PtrNe, lhs, rhs)),
+            (Op::Lt, Tp::Pointer, Tp::Pointer) => Some(binary_op!(BoolE::PtrLt, lhs, rhs)),
+            (Op::Le, Tp::Pointer, Tp::Pointer) => Some(binary_op!(BoolE::PtrLe, lhs, rhs)),
+            (Op::Gt, Tp::Pointer, Tp::Pointer) => Some(binary_op!(BoolE::PtrGt, lhs, rhs)),
+            (Op::Ge, Tp::Pointer, Tp::Pointer) => Some(binary_op!(BoolE::PtrGe, lhs, rhs)),
+            (Op::Eq, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(BoolE::DateTimeNaiveEq, lhs, rhs))
+            }
+            (Op::Ne, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(BoolE::DateTimeNaiveNe, lhs, rhs))
+            }
+            (Op::Lt, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(BoolE::DateTimeNaiveLt, lhs, rhs))
+            }
+            (Op::Le, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(BoolE::DateTimeNaiveLe, lhs, rhs))
+            }
+            (Op::Gt, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(BoolE::DateTimeNaiveGt, lhs, rhs))
+            }
+            (Op::Ge, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(BoolE::DateTimeNaiveGe, lhs, rhs))
+            }
+            (Op::Sub, Tp::DateTimeNaive, Tp::DateTimeNaive) => {
+                Some(binary_op!(DurationExpression::DateTimeNaiveSub, lhs, rhs))
+            }
+            (Op::Add, Tp::DateTimeNaive, Tp::Duration) => {
+                Some(binary_op!(DateTimeNaiveExpression::AddDuration, lhs, rhs))
+            }
+            (Op::Sub, Tp::DateTimeNaive, Tp::Duration) => {
+                Some(binary_op!(DateTimeNaiveExpression::SubDuration, lhs, rhs))
+            }
+            (Op::Eq, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(BoolE::DateTimeUtcEq, lhs, rhs))
+            }
+            (Op::Ne, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(BoolE::DateTimeUtcNe, lhs, rhs))
+            }
+            (Op::Lt, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(BoolE::DateTimeUtcLt, lhs, rhs))
+            }
+            (Op::Le, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(BoolE::DateTimeUtcLe, lhs, rhs))
+            }
+            (Op::Gt, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(BoolE::DateTimeUtcGt, lhs, rhs))
+            }
+            (Op::Ge, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(BoolE::DateTimeUtcGe, lhs, rhs))
+            }
+            (Op::Sub, Tp::DateTimeUtc, Tp::DateTimeUtc) => {
+                Some(binary_op!(DurationExpression::DateTimeUtcSub, lhs, rhs))
+            }
+            (Op::Add, Tp::DateTimeUtc, Tp::Duration) => {
+                Some(binary_op!(DateTimeUtcExpression::AddDuration, lhs, rhs))
+            }
+            (Op::Sub, Tp::DateTimeUtc, Tp::Duration) => {
+                Some(binary_op!(DateTimeUtcExpression::SubDuration, lhs, rhs))
+            }
+            (Op::Eq, Tp::Duration, Tp::Duration) => Some(binary_op!(BoolE::DurationEq, lhs, rhs)),
+            (Op::Ne, Tp::Duration, Tp::Duration) => Some(binary_op!(BoolE::DurationNe, lhs, rhs)),
+            (Op::Lt, Tp::Duration, Tp::Duration) => Some(binary_op!(BoolE::DurationLt, lhs, rhs)),
+            (Op::Le, Tp::Duration, Tp::Duration) => Some(binary_op!(BoolE::DurationLe, lhs, rhs)),
+            (Op::Gt, Tp::Duration, Tp::Duration) => Some(binary_op!(BoolE::DurationGt, lhs, rhs)),
+            (Op::Ge, Tp::Duration, Tp::Duration) => Some(binary_op!(BoolE::DurationGe, lhs, rhs)),
+            (Op::Add, Tp::Duration, Tp::Duration) => Some(binary_op!(DurationE::Add, lhs, rhs)),
+            (Op::Sub, Tp::Duration, Tp::Duration) => Some(binary_op!(DurationE::Sub, lhs, rhs)),
+            (Op::Add, Tp::Duration, Tp::DateTimeNaive) => {
+                Some(binary_op!(DateTimeNaiveExpression::AddDuration, rhs, lhs))
+            }
+            (Op::Add, Tp::Duration, Tp::DateTimeUtc) => {
+                Some(binary_op!(DateTimeUtcExpression::AddDuration, rhs, lhs))
+            }
+            (Op::Mul, Tp::Duration, Tp::Int) => Some(binary_op!(DurationE::MulByInt, lhs, rhs)),
+            (Op::Mul, Tp::Int, Tp::Duration) => Some(binary_op!(DurationE::MulByInt, rhs, lhs)),
+            (Op::FloorDiv, Tp::Duration, Tp::Int) => {
+                Some(binary_op!(DurationE::DivByInt, lhs, rhs))
+            }
+            (Op::FloorDiv, Tp::Duration, Tp::Duration) => {
+                Some(binary_op!(IntExpression::DurationFloorDiv, lhs, rhs))
+            }
+            (Op::TrueDiv, Tp::Duration, Tp::Duration) => {
+                Some(binary_op!(FloatExpression::DurationTrueDiv, lhs, rhs))
+            }
+            (Op::Mod, Tp::Duration, Tp::Duration) => Some(binary_op!(DurationE::Mod, lhs, rhs)),
+            (Op::MatMul, Tp::Array, Tp::Array) => Some(binary_op!(AnyE::MatMul, lhs, rhs)),
+            (_, _, _) => None,
+        }
     }
 
     #[staticmethod]
     fn eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::Eq(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
+        binary_op!(BoolExpression::Eq, lhs, rhs)
     }
 
     #[staticmethod]
     fn ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::Ne(
-                lhs.inner.clone(),
-                rhs.inner.clone(),
-            ))),
-            lhs.gil || rhs.gil,
-        )
+        binary_op!(BoolExpression::Ne, lhs, rhs)
     }
 
     #[staticmethod]
-    fn int_to_float(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::CastFromInt(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_to_bool(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::CastFromInt(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn int_to_str(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::String(StringExpression::CastFromInt(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_to_int(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::CastFromFloat(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_to_bool(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::CastFromFloat(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn float_to_str(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::String(StringExpression::CastFromFloat(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn bool_to_int(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::CastFromBool(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn bool_to_float(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::CastFromBool(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn bool_to_str(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::String(StringExpression::CastFromBool(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_to_int(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Int(IntExpression::CastFromString(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_to_float(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Float(FloatExpression::CastFromString(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn str_to_bool(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::CastFromString(
-                expr.inner.clone(),
-            ))),
-            expr.gil,
-        )
-    }
-
-    #[staticmethod]
-    fn date_time_naive_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeNaiveEq, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeNaiveNe, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeNaiveLt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeNaiveLe, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeNaiveGt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeNaiveGe, lhs, rhs)
+    fn cast(expr: &PyExpression, source_type: Type, target_type: Type) -> Option<Self> {
+        type Tp = Type;
+        match (source_type, target_type) {
+            (Tp::Int, Tp::Float) => Some(unary_op!(FloatExpression::CastFromInt, expr)),
+            (Tp::Int, Tp::Bool) => Some(unary_op!(BoolExpression::CastFromInt, expr)),
+            (Tp::Int, Tp::String) => Some(unary_op!(StringExpression::CastFromInt, expr)),
+            (Tp::Float, Tp::Int) => Some(unary_op!(IntExpression::CastFromFloat, expr)),
+            (Tp::Float, Tp::Bool) => Some(unary_op!(BoolExpression::CastFromFloat, expr)),
+            (Tp::Float, Tp::String) => Some(unary_op!(StringExpression::CastFromFloat, expr)),
+            (Tp::Bool, Tp::Int) => Some(unary_op!(IntExpression::CastFromBool, expr)),
+            (Tp::Bool, Tp::Float) => Some(unary_op!(FloatExpression::CastFromBool, expr)),
+            (Tp::Bool, Tp::String) => Some(unary_op!(StringExpression::CastFromBool, expr)),
+            (Tp::String, Tp::Int) => Some(unary_op!(IntExpression::CastFromString, expr)),
+            (Tp::String, Tp::Float) => Some(unary_op!(FloatExpression::CastFromString, expr)),
+            (Tp::String, Tp::Bool) => Some(unary_op!(BoolExpression::CastFromString, expr)),
+            (_, _) => None,
+        }
     }
 
     #[staticmethod]
     fn date_time_naive_nanosecond(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveNanosecond, expr)
+        unary_op!(IntExpression::DateTimeNaiveNanosecond, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_microsecond(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveMicrosecond, expr)
+        unary_op!(IntExpression::DateTimeNaiveMicrosecond, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_millisecond(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveMillisecond, expr)
+        unary_op!(IntExpression::DateTimeNaiveMillisecond, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_second(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveSecond, expr)
+        unary_op!(IntExpression::DateTimeNaiveSecond, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_minute(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveMinute, expr)
+        unary_op!(IntExpression::DateTimeNaiveMinute, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_hour(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveHour, expr)
+        unary_op!(IntExpression::DateTimeNaiveHour, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_day(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveDay, expr)
+        unary_op!(IntExpression::DateTimeNaiveDay, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_month(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveMonth, expr)
+        unary_op!(IntExpression::DateTimeNaiveMonth, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_year(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveYear, expr)
+        unary_op!(IntExpression::DateTimeNaiveYear, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_timestamp(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeNaiveTimestamp, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_sub(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::DateTimeNaiveSub, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_add_duration(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::AddDuration, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_sub_duration(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::SubDuration, lhs, rhs)
+        unary_op!(IntExpression::DateTimeNaiveTimestamp, expr)
     }
 
     #[staticmethod]
     fn date_time_naive_strptime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::Strptime, expr, fmt)
+        binary_op!(DateTimeNaiveExpression::Strptime, expr, fmt)
     }
 
     #[staticmethod]
     fn date_time_naive_strftime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_operator!(StringExpression::DateTimeNaiveStrftime, expr, fmt)
+        binary_op!(StringExpression::DateTimeNaiveStrftime, expr, fmt)
     }
 
     #[staticmethod]
     fn date_time_naive_from_timestamp(expr: &PyExpression, unit: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::FromTimestamp, expr, unit)
+        binary_op!(DateTimeNaiveExpression::FromTimestamp, expr, unit)
     }
 
     #[staticmethod]
     fn date_time_naive_to_utc(expr: &PyExpression, from_timezone: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::FromNaive, expr, from_timezone)
+        binary_op!(DateTimeUtcExpression::FromNaive, expr, from_timezone)
     }
 
     #[staticmethod]
     fn date_time_naive_round(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::Round, expr, duration)
+        binary_op!(DateTimeNaiveExpression::Round, expr, duration)
     }
 
     #[staticmethod]
     fn date_time_naive_floor(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::Floor, expr, duration)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeUtcEq, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeUtcNe, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeUtcLt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeUtcLe, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeUtcGt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DateTimeUtcGe, lhs, rhs)
+        binary_op!(DateTimeNaiveExpression::Floor, expr, duration)
     }
 
     #[staticmethod]
     fn date_time_utc_nanosecond(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcNanosecond, expr)
+        unary_op!(IntExpression::DateTimeUtcNanosecond, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_microsecond(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcMicrosecond, expr)
+        unary_op!(IntExpression::DateTimeUtcMicrosecond, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_millisecond(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcMillisecond, expr)
+        unary_op!(IntExpression::DateTimeUtcMillisecond, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_second(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcSecond, expr)
+        unary_op!(IntExpression::DateTimeUtcSecond, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_minute(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcMinute, expr)
+        unary_op!(IntExpression::DateTimeUtcMinute, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_hour(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcHour, expr)
+        unary_op!(IntExpression::DateTimeUtcHour, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_day(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcDay, expr)
+        unary_op!(IntExpression::DateTimeUtcDay, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_month(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcMonth, expr)
+        unary_op!(IntExpression::DateTimeUtcMonth, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_year(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcYear, expr)
+        unary_op!(IntExpression::DateTimeUtcYear, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_timestamp(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DateTimeUtcTimestamp, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_sub(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::DateTimeUtcSub, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_add_duration(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::AddDuration, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_sub_duration(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::SubDuration, lhs, rhs)
+        unary_op!(IntExpression::DateTimeUtcTimestamp, expr)
     }
 
     #[staticmethod]
     fn date_time_utc_strptime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::Strptime, expr, fmt)
+        binary_op!(DateTimeUtcExpression::Strptime, expr, fmt)
     }
 
     #[staticmethod]
     fn date_time_utc_strftime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_operator!(StringExpression::DateTimeUtcStrftime, expr, fmt)
+        binary_op!(StringExpression::DateTimeUtcStrftime, expr, fmt)
     }
 
     #[staticmethod]
     fn date_time_utc_to_naive(expr: &PyExpression, to_timezone: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::FromUtc, expr, to_timezone)
+        binary_op!(DateTimeNaiveExpression::FromUtc, expr, to_timezone)
     }
 
     #[staticmethod]
     fn date_time_utc_round(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::Round, expr, duration)
+        binary_op!(DateTimeUtcExpression::Round, expr, duration)
     }
 
     #[staticmethod]
     fn date_time_utc_floor(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::Floor, expr, duration)
-    }
-
-    #[staticmethod]
-    fn duration_eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DurationEq, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DurationNe, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_lt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DurationLt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_le(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DurationLe, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_gt(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DurationGt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_ge(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(BoolExpression::DurationGe, lhs, rhs)
+        binary_op!(DateTimeUtcExpression::Floor, expr, duration)
     }
 
     #[staticmethod]
     fn duration_nanoseconds(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationNanoseconds, expr)
+        unary_op!(IntExpression::DurationNanoseconds, expr)
     }
 
     #[staticmethod]
     fn duration_microseconds(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationMicroseconds, expr)
+        unary_op!(IntExpression::DurationMicroseconds, expr)
     }
 
     #[staticmethod]
     fn duration_milliseconds(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationMilliseconds, expr)
+        unary_op!(IntExpression::DurationMilliseconds, expr)
     }
 
     #[staticmethod]
     fn duration_seconds(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationSeconds, expr)
+        unary_op!(IntExpression::DurationSeconds, expr)
     }
 
     #[staticmethod]
     fn duration_minutes(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationMinutes, expr)
+        unary_op!(IntExpression::DurationMinutes, expr)
     }
 
     #[staticmethod]
     fn duration_hours(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationHours, expr)
+        unary_op!(IntExpression::DurationHours, expr)
     }
 
     #[staticmethod]
     fn duration_days(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationDays, expr)
+        unary_op!(IntExpression::DurationDays, expr)
     }
 
     #[staticmethod]
     fn duration_weeks(expr: &PyExpression) -> Self {
-        unary_operator!(IntExpression::DurationWeeks, expr)
-    }
-
-    #[staticmethod]
-    fn duration_neg(expr: &PyExpression) -> Self {
-        unary_operator!(DurationExpression::Neg, expr)
-    }
-
-    #[staticmethod]
-    fn duration_add(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::Add, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_add_date_time_naive(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DateTimeNaiveExpression::AddDuration, rhs, lhs)
-    }
-
-    #[staticmethod]
-    fn duration_add_date_time_utc(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DateTimeUtcExpression::AddDuration, rhs, lhs)
-    }
-
-    #[staticmethod]
-    fn duration_sub(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::Sub, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_mul_by_int(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::MulByInt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn int_mul_by_duration(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::MulByInt, rhs, lhs)
-    }
-
-    #[staticmethod]
-    fn duration_div_by_int(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::DivByInt, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_floor_div(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(IntExpression::DurationFloorDiv, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_true_div(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(FloatExpression::DurationTrueDiv, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn duration_mod(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_operator!(DurationExpression::Mod, lhs, rhs)
+        unary_op!(IntExpression::DurationWeeks, expr)
     }
 
     #[staticmethod]
@@ -1695,7 +1130,7 @@ impl PyExpression {
 
     #[staticmethod]
     fn sequence_get_item_unchecked(expr: &PyExpression, index: &PyExpression) -> Self {
-        binary_operator!(AnyExpression::TupleGetItemUnchecked, expr, index)
+        binary_op!(AnyExpression::TupleGetItemUnchecked, expr, index)
     }
 }
 
@@ -1706,18 +1141,24 @@ pub struct PathwayType(Type);
 impl PathwayType {
     #[classattr]
     pub const ANY: Type = Type::Any;
-
-    #[classattr]
-    pub const STRING: Type = Type::String;
-
-    #[classattr]
-    pub const INT: Type = Type::Int;
-
     #[classattr]
     pub const BOOL: Type = Type::Bool;
-
+    #[classattr]
+    pub const INT: Type = Type::Int;
     #[classattr]
     pub const FLOAT: Type = Type::Float;
+    #[classattr]
+    pub const POINTER: Type = Type::Pointer;
+    #[classattr]
+    pub const STRING: Type = Type::String;
+    #[classattr]
+    pub const DATE_TIME_NAIVE: Type = Type::DateTimeNaive;
+    #[classattr]
+    pub const DATE_TIME_UTC: Type = Type::DateTimeUtc;
+    #[classattr]
+    pub const DURATION: Type = Type::Duration;
+    #[classattr]
+    pub const ARRAY: Type = Type::Array;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "MonitoringLevel")]
@@ -4249,6 +3690,8 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
     m.add_class::<BasePointer>()?;
     m.add_class::<PyReducer>()?;
+    m.add_class::<PyUnaryOperator>()?;
+    m.add_class::<PyBinaryOperator>()?;
     m.add_class::<PyExpression>()?;
     m.add_class::<PathwayType>()?;
     m.add_class::<PyMonitoringLevel>()?;

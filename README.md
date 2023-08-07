@@ -37,7 +37,7 @@ For any questions, you will find the community and team behind the project [on D
 
 ## Installation
 
-Pathway requires Python 3.9 or above.
+Pathway requires Python 3.10 or above.
 
 You can install the current release of Pathway using `pip`:
 

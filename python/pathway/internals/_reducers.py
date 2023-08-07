@@ -7,6 +7,7 @@ from typing import Any, Dict
 import numpy as np
 
 import pathway.internals as pw
+from pathway.internals.api import Pointer
 
 
 def generate_reducer(fun):
@@ -55,12 +56,12 @@ def _count(col: Dict[int, Any]) -> int:
     return len(col.values())
 
 
-def _argmin(col: Dict[int, Any]) -> Any:
-    return min(col.items(), key=lambda i: (i[1], i[0]))[0]
+def _argmin(col: Dict[int, Any]) -> Pointer:
+    return min(col.items(), key=lambda i: (i[1], i[0]))[0]  # type: ignore
 
 
-def _argmax(col: Dict[int, Any]) -> Any:
-    return max(col.items(), key=lambda i: (i[1], -int(i[0])))[0]
+def _argmax(col: Dict[int, Any]) -> Pointer:
+    return max(col.items(), key=lambda i: (i[1], -int(i[0])))[0]  # type: ignore
 
 
 def _unique(col: Dict[int, Any]) -> Any:
