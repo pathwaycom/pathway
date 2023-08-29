@@ -25,7 +25,12 @@ def static_table_from_md(scope, txt, ptr_columns=()) -> api.Table:
     for column in ptr_columns:
         df[column] = df[column].apply(api.unsafe_make_pointer)
 
-    return api.static_table_from_pandas(scope, df, {}, unsafe_trusted_ids=True)
+    return api.static_table_from_pandas(
+        scope,
+        df,
+        {},
+        connector_properties=api.ConnectorProperties(unsafe_trusted_ids=True),
+    )
 
 
 def test_assert(event_loop):
@@ -171,7 +176,7 @@ def test_groupby_reduce(event_loop):
                 grouper.input_column(tab.columns[1]),
                 grouper.input_column(tab.columns[2]),
                 grouper.reducer_column(api.Reducer.MIN, tab.columns[3]),
-                grouper.reducer_column(api.Reducer.SUM, tab.columns[2]),
+                grouper.reducer_column(api.Reducer.INT_SUM, tab.columns[2]),
                 # grouper.reducer_column(api.Reducer.SORTED_TUPLE, tab.columns[3]), TODO: fix typing issues.
                 grouper.count_column(),
                 grouper.reducer_column(api.Reducer.ARG_MIN, tab.columns[3]),
@@ -226,7 +231,7 @@ def test_groupby_reduce_expression(event_loop):
 
         tmp_tab = s.table(
             grouper.universe,
-            [grouper.reducer_column(api.Reducer.SUM, new_table.columns[0])],
+            [grouper.reducer_column(api.Reducer.INT_SUM, new_table.columns[0])],
         )
         col_expr_outer = s.map_column(
             tmp_tab, lambda x: 1000 + x[0], api.EvalProperties(dtype=int)
@@ -238,7 +243,7 @@ def test_groupby_reduce_expression(event_loop):
                 grouper.input_column(new_table.columns[1]),
                 grouper.input_column(new_table.columns[2]),
                 col_expr_outer,
-                grouper.reducer_column(api.Reducer.SUM, new_table.columns[4]),
+                grouper.reducer_column(api.Reducer.INT_SUM, new_table.columns[4]),
             ],
         )
 

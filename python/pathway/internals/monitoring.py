@@ -120,11 +120,11 @@ class MonitoringOutput:
         table = Table(caption=caption, box=box.SIMPLE)
         table.add_column("operator", justify="left")
         table.add_column(
-            "latency to wall clock \[ms]",  # noqa: W605 escape sequence required by rich
+            r"latency to wall clock \[ms]",
             justify="right",
         )
         table.add_column(
-            "lag to input \[ms]",  # noqa: W605 escape sequence required by rich
+            r"lag to input \[ms]",
             justify="right",
         )
 

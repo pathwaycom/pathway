@@ -34,10 +34,11 @@ from pathway.internals.graph_runner.expression_evaluator import ExpressionEvalua
 from pathway.internals.graph_runner.scope_context import ScopeContext
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.operator import (
-    ContextualizedExpressionOperator,
+    ContextualizedIntermediateOperator,
     DebugOperator,
     InputOperator,
     IterateOperator,
+    NonContextualizedIntermediateOperator,
     Operator,
     OutputOperator,
 )
@@ -107,8 +108,8 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                     self.scope,
                     operator.debug_datasource.data,
                     table.schema.as_dict(),
-                    operator.id_from,
-                    operator.unsafe_trusted_ids,
+                    operator.debug_datasource.schema.primary_key_columns(),
+                    operator.debug_datasource.connector_properties,
                 )
                 self.state.set_table(table, materialized_table)
         elif isinstance(datasource, PandasDataSource):
@@ -118,8 +119,8 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                     self.scope,
                     datasource.data,
                     table.schema.as_dict(),
-                    operator.id_from,
-                    operator.unsafe_trusted_ids,
+                    datasource.schema.primary_key_columns(),
+                    datasource.connector_properties,
                 )
                 self.state.set_table(table, materialized_table)
         elif isinstance(datasource, GenericDataSource):
@@ -163,13 +164,13 @@ class OutputOperatorHandler(
             RuntimeError("datasink not supported")
 
 
-class ContextualizedExpressionOperatorHandler(
-    OperatorHandler[ContextualizedExpressionOperator],
-    operator_type=ContextualizedExpressionOperator,
+class ContextualizedIntermediateOperatorHandler(
+    OperatorHandler[ContextualizedIntermediateOperator],
+    operator_type=ContextualizedIntermediateOperator,
 ):
     def _run(
         self,
-        operator: ContextualizedExpressionOperator,
+        operator: ContextualizedIntermediateOperator,
     ):
         for table in operator.output_tables:
             all_columns_skipped = True
@@ -224,6 +225,23 @@ class ContextualizedExpressionOperatorHandler(
 
     def _does_not_need_evaluation(self, column) -> bool:
         return self.state.has_column(column) or self.scope_context.skip_column(column)
+
+
+class NonContextualizedIntermediateOperatorHandler(
+    OperatorHandler[NonContextualizedIntermediateOperator],
+    operator_type=NonContextualizedIntermediateOperator,
+):
+    def _run(
+        self,
+        operator: NonContextualizedIntermediateOperator,
+    ):
+        for table in operator.output_tables:
+            for _, column in table._columns.items():
+                assert self.state.has_column(column) or self.scope_context.skip_column(
+                    column
+                )
+            universe = self.state.get_universe(table._universe)
+            self.state.set_column(table._id_column, universe.id_column)
 
 
 class DebugOperatorHandler(

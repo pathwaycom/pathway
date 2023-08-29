@@ -21,6 +21,7 @@ from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
+from pathway.internals.schema import schema_from_pandas
 from pathway.io import csv
 from pathway.tests.utils import T, TestDataSource
 
@@ -62,7 +63,7 @@ def test_process_output_nodes(tmp_path: pathlib.Path):
     input1.debug("input1")
     input2 = Table.empty()
 
-    file_path = str(tmp_path / "test_output.csv")
+    file_path = tmp_path / "test_output.csv"
     csv.write(input2, file_path)
 
     def validate(state: ScopeState) -> None:
@@ -81,7 +82,7 @@ def test_process_output_nodes_and_debug_nodes(tmp_path: pathlib.Path):
     input2 = Table.empty()
     input3 = Table.empty()
 
-    file_path = str(tmp_path / "test_output.csv")
+    file_path = tmp_path / "test_output.csv"
     csv.write(input2, file_path)
 
     def validate(state) -> None:
@@ -109,15 +110,17 @@ def test_process_all_nodes():
 
 
 def test_debug_datasource():
+    df = _markdown_to_pandas(
+        """
+            | foo
+        1   | 42
+        """
+    )
     input1 = table_from_datasource(
         datasource=TestDataSource(schema_from_types(foo=int)),
         debug_datasource=datasource.PandasDataSource(
-            _markdown_to_pandas(
-                """
-                    | foo
-                1   | 42
-                """
-            )
+            data=df,
+            schema=schema_from_pandas(df),
         ),
     )
     input2 = T(
@@ -135,15 +138,17 @@ def test_debug_datasource():
 
 
 def test_debug_datasource_schema_mismatch():
+    df = _markdown_to_pandas(
+        """
+            | foo
+        1   | 42
+        """
+    )
     input = table_from_datasource(
         datasource=TestDataSource(schema_from_types(foo=str)),
         debug_datasource=datasource.PandasDataSource(
-            _markdown_to_pandas(
-                """
-                    | foo
-                1   | 42
-                """
-            )
+            data=df,
+            schema=schema_from_pandas(df),
         ),
     )
 

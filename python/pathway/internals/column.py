@@ -130,10 +130,8 @@ class ColumnWithExpression(ColumnWithContext):
         universe: Universe,
         expression: ColumnExpression,
         lineage: Optional[Lineage] = None,
-        dtype: Optional[DType] = None,
     ):
-        if dtype is None:
-            dtype = context.expression_type(expression)
+        dtype = context.expression_type(expression)
         super().__init__(dtype, context, universe)
         self.expression = expression
         if lineage is not None:
@@ -155,9 +153,8 @@ class ColumnWithReference(ColumnWithExpression):
         universe: Universe,
         expression: ColumnRefOrIxExpression,
         lineage: Optional[Lineage] = None,
-        dtype: Optional[DType] = None,
     ):
-        super().__init__(context, universe, expression, lineage, dtype)
+        super().__init__(context, universe, expression, lineage)
         self.expression = expression
         if lineage is None:
             lineage = expression._column.lineage
@@ -207,10 +204,20 @@ class Context:
     ) -> StableSet[Column]:
         return StableSet()
 
-    def expression_type(self, expression: ColumnExpression):
-        from pathway.internals import type_interpreter
+    def _get_type_interpreter(self):
+        from pathway.internals.type_interpreter import TypeInterpreter
 
-        return type_interpreter.eval_type(expression)
+        return TypeInterpreter()
+
+    def expression_type(self, expression: ColumnExpression) -> DType:
+        return self.expression_with_type(expression)._dtype
+
+    def expression_with_type(self, expression: ColumnExpression) -> ColumnExpression:
+        from pathway.internals.type_interpreter import TypeInterpreterState
+
+        return self._get_type_interpreter().eval_expression(
+            expression, state=TypeInterpreterState()
+        )
 
 
 @dataclass(eq=False, frozen=True)
@@ -307,10 +314,8 @@ class UpdateRowsContext(Context):
         return StableSet([self.updates[ref.name]])
 
     def expression_type(self, expression: ColumnExpression):
-        from pathway.internals import type_interpreter
-
         assert isinstance(expression, ColumnReference)
-        t1 = type_interpreter.eval_type(expression)
+        t1 = super().expression_type(expression)
         t2 = self.updates[expression.name].dtype
         return types_lca(t1, t2)
 
@@ -331,10 +336,8 @@ class ConcatUnsafeContext(Context):
         return StableSet([update[ref.name] for update in self.updates])
 
     def expression_type(self, expression: ColumnExpression):
-        from pathway.internals import type_interpreter
-
         assert isinstance(expression, ColumnReference)
-        t = type_interpreter.eval_type(expression)
+        t = super().expression_type(expression)
         for update in self.updates:
             up = update[expression.name].dtype
             t = types_lca(t, up)
@@ -363,12 +366,12 @@ class JoinContext(Context):
     def columns_to_eval(self) -> Iterable[Column]:
         return chain(self.on_left.columns, self.on_right.columns)
 
-    def expression_type(self, expression: ColumnExpression):
-        from pathway.internals import type_interpreter
+    def _get_type_interpreter(self):
+        from pathway.internals.type_interpreter import JoinTypeInterpreter
 
-        return type_interpreter.JoinTypeInterpreter(
+        return JoinTypeInterpreter(
             self.left_table, self.right_table, self.right_ear, self.left_ear
-        ).eval_expression(expression)
+        )
 
 
 @dataclass(eq=True, frozen=True)

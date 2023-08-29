@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from os import PathLike
+from typing import Optional, Union
 
 import pathway as pw
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -13,10 +14,10 @@ from pathway.internals.trace import trace_user_frame
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: str,
+    path: Union[str, PathLike],
     *,
     mode: str = "streaming",
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     autocommit_duration_ms: Optional[int] = 1500,
     debug_data=None,
 ) -> Table:

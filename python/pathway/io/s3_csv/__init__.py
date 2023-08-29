@@ -31,7 +31,7 @@ def read(
     csv_settings: Optional[CsvParserSettings] = None,
     mode: str = "streaming",
     autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     debug_data=None,
     value_columns: Optional[List[str]] = None,
     id_columns: Optional[List[str]] = None,
@@ -175,7 +175,7 @@ def read(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

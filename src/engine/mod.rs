@@ -4,6 +4,8 @@
 pub mod error;
 pub use self::error::{Error, Result};
 
+pub mod report_error;
+
 pub mod value;
 pub use self::value::{Key, KeyImpl, Type, Value};
 

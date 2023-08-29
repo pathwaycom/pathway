@@ -16,14 +16,16 @@ use super::{Key, Value};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Reducer {
-    Sum,
+    FloatSum,
     IntSum,
+    ArraySum,
     Unique,
     Min,
     ArgMin,
     Max,
     ArgMax,
     SortedTuple,
+    Tuple,
     Any,
 }
 
@@ -44,8 +46,6 @@ pub trait ReducerImpl: 'static {
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
     ) -> Self::State;
-
-    fn neutral(&self) -> Option<Value>;
 
     fn finish(&self, state: Self::State) -> Value;
 }
@@ -100,22 +100,47 @@ impl SemigroupReducerImpl for IntSumReducer {
     }
 }
 #[derive(Debug, Clone, Copy)]
-pub struct SumReducer;
+pub struct FloatSumReducer;
+
+impl ReducerImpl for FloatSumReducer {
+    type State = OrderedFloat<f64>;
+
+    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+        match value {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    fn combine<'a>(
+        &self,
+        values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
+    ) -> Self::State {
+        #[allow(clippy::cast_precision_loss)]
+        values
+            .into_iter()
+            .map(|(value, cnt)| *value * cnt.get() as f64)
+            .sum()
+    }
+
+    fn finish(&self, state: Self::State) -> Value {
+        Value::Float(state)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ArraySumReducer;
 
 #[derive(Debug)]
-enum SumState<'a> {
-    Int(i64),
-    Float(f64),
+enum ArraySumState<'a> {
     IntArray(CowArray<'a, i64, IxDyn>),
     FloatArray(CowArray<'a, f64, IxDyn>),
 }
 
-impl<'a> SumState<'a> {
+impl<'a> ArraySumState<'a> {
     fn new(value: &'a Value, cnt: NonZeroUsize) -> Self {
         match value {
-            Value::Int(i) => Self::Int(i * i64::try_from(cnt.get()).unwrap()),
             #[allow(clippy::cast_precision_loss)]
-            Value::Float(OrderedFloat(f)) => Self::Float(f * cnt.get() as f64),
             Value::IntArray(array) => {
                 if cnt.get() == 1 {
                     Self::IntArray(CowArray::from(&**array))
@@ -131,46 +156,38 @@ impl<'a> SumState<'a> {
                     Self::FloatArray(CowArray::from(&**array * cnt.get() as f64))
                 }
             }
-            _ => panic!("unsupported type for sum"),
+            _ => panic!("unsupported type for npsum"),
         }
     }
 }
 
-impl<'a> Add for SumState<'a> {
+impl<'a> Add for ArraySumState<'a> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
         match (self, rhs) {
-            (Self::Int(lhs), Self::Int(rhs)) => Self::Int(lhs + rhs),
-            (Self::Float(lhs), Self::Float(rhs)) => Self::Float(lhs + rhs),
             (Self::IntArray(lhs), Self::IntArray(rhs)) => {
                 Self::IntArray(CowArray::from(lhs.into_owned() + &rhs))
             }
             (Self::FloatArray(lhs), Self::FloatArray(rhs)) => {
                 Self::FloatArray(CowArray::from(lhs.into_owned() + &rhs))
             }
-            _ => panic!("mixing types in sum is not allowed"),
+            _ => panic!("mixing types in npsum is not allowed"),
         }
     }
 }
 
-impl<'a> From<SumState<'a>> for Value {
-    fn from(state: SumState<'a>) -> Self {
+impl<'a> From<ArraySumState<'a>> for Value {
+    fn from(state: ArraySumState<'a>) -> Self {
         match state {
-            SumState::Int(i) => Self::from(i),
-            SumState::Float(f) => Self::from(f),
-            SumState::IntArray(a) => Self::from(a.into_owned()),
-            SumState::FloatArray(a) => Self::from(a.into_owned()),
+            ArraySumState::IntArray(a) => Self::from(a.into_owned()),
+            ArraySumState::FloatArray(a) => Self::from(a.into_owned()),
         }
     }
 }
 
-impl ReducerImpl for SumReducer {
+impl ReducerImpl for ArraySumReducer {
     type State = Value;
-
-    fn neutral(&self) -> Option<Value> {
-        Some(Value::Int(0)) // XXX
-    }
 
     fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(value.clone())
@@ -182,7 +199,7 @@ impl ReducerImpl for SumReducer {
     ) -> Self::State {
         values
             .into_iter()
-            .map(|(value, cnt)| SumState::new(value, cnt))
+            .map(|(value, cnt)| ArraySumState::new(value, cnt))
             .reduce(|a, b| a + b)
             .expect("values should not be empty")
             .into()
@@ -198,10 +215,6 @@ pub struct UniqueReducer;
 
 impl ReducerImpl for UniqueReducer {
     type State = Option<Value>;
-
-    fn neutral(&self) -> Option<Value> {
-        None
-    }
 
     fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(Some(value.clone()))
@@ -234,10 +247,6 @@ pub struct MinReducer;
 impl ReducerImpl for MinReducer {
     type State = Value;
 
-    fn neutral(&self) -> Option<Value> {
-        None
-    }
-
     fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(value.clone())
     }
@@ -264,10 +273,6 @@ pub struct ArgMinReducer;
 
 impl ReducerImpl for ArgMinReducer {
     type State = (Value, Key);
-
-    fn neutral(&self) -> Option<Value> {
-        None
-    }
 
     fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
         Some((value.clone(), *key))
@@ -305,10 +310,6 @@ pub struct AnyReducer;
 impl ReducerImpl for AnyReducer {
     type State = (Key, Value);
 
-    fn neutral(&self) -> Option<Value> {
-        None
-    }
-
     fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
         Some((*key, value.clone()))
     }
@@ -336,10 +337,6 @@ pub struct MaxReducer;
 impl ReducerImpl for MaxReducer {
     type State = Value;
 
-    fn neutral(&self) -> Option<Value> {
-        None
-    }
-
     fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(value.clone())
     }
@@ -366,10 +363,6 @@ pub struct ArgMaxReducer;
 
 impl ReducerImpl for ArgMaxReducer {
     type State = (Value, Key);
-
-    fn neutral(&self) -> Option<Value> {
-        None
-    }
 
     fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
         Some((value.clone(), *key))
@@ -417,12 +410,44 @@ impl ReducerImpl for SortedTupleReducer {
             .collect()
     }
 
-    fn neutral(&self) -> Option<Value> {
-        Some(Value::from(&[][..]))
-    }
-
     fn finish(&self, mut state: Self::State) -> Value {
         state.sort();
         state.as_slice().into()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TupleReducer;
+
+impl ReducerImpl for TupleReducer {
+    type State = Vec<(Key, Value)>;
+
+    fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
+        Some(vec![(*key, value.clone())])
+    }
+
+    fn combine<'a>(
+        &self,
+        values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
+    ) -> Self::State {
+        values
+            .into_iter()
+            .flat_map(|(state, cnt)| {
+                state
+                    .iter()
+                    .flat_map(move |v| repeat(v).take(cnt.get()))
+                    .cloned()
+            })
+            .collect()
+    }
+
+    fn finish(&self, mut state: Self::State) -> Value {
+        state.sort_by_key(|(key, _)| *key);
+        state
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<Value>>()
+            .as_slice()
+            .into()
     }
 }

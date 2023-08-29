@@ -31,7 +31,7 @@ def pagerank(edges: pw.Table[Edge], steps: int = 5) -> pw.Table[Result]:
         )
 
         inflows = edges.groupby(id=edges.v).reduce(
-            flow=pw.reducers.int_sum(outflow.ix(edges.u).flow)
+            flow=pw.reducers.sum(outflow.ix(edges.u).flow)
         )
 
         inflows = pw.Table.concat(base, inflows)

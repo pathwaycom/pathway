@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type
+from os import PathLike
+from typing import Any, Dict, List, Optional, Type, Union
 
 import pathway as pw
 from pathway.internals.api import PathwayType
@@ -15,13 +16,13 @@ from pathway.internals.trace import trace_user_frame
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: str,
+    path: Union[str, PathLike],
     *,
     schema: Optional[Type[Schema]] = None,
     mode: str = "streaming",
     json_field_paths: Optional[Dict[str, str]] = None,
     autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     debug_data=None,
     value_columns: Optional[List[str]] = None,
     primary_key: Optional[List[str]] = None,
@@ -170,7 +171,7 @@ def read(
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, filename: str) -> None:
+def write(table: Table, filename: Union[str, PathLike]) -> None:
     """Writes ``table``'s stream of updates to a file in jsonlines format.
 
     Args:

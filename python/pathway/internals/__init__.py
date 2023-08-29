@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pathway.internals import asynchronous, universes
-from pathway.internals._reducers import reducers
+from pathway.internals import asynchronous, reducers, universes
 from pathway.internals.api import Pointer
 from pathway.internals.common import (
     apply,
@@ -19,6 +18,7 @@ from pathway.internals.common import (
     require,
     udf,
     udf_async,
+    unwrap,
 )
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.decorators import (
@@ -46,6 +46,7 @@ from pathway.internals.row_transformer import ClassArg
 from pathway.internals.run import run, run_all
 from pathway.internals.schema import (
     Schema,
+    SchemaProperties,
     column_definition,
     schema_builder,
     schema_from_types,
@@ -116,4 +117,6 @@ __all__ = [
     "DateTimeNaive",
     "DateTimeUtc",
     "Duration",
+    "unwrap",
+    "SchemaProperties",
 ]

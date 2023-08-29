@@ -8,13 +8,11 @@ pub mod shard;
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats};
+use crate::connectors::Connector;
 use crate::connectors::ARTIFICIAL_TIME_ON_REWIND_START;
-use crate::persistence::storage::{
-    filesystem::SaveStatePolicy, FileSystem as FileSystemMetadataStorage,
-};
-use crate::persistence::tracker::{
-    PersistenceManagerConfig, PersistencyManager, SimplePersistencyManager, StreamStorageConfig,
-};
+use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
+use crate::persistence::tracker::{PersistenceManager, SimplePersistenceManager};
+use crate::persistence::ExternalPersistentId;
 
 use std::any::type_name;
 use std::borrow::{Borrow, Cow};
@@ -26,8 +24,7 @@ use std::fmt::Display;
 use std::iter::{once, zip};
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
-use std::panic::{catch_unwind, panic_any, resume_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,15 +78,16 @@ use super::graph::FlattenHandle;
 use super::http_server::maybe_run_http_server_thread;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
-    AnyReducer, ArgMaxReducer, ArgMinReducer, IntSumReducer, MaxReducer, MinReducer, ReducerImpl,
-    SemigroupReducerImpl, SortedTupleReducer, SumReducer, UniqueReducer,
+    AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, FloatSumReducer, IntSumReducer,
+    MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer, TupleReducer,
+    UniqueReducer,
 };
+use super::report_error::{ReportError, SpawnWithReporter, UnwrapWithReporter};
 use super::{
     BatchWrapper, ColumnHandle, ComplexColumn, ConcatHandle, Error, Expression, Graph,
     GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType, JoinerHandle, Key,
     OperatorStats, ProberStats, Reducer, Result, Table, UniverseHandle, Value, VennUniverseHandle,
 };
-use crate::connectors::Connector;
 
 pub type WakeupReceiver = Receiver<Box<dyn FnOnce() -> DynResult<()> + Send + Sync + 'static>>;
 
@@ -117,52 +115,11 @@ impl ErrorReporter {
         let reporter = Self { sender };
         (reporter, receiver)
     }
+}
 
+impl ReportError for ErrorReporter {
     fn report(&self, error: Error) {
         self.sender.try_send(error).unwrap_or(());
-    }
-
-    #[track_caller]
-    fn report_and_panic(&self, error: Error) -> ! {
-        let message = error.to_string();
-        self.report(error);
-        panic_any(message);
-    }
-
-    #[track_caller]
-    fn report_and_panic_with_trace(&self, error: DynError, trace: &Trace) -> ! {
-        let message = error.to_string();
-        self.report(Error::with_trace(error, trace.clone()));
-        panic_any(message);
-    }
-}
-
-trait UnwrapWithReporter<T> {
-    fn unwrap_with_reporter(self, error_reporter: &ErrorReporter) -> T;
-    fn unwrap_with_reporter_and_trace(self, error_reporter: &ErrorReporter, trace: &Trace) -> T;
-}
-
-impl<T> UnwrapWithReporter<T> for DynResult<T> {
-    #[track_caller]
-    fn unwrap_with_reporter(self, error_reporter: &ErrorReporter) -> T {
-        self.unwrap_or_else(|err| error_reporter.report_and_panic(Error::from(err)))
-    }
-    #[track_caller]
-    fn unwrap_with_reporter_and_trace(self, error_reporter: &ErrorReporter, trace: &Trace) -> T {
-        self.unwrap_or_else(|err| error_reporter.report_and_panic_with_trace(err, trace))
-    }
-}
-
-impl<T> UnwrapWithReporter<T> for Result<T> {
-    #[track_caller]
-    fn unwrap_with_reporter(self, error_reporter: &ErrorReporter) -> T {
-        self.unwrap_or_else(|err| error_reporter.report_and_panic(err))
-    }
-    #[track_caller]
-    fn unwrap_with_reporter_and_trace(self, error_reporter: &ErrorReporter, trace: &Trace) -> T {
-        self.unwrap_or_else(|err| {
-            error_reporter.report_and_panic_with_trace(DynError::from(err), trace)
-        })
     }
 }
 
@@ -292,7 +249,7 @@ impl<S: MaybeTotalScope> From<Collection<S, (Key, Value)>> for Values<S> {
     }
 }
 
-type PersistentStorage = Option<Arc<Mutex<SimplePersistencyManager>>>;
+type PersistentStorage = Option<Arc<Mutex<SimplePersistenceManager>>>;
 
 enum UniverseData<S: MaybeTotalScope> {
     FromCollection {
@@ -878,7 +835,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     flattens: Arena<Flatten<S>, FlattenHandle>,
     venn_universes: Arena<VennUniverse<S>, VennUniverseHandle>,
     pollers: Vec<Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>>,
-    connector_threads: Vec<JoinHandle<DynResult<()>>>,
+    connector_threads: Vec<JoinHandle<()>>,
     connector_monitors: Vec<Rc<RefCell<ConnectorMonitor>>>,
     error_reporter: ErrorReporter,
     input_probe: ProbeHandle<S::Timestamp>,
@@ -901,6 +858,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
         JoinerHandle,
     >,
     ignore_asserts: bool,
+    persistence_config: Option<PersistenceManagerConfig>,
     persistent_storage: PersistentStorage,
 }
 
@@ -1280,9 +1238,23 @@ impl<S: MaybeTotalScope> KeyWithTupleArranged<S> {
 
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
 impl<S: MaybeTotalScope> DataflowGraphInner<S> {
-    fn new(scope: S, error_reporter: ErrorReporter, ignore_asserts: bool) -> Self {
-        let persistent_storage = Self::construct_persistent_storage(scope.index(), scope.peers());
-        Self {
+    fn new(
+        scope: S,
+        error_reporter: ErrorReporter,
+        ignore_asserts: bool,
+        persistence_config: Option<PersistenceManagerConfig>,
+    ) -> Result<Self> {
+        let persistent_storage = {
+            if let Some(persistence_config) = &persistence_config {
+                Some(Arc::new(Mutex::new(SimplePersistenceManager::new(
+                    persistence_config.clone(),
+                )?)))
+            } else {
+                None
+            }
+        };
+
+        Ok(Self {
             scope,
             universes: Arena::new(),
             columns: Arena::new(),
@@ -1307,8 +1279,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             concat_cache: HashMap::new(),
             joiners_cache: HashMap::new(),
             ignore_asserts,
+            persistence_config,
             persistent_storage,
-        }
+        })
     }
 
     fn worker_index(&self) -> usize {
@@ -1317,27 +1290,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
     fn worker_count(&self) -> usize {
         self.scope.peers()
-    }
-
-    fn construct_persistent_storage(worker_id: usize, total_workers: usize) -> PersistentStorage {
-        let persistent_storage_path = std::env::var("PATHWAY_PERSISTENT_STORAGE").ok()?;
-
-        let storage = FileSystemMetadataStorage::new(
-            Path::new(&persistent_storage_path),
-            worker_id,
-            SaveStatePolicy::Background(Duration::from_secs(1)),
-        )
-        .expect("Persistent storage failed to initialize. Worker id: {worker_id}");
-
-        let persistency_manager = Arc::new(Mutex::new(SimplePersistencyManager::new(
-            Box::new(storage),
-            PersistenceManagerConfig::new(
-                StreamStorageConfig::Filesystem(persistent_storage_path.into()),
-                worker_id,
-                total_workers,
-            ),
-        )));
-        Some(persistency_manager)
     }
 
     fn empty_universe(&mut self) -> Result<UniverseHandle> {
@@ -1923,7 +1875,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 (
                     key,
                     KeyWith(
-                        Tuple::Two([Value::from(key), Value::from(i as i64)]).key(),
+                        Tuple::Two([Value::from(key), Value::from(i64::try_from(i).unwrap())])
+                            .key(),
                         value,
                     ),
                 )
@@ -2149,14 +2102,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
     fn create_dataflow_reducer(reducer: Reducer) -> Rc<dyn DataflowReducer<S>> {
         match reducer {
-            Reducer::Sum => Rc::new(SumReducer),
+            Reducer::FloatSum => Rc::new(FloatSumReducer),
             Reducer::IntSum => Rc::new(IntSumReducer),
+            Reducer::ArraySum => Rc::new(ArraySumReducer),
             Reducer::Unique => Rc::new(UniqueReducer),
             Reducer::Min => Rc::new(MinReducer),
             Reducer::ArgMin => Rc::new(ArgMinReducer),
             Reducer::Max => Rc::new(MaxReducer),
             Reducer::ArgMax => Rc::new(ArgMaxReducer),
             Reducer::SortedTuple => Rc::new(SortedTupleReducer),
+            Reducer::Tuple => Rc::new(TupleReducer),
             Reducer::Any => Rc::new(AnyReducer),
         }
     }
@@ -2968,6 +2923,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
     }
 }
 
+#[derive(Debug, Clone)]
 enum OutputEvent {
     Commit(Option<u64>),
     Batch(Vec<((Key, Tuple), u64, isize)>),
@@ -2981,7 +2937,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
+        let has_persistent_storage = self.persistent_storage.is_some();
+        if let Some(external_persistent_id) = external_persistent_id {
+            if !has_persistent_storage {
+                return Err(Error::NoPersistentStorage(external_persistent_id.clone()));
+            }
+        } else if has_persistent_storage && !reader.is_internal() {
+            return Err(Error::PersistentIdNotAssigned(reader.storage_type()));
+        }
+
         let (universe_session, keys): (KeysSession<S>, Keys<S>) = self.scope.new_collection();
         let keys = keys.reshard();
         keys.probe_with(&mut self.input_probe);
@@ -3005,7 +2971,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             let reader_storage_type = reader.storage_type();
 
             let connector = Connector::<S::Timestamp>::new(commit_duration);
-            let (poller, input_thread_handle, offsets_by_time, connector_monitor) = connector.run(
+            let state = connector.run(
                 reader,
                 parser,
                 column_sessions,
@@ -3025,20 +2991,22 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 self.persistent_storage.clone(),
                 self.connector_monitors.len(),
                 realtime_reader_needed,
-            );
+                external_persistent_id,
+                self.error_reporter.clone(),
+            )?;
 
-            self.pollers.push(poller);
-            self.connector_threads.push(input_thread_handle);
+            self.pollers.push(state.poller);
+            self.connector_threads.push(state.input_thread_handle);
             if let Some(persistent_storage) = &mut self.persistent_storage {
                 if let Some(persistent_id) = persistent_id {
                     persistent_storage.lock().unwrap().register_input_source(
                         persistent_id,
                         &reader_storage_type,
-                        offsets_by_time,
+                        state.offsets_by_time,
                     );
                 }
             }
-            self.connector_monitors.push(connector_monitor);
+            self.connector_monitors.push(state.connector_monitor);
         }
 
         let universe = Universe::from_collection(keys);
@@ -3065,8 +3033,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let output_columns = self.tuples(universe_handle, column_handles)?;
         let single_threaded = data_sink.single_threaded();
 
-        let (sender, receiver) = mpsc::channel();
-
         let output = output_columns
             .as_collection()
             .consolidate_nondecreasing()
@@ -3079,23 +3045,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             }
         };
 
-        inspect_output
-            .inspect_core(move |event| match event {
-                Ok((_time, data)) => {
-                    sender
-                        .send(OutputEvent::Batch(data.to_vec()))
-                        .expect("output report failed");
-                }
-                Err(frontier) => {
-                    assert!(frontier.len() <= 1);
-                    if let Err(e) = sender.send(OutputEvent::Commit(frontier.first().copied())) {
-                        warn!("Failed to report time advancement: {e}");
-                    }
-                }
-            })
-            .probe_with(&mut self.output_probe);
+        let sender = if !single_threaded || self.scope.index() == 0 {
+            let (sender, receiver) = mpsc::channel();
 
-        if !single_threaded || self.scope.index() == 0 {
             let thread_name = format!(
                 "pathway:output_table-{}-{}",
                 data_sink.short_description(),
@@ -3109,7 +3061,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
             let output_joiner_handle = Builder::new()
                 .name(thread_name)
-                .spawn(move || loop {
+                .spawn_with_reporter(self.error_reporter.clone(), move || loop {
                     match receiver.recv() {
                         Ok(OutputEvent::Batch(batch)) => {
                             for ((key, values), time, diff) in batch {
@@ -3148,7 +3100,36 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 })
                 .expect("output thread creation failed");
             self.connector_threads.push(output_joiner_handle);
-        }
+            Some(sender)
+        } else {
+            None
+        };
+
+        inspect_output
+            .inspect_core(move |event| match sender {
+                None => {
+                    // There is no connector thread for this worker.
+                    // We shouldn't be getting any data, but we can get frontier updates.
+                    match event {
+                        Ok((_time, [])) => {}
+                        Err(_frontier) => {}
+                        _ => panic!("got data in a worker that is not doing output"),
+                    }
+                }
+                Some(ref sender) => {
+                    let event = match event {
+                        Ok((_time, data)) => OutputEvent::Batch(data.to_vec()),
+                        Err(frontier) => {
+                            assert!(frontier.len() <= 1);
+                            OutputEvent::Commit(frontier.first().copied())
+                        }
+                    };
+                    sender
+                        .send(event)
+                        .expect("sending output event should not fail");
+                }
+            })
+            .probe_with(&mut self.output_probe);
 
         Ok(())
     }
@@ -3224,7 +3205,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 subscope.clone(),
                 self.error_reporter.clone(),
                 self.ignore_asserts,
-            );
+                self.persistence_config.clone(),
+            )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
             let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
             let inner_iterated: Vec<IteratedTable<_, _>> = state.create_tables(iterated)?;
@@ -3235,7 +3217,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             let iterated_handles = extract_handles(inner_iterated.iter());
             let iterated_with_universe_handles =
                 extract_handles(inner_iterated_with_universe.iter());
-            let extra_handles = extract_handles(inner_extra.into_iter());
+            let extra_handles = extract_handles(inner_extra);
             let (result, result_with_universe) = logic(
                 &subgraph,
                 iterated_handles,
@@ -3737,12 +3719,18 @@ where
 struct InnerDataflowGraph<S: MaybeTotalScope>(RefCell<DataflowGraphInner<S>>);
 
 impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
-    pub fn new(scope: S, error_reporter: ErrorReporter, ignore_asserts: bool) -> Self {
-        Self(RefCell::new(DataflowGraphInner::new(
+    pub fn new(
+        scope: S,
+        error_reporter: ErrorReporter,
+        ignore_asserts: bool,
+        persistence_config: Option<PersistenceManagerConfig>,
+    ) -> Result<Self> {
+        Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
             error_reporter,
             ignore_asserts,
-        )))
+            persistence_config,
+        )?)))
     }
 }
 
@@ -4113,6 +4101,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _parser: Box<dyn Parser>,
         _commit_duration: Option<Duration>,
         _parallel_readers: usize,
+        _external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
         Err(Error::IoNotPossible)
     }
@@ -4181,12 +4170,20 @@ struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = u64>>(
 );
 
 impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
-    pub fn new(scope: S, error_reporter: ErrorReporter, ignore_asserts: bool) -> Self {
-        Self(RefCell::new(DataflowGraphInner::new(
+    pub fn new(
+        scope: S,
+        error_reporter: ErrorReporter,
+        ignore_asserts: bool,
+        persistence_config: Option<PersistenceManagerOuterConfig>,
+    ) -> Result<Self> {
+        let worker_idx = scope.index();
+        let total_workers = scope.peers();
+        Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
             error_reporter,
             ignore_asserts,
-        )))
+            persistence_config.map(|cfg| cfg.into_inner(worker_idx, total_workers)),
+        )?)))
     }
 }
 
@@ -4576,10 +4573,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
-        self.0
-            .borrow_mut()
-            .connector_table(reader, parser, commit_duration, parallel_readers)
+        self.0.borrow_mut().connector_table(
+            reader,
+            parser,
+            commit_duration,
+            parallel_readers,
+            external_persistent_id,
+        )
     }
 
     fn output_table(
@@ -4721,6 +4723,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     ignore_asserts: bool,
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
+    persistence_config: Option<PersistenceManagerOuterConfig>,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
@@ -4762,8 +4765,13 @@ where
                 progress_reporter_runner,
                 http_server_runner,
             ) = worker.dataflow::<u64, _, _>(|scope| {
-                let graph =
-                    OuterDataflowGraph::new(scope.clone(), error_reporter.clone(), ignore_asserts);
+                let graph = OuterDataflowGraph::new(
+                    scope.clone(),
+                    error_reporter.clone(),
+                    ignore_asserts,
+                    persistence_config.clone(),
+                )
+                .unwrap_with_reporter(&error_reporter);
                 let res = logic(&graph).unwrap_with_reporter(&error_reporter);
                 let progress_reporter_runner =
                     maybe_run_reporter(&monitoring_level, &graph, stats_monitor.clone());
@@ -4823,10 +4831,9 @@ where
             }
 
             for connector_thread in connector_threads {
-                let join_result = connector_thread
+                connector_thread
                     .join()
-                    .expect("join connector thread failed");
-                join_result.unwrap_with_reporter(&error_reporter);
+                    .expect("connector thread should not panic");
             }
 
             for prober in &mut probers {

@@ -4,6 +4,11 @@ use std::fmt;
 use std::result;
 
 use super::{Key, Value};
+use crate::persistence::metadata_backends::Error as MetadataBackendError;
+
+use crate::connectors::data_storage::WriteError;
+use crate::connectors::StorageType;
+use crate::persistence::ExternalPersistentId;
 
 #[allow(clippy::module_name_repetitions)]
 pub type DynError = Box<dyn error::Error + Send + Sync>;
@@ -120,6 +125,9 @@ pub enum Error {
     #[error("value error: {0}")]
     ValueError(String),
 
+    #[error("persistent metadata backend failed: {0}")]
+    PersistentStorageError(#[from] MetadataBackendError),
+
     #[error(transparent)]
     Other(DynError),
 
@@ -129,6 +137,17 @@ pub enum Error {
         inner: DynError,
         trace: Trace,
     },
+
+    #[error("persistent id {0} is assigned, but no persistent storage is configured")]
+    NoPersistentStorage(ExternalPersistentId),
+
+    #[error(
+        "persistent storage is configured, but persistent id is not assigned for {0:?} reader"
+    )]
+    PersistentIdNotAssigned(StorageType),
+
+    #[error("snapshot writer failed: {0}")]
+    SnapshotWriterError(#[source] WriteError),
 }
 
 impl Error {
@@ -153,9 +172,9 @@ impl Error {
         }
     }
 
-    pub fn with_trace(error: DynError, trace: Trace) -> Self {
+    pub fn with_trace(error: impl Into<DynError>, trace: Trace) -> Self {
         Self::WithTrace {
-            inner: error,
+            inner: error.into(),
             trace,
         }
     }

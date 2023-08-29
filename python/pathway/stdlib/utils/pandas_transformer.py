@@ -137,6 +137,30 @@ def pandas_transformer(
         in resulting table. Defaults to None.
     Returns:
         Transformer that can be applied on Pathway tables.
+
+
+    Example:
+
+        >>> import pathway as pw
+        >>> input = pw.debug.table_from_markdown(
+        ...     '''
+        ...     | foo  | bar
+        ... 0   | 10   | 100
+        ... 1   | 20   | 200
+        ... 2   | 30   | 300
+        ... '''
+        ... )
+        >>> class Output(pw.Schema):
+        ...     sum: int
+        >>> @pw.pandas_transformer(output_schema=Output)
+        ... def sum_cols(t: pd.DataFrame) -> pd.DataFrame:
+        ...     return pd.DataFrame(t.sum(axis=1))
+        >>> output = sum_cols(input)
+        >>> pw.debug.compute_and_print(output, include_id=False)
+        sum
+        110
+        220
+        330
     """
 
     def decorator(func):

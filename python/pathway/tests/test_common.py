@@ -1937,8 +1937,6 @@ def test_apply_async_coerce_async():
 
 def test_apply_async_disk_cache(tmp_path: pathlib.Path):
     cache_dir = tmp_path / "test_cache"
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(cache_dir)
-
     counter = mock.Mock()
 
     @pw.asynchronous.async_options(cache_strategy=pw.asynchronous.DiskCache())
@@ -1965,8 +1963,20 @@ def test_apply_async_disk_cache(tmp_path: pathlib.Path):
     )
 
     # run twice to check if cache is used
-    assert_table_equality(result, expected)
-    assert_table_equality(result, expected)
+    assert_table_equality(
+        result,
+        expected,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        ),
+    )
+    assert_table_equality(
+        result,
+        expected,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        ),
+    )
     assert os.path.exists(cache_dir)
     assert counter.call_count == 3
 
@@ -2005,7 +2015,6 @@ def test_udf_async():
 
 def test_udf_async_options(tmp_path: pathlib.Path):
     cache_dir = tmp_path / "test_cache"
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(cache_dir)
 
     counter = mock.Mock()
 
@@ -2033,8 +2042,20 @@ def test_udf_async_options(tmp_path: pathlib.Path):
     )
 
     # run twice to check if cache is used
-    assert_table_equality(result, expected)
-    assert_table_equality(result, expected)
+    assert_table_equality(
+        result,
+        expected,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        ),
+    )
+    assert_table_equality(
+        result,
+        expected,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        ),
+    )
     assert os.path.exists(cache_dir)
     assert counter.call_count == 3
 
@@ -2591,7 +2612,7 @@ def test_groupby_int_sum():
     )
 
     left_res = left.groupby(left.owner).reduce(
-        left.owner, val=pw.reducers.int_sum(left.val)
+        left.owner, val=pw.reducers.sum(left.val)
     )
 
     assert_table_equality_wo_index(
@@ -2995,6 +3016,75 @@ def test_avg_reducer():
      Bob    | 7.5
     """
     )
+    assert_table_equality_wo_index(res, expected)
+
+
+def test_npsum_reducer_ints():
+    t = pw.debug.table_from_pandas(
+        pd.DataFrame(
+            {
+                "data": [
+                    np.array([1, 2, 3]),
+                    np.array([4, 5, 6]),
+                    np.array([7, 8, 9]),
+                ]
+            }
+        )
+    )
+    result = pw.debug.table_from_pandas(
+        pd.DataFrame(
+            {
+                "sum": [
+                    np.array([12, 15, 18]),
+                ]
+            }
+        )
+    )
+    assert_table_equality_wo_index(t.reduce(sum=pw.reducers.sum(pw.this.data)), result)
+
+
+def test_npsum_reducer_floats():
+    t = pw.debug.table_from_pandas(
+        pd.DataFrame(
+            {
+                "data": [
+                    np.array([1.1, 2.1, 3.1]),
+                    np.array([4.1, 5.1, 6.1]),
+                    np.array([7.1, 8.1, 9.1]),
+                ]
+            }
+        )
+    )
+    result = pw.debug.table_from_pandas(
+        pd.DataFrame(
+            {
+                "sum": [
+                    np.array([12.3, 15.3, 18.3]),
+                ]
+            }
+        )
+    )
+    assert_table_equality_wo_index(t.reduce(sum=pw.reducers.sum(pw.this.data)), result)
+
+
+def test_ndarray_reducer():
+    t = pw.debug.table_from_markdown(
+        """
+       | colA | colB
+    3  | valA | -1
+    2  | valA | 1
+    5  | valA | 2
+    4  | valB | 4
+    6  | valB | 4
+    1  | valB | 7
+    """
+    )
+
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame({"tuple": [np.array([1, -1, 2]), np.array([7, 4, 4])]})
+    )
+
+    res = t.groupby(t.colA).reduce(tuple=pw.reducers.ndarray(t.colB))
     assert_table_equality_wo_index(res, expected)
 
 
@@ -4122,6 +4212,43 @@ def test_lazy_coalesce():
     assert_table_equality(ret, tab)
 
 
+def test_coalesce_optional_int_float():
+    table = T(
+        """
+          | a |  b
+        1 | 1 | 1.2
+        2 |   | 2.3
+        3 | 3 | 3.4
+        4 |   | 4.5
+    """
+    )
+    expected = T(
+        """
+        res
+        1 | 1.5
+        2 | 2.8
+        3 | 3.5
+        4 | 5.0
+    """
+    )
+    ret = table.select(res=pw.coalesce(pw.this.a, pw.this.b) + 0.5)
+    assert_table_equality(ret, expected)
+
+
+def test_coalesce_errors_on_incompatible_types():
+    table = T(
+        """
+          | a |  b
+        1 | 1 | abc
+        2 | 2 | x
+        3 | 3 | xxx
+        4 | 4 | d
+    """
+    )
+    with pytest.raises(TypeError):
+        table.select(res=pw.coalesce(pw.this.a, pw.this.b))
+
+
 def test_require_01():
     tab = T(
         """
@@ -4179,6 +4306,67 @@ def test_if_else():
         """
         ),
     )
+
+
+def test_if_else_int_float():
+    table = T(
+        """
+        a |  b
+        1 | 1.2
+        2 | 2.3
+        3 | 3.4
+        4 | 4.5
+        """
+    )
+    expected = T(
+        """
+        res
+        1.3
+        2.4
+        3.1
+        4.1
+    """
+    )
+    ret = table.select(res=pw.if_else(pw.this.a > 2, pw.this.a, pw.this.b) + 0.1)
+
+    assert_table_equality(ret, expected)
+
+
+def test_if_else_optional_int_float():
+    table = T(
+        """
+          | a |  b  | c
+        1 | 1 | 1.2 | False
+        2 | 2 | 2.3 | False
+        3 | 3 | 3.4 | True
+        4 |   | 4.5 | True
+    """
+    )
+    expected = T(
+        """
+        res
+        1 | 1.2
+        2 | 2.3
+        3 | 3.0
+        4 |
+    """
+    )
+    ret = table.select(res=pw.if_else(pw.this.c, pw.this.a, pw.this.b))
+    assert_table_equality(ret, expected)
+
+
+def test_if_else_errors_on_incompatible_types():
+    table = T(
+        """
+          | a |  b
+        1 | 1 | abc
+        2 | 2 | x
+        3 | 3 | xxx
+        4 | 4 | d
+    """
+    )
+    with pytest.raises(TypeError):
+        table.select(res=pw.if_else(pw.this.a > 2, pw.this.a, pw.this.b))
 
 
 def test_join_filter_1():
@@ -4335,7 +4523,7 @@ def test_outerjoin_filter_2():
         left.join_outer(right, left.val == right.val)
         .filter(pw.left.val.is_not_none())
         .filter(pw.right.val.is_not_none())
-        .select(val=pw.left.val + pw.right.val)
+        .select(val=pw.unwrap(pw.left.val) + pw.unwrap(pw.right.val))
     )
     assert_table_equality_wo_index(
         joined,
@@ -4345,7 +4533,7 @@ def test_outerjoin_filter_2():
              22
              24
             """
-        ).update_types(val=Optional[int]),
+        ),
     )
 
 
@@ -5127,3 +5315,107 @@ on
     )
     assert_table_equality_wo_index(res, expected)
     assert_table_equality_wo_index(res, expected)
+
+
+def test_unwrap():
+    a = T(
+        """
+        foo
+        1
+        2
+        3
+        None
+        """
+    )
+    result = a.filter(a.foo.is_not_none()).select(ret=pw.unwrap(pw.this.foo))
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            ret
+            1
+            2
+            3
+            """
+        ),
+    )
+
+
+def test_unwrap_with_nones():
+    a = T(
+        """
+        foo
+        1
+        2
+        3
+        None
+        """
+    )
+    a.select(ret=pw.unwrap(pw.this.foo))
+
+    with pytest.raises(ValueError):
+        run_all()
+
+
+def test_tuple_reducer():
+    t = pw.debug.table_from_markdown(
+        """
+       | colA | colB
+    3  | valA | -1
+    2  | valA | 1
+    5  | valA | 2
+    4  | valB | 4
+    6  | valB | 4
+    1  | valB | 7
+    """
+    )
+
+    df = pd.DataFrame({"tuple": [(1, -1, 2), (7, 4, 4)]})
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(tuple=List[int]),
+    )
+
+    res = t.groupby(t.colA).reduce(tuple=pw.reducers.tuple(t.colB))
+    assert_table_equality_wo_index(res, expected)
+
+
+def test_tuple_reducer_consistency():
+    left = T(
+        """
+    pet  |  owner  | age
+    dog  | Bob     | 10
+    cat  | Alice   | 9
+    cat  | Alice   | 8
+    dog  | Bob     | 7
+    foo  | Charlie | 6
+    """
+    )
+
+    left_res = left.reduce(
+        pet=pw.reducers.tuple(left.pet),
+        owner=pw.reducers.tuple(left.owner),
+        age=pw.reducers.tuple(left.age),
+    )
+
+    t2 = left_res.select(
+        pet=pw.this.pet.get(3), owner=pw.this.owner.get(3), age=pw.this.age.get(3)
+    )
+
+    joined = left.join(
+        t2,
+        left.pet == t2.pet,
+        left.owner == t2.owner,
+        left.age == t2.age,
+    ).reduce(cnt=pw.reducers.count())
+
+    assert_table_equality_wo_index(
+        joined,
+        T(
+            """
+            cnt
+            1
+            """
+        ),
+    )

@@ -16,7 +16,8 @@ from pathway.internals.graph_runner.scope_context import ScopeContext
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.helpers import StableSet
 from pathway.internals.monitoring import MonitoringLevel, monitor_stats
-from pathway.internals.operator import ContextualizedExpressionOperator, Operator
+from pathway.internals.operator import ContextualizedIntermediateOperator, Operator
+from pathway.internals.persistence import PersistenceConfig
 
 
 class GraphRunner:
@@ -35,6 +36,7 @@ class GraphRunner:
         monitoring_level: MonitoringLevel = MonitoringLevel.AUTO,
         with_http_server: bool = False,
         default_logging: bool = True,
+        persistence_config: Optional[PersistenceConfig] = None,
     ) -> None:
         self._graph = input_graph
         self.debug = debug
@@ -44,6 +46,7 @@ class GraphRunner:
         self.monitoring_level = monitoring_level
         self.with_http_server = with_http_server
         self.default_logging = default_logging
+        self.persistence_config = persistence_config
 
     def run_tables(
         self,
@@ -84,7 +87,7 @@ class GraphRunner:
         node_names = [
             (operator.id, operator.label())
             for operator in context.nodes
-            if isinstance(operator, ContextualizedExpressionOperator)
+            if isinstance(operator, ContextualizedIntermediateOperator)
         ]
 
         monitoring_level = self.monitoring_level.to_internal()
@@ -92,6 +95,12 @@ class GraphRunner:
         with new_event_loop() as event_loop, monitor_stats(
             monitoring_level, node_names, self.default_logging
         ) as stats_monitor:
+            if self.persistence_config:
+                self.persistence_config.on_before_run()
+                persistence_engine_config = self.persistence_config.engine_config
+            else:
+                persistence_engine_config = None
+
             return api.run_with_new_graph(
                 logic,
                 event_loop=event_loop,
@@ -99,6 +108,7 @@ class GraphRunner:
                 stats_monitor=stats_monitor,
                 monitoring_level=monitoring_level,
                 with_http_server=self.with_http_server,
+                persistence_config=persistence_engine_config,
             )
 
     def build_scope(

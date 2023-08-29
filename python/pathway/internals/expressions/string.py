@@ -1,6 +1,6 @@
 # Copyright © 2023 Pathway
 
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 import pathway.internals.expression as expr
 from pathway.internals import api
@@ -57,11 +57,10 @@ class StringNamespace:
         david  | david
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                str: lambda x: api.Expression.apply(str.lower, x),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (str, str, lambda x: api.Expression.apply(str.lower, x)),
+            ],
             "str.lower",
             self._expression,
         )
@@ -93,11 +92,10 @@ class StringNamespace:
         david  | DAVID
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                str: lambda x: api.Expression.apply(str.upper, x),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (str, str, lambda x: api.Expression.apply(str.upper, x)),
+            ],
             "str.upper",
             self._expression,
         )
@@ -129,11 +127,10 @@ class StringNamespace:
         david  | divad
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                str: lambda x: api.Expression.apply(lambda y: y[::-1], x),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (str, str, lambda x: api.Expression.apply(lambda y: y[::-1], x)),
+            ],
             "str.reverse",
             self._expression,
         )
@@ -165,11 +162,10 @@ class StringNamespace:
         david  | 5
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                str: lambda x: api.Expression.apply(len, x),
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (str, int, lambda x: api.Expression.apply(len, x)),
+            ],
             "str.len",
             self._expression,
         )
@@ -231,13 +227,16 @@ class StringNamespace:
         yelliwwiid | yellowwoid
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str, str, int): lambda x, y, z, c: api.Expression.apply(
-                    lambda s1, s2, s3, cnt: s1.replace(s2, s3, cnt), x, y, z, c
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, str, str, int),
+                    str,
+                    lambda x, y, z, c: api.Expression.apply(
+                        lambda s1, s2, s3, cnt: s1.replace(s2, s3, cnt), x, y, z, c
+                    ),
                 ),
-            },
-            str,
+            ],
             "str.replace",
             self._expression,
             old_value,
@@ -272,11 +271,14 @@ class StringNamespace:
         david  | False
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str): lambda x, y: api.Expression.apply(str.startswith, x, y),
-            },
-            bool,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, str),
+                    bool,
+                    lambda x, y: api.Expression.apply(str.startswith, x, y),
+                ),
+            ],
             "str.starts_with",
             self._expression,
             prefix,
@@ -309,11 +311,14 @@ class StringNamespace:
         david  | False
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str): lambda x, y: api.Expression.apply(str.endswith, x, y),
-            },
-            bool,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, str),
+                    bool,
+                    lambda x, y: api.Expression.apply(str.endswith, x, y),
+                ),
+            ],
             "str.ends_with",
             self._expression,
             suffix,
@@ -343,11 +348,10 @@ class StringNamespace:
         david  | DAVID
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                str: lambda x: api.Expression.apply(str.swapcase, x),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (str, str, lambda x: api.Expression.apply(str.swapcase, x)),
+            ],
             "str.swap_case",
             self._expression,
         )
@@ -355,8 +359,8 @@ class StringNamespace:
     def strip(
         self, chars: Optional[Union[expr.ColumnExpression, str]] = None
     ) -> expr.ColumnExpression:
-        """Returns a copy of the string with specified characters.
-        If no arguments are passed, remove the leading and trailing whitespaces.
+        """Returns a copy of the string with specified leading and trailing characters
+        removed. If no arguments are passed, remove the leading and trailing whitespaces.
 
 
         Example:
@@ -380,21 +384,14 @@ class StringNamespace:
         david  | avi
         """
 
-        if chars is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    str: lambda x: api.Expression.apply(str.strip, x),
-                },
-                str,
-                "str.strip",
-                self._expression,
-            )
-
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str): lambda x, y: api.Expression.apply(str.strip, x, y),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, Optional[str]),
+                    str,
+                    lambda x, y: api.Expression.apply(str.strip, x, y),
+                ),
+            ],
             "str.strip",
             self._expression,
             chars,
@@ -420,11 +417,10 @@ class StringNamespace:
         Title
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                str: lambda x: api.Expression.apply(str.title, x),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (str, str, lambda x: api.Expression.apply(str.title, x)),
+            ],
             "str.title",
             self._expression,
         )
@@ -435,7 +431,7 @@ class StringNamespace:
         start: Optional[Union[expr.ColumnExpression, int]] = None,
         end: Optional[Union[expr.ColumnExpression, int]] = None,
     ) -> expr.ColumnExpression:
-        """Returns the number of non-overlapping occurrences of substring sub in the range [start, end].
+        """Returns the number of non-overlapping occurrences of substring sub in the range [start, end).
         Optional arguments start and end are interpreted as in slice notation.
 
 
@@ -460,41 +456,19 @@ class StringNamespace:
         Zoo   | 2
         """
 
-        if start is None and end is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    (str, str): lambda x, y: api.Expression.apply(str.count, x, y),
-                },
-                int,
-                "str.count",
-                self._expression,
-                sub,
-            )
-
-        if end is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    (str, str, int): lambda x, y, z: api.Expression.apply(
-                        str.count, x, y, z
+        return expr.MethodCallExpression(
+            [
+                (
+                    (
+                        str,
+                        str,
+                        Optional[int],
+                        Optional[int],
                     ),
-                },
-                int,
-                "str.count",
-                self._expression,
-                sub,
-                start,
-            )
-
-        if start is None:
-            raise ValueError("str.count: missing end argument.")
-
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str, int, int): lambda x, y, z, t: api.Expression.apply(
-                    str.count, x, y, z, t
+                    int,
+                    lambda *args: api.Expression.apply(str.count, *args),
                 ),
-            },
-            int,
+            ],
             "str.count",
             self._expression,
             sub,
@@ -525,50 +499,28 @@ class StringNamespace:
         ...    4 | Zoo
         ... '''
         ... )
-        >>> table += table.select(count=table.name.str.find("o"))
+        >>> table += table.select(pos=table.name.str.find("o"))
         >>> pw.debug.compute_and_print(table, include_id=False)
-        name  | count
+        name  | pos
         Alice | -1
         Hello | 4
         World | 1
         Zoo   | 1
         """
 
-        if start is None and end is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    (str, str): lambda x, y: api.Expression.apply(str.find, x, y),
-                },
-                int,
-                "str.find",
-                self._expression,
-                sub,
-            )
-
-        if end is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    (str, str, int): lambda x, y, z: api.Expression.apply(
-                        str.find, x, y, z
+        return expr.MethodCallExpression(
+            [
+                (
+                    (
+                        str,
+                        str,
+                        Optional[int],
+                        Optional[int],
                     ),
-                },
-                int,
-                "str.find",
-                self._expression,
-                sub,
-                start,
-            )
-
-        if start is None:
-            raise ValueError("str.find: missing end argument.")
-
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str, int, int): lambda x, y, z, t: api.Expression.apply(
-                    lambda s1, s2, s, e: str.find, x, y, z, t
+                    int,
+                    lambda *args: api.Expression.apply(str.find, *args),
                 ),
-            },
-            int,
+            ],
             "str.find",
             self._expression,
             sub,
@@ -599,50 +551,28 @@ class StringNamespace:
         ...    4 | Zoo
         ... '''
         ... )
-        >>> table += table.select(count=table.name.str.rfind("o"))
+        >>> table += table.select(pos=table.name.str.rfind("o"))
         >>> pw.debug.compute_and_print(table, include_id=False)
-        name  | count
+        name  | pos
         Alice | -1
         Hello | 4
         World | 1
         Zoo   | 2
         """
 
-        if start is None and end is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    (str, str): lambda x, y: api.Expression.apply(str.rfind, x, y),
-                },
-                int,
-                "str.rfind",
-                self._expression,
-                sub,
-            )
-
-        if end is None:
-            return expr.MethodCallExpression.with_static_type(
-                {
-                    (str, str, int): lambda x, y, z: api.Expression.apply(
-                        str.rfind, x, y, z
+        return expr.MethodCallExpression(
+            [
+                (
+                    (
+                        str,
+                        str,
+                        Optional[int],
+                        Optional[int],
                     ),
-                },
-                int,
-                "str.rfind",
-                self._expression,
-                sub,
-                start,
-            )
-
-        if start is None:
-            raise ValueError("str.rfind: missing end argument.")
-
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str, int, int): lambda x, y, z, t: api.Expression.apply(
-                    str.rfind, x, y, z, t
+                    int,
+                    lambda *args: api.Expression.apply(str.rfind, *args),
                 ),
-            },
-            int,
+            ],
             "str.rfind",
             self._expression,
             sub,
@@ -694,11 +624,14 @@ class StringNamespace:
         BB   | B
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str): lambda x, y: api.Expression.apply(str.removeprefix, x, y),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, str),
+                    str,
+                    lambda x, y: api.Expression.apply(str.removeprefix, x, y),
+                ),
+            ],
             "str.remove_prefix",
             self._expression,
             prefix,
@@ -748,11 +681,14 @@ class StringNamespace:
         banana | bana
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, str): lambda x, y: api.Expression.apply(str.removesuffix, x, y),
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, str),
+                    str,
+                    lambda x, y: api.Expression.apply(str.removesuffix, x, y),
+                ),
+            ],
             "str.remove_suffix",
             self._expression,
             suffix,
@@ -787,15 +723,153 @@ class StringNamespace:
         david  | avi
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (str, int, int): lambda x, y, z: api.Expression.apply(
-                    lambda s, slice_start, slice_end: s[slice_start:slice_end], x, y, z
+        return expr.MethodCallExpression(
+            [
+                (
+                    (str, int, int),
+                    str,
+                    lambda x, y, z: api.Expression.apply(
+                        lambda s, slice_start, slice_end: s[slice_start:slice_end],
+                        x,
+                        y,
+                        z,
+                    ),
                 ),
-            },
-            str,
+            ],
             "str.slice",
             self._expression,
             start,
             end,
+        )
+
+    def parse_int(self, optional: bool = False) -> expr.ColumnExpression:
+        """Parses the string to int. If optional argument is set to True, then the
+        return type is Optional[int] and if some string cannot be parsed, None is
+        returned.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> df = pd.DataFrame({"a": ["-5", "0", "200"]}, dtype=str)
+        >>> table = pw.debug.table_from_pandas(df)
+        >>> table.schema.as_dict()
+        {'a': <class 'str'>}
+        >>> table = table.select(a=table.a.str.parse_int())
+        >>> table.schema.as_dict()
+        {'a': <class 'int'>}
+        >>> pw.debug.compute_and_print(table, include_id=False)
+        a
+        -5
+        0
+        200
+        """
+        return expr.MethodCallExpression(
+            [
+                (
+                    str,
+                    Optional[int] if optional else int,
+                    lambda x: api.Expression.parse_int(x, optional),
+                )
+            ],
+            "str.parse_int",
+            self._expression,
+        )
+
+    def parse_float(self, optional: bool = False) -> expr.ColumnExpression:
+        """Parses the string to float. If optional argument is set to True, then the
+        return type is Optional[float] and if some string cannot be parsed, None is
+        returned.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> df = pd.DataFrame({"a": ["-5", "0.1", "200.999"]}, dtype=str)
+        >>> table = pw.debug.table_from_pandas(df)
+        >>> table.schema.as_dict()
+        {'a': <class 'str'>}
+        >>> table = table.select(a=table.a.str.parse_float())
+        >>> table.schema.as_dict()
+        {'a': <class 'float'>}
+        >>> pw.debug.compute_and_print(table, include_id=False)
+        a
+        -5.0
+        0.1
+        200.999
+        """
+        return expr.MethodCallExpression(
+            [
+                (
+                    str,
+                    Optional[float] if optional else float,
+                    lambda x: api.Expression.parse_float(x, optional),
+                )
+            ],
+            "str.parse_float",
+            self._expression,
+        )
+
+    default_true_values = ["on", "true", "yes", "1"]
+    default_false_values = ["off", "false", "no", "0"]
+
+    def parse_bool(
+        self,
+        true_values: Iterable[str] = default_true_values,
+        false_values: Iterable[str] = default_false_values,
+        optional: bool = False,
+    ) -> expr.ColumnExpression:
+        """Parses the string to bool, by checking if given string is either in
+        true_values or false_values. The given string and all values in true_vales and
+        false_values are made lowercase, so parsing is case insensitive.
+
+        When true_values and false_values arguments are
+        not provided, strings "True", "On", "1" and "Yes" are interpreted as True value,
+        and "False", "Off", "0", and "No" are interpreted as False.
+
+        If true_values or false_values is provided, then these values are mapped to
+        respectively True and False, while all other either raise an exception or return
+        None, depending on argument optional.
+
+        If optional argument is set to True, then the
+        return type is Optional[bool] and if some string cannot be parsed, None is
+        returned.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> df = pd.DataFrame({"a": ["0", "TRUE", "on"]}, dtype=str)
+        >>> table = pw.debug.table_from_pandas(df)
+        >>> table.schema.as_dict()
+        {'a': <class 'str'>}
+        >>> pw.debug.compute_and_print(table, include_id=False)
+        a
+        0
+        TRUE
+        on
+        >>> table = table.select(a=table.a.str.parse_bool())
+        >>> table.schema.as_dict()
+        {'a': <class 'bool'>}
+        >>> pw.debug.compute_and_print(table, include_id=False)
+        a
+        False
+        True
+        True
+        """
+        lowercase_true_values = [s.lower() for s in true_values]
+        lowercase_false_values = [s.lower() for s in false_values]
+
+        return expr.MethodCallExpression(
+            [
+                (
+                    str,
+                    Optional[bool] if optional else bool,
+                    lambda x: api.Expression.parse_bool(
+                        x, lowercase_true_values, lowercase_false_values, optional
+                    ),
+                )
+            ],
+            "str.parse_bool",
+            self._expression,
         )

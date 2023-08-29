@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type
+from os import PathLike
+from typing import Any, Dict, List, Optional, Type, Union
 
 import pathway as pw
 from pathway.internals.api import PathwayType
@@ -15,14 +16,14 @@ from pathway.io._utils import CsvParserSettings, check_deprecated_kwargs
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: str,
+    path: Union[str, PathLike],
     value_columns: Optional[List[str]] = None,
     *,
     schema: Optional[Type[pw.Schema]] = None,
     csv_settings: Optional[CsvParserSettings] = None,
     mode: str = "streaming",
     autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     debug_data=None,
     id_columns: Optional[List[str]] = None,
     types: Optional[Dict[str, PathwayType]] = None,
@@ -165,7 +166,7 @@ def read(
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, filename: str) -> None:
+def write(table: Table, filename: Union[str, PathLike]) -> None:
     """Writes `table`'s stream of updates to a file in delimiter-separated values format.
 
     Args:

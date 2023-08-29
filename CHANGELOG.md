@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2023-08-29
+
+### Added
+
+- `tuple` reducer, that returns a tuple with values.
+- `ndarray` reducer, that returns an array with values.
+
+### Changed
+- `numpy` arrays of `int32`, `uint32` and `float32` are now converted to their 64-bit variants instead of tuples.
+- KNNIndex interface to take columns as inputs.
+- Reducers now check types of their arguments.
+
+### Fixed
+
+- Fixed delayed reporting of output connector errors.
+- Python objects are now freed more often, reducing peak memory usage.
+
 ## [0.3.0] - 2023-08-07
 
 ### Added

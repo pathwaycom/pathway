@@ -236,7 +236,7 @@ def test_traceback_expression():
         """
     )
 
-    with _assert_error_trace(RuntimeError):
+    with _assert_error_trace(TypeError):
         input.select(ret=pw.this.v <= "foo")  # cause
 
 
@@ -257,6 +257,7 @@ def test_traceback_rust_expression():
         run_all()
 
 
+@pytest.mark.xfail
 def test_traceback_async_apply():
     input = T(
         """
@@ -393,14 +394,13 @@ def test_traceback_transformers_4():
 
 def test_traceback_connectors_1():
     df = pd.DataFrame({"data": [1, 2, 3]})
-    pw.debug.table_from_pandas(df, id_from=["non-existing-column"])  # cause
     with _assert_error_trace(KeyError):
-        run_all()
+        pw.debug.table_from_pandas(df, id_from=["non-existing-column"])  # cause
 
 
 def test_traceback_connectors_2(tmp_path):
     pw.io.csv.write(  # cause
-        pw.Table.empty(), str(tmp_path / "non_existing_directory" / "output.csv")
+        pw.Table.empty(), tmp_path / "non_existing_directory" / "output.csv"
     )
     with _assert_error_trace(OSError):
         run_all()

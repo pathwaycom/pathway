@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
     ClassVar,
     Dict,
@@ -20,18 +21,25 @@ from typing import (
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import _reducers, api, asynchronous
-from pathway.internals.dtype import unoptionalize
+from pathway.internals import api, asynchronous
+from pathway.internals.dtype import (
+    DType,
+    NoneType,
+    is_optional,
+    sanitize_type,
+    unoptionalize_pair,
+)
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import ExpressionVisitor
-from pathway.internals.graph_runner.operator_mapping import (
+from pathway.internals.graph_runner.scope_context import ScopeContext
+from pathway.internals.operator_mapping import (
+    common_dtype_in_binary_operator,
     get_binary_expression,
     get_binary_operators_mapping_optionals,
     get_cast_operators_mapping,
     get_unary_expression,
     tuple_handling_operators,
 )
-from pathway.internals.graph_runner.scope_context import ScopeContext
 
 if TYPE_CHECKING:
     from pathway.internals.graph_runner.state import ScopeState
@@ -83,7 +91,10 @@ class ExpressionEvaluator(ABC):
     def eval(self, column: clmn.ColumnWithExpression) -> api.Column:
         pass
 
-    def expression_type(self, expression: clmn.ColumnExpression):
+    def expression_type(
+        self,
+        expression: clmn.ColumnExpression,
+    ):
         return self.context.expression_type(expression)
 
 
@@ -116,8 +127,20 @@ class DependencyReference:
 class RowwiseEvaluator(
     ExpressionEvaluator, ExpressionVisitor, context_type=clmn.RowwiseContext
 ):
+    def eval_expression(
+        self,
+        expression: expr.ColumnExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+        **kwargs,
+    ) -> api.Expression:
+        assert eval_state is not None
+        assert not kwargs
+        return super().eval_expression(expression, eval_state=eval_state, **kwargs)
+
     def eval_dependency(
-        self, column: api.Column, eval_state: Optional[RowwiseEvalState]
+        self,
+        column: api.Column,
+        eval_state: Optional[RowwiseEvalState],
     ):
         assert eval_state is not None
         index = eval_state.dependency(column)
@@ -133,10 +156,12 @@ class RowwiseEvaluator(
         expression: expr.ColumnExpression,
         eval_properties: Optional[api.EvalProperties] = None,
     ) -> api.Column:
+        expression = self.context.expression_with_type(expression)
         if eval_properties is None:
-            eval_properties = api.EvalProperties(dtype=self.expression_type(expression))
+            eval_properties = api.EvalProperties(dtype=expression._dtype)
         if isinstance(expression, expr.NumbaApplyExpression):
             return self.numba_compile_numbaapply(expression, eval_properties)
+
         eval_state = RowwiseEvalState()
         api_expression = self.eval_expression(expression, eval_state=eval_state)
         table = self.scope.table(self.output_universe, eval_state.columns)
@@ -151,7 +176,7 @@ class RowwiseEvaluator(
     ):
         assert not expression._kwargs
         if eval_properties is None:
-            eval_properties = api.EvalProperties(dtype=self.expression_type(expression))
+            eval_properties = api.EvalProperties(dtype=expression._dtype)
         columns = [self._column_from_expression(arg) for arg in expression._args]
         table = self.scope.table(self.output_universe, columns)
         return self.scope.unsafe_map_column_numba(
@@ -175,7 +200,7 @@ class RowwiseEvaluator(
     ):
         operator_fun = expression._operator
         arg = self.eval_expression(expression._expr, eval_state=eval_state)
-        operand_dtype = self.expression_type(expression._expr)
+        operand_dtype = expression._expr._dtype
         if (
             result_expression := get_unary_expression(arg, operator_fun, operand_dtype)
         ) is not None:
@@ -192,16 +217,16 @@ class RowwiseEvaluator(
         left_expression = expression._left
         right_expression = expression._right
 
-        left_dtype = self.expression_type(left_expression)
-        right_dtype = self.expression_type(right_expression)
+        left_dtype = left_expression._dtype
+        right_dtype = right_expression._dtype
 
-        # TODO: casting of Optional[int] to Optional[float]
-        if left_dtype == int and right_dtype in [float, Optional[float]]:
-            left_dtype = float
-            left_expression = expr.CastExpression(left_dtype, left_expression)
-        if left_dtype in [float, Optional[float]] and right_dtype == int:
-            right_dtype = float
-            right_expression = expr.CastExpression(right_dtype, right_expression)
+        if (
+            dtype := common_dtype_in_binary_operator(left_dtype, right_dtype)
+        ) is not None:
+            left_dtype = dtype
+            right_dtype = dtype
+            left_expression = expr.CastExpression(dtype, left_expression)
+            right_expression = expr.CastExpression(dtype, right_expression)
 
         left = self.eval_expression(left_expression, eval_state=eval_state)
         right = self.eval_expression(right_expression, eval_state=eval_state)
@@ -217,7 +242,7 @@ class RowwiseEvaluator(
         ) is not None:
             return result_expression
 
-        left_dtype_unoptionalized, right_dtype_unoptionalized = unoptionalize(
+        left_dtype_unoptionalized, right_dtype_unoptionalized = unoptionalize_pair(
             left_dtype,
             right_dtype,
         )
@@ -228,17 +253,6 @@ class RowwiseEvaluator(
             )
         ) is not None:
             return dtype_and_handler[1](left, right)
-
-        if (
-            result_expression := get_binary_expression(
-                left,
-                right,
-                operator_fun,
-                left_dtype_unoptionalized,
-                right_dtype_unoptionalized,
-            )
-        ) is not None:
-            return result_expression
 
         operator_symbol = getattr(
             expression._operator, "_symbol", expression._operator.__name__
@@ -260,7 +274,8 @@ class RowwiseEvaluator(
             )
             return api.Expression.apply(operator_fun, left, right)
         else:
-            raise RuntimeError(
+            # this path should be covered by TypeInterpreter
+            raise TypeError(
                 f"Pathway does not support using binary operator {expression._operator.__name__}"
                 + f" on columns of types {left_dtype}, {right_dtype}."
                 + "It refers to the following expression:\n"
@@ -291,7 +306,8 @@ class RowwiseEvaluator(
             fun=expression._fun, args=expression._args, kwargs=expression._kwargs
         )
         return api.Expression.apply(
-            fun, *(self.eval_expression(arg, eval_state=eval_state) for arg in args)
+            fun,
+            *(self.eval_expression(arg, eval_state=eval_state) for arg in args),
         )
 
     def eval_async_apply(
@@ -311,7 +327,7 @@ class RowwiseEvaluator(
             table,
             fun,
             properties=api.EvalProperties(
-                dtype=self.expression_type(expression),
+                dtype=expression._dtype,
                 trace=expression._trace.to_engine(),
             ),
         )
@@ -331,22 +347,27 @@ class RowwiseEvaluator(
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         arg = self.eval_expression(expression._expr, eval_state=eval_state)
-        key = (
-            self.expression_type(expression._expr),
-            self.expression_type(expression),
-        )
-        if key[0] == key[1]:
-            return arg
-        if (result_expression := get_cast_operators_mapping(arg, *key)) is not None:
+        source_type = expression._expr._dtype
+        target_type = expression._return_type
+
+        if (
+            source_type == target_type
+            or Optional[source_type] == target_type
+            or (source_type == NoneType and is_optional(target_type))
+            or target_type == Any
+            or sanitize_type(source_type) == sanitize_type(target_type)
+            # FIXME: last arg currently needed for Pointer; remove when not required
+        ):
+            return arg  # then cast is noop
+        if (
+            result_expression := get_cast_operators_mapping(
+                arg, source_type, target_type
+            )
+        ) is not None:
             return result_expression
 
-        key = unoptionalize(key[0], key[1])
-
-        if (result_expression := get_cast_operators_mapping(arg, *key)) is not None:
-            return result_expression
-
-        raise RuntimeError(
-            f"Pathway doesn't support type conversion between {key[0]} and {key[1]}"
+        raise TypeError(
+            f"Pathway doesn't support type conversion from {source_type} to {target_type}."
         )
 
     def eval_declare(
@@ -361,9 +382,15 @@ class RowwiseEvaluator(
         expression: expr.CoalesceExpression,
         eval_state: Optional[RowwiseEvalState] = None,
     ):
-        args = [
-            self.eval_expression(arg, eval_state=eval_state) for arg in expression._args
-        ]
+        dtype = self.expression_type(expression)
+        args: List[api.Expression] = []
+        for expr_arg in expression._args:
+            if not is_optional(dtype) and is_optional(expr_arg._dtype):
+                arg_dtype = DType(Optional[dtype])
+            else:
+                arg_dtype = dtype
+            arg_expr = expr.CastExpression(arg_dtype, expr_arg)
+            args.append(self.eval_expression(arg_expr, eval_state=eval_state))
 
         res = args[-1]
         for arg in reversed(args[:-1]):
@@ -396,11 +423,40 @@ class RowwiseEvaluator(
         expression: expr.IfElseExpression,
         eval_state: Optional[RowwiseEvalState] = None,
     ):
+        dtype = expression._dtype
         if_ = self.eval_expression(expression._if, eval_state=eval_state)
-        then = self.eval_expression(expression._then, eval_state=eval_state)
-        else_ = self.eval_expression(expression._else, eval_state=eval_state)
+        then = self.eval_expression(
+            expr.CastExpression(dtype, expression._then),
+            eval_state=eval_state,
+        )
+        else_ = self.eval_expression(
+            expr.CastExpression(dtype, expression._else),
+            eval_state=eval_state,
+        )
 
         return api.Expression.if_else(if_, then, else_)
+
+    def eval_not_none(
+        self,
+        expression: expr.IsNotNoneExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+    ):
+        return api.Expression.unary_expression(
+            api.Expression.is_none(
+                self.eval_expression(expression._expr, eval_state=eval_state)
+            ),
+            api.UnaryOperator.INV,
+            api.PathwayType.BOOL,
+        )
+
+    def eval_none(
+        self,
+        expression: expr.IsNoneExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+    ):
+        return api.Expression.is_none(
+            self.eval_expression(expression._expr, eval_state=eval_state)
+        )
 
     def eval_reducer(
         self,
@@ -415,6 +471,13 @@ class RowwiseEvaluator(
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         raise RuntimeError("RowwiseEvaluator encountered ReducerIxExpression")
+
+    def eval_count(
+        self,
+        expression: expr.CountExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+    ):
+        raise RuntimeError("RowwiseEvaluator encountered CountExpression")
 
     def eval_ix(
         self,
@@ -438,7 +501,11 @@ class RowwiseEvaluator(
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         expressions = [
-            self.eval_expression(arg, eval_state=eval_state) for arg in expression._args
+            self.eval_expression(
+                arg,
+                eval_state=eval_state,
+            )
+            for arg in expression._args
         ]
         optional = expression._optional
         return api.Expression.pointer_from(*expressions, optional=optional)
@@ -471,15 +538,29 @@ class RowwiseEvaluator(
         expression: expr.MethodCallExpression,
         eval_state: Optional[RowwiseEvalState] = None,
     ):
-        expressions = [
-            self.eval_expression(arg, eval_state=eval_state) for arg in expression._args
-        ]
-        dtypes = tuple([self.expression_type(arg) for arg in expression._args])
-        if (handler := expression._fun_mapping.get(dtypes)) is not None:
+        dtypes = tuple([arg._dtype for arg in expression._args])
+        if (dtypes_and_handler := expression.get_function(dtypes)) is not None:
+            new_dtypes, _, handler = dtypes_and_handler
+
+            expressions = [
+                self.eval_expression(
+                    expr.CastExpression(dtype, arg),
+                    eval_state=eval_state,
+                )
+                for dtype, arg in zip(new_dtypes, expression._args)
+            ]
             return handler(*expressions)
         raise AttributeError(
             f"Column of type {dtypes[0]} has no attribute {expression._name}."
         )
+
+    def eval_unwrap(
+        self,
+        expression: expr.UnwrapExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+    ):
+        val = self.eval_expression(expression._expr, eval_state=eval_state)
+        return api.Expression.unwrap(val)
 
     def _dereference(self, expression: expr.ColumnReference):
         column = self.state.get_column(expression._column)
@@ -686,24 +767,6 @@ class GroupedEvaluator(RowwiseEvaluator, context_type=clmn.GroupedContext):
             table, requested_columns, self.context.set_id
         )
 
-    def map_reducer(self, reducer: Callable) -> api.Reducer:
-        api_reducers = {
-            # XXX
-            _reducers._argmin: api.Reducer.ARG_MIN,
-            _reducers._min: api.Reducer.MIN,
-            _reducers._argmax: api.Reducer.ARG_MAX,
-            _reducers._max: api.Reducer.MAX,
-            _reducers._sum: api.Reducer.SUM,
-            _reducers._int_sum: api.Reducer.INT_SUM,
-            _reducers._sorted_tuple: api.Reducer.SORTED_TUPLE,
-            _reducers._max_int: api.Reducer.MAX,
-            _reducers._min_int: api.Reducer.MIN,
-            _reducers._npsum: api.Reducer.SUM,
-            _reducers._unique: api.Reducer.UNIQUE,
-            _reducers._any: api.Reducer.ANY,
-        }
-        return api_reducers[reducer]
-
     def _dereference(self, expression: expr.ColumnReference):
         input_column = self.context.grouping_columns.get(
             expression._to_original_internal()
@@ -713,26 +776,28 @@ class GroupedEvaluator(RowwiseEvaluator, context_type=clmn.GroupedContext):
         else:
             return self.grouper.input_column(self.state.get_column(input_column))
 
+    def eval_count(
+        self,
+        expression: expr.CountExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+    ):
+        column = self.grouper.count_column()
+        return self.eval_dependency(column, eval_state=eval_state)
+
     def eval_reducer(
         self,
         expression: expr.ReducerExpression,
         eval_state: Optional[RowwiseEvalState] = None,
     ):
-        args: List[api.Column] = []
-        for arg in expression._args:
-            context = self.context.table._context
-            input_column = self.context.table._eval(arg, context)
-            column = RowwiseEvaluator(
-                context, self.scope, self.state, self.scope_context
-            ).eval(input_column)
-            args.append(column)
-        if expression._reducer is _reducers._count:
-            column = self.grouper.count_column()
-        else:
-            [arg_column] = args
-            reducer = self.map_reducer(expression._reducer)
-            column = self.grouper.reducer_column(reducer, arg_column)
-        return self.eval_dependency(column, eval_state)
+        [arg] = expression._args
+        context = self.context.table._context
+        input_column = self.context.table._eval(arg, context)
+        arg_column = RowwiseEvaluator(
+            context, self.scope, self.state, self.scope_context
+        ).eval(input_column)
+        engine_reducer = expression._reducer.engine_reducer(arg._dtype)
+        column = self.grouper.reducer_column(engine_reducer, arg_column)
+        return self.eval_dependency(column, eval_state=eval_state)
 
     def eval_reducer_ix(
         self,
@@ -740,7 +805,7 @@ class GroupedEvaluator(RowwiseEvaluator, context_type=clmn.GroupedContext):
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         [arg] = expression._args
-        reducer = self.map_reducer(expression._reducer)
+        engine_reducer = expression._reducer.engine_reducer(arg._dtype)
         rowwise_context = self.context.table._context
         column = self.context.table._eval(arg, rowwise_context)
         rowwise = RowwiseEvaluator(
@@ -759,8 +824,10 @@ class GroupedEvaluator(RowwiseEvaluator, context_type=clmn.GroupedContext):
             keys_col, input_column.universe, strict=True, optional=ix_expr._optional
         )
 
-        result_column = self.grouper.reducer_ix_column(reducer, ixer, input_column)
-        return self.eval_dependency(result_column, eval_state)
+        result_column = self.grouper.reducer_ix_column(
+            engine_reducer, ixer, input_column
+        )
+        return self.eval_dependency(result_column, eval_state=eval_state)
 
     @cached_property
     def output_universe(self) -> api.Universe:

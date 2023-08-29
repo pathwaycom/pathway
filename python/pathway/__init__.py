@@ -16,6 +16,7 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
     filterwarnings("ignore", category=BeartypeDecorHintPep585DeprecationWarning)
 
 
+import pathway.reducers as reducers
 from pathway import debug, demo, io
 from pathway.internals import (
     ClassArg,
@@ -33,6 +34,7 @@ from pathway.internals import (
     MonitoringLevel,
     Pointer,
     Schema,
+    SchemaProperties,
     Table,
     TableLike,
     TableSlice,
@@ -56,7 +58,6 @@ from pathway.internals import (
     method,
     numba_apply,
     output_attribute,
-    reducers,
     require,
     right,
     run,
@@ -69,6 +70,7 @@ from pathway.internals import (
     udf,
     udf_async,
     universes,
+    unwrap,
 )
 from pathway.internals.api import PathwayType as Type
 from pathway.stdlib import graphs, indexing, ml, ordered, statistical, temporal, utils
@@ -144,6 +146,8 @@ __all__ = [
     "DateTimeNaive",
     "DateTimeUtc",
     "Duration",
+    "unwrap",
+    "SchemaProperties",
 ]
 
 

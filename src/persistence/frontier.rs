@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+
 use crate::connectors::data_storage::StorageType;
 use crate::connectors::{OffsetKey, OffsetValue};
-use crate::persistence::{Error, PersistentId};
+use crate::persistence::PersistentId;
 
-#[derive(Clone, Debug, Default)]
+#[serde_as]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OffsetAntichain {
+    #[serde_as(as = "Vec<(_, _)>")]
     antichain: HashMap<OffsetKey, OffsetValue>,
 }
 
@@ -35,38 +40,6 @@ impl OffsetAntichain {
     pub fn empty(&self) -> bool {
         self.antichain.is_empty()
     }
-
-    pub fn serialize(&self) -> String {
-        let mut tokens = Vec::<String>::new();
-        for (offset_key, offset_value) in &self.antichain {
-            let key_serialized = serde_json::to_string(offset_key)
-                .expect("JSON Serialization of a simple structure should not fail");
-            let value_serialized = serde_json::to_string(offset_value)
-                .expect("JSON Serialization of a simple structure should not fail");
-            let kv_token = format!("{key_serialized}~{value_serialized}");
-            tokens.push(kv_token);
-        }
-        tokens.join("$")
-    }
-
-    pub fn deserialize(serialized: &str) -> Result<Self, Error> {
-        let tokens = serialized.split('$');
-        let mut result = OffsetAntichain::new();
-        for token in tokens {
-            let key_value: Vec<&str> = token.split('~').collect();
-            if key_value.len() != 2 {
-                return Err(Error::KeyValueIncorrect);
-            }
-
-            let deserialized_offset_key = serde_json::from_str::<OffsetKey>(key_value[0])
-                .map_err(Error::IncorrectSerializedOffset)?;
-            let deserialized_offset_value = serde_json::from_str::<OffsetValue>(key_value[1])
-                .map_err(Error::IncorrectSerializedOffset)?;
-
-            result.advance_offset(deserialized_offset_key, deserialized_offset_value);
-        }
-        Ok(result)
-    }
 }
 
 impl<'a> IntoIterator for &'a OffsetAntichain {
@@ -87,7 +60,7 @@ impl IntoIterator for OffsetAntichain {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OffsetAntichainCollection {
     antichains: HashMap<PersistentId, OffsetAntichain>,
 }
@@ -163,38 +136,5 @@ impl OffsetAntichainCollection {
 
     pub fn take_state(self) -> HashMap<PersistentId, OffsetAntichain> {
         self.antichains
-    }
-
-    pub fn serialize(&self) -> String {
-        let mut tokens = Vec::<String>::new();
-        for (persistent_id, antichain) in &self.antichains {
-            tokens.push(format!("{persistent_id}|{}", antichain.serialize()));
-        }
-        tokens.join("^")
-    }
-
-    pub fn deserialize(serialized: &str) -> Result<Self, Error> {
-        let mut result = OffsetAntichainCollection::new();
-
-        if serialized.is_empty() {
-            return Ok(Self::new());
-        }
-
-        let tokens = serialized.split('^');
-        for token in tokens {
-            let key_value: Vec<&str> = token.split('|').collect();
-            if key_value.len() != 2 {
-                return Err(Error::KeyValueIncorrect);
-            }
-            let persistent_id: PersistentId = key_value[0]
-                .parse()
-                .map_err(|_| Error::PersistentIdNotUInt)?;
-            let antichain = OffsetAntichain::deserialize(key_value[1])?;
-            if !result.add_antichain(persistent_id, antichain) {
-                return Err(Error::DuplicatePersistentId);
-            }
-        }
-
-        Ok(result)
     }
 }

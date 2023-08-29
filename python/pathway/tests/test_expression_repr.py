@@ -93,16 +93,13 @@ def test_reducer():
         """
     )
     assert repr(pw.reducers.min(t.pet)) == "pathway.reducers.min(<table1>.pet)"
-    assert repr(pw.reducers.min_int(t.pet)) == "pathway.reducers.min_int(<table1>.pet)"
     assert repr(pw.reducers.max(t.pet)) == "pathway.reducers.max(<table1>.pet)"
-    assert repr(pw.reducers.max_int(t.pet)) == "pathway.reducers.max_int(<table1>.pet)"
     assert repr(pw.reducers.sum(t.pet)) == "pathway.reducers.sum(<table1>.pet)"
-    assert repr(pw.reducers.int_sum(t.pet)) == "pathway.reducers.int_sum(<table1>.pet)"
     assert (
         repr(pw.reducers.sorted_tuple(t.pet))
         == "pathway.reducers.sorted_tuple(<table1>.pet)"
     )
-    assert repr(pw.reducers.count(t.pet)) == "pathway.reducers.count(<table1>.pet)"
+    assert repr(pw.reducers.count()) == "pathway.reducers.count()"
     assert repr(pw.reducers.argmin(t.pet)) == "pathway.reducers.argmin(<table1>.pet)"
     assert repr(pw.reducers.argmax(t.pet)) == "pathway.reducers.argmax(<table1>.pet)"
 
@@ -268,3 +265,13 @@ def test_sequence_get():
     assert repr(t.owner.get(t.pet, "x")) == "(<table1>.owner).get(<table1>.pet, 'x')"
     assert repr(t.owner[2]) == "(<table1>.owner)[2]"
     assert repr(t.owner[t.pet]) == "(<table1>.owner)[<table1>.pet]"
+
+
+def test_unwrap():
+    t = T(
+        """
+    pet  |  owner  | age
+     1   | Alice   | 10
+        """
+    )
+    assert repr(pw.unwrap(t.pet)) == "pathway.unwrap(<table1>.pet)"

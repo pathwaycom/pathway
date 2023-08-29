@@ -11,6 +11,7 @@ from typing import (
     Any,
     Dict,
     KeysView,
+    List,
     Mapping,
     Optional,
     Type,
@@ -18,6 +19,7 @@ from typing import (
     get_type_hints,
 )
 
+import numpy as np
 import pandas as pd
 
 from pathway.internals import trace
@@ -49,6 +51,8 @@ def schema_from_columns(
 def _type_converter(series):
     if (series.isna() | series.isnull()).all():
         return NoneType
+    if (series.apply(lambda x: isinstance(x, np.ndarray))).all():
+        return np.ndarray
     if pd.api.types.is_integer_dtype(series.dtype):
         ret_type: Type = int
     elif pd.api.types.is_float_dtype(series.dtype):
@@ -75,13 +79,24 @@ def _type_converter(series):
 
 
 def schema_from_pandas(
-    dframe: pd.DataFrame, _name: Optional[str] = None
+    dframe: pd.DataFrame,
+    *,
+    id_from: Optional[List[str]] = None,
+    name: Optional[str] = None,
 ) -> Type[Schema]:
-    if _name is None:
-        _name = "schema_from_pandas(" + str(dframe.columns) + ")"
+    if name is None:
+        name = "schema_from_pandas(" + str(dframe.columns) + ")"
+    if id_from is None:
+        id_from = []
+    columns: Dict[str, ColumnDefinition] = {
+        name: column_definition(dtype=_type_converter(dframe[name]))
+        for name in dframe.columns
+    }
+    for name in id_from:
+        columns[name] = dataclasses.replace(columns[name], primary_key=True)
 
-    return schema_from_types(
-        _name, **{col: _type_converter(dframe[col]) for col in dframe.columns}
+    return schema_builder(
+        columns=columns, properties=SchemaProperties(append_only=True), name=name
     )
 
 
@@ -295,8 +310,13 @@ class Schema(metaclass=SchemaMetaclass):
         super().__init_subclass__(**kwargs)
 
 
-def _schema_builder(_name: str, _dict: dict[str, Any]) -> Type[Schema]:
-    return SchemaMetaclass(_name, (Schema,), _dict)  # type: ignore
+def _schema_builder(
+    _name: str,
+    _dict: dict[str, Any],
+    *,
+    properties: SchemaProperties = SchemaProperties(),
+) -> Type[Schema]:
+    return SchemaMetaclass(_name, (Schema,), _dict, append_only=properties.append_only)  # type: ignore
 
 
 def is_subschema(left: Type[Schema], right: Type[Schema]):
@@ -366,13 +386,17 @@ def column_definition(
 
 
 def schema_builder(
-    columns: Dict[str, ColumnDefinition], name: Optional[str] = None
+    columns: Dict[str, ColumnDefinition],
+    *,
+    name: Optional[str] = None,
+    properties: SchemaProperties = SchemaProperties(),
 ) -> Type[Schema]:
     """Allows to build schema inline, from a dictionary of column definitions.
 
     Args:
         columns: dictionary of column definitions.
         name: schema name.
+        properties: schema properties.
 
     Returns:
         Schema
@@ -399,4 +423,4 @@ def schema_builder(
         **columns,
     }
 
-    return _schema_builder(name, __dict)
+    return _schema_builder(name, __dict, properties=properties)

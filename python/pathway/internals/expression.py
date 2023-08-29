@@ -11,14 +11,16 @@ from typing import (
     Callable,
     Dict,
     Iterable,
+    List,
     Optional,
     Tuple,
     Type,
     Union,
 )
 
-from pathway.internals import helpers
+from pathway.internals import api, helpers
 from pathway.internals.api import Value
+from pathway.internals.dtype import DType, dtype_issubclass
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.shadows import inspect, operator
 from pathway.internals.trace import Trace
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
         NumericalNamespace,
         StringNamespace,
     )
+    from pathway.internals.reducers import UnaryReducer
     from pathway.internals.table import Table
 
 
@@ -37,6 +40,7 @@ class ColumnExpression(OperatorInput, ABC):
     _deps: helpers.SetOnceProperty[
         Iterable[ColumnExpression]
     ] = helpers.SetOnceProperty(wrapper=tuple)
+    _dtype: DType
 
     def __init__(self):
         self._trace = Trace.from_traceback()
@@ -187,11 +191,11 @@ class ColumnExpression(OperatorInput, ABC):
     def __hash__(self):
         return object.__hash__(self)
 
-    def is_none(self) -> ColumnBinaryOpExpression:
-        return self == None  # noqa: E711
+    def is_none(self) -> IsNoneExpression:
+        return IsNoneExpression(self)
 
-    def is_not_none(self) -> ColumnBinaryOpExpression:
-        return self != None  # noqa: E711
+    def is_not_none(self) -> IsNotNoneExpression:
+        return IsNotNoneExpression(self)
 
     # Missing `__iter__` would make Python fall back to `__getitem__, which
     # will not do the right thing.
@@ -280,6 +284,48 @@ class ColumnExpression(OperatorInput, ABC):
         from pathway.internals.expressions import StringNamespace
 
         return StringNamespace(self)
+
+    def to_string(self) -> MethodCallExpression:
+        """Changes the values to strings.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.parse_to_table('''
+        ... val
+        ... 1
+        ... 2
+        ... 3
+        ... 4''')
+        >>> t1.schema.as_dict()
+        {'val': <class 'int'>}
+        >>> pw.debug.compute_and_print(t1, include_id=False)
+        val
+        1
+        2
+        3
+        4
+        >>> t2 = t1.select(val = pw.this.val.to_string())
+        >>> t2.schema.as_dict()
+        {'val': <class 'str'>}
+        >>> pw.debug.compute_and_print(t2.select(val=pw.this.val + "a"), include_id=False)
+        val
+        1a
+        2a
+        3a
+        4a
+        """
+        return MethodCallExpression(
+            [
+                (
+                    Any,
+                    str,
+                    api.Expression.to_string,
+                )
+            ],
+            "to_string",
+            self,
+        )
 
 
 ColumnExpressionOrValue = Union[ColumnExpression, Value]
@@ -491,10 +537,10 @@ class ColumnUnaryOpExpression(ColumnExpression):
 
 
 class ReducerExpression(ColumnExpression):
-    _reducer: Callable
-    _args: Tuple[ColumnExpression, ...]
+    _reducer: UnaryReducer
+    _arg: ColumnExpression
 
-    def __init__(self, reducer: Callable, *args: ColumnExpressionOrValue):
+    def __init__(self, reducer: UnaryReducer, *args: ColumnExpressionOrValue):
         super().__init__()
         self._reducer = reducer
         self._args = tuple(_wrap_arg(arg) for arg in args)
@@ -512,8 +558,14 @@ class ReducerExpression(ColumnExpression):
 
 
 class ReducerIxExpression(ReducerExpression):
-    def __init__(self, reducer: Callable, arg: ColumnIxExpression):
+    def __init__(self, reducer: UnaryReducer, arg: ColumnIxExpression):
         super().__init__(reducer, arg)
+
+
+class CountExpression(ColumnExpression):
+    def __init__(self):
+        super().__init__()
+        self._deps = []
 
 
 class ApplyExpression(ColumnExpression):
@@ -532,7 +584,10 @@ class ApplyExpression(ColumnExpression):
         super().__init__()
         self._fun = fun
         if return_type is None:
-            return_type = inspect.signature(self._fun).return_annotation
+            try:
+                return_type = inspect.signature(self._fun).return_annotation
+            except ValueError:
+                return_type = Any
         self._return_type = return_type
 
         self._args = tuple(_wrap_arg(arg) for arg in args)
@@ -642,7 +697,25 @@ class IfElseExpression(ColumnExpression):
         self._if = _wrap_arg(_if)
         self._then = _wrap_arg(_then)
         self._else = _wrap_arg(_else)
-        self._deps = [_if, _then, _else]
+        self._deps = [self._if, self._then, self._else]
+
+
+class IsNoneExpression(ColumnExpression):
+    _expr: ColumnExpression
+
+    def __init__(self, _expr: ColumnExpressionOrValue):
+        super().__init__()
+        self._expr = _wrap_arg(_expr)
+        self._deps = [self._expr]
+
+
+class IsNotNoneExpression(ColumnExpression):
+    _expr: ColumnExpression
+
+    def __init__(self, _expr: ColumnExpressionOrValue):
+        super().__init__()
+        self._expr = _wrap_arg(_expr)
+        self._deps = [self._expr]
 
 
 class PointerExpression(ColumnExpression):
@@ -702,56 +775,79 @@ ReturnTypeFunType = Callable[[Tuple[Any, ...]], Any]
 
 
 class MethodCallExpression(ColumnExpression):
-    _fun_mapping: Dict[Any, Callable]
-    _return_type_fun: ReturnTypeFunType
+    _fun_mapping: List[Tuple[Any, Any, Callable]]
     _name: str
     _args: Tuple[ColumnExpression, ...]
 
     def __init__(
         self,
-        fun_mapping: Dict[Any, Callable],
-        return_type_fun: ReturnTypeFunType,
+        fun_mapping: List[Tuple[Any, Any, Callable]],
         name: str,
         *args: ColumnExpressionOrValue,
     ) -> None:
         """Creates an Expression that represents a method call on object `args[0]`.
 
+        The implementation can be different depending on the args types. The first
+        matching function from fun_mapping is used. The types of the args do not have
+        to be an exact match for types in fun_mapping. The keys of fun_mapping are
+        analyzed in order and if the args types are castable to a given key,
+        the implementation corresponding to this key will be used. No more keys
+        will be processed, even if there is an exact match later. Keep that in mind
+        when ordering your functions in fun_mapping.
+
         Args:
-            fun_mapping: dictionary mapping args types to API function call
-            return_type_fun: function that receives a tuple of types of *args and
-                returns a type of the method call result
+            fun_mapping: list of tuples with args types, result type and the
+                corresponding API function call. They have to have the form
+                (arguments_types, result_type, function).
             name: used to represent the method by `ExpressionFormatter`
             *args: `args[0]` is an object the method is called on `args[1:]` are
                 the parameters of the method
         """
         super().__init__()
         self._fun_mapping = self._wrap_mapping_key_in_tuple(fun_mapping)
-        self._return_type_fun = return_type_fun
         self._name = name
 
         self._args = tuple(_wrap_arg(arg) for arg in args)
 
         self._deps = self._args
         assert len(args) > 0
+        for key_dtypes, _, _ in self._fun_mapping:
+            if len(key_dtypes) != len(self._args):
+                raise ValueError(
+                    f"In MethodCallExpression the number of args ({len(args)}) has to "
+                    + f"be the same as the number of types in key ({len(key_dtypes)})"
+                )
 
     def _wrap_mapping_key_in_tuple(
-        self, mapping: Dict[Any, Callable]
-    ) -> Dict[Any, Callable]:
-        result = {}
-        for key, value in mapping.items():
+        self, mapping: List[Tuple[Any, Any, Callable]]
+    ) -> List[Tuple[Any, Any, Callable]]:
+        result = []
+        for key, result_dtype, value in mapping:
             if not isinstance(key, tuple):
                 key = (key,)
-            result[key] = value
+            result.append((key, result_dtype, value))
         return result
 
-    @staticmethod
-    def with_static_type(
-        fun_mapping: Dict[Any, Callable],
-        return_type: Any,
-        name: str,
-        *args: ColumnExpressionOrValue,
-    ) -> MethodCallExpression:
-        return MethodCallExpression(fun_mapping, lambda _: return_type, name, *args)
+    def get_function(
+        self, dtypes: Tuple[DType, ...]
+    ) -> Optional[Tuple[Tuple[DType, ...], DType, Callable]]:
+        for key, target_type, fun in self._fun_mapping:
+            assert len(dtypes) == len(key)
+            if all(
+                dtype_issubclass(arg_dtype, key_dtype)
+                for arg_dtype, key_dtype in zip(dtypes, key)
+            ):
+                return (key, target_type, fun)
+        return None
+
+
+class UnwrapExpression(ColumnExpression):
+    _expr: ColumnExpression
+
+    def __init__(self, expr: ColumnExpressionOrValue):
+        super().__init__()
+        self._expr = _wrap_arg(expr)
+        self._deps = [self._expr]
 
 
 def _wrap_arg(arg: ColumnExpressionOrValue) -> ColumnExpression:
@@ -761,7 +857,7 @@ def _wrap_arg(arg: ColumnExpressionOrValue) -> ColumnExpression:
 
 
 def smart_name(arg: ColumnExpression) -> Optional[str]:
-    from pathway.internals._reducers import _any, _unique
+    from pathway.internals.reducers import _any, _unique
 
     if isinstance(arg, ColumnRefOrIxExpression):
         return arg.name
@@ -770,4 +866,12 @@ def smart_name(arg: ColumnExpression) -> Optional[str]:
         if len(r_args) == 1:
             [r_arg] = r_args
             return smart_name(r_arg)
+    return None
+
+
+def get_column_filtered_by_is_none(arg: ColumnExpression) -> Optional[ColumnReference]:
+    if isinstance(arg, IsNotNoneExpression) and isinstance(
+        filter_col := arg._expr, ColumnReference
+    ):
+        return filter_col
     return None

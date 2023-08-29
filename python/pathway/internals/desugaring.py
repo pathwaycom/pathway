@@ -36,14 +36,16 @@ class ThisDesugaring(DesugaringTransform):
     def __init__(self, substitution: Dict[thisclass.ThisMetaclass, table.Joinable]):
         self.substitution = substitution
 
-    def eval_column_val(self, expression: expr.ColumnReference) -> expr.ColumnReference:
+    def eval_column_val(
+        self, expression: expr.ColumnReference, **kwargs
+    ) -> expr.ColumnReference:
         table = self._desugar_table(expression.table)
         return table[expression.name]
 
     def eval_pointer(
-        self, expression: expr.PointerExpression
+        self, expression: expr.PointerExpression, **kwargs
     ) -> expr.PointerExpression:
-        args = [self.eval_expression(arg) for arg in expression._args]
+        args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         optional = expression._optional
         desugared_table = self._desugar_table(expression._table)
         from pathway.internals import table
@@ -69,7 +71,9 @@ class SubstitutionDesugaring(DesugaringTransform):
     def __init__(self, substitution: Dict[expr.InternalColRef, expr.ColumnExpression]):
         self.substitution = substitution
 
-    def eval_column_val(self, expression: expr.ColumnReference) -> expr.ColumnExpression:  # type: ignore
+    def eval_column_val(  # type: ignore[override]
+        self, expression: expr.ColumnReference, **kwargs
+    ) -> expr.ColumnExpression:
         return self.substitution.get(expression._to_internal(), expression)
 
 
@@ -82,10 +86,12 @@ class TableSubstitutionDesugaring(DesugaringTransform):
     ):
         self._table_substitution = table_substitution
 
-    def eval_column_val(self, expression: expr.ColumnReference) -> expr.ColumnReference:
+    def eval_column_val(
+        self, expression: expr.ColumnReference, **kwargs
+    ) -> expr.ColumnReference:
         target_table = self._table_substitution.get(expression.table)
         if target_table is None:
-            return super().eval_column_val(expression)
+            return super().eval_column_val(expression, **kwargs)
         else:
             return target_table[expression.name]
 
@@ -97,16 +103,20 @@ class TableReplacementWithNoneDesugaring(IdentityTransform):
         self._table = table
 
     def eval_column_val(  # type: ignore[override]
-        self, expression: expr.ColumnReference
+        self, expression: expr.ColumnReference, **kwargs
     ) -> expr.ColumnExpression:
         if expression.table is self._table:
             return expr.ColumnConstExpression(None)
         else:
-            return super().eval_column_val(expression)
+            return super().eval_column_val(expression, **kwargs)
 
-    def eval_ix(self, expression: expr.ColumnIxExpression) -> expr.ColumnExpression:
-        column_expression = super().eval_column_val(expression._column_expression)
-        keys_expression = self.eval_expression(expression._keys_expression)
+    def eval_ix(
+        self, expression: expr.ColumnIxExpression, **kwargs
+    ) -> expr.ColumnIxExpression:
+        column_expression = super().eval_column_val(
+            expression._column_expression, **kwargs
+        )
+        keys_expression = self.eval_expression(expression._keys_expression, **kwargs)
         return expr.ColumnIxExpression(
             column_expression=column_expression,
             keys_expression=keys_expression,
@@ -114,10 +124,10 @@ class TableReplacementWithNoneDesugaring(IdentityTransform):
         )
 
     def eval_require(
-        self, expression: expr.RequireExpression
+        self, expression: expr.RequireExpression, **kwargs
     ) -> expr.RequireExpression:
-        val = self.eval_expression(expression._val)
-        args = [self.eval_expression(arg) for arg in expression._args]
+        val = self.eval_expression(expression._val, **kwargs)
+        args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         for arg in args:
             if isinstance(arg, expr.ColumnConstExpression):
                 if arg._val is None:
@@ -138,9 +148,11 @@ class TableCallbackDesugaring(DesugaringTransform):
     def callback(self, *args, **kwargs):
         pass
 
-    def eval_call(self, expression: expr.ColumnCallExpression) -> expr.ColumnReference:
+    def eval_call(  # type:ignore[override]
+        self, expression: expr.ColumnCallExpression, **kwargs
+    ) -> expr.ColumnReference:
         args: Dict[str, expr.ColumnExpression] = {
-            f"arg_{index}": self.eval_expression(arg)
+            f"arg_{index}": self.eval_expression(arg, **kwargs)
             for index, arg in enumerate(expression._args)
         }
 
@@ -181,11 +193,21 @@ class TableReduceDesugaring(TableCallbackDesugaring):
         return self.table_like.reduce(*args, **kwargs)
 
     def eval_reducer(
-        self, expression: expr.ReducerExpression
+        self, expression: expr.ReducerExpression, **kwargs
     ) -> expr.ReducerExpression:
         select_desugar = TableSelectDesugaring(self.table_like._joinable_to_group)
-        args = [select_desugar.eval_expression(arg) for arg in expression._args]
+        args = [
+            select_desugar.eval_expression(arg, **kwargs) for arg in expression._args
+        ]
         return expr.ReducerExpression(expression._reducer, *args)
+
+    def eval_reducer_ix(
+        self, expression: expr.ReducerIxExpression, **kwargs
+    ) -> expr.ReducerIxExpression:
+        select_desugar = TableSelectDesugaring(self.table_like._joinable_to_group)
+        arg = cast(expr.ColumnIxExpression, expression._args[0])
+        arg_ix = select_desugar.eval_ix(arg, **kwargs)
+        return expr.ReducerIxExpression(expression._reducer, arg_ix)
 
 
 ColExprT = TypeVar("ColExprT", bound=expr.ColumnExpression)

@@ -6,7 +6,7 @@ import functools
 import io
 import re
 from os import PathLike
-from typing import Union
+from typing import List, Optional, Type, Union
 
 import pandas as pd
 
@@ -16,7 +16,9 @@ from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.schema import Schema, schema_from_pandas
 from pathway.internals.table import Table
+from pathway.internals.trace import trace_user_frame
 
 
 @runtime_type_check
@@ -53,6 +55,7 @@ class _NoneAwareComparisonWrapper:
 
 
 @runtime_type_check
+@trace_user_frame
 def compute_and_print(table: Table, *, include_id=True, short_pointers=True):
     keys, columns = table_to_dicts(table)
 
@@ -102,6 +105,7 @@ def compute_and_print(table: Table, *, include_id=True, short_pointers=True):
 
 
 @runtime_type_check
+@trace_user_frame
 def table_to_pandas(table: Table):
     keys, columns = table_to_dicts(table)
     res = pd.DataFrame(columns, index=keys)
@@ -109,13 +113,30 @@ def table_to_pandas(table: Table):
 
 
 @runtime_type_check
+@trace_user_frame
 def table_from_pandas(
-    df: pd.DataFrame, id_from=None, unsafe_trusted_ids=False
+    df: pd.DataFrame,
+    id_from: Optional[List[str]] = None,
+    unsafe_trusted_ids: bool = False,
+    schema: Optional[Type[Schema]] = None,
 ) -> Table:
+    if id_from is not None and schema is not None:
+        raise ValueError("parameters `schema` and `id_from` are mutually exclusive")
+
+    if schema is None:
+        schema = schema_from_pandas(df, id_from=id_from)
+    elif list(df.columns) != schema.column_names():
+        raise ValueError("schema does not match given dataframe")
+
     return table_from_datasource(
-        PandasDataSource(df),
-        id_from=id_from,
-        unsafe_trusted_ids=unsafe_trusted_ids,
+        PandasDataSource(
+            schema=schema,
+            data=df,
+            connector_properties=api.ConnectorProperties(
+                unsafe_trusted_ids=unsafe_trusted_ids,
+                append_only=schema.properties().append_only,
+            ),
+        )
     )
 
 
@@ -140,9 +161,16 @@ def _markdown_to_pandas(table_def):
     ).convert_dtypes()
 
 
-def parse_to_table(table_def, id_from=None, unsafe_trusted_ids=False) -> Table:
+def parse_to_table(
+    table_def,
+    id_from=None,
+    unsafe_trusted_ids=False,
+    schema: Optional[Type[Schema]] = None,
+) -> Table:
     df = _markdown_to_pandas(table_def)
-    return table_from_pandas(df, id_from=id_from, unsafe_trusted_ids=unsafe_trusted_ids)
+    return table_from_pandas(
+        df, id_from=id_from, unsafe_trusted_ids=unsafe_trusted_ids, schema=schema
+    )
 
 
 @runtime_type_check

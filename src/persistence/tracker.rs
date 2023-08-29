@@ -1,21 +1,17 @@
 use itertools::Itertools;
-use log::{error, info, warn};
+use log::error;
 use std::collections::HashMap;
-use std::fs;
-use std::io::Error as IoError;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::connectors::data_storage::{ReadError, StorageType, WriteError};
-use crate::connectors::snapshot::{
-    LocalBinarySnapshotReader, LocalBinarySnapshotWriter, SnapshotReader, SnapshotWriter,
-};
-use crate::fs_helpers::ensure_directory;
+use crate::connectors::snapshot::{SnapshotReader, SnapshotWriter};
+use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::storage::Storage as MetadataStorage;
+use crate::persistence::metadata_backends::Error as MetadataBackendError;
+use crate::persistence::state::MetadataAccessor;
 use crate::persistence::PersistentId;
 
-pub trait PersistencyManager {
+pub trait PersistenceManager {
     fn register_input_source(
         &mut self,
         persistent_id: PersistentId,
@@ -28,145 +24,33 @@ pub trait PersistencyManager {
 
     fn create_snapshot_readers(
         &self,
-        persistent_id: u128,
+        persistent_id: PersistentId,
     ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError>;
 
     fn create_snapshot_writer(
         &mut self,
-        persistent_id: u128,
+        persistent_id: PersistentId,
     ) -> Result<Box<dyn SnapshotWriter>, WriteError>;
 }
 
-pub enum StreamStorageConfig {
-    Filesystem(PathBuf),
-}
-
-pub struct PersistenceManagerConfig {
-    stream_storage: StreamStorageConfig,
-    worker_id: usize,
-    total_workers: usize,
-}
-
-impl PersistenceManagerConfig {
-    pub fn new(
-        stream_storage: StreamStorageConfig,
-        worker_id: usize,
-        total_workers: usize,
-    ) -> Self {
-        Self {
-            stream_storage,
-            worker_id,
-            total_workers,
-        }
-    }
-
-    pub fn create_snapshot_readers(
-        &self,
-        persistent_id: u128,
-    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError> {
-        match &self.stream_storage {
-            StreamStorageConfig::Filesystem(root_path) => {
-                let mut result: Vec<Box<dyn SnapshotReader>> = Vec::new();
-                for path in self.assigned_snapshot_paths(root_path, persistent_id)? {
-                    result.push(Box::new(LocalBinarySnapshotReader::new(&path)?));
-                }
-                Ok(result)
-            }
-        }
-    }
-
-    pub fn create_snapshot_writer(
-        &mut self,
-        persistent_id: u128,
-    ) -> Result<Box<dyn SnapshotWriter>, WriteError> {
-        match &self.stream_storage {
-            StreamStorageConfig::Filesystem(root_path) => {
-                Ok(Box::new(LocalBinarySnapshotWriter::new(
-                    &self.snapshot_writer_path(root_path, persistent_id)?,
-                )?))
-            }
-        }
-    }
-
-    fn snapshot_writer_path(
-        &self,
-        root_path: &Path,
-        persistent_id: u128,
-    ) -> Result<PathBuf, IoError> {
-        ensure_directory(root_path)?;
-        ensure_directory(&root_path.join("streams"))?;
-        ensure_directory(&root_path.join(format!("streams/{}", self.worker_id)))?;
-        Ok(root_path.join(format!("streams/{}/{persistent_id}/", self.worker_id)))
-    }
-
-    fn assigned_snapshot_paths(
-        &self,
-        root_path: &Path,
-        persistent_id: u128,
-    ) -> Result<Vec<PathBuf>, IoError> {
-        ensure_directory(root_path)?;
-
-        let streams_dir = root_path.join("streams");
-        ensure_directory(&streams_dir)?;
-
-        let mut assigned_paths = Vec::new();
-        let paths = fs::read_dir(&streams_dir)?;
-        for entry in paths.flatten() {
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                let dir_name = if let Some(name) = entry.file_name().to_str() {
-                    name.to_string()
-                } else {
-                    error!("Failed to parse block folder name: {entry:?}");
-                    continue;
-                };
-
-                let earlier_worker_id: usize = match dir_name.parse() {
-                    Ok(worker_id) => worker_id,
-                    Err(e) => {
-                        error!("Could not parse worker id from snapshot directory {entry:?}. Error details: {e}");
-                        continue;
-                    }
-                };
-
-                if earlier_worker_id % self.total_workers != self.worker_id {
-                    continue;
-                }
-                if earlier_worker_id != self.worker_id {
-                    info!("Assigning snapshot from the former worker {earlier_worker_id} to worker {} due to reduced number of worker threads", self.worker_id);
-                }
-
-                let snapshot_path =
-                    streams_dir.join(format!("{earlier_worker_id}/{persistent_id}"));
-                assigned_paths.push(snapshot_path);
-            } else {
-                warn!("Unexpected object in snapshot directory: {entry:?}");
-            }
-        }
-
-        Ok(assigned_paths)
-    }
-}
-
 type FrontierByTimeForInputSources = Vec<(PersistentId, Arc<Mutex<HashMap<u64, OffsetAntichain>>>)>;
-pub struct SimplePersistencyManager {
-    metadata_storage: Box<dyn MetadataStorage>,
+pub struct SimplePersistenceManager {
+    metadata_storage: MetadataAccessor,
     config: PersistenceManagerConfig,
+
     sink_threshold_times: Vec<Option<u64>>,
     input_sources: FrontierByTimeForInputSources,
 }
 
-impl SimplePersistencyManager {
-    pub fn new(
-        metadata_storage: Box<dyn MetadataStorage>,
-        config: PersistenceManagerConfig,
-    ) -> SimplePersistencyManager {
-        Self {
-            metadata_storage,
+impl SimplePersistenceManager {
+    pub fn new(config: PersistenceManagerConfig) -> Result<Self, MetadataBackendError> {
+        Ok(Self {
+            metadata_storage: config.create_metadata_storage()?,
             config,
-            input_sources: Vec::new(),
+
             sink_threshold_times: Vec::new(),
-        }
+            input_sources: Vec::new(),
+        })
     }
 
     pub fn last_finalized_timestamp(&self) -> u64 {
@@ -174,7 +58,7 @@ impl SimplePersistencyManager {
     }
 }
 
-impl PersistencyManager for SimplePersistencyManager {
+impl PersistenceManager for SimplePersistenceManager {
     fn register_input_source(
         &mut self,
         persistent_id: PersistentId,
@@ -203,15 +87,12 @@ impl PersistencyManager for SimplePersistencyManager {
         self.sink_threshold_times.len() - 1
     }
 
+    /// Updates the frontiers of the data sources to the further ones,
+    /// corresponding to the newly closed timestamp. It happens when all data
+    /// for the particular timestamp has been outputted in full.
+    ///
+    /// When the program is restarted, it results in not outputting this data again.
     fn accept_finalized_timestamp(&mut self, sink_id: usize, reported_timestamp: Option<u64>) {
-        /*
-            This method updates the frontiers of the data sources to the further
-            ones, corresponding to the newly closed timestamp. It happens when all data
-            for the particular timestamp has been outputted in full.
-
-            When the program is restarted, it results in not outputting this data again.
-        */
-
         self.sink_threshold_times[sink_id] = reported_timestamp;
         let finalized_timestamp = self.globally_finalized_timestamp();
         if finalized_timestamp < self.last_finalized_timestamp() {
@@ -234,7 +115,7 @@ impl PersistencyManager for SimplePersistencyManager {
                 let mut frontiers_by_time = input_source.lock().unwrap();
                 let mut timestamps_to_flush = Vec::new();
 
-                for (timestamp, _) in frontiers_by_time.iter() {
+                for timestamp in frontiers_by_time.keys() {
                     if *timestamp <= finalized_timestamp {
                         timestamps_to_flush.push(*timestamp);
                     }
@@ -268,24 +149,27 @@ impl PersistencyManager for SimplePersistencyManager {
         }
         self.metadata_storage
             .accept_finalized_timestamp(finalized_timestamp);
+        if let Err(e) = self.metadata_storage.save_current_state() {
+            error!("Unable to save new frontiers, data on the output may duplicate in re-run. Error: {e}");
+        }
     }
 
     fn create_snapshot_readers(
         &self,
-        persistent_id: u128,
+        persistent_id: PersistentId,
     ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError> {
         self.config.create_snapshot_readers(persistent_id)
     }
 
     fn create_snapshot_writer(
         &mut self,
-        persistent_id: u128,
+        persistent_id: PersistentId,
     ) -> Result<Box<dyn SnapshotWriter>, WriteError> {
         self.config.create_snapshot_writer(persistent_id)
     }
 }
 
-impl SimplePersistencyManager {
+impl SimplePersistenceManager {
     pub fn globally_finalized_timestamp(&self) -> u64 {
         let min_sink_timestamp = self.sink_threshold_times.iter().flatten().min();
         if let Some(min_sink_timestamp) = min_sink_timestamp {

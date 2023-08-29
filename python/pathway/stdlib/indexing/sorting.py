@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Optional, TypedDict
+from typing import Callable, Optional, TypedDict
 
 import pathway.internals as pw
 from pathway.internals.arg_tuple import wrap_arg_tuple
@@ -116,8 +116,8 @@ def build_sorted_index(nodes: pw.Table[Key | Instance]) -> SortedIndex:
     )
     result += result.select(
         candidate=root.ix_ref(result.instance).root,
-        left=pw.declare_type(Any, None),
-        right=pw.declare_type(Any, None),
+        left=pw.declare_type(Optional[pw.Pointer], None),
+        right=pw.declare_type(Optional[pw.Pointer], None),
     )
 
     result = pw.iterate(_build_tree_step, result=result).result
@@ -129,19 +129,14 @@ def build_sorted_index(nodes: pw.Table[Key | Instance]) -> SortedIndex:
         parent=None,
     )
 
-    result_nonull_left = result.filter(result.left.is_not_none()).update_types(
-        left=pw.Pointer
-    )
+    result_nonull_left = result.filter(result.left.is_not_none())
     result <<= (
         result_nonull_left.select(parent=result_nonull_left.id)
         .with_id(result_nonull_left.left)
         .promise_universe_is_subset_of(result)
     )
 
-    result_nonull_right = result.filter(result.right.is_not_none()).update_types(
-        right=pw.Pointer
-    )
-
+    result_nonull_right = result.filter(result.right.is_not_none())
     result <<= (
         result_nonull_right.select(parent=result_nonull_right.id)
         .with_id(result_nonull_right.right)

@@ -154,6 +154,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
         if not hasattr(self, "_requests"):
             self._requests = asyncio.Queue()
 
+    def _is_internal(self) -> bool:
+        return True
+
 
 class AsyncTransformer(ABC):
     """

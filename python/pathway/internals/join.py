@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import itertools
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple, cast
@@ -25,7 +24,7 @@ from pathway.internals.arg_handlers import (
     reduce_args_handler,
     select_args_handler,
 )
-from pathway.internals.decorators import contextualized_expression_operator
+from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
     DesugaringContext,
     SubstitutionDesugaring,
@@ -577,7 +576,7 @@ class JoinResult(Joinable, OperatorInput):
 
     @desugar
     @arg_handler(handler=select_args_handler)
-    @contextualized_expression_operator
+    @contextualized_operator
     @trace_user_frame
     def select(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Computes result of a join.
@@ -631,6 +630,7 @@ class JoinResult(Joinable, OperatorInput):
             | self._right_table._operator_dependencies()
         )
 
+    @desugar
     @trace_user_frame
     def filter(self, filter_expression: expr.ColumnExpression) -> FilteredJoinResult:
         """Filters rows, keeping the ones satisfying the predicate.
@@ -906,18 +906,20 @@ class FilteredJoinResult(JoinResult):
     _context: clmn.JoinFilterContext
     _join_result: JoinResult
 
-    def __init__(self, join_result: JoinResult, filtering: Table):
+    def __init__(
+        self,
+        join_result: JoinResult,
+        filtering: Table,
+    ):
         universe = filtering._universe
         self._filtering = filtering
         self._join_result = join_result
         new_context = clmn.JoinFilterContext(
             **{  # type: ignore
                 **vars(
-                    dataclasses.replace(
-                        join_result._context,
-                        universe=universe,
-                    )
+                    join_result._context,
                 ),
+                "universe": universe,
                 "filtering_column": filtering._id_column,
             }
         )

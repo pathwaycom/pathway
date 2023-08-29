@@ -14,7 +14,7 @@ def classifier_accuracy(predicted_labels, exact_labels):
         match=comparative_results.label == comparative_results.predicted_label
     )
     accuracy = comparative_results.groupby(comparative_results.match).reduce(
-        cnt=pw.reducers.count(comparative_results.match),
+        cnt=pw.reducers.count(),
         value=comparative_results.match,
     )
     pw.universes.promise_is_subset_of(predicted_labels, accuracy)

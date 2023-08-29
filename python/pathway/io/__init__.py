@@ -1,5 +1,6 @@
 # Copyright © 2023 Pathway
 
+from pathway.internals.persistence import PersistenceConfig, PersistentStorageBackend
 from pathway.io import (
     csv,
     debezium,
@@ -33,6 +34,8 @@ __all__ = [
     "logstash",
     "minio",
     "null",
+    "PersistenceConfig",
+    "PersistentStorageBackend",
     "plaintext",
     "postgres",
     "python",

@@ -39,7 +39,7 @@ def test_session_simple():
         pw.this._pw_window_end,
         min_t=pw.reducers.min(pw.this.t),
         max_v=pw.reducers.max(pw.this.v),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
     res = T(
         """
@@ -109,7 +109,7 @@ def test_session_max_gap():
     gb = t.windowby(t.t, window=pw.temporal.session(max_gap=0.15))
     result = gb.reduce(
         min_t=pw.reducers.min(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
     res = T(
         """
@@ -154,7 +154,7 @@ def test_sliding():
         pw.this._pw_window_end,
         min_t=pw.reducers.min(pw.this.t),
         max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
     res = T(
         """
@@ -192,7 +192,7 @@ def test_sliding_offset():
         pw.this._pw_window_end,
         min_t=pw.reducers.min(pw.this.t),
         max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
 
     res = T(
@@ -226,7 +226,7 @@ def test_sliding_larger_hop():
         pw.this._pw_window_end,
         min_t=pw.reducers.min(pw.this.t),
         max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
 
     res = T(
@@ -260,7 +260,7 @@ def test_tumbling():
         pw.this._pw_window_end,
         min_t=pw.reducers.min(pw.this.t),
         max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
 
     res = T(
@@ -295,7 +295,7 @@ def test_tumbling_offset():
         pw.this._pw_window_end,
         min_t=pw.reducers.min(pw.this.t),
         max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
 
     res = T(
@@ -321,7 +321,7 @@ def test_tumbling_floats():
         pw.this._pw_shard,
         pw.this._pw_window_start,
         pw.this._pw_window_end,
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
     res_pd = pw.debug.table_to_pandas(result)
     assert res_pd["count"].sum() == n
@@ -339,7 +339,7 @@ def test_sliding_floats():
         pw.this._pw_shard,
         pw.this._pw_window_start,
         pw.this._pw_window_end,
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
     res_pd = pw.debug.table_to_pandas(result)
     assert res_pd["count"].sum() == 3 * n
@@ -439,7 +439,7 @@ def test_windows_smart_cols(w):
         pw.this._pw_shard,
         min_t=pw.reducers.min(pw.this.t),
         max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(pw.this.t),
+        count=pw.reducers.count(),
     )
 
     assert_table_equality_wo_index(res, expected)

@@ -1,5 +1,5 @@
 mod helpers;
-use helpers::create_persistency_manager;
+use helpers::create_persistence_manager;
 use helpers::get_entries_in_receiver;
 
 use assert_matches::assert_matches;
@@ -16,7 +16,7 @@ use pathway_engine::connectors::snapshot::{
 };
 use pathway_engine::connectors::{Connector, Entry};
 use pathway_engine::engine::{Key, Value};
-use pathway_engine::persistence::tracker::PersistencyManager;
+use pathway_engine::persistence::tracker::PersistenceManager;
 use pathway_engine::persistence::PersistentId;
 
 fn get_snapshot_reader_entries(mut snapshot_reader: Box<dyn SnapshotReader>) -> Vec<SnapshotEvent> {
@@ -35,7 +35,7 @@ fn get_snapshot_reader_entries(mut snapshot_reader: Box<dyn SnapshotReader>) -> 
 }
 
 fn read_persistent_buffer(chunks_root: &Path) -> Vec<SnapshotEvent> {
-    let snapshot_reader = LocalBinarySnapshotReader::new(chunks_root)
+    let snapshot_reader = LocalBinarySnapshotReader::new(chunks_root.to_path_buf())
         .expect("Failed to create reader for test snapshot storage");
     get_snapshot_reader_entries(Box::new(snapshot_reader))
 }
@@ -44,7 +44,7 @@ fn read_persistent_buffer_full(
     chunks_root: &Path,
     persistent_id: PersistentId,
 ) -> Vec<SnapshotEvent> {
-    let tracker = create_persistency_manager(chunks_root, false);
+    let tracker = create_persistence_manager(chunks_root, false);
     let (sender, receiver) = mpsc::channel();
     Connector::<u64>::rewind_from_disk_snapshot(persistent_id, &tracker, &sender);
     let entries: Vec<Entry> = get_entries_in_receiver(receiver);
@@ -79,10 +79,10 @@ fn test_stream_snapshot_io() -> eyre::Result<()> {
     );
 
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     {
-        let mut snapshot_writer = LocalBinarySnapshotWriter::new(&test_storage_path)
+        let mut snapshot_writer = LocalBinarySnapshotWriter::new(test_storage_path)
             .expect("Failed to create test snapshot storage");
         snapshot_writer
             .write(&event1)
@@ -93,7 +93,7 @@ fn test_stream_snapshot_io() -> eyre::Result<()> {
     }
 
     assert_eq!(
-        read_persistent_buffer(&test_storage_path),
+        read_persistent_buffer(test_storage_path),
         vec![event1, event2]
     );
 
@@ -103,17 +103,17 @@ fn test_stream_snapshot_io() -> eyre::Result<()> {
 #[test]
 fn test_stream_snapshot_io_broken_format() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     {
-        let mut test_file = File::create(test_storage_path.as_path().join("1"))
-            .expect("Test storage creation broken");
+        let mut test_file =
+            File::create(test_storage_path.join("1")).expect("Test storage creation broken");
         test_file
             .write_all(b"hello world")
             .expect("Failed to write");
     }
 
-    let mut snapshot_reader = LocalBinarySnapshotReader::new(&test_storage_path)
+    let mut snapshot_reader = LocalBinarySnapshotReader::new(test_storage_path.to_path_buf())
         .expect("Failed to create reader for test snapshot storage");
     let entry = snapshot_reader.read();
     assert_matches!(entry, Err(_));
@@ -124,9 +124,9 @@ fn test_stream_snapshot_io_broken_format() -> eyre::Result<()> {
 #[test]
 fn test_stream_empty() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
-    let mut snapshot_reader = LocalBinarySnapshotReader::new(Path::new(&test_storage_path))
+    let mut snapshot_reader = LocalBinarySnapshotReader::new(test_storage_path.to_path_buf())
         .expect("Failed to create reader for test snapshot storage");
     let entry = snapshot_reader.read();
     assert_matches!(entry, Ok(SnapshotEvent::Finished));
@@ -137,17 +137,17 @@ fn test_stream_empty() -> eyre::Result<()> {
 #[test]
 fn test_stream_not_from_dir() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     {
-        let mut test_file = File::create(test_storage_path.as_path().join("1"))
-            .expect("Test storage creation broken");
+        let mut test_file =
+            File::create(test_storage_path.join("1")).expect("Test storage creation broken");
         test_file
             .write_all(b"hello world")
             .expect("Failed to write");
     }
 
-    let snapshot_reader = LocalBinarySnapshotReader::new(&test_storage_path.as_path().join("1"));
+    let snapshot_reader = LocalBinarySnapshotReader::new(test_storage_path.join("1"));
     assert!(snapshot_reader.is_err());
 
     Ok(())
@@ -156,9 +156,9 @@ fn test_stream_not_from_dir() -> eyre::Result<()> {
 #[test]
 fn test_buffer_scenario() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
-    let tracker = create_persistency_manager(&test_storage_path, true);
+    let tracker = create_persistence_manager(test_storage_path, true);
     let mut buffer = tracker
         .lock()
         .unwrap()
@@ -179,7 +179,7 @@ fn test_buffer_scenario() -> eyre::Result<()> {
     );
 
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         Vec::new()
     );
     buffer.write(&event1).unwrap();
@@ -192,7 +192,7 @@ fn test_buffer_scenario() -> eyre::Result<()> {
         .accept_finalized_timestamp(mock_sink_id, Some(2));
 
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         vec![event1.clone(), event2.clone()]
     );
 
@@ -203,7 +203,7 @@ fn test_buffer_scenario() -> eyre::Result<()> {
     buffer.write(&event3).unwrap();
     buffer.write(&event4).unwrap();
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         vec![event1.clone(), event2.clone()]
     );
 
@@ -211,16 +211,18 @@ fn test_buffer_scenario() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .accept_finalized_timestamp(mock_sink_id, Some(5));
+
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         vec![event1.clone(), event2.clone()]
     );
     tracker
         .lock()
         .unwrap()
         .accept_finalized_timestamp(mock_sink_id, Some(10));
+
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         vec![event1.clone(), event2.clone()]
     );
 
@@ -231,8 +233,9 @@ fn test_buffer_scenario() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .accept_finalized_timestamp(mock_sink_id, Some(12));
+
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         vec![
             event1.clone(),
             event2.clone(),
@@ -244,8 +247,9 @@ fn test_buffer_scenario() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .accept_finalized_timestamp(mock_sink_id, Some(15));
+
     assert_eq!(
-        read_persistent_buffer_full(&test_storage_path, 42),
+        read_persistent_buffer_full(test_storage_path, 42),
         vec![event1, event2, event3, event4]
     );
 
@@ -255,9 +259,9 @@ fn test_buffer_scenario() -> eyre::Result<()> {
 #[test]
 fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
-    let tracker = create_persistency_manager(&test_storage_path, true);
+    let tracker = create_persistence_manager(test_storage_path, true);
     let mock_sink_id = tracker.lock().unwrap().register_sink();
 
     let event1 =
@@ -282,8 +286,9 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
             .lock()
             .unwrap()
             .accept_finalized_timestamp(mock_sink_id, Some(2));
+
         assert_eq!(
-            read_persistent_buffer_full(&test_storage_path, 42),
+            read_persistent_buffer_full(test_storage_path, 42),
             vec![event1.clone()]
         );
     }
@@ -303,8 +308,9 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
             .lock()
             .unwrap()
             .accept_finalized_timestamp(mock_sink_id, Some(3));
+
         assert_eq!(
-            read_persistent_buffer_full(&test_storage_path, 42),
+            read_persistent_buffer_full(test_storage_path, 42),
             vec![event1, event2]
         );
     }

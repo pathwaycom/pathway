@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import datetime
-from typing import Dict, Generic, Tuple, TypeVar, Union
+from typing import Any, Dict, Generic, List, Mapping, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 import pandas as pd
 
 from pathway.engine import *
+from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.schema import Schema
 
 Value = Union[
@@ -20,6 +21,7 @@ Value = Union[
     BasePointer,
     datetime.datetime,
     datetime.timedelta,
+    np.ndarray,
     Tuple["Value", ...],
 ]
 CapturedTable = Dict[BasePointer, Tuple[Value, ...]]
@@ -49,8 +51,14 @@ class Pointer(BasePointer, Generic[TSchema]):
 
 
 def static_table_from_pandas(
-    scope, df, dtypes=None, id_from=None, unsafe_trusted_ids=True
+    scope,
+    df: pd.DataFrame,
+    dtypes: Optional[Dict[str, Any]] = None,
+    id_from: Optional[List[str]] = None,
+    connector_properties: Optional[ConnectorProperties] = None,
 ) -> Table:
+    connector_properties = connector_properties or ConnectorProperties()
+
     dtypes = dtypes or {}
 
     def denumpify_inner(x):
@@ -68,12 +76,12 @@ def static_table_from_pandas(
             return v
 
     if id_from is None:
-        if unsafe_trusted_ids:
+        if connector_properties.unsafe_trusted_ids:
             ids = {k: unsafe_make_pointer(k) for k in df.index}
         else:
             ids = {k: ref_scalar(k) for k in df.index}
     else:
-        ids = {k: ref_scalar(*args) for (k, *args) in df[list(id_from)].itertuples()}
+        ids = {k: ref_scalar(*args) for (k, *args) in df[id_from].itertuples()}
 
     universe = scope.static_universe(ids.values())
     columns = []
@@ -89,3 +97,17 @@ def static_table_from_pandas(
                     break
         columns.append(scope.static_column(universe, list(data.items()), dtype))
     return Table(universe, columns)
+
+
+_TYPES_TO_ENGINE_MAPPING: Mapping[Any, PathwayType] = {
+    bool: PathwayType.BOOL,
+    int: PathwayType.INT,
+    float: PathwayType.FLOAT,
+    Pointer: PathwayType.POINTER,
+    str: PathwayType.STRING,
+    DateTimeNaive: PathwayType.DATE_TIME_NAIVE,
+    DateTimeUtc: PathwayType.DATE_TIME_UTC,
+    Duration: PathwayType.DURATION,
+    np.ndarray: PathwayType.ARRAY,
+    Any: PathwayType.ANY,
+}

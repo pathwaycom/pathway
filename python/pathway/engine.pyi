@@ -44,6 +44,7 @@ class PyTrace:
 class EvalProperties:
     trace: Optional[PyTrace] = None
     dtype: Optional[DType] = None
+    append_only: Optional[bool] = False
 
 @dataclasses.dataclass(frozen=True)
 class ConnectorProperties:
@@ -84,10 +85,11 @@ class Reducer:
     MIN: Reducer
     ARG_MAX: Reducer
     MAX: Reducer
-    SUM: Reducer
+    FLOAT_SUM: Reducer
+    ARRAY_SUM: Reducer
     INT_SUM: Reducer
     SORTED_TUPLE: Reducer
-    COUNT: Reducer
+    TUPLE: Reducer
     UNIQUE: Reducer
     ANY: Reducer
 
@@ -143,6 +145,10 @@ class Expression:
     def ne(lhs: Expression, rhs: Expression) -> Expression: ...
     @staticmethod
     def cast(
+        expr: Expression, source_type: PathwayType, target_type: PathwayType
+    ) -> Optional[Expression]: ...
+    @staticmethod
+    def cast_optional(
         expr: Expression, source_type: PathwayType, target_type: PathwayType
     ) -> Optional[Expression]: ...
     @staticmethod
@@ -236,6 +242,14 @@ class Expression:
     @staticmethod
     def duration_weeks(expr: Expression) -> Expression: ...
     @staticmethod
+    def parse_int(expr: Expression, optional: bool) -> Expression: ...
+    @staticmethod
+    def parse_float(expr: Expression, optional: bool) -> Expression: ...
+    @staticmethod
+    def parse_bool(
+        expr: Expression, true_list: list[str], false_list: list[str], optional: bool
+    ) -> Expression: ...
+    @staticmethod
     def pointer_from(*args: Expression, optional: bool) -> Expression: ...
     @staticmethod
     def make_tuple(*args: Expression) -> Expression: ...
@@ -247,6 +261,10 @@ class Expression:
     def sequence_get_item_unchecked(
         expr: Expression, index: Expression
     ) -> Expression: ...
+    @staticmethod
+    def unwrap(expr: Expression) -> Expression: ...
+    @staticmethod
+    def to_string(expr: Expression) -> Expression: ...
 
 class MonitoringLevel(Enum):
     NONE = 0
@@ -450,6 +468,7 @@ def run_with_new_graph(
     ignore_asserts: bool = False,
     monitoring_level: MonitoringLevel = MonitoringLevel.NONE,
     with_http_server: bool = False,
+    persistence_config: PersistenceConfig,
 ) -> List[CapturedTable]: ...
 def unsafe_make_pointer(arg) -> BasePointer: ...
 
@@ -478,4 +497,7 @@ class ElasticSearchAuth:
     def __init__(self, *args, **kwargs): ...
 
 class ElasticSearchParams:
+    def __init__(self, *args, **kwargs): ...
+
+class PersistenceConfig:
     def __init__(self, *args, **kwargs): ...

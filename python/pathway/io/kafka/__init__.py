@@ -41,7 +41,7 @@ def read(
     autocommit_duration_ms: Optional[int] = 1500,
     json_field_paths: Optional[Dict[str, str]] = None,
     parallel_readers: Optional[int] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     value_columns: Optional[List[str]] = None,
     primary_key: Optional[List[str]] = None,
     types: Optional[Dict[str, PathwayType]] = None,
@@ -269,7 +269,7 @@ def read(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -288,7 +288,7 @@ def simple_read(
     autocommit_duration_ms: Optional[int] = 1500,
     json_field_paths: Optional[Dict[str, str]] = None,
     parallel_readers: Optional[int] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
 ) -> Table:
     """Simplified method to read data from Kafka. Only requires the server address and
     the topic name. If you have any kind of authentication or require fine-tuning of the
@@ -378,7 +378,7 @@ def read_from_upstash(
     autocommit_duration_ms: Optional[int] = 1500,
     json_field_paths: Optional[Dict[str, str]] = None,
     parallel_readers: Optional[int] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
 ) -> Table:
     """Simplified method to read data from Kafka instance hosted in Upstash. It requires
     endpoint address and topic along with credentials.

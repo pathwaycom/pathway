@@ -192,11 +192,10 @@ class OperatorFromDef(Operator, ABC):
         return self.func_spec.func.__name__
 
 
-class ContextualizedExpressionOperator(OperatorFromDef):
-    """Operator producing tables with `ColumnWithExpression`s.
-
-    `@contextualized_expression_operator` can be used to decorate any function so that
-    operator will be created and added to the graph whenever such function is called.
+class IntermediateOperator(OperatorFromDef):
+    """Operator producing tables. It should not be used directly. Use
+    ContextualizedIntermediateOperator or NonContextualizedIntermediateOperator depending
+    on your needs.
     """
 
     def __init__(self, func_spec, id):
@@ -212,6 +211,28 @@ class ContextualizedExpressionOperator(OperatorFromDef):
         self._prepare_outputs(result)
 
         return result.scalar_or_tuple()
+
+
+class ContextualizedIntermediateOperator(IntermediateOperator):
+    """Operator producing tables with `ColumnWithExpression`s that have not been
+    evaluated yet.
+
+    `@contextualized_operator` can be used to decorate any function so that
+    operator will be created and added to the graph whenever such function is called.
+    """
+
+    pass
+
+
+class NonContextualizedIntermediateOperator(IntermediateOperator):
+    """Operator producing tables consisting of columns that have been previously
+    evaluated.
+
+    `@non_contextualized_operator` can be used to decorate any function so
+    that operator will be created and added to the graph whenever such function is called.
+    """
+
+    pass
 
 
 class DebugOperator(Operator):
@@ -235,22 +256,16 @@ class InputOperator(Operator):
     """Holds a definition of external datasource."""
 
     datasource: DataSource
-    id_from: Optional[Tuple[str, ...]]
-    unsafe_trusted_ids: bool
     debug_datasource: Optional[StaticDataSource]
 
     def __init__(
         self,
         datasource: DataSource,
-        id_from: Optional[Tuple[str, ...]],
-        unsafe_trusted_ids: bool,
         id: int,
         debug_datasource: Optional[StaticDataSource] = None,
     ) -> None:
         super().__init__(id)
         self.datasource = datasource
-        self.id_from = id_from
-        self.unsafe_trusted_ids = unsafe_trusted_ids
         self.debug_datasource = debug_datasource
 
     def __call__(self):

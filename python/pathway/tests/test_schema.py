@@ -57,9 +57,10 @@ def test_schema_builder():
             "c": pw.column_definition(),
         },
         name="FooSchema",
+        properties=pw.SchemaProperties(append_only=True),
     )
 
-    class FooSchema(pw.Schema):
+    class FooSchema(pw.Schema, append_only=True):
         a: int = pw.column_definition(dtype=int, name="aa")
         b: str = pw.column_definition(dtype=str, default_value="default")
         c: Any

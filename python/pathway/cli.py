@@ -51,15 +51,9 @@ def cli() -> None:
     default=10000,
     help="first port to use for communication",
 )
-@click.option(
-    "--persistent-storage-path",
-    type=str,
-    default=None,
-    help="directory path for persistent storage",
-)
 @click.argument("program")
 @click.argument("arguments", nargs=-1)
-def spawn(threads, processes, first_port, program, arguments, persistent_storage_path):
+def spawn(threads, processes, first_port, program, arguments):
     processes_str = plural(processes, "process", "processes")
     workers_str = plural(processes * threads, "total worker", "total workers")
     click.echo(f"Preparing {processes_str} ({workers_str})", err=True)
@@ -71,8 +65,6 @@ def spawn(threads, processes, first_port, program, arguments, persistent_storage
             env["PATHWAY_PROCESSES"] = str(processes)
             env["PATHWAY_FIRST_PORT"] = str(first_port)
             env["PATHWAY_PROCESS_ID"] = str(process_id)
-            if persistent_storage_path:
-                env["PATHWAY_PERSISTENT_STORAGE"] = persistent_storage_path
             handle = subprocess.Popen([program] + list(arguments), env=env)
             process_handles.append(handle)
         for handle in process_handles:

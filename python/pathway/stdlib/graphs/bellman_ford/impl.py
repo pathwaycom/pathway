@@ -31,7 +31,7 @@ def _bellman_ford_step(
     )
     vertices_dist = vertices_dist.update_rows(
         relaxed_edges.groupby(id=relaxed_edges.v).reduce(
-            dist_from_source=pw.reducers.min_int(relaxed_edges.dist_from_source),
+            dist_from_source=pw.reducers.min(relaxed_edges.dist_from_source),
         )
     )
     return vertices_dist

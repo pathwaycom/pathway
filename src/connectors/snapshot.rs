@@ -51,9 +51,9 @@ pub struct LocalBinarySnapshotReader {
 }
 
 impl LocalBinarySnapshotReader {
-    pub fn new(path: &Path) -> Result<LocalBinarySnapshotReader, ReadError> {
+    pub fn new(root_path: PathBuf) -> Result<LocalBinarySnapshotReader, ReadError> {
         let mut times_advanced = Vec::new();
-        let entries = fs::read_dir(path).map_err(ReadError::Io)?;
+        let entries = fs::read_dir(&root_path).map_err(ReadError::Io)?;
         for entry in entries {
             let entry = entry.map_err(ReadError::Io)?;
             if let Ok(file_name) = entry.file_name().into_string() {
@@ -69,7 +69,7 @@ impl LocalBinarySnapshotReader {
         times_advanced.sort_unstable();
 
         Ok(Self {
-            root_path: path.into(),
+            root_path,
             reader: None,
             next_file_idx: 0,
             times_advanced,

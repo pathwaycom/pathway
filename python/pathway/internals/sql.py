@@ -30,10 +30,22 @@ class ReducerDetector(IdentityTransform):
         self.contains_reducers = False
 
     def eval_reducer(
-        self, expression: expr.ReducerExpression
+        self, expression: expr.ReducerExpression, **kwargs
     ) -> expr.ReducerExpression:
         self.contains_reducers = True
-        return super().eval_reducer(expression)
+        return super().eval_reducer(expression, **kwargs)
+
+    def eval_reducer_ix(
+        self, expression: expr.ReducerIxExpression, **kwargs
+    ) -> expr.ReducerIxExpression:
+        self.contains_reducers = True
+        return super().eval_reducer_ix(expression, **kwargs)
+
+    def eval_count(
+        self, expression: expr.CountExpression, **kwargs
+    ) -> expr.CountExpression:
+        self.contains_reducers = True
+        return super().eval_count(expression, **kwargs)
 
 
 _expression_handlers: Dict[Type[sql_expr.Expression], Callable] = {}
@@ -441,7 +453,7 @@ def _join(node: sql_expr.Join, _context: ContextType) -> Callable:
             assert side in ["INNER", ""]
             ret = left_tab.join(right_tab, *on)
             for fil in postfilter:
-                ret = ret.filter(postfilter)
+                ret = ret.filter(fil)
             return ret, context
 
     return _wrap
@@ -453,13 +465,15 @@ class _HavingHelper(IdentityTransform):
     def __init__(self, tab):
         self.tab = tab
 
-    def eval_column_val(self, expression: expr.ColumnReference) -> expr.ColumnReference:
+    def eval_column_val(
+        self, expression: expr.ColumnReference, **kwargs
+    ) -> expr.ColumnReference:
         if isinstance(expression.table, thisclass.ThisMetaclass):
             try:
                 return self.tab[expression.name]
             except KeyError:
                 pass
-        return super().eval_column_val(expression)
+        return super().eval_column_val(expression, **kwargs)
 
 
 def _all_nonnested_subqueries(node):
@@ -486,7 +500,7 @@ def _process_field_for_subqueries(field, tab, context, orig_context, agg_fun):
         context_subqueries[tabname] = subquery_tab
         [colexpr] = subquery_tab
         subquery.replace(sqlglot.parse_one(f"{agg_fun}({tabname}.{colexpr.name})"))
-        tab_joined = tab_joined.join_left(subquery_tab, id=tab_joined.id)
+        tab_joined = tab_joined.join(subquery_tab, id=tab_joined.id)
 
     return tab_joined, context_subqueries
 
@@ -530,7 +544,7 @@ def _select(
 
         tab_filter_where = tab_joined_where.select(
             filter_col=_where(where_field, context_subqueries_where)
-        )
+        ).with_universe_of(tab)
         tab = tab.filter(tab_filter_where.filter_col)
 
     # HAVING block

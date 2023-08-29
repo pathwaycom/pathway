@@ -48,7 +48,7 @@ impl Shard for Event {
         match self {
             Self::Request(request) => request.shard(),
             Self::Reply(request, _reply) => request.shard(),
-            Self::Dependency(_requestor, requested) => requested.shard(),
+            Self::Dependency(_requester, requested) => requested.shard(),
         }
     }
 }
@@ -145,6 +145,7 @@ impl<'a> ContextTrait for Context<'a> {
 }
 
 #[allow(clippy::too_many_lines)] // XXX
+#[allow(clippy::similar_names)] // XXX
 pub(super) fn complex_columns<S: MaybeTotalScope>(
     graph: &mut DataflowGraphInner<S>,
     inputs: Vec<ComplexColumn>,
@@ -183,14 +184,14 @@ pub(super) fn complex_columns<S: MaybeTotalScope>(
         let requests = events
             .flat_map(|event| match event {
                 Event::Request(request) => Some(request),
-                Event::Dependency(_requestor, requested) => Some(requested),
+                Event::Dependency(_requester, requested) => Some(requested),
                 _ => None,
             })
             .distinct();
 
         let dependencies: ArrangedByKey<_, Request, Request> = events
             .flat_map(|event| match event {
-                Event::Dependency(requestor, requested) => Some((requestor, requested)),
+                Event::Dependency(requester, requested) => Some((requester, requested)),
                 _ => None,
             })
             .arrange_named("dependencies");
@@ -243,15 +244,15 @@ pub(super) fn complex_columns<S: MaybeTotalScope>(
             };
             let our_requests_arranged: ArrangedBySelf<_, Request> = our_requests.arrange();
             let reverse_dependencies_arranged: ArrangedByKey<_, Request, Request> = dependencies
-                .join_core(&our_requests_arranged, |requestor, requested, ()| {
-                    once((requested.clone(), requestor.clone()))
+                .join_core(&our_requests_arranged, |requester, requested, ()| {
+                    once((requested.clone(), requester.clone()))
                 })
                 .arrange();
             let our_inputs = our_request_inputs.concat(&reverse_dependencies_arranged.join_core(
                 &values,
-                |requested, requestor, value| {
+                |requested, requester, value| {
                     once((
-                        requestor.clone(),
+                        requester.clone(),
                         ComputerInput::Dependency(requested.clone(), value.clone()),
                     ))
                 },

@@ -5,11 +5,12 @@ use std::sync::{mpsc, mpsc::Receiver, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use pathway_engine::persistence::storage::{
-    filesystem::SaveStatePolicy, FileSystem as FileSystemMetadataStorage,
+use pathway_engine::persistence::config::{
+    MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
 };
-use pathway_engine::persistence::tracker::SimplePersistencyManager;
-use pathway_engine::persistence::tracker::{PersistenceManagerConfig, StreamStorageConfig};
+use pathway_engine::persistence::metadata_backends::FilesystemKVStorage;
+use pathway_engine::persistence::state::MetadataAccessor;
+use pathway_engine::persistence::tracker::{PersistenceManager, SimplePersistenceManager};
 
 use pathway_engine::connectors::data_format::{ParsedEvent, Parser};
 use pathway_engine::connectors::data_storage::{ReadResult, Reader, ReaderBuilder, ReaderContext};
@@ -17,7 +18,6 @@ use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::{Connector, Entry};
 use pathway_engine::engine::Key;
 use pathway_engine::persistence::frontier::OffsetAntichain;
-use pathway_engine::persistence::tracker::PersistencyManager;
 
 #[derive(Debug)]
 pub struct FullReadResult {
@@ -29,7 +29,7 @@ pub struct FullReadResult {
 pub fn full_cycle_read(
     reader: Box<dyn ReaderBuilder>,
     parser: &mut dyn Parser,
-    persistent_storage: &Option<Arc<Mutex<SimplePersistencyManager>>>,
+    persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
 ) -> FullReadResult {
     let maybe_persistent_id = reader.persistent_id();
 
@@ -47,7 +47,7 @@ pub fn full_cycle_read(
     let main_thread = thread::current();
     let (sender, receiver) = mpsc::channel();
     let mut snapshot_writer =
-        Connector::<u64>::snapshot_writer(reader.as_ref(), persistent_storage);
+        Connector::<u64>::snapshot_writer(reader.as_ref(), persistent_storage).unwrap();
 
     let mut reader = reader.build().expect("building the reader failed");
     Connector::<u64>::read_snapshot(&mut *reader, persistent_storage, &sender);
@@ -158,27 +158,32 @@ pub fn read_data_from_reader(
     Ok(read_lines)
 }
 
-pub fn create_persistency_manager(
+pub fn create_persistence_manager(
     fs_path: &Path,
     recreate: bool,
-) -> Arc<Mutex<SimplePersistencyManager>> {
+) -> Arc<Mutex<SimplePersistenceManager>> {
     if recreate {
         let _ = std::fs::remove_dir_all(fs_path);
     }
-    let storage = FileSystemMetadataStorage::new(fs_path, 0, SaveStatePolicy::OnUpdate)
-        .expect("Storage creation failed");
-    Arc::new(Mutex::new(SimplePersistencyManager::new(
-        Box::new(storage),
-        PersistenceManagerConfig::new(StreamStorageConfig::Filesystem(fs_path.to_path_buf()), 0, 1),
-    )))
+    Arc::new(Mutex::new(
+        SimplePersistenceManager::new(
+            PersistenceManagerOuterConfig::new(
+                MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
+                StreamStorageConfig::Filesystem(fs_path.to_path_buf()),
+            )
+            .into_inner(0, 1),
+        )
+        .expect("Failed to create persistence manager"),
+    ))
 }
 
-pub fn create_metadata_storage(fs_path: &Path, recreate: bool) -> FileSystemMetadataStorage {
+pub fn create_metadata_storage(fs_path: &Path, recreate: bool) -> MetadataAccessor {
     if recreate {
         let _ = std::fs::remove_dir_all(fs_path);
     }
-    FileSystemMetadataStorage::new(fs_path, 0, SaveStatePolicy::OnUpdate)
-        .expect("Storage creation failed")
+
+    let backend = Box::new(FilesystemKVStorage::new(fs_path).expect("Backend creation failed"));
+    MetadataAccessor::new(backend, 0).expect("Storage creation failed")
 }
 
 pub fn get_entries_in_receiver<T>(receiver: Receiver<T>) -> Vec<T> {

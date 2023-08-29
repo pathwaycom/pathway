@@ -9,6 +9,7 @@ import boto3
 import pandas as pd
 
 import pathway as pw
+from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import write_lines
 
@@ -132,7 +133,7 @@ def test_minio_read_write(tmp_path: pathlib.Path):
 
 
 def test_s3_backfilling(tmp_path: pathlib.Path):
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(tmp_path / "PStorage")
+    pathway_persistent_storage = tmp_path / "PStorage"
     s3_folder_path = "integration_tests/test_s3_backfilling/{}".format(time.time())
     s3_input_path = s3_folder_path + "/input.csv"
 
@@ -149,10 +150,15 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
-        persistent_id=1,
+        persistent_id="1",
     )
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
-    pw.run()
+    pw.run(
+        monitoring_level=MonitoringLevel.NONE,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+        ),
+    )
     G.clear()
 
     input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde"
@@ -168,10 +174,15 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
-        persistent_id=1,
+        persistent_id="1",
     )
     pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
-    pw.run()
+    pw.run(
+        monitoring_level=MonitoringLevel.NONE,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+        ),
+    )
     G.clear()
 
     input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde\n5,Hola"
@@ -191,10 +202,15 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
-        persistent_id=1,
+        persistent_id="1",
     )
     pw.io.csv.write(table, str(output_path))
-    pw.run()
+    pw.run(
+        monitoring_level=MonitoringLevel.NONE,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+        ),
+    )
 
     model_output_contents = "key,value\n5,Hola\n6,Mundo"
     model_output_path = tmp_path / "expected_output.csv"
@@ -210,7 +226,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
 
 
 def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(tmp_path / "PStorage")
+    pathway_persistent_storage = str(tmp_path / "PStorage")
     input_s3_path = "integration_tests/test_s3_json_read_write/{}".format(time.time())
     output_path = tmp_path / "output.json"
 
@@ -231,10 +247,15 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
             format="json",
             schema=InputSchema,
             mode="static",
-            persistent_id=1,
+            persistent_id="1",
         )
         pw.io.jsonlines.write(table, str(output_path))
-        pw.run()
+        pw.run(
+            monitoring_level=MonitoringLevel.NONE,
+            persistence_config=pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+            ),
+        )
 
     input_contents = [
         {"key": 1, "value": "One"},

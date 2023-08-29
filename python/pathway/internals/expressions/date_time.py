@@ -59,12 +59,11 @@ class DateTimeNamespace:
         123456789
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_nanosecond,
-                DateTimeUtc: api.Expression.date_time_utc_nanosecond,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_nanosecond),
+                (DateTimeUtc, int, api.Expression.date_time_utc_nanosecond),
+            ],
             "dt.nanosecond",
             self._expression,
         )
@@ -99,12 +98,11 @@ class DateTimeNamespace:
         123456
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_microsecond,
-                DateTimeUtc: api.Expression.date_time_utc_microsecond,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_microsecond),
+                (DateTimeUtc, int, api.Expression.date_time_utc_microsecond),
+            ],
             "dt.microsecond",
             self._expression,
         )
@@ -139,12 +137,11 @@ class DateTimeNamespace:
         123
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_millisecond,
-                DateTimeUtc: api.Expression.date_time_utc_millisecond,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_millisecond),
+                (DateTimeUtc, int, api.Expression.date_time_utc_millisecond),
+            ],
             "dt.millisecond",
             self._expression,
         )
@@ -179,12 +176,11 @@ class DateTimeNamespace:
         23
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_second,
-                DateTimeUtc: api.Expression.date_time_utc_second,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_second),
+                (DateTimeUtc, int, api.Expression.date_time_utc_second),
+            ],
             "dt.second",
             self._expression,
         )
@@ -219,12 +215,11 @@ class DateTimeNamespace:
         13
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_minute,
-                DateTimeUtc: api.Expression.date_time_utc_minute,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_minute),
+                (DateTimeUtc, int, api.Expression.date_time_utc_minute),
+            ],
             "dt.minute",
             self._expression,
         )
@@ -255,12 +250,11 @@ class DateTimeNamespace:
         14
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_hour,
-                DateTimeUtc: api.Expression.date_time_utc_hour,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_hour),
+                (DateTimeUtc, int, api.Expression.date_time_utc_hour),
+            ],
             "dt.hour",
             self._expression,
         )
@@ -291,12 +285,11 @@ class DateTimeNamespace:
         25
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_day,
-                DateTimeUtc: api.Expression.date_time_utc_day,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_day),
+                (DateTimeUtc, int, api.Expression.date_time_utc_day),
+            ],
             "dt.day",
             self._expression,
         )
@@ -327,12 +320,11 @@ class DateTimeNamespace:
         5
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_month,
-                DateTimeUtc: api.Expression.date_time_utc_month,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_month),
+                (DateTimeUtc, int, api.Expression.date_time_utc_month),
+            ],
             "dt.month",
             self._expression,
         )
@@ -363,12 +355,11 @@ class DateTimeNamespace:
         2023
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_year,
-                DateTimeUtc: api.Expression.date_time_utc_year,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_year),
+                (DateTimeUtc, int, api.Expression.date_time_utc_year),
+            ],
             "dt.year",
             self._expression,
         )
@@ -436,12 +427,11 @@ class DateTimeNamespace:
         1679748326987654321
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                DateTimeNaive: api.Expression.date_time_naive_timestamp,
-                DateTimeUtc: api.Expression.date_time_utc_timestamp,
-            },
-            int,
+        return expr.MethodCallExpression(
+            [
+                (DateTimeNaive, int, api.Expression.date_time_naive_timestamp),
+                (DateTimeUtc, int, api.Expression.date_time_utc_timestamp),
+            ],
             "dt.timestamp",
             self._expression,
         )
@@ -486,12 +476,11 @@ class DateTimeNamespace:
         26.03.2023 | March 26, 2023    | 12:13:00 | 12:13:00 PM
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (DateTimeNaive, str): api.Expression.date_time_naive_strftime,
-                (DateTimeUtc, str): api.Expression.date_time_utc_strftime,
-            },
-            str,
+        return expr.MethodCallExpression(
+            [
+                ((DateTimeNaive, str), str, api.Expression.date_time_naive_strftime),
+                ((DateTimeUtc, str), str, api.Expression.date_time_utc_strftime),
+            ],
             "dt.strftime",
             self._expression,
             fmt,
@@ -595,8 +584,11 @@ class DateTimeNamespace:
             fun = api.Expression.date_time_naive_strptime
             return_type = DateTimeNaive
 
-        return expr.MethodCallExpression.with_static_type(
-            {(str, str): fun}, return_type, "dt.strptime", self._expression, fmt
+        return expr.MethodCallExpression(
+            [((str, str), return_type, fun)],
+            "dt.strptime",
+            self._expression,
+            fmt,
         )
 
     def to_utc(
@@ -676,11 +668,14 @@ class DateTimeNamespace:
         2023-11-05 01:00:00 | 2023-11-05 09:00:00+00:00
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (DateTimeNaive, str): api.Expression.date_time_naive_to_utc,
-            },
-            DateTimeUtc,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (DateTimeNaive, str),
+                    DateTimeUtc,
+                    api.Expression.date_time_naive_to_utc,
+                ),
+            ],
             "dt.to_utc",
             self._expression,
             from_timezone,
@@ -763,11 +758,14 @@ class DateTimeNamespace:
         2023-11-05 09:30:00+00:00 | 2023-11-05 01:30:00
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (DateTimeUtc, str): api.Expression.date_time_utc_to_naive,
-            },
-            DateTimeNaive,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (DateTimeUtc, str),
+                    DateTimeNaive,
+                    api.Expression.date_time_utc_to_naive,
+                ),
+            ],
             "dt.to_to_naive_in_timezone",
             self._expression,
             timezone,
@@ -949,11 +947,18 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            {
-                (DateTimeNaive, Duration): api.Expression.date_time_naive_round,
-                (DateTimeUtc, Duration): api.Expression.date_time_utc_round,
-            },
-            lambda dtypes: dtypes[0],
+            [
+                (
+                    (DateTimeNaive, Duration),
+                    DateTimeNaive,
+                    api.Expression.date_time_naive_round,
+                ),
+                (
+                    (DateTimeUtc, Duration),
+                    DateTimeUtc,
+                    api.Expression.date_time_utc_round,
+                ),
+            ],
             "dt.round",
             self._expression,
             duration,
@@ -1000,11 +1005,18 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            {
-                (DateTimeNaive, Duration): api.Expression.date_time_naive_floor,
-                (DateTimeUtc, Duration): api.Expression.date_time_utc_floor,
-            },
-            lambda dtypes: dtypes[0],
+            [
+                (
+                    (DateTimeNaive, Duration),
+                    DateTimeNaive,
+                    api.Expression.date_time_naive_floor,
+                ),
+                (
+                    (DateTimeUtc, Duration),
+                    DateTimeUtc,
+                    api.Expression.date_time_utc_floor,
+                ),
+            ],
             "dt.floor",
             self._expression,
             duration,
@@ -1048,9 +1060,8 @@ class DateTimeNamespace:
         86423123456789
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_nanoseconds},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_nanoseconds)],
             "dt.nanoseconds",
             self._expression,
         )
@@ -1093,9 +1104,8 @@ class DateTimeNamespace:
         86423123456
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_microseconds},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_microseconds)],
             "dt.microseconds",
             self._expression,
         )
@@ -1138,9 +1148,8 @@ class DateTimeNamespace:
         86423123
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_milliseconds},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_milliseconds)],
             "dt.milliseconds",
             self._expression,
         )
@@ -1181,9 +1190,8 @@ class DateTimeNamespace:
         86423
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_seconds},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_seconds)],
             "dt.seconds",
             self._expression,
         )
@@ -1224,9 +1232,8 @@ class DateTimeNamespace:
         1453
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_minutes},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_minutes)],
             "dt.minutes",
             self._expression,
         )
@@ -1269,9 +1276,8 @@ class DateTimeNamespace:
         24
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_hours},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_hours)],
             "dt.hours",
             self._expression,
         )
@@ -1314,9 +1320,8 @@ class DateTimeNamespace:
         366
         """
 
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_days},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_days)],
             "dt.days",
             self._expression,
         )
@@ -1358,16 +1363,15 @@ class DateTimeNamespace:
         0
         52
         """
-        return expr.MethodCallExpression.with_static_type(
-            {Duration: api.Expression.duration_weeks},
-            int,
+        return expr.MethodCallExpression(
+            [(Duration, int, api.Expression.duration_weeks)],
             "dt.weeks",
             self._expression,
         )
 
     def from_timestamp(self, unit: str) -> expr.ColumnExpression:
         """
-        Converts timestamp represented as an in to DateTime.
+        Converts timestamp represented as an int to DateTime.
 
         Args:
             timestamp: value to be converted to DateTime
@@ -1395,11 +1399,14 @@ class DateTimeNamespace:
         """
         if unit not in ("s", "ms", "us", "ns"):
             raise ValueError(f"unit has to be one of s, ms, us, ns but is {unit}.")
-        return expr.MethodCallExpression.with_static_type(
-            {
-                (int, str): api.Expression.date_time_naive_from_timestamp,
-            },
-            DateTimeNaive,
+        return expr.MethodCallExpression(
+            [
+                (
+                    (int, str),
+                    DateTimeNaive,
+                    api.Expression.date_time_naive_from_timestamp,
+                ),
+            ],
             "datetime_from_timestamp",
             self._expression,
             unit,

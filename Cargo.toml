@@ -1,6 +1,6 @@
 [package]
 name = "pathway"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 publish = false
 rust-version = "1.71.0"
@@ -14,7 +14,7 @@ crate-type = ["cdylib", "lib"]
 assert_matches = "1.5.0"
 color-eyre = { version = "0.6.2", default-features = false }
 eyre = "0.6.8"
-tempfile = "3.7.0"
+tempfile = "3.8.0"
 
 [dependencies]
 arc-swap = "1.6.0"
@@ -34,17 +34,17 @@ hyper = { version = "0.14", features = ["server"] }
 id-arena = "2.2.1"
 itertools = "0.11.0"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
-log = { version = "0.4.19", features = ["std"] }
+log = { version = "0.4.20", features = ["std"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
 nix = { version = "0.26.2", default-features = false, features = ["fs"] }
 num-integer = "0.1.45"
 numpy = "0.19.0"
 once_cell = "1.18.0"
-ordered-float = { version = "3.7.0", features = ["serde"] }
+ordered-float = { version = "3.9.0", features = ["serde"] }
 pipe = "0.4.0"
-postgres = "0.19.5"
+postgres = { version = "0.19.6", features = ["with-chrono-0_4"] }
 prometheus-client = "0.21.2"
-pyo3 = { version = "0.19.2", features = ["abi3-py38"] }
+pyo3 = { version = "0.19.2", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-asyncio = "0.19.0"
 pyo3-log = "0.8.3"
 rand = "0.8.5"
@@ -52,12 +52,13 @@ rdkafka = { version = "0.33.2", features = ["ssl-vendored", "cmake-build"] }
 rust-s3 = { version = "0.33.0", features = ["sync-native-tls-vendored", "sync-native-tls", "fail-on-err"], default-features = false }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
-serde = { version = "1.0.180", features = ["derive", "rc"] }
+serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_json = "1.0"
+serde_with = "3.2.0"
 smallvec = { version = "1.11.0", features = ["union", "const_generics"] }
-thiserror = "1.0.44"
+thiserror = "1.0.47"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
-tokio = "1.29.1"
+tokio = "1.32.0"
 typed-arena = "2.0.2"
 xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
 

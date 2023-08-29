@@ -1,0 +1,66 @@
+name: Bug Report
+description: File a bug report
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Steps to reproduce
+      description: What happened and how to reproduce it?
+      placeholder: Tell us what you see! 
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Please copy and paste any relevant log output. This will be automatically formatted into code, so no need for backticks.
+      placeholder: Tell us what you see! It would be nice if you could leave us the logs.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: what-did-you-expect
+    attributes:
+      label: What did you expect to happen?
+      description: Also tell us, what did you expect to happen?
+      placeholder: Describe your expectations.
+    validations:
+      required: true
+  - type: input
+    id: pathway_version
+    attributes:
+      label: Version
+      description: On which version of Pathway are you working?
+    validations:
+      required: true
+  - type: input
+    id: docker_version
+    attributes:
+      label: Docker Versions (if used)
+      description: On which Docker version are you working?
+    validations:
+      required: false
+  - type: dropdown
+    id: os_version
+    attributes:
+      label: OS
+      description: On which OS did you run Pathway?
+      options:
+        - Linux
+        - MacOS
+    validations:
+      required: true
+  - type: dropdown
+    id: cpu_architecture
+    attributes:
+      label: On which CPU architecture did you run Pathway?
+      multiple: false
+      options:
+        - x86-64
+        - ARM64 (AArch64, Apple silicon)

@@ -131,7 +131,7 @@ def knn_lsh_generic_classifier_train(
                 ids = pw.input_attribute()
 
                 @pw.output_attribute
-                def knns_ids(self):
+                def knns_ids(self) -> np.ndarray:
                     querypoint = self.data
                     for id_candidate in self.ids:
                         try:
@@ -151,7 +151,8 @@ def knn_lsh_generic_classifier_train(
                     )[
                         :neighs
                     ]  # neighs - 1 in argpartition, because of 0-based indexing
-                    return np.array(self.ids)[knn_ids]
+                    ret = np.array(self.ids)[knn_ids]
+                    return ret
 
         knn_result = compute_knns_transformer(  # type: ignore
             training_data=data, flattened=flattened
@@ -164,10 +165,8 @@ def knn_lsh_generic_classifier_train(
         ).select(knn_result.knns_ids, query_id=queries.id)
 
         knn_result_with_empty_results = knn_result_with_empty_results.with_columns(
-            knns_ids=pw.declare_type(
-                knn_result.schema["knns_ids"], pw.coalesce(pw.this.knns_ids, ())
-            ),
-        )
+            knns_ids=pw.coalesce(pw.this.knns_ids, np.array(()))
+        ).update_types(knns_ids=knn_result.schema["knns_ids"])
         # return knn_result
         return knn_result_with_empty_results
 

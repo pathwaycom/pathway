@@ -277,7 +277,7 @@ def construct_s3_data_storage(
     poll_new_objects: bool,
     *,
     csv_settings: Optional[CsvParserSettings] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
 ):
     if format == "csv":
         return api.DataStorage(

@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Type
+from typing import List, Type
 
 from pathway.internals import api, schema
-from pathway.internals.dtype import _is_optional, _strip_optional  # type:ignore
+from pathway.internals.dtype import unoptionalize
 from pathway.internals.table import Table
-
-_TYPE_MAPPING = {
-    Any: api.PathwayType.ANY,
-    int: api.PathwayType.INT,
-    str: api.PathwayType.STRING,
-    float: api.PathwayType.FLOAT,
-    bool: api.PathwayType.BOOL,
-}
 
 
 def _format_output_value_fields(table: Table) -> List[api.ValueField]:
@@ -31,14 +23,10 @@ def _form_value_fields(schema: Type[schema.Schema]) -> List[api.ValueField]:
     result = []
 
     # XXX fix mapping schema types to PathwayType
-    def _unoptionalize(dtype):
-        if _is_optional(dtype):
-            return _strip_optional(dtype)
-        else:
-            return dtype
-
     types = {
-        name: _TYPE_MAPPING.get(_unoptionalize(dtype), api.PathwayType.ANY)
+        name: api._TYPES_TO_ENGINE_MAPPING.get(
+            unoptionalize(dtype), api.PathwayType.ANY
+        )
         for name, dtype in schema.as_dict().items()
     }
 

@@ -1399,7 +1399,16 @@ def test_sql_interview_Q16_bis():
     FROM EmployeeInfo E INNER JOIN EmployeePosition P ON
     E.EmpID = P.EmpID AND P.EmpPosition = 'Manager';
     """
-    pw.sql(sql_query, EmployeeInfo=EmployeeInfo, EmployeePosition=EmployeePosition)
+
+    expected_table = (
+        EmployeeInfo.join(EmployeePosition, pw.left.EmpID == pw.right.EmpID)
+        .filter(pw.right.EmpPosition == "Manager")
+        .select(pw.left.EmpFname, pw.left.EmpLname, pw.right.EmpPosition)
+    )
+    assert_table_equality(
+        pw.sql(sql_query, EmployeeInfo=EmployeeInfo, EmployeePosition=EmployeePosition),
+        expected_table,
+    )
 
 
 @pytest.mark.xfail(reason="ORDER BY EmpDeptCount not supported.")
@@ -1439,7 +1448,7 @@ def test_sql_interview_Q17_bis():
     """
     res_table = pw.sql(sql_query, EmployeeInfo=EmployeeInfo)
     expected_table = EmployeeInfo.groupby(pw.this.Department).reduce(
-        pw.this.Department, EmpDeptCount=pw.reducers.count(pw.this.EmpID)
+        pw.this.Department, EmpDeptCount=pw.reducers.count()
     )
     assert_table_equality(res_table, expected_table)
 

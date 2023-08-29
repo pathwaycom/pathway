@@ -15,7 +15,6 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str)
     args = parser.parse_args()
 
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = args.pstorage
     os.environ["PATHWAY_THREADS"] = str(args.n_cpus)
 
     class InputSchema(pw.Schema):
@@ -26,7 +25,7 @@ if __name__ == "__main__":
         schema=InputSchema,
         format="json",
         mode=args.mode,
-        persistent_id=1,
+        persistent_id="1",
         autocommit_duration_ms=10,
     )
     result = words.groupby(words.word).reduce(
@@ -34,4 +33,9 @@ if __name__ == "__main__":
         count=pw.reducers.count(),
     )
     pw.io.csv.write(result, args.output)
-    pw.run(monitoring_level=MonitoringLevel.NONE)
+    pw.run(
+        monitoring_level=MonitoringLevel.NONE,
+        persistence_config=pw.io.PersistenceConfig.single_backend(
+            pw.io.PersistentStorageBackend.filesystem(path=args.pstorage),
+        ),
+    )

@@ -648,7 +648,7 @@ def test_pointer_eq():
     t = t.select(
         *pw.this,
         true_pointer=pw.this.pointer_from(t.true_id),
-        false_pointer=pw.this.pointer_from(t.false_id)
+        false_pointer=pw.this.pointer_from(t.false_id),
     )
     res = t.select(
         a=(t.id == t.true_pointer),
@@ -1162,7 +1162,6 @@ def test_matrix_multiplication_errors_on_shapes_mismatch(a, b) -> None:
         run_all()
 
 
-@pytest.mark.xfail(reason="Optional[int] vs float is not yet supported")
 def test_optional_int_vs_float():
     table = T(
         """
@@ -1200,6 +1199,29 @@ def test_int_vs_optional_float():
     True  | False
     False | True
     False | True
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+def test_optional_int_addition():
+    table = T(
+        """
+    a | b
+    1 | 1
+      | 2
+    3 |
+    """
+    )
+    result = (
+        table.filter(pw.this.a.is_not_none())
+        .filter(pw.this.b.is_not_none())
+        .select(resA=pw.this.a + pw.this.b)
+    )
+    expected = T(
+        """
+    resA
+    2
     """
     )
     assert_table_equality(result, expected)

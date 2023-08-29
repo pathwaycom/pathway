@@ -289,7 +289,11 @@ class AsofJoinResult(DesugaringContext):
                     pw.if_else(
                         next_id.is_none(),
                         prev_id,
-                        pw.if_else(cur_t - prev_t < next_t - cur_t, prev_id, next_id),
+                        pw.if_else(
+                            cur_t - pw.unwrap(prev_t) < pw.unwrap(next_t) - cur_t,
+                            prev_id,
+                            next_id,
+                        ),
                     ),
                 )
 
@@ -317,9 +321,7 @@ class AsofJoinResult(DesugaringContext):
 
             reqs_with_default = [req for req in reqs if req.default is not None]
             reqs_wo_default = [req for req in reqs if req.default is None]
-            m_with_peer = m_self.filter(m_self.peer_elem.is_not_none()).update_types(
-                peer_elem=pw.Pointer
-            )
+            m_with_peer = m_self.filter(m_self.peer_elem.is_not_none())
 
             res_default = m_self.select(
                 **{req.output_name: req.default for req in reqs_with_default}

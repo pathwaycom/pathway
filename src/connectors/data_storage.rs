@@ -26,15 +26,17 @@ use std::time::SystemTime;
 use typed_arena::Arena;
 
 use chrono::{DateTime, FixedOffset};
-use log::{error, warn};
+use log::{error, info, warn};
 use postgres::types::ToSql;
 
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
+use crate::engine::time::DateTime as InternalDateTime;
 use crate::engine::Value;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::PersistentId;
+use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::python_api::threads::PythonThreadState;
+use crate::python_api::with_gil_and_pool;
 use crate::python_api::PythonSubject;
 
 use bincode::ErrorKind as BincodeError;
@@ -254,14 +256,18 @@ pub trait ReaderBuilder: Send + 'static {
         type_name::<Self>().into()
     }
 
-    fn name(&self, id: usize) -> String {
+    fn name(&self, persistent_id: &Option<ExternalPersistentId>, id: usize) -> String {
         let desc = self.short_description();
         let name = desc.split("::").last().unwrap().replace("Builder", "");
-        if let Some(id) = self.persistent_id() {
+        if let Some(id) = persistent_id {
             format!("{name}-{id}")
         } else {
             format!("{name}-{id}")
         }
+    }
+
+    fn is_internal(&self) -> bool {
+        false
     }
 
     fn persistent_id(&self) -> Option<PersistentId>;
@@ -926,13 +932,17 @@ impl ReaderBuilder for PythonReaderBuilder {
             persistent_id,
         } = *self;
 
-        Python::with_gil(|py| subject.borrow(py).start.call0(py))?;
+        with_gil_and_pool(|py| subject.borrow(py).start.call0(py))?;
 
         Ok(Box::new(PythonReader {
             subject,
             persistent_id,
             python_thread_state,
         }))
+    }
+
+    fn is_internal(&self) -> bool {
+        self.subject.get().is_internal
     }
 
     fn persistent_id(&self) -> Option<PersistentId> {
@@ -946,11 +956,12 @@ impl ReaderBuilder for PythonReaderBuilder {
 
 impl Reader for PythonReader {
     fn seek(&mut self, _frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        todo!("seek is not supported for Python connector yet");
+        info!("Seek doesn't need to be performed for Python source");
+        Ok(())
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
-        Python::with_gil(|py| {
+        with_gil_and_pool(|py| {
             let (addition, key, values): (bool, Option<Value>, Vec<u8>) = self
                 .subject
                 .borrow(py)
@@ -1052,6 +1063,8 @@ impl Writer for PsqlWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         let strs = Arena::new();
         let strings = Arena::new();
+        let chrono_datetimes = Arena::new();
+        let chrono_utc_datetimes = Arena::new();
 
         let params: Vec<_> = data
             .values
@@ -1063,6 +1076,10 @@ impl Writer for PsqlWriter {
                     Value::Int(i) => Ok(i),
                     Value::Float(f) => Ok(f.as_ref()),
                     Value::String(s) => Ok(strs.alloc(&**s)),
+                    Value::DateTimeNaive(dt) => Ok(chrono_datetimes.alloc(dt.as_chrono_datetime())),
+                    Value::DateTimeUtc(dt) => {
+                        Ok(chrono_utc_datetimes.alloc(dt.as_chrono_datetime().and_utc()))
+                    }
                     other => Ok(strings.alloc(other.to_postgres_output())),
                 }
             })

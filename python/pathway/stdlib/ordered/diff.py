@@ -84,10 +84,11 @@ def diff(
             )
 
         ordered_table += ordered_table.select(
-            diff=pw.if_else(
-                value.is_none() | ordered_table.prev.is_none(),
-                None,
-                value - self.ix(ordered_table.prev, optional=True)[value._name],
+            diff=pw.require(
+                value
+                - pw.unwrap(self.ix(ordered_table.prev, optional=True)[value._name]),
+                value,
+                ordered_table.prev,
             )
         )
 

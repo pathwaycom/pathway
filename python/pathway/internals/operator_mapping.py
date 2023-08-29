@@ -3,9 +3,15 @@ from typing import Any, Callable, Mapping, Optional, Tuple
 import numpy as np
 
 from pathway.internals import api
-from pathway.internals.api import Pointer
+from pathway.internals.api import _TYPES_TO_ENGINE_MAPPING, Pointer
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
-from pathway.internals.dtype import DType, NoneType
+from pathway.internals.dtype import (
+    DType,
+    NoneType,
+    is_optional,
+    types_lca,
+    unoptionalize,
+)
 from pathway.internals.shadows import operator
 
 UnaryOperator = Callable[[Any], Any]
@@ -54,19 +60,6 @@ _binary_operators_to_engine: Mapping[BinaryOperator, api.BinaryOperator] = {
     operator.matmul: api.BinaryOperator.MATMUL,
 }
 
-_types_to_engine: Mapping[Any, api.PathwayType] = {
-    bool: api.PathwayType.BOOL,
-    int: api.PathwayType.INT,
-    float: api.PathwayType.FLOAT,
-    Pointer: api.PathwayType.POINTER,
-    str: api.PathwayType.STRING,
-    DateTimeNaive: api.PathwayType.DATE_TIME_NAIVE,
-    DateTimeUtc: api.PathwayType.DATE_TIME_UTC,
-    Duration: api.PathwayType.DURATION,
-    np.ndarray: api.PathwayType.ARRAY,
-}
-
-
 _unary_operators_mapping: UnaryOperatorMapping = {
     (operator.inv, bool): bool,
     (operator.neg, int): int,
@@ -81,7 +74,7 @@ def get_unary_operators_mapping(op, operand_dtype, default=None):
 
 def get_unary_expression(expr, op, expr_dtype, default=None):
     op_engine = _unary_operators_to_engine.get(op)
-    expr_dtype_engine = _types_to_engine.get(expr_dtype)
+    expr_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(expr_dtype)
     if op_engine is None or expr_dtype_engine is None:
         return default
     expression = api.Expression.unary_expression(expr, op_engine, expr_dtype_engine)
@@ -197,8 +190,8 @@ def get_binary_operators_mapping(op, left, right, default=None) -> DType:
 
 def get_binary_expression(left, right, op, left_dtype, right_dtype, default=None):
     op_engine = _binary_operators_to_engine.get(op)
-    left_dtype_engine = _types_to_engine.get(left_dtype)
-    right_dtype_engine = _types_to_engine.get(right_dtype)
+    left_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(left_dtype)
+    right_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(right_dtype)
     if op_engine is None or left_dtype_engine is None or right_dtype_engine is None:
         return default
 
@@ -222,11 +215,31 @@ def get_binary_operators_mapping_optionals(op, left, right, default=None):
 
 
 def get_cast_operators_mapping(
-    expr, source_type, target_type, default=None
+    expr: api.Expression, source_type: DType, target_type: DType, default=None
 ) -> Optional[api.Expression]:
-    source_type_engine = _types_to_engine.get(source_type)
-    target_type_engine = _types_to_engine.get(target_type)
+    source_type_engine = _TYPES_TO_ENGINE_MAPPING.get(unoptionalize(source_type))
+    target_type_engine = _TYPES_TO_ENGINE_MAPPING.get(unoptionalize(target_type))
     if source_type_engine is None or target_type_engine is None:
         return default
-    expression = api.Expression.cast(expr, source_type_engine, target_type_engine)
+    if is_optional(source_type) and is_optional(target_type):
+        fun = api.Expression.cast_optional
+    else:
+        fun = api.Expression.cast
+    expression = fun(
+        expr,
+        source_type_engine,
+        target_type_engine,
+    )
     return expression if expression is not None else default
+
+
+def common_dtype_in_binary_operator(
+    left_dtype: DType, right_dtype: DType
+) -> Optional[DType]:
+    if (
+        left_dtype in [int, Optional[int]] and right_dtype in [float, Optional[float]]
+    ) or (
+        left_dtype in [float, Optional[float]] and right_dtype in [int, Optional[int]]
+    ):
+        return types_lca(left_dtype, right_dtype)
+    return None

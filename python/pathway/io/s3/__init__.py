@@ -116,7 +116,7 @@ def read(
     mode: str = "streaming",
     csv_settings: Optional[CsvParserSettings] = None,
     json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     autocommit_duration_ms: Optional[int] = 1500,
     debug_data: Any = None,
 ) -> Table:
@@ -219,7 +219,7 @@ def read(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            _schema=schema,
+            schema=schema,
             connector_properties=properties,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
@@ -237,7 +237,7 @@ def read_from_digital_ocean(
     mode: str = "streaming",
     csv_settings: Optional[CsvParserSettings] = None,
     json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     autocommit_duration_ms: Optional[int] = 1500,
     debug_data: Any = None,
 ) -> Table:
@@ -325,7 +325,7 @@ def read_from_digital_ocean(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -342,7 +342,7 @@ def read_from_wasabi(
     mode: str = "streaming",
     csv_settings: Optional[CsvParserSettings] = None,
     json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     autocommit_duration_ms: Optional[int] = 1500,
     debug_data: Any = None,
 ) -> Table:
@@ -428,7 +428,7 @@ def read_from_wasabi(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

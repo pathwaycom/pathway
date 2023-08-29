@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Type
+from os import PathLike, fspath
+from typing import Any, Dict, List, Optional, Set, Type, Union
 
 from pathway.internals import Schema, api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -29,14 +30,14 @@ SUPPORTED_OUTPUT_FORMATS: Set[str] = set(
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: str,
+    path: Union[str, PathLike],
     format: str,
     *,
     schema: Optional[Type[Schema]] = None,
     mode: str = "streaming",
     csv_settings: Optional[CsvParserSettings] = None,
     json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     autocommit_duration_ms: Optional[int] = 1500,
     debug_data: Any = None,
     value_columns: Optional[List[str]] = None,
@@ -207,7 +208,7 @@ def read(
     if format == "csv":
         data_storage = api.DataStorage(
             storage_type="csv",
-            path=path,
+            path=fspath(path),
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
             poll_new_objects=poll_new_objects,
             persistent_id=persistent_id,
@@ -215,7 +216,7 @@ def read(
     else:
         data_storage = api.DataStorage(
             storage_type="fs",
-            path=path,
+            path=fspath(path),
             poll_new_objects=poll_new_objects,
             persistent_id=persistent_id,
         )
@@ -239,7 +240,7 @@ def read(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -247,7 +248,7 @@ def read(
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, filename: str, format: str) -> None:
+def write(table: Table, filename: Union[str, PathLike], format: str) -> None:
     """Writes ``table``'s stream of updates to a file in the given format.
 
     Args:
@@ -320,7 +321,7 @@ a plain JSON.
             )
         )
 
-    data_storage = api.DataStorage(storage_type="fs", path=filename)
+    data_storage = api.DataStorage(storage_type="fs", path=fspath(filename))
     if format == "csv":
         data_format = api.DataFormat(
             format_type="dsv",

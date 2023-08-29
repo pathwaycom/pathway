@@ -513,3 +513,42 @@ def make_tuple(*args: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     (3, 30, 'c')
     """
     return expr.MakeTupleExpression(*args)
+
+
+def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
+    """Changes the type of the column from Optional[T] to T. If there is any None in the
+    column this operation will raise an exception.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.parse_to_table('''
+    ... colA | colB
+    ... 1    | 5
+    ... 2    | 9
+    ... 3    | None
+    ... 4    | 15''')
+    >>> t1.schema.as_dict()
+    {'colA': <class 'int'>, 'colB': typing.Optional[int]}
+    >>> pw.debug.compute_and_print(t1, include_id=False)
+    colA | colB
+    1    | 5
+    2    | 9
+    3    |
+    4    | 15
+    >>> t2 = t1.filter(t1.colA < 3)
+    >>> t2.schema.as_dict()
+    {'colA': <class 'int'>, 'colB': typing.Optional[int]}
+    >>> pw.debug.compute_and_print(t2, include_id=False)
+    colA | colB
+    1    | 5
+    2    | 9
+    >>> t3 = t2.select(colB = pw.unwrap(t2.colB))
+    >>> t3.schema.as_dict()
+    {'colB': <class 'int'>}
+    >>> pw.debug.compute_and_print(t3, include_id=False)
+    colB
+    5
+    9
+    """
+    return expr.UnwrapExpression(col)

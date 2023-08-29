@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import random
+import sys
 import threading
 import time
 from typing import Any, Dict
@@ -14,8 +15,10 @@ import pandas as pd
 import pytest
 
 import pathway as pw
+from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
+    CsvLinesNumberChecker,
     T,
     assert_table_equality,
     assert_table_equality_wo_index,
@@ -27,18 +30,6 @@ from pathway.tests.utils import (
     write_lines,
     xfail_on_darwin,
 )
-
-
-def get_number_of_lines_checker(
-    output_path, n_lines, usecols=("k", "v"), index_col=("k")
-):
-    def checker():
-        result = pd.read_csv(
-            output_path, usecols=usecols, index_col=index_col
-        ).sort_index()
-        return len(result) == n_lines
-
-    return checker
 
 
 def start_streaming_inputs(inputs_path, n_files, stream_interval, data_format):
@@ -69,20 +60,6 @@ def start_streaming_inputs(inputs_path, n_files, stream_interval, data_format):
 
     inputs_thread = threading.Thread(target=stream_inputs, daemon=True)
     inputs_thread.start()
-
-
-def get_stream_test_folder_contents(root_path):
-    report_parts = []
-    inputs_dir = os.listdir(root_path / "inputs")
-    for input_filename in inputs_dir:
-        report_parts.append("Input file: {}".format(str(input_filename)))
-    try:
-        with open(root_path / "output", "r") as f:
-            output_report = f.read()
-    except Exception:
-        output_report = "<FILE DOES NOT EXIST>"
-    report_parts.append("\nOutput: {}".format(output_report))
-    return "\n".join(report_parts)
 
 
 def test_python_connector():
@@ -351,7 +328,7 @@ def test_csv_skip_column(tmp_path: pathlib.Path):
         2 | bar | b
         3 | baz | c
     """
-    input_path = str(tmp_path / "input.csv")
+    input_path = tmp_path / "input.csv"
     write_csv(input_path, data)
     table = pw.io.csv.read(
         input_path,
@@ -400,14 +377,14 @@ def test_id_hashing_across_connectors(tmp_path: pathlib.Path):
             self.next_json({"key": 3, "value": "baz"})
 
     table_csv = pw.io.csv.read(
-        str(tmp_path / "input.csv"),
+        tmp_path / "input.csv",
         id_columns=["key"],
         value_columns=["value"],
         types={"key": pw.Type.INT, "value": pw.Type.STRING},
         mode="static",
     )
     table_json = pw.io.jsonlines.read(
-        str(tmp_path / "input.json"),
+        tmp_path / "input.json",
         primary_key=["key"],
         value_columns=["value"],
         types={"key": pw.Type.INT, "value": pw.Type.STRING},
@@ -663,8 +640,6 @@ def test_async_transformer_assert_schema_error():
 
 def test_async_transformer_disk_cache(tmp_path: pathlib.Path):
     cache_dir = tmp_path / "test_cache"
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(cache_dir)
-
     counter = mock.Mock()
 
     def pipeline():
@@ -702,7 +677,13 @@ def test_async_transformer_disk_cache(tmp_path: pathlib.Path):
             .result
         )
 
-        assert_table_equality(result, expected)
+        assert_table_equality(
+            result,
+            expected,
+            persistence_config=pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(cache_dir),
+            ),
+        )
 
     # run twice to check if cache is used
     pipeline()
@@ -734,6 +715,7 @@ def test_fs_raw(tmp_path: pathlib.Path):
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_csv_directory(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     os.mkdir(inputs_path)
@@ -764,12 +746,11 @@ def test_csv_directory(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 2), 30
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_csv_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "csv")
@@ -788,12 +769,11 @@ def test_csv_streaming(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 5), 30
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_json_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "json")
@@ -812,12 +792,11 @@ def test_json_streaming(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 5), 30
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_plaintext_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "plaintext")
@@ -831,13 +810,11 @@ def test_plaintext_streaming(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 5, ("data",), ("data",)),
-        30,
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_csv_streaming_fs_alias(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "csv")
@@ -857,12 +834,11 @@ def test_csv_streaming_fs_alias(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 5), 30
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_json_streaming_fs_alias(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "json")
@@ -882,12 +858,11 @@ def test_json_streaming_fs_alias(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 5), 30
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xdist_group(name="streaming_tests")
 def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "plaintext")
@@ -902,20 +877,17 @@ def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(
-        get_number_of_lines_checker(output_path, 5, ("data",), ("data",)),
-        30,
-    ), get_stream_test_folder_contents(tmp_path)
+    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 def test_pathway_type_mapping():
     import inspect
 
-    from pathway.internals.api import PathwayType
+    from pathway.internals.api import _TYPES_TO_ENGINE_MAPPING, PathwayType
     from pathway.io._utils import _PATHWAY_TYPE_MAPPING
 
     assert all(
-        t in _PATHWAY_TYPE_MAPPING
+        t in _PATHWAY_TYPE_MAPPING and t in _TYPES_TO_ENGINE_MAPPING.values()
         for _, t in inspect.getmembers(PathwayType)
         if isinstance(t, PathwayType)
     )
@@ -982,3 +954,212 @@ def test_json_optional_values_with_paths(tmp_path: pathlib.Path):
             """
         ).with_id_from(pw.this.k),
     )
+
+
+def test_table_from_pandas_schema():
+    class DfSchema(pw.Schema):
+        a: float
+
+    table = pw.debug.table_from_markdown(
+        """
+        a
+        0.0
+        """,
+        schema=DfSchema,
+    )
+    expected = pw.debug.table_from_markdown(
+        """
+        a
+        0.0
+        """
+    ).update_types(a=float)
+
+    assert_table_equality(table, expected)
+
+
+def test_table_from_pandas_wrong_schema():
+    with pytest.raises(ValueError):
+        pw.debug.table_from_markdown(
+            """
+                | foo | bar
+            1   | 32  | 32
+            """,
+            schema=pw.schema_builder({"foo": pw.column_definition()}),
+        )
+
+
+def test_table_from_pandas_wrong_params():
+    with pytest.raises(ValueError):
+        pw.debug.table_from_markdown(
+            """
+                | foo | bar
+            1   | 32  | 32
+            """,
+            id_from=["foo"],
+            schema=pw.schema_builder(
+                {"foo": pw.column_definition(), "bar": pw.column_definition()}
+            ),
+        )
+
+
+def test_python_connector_persistence(tmp_path: pathlib.Path):
+    persistent_storage_path = tmp_path / "PStorage"
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+
+    class TestSubject(pw.python.ConnectorSubject):
+        def __init__(self, items):
+            super().__init__()
+            self.items = items
+
+        def run(self):
+            for item in self.items:
+                self.next_str(item)
+
+    def run_computation(py_connector_input, fs_connector_input):
+        G.clear()
+        write_lines(input_path, "\n".join(fs_connector_input))
+        table_py = pw.python.read(
+            TestSubject(py_connector_input), format="raw", persistent_id="1"
+        )
+        table_csv = pw.io.plaintext.read(input_path, persistent_id="2", mode="static")
+        table_joined = table_py.join(table_csv, table_py.data == table_csv.data).select(
+            table_py.data
+        )
+        pw.io.csv.write(table_joined, output_path)
+        pw.run(
+            persistence_config=pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(persistent_storage_path),
+            )
+        )
+
+    # We have "one" in Python connector and "one" in plaintext connector
+    # They will form this one pair.
+    run_computation(["one", "two"], ["one", "three"])
+    result = pd.read_csv(output_path)
+    assert set(result["data"]) == {"one"}
+
+    # In case of non-persistent run we have an empty table on the left and four-element
+    # table on the right. They join can't form any pairs in this case.
+    #
+    # But we are running in persistent mode and the table ["one", "two"] from the
+    # previous run is persisted. We also have the first two elements of the plaintext
+    # table persisted, so in this run we will do the join of ["one", "two"] (persisted
+    # Python) with ["two", "four"] (new plaintext). It will produce one line: "two".
+    run_computation([], ["one", "three", "two", "four"])
+    result = pd.read_csv(output_path)
+    assert set(result["data"]) == {"two"}
+
+    # Now we add two additional elements to the Python-connector table. Now the table in
+    # connector is ["one", "two", "three", "four"], where ["one", "two"] are old
+    # persisted elements, while ["three", "four"] are new.
+    #
+    # We don't have any new elements in the second, plaintext table, but since it's
+    # persisted, and join has the new results, it will produce ["three", "four"] on the
+    # output.
+    run_computation(["three", "four"], ["one", "three", "two", "four"])
+    result = pd.read_csv(output_path)
+    assert set(result["data"]) == {"three", "four"}
+
+
+def test_no_pstorage(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "input.txt"
+    path = tmp_path / "NotPStorage"
+    write_lines(path, "hello")
+    write_lines(input_path, "hello")
+
+    table = pw.io.plaintext.read(input_path)
+    pw.io.csv.write(table, output_path)
+    with pytest.raises(
+        api.EngineError,
+        match="persistent metadata backend failed: target object should be a directory",
+    ):
+        pw.run(
+            persistence_config=pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(path),
+            )
+        )
+
+
+def test_persistent_id_not_assigned(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    write_lines(input_path, "test_data")
+    pstorage_path = tmp_path / "PStrorage"
+
+    table = pw.io.plaintext.read(input_path)
+    pw.io.csv.write(table, tmp_path / "output.txt")
+    with pytest.raises(
+        ValueError,
+        match="persistent storage is configured, but persistent id is not assigned for FileSystem reader",
+    ):
+        pw.run(
+            persistence_config=pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(pstorage_path)
+            )
+        )
+
+
+def test_no_persistent_storage(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    write_lines(input_path, "test_data")
+
+    table = pw.io.plaintext.read(input_path, persistent_id="1")
+    pw.io.csv.write(table, tmp_path / "output.txt")
+    with pytest.raises(
+        ValueError,
+        match="persistent id 1 is assigned, but no persistent storage is configured",
+    ):
+        pw.run()
+
+
+def test_duplicated_persistent_id(tmp_path: pathlib.Path):
+    pstorage_path = tmp_path / "PStorage"
+    input_path = tmp_path / "input_first.txt"
+    input_path_2 = tmp_path / "input_second.txt"
+    output_path = tmp_path / "output.txt"
+
+    write_lines(input_path, "hello")
+    write_lines(input_path_2, "world")
+
+    table_1 = pw.io.plaintext.read(input_path, persistent_id="one")
+    table_2 = pw.io.plaintext.read(input_path_2, persistent_id="one")
+    pw.universes.promise_are_pairwise_disjoint(table_1, table_2)
+    table_concat = table_1.concat(table_2)
+    pw.io.csv.write(table_concat, output_path)
+
+    with pytest.raises(
+        ValueError,
+        match="Persistent ID 'one' used more than once",
+    ):
+        pw.run(
+            persistence_config=pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(pstorage_path)
+            )
+        )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/dev/full is Linux-only")
+def test_immediate_connector_errors():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        should_finish: threading.Event
+        timed_out: bool
+
+        def __init__(self):
+            super().__init__()
+            self.finish = threading.Event()
+            self.timed_out = False
+
+        def run(self):
+            self.next_str("manul")
+            if not self.finish.wait(timeout=10):
+                self.timed_out = True
+
+    subject = TestSubject()
+    table = pw.io.python.read(subject, format="raw", autocommit_duration_ms=10)
+    pw.csv.write(table, "/dev/full")
+    with pytest.raises(api.EngineError, match="No space left on device"):
+        run_all()
+    subject.finish.set()
+
+    assert not subject.timed_out

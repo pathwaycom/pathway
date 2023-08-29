@@ -114,6 +114,18 @@ class ConnectorSubject(ABC):
         """
         return self._buffer.get()
 
+    def _is_internal(self) -> bool:
+        """
+        The Python connector is internal in case it is used to implement an internal
+        Pathway feature rather than to read the data from an external source.
+
+        We need this distinction, because internal usages don't read user data and
+        aren't a part of the external perimeter, which is currently persisted. Therefore
+        we need to tell the engine not to require persistent_id from such connectors
+        and not to store the snapshot of its inputs.
+        """
+        return False
+
 
 @runtime_type_check
 @trace_user_frame
@@ -128,6 +140,7 @@ def read(
     primary_key: Optional[List[str]] = None,
     types: Optional[Dict[str, PathwayType]] = None,
     default_values: Optional[Dict[str, Any]] = None,
+    persistent_id: Optional[str] = None,
 ):
     """Reads a table from a ConnectorSubject.
 
@@ -150,6 +163,11 @@ def read(
         default_values: dictionary containing default values for columns replacing
             blank entries. The default value of the column must be specified explicitly,
             otherwise there will be no default value. [will be deprecated soon]
+        persistent_id: (unstable) An identifier, under which the state of the table \
+will be persisted or ``None``, if there is no need to persist the state of this table. \
+When a program restarts, it restores the state for all input tables according to what \
+was saved for their ``persistent_id``. This way it's possible to configure the start of \
+computations from the moment they were terminated last time.
 
     Returns:
         Table: The table read.
@@ -177,7 +195,10 @@ def read(
     )
     data_storage = api.DataStorage(
         storage_type="python",
-        python_subject=api.PythonSubject(start=subject.start, read=subject._read),
+        python_subject=api.PythonSubject(
+            start=subject.start, read=subject._read, is_internal=subject._is_internal()
+        ),
+        persistent_id=persistent_id,
     )
     properties = construct_connector_properties(
         schema_properties=schema.properties(),
@@ -188,7 +209,7 @@ def read(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

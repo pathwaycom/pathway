@@ -22,16 +22,17 @@ pub mod offset;
 pub mod snapshot;
 
 use crate::connectors::monitoring::ConnectorMonitor;
-use crate::engine::error::DynResult;
+use crate::engine::report_error::{ReportError, SpawnWithReporter};
 use crate::engine::{Key, Value};
 
 use crate::connectors::snapshot::{Event as SnapshotEvent, SnapshotWriter};
+use crate::engine::Error as EngineError;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::tracker::{PersistencyManager, SimplePersistencyManager};
-use crate::persistence::PersistentId;
+use crate::persistence::tracker::{PersistenceManager, SimplePersistenceManager};
+use crate::persistence::{ExternalPersistentId, PersistentId};
 
 use data_format::{ParseResult, ParsedEvent, Parser};
-use data_storage::{ReadResult, Reader, ReaderBuilder, ReaderContext};
+use data_storage::{ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError};
 
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
@@ -54,6 +55,29 @@ pub trait CustomReader {
     Connector is a constructor, taking the reader, the parser, the input session and proving the parsed data to the input session for the
     data source defined by reader.
 */
+
+pub struct StartedConnectorState<Timestamp> {
+    pub poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
+    pub input_thread_handle: std::thread::JoinHandle<()>,
+    pub offsets_by_time: Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
+    pub connector_monitor: Rc<RefCell<ConnectorMonitor>>,
+}
+
+impl<Timestamp> StartedConnectorState<Timestamp> {
+    pub fn new(
+        poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
+        input_thread_handle: std::thread::JoinHandle<()>,
+        offsets_by_time: Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
+        connector_monitor: Rc<RefCell<ConnectorMonitor>>,
+    ) -> Self {
+        Self {
+            poller,
+            input_thread_handle,
+            offsets_by_time,
+            connector_monitor,
+        }
+    }
+}
 
 pub struct Connector<Timestamp> {
     commit_duration: Option<Duration>,
@@ -105,7 +129,7 @@ where
         universe_session.advance_to(self.current_timestamp.clone());
         universe_session.flush();
 
-        for input_session in input_sessions.iter_mut() {
+        for input_session in &mut *input_sessions {
             input_session.advance_to(self.current_timestamp.clone());
             input_session.flush();
         }
@@ -115,7 +139,7 @@ where
 
     pub fn rewind_from_disk_snapshot(
         persistent_id: PersistentId,
-        persistent_storage: &Arc<Mutex<SimplePersistencyManager>>,
+        persistent_storage: &Arc<Mutex<SimplePersistenceManager>>,
         sender: &Sender<Entry>,
     ) {
         let snapshot_readers = persistent_storage
@@ -209,7 +233,7 @@ where
 
     pub fn read_snapshot(
         reader: &mut dyn Reader,
-        persistent_storage: &Option<Arc<Mutex<SimplePersistencyManager>>>,
+        persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
         sender: &Sender<Entry>,
     ) {
         // Rewind the data source
@@ -240,31 +264,26 @@ where
 
     pub fn snapshot_writer(
         reader: &dyn ReaderBuilder,
-        persistent_storage: &Option<Arc<Mutex<SimplePersistencyManager>>>,
-    ) -> Option<Box<dyn SnapshotWriter>> {
-        if let Some(persistent_id) = reader.persistent_id() {
-            if let Some(persistent_storage) = &persistent_storage {
-                match persistent_storage
-                    .lock()
-                    .unwrap()
-                    .create_snapshot_writer(persistent_id)
-                {
-                    Ok(storage) => Some(storage),
-                    Err(e) => {
-                        error!("Failed to create persistent storage writer ({e})");
-                        None
-                    }
-                }
+        persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
+    ) -> Result<Option<Box<dyn SnapshotWriter>>, WriteError> {
+        if let Some(persistent_storage) = &persistent_storage {
+            if let Some(persistent_id) = reader.persistent_id() {
+                Ok(Some(
+                    persistent_storage
+                        .lock()
+                        .unwrap()
+                        .create_snapshot_writer(persistent_id)?,
+                ))
             } else {
-                warn!("Persistent ID {persistent_id} specified for a data source but persistent storage is not configured");
-                None
+                assert!(reader.is_internal());
+                Ok(None)
             }
         } else {
-            None
+            assert!(reader.persistent_id().is_none());
+            Ok(None)
         }
     }
 
-    #[allow(clippy::type_complexity)]
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         mut self,
@@ -273,15 +292,12 @@ where
         mut input_sessions: Vec<InputSession<Timestamp, (Key, Value), isize>>,
         mut universe_session: InputSession<Timestamp, Key, isize>,
         mut values_to_key: impl FnMut(Option<Vec<Value>>) -> Key + 'static,
-        persistent_storage: Option<Arc<Mutex<SimplePersistencyManager>>>,
+        persistent_storage: Option<Arc<Mutex<SimplePersistenceManager>>>,
         connector_id: usize,
         realtime_reader_needed: bool,
-    ) -> (
-        Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
-        std::thread::JoinHandle<DynResult<()>>,
-        Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
-        Rc<RefCell<ConnectorMonitor>>,
-    ) {
+        external_persistent_id: &Option<ExternalPersistentId>,
+        error_reporter: impl ReportError + 'static,
+    ) -> Result<StartedConnectorState<Timestamp>, EngineError> {
         assert_eq!(input_sessions.len(), parser.column_count());
 
         let main_thread = thread::current();
@@ -292,13 +308,14 @@ where
             reader.short_description(),
             parser.short_description()
         );
-        let reader_name = reader.name(connector_id);
+        let reader_name = reader.name(external_persistent_id, connector_id);
 
-        let mut snapshot_writer = Self::snapshot_writer(reader.as_ref(), &persistent_storage);
+        let mut snapshot_writer = Self::snapshot_writer(reader.as_ref(), &persistent_storage)
+            .map_err(EngineError::SnapshotWriterError)?;
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
-            .spawn(move || {
+            .spawn_with_reporter(error_reporter, move || {
                 let sender = guard(sender, |sender| {
                     // ensure that we always unpark the main thread after dropping the sender, so it
                     // notices we are done sending
@@ -306,7 +323,7 @@ where
                     main_thread.unpark();
                 });
 
-                let mut reader = reader.build().expect("building the reader failed");
+                let mut reader = reader.build()?;
                 Self::read_snapshot(&mut *reader, &persistent_storage, &sender);
                 if realtime_reader_needed {
                     Self::read_realtime_updates(&mut *reader, &sender, &main_thread);
@@ -380,12 +397,12 @@ where
                 }
             }
         });
-        (
+        Ok(StartedConnectorState::new(
             poller,
             input_thread_handle,
             offsets_by_time,
             cloned_connector_monitor,
-        )
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]

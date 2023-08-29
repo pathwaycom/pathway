@@ -61,6 +61,31 @@ where
     }
 }
 
+impl<'a, S> MaybeTotalScope for Child<'a, S, i32>
+where
+    S: ScopeParent<Timestamp = ()>,
+{
+    type MaybeTotalTimestamp = Self::Timestamp;
+
+    fn count<T>(arranged: &Arranged<Self, T>) -> Collection<Self, (T::Key, T::R), isize>
+    where
+        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
+        T::Key: Data,
+        T::R: Semigroup,
+    {
+        operators::CountTotal::count_total(arranged)
+    }
+
+    fn distinct<T>(arranged: &Arranged<Self, T>) -> Collection<Self, T::Key, isize>
+    where
+        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
+        T::Key: Data,
+        T::R: Semigroup,
+    {
+        operators::ThresholdTotal::distinct_total(arranged)
+    }
+}
+
 impl<'a, S, T1, T2> MaybeTotalScope for Child<'a, S, Product<T1, T2>>
 where
     S: ScopeParent<Timestamp = T1>,

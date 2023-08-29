@@ -56,11 +56,10 @@ class NumericalNamespace:
         """
 
         return expr.MethodCallExpression(
-            {
-                int: lambda x: api.Expression.apply(abs, x),
-                float: lambda x: api.Expression.apply(abs, x),
-            },
-            lambda dtypes: dtypes[0],
+            [
+                (int, int, lambda x: api.Expression.apply(abs, x)),
+                (float, float, lambda x: api.Expression.apply(abs, x)),
+            ],
             "num.abs",
             self._expression,
         )
@@ -124,11 +123,10 @@ class NumericalNamespace:
         """
 
         return expr.MethodCallExpression(
-            {
-                (int, int): lambda x, y: api.Expression.apply(round, x, y),
-                (float, int): lambda x, y: api.Expression.apply(round, x, y),
-            },
-            lambda dtypes: dtypes[0],
+            [
+                ((int, int), int, lambda x, y: api.Expression.apply(round, x, y)),
+                ((float, int), float, lambda x, y: api.Expression.apply(round, x, y)),
+            ],
             "num.round",
             self._expression,
             decimals,
@@ -164,31 +162,35 @@ class NumericalNamespace:
         3.5
         """
 
-        def get_return_type(input_type):
-            if input_type == Optional[int]:
-                return int
-            if input_type == Optional[float]:
-                return float
-            return input_type
-
         # XXX Update to api.Expression.if_else when a isnan operator is supported.
         return expr.MethodCallExpression(
-            {
-                int: lambda x: x,
-                float: lambda x: api.Expression.apply(
-                    lambda y: float(default_value) if math.isnan(y) else y, x
+            [
+                (int, int, lambda x: x),
+                (
+                    float,
+                    float,
+                    lambda x: api.Expression.apply(
+                        lambda y: float(default_value) if math.isnan(y) else y, x
+                    ),
                 ),
-                Optional[int]: lambda x: api.Expression.apply(
-                    lambda y: int(default_value) if y is None else y, x
+                (
+                    Optional[int],
+                    int,
+                    lambda x: api.Expression.apply(
+                        lambda y: int(default_value) if y is None else y, x
+                    ),
                 ),
-                Optional[float]: lambda x: api.Expression.apply(
-                    lambda y: float(default_value)
-                    if ((y is None) or math.isnan(y))
-                    else y,
-                    x,
+                (
+                    Optional[float],
+                    float,
+                    lambda x: api.Expression.apply(
+                        lambda y: float(default_value)
+                        if ((y is None) or math.isnan(y))
+                        else y,
+                        x,
+                    ),
                 ),
-            },
-            lambda dtypes: get_return_type(dtypes[0]),
+            ],
             "num.fill_na",
             self._expression,
         )

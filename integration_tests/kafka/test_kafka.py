@@ -9,7 +9,6 @@ import pandas as pd
 from utils import KafkaTestContext
 
 import pathway as pw
-from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import wait_result_with_checker, write_lines
 
@@ -200,7 +199,7 @@ def test_kafka_output(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
 
 
 def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(tmp_path / "PStorage")
+    persistent_storage_path = tmp_path / "PStorage"
 
     kafka_context.fill(
         [
@@ -217,7 +216,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         value_columns=["v"],
         primary_key=["k"],
         autocommit_duration_ms=100,
-        persistent_id=1,
+        persistent_id="1",
     )
 
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
@@ -235,6 +234,11 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
             index_col=["k"],
         ),
         10,
+        kwargs={
+            "persistence_config": pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(persistent_storage_path),
+            ),
+        },
     )
     G.clear()
 
@@ -254,7 +258,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         value_columns=["v"],
         primary_key=["k"],
         autocommit_duration_ms=100,
-        persistent_id=1,
+        persistent_id="1",
     )
 
     pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
@@ -271,6 +275,12 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
             index_col=["k"],
         ),
         10,
+        target=pw.run,
+        kwargs={
+            "persistence_config": pw.io.PersistenceConfig.single_backend(
+                pw.io.PersistentStorageBackend.filesystem(persistent_storage_path),
+            ),
+        },
     )
 
 
@@ -311,7 +321,7 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
             self.reader_args = reader_args
             self.reader_kwargs = reader_kwargs
 
-        def __call__(self):
+        def __call__(self, *args, **kwargs):
             G.clear()
             words = self.reader_method(*self.reader_args, **self.reader_kwargs)
             result = words.groupby(words.data).reduce(
@@ -323,9 +333,9 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
                 rdkafka_settings=kafka_context.default_rdkafka_settings(),
                 topic_name=kafka_context.output_topic,
             )
-            pw.run(monitoring_level=MonitoringLevel.NONE)
+            pw.run(*args, **kwargs)
 
-    os.environ["PATHWAY_PERSISTENT_STORAGE"] = str(tmp_path / "PStorage")
+    persistent_storage_path = tmp_path / "PStorage"
     try:
         kafka_context.set_input_topic_partitions(24)
         n_kafka_runs = 5
@@ -337,15 +347,22 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
             kafka_context.fill(generate_wordcount_input(1000, 50))
             assert wait_result_with_checker(
                 checker=WordcountChecker(1000, 50 * (run_seq_id + 1)),
-                timeout_sec=30,
+                timeout_sec=60,
                 target=WordcountProgram(
                     pw.io.kafka.read,
                     rdkafka_settings=kafka_context.default_rdkafka_settings(),
                     topic=kafka_context.input_topic,
                     format="raw",
                     autocommit_duration_ms=5,
-                    persistent_id=1,
+                    persistent_id="1",
                 ),
+                kwargs={
+                    "persistence_config": pw.io.PersistenceConfig.single_backend(
+                        pw.io.PersistentStorageBackend.filesystem(
+                            persistent_storage_path
+                        ),
+                    ),
+                },
             )
 
         # Change the data format: it used to be Kafka, but now we can switch to a file
@@ -353,13 +370,18 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
         write_lines(input_file_path, "\n".join(generate_wordcount_input(1000, 50)))
         assert wait_result_with_checker(
             checker=WordcountChecker(1000, 50 * (n_kafka_runs + 1)),
-            timeout_sec=30,
+            timeout_sec=60,
             target=WordcountProgram(
                 pw.io.plaintext.read,
                 str(input_file_path),
                 autocommit_duration_ms=5,
-                persistent_id=1,
+                persistent_id="1",
             ),
+            kwargs={
+                "persistence_config": pw.io.PersistenceConfig.single_backend(
+                    pw.io.PersistentStorageBackend.filesystem(persistent_storage_path),
+                ),
+            },
         )
     finally:
         del os.environ["PATHWAY_THREADS"]

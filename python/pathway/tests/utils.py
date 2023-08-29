@@ -4,22 +4,23 @@ from __future__ import annotations
 
 import collections
 import multiprocessing
-import os
 import pathlib
 import platform
 import re
+import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Type, Union
+from typing import Callable, Tuple, Union
 
+import numpy as np
+import pandas as pd
 import pytest
 
 import pathway as pw
 from pathway.debug import _markdown_to_pandas, parse_to_table, table_from_pandas
 from pathway.internals import api, datasource
-from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner import GraphRunner
-from pathway.internals.schema import Schema, is_subschema, schema_from_columns
+from pathway.internals.schema import is_subschema, schema_from_columns
 from pathway.internals.table import Table
 
 try:
@@ -40,23 +41,40 @@ def assert_equal_tables(t0: api.CapturedTable, t1: api.CapturedTable):
     assert t0 == t1
 
 
+def make_value_hashable(val: api.Value):
+    if isinstance(val, np.ndarray):
+        return (type(val), val.dtype, val.shape, str(val))
+    else:
+        return val
+
+
+def make_row_hashable(row: Tuple[api.Value, ...]):
+    return tuple(make_value_hashable(val) for val in row)
+
+
 def assert_equal_tables_wo_index(t0: api.CapturedTable, t1: api.CapturedTable):
-    assert collections.Counter(t0.values()) == collections.Counter(t1.values())
+    assert collections.Counter(
+        make_row_hashable(row) for row in t0.values()
+    ) == collections.Counter(make_row_hashable(row) for row in t1.values())
+
+
+class CsvLinesNumberChecker:
+    def __init__(self, path, n_lines):
+        self.path = path
+        self.n_lines = n_lines
+
+    def __call__(self):
+        result = pd.read_csv(self.path).sort_index()
+        return len(result) == self.n_lines
 
 
 @dataclass(frozen=True)
 class TestDataSource(datasource.DataSource):
     __test__ = False
 
-    _schema: Type[Schema]
-
-    @property
-    def schema(self) -> Type[Schema]:
-        return self._schema
-
 
 def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
-    def inner(table: Table, expected: Table):
+    def inner(table: Table, expected: Table, **kwargs):
         table_schema_dict = table.schema.as_dict()
         expected_schema_dict = expected.schema.as_dict()
         columns_schema_dict = schema_from_columns(table._columns).as_dict()
@@ -83,16 +101,15 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
             raise RuntimeError(
                 f"Mismatched column names, {list(table.column_names())} vs {list(expected.column_names())}"
             )
+
+        print("We will do GraphRunner with the following kwargs: ", kwargs)
+
         [captured_table, captured_expected] = GraphRunner(
-            table._source.graph, monitoring_level=pw.MonitoringLevel.NONE
+            table._source.graph, monitoring_level=pw.MonitoringLevel.NONE, **kwargs
         ).run_tables(table, expected)
         return verifier(captured_table, captured_expected)
 
     return inner
-
-
-def table_from_schema(schema):
-    return table_from_datasource(TestDataSource(schema))
 
 
 def T(*args, format="markdown", **kwargs):
@@ -135,9 +152,10 @@ def run_all(**kwargs):
     pw.run_all(**kwargs)
 
 
-def wait_result_with_checker(checker, timeout_sec, target=run):
-    p = multiprocessing.Process(target=target, args=())
+def wait_result_with_checker(checker, timeout_sec, target=run, args=(), kwargs={}):
+    p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
     p.start()
+    started_at = time.time()
 
     succeeded = False
     for _ in range(timeout_sec):
@@ -145,12 +163,18 @@ def wait_result_with_checker(checker, timeout_sec, target=run):
         try:
             succeeded = checker()
             if succeeded:
+                print(
+                    "Correct result obtained after {} seconds".format(
+                        time.time() - started_at
+                    ),
+                    file=sys.stderr,
+                )
                 break
         except Exception:
             pass
 
-    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
-        time.sleep(3.0)  # allow a little gap to persist state
+    if "persistence_config" in kwargs:
+        time.sleep(5.0)  # allow a little gap to persist state
 
     p.terminate()
     p.join()

@@ -3,6 +3,7 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
+use pyo3::marker::Ungil;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use std::os::unix::prelude::*;
@@ -10,7 +11,7 @@ use std::os::unix::prelude::*;
 use log::warn;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::iter::zip;
@@ -46,6 +47,7 @@ use rdkafka::ClientConfig;
 use s3::bucket::Bucket as S3Bucket;
 use scopeguard::defer;
 use send_wrapper::SendWrapper;
+use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::threads::PythonThreadState;
 use crate::connectors::data_format::{
@@ -77,12 +79,19 @@ use crate::engine::{DateTimeNaiveExpression, DateTimeUtcExpression, DurationExpr
 use crate::engine::{Expression, IntExpression};
 use crate::engine::{FloatExpression, Graph};
 use crate::engine::{StringExpression, Table as EngineTable};
-use crate::persistence::PersistentId;
+use crate::persistence::config::{
+    MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
+};
+use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::pipe::{pipe, ReaderType, WriterType};
 
 mod logging;
 mod numba;
 pub mod threads;
+
+pub fn with_gil_and_pool<R>(f: impl FnOnce(Python) -> R + Ungil) -> R {
+    Python::with_gil(|py| py.with_pool(f))
+}
 
 static CONVERT: GILOnceCell<PyObject> = GILOnceCell::new();
 
@@ -255,8 +264,14 @@ impl<'source> FromPyObject<'source> for Value {
             Ok(s.to_str()?.into())
         } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i64>>() {
             Ok(Value::from(array.as_array().to_owned()))
+        } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i32>>() {
+            Ok(Value::from(array.as_array().mapv(i64::from)))
+        } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<u32>>() {
+            Ok(Value::from(array.as_array().mapv(i64::from)))
         } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<f64>>() {
             Ok(Value::from(array.as_array().to_owned()))
+        } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<f32>>() {
+            Ok(Value::from(array.as_array().mapv(f64::from)))
         } else if let Ok(t) = ob.extract::<Vec<Self>>() {
             Ok(Value::from(t.as_slice()))
         } else {
@@ -373,9 +388,11 @@ impl From<EngineError> for PyErr {
                 | EngineError::KeyMissingInColumn(_)
                 | EngineError::KeyMissingInUniverse(_) => PyKeyError::type_object(py),
                 EngineError::DivisionByZero => PyZeroDivisionError::type_object(py),
-                EngineError::IterationLimitTooSmall | EngineError::ValueError(_) => {
-                    PyValueError::type_object(py)
-                }
+                EngineError::IterationLimitTooSmall
+                | EngineError::ValueError(_)
+                | EngineError::PersistentIdNotAssigned(_)
+                | EngineError::NoPersistentStorage(_)
+                | EngineError::ParseError(_) => PyValueError::type_object(py),
                 EngineError::IndexOutOfBounds => PyIndexError::type_object(py),
                 _ => ENGINE_ERROR_TYPE.as_ref(py),
             };
@@ -467,13 +484,19 @@ impl PyReducer {
     pub const MAX: Reducer = Reducer::Max;
 
     #[classattr]
-    pub const SUM: Reducer = Reducer::Sum;
+    pub const FLOAT_SUM: Reducer = Reducer::FloatSum;
 
     #[classattr]
     pub const INT_SUM: Reducer = Reducer::IntSum;
 
     #[classattr]
+    pub const ARRAY_SUM: Reducer = Reducer::ArraySum;
+
+    #[classattr]
     pub const SORTED_TUPLE: Reducer = Reducer::SortedTuple;
+
+    #[classattr]
+    pub const TUPLE: Reducer = Reducer::Tuple;
 
     #[classattr]
     pub const UNIQUE: Reducer = Reducer::Unique;
@@ -604,23 +627,48 @@ impl PyExpression {
 }
 
 macro_rules! unary_op {
-    ($expression:path,$e:expr) => {
+    ($expression:path, $e:expr $(, $arg:expr)*) => {
         Self::new(
-            Arc::new(Expression::from($expression($e.inner.clone()))),
+            Arc::new(Expression::from($expression($e.inner.clone() $(, $arg)*))),
             $e.gil,
         )
     };
 }
 
 macro_rules! binary_op {
-    ($expression:path,$lhs:expr,$rhs:expr) => {
+    ($expression:path, $lhs:expr, $rhs:expr $(, $arg:expr)*) => {
         Self::new(
             Arc::new(Expression::from($expression(
                 $lhs.inner.clone(),
                 $rhs.inner.clone(),
+                $($arg,)*
             ))),
             $lhs.gil || $rhs.gil,
         )
+    };
+}
+
+macro_rules! unary_expr {
+    ($name:ident, $expression:path $(, $arg:ident : $type:ty)*) => {
+        #[pymethods]
+        impl PyExpression {
+            #[staticmethod]
+            fn $name(expr: &Self $(, $arg : $type)*) -> Self {
+                unary_op!($expression, expr $(, $arg)*)
+            }
+        }
+    };
+}
+
+macro_rules! binary_expr {
+    ($name:ident, $expression:path $(, $arg:ident : $type:ty)*) => {
+        #[pymethods]
+        impl PyExpression {
+            #[staticmethod]
+            fn $name(lhs: &Self, rhs: &Self $(, $arg : $type)*) -> Self {
+                binary_op!($expression, lhs, rhs $(, $arg)*)
+            }
+        }
     };
 }
 
@@ -649,7 +697,7 @@ impl PyExpression {
         Self::new(
             Arc::new(Expression::Any(AnyExpression::Apply(
                 Box::new(move |input| {
-                    Python::with_gil(|py| -> DynResult<Value> {
+                    with_gil_and_pool(|py| -> DynResult<Value> {
                         let args = PyTuple::new(py, input);
                         Ok(function.call1(py, args)?.extract::<Value>(py)?)
                     })
@@ -657,14 +705,6 @@ impl PyExpression {
                 args.into(),
             ))),
             true,
-        )
-    }
-
-    #[staticmethod]
-    fn is_none(expr: &PyExpression) -> Self {
-        Self::new(
-            Arc::new(Expression::Bool(BoolExpression::IsNone(expr.inner.clone()))),
-            expr.gil,
         )
     }
 
@@ -842,16 +882,6 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    fn eq(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_op!(BoolExpression::Eq, lhs, rhs)
-    }
-
-    #[staticmethod]
-    fn ne(lhs: &PyExpression, rhs: &PyExpression) -> Self {
-        binary_op!(BoolExpression::Ne, lhs, rhs)
-    }
-
-    #[staticmethod]
     fn cast(expr: &PyExpression, source_type: Type, target_type: Type) -> Option<Self> {
         type Tp = Type;
         match (source_type, target_type) {
@@ -872,198 +902,19 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    fn date_time_naive_nanosecond(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveNanosecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_microsecond(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveMicrosecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_millisecond(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveMillisecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_second(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveSecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_minute(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveMinute, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_hour(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveHour, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_day(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveDay, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_month(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveMonth, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_year(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveYear, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_timestamp(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeNaiveTimestamp, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_strptime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_op!(DateTimeNaiveExpression::Strptime, expr, fmt)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_strftime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_op!(StringExpression::DateTimeNaiveStrftime, expr, fmt)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_from_timestamp(expr: &PyExpression, unit: &PyExpression) -> Self {
-        binary_op!(DateTimeNaiveExpression::FromTimestamp, expr, unit)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_to_utc(expr: &PyExpression, from_timezone: &PyExpression) -> Self {
-        binary_op!(DateTimeUtcExpression::FromNaive, expr, from_timezone)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_round(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_op!(DateTimeNaiveExpression::Round, expr, duration)
-    }
-
-    #[staticmethod]
-    fn date_time_naive_floor(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_op!(DateTimeNaiveExpression::Floor, expr, duration)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_nanosecond(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcNanosecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_microsecond(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcMicrosecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_millisecond(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcMillisecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_second(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcSecond, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_minute(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcMinute, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_hour(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcHour, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_day(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcDay, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_month(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcMonth, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_year(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcYear, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_timestamp(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DateTimeUtcTimestamp, expr)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_strptime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_op!(DateTimeUtcExpression::Strptime, expr, fmt)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_strftime(expr: &PyExpression, fmt: &PyExpression) -> Self {
-        binary_op!(StringExpression::DateTimeUtcStrftime, expr, fmt)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_to_naive(expr: &PyExpression, to_timezone: &PyExpression) -> Self {
-        binary_op!(DateTimeNaiveExpression::FromUtc, expr, to_timezone)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_round(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_op!(DateTimeUtcExpression::Round, expr, duration)
-    }
-
-    #[staticmethod]
-    fn date_time_utc_floor(expr: &PyExpression, duration: &PyExpression) -> Self {
-        binary_op!(DateTimeUtcExpression::Floor, expr, duration)
-    }
-
-    #[staticmethod]
-    fn duration_nanoseconds(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationNanoseconds, expr)
-    }
-
-    #[staticmethod]
-    fn duration_microseconds(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationMicroseconds, expr)
-    }
-
-    #[staticmethod]
-    fn duration_milliseconds(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationMilliseconds, expr)
-    }
-
-    #[staticmethod]
-    fn duration_seconds(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationSeconds, expr)
-    }
-
-    #[staticmethod]
-    fn duration_minutes(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationMinutes, expr)
-    }
-
-    #[staticmethod]
-    fn duration_hours(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationHours, expr)
-    }
-
-    #[staticmethod]
-    fn duration_days(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationDays, expr)
-    }
-
-    #[staticmethod]
-    fn duration_weeks(expr: &PyExpression) -> Self {
-        unary_op!(IntExpression::DurationWeeks, expr)
+    fn cast_optional(expr: &PyExpression, source_type: Type, target_type: Type) -> Option<Self> {
+        type Tp = Type;
+        match (target_type, source_type) {
+            (Tp::Int, Tp::Float) => Some(unary_op!(
+                AnyExpression::CastToOptionalIntFromOptionalFloat,
+                expr
+            )),
+            (Tp::Float, Tp::Int) => Some(unary_op!(
+                AnyExpression::CastToOptionalFloatFromOptionalInt,
+                expr
+            )),
+            (_, _) => None,
+        }
     }
 
     #[staticmethod]
@@ -1127,12 +978,95 @@ impl PyExpression {
             expr.gil || index.gil || default.gil,
         )
     }
-
-    #[staticmethod]
-    fn sequence_get_item_unchecked(expr: &PyExpression, index: &PyExpression) -> Self {
-        binary_op!(AnyExpression::TupleGetItemUnchecked, expr, index)
-    }
 }
+
+unary_expr!(is_none, BoolExpression::IsNone);
+binary_expr!(eq, BoolExpression::Eq);
+binary_expr!(ne, BoolExpression::Ne);
+binary_expr!(
+    sequence_get_item_unchecked,
+    AnyExpression::TupleGetItemUnchecked
+);
+unary_expr!(
+    date_time_naive_nanosecond,
+    IntExpression::DateTimeNaiveNanosecond
+);
+unary_expr!(
+    date_time_naive_microsecond,
+    IntExpression::DateTimeNaiveMicrosecond
+);
+unary_expr!(
+    date_time_naive_millisecond,
+    IntExpression::DateTimeNaiveMillisecond
+);
+unary_expr!(date_time_naive_second, IntExpression::DateTimeNaiveSecond);
+unary_expr!(date_time_naive_minute, IntExpression::DateTimeNaiveMinute);
+unary_expr!(date_time_naive_hour, IntExpression::DateTimeNaiveHour);
+unary_expr!(date_time_naive_day, IntExpression::DateTimeNaiveDay);
+unary_expr!(date_time_naive_month, IntExpression::DateTimeNaiveMonth);
+unary_expr!(date_time_naive_year, IntExpression::DateTimeNaiveYear);
+unary_expr!(
+    date_time_naive_timestamp,
+    IntExpression::DateTimeNaiveTimestamp
+);
+binary_expr!(date_time_naive_strptime, DateTimeNaiveExpression::Strptime);
+binary_expr!(
+    date_time_naive_strftime,
+    StringExpression::DateTimeNaiveStrftime
+);
+binary_expr!(
+    date_time_naive_from_timestamp,
+    DateTimeNaiveExpression::FromTimestamp
+);
+binary_expr!(date_time_naive_to_utc, DateTimeUtcExpression::FromNaive);
+binary_expr!(date_time_naive_round, DateTimeNaiveExpression::Round);
+binary_expr!(date_time_naive_floor, DateTimeNaiveExpression::Floor);
+unary_expr!(
+    date_time_utc_nanosecond,
+    IntExpression::DateTimeUtcNanosecond
+);
+unary_expr!(
+    date_time_utc_microsecond,
+    IntExpression::DateTimeUtcMicrosecond
+);
+unary_expr!(
+    date_time_utc_millisecond,
+    IntExpression::DateTimeUtcMillisecond
+);
+unary_expr!(date_time_utc_second, IntExpression::DateTimeUtcSecond);
+unary_expr!(date_time_utc_minute, IntExpression::DateTimeUtcMinute);
+unary_expr!(date_time_utc_hour, IntExpression::DateTimeUtcHour);
+unary_expr!(date_time_utc_day, IntExpression::DateTimeUtcDay);
+unary_expr!(date_time_utc_month, IntExpression::DateTimeUtcMonth);
+unary_expr!(date_time_utc_year, IntExpression::DateTimeUtcYear);
+unary_expr!(date_time_utc_timestamp, IntExpression::DateTimeUtcTimestamp);
+binary_expr!(date_time_utc_strptime, DateTimeUtcExpression::Strptime);
+binary_expr!(
+    date_time_utc_strftime,
+    StringExpression::DateTimeUtcStrftime
+);
+binary_expr!(date_time_utc_to_naive, DateTimeNaiveExpression::FromUtc);
+binary_expr!(date_time_utc_round, DateTimeUtcExpression::Round);
+binary_expr!(date_time_utc_floor, DateTimeUtcExpression::Floor);
+unary_expr!(duration_nanoseconds, IntExpression::DurationNanoseconds);
+unary_expr!(duration_microseconds, IntExpression::DurationMicroseconds);
+unary_expr!(duration_milliseconds, IntExpression::DurationMilliseconds);
+unary_expr!(duration_seconds, IntExpression::DurationSeconds);
+unary_expr!(duration_minutes, IntExpression::DurationMinutes);
+unary_expr!(duration_hours, IntExpression::DurationHours);
+unary_expr!(duration_days, IntExpression::DurationDays);
+unary_expr!(duration_weeks, IntExpression::DurationWeeks);
+unary_expr!(unwrap, AnyExpression::Unwrap);
+unary_expr!(to_string, StringExpression::ToString);
+unary_expr!(parse_int, AnyExpression::ParseStringToInt, optional: bool);
+unary_expr!(parse_float, AnyExpression::ParseStringToFloat, optional: bool);
+unary_expr!(
+    parse_bool,
+    AnyExpression::ParseStringToBool,
+    true_list: Vec<String>,
+    false_list: Vec<String>,
+    optional: bool
+);
 
 #[pyclass(module = "pathway.engine", frozen, name = "PathwayType")]
 pub struct PathwayType(Type);
@@ -1520,7 +1454,9 @@ impl Computer {
                 .map(|data_column| data_column.borrow(py).handle);
             EngineComputer::Method {
                 logic: Box::new(move |engine_context, args| {
-                    Ok(Python::with_gil(|py| {
+                    let engine_context = SendWrapper::new(engine_context);
+                    Ok(with_gil_and_pool(|py| {
+                        let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, args)
                     })?)
                 }),
@@ -1534,7 +1470,9 @@ impl Computer {
             assert!(self_ref.data_column.is_none());
             EngineComputer::Attribute {
                 logic: Box::new(move |engine_context| {
-                    Ok(Python::with_gil(|py| {
+                    let engine_context = SendWrapper::new(engine_context);
+                    Ok(with_gil_and_pool(|py| {
+                        let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, &[])
                     })?)
                 }),
@@ -1601,6 +1539,7 @@ pub struct Scope {
     // empty_universe: Lazy<Py<Universe>>,
     universes: RefCell<HashMap<UniverseHandle, Py<Universe>>>,
     columns: RefCell<HashMap<ColumnHandle, Py<Column>>>,
+    persistent_ids: RefCell<HashSet<ExternalPersistentId>>,
     event_loop: PyObject,
 }
 
@@ -1612,6 +1551,7 @@ impl Scope {
             graph: SendWrapper::new(ScopedGraph::new()),
             universes: RefCell::new(HashMap::new()),
             columns: RefCell::new(HashMap::new()),
+            persistent_ids: RefCell::new(HashSet::new()),
             event_loop,
         }
     }
@@ -1670,6 +1610,21 @@ impl Scope {
         properties: ConnectorProperties,
     ) -> PyResult<Table> {
         let py = self_.py();
+
+        let persistent_id = data_source.borrow().persistent_id.clone();
+        if let Some(persistent_id) = &persistent_id {
+            let is_unique_id = self_
+                .borrow()
+                .persistent_ids
+                .borrow_mut()
+                .insert(persistent_id.to_string());
+            if !is_unique_id {
+                return Err(PyValueError::new_err(format!(
+                    "Persistent ID '{persistent_id}' used more than once"
+                )));
+            }
+        }
+
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(py)?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
@@ -1680,6 +1635,7 @@ impl Scope {
                 .commit_duration_ms
                 .map(time::Duration::from_millis),
             parallel_readers,
+            &persistent_id,
         )?;
 
         let universe = Universe::new(self_, universe_handle)?;
@@ -1776,7 +1732,7 @@ impl Scope {
             BatchWrapper::WithGil,
             Arc::new(Expression::Any(AnyExpression::Apply(
                 Box::new(move |input| {
-                    Python::with_gil(|py| -> DynResult<_> {
+                    with_gil_and_pool(|py| -> DynResult<_> {
                         let inputs = PyTuple::new(py, input);
                         let args = PyTuple::new(py, [inputs]);
                         Ok(function.call1(py, args)?.extract::<Value>(py)?)
@@ -1805,7 +1761,7 @@ impl Scope {
         let event_loop = self_.borrow().event_loop.clone();
         let handle = self_.borrow().graph.async_apply_column(
             Arc::new(move |_, values| {
-                let future = Python::with_gil(|py| {
+                let future = with_gil_and_pool(|py| {
                     let event_loop = event_loop.clone();
                     let args = PyTuple::new(py, values);
                     let awaitable = function.call1(py, args)?;
@@ -1817,7 +1773,7 @@ impl Scope {
 
                 Box::pin(async {
                     let result = future?.await?;
-                    Python::with_gil(|py| result.extract::<Value>(py).map_err(DynError::from))
+                    with_gil_and_pool(|py| result.extract::<Value>(py).map_err(DynError::from))
                 })
             }),
             universe_ref.handle,
@@ -2304,7 +2260,7 @@ impl Scope {
         self_.borrow().graph.subscribe_column(
             BatchWrapper::WithGil,
             Box::new(move |key, values, time, diff| {
-                Python::with_gil(|py| {
+                with_gil_and_pool(|py| {
                     let py_key = key.to_object(py);
                     let py_values = PyTuple::new(py, values).to_object(py);
                     let py_time = time.to_object(py);
@@ -2316,7 +2272,7 @@ impl Scope {
                 })
             }),
             Box::new(move || {
-                Python::with_gil(|py| {
+                with_gil_and_pool(|py| {
                     on_end.call0(py)?;
                     Ok(())
                 })
@@ -2560,7 +2516,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Py<Py
         consolidate_updates(column_data);
         assert_eq!(column_data.len(), combined_universe_data.len());
     }
-    Python::with_gil(|py| {
+    with_gil_and_pool(|py| {
         let dict = PyDict::new(py);
         for (i, (key, diff)) in combined_universe_data.into_iter().enumerate() {
             assert_eq!(diff, 1);
@@ -2580,7 +2536,16 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Py<Py
 }
 
 #[pyfunction]
-#[pyo3(signature = (logic, event_loop, stats_monitor=None, ignore_asserts = false, monitoring_level = MonitoringLevel::None, with_http_server = false))]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (
+    logic,
+    event_loop,
+    stats_monitor = None,
+    ignore_asserts = false,
+    monitoring_level = MonitoringLevel::None,
+    with_http_server = false,
+    persistence_config = None
+))]
 pub fn run_with_new_graph(
     py: Python,
     logic: PyObject,
@@ -2589,12 +2554,20 @@ pub fn run_with_new_graph(
     ignore_asserts: bool,
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
+    persistence_config: Option<PersistenceConfig>,
 ) -> PyResult<Vec<Py<PyDict>>> {
     defer! {
         log::logger().flush();
     }
     let config =
         config_from_env().map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg))?;
+    let persistence_config = {
+        if let Some(persistence_config) = persistence_config {
+            Some(persistence_config.prepare(py)?)
+        } else {
+            None
+        }
+    };
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         py.allow_threads(|| {
             run_with_new_dataflow_graph(
@@ -2623,6 +2596,7 @@ pub fn run_with_new_graph(
                 ignore_asserts,
                 monitoring_level,
                 with_http_server,
+                persistence_config,
             )
         })
     })??;
@@ -2961,6 +2935,7 @@ impl ElasticSearchParams {
     }
 }
 
+#[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct DataStorage {
     storage_type: String,
@@ -2974,7 +2949,40 @@ pub struct DataStorage {
     elasticsearch_params: Option<Py<ElasticSearchParams>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Py<PythonSubject>>,
-    persistent_id: Option<PersistentId>,
+    persistent_id: Option<ExternalPersistentId>,
+}
+
+#[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct PersistenceConfig {
+    metadata_storage: DataStorage,
+    stream_storage: DataStorage,
+}
+
+#[pymethods]
+impl PersistenceConfig {
+    #[new]
+    #[pyo3(signature = (
+        *,
+        metadata_storage,
+        stream_storage,
+    ))]
+    fn new(metadata_storage: DataStorage, stream_storage: DataStorage) -> Self {
+        Self {
+            metadata_storage,
+            stream_storage,
+        }
+    }
+}
+
+impl PersistenceConfig {
+    fn prepare(self, py: pyo3::Python) -> PyResult<PersistenceManagerOuterConfig> {
+        Ok(PersistenceManagerOuterConfig::new(
+            self.metadata_storage
+                .construct_metadata_storage_config(py)?,
+            self.stream_storage.construct_stream_storage_config(py)?,
+        ))
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
@@ -2982,14 +2990,19 @@ pub struct DataStorage {
 pub struct PythonSubject {
     pub start: Py<PyAny>,
     pub read: Py<PyAny>,
+    pub is_internal: bool,
 }
 
 #[pymethods]
 impl PythonSubject {
     #[new]
-    #[pyo3(signature = (start, read))]
-    fn new(start: Py<PyAny>, read: Py<PyAny>) -> Self {
-        Self { start, read }
+    #[pyo3(signature = (start, read, is_internal))]
+    fn new(start: Py<PyAny>, read: Py<PyAny>, is_internal: bool) -> Self {
+        Self {
+            start,
+            read,
+            is_internal,
+        }
     }
 }
 
@@ -3068,7 +3081,7 @@ impl DataStorage {
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
-        persistent_id: Option<PersistentId>,
+        persistent_id: Option<ExternalPersistentId>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -3257,11 +3270,22 @@ impl DataStorage {
         }
     }
 
+    fn internal_persistent_id(&self) -> Option<PersistentId> {
+        self.persistent_id.clone().map(|external_persistent_id| {
+            let mut hasher = Hasher::default();
+            hasher.update(external_persistent_id.as_bytes());
+            hasher.digest128()
+        })
+    }
+
     fn construct_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => {
-                let storage =
-                    FilesystemReader::new(self.path()?, self.poll_new_objects, self.persistent_id)?;
+                let storage = FilesystemReader::new(
+                    self.path()?,
+                    self.poll_new_objects,
+                    self.internal_persistent_id(),
+                )?;
                 Ok((Box::new(storage), 1))
             }
             "s3" => {
@@ -3269,7 +3293,7 @@ impl DataStorage {
                     self.s3_bucket(py)?,
                     self.path()?,
                     self.poll_new_objects,
-                    self.persistent_id,
+                    self.internal_persistent_id(),
                 );
                 Ok((Box::new(storage), 1))
             }
@@ -3279,7 +3303,7 @@ impl DataStorage {
                     self.path()?,
                     self.build_csv_parser_settings(py),
                     self.poll_new_objects,
-                    self.persistent_id,
+                    self.internal_persistent_id(),
                 );
                 Ok((Box::new(storage), 1))
             }
@@ -3288,7 +3312,7 @@ impl DataStorage {
                     self.path()?,
                     self.build_csv_parser_settings(py),
                     self.poll_new_objects,
-                    self.persistent_id,
+                    self.internal_persistent_id(),
                 )?;
                 Ok((Box::new(reader), 1))
             }
@@ -3304,7 +3328,8 @@ impl DataStorage {
                     PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}"))
                 })?;
 
-                let reader = KafkaReader::new(consumer, topic.to_string(), self.persistent_id);
+                let reader =
+                    KafkaReader::new(consumer, topic.to_string(), self.internal_persistent_id());
                 Ok((Box::new(reader), self.parallel_readers.unwrap_or(256)))
             }
             "python" => {
@@ -3313,11 +3338,49 @@ impl DataStorage {
                         "For Python connector, python_subject should be specified",
                     )
                 })?;
-                let reader = PythonReaderBuilder::new(subject, self.persistent_id);
+
+                if subject.borrow(py).is_internal && self.persistent_id.is_some() {
+                    return Err(PyValueError::new_err(
+                        "Python connectors marked internal can't have persistent id",
+                    ));
+                }
+
+                let reader = PythonReaderBuilder::new(subject, self.internal_persistent_id());
                 Ok((Box::new(reader), 1))
             }
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
+            ))),
+        }
+    }
+
+    fn construct_stream_storage_config(&self, py: pyo3::Python) -> PyResult<StreamStorageConfig> {
+        match self.storage_type.as_ref() {
+            "fs" => Ok(StreamStorageConfig::Filesystem(self.path()?.into())),
+            "s3" => {
+                let bucket = self.s3_bucket(py)?;
+                let path = self.path()?;
+                Ok(StreamStorageConfig::S3 {
+                    bucket,
+                    root_path: path.into(),
+                })
+            }
+            other => Err(PyValueError::new_err(format!(
+                "Unsupported snapshot storage format: {other:?}"
+            ))),
+        }
+    }
+
+    fn construct_metadata_storage_config(
+        &self,
+        _py: pyo3::Python,
+    ) -> PyResult<MetadataStorageConfig> {
+        // _py is not removed, because we will need it anyway with adding more storages
+
+        match self.storage_type.as_ref() {
+            "fs" => Ok(MetadataStorageConfig::Filesystem(self.path()?.into())),
+            other => Err(PyValueError::new_err(format!(
+                "Unsupported metadata storage format: {other:?}"
             ))),
         }
     }
@@ -3715,6 +3778,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<ValueField>()?;
     m.add_class::<DataStorage>()?;
     m.add_class::<DataFormat>()?;
+    m.add_class::<PersistenceConfig>()?;
     m.add_class::<PythonSubject>()?;
 
     m.add_class::<ConnectorProperties>()?;

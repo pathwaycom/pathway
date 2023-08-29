@@ -93,6 +93,12 @@ pub enum AnyExpression {
     MakeTuple(Expressions),
     TupleGetItemChecked(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     TupleGetItemUnchecked(Arc<Expression>, Arc<Expression>),
+    ParseStringToInt(Arc<Expression>, bool),
+    ParseStringToFloat(Arc<Expression>, bool),
+    ParseStringToBool(Arc<Expression>, Vec<String>, Vec<String>, bool),
+    Unwrap(Arc<Expression>),
+    CastToOptionalIntFromOptionalFloat(Arc<Expression>),
+    CastToOptionalFloatFromOptionalInt(Arc<Expression>),
     MatMul(Arc<Expression>, Arc<Expression>),
 }
 
@@ -235,6 +241,7 @@ pub enum StringExpression {
     CastFromInt(Arc<Expression>),
     DateTimeNaiveStrftime(Arc<Expression>, Arc<Expression>),
     DateTimeUtcStrftime(Arc<Expression>, Arc<Expression>),
+    ToString(Arc<Expression>),
 }
 
 #[derive(Debug)]
@@ -354,6 +361,7 @@ where
 }
 
 impl AnyExpression {
+    #[allow(clippy::too_many_lines)]
     pub fn eval(&self, values: &[Value]) -> DynResult<Value> {
         match self {
             Self::Argument(i) => Ok(values.get(*i).ok_or(Error::IndexOutOfBounds)?.clone()), // XXX: oob
@@ -391,6 +399,65 @@ impl AnyExpression {
                     Err(DynError::from(Error::IndexOutOfBounds))
                 }
             }
+            Self::ParseStringToInt(e, optional) => {
+                let val = e.eval_as_string(values)?;
+                let val_str = val.trim();
+                let parse_result = val_str.parse().map(Value::Int);
+                if *optional {
+                    Ok(parse_result.unwrap_or(Value::None))
+                } else {
+                    parse_result.map_err(|e| {
+                        DynError::from(Error::ParseError(format!(
+                            "cannot parse {val:?} to int: {e}"
+                        )))
+                    })
+                }
+            }
+            Self::ParseStringToFloat(e, optional) => {
+                let val = e.eval_as_string(values)?;
+                let val_str = val.trim();
+                let parse_result = val_str.parse().map(Value::Float);
+                if *optional {
+                    Ok(parse_result.unwrap_or(Value::None))
+                } else {
+                    parse_result.map_err(|e| {
+                        DynError::from(Error::ParseError(format!(
+                            "cannot parse {val:?} to float: {e}"
+                        )))
+                    })
+                }
+            }
+            Self::ParseStringToBool(e, true_list, false_list, optional) => {
+                let val = e.eval_as_string(values)?;
+                let val_str = val.trim().to_lowercase();
+                if true_list.contains(&val_str) {
+                    Ok(Value::Bool(true))
+                } else if false_list.contains(&val_str) {
+                    Ok(Value::Bool(false))
+                } else if *optional {
+                    Ok(Value::None)
+                } else {
+                    Err(DynError::from(Error::ParseError(format!(
+                        "cannot parse {val:?} to bool"
+                    ))))
+                }
+            }
+            Self::CastToOptionalIntFromOptionalFloat(expr) => match expr.eval(values)? {
+                #[allow(clippy::cast_possible_truncation)]
+                Value::Float(f) => Ok((*f as i64).into()),
+                Value::None => Ok(Value::None),
+                val => Err(DynError::from(Error::ValueError(format!(
+                    "Cannot cast to int from {val:?}"
+                )))),
+            },
+            Self::CastToOptionalFloatFromOptionalInt(expr) => match expr.eval(values)? {
+                #[allow(clippy::cast_precision_loss)]
+                Value::Int(i) => Ok((i as f64).into()),
+                Value::None => Ok(Value::None),
+                val => Err(DynError::from(Error::ValueError(format!(
+                    "Cannot cast to float from {val:?}"
+                )))),
+            },
             Self::MatMul(lhs, rhs) => {
                 let lhs_val = lhs.eval(values)?;
                 let rhs_val = rhs.eval(values)?;
@@ -404,6 +471,16 @@ impl AnyExpression {
                             "can't perform matrix multiplication on {lhs_type:?} and {rhs_type:?}",
                         ))))
                     }
+                }
+            }
+            Self::Unwrap(e) => {
+                let val = e.eval(values)?;
+                if val == Value::None {
+                    Err(DynError::from(Error::ValueError(String::from(
+                        "cannot unwrap if there is None value",
+                    ))))
+                } else {
+                    Ok(val)
                 }
             }
         }
@@ -756,6 +833,13 @@ impl StringExpression {
                 e.eval_as_date_time_utc(values)?
                     .strftime(&fmt.eval_as_string(values)?),
             )),
+            Self::ToString(e) => {
+                let val = e.eval(values)?;
+                Ok(match val {
+                    Value::String(s) => s,
+                    _ => val.to_string().into(),
+                })
+            }
         }
     }
 }

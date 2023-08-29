@@ -22,6 +22,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self,
         host: str,
         port: int,
+        route: str,
         loop: asyncio.AbstractEventLoop,
         tasks: Dict[Any, Any],
         schema: Type[pw.Schema],
@@ -30,6 +31,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         super().__init__()
         self._host = host
         self._port = port
+        self._route = route
         self._loop = loop
         self._tasks = tasks
         self._schema = schema
@@ -37,12 +39,12 @@ class RestServerSubject(io.python.ConnectorSubject):
 
     def run(self):
         app = web.Application()
-        app.add_routes([web.post("/", self.handle)])
+        app.add_routes([web.post(self._route, self.handle)])
         web.run_app(
             app, host=self._host, port=self._port, loop=self._loop, handle_signals=False
         )
 
-    async def handle(self, request):
+    async def handle(self, request: web.Request):
         id = unsafe_make_pointer(uuid4().int)
 
         if self._format == "raw":
@@ -50,6 +52,10 @@ class RestServerSubject(io.python.ConnectorSubject):
         elif self._format == "custom":
             try:
                 payload = await request.json()
+                query_params = request.query
+                for param, value in query_params.items():
+                    if param not in payload:
+                        payload[param] = value
             except json.decoder.JSONDecodeError:
                 raise web.HTTPBadRequest(reason="payload is not a valid json")
 
@@ -74,17 +80,39 @@ class RestServerSubject(io.python.ConnectorSubject):
         return task["result"]
 
     def _verify_payload(self, payload: dict):
+        defaults = self._schema.default_values()
         for column in self._schema.keys():
-            if column not in payload:
+            if column not in payload and column not in defaults:
                 raise web.HTTPBadRequest(reason=f"`{column}` is required")
 
 
 def rest_connector(
     host: str,
     port: int,
+    *,
+    route: str = "/",
     schema: Optional[Type[pw.Schema]] = None,
     autocommit_duration_ms=1500,
 ) -> Tuple[pw.Table, Callable]:
+    """
+    Runs a lightweight HTTP server and inputs a collection from the HTTP endpoint,
+    configured by the parameters of this method.
+
+    On the output, the method provides a table and a callable, which needs to accept
+    the result table of the computation, which entries will be tracked and put into
+    respective request's responses.
+
+    Args:
+        host: TCP/IP host or a sequence of hosts for the created endpoint;
+        port: port for the created endpoint;
+        route: route which will be listened to by the web server;
+        schema: schema of the resulting table.
+
+    Returns:
+        table: the table read;
+        response_writer: a callable, where the result table should be provided.
+    """
+
     loop = asyncio.new_event_loop()
     tasks: Dict[Any, Any] = {}
 
@@ -96,7 +124,13 @@ def rest_connector(
 
     input_table = io.python.read(
         subject=RestServerSubject(
-            host=host, port=port, loop=loop, tasks=tasks, schema=schema, format=format
+            host=host,
+            port=port,
+            route=route,
+            loop=loop,
+            tasks=tasks,
+            schema=schema,
+            format=format,
         ),
         schema=schema,
         format="json",

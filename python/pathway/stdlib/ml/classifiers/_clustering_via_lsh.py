@@ -40,8 +40,8 @@ def clustering_via_lsh(
         .reduce(
             flat_data.bucketing,
             flat_data.band,
-            sum=pw.reducers.npsum(flat_data.data),
-            count=pw.reducers.count(None),
+            sum=pw.reducers.sum(flat_data.data),
+            count=pw.reducers.count(),
         )
         .select(
             pw.this.bucketing,

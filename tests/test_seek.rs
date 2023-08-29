@@ -1,5 +1,5 @@
 mod helpers;
-use helpers::{create_persistency_manager, full_cycle_read, FullReadResult};
+use helpers::{create_persistence_manager, full_cycle_read, FullReadResult};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,7 +13,7 @@ use pathway_engine::connectors::data_format::{
 use pathway_engine::connectors::data_storage::ReaderBuilder;
 use pathway_engine::connectors::data_storage::{CsvFilesystemReader, FilesystemReader};
 use pathway_engine::engine::Value;
-use pathway_engine::persistence::tracker::SimplePersistencyManager;
+use pathway_engine::persistence::tracker::SimplePersistenceManager;
 
 enum TestedFormat {
     Csv,
@@ -51,7 +51,7 @@ fn json_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dy
 fn full_cycle_read_kv(
     format: TestedFormat,
     input_path: &Path,
-    persistent_storage: &Option<Arc<Mutex<SimplePersistencyManager>>>,
+    persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
 ) -> FullReadResult {
     let (reader, mut parser) = match format {
         TestedFormat::Csv => csv_reader_parser_pair(input_path),
@@ -63,17 +63,17 @@ fn full_cycle_read_kv(
 #[test]
 fn test_csv_file_recovery() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     let pstorage_root_path = test_storage_path.join("pstorage");
-    let input_path = test_storage_path.as_path().join("input.csv");
+    let input_path = test_storage_path.join("input.csv");
 
     std::fs::write(&input_path, "key,value\n1,2\na,b").unwrap();
     {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &input_path,
-            &Some(create_persistency_manager(&pstorage_root_path, true)),
+            &Some(create_persistence_manager(&pstorage_root_path, true)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -95,7 +95,7 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &input_path,
-            &Some(create_persistency_manager(&pstorage_root_path, false)),
+            &Some(create_persistence_manager(&pstorage_root_path, false)),
         );
         eprintln!("data stream after: {:?}", data_stream.new_parsed_entries);
         assert_eq!(
@@ -119,10 +119,10 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
 #[test]
 fn test_csv_dir_recovery() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     let pstorage_root_path = test_storage_path.join("pstorage");
-    let inputs_dir_path = test_storage_path.as_path().join("inputs");
+    let inputs_dir_path = test_storage_path.join("inputs");
     std::fs::create_dir(&inputs_dir_path).unwrap_or(());
 
     std::fs::write(inputs_dir_path.join("input1.csv"), "key,value\n1,2\na,b").unwrap();
@@ -136,7 +136,7 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &inputs_dir_path,
-            &Some(create_persistency_manager(&pstorage_root_path, true)),
+            &Some(create_persistence_manager(&pstorage_root_path, true)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -175,7 +175,7 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &inputs_dir_path,
-            &Some(create_persistency_manager(&pstorage_root_path, false)),
+            &Some(create_persistence_manager(&pstorage_root_path, false)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -192,10 +192,10 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
 #[test]
 fn test_json_file_recovery() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     let pstorage_root_path = test_storage_path.join("pstorage");
-    let input_path = test_storage_path.as_path().join("input.json");
+    let input_path = test_storage_path.join("input.json");
 
     std::fs::write(
         &input_path,
@@ -207,7 +207,7 @@ fn test_json_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &input_path,
-            &Some(create_persistency_manager(&pstorage_root_path, true)),
+            &Some(create_persistence_manager(&pstorage_root_path, true)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -229,7 +229,7 @@ fn test_json_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &input_path,
-            &Some(create_persistency_manager(&pstorage_root_path, false)),
+            &Some(create_persistence_manager(&pstorage_root_path, false)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -246,10 +246,10 @@ fn test_json_file_recovery() -> eyre::Result<()> {
 #[test]
 fn test_json_folder_recovery() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     let pstorage_root_path = test_storage_path.join("pstorage");
-    let inputs_dir_path = test_storage_path.as_path().join("inputs");
+    let inputs_dir_path = test_storage_path.join("inputs");
     std::fs::create_dir(&inputs_dir_path).unwrap_or(());
 
     std::fs::write(
@@ -268,7 +268,7 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(create_persistency_manager(&pstorage_root_path, true)),
+            &Some(create_persistence_manager(&pstorage_root_path, true)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -297,7 +297,7 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(create_persistency_manager(&pstorage_root_path, false)),
+            &Some(create_persistence_manager(&pstorage_root_path, false)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -315,10 +315,10 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
 #[test]
 fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
     let test_storage = tempdir()?;
-    let test_storage_path = test_storage.into_path();
+    let test_storage_path = test_storage.path();
 
     let pstorage_root_path = test_storage_path.join("pstorage");
-    let inputs_dir_path = test_storage_path.as_path().join("inputs");
+    let inputs_dir_path = test_storage_path.join("inputs");
     std::fs::create_dir(&inputs_dir_path).unwrap_or(());
 
     std::fs::write(
@@ -337,7 +337,7 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(create_persistency_manager(&pstorage_root_path, true)),
+            &Some(create_persistence_manager(&pstorage_root_path, true)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -364,7 +364,7 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(create_persistency_manager(&pstorage_root_path, false)),
+            &Some(create_persistence_manager(&pstorage_root_path, false)),
         );
         assert_eq!(
             data_stream.new_parsed_entries,

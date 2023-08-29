@@ -31,12 +31,13 @@ from pathway.internals.arg_handlers import (
     select_args_handler,
 )
 from pathway.internals.decorators import (
-    contextualized_expression_operator,
+    contextualized_operator,
     empty_from_schema,
+    non_contextualized_operator,
     table_to_datasink,
 )
 from pathway.internals.desugaring import combine_args_kwargs, desugar
-from pathway.internals.dtype import DType, sanitize_type
+from pathway.internals.dtype import DType, is_pointer, unoptionalize
 from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.ix import IxIndexer
 from pathway.internals.join import Joinable
@@ -163,6 +164,12 @@ class Table(
 
     def _get_column(self, name: str) -> clmn.Column:
         return self._columns[name]
+
+    def _ipython_key_completions_(self):
+        return list(self.column_names())
+
+    def __dir__(self):
+        return super().__dir__() + list(self.column_names())
 
     @property
     def schema(self) -> Type[Schema]:
@@ -364,7 +371,7 @@ class Table(
 
     @desugar
     @arg_handler(handler=select_args_handler)
-    @contextualized_expression_operator
+    @contextualized_operator
     def select(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Build a new table with columns specified by kwargs.
 
@@ -471,7 +478,6 @@ class Table(
         return TableSlice(dict(**self), self)
 
     @desugar
-    @contextualized_expression_operator
     @runtime_type_check
     def filter(self, filter_expression: expr.ColumnExpression) -> Table:
         """Filter a table according to `filter` condition.
@@ -497,6 +503,22 @@ class Table(
         label | outdegree
         7     | 0
         """
+        filter_type = eval_type(filter_expression)
+        if filter_type != DType(bool):
+            raise TypeError(
+                f"Filter argument of Table.filter() has to be bool, found {filter_type}."
+            )
+        ret = self._filter(filter_expression)
+        if (
+            filter_col := expr.get_column_filtered_by_is_none(filter_expression)
+        ) is not None and filter_col.table == self:
+            name = filter_col.name
+            dtype = self._columns[name].dtype
+            ret = ret.update_types(**{name: unoptionalize(dtype)})
+        return ret
+
+    @contextualized_operator
+    def _filter(self, filter_expression: expr.ColumnExpression) -> Table:
         self._validate_expression(filter_expression)
         filtering_column = self._eval(filter_expression)
         assert self._universe == filtering_column.universe
@@ -516,7 +538,7 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     def difference(self, other: Table) -> Table:
         r"""Restrict self universe to keys not appearing in the other table.
@@ -567,7 +589,7 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     def intersect(self, *tables: Table) -> Table:
         """Restrict self universe to keys appearing in all of the tables.
@@ -622,7 +644,7 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
-    @contextualized_expression_operator
+    @non_contextualized_operator
     @runtime_type_check
     def copy(self) -> Table:
         """Returns a copy of a table.
@@ -834,7 +856,7 @@ class Table(
         """
         return self.update_cells(other)
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def concat(self, *others: Table) -> Table:
@@ -916,7 +938,7 @@ class Table(
         )
         return ret
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     def update_cells(self, other: Table) -> Table:
         """Updates cells of `self`, breaking ties in favor of the values in `other`.
@@ -987,7 +1009,7 @@ class Table(
             *cols_missing_in_other.items(), *updated_cols.items()
         )
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     def update_rows(self, other: Table) -> Table:
         """Updates rows of `self`, breaking ties in favor for the rows in `other`.
@@ -1174,7 +1196,7 @@ class Table(
             pk_columns=pk_columns,
         )
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def _with_new_index(
@@ -1184,8 +1206,8 @@ class Table(
     ) -> Table:
         self._validate_expression(new_index)
         index_type = eval_type(new_index)
-        if sanitize_type(index_type) != Pointer:
-            raise RuntimeError(
+        if not is_pointer(index_type):
+            raise TypeError(
                 f"Pathway supports reindexing Tables with Pointer type only. The type used was {index_type}."
             )
         reindex_column = self._eval(new_index)
@@ -1207,7 +1229,7 @@ class Table(
         )
 
     @desugar
-    @contextualized_expression_operator
+    @non_contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def rename_columns(self, **kwargs: Union[str, expr.ColumnReference]) -> Table:
@@ -1355,7 +1377,7 @@ class Table(
         return self.rename_columns(**kwargs)
 
     @desugar
-    @contextualized_expression_operator
+    @non_contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def without(self, *columns: Union[str, expr.ColumnReference]) -> Table:
@@ -1423,7 +1445,7 @@ class Table(
             **{key: declare_type(val, self[key]) for key, val in kwargs.items()}
         )
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     def _having(self, indexer: expr.ColumnReference) -> Table:
         universe = indexer.table._universe.subset()
@@ -1443,7 +1465,7 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def with_universe_of(self, other: TableLike) -> Table:
@@ -1476,7 +1498,7 @@ class Table(
         return self._unsafe_promise_universe(other._universe)
 
     @desugar
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def flatten(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
@@ -1552,7 +1574,7 @@ class Table(
         )
 
     @desugar
-    @contextualized_expression_operator
+    @contextualized_operator
     @runtime_type_check
     @trace_user_frame
     def _sort_experimental(
@@ -1616,7 +1638,6 @@ class Table(
         column: clmn.Column,
         name: str,
         lineage: Optional[clmn.Lineage] = None,
-        dtype: Optional[DType] = None,
     ) -> clmn.Column:
         """Contextualize column by wrapping it in expression."""
         expression = expr.ColumnReference(table=self, column=column, name=name)
@@ -1625,7 +1646,6 @@ class Table(
             universe=context.universe,
             expression=expression,
             lineage=lineage,
-            dtype=dtype,
         )
 
     @cached_property
@@ -1760,7 +1780,7 @@ class Table(
         ... Carole | cat
         ... David  | cat
         ... ''')
-        >>> t2 = t1.groupby(pw.this.pet).reduce(pw.this.pet, count=pw.reducers.count(pw.this.name))
+        >>> t2 = t1.groupby(pw.this.pet).reduce(pw.this.pet, count=pw.reducers.count())
         >>> t3 = t1.select(*pw.this, new_value=t2.ix_ref(pw.this.pet).count)
         >>> pw.debug.compute_and_print(t3, include_id=False)
         name   | pet | new_value
@@ -1779,7 +1799,7 @@ class Table(
         ... Carole | cat
         ... David  | cat
         ... ''')
-        >>> t2 = t1.reduce(count=pw.reducers.count(pw.this.name))
+        >>> t2 = t1.reduce(count=pw.reducers.count())
         >>> t3 = t1.select(*pw.this, new_value=t2.ix_ref().count)
         >>> pw.debug.compute_and_print(t3, include_id=False)
         name   | pet | new_value

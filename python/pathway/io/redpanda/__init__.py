@@ -24,7 +24,7 @@ def read(
     autocommit_duration_ms: Optional[int] = 1500,
     json_field_paths: Optional[Dict[str, str]] = None,
     parallel_readers: Optional[int] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     value_columns: Optional[List[str]] = None,
     primary_key: Optional[List[str]] = None,
     types: Optional[Dict[str, PathwayType]] = None,

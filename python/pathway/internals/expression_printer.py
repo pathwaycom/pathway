@@ -51,11 +51,14 @@ class ExpressionFormatter(ExpressionVisitor):
 
     def eval_reducer(self, expression: expr.ReducerExpression):
         args = self._eval_args_kwargs(expression._args)
-        name = expression._reducer.__name__.lstrip("_")
+        name = expression._reducer.name
         return f"pathway.reducers.{name}({args})"
 
     def eval_reducer_ix(self, expression: expr.ReducerIxExpression):
         return self.eval_reducer(expression)
+
+    def eval_count(self, expression: expr.CountExpression):
+        return "pathway.reducers.count()"
 
     def eval_apply(self, expression: expr.ApplyExpression):
         args = self._eval_args_kwargs(expression._args, expression._kwargs)
@@ -112,6 +115,14 @@ class ExpressionFormatter(ExpressionVisitor):
         )
         return f"pathway.if_else({args})"
 
+    def eval_not_none(self, expression: expr.IsNotNoneExpression):
+        args = self._eval_args_kwargs((expression._expr,))
+        return f"{args}.is_not_none())"
+
+    def eval_none(self, expression: expr.IsNoneExpression):
+        args = self._eval_args_kwargs((expression._expr,))
+        return f"{args}.is_none())"
+
     def eval_method_call(self, expression: expr.MethodCallExpression):
         object_ = self.eval_expression(expression._args[0])
         args = self._eval_args_kwargs(expression._args[1:])
@@ -146,6 +157,10 @@ class ExpressionFormatter(ExpressionVisitor):
             return f"({object}).get({args_formatted})"
         else:
             return f"({object})[{args_formatted}]"
+
+    def eval_unwrap(self, expression: expr.UnwrapExpression):
+        uexpr = self.eval_expression(expression._expr)
+        return f"pathway.unwrap({uexpr})"
 
 
 def get_expression_info(expression: expr.ColumnExpression) -> str:

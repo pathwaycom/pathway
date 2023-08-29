@@ -1130,7 +1130,7 @@ def test_incorrect_args_specific():
 def test_interval_joins_typing_on():
     left_table = pw.Table.empty(timestamp=int, col=int)
     right_table = pw.Table.empty(timestamp=int, col=str)
-    with pytest.raises(expected_exception=RuntimeError):
+    with pytest.raises(expected_exception=TypeError):
         left_table.interval_join(
             right_table,
             left_table.timestamp,

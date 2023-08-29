@@ -62,7 +62,7 @@ def read(
     mode: str = "streaming",
     csv_settings: Optional[CsvParserSettings] = None,
     json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     autocommit_duration_ms: Optional[int] = 1500,
     debug_data: Any = None,
 ) -> Table:
@@ -134,5 +134,6 @@ def read(
         mode=mode,
         autocommit_duration_ms=autocommit_duration_ms,
         persistent_id=persistent_id,
+        json_field_paths=json_field_paths,
         debug_data=debug_data,
     )

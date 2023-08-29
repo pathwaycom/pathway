@@ -1005,7 +1005,7 @@ window_start | window_end | count
 def test_window_joins_typing_on():
     left_table = pw.Table.empty(timestamp=int, col=int)
     right_table = pw.Table.empty(timestamp=int, col=str)
-    with pytest.raises(expected_exception=RuntimeError):
+    with pytest.raises(expected_exception=TypeError):
         left_table.window_join(
             right_table,
             left_table.timestamp,

@@ -16,7 +16,7 @@ import pathway.internals.column as clmn
 import pathway.internals.expression as expr
 from pathway.internals import table, table_like, thisclass
 from pathway.internals.arg_handlers import arg_handler, reduce_args_handler
-from pathway.internals.decorators import contextualized_expression_operator
+from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
     DesugaringContext,
     SubstitutionDesugaring,
@@ -126,7 +126,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
 
     @desugar
     @arg_handler(handler=reduce_args_handler)
-    @contextualized_expression_operator
+    @contextualized_operator
     def reduce(
         self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression
     ) -> table.Table:

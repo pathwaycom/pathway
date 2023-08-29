@@ -23,7 +23,7 @@ def read(
     schema: Optional[Type[Schema]] = None,
     debug_data=None,
     autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[int] = None,
+    persistent_id: Optional[str] = None,
     value_columns: Optional[List[str]] = None,
     primary_key: Optional[List[str]] = None,
     types: Optional[Dict[str, PathwayType]] = None,
@@ -143,7 +143,7 @@ def read(
             datastorage=data_storage,
             dataformat=data_format,
             connector_properties=properties,
-            _schema=schema,
+            schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

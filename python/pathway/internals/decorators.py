@@ -18,8 +18,12 @@ from pathway.internals.helpers import function_spec, with_optional_kwargs
 from pathway.internals.parse_graph import G
 
 
-def contextualized_expression_operator(func):
-    return _operator_wrapper(func, op.ContextualizedExpressionOperator)
+def contextualized_operator(func):
+    return _operator_wrapper(func, op.ContextualizedIntermediateOperator)
+
+
+def non_contextualized_operator(func):
+    return _operator_wrapper(func, op.NonContextualizedIntermediateOperator)
 
 
 def _operator_wrapper(func: Callable, operator_cls: Type[op.OperatorFromDef]):
@@ -228,14 +232,10 @@ def method(func, **kwargs):
 
 def table_from_datasource(
     datasource,
-    id_from=None,
-    unsafe_trusted_ids=False,
     debug_datasource: Optional[StaticDataSource] = None,
 ):
     return G.add_operator(
-        lambda id: op.InputOperator(
-            datasource, id_from, unsafe_trusted_ids, id, debug_datasource
-        ),
+        lambda id: op.InputOperator(datasource, id, debug_datasource),
         lambda operator: operator(),  # type:ignore
     )
 

@@ -339,7 +339,7 @@ def _fuzzy_match(
     else:
         edges = pw.Table.concat_reindex(edges_left, edges_right)
     features_cnt = features.select(cnt=0).update_rows(
-        edges.groupby(id=edges.feature).reduce(cnt=pw.reducers.count(None))
+        edges.groupby(id=edges.feature).reduce(cnt=pw.reducers.count())
     )
     del edges
 

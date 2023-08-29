@@ -57,7 +57,7 @@ class _SessionWindow(Window):
         self, cur: pw.ColumnExpression, next: pw.ColumnExpression
     ) -> pw.ColumnExpression:
         if self.predicate is not None:
-            return pw.apply(self.predicate, cur, next)
+            return pw.apply_with_type(self.predicate, bool, cur, next)
         else:
             return next - cur < self.max_gap
 
@@ -79,7 +79,7 @@ class _SessionWindow(Window):
             _pw_window=pw.if_else(
                 sel_key.next_key.is_not_none(),
                 pw.if_else(
-                    self._merge(target.key, sel_key.next_key),
+                    self._merge(target.key, pw.unwrap(sel_key.next_key)),
                     target.next,
                     target.id,
                 ),
@@ -451,7 +451,7 @@ def session(
     ... pw.this._pw_window_end,
     ... min_t=pw.reducers.min(pw.this.t),
     ... max_v=pw.reducers.max(pw.this.v),
-    ... count=pw.reducers.count(pw.this.t),
+    ... count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
     _pw_shard | _pw_window_start | _pw_window_end | min_t | max_v | count
@@ -517,7 +517,7 @@ def sliding(
     ...   pw.this._pw_window_end,
     ...   min_t=pw.reducers.min(pw.this.t),
     ...   max_t=pw.reducers.max(pw.this.t),
-    ...   count=pw.reducers.count(pw.this.t),
+    ...   count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
     _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
@@ -587,7 +587,7 @@ def tumbling(
     ...   pw.this._pw_window_end,
     ...   min_t=pw.reducers.min(pw.this.t),
     ...   max_t=pw.reducers.max(pw.this.t),
-    ...   count=pw.reducers.count(pw.this.t),
+    ...   count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
     _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
@@ -644,7 +644,7 @@ def windowby(
     ... pw.this.shard,
     ... min_t=pw.reducers.min(pw.this.t),
     ... max_v=pw.reducers.max(pw.this.v),
-    ... count=pw.reducers.count(pw.this.t),
+    ... count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
     shard | min_t | max_v | count

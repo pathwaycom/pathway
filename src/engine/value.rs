@@ -253,8 +253,8 @@ impl Value {
 impl Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::None => write!(fmt, "none"),
-            Self::Bool(b) => write!(fmt, "{}", if *b { "true" } else { "false" }),
+            Self::None => write!(fmt, "None"),
+            Self::Bool(b) => write!(fmt, "{}", if *b { "True" } else { "False" }),
             Self::Int(i) => write!(fmt, "{i}"),
             Self::Float(OrderedFloat(f)) => write!(fmt, "{f}"),
             Self::Pointer(p) => write!(fmt, "{p:#}"),

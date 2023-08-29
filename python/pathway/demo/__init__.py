@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import csv
 import time
-from typing import Any, Dict, List, Optional, Type
+from os import PathLike
+from typing import Any, Dict, List, Optional, Type, Union
 
 import pathway as pw
 
@@ -192,7 +193,7 @@ def range_stream(
 
 
 def replay_csv(
-    path: str,
+    path: Union[str, PathLike],
     value_columns: List[str],
     schema: Optional[Type[pw.Schema]] = None,
     input_rate: float = 1.0,

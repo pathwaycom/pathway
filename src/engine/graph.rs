@@ -11,6 +11,7 @@ use scopeguard::defer;
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::ConnectorStats;
+use crate::persistence::ExternalPersistentId;
 
 use super::error::{DynResult, Trace};
 use super::{Error, Expression, Key, Reducer, Result, Value};
@@ -487,6 +488,7 @@ pub trait Graph {
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<(UniverseHandle, Vec<ColumnHandle>)>;
 
     fn output_table(
@@ -899,8 +901,17 @@ impl Graph for ScopedGraph {
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
-        self.try_with(|g| g.connector_table(reader, parser, commit_duration, parallel_readers))
+        self.try_with(|g| {
+            g.connector_table(
+                reader,
+                parser,
+                commit_duration,
+                parallel_readers,
+                external_persistent_id,
+            )
+        })
     }
 
     fn output_table(
