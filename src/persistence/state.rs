@@ -1,6 +1,7 @@
 use log::{error, warn};
 use std::cmp::max;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::mem::swap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +14,8 @@ use crate::persistence::frontier::OffsetAntichainCollection;
 use crate::persistence::metadata_backends::{Error, MetadataBackend};
 use crate::persistence::PersistentId;
 
+const EXPECTED_KEY_PARTS: usize = 3;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StoredMetadata {
     frontiers: OffsetAntichainCollection,
@@ -24,6 +27,7 @@ pub struct StoredMetadata {
 pub struct MetadataAccessor {
     backend: Box<dyn MetadataBackend>,
     internal_state: StoredMetadata,
+    past_runs_threshold_times: HashMap<usize, u64>,
 
     current_key_to_use: String,
     next_key_to_use: String,
@@ -57,42 +61,118 @@ impl StoredMetadata {
     }
 }
 
+struct MetadataKey {
+    timestamp: u128,
+    worker_id: usize,
+    rotation_id: usize,
+}
+
+impl MetadataKey {
+    fn from_str(key: &str) -> Option<Self> {
+        let key_parts: Vec<&str> = key.split('-').collect();
+        if key_parts.len() != EXPECTED_KEY_PARTS {
+            error!("Wrong format of persistent entry key: {key}");
+            return None;
+        }
+
+        let Ok(timestamp) = key_parts[0].parse::<u128>() else {
+            error!("Timestamp is unparsable from the key {key}");
+            return None;
+        };
+
+        let Ok(worker_id) = key_parts[1].parse::<usize>() else {
+            error!("Worker id is unparsable from the key {key}");
+            return None;
+        };
+
+        let Ok(rotation_id) = key_parts[2].parse::<usize>() else {
+            error!("Rotation id is unparsable from the key {key}");
+            return None;
+        };
+
+        Some(Self {
+            timestamp,
+            worker_id,
+            rotation_id,
+        })
+    }
+
+    fn from_components(timestamp: u128, worker_id: usize, rotation_id: usize) -> Self {
+        Self {
+            timestamp,
+            worker_id,
+            rotation_id,
+        }
+    }
+}
+
+impl Display for MetadataKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}-{}-{}",
+            self.timestamp, self.worker_id, self.rotation_id
+        )
+    }
+}
+
 impl MetadataAccessor {
     pub fn new(backend: Box<dyn MetadataBackend>, worker_id: usize) -> Result<Self, Error> {
-        let internal_state = {
+        let (internal_state, past_runs_threshold_times) = {
             let mut internal_state = StoredMetadata::new();
+            let mut past_runs_threshold_times = HashMap::new();
 
             let keys = backend.list_keys()?;
             for key in keys {
+                let metadata_key = MetadataKey::from_str(&key);
+                let Some(metadata_key) = metadata_key else {
+                    continue;
+                };
+                let other_worker_id = metadata_key.worker_id;
+
                 let raw_block = backend.get_value(&key)?;
                 let block_result = StoredMetadata::parse(&raw_block);
                 match block_result {
-                    Ok(block) => internal_state.merge(block),
+                    Ok(block) => {
+                        past_runs_threshold_times
+                            .entry(other_worker_id)
+                            .and_modify(|timestamp: &mut u64| {
+                                *timestamp = max(*timestamp, block.last_advanced_timestamp);
+                            })
+                            .or_insert(block.last_advanced_timestamp);
+                        internal_state.merge(block);
+                    }
                     Err(e) => {
                         warn!("Broken offsets block with key {key}. Error: {e}");
                     }
                 };
             }
 
-            internal_state
+            (internal_state, past_runs_threshold_times)
         };
 
         let current_timestamp = {
             let now = SystemTime::now();
-
             now.duration_since(UNIX_EPOCH)
                 .expect("Failed to acquire system time")
                 .as_millis()
         };
-        let current_key_to_use = format!("{current_timestamp}-{worker_id}-0");
-        let next_key_to_use = format!("{current_timestamp}-{worker_id}-1");
+        let current_key_to_use =
+            MetadataKey::from_components(current_timestamp, worker_id, 0).to_string();
+        let next_key_to_use =
+            MetadataKey::from_components(current_timestamp, worker_id, 1).to_string();
 
         Ok(Self {
             backend,
             internal_state,
+            past_runs_threshold_times,
             current_key_to_use,
             next_key_to_use,
         })
+    }
+
+    pub fn past_runs_threshold_times(&self) -> &HashMap<usize, u64> {
+        &self.past_runs_threshold_times
     }
 
     pub fn frontier_for(&self, persistent_id: PersistentId) -> OffsetAntichain {

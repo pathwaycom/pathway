@@ -197,6 +197,7 @@ pub enum Trace {
         line: String,
         file_name: String,
         line_number: u32,
+        function: String,
     },
     Empty,
 }
@@ -208,9 +209,10 @@ impl fmt::Display for Trace {
                 line,
                 file_name,
                 line_number,
+                function,
             } => write!(
                 f,
-                "Occurred here:\n \tLine: {line}\n \tFile: {file_name}:{line_number}"
+                "Occurred here:\n \tLine: {line}\n \tFile: {file_name}:{line_number}\n \tFunction: {function}"
             ),
             Self::Empty => write!(f, ""),
         }

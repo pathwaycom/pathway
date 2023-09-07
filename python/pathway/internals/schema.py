@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 from collections import ChainMap
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -16,6 +15,7 @@ from typing import (
     Optional,
     Type,
     ValuesView,
+    cast,
     get_type_hints,
 )
 
@@ -191,6 +191,7 @@ class SchemaProperties:
 class SchemaMetaclass(type):
     __columns__: Dict[str, ColumnDefinition]
     __properties__: SchemaProperties
+    __types__: Dict[str, DType]
 
     @trace.trace_user_frame
     def __init__(self, *args, append_only=False, **kwargs) -> None:
@@ -198,6 +199,9 @@ class SchemaMetaclass(type):
 
         self.__columns__ = _create_column_definitions(self)
         self.__properties__ = SchemaProperties(append_only=append_only)
+        self.__types__ = {
+            name: cast(DType, column.dtype) for name, column in self.__columns__.items()
+        }
 
     def __or__(self, other: Type[Schema]) -> Type[Schema]:  # type: ignore
         return schema_add(self, other)  # type: ignore
@@ -209,7 +213,7 @@ class SchemaMetaclass(type):
         return dict(self.__columns__)
 
     def column_names(self) -> list[str]:
-        return list(self.as_dict().keys())
+        return list(self.keys())
 
     def primary_key_columns(self) -> Optional[list[str]]:
         # There is a distinction between an empty set of columns denoting
@@ -231,23 +235,22 @@ class SchemaMetaclass(type):
         }
 
     def types(self) -> list[Any]:
-        return list(self.as_dict().values())
+        return list(self.__types__.values())
 
     def keys(self) -> KeysView[str]:
-        return self.as_dict().keys()
+        return self.__columns__.keys()
 
     def values(self) -> ValuesView[Any]:
-        return self.as_dict().values()
+        return self.__types__.values()
 
     def __getitem__(self, name):
-        return self.as_dict()[name]
+        return self.__types__[name]
 
-    @lru_cache
     def as_dict(self):
-        return {name: column.dtype for name, column in self.__columns__.items()}
+        return self.__types__.copy()
 
     def __repr__(self):
-        return self.__name__ + str(self.as_dict())
+        return self.__name__ + str(self.__types__)
 
     def __str__(self):
         col_names = [k for k in self.keys()]

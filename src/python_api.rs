@@ -8,18 +8,6 @@ use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use std::os::unix::prelude::*;
 
-use log::warn;
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{BufWriter, Read};
-use std::iter::zip;
-use std::mem::take;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time;
-
 use csv::ReaderBuilder as CsvReaderBuilder;
 use differential_dataflow::consolidation::{consolidate, consolidate_updates};
 use elasticsearch::{
@@ -31,6 +19,7 @@ use elasticsearch::{
     Elasticsearch,
 };
 use itertools::Itertools;
+use log::warn;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::{Lazy, OnceCell};
 use postgres::{Client, NoTls};
@@ -47,6 +36,16 @@ use rdkafka::ClientConfig;
 use s3::bucket::Bucket as S3Bucket;
 use scopeguard::defer;
 use send_wrapper::SendWrapper;
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufWriter, Read};
+use std::iter::zip;
+use std::mem::take;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::threads::PythonThreadState;
@@ -56,12 +55,12 @@ use crate::connectors::data_format::{
     PsqlUpdatesFormatter,
 };
 use crate::connectors::data_storage::{
-    CsvFilesystemReader, ElasticSearchWriter, FileWriter, FilesystemReader, KafkaReader,
-    KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReaderBuilder, S3CsvReader,
-    S3LinesReader, Writer,
+    ConnectorMode, CsvFilesystemReader, ElasticSearchWriter, FileWriter, FilesystemReader,
+    KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReaderBuilder,
+    S3CsvReader, S3LinesReader, Writer,
 };
 use crate::engine::dataflow::config_from_env;
-use crate::engine::error::{DynError, DynResult, Trace};
+use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
 use crate::engine::graph::ScopedContext;
 use crate::engine::progress_reporter::MonitoringLevel;
 use crate::engine::time::DateTime;
@@ -351,6 +350,18 @@ impl IntoPy<PyObject> for Type {
     }
 }
 
+impl<'source> FromPyObject<'source> for ConnectorMode {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyConnectorMode>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for ConnectorMode {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyConnectorMode(self).into_py(py)
+    }
+}
+
 impl<'source> FromPyObject<'source> for MonitoringLevel {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyMonitoringLevel>>()?.0)
@@ -370,16 +381,10 @@ impl From<EngineError> for PyErr {
             Err(other) => error = other,
         };
         Python::with_gil(|py| {
-            let message = error.to_string();
             if let EngineError::WithTrace { inner, trace } = error {
-                match inner.downcast::<PyErr>() {
-                    Ok(error) => {
-                        let message = error.value(py).to_string();
-                        let error_type = error.get_type(py);
-                        return PyErr::from_type(error_type, format!("{message}\n{trace}"));
-                    }
-                    Err(other) => error = EngineError::from(other),
-                }
+                let inner = PyErr::from(EngineError::from(inner));
+                let args = (inner, trace);
+                return PyErr::from_type(ENGINE_ERROR_WITH_TRACE_TYPE.as_ref(py), args);
             }
             let exception_type = match error {
                 EngineError::TypeMismatch { .. } => PyTypeError::type_object(py),
@@ -396,6 +401,7 @@ impl From<EngineError> for PyErr {
                 EngineError::IndexOutOfBounds => PyIndexError::type_object(py),
                 _ => ENGINE_ERROR_TYPE.as_ref(py),
             };
+            let message = error.to_string();
             PyErr::from_type(exception_type, message)
         })
     }
@@ -1095,6 +1101,19 @@ impl PathwayType {
     pub const ARRAY: Type = Type::Array;
 }
 
+#[pyclass(module = "pathway.engine", frozen, name = "ConnectorMode")]
+pub struct PyConnectorMode(ConnectorMode);
+
+#[pymethods]
+impl PyConnectorMode {
+    #[classattr]
+    pub const STATIC: ConnectorMode = ConnectorMode::Static;
+    #[classattr]
+    pub const SIMPLE_STREAMING: ConnectorMode = ConnectorMode::SimpleStreaming;
+    #[classattr]
+    pub const STREAMING_WITH_DELETIONS: ConnectorMode = ConnectorMode::StreamingWithDeletions;
+}
+
 #[pyclass(module = "pathway.engine", frozen, name = "MonitoringLevel")]
 pub struct PyMonitoringLevel(MonitoringLevel);
 
@@ -1321,6 +1340,19 @@ static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
             None,
         )
         .expect("creating EngineError type should not fail")
+    })
+});
+
+static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
+    Python::with_gil(|py| {
+        PyErr::new_type(
+            py,
+            "pathway.engine.EngineErrorWithTrace",
+            None,
+            Some(PyException::type_object(py)),
+            None,
+        )
+        .expect("creating EngineErrorWithTrace type should not fail")
     })
 });
 
@@ -2944,7 +2976,7 @@ pub struct DataStorage {
     topic: Option<String>,
     connection_string: Option<String>,
     csv_parser_settings: Option<Py<CsvParserSettings>>,
-    poll_new_objects: bool,
+    mode: ConnectorMode,
     aws_s3_settings: Option<Py<AwsS3Settings>>,
     elasticsearch_params: Option<Py<ElasticSearchParams>>,
     parallel_readers: Option<usize>,
@@ -3061,7 +3093,7 @@ impl DataStorage {
         topic = None,
         connection_string = None,
         csv_parser_settings = None,
-        poll_new_objects = true,
+        mode = ConnectorMode::SimpleStreaming,
         aws_s3_settings = None,
         elasticsearch_params = None,
         parallel_readers = None,
@@ -3076,7 +3108,7 @@ impl DataStorage {
         topic: Option<String>,
         connection_string: Option<String>,
         csv_parser_settings: Option<Py<CsvParserSettings>>,
-        poll_new_objects: bool,
+        mode: ConnectorMode,
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         parallel_readers: Option<usize>,
@@ -3090,7 +3122,7 @@ impl DataStorage {
             topic,
             connection_string,
             csv_parser_settings,
-            poll_new_objects,
+            mode,
             aws_s3_settings,
             elasticsearch_params,
             parallel_readers,
@@ -3281,18 +3313,15 @@ impl DataStorage {
     fn construct_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => {
-                let storage = FilesystemReader::new(
-                    self.path()?,
-                    self.poll_new_objects,
-                    self.internal_persistent_id(),
-                )?;
+                let storage =
+                    FilesystemReader::new(self.path()?, self.mode, self.internal_persistent_id())?;
                 Ok((Box::new(storage), 1))
             }
             "s3" => {
                 let storage = S3LinesReader::new(
                     self.s3_bucket(py)?,
                     self.path()?,
-                    self.poll_new_objects,
+                    self.mode.is_polling_enabled(),
                     self.internal_persistent_id(),
                 );
                 Ok((Box::new(storage), 1))
@@ -3302,7 +3331,7 @@ impl DataStorage {
                     self.s3_bucket(py)?,
                     self.path()?,
                     self.build_csv_parser_settings(py),
-                    self.poll_new_objects,
+                    self.mode.is_polling_enabled(),
                     self.internal_persistent_id(),
                 );
                 Ok((Box::new(storage), 1))
@@ -3311,7 +3340,7 @@ impl DataStorage {
                 let reader = CsvFilesystemReader::new(
                     self.path()?,
                     self.build_csv_parser_settings(py),
-                    self.poll_new_objects,
+                    self.mode,
                     self.internal_persistent_id(),
                 )?;
                 Ok((Box::new(reader), 1))
@@ -3475,7 +3504,7 @@ impl DataFormat {
         let Some(delimiter) = &self.delimiter else {
             return Err(PyValueError::new_err(
                 "For dsv format, delimiter must be specified",
-            ))
+            ));
         };
 
         Ok(DsvSettings::new(
@@ -3579,7 +3608,7 @@ impl DataFormat {
 pub struct EvalProperties {
     #[allow(unused)]
     dtype: Py<PyAny>,
-    trace: Option<Py<PyTrace>>,
+    trace: Option<Py<Trace>>,
 }
 
 #[pymethods]
@@ -3589,16 +3618,16 @@ impl EvalProperties {
         dtype,
         trace = None,
     ))]
-    fn new(dtype: Py<PyAny>, trace: Option<Py<PyTrace>>) -> Self {
+    fn new(dtype: Py<PyAny>, trace: Option<Py<Trace>>) -> Self {
         Self { dtype, trace }
     }
 }
 
 impl EvalProperties {
-    fn trace(&self, py: Python) -> PyResult<Trace> {
+    fn trace(&self, py: Python) -> PyResult<EngineTrace> {
         self.trace
             .clone()
-            .map_or(Ok(Trace::Empty), |t| t.extract(py))
+            .map_or(Ok(EngineTrace::Empty), |t| t.extract(py))
     }
 }
 
@@ -3634,41 +3663,76 @@ impl ConnectorProperties {
 
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Clone)]
-pub struct PyTrace {
+pub struct Trace {
+    #[pyo3(get)]
     line: String,
+    #[pyo3(get)]
     file_name: String,
+    #[pyo3(get)]
     line_number: u32,
+    #[pyo3(get)]
+    function: String,
 }
 
 #[pymethods]
-impl PyTrace {
+impl Trace {
     #[new]
     #[pyo3(signature = (
         line,
         file_name,
         line_number,
+        function,
     ))]
-    fn new(line: String, file_name: String, line_number: u32) -> Self {
+    fn new(line: String, file_name: String, line_number: u32, function: String) -> Self {
         Self {
             line,
             file_name,
             line_number,
+            function,
         }
     }
 }
 
-impl<'source> FromPyObject<'source> for Trace {
+impl<'source> FromPyObject<'source> for EngineTrace {
     fn extract(obj: &'source PyAny) -> PyResult<Self> {
-        let PyTrace {
+        let Trace {
             file_name,
             line_number,
             line,
-        } = obj.extract::<PyTrace>()?;
+            function,
+        } = obj.extract::<Trace>()?;
         Ok(Self::Frame {
             file_name,
             line,
             line_number,
+            function,
         })
+    }
+}
+
+impl ToPyObject for EngineTrace {
+    fn to_object(&self, py: Python<'_>) -> PyObject {
+        self.clone().into_py(py)
+    }
+}
+
+impl IntoPy<PyObject> for EngineTrace {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            Self::Empty => py.None(),
+            Self::Frame {
+                line,
+                file_name,
+                line_number,
+                function,
+            } => Trace {
+                line,
+                file_name,
+                line_number,
+                function,
+            }
+            .into_py(py),
+        }
     }
 }
 
@@ -3757,6 +3821,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBinaryOperator>()?;
     m.add_class::<PyExpression>()?;
     m.add_class::<PathwayType>()?;
+    m.add_class::<PyConnectorMode>()?;
     m.add_class::<PyMonitoringLevel>()?;
     m.add_class::<Universe>()?;
     m.add_class::<Column>()?;
@@ -3783,7 +3848,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<EvalProperties>()?;
-    m.add_class::<PyTrace>()?;
+    m.add_class::<Trace>()?;
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;
@@ -3792,6 +3857,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;
+    m.add("EngineErrorWithTrace", &*ENGINE_ERROR_WITH_TRACE_TYPE)?;
 
     Ok(())
 }

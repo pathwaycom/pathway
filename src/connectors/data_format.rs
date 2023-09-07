@@ -9,8 +9,8 @@ use std::mem::take;
 use std::str::FromStr;
 use std::str::{from_utf8, Utf8Error};
 
-use crate::connectors::ReaderContext;
 use crate::connectors::ReaderContext::{Diff, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::{DataEventType, ReaderContext};
 use crate::engine::error::DynError;
 use crate::engine::{Key, Result, Type, Value};
 
@@ -23,7 +23,9 @@ use serde_json::Value as JsonValue;
 pub enum ParsedEvent {
     AdvanceTime,
     Insert((Option<Vec<Value>>, Vec<Value>)),
-    Remove((Vec<Value>, Vec<Value>)),
+
+    // If None, finding the key for the provided values becomes responsibility of the connector
+    Delete((Option<Vec<Value>>, Vec<Value>)),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,9 +73,6 @@ pub enum ParseError {
 
     #[error("received plaintext message is not in utf-8 format: {0}")]
     Utf8DecodeFailed(#[from] Utf8Error),
-
-    #[error("received removal event without a key")]
-    RemovalEventWithoutKey,
 
     #[error("parsing {0:?} from an external datasource is not supported")]
     UnparsableType(Type),
@@ -309,7 +308,7 @@ impl DsvParser {
         Ok(())
     }
 
-    fn parse_bytes_simple(&mut self, raw_bytes: &[u8]) -> ParseResult {
+    fn parse_bytes_simple(&mut self, event: DataEventType, raw_bytes: &[u8]) -> ParseResult {
         let line = prepare_plaintext_string(raw_bytes)?;
 
         if line.is_empty() {
@@ -324,7 +323,7 @@ impl DsvParser {
             .split(self.settings.separator)
             .map(std::string::ToString::to_string)
             .collect();
-        self.parse_tokenized_entries(&tokens)
+        self.parse_tokenized_entries(event, &tokens)
     }
 
     fn values_by_indices(
@@ -341,7 +340,7 @@ impl DsvParser {
         Ok(parsed_tokens)
     }
 
-    fn parse_tokenized_entries(&mut self, tokens: &[String]) -> ParseResult {
+    fn parse_tokenized_entries(&mut self, event: DataEventType, tokens: &[String]) -> ParseResult {
         if tokens.len() == 1 {
             let line = &tokens[0];
             if line == "*COMMIT*" {
@@ -374,7 +373,10 @@ impl DsvParser {
             };
             let parsed_tokens =
                 Self::values_by_indices(tokens, &self.value_column_indices, &self.indexed_schema)?;
-            let parsed_entry = ParsedEvent::Insert((key, parsed_tokens));
+            let parsed_entry = match event {
+                DataEventType::Insert => ParsedEvent::Insert((key, parsed_tokens)),
+                DataEventType::Delete => ParsedEvent::Delete((key, parsed_tokens)),
+            };
             Ok(vec![parsed_entry])
         } else {
             Err(ParseError::UnexpectedNumberOfCsvTokens(tokens.len()))
@@ -385,10 +387,12 @@ impl DsvParser {
 impl Parser for DsvParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
         match data {
-            RawBytes(raw_bytes) => self.parse_bytes_simple(raw_bytes),
-            TokenizedEntries(tokenized_entries) => self.parse_tokenized_entries(tokenized_entries),
+            RawBytes(event, raw_bytes) => self.parse_bytes_simple(*event, raw_bytes),
+            TokenizedEntries(event, tokenized_entries) => {
+                self.parse_tokenized_entries(*event, tokenized_entries)
+            }
             KeyValue((_key, value)) => match value {
-                Some(bytes) => self.parse_bytes_simple(bytes),
+                Some(bytes) => self.parse_bytes_simple(DataEventType::Insert, bytes), // In Kafka we only have additions now
                 None => Err(ParseError::EmptyKafkaPayload),
             },
             Diff(_) => Err(ParseError::UnsupportedReaderContext),
@@ -420,10 +424,14 @@ impl Default for IdentityParser {
 
 impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let (addition, key, line) = match data {
-            RawBytes(raw_bytes) => (true, None, prepare_plaintext_string(raw_bytes)?),
+        let (event, key, line) = match data {
+            RawBytes(event, raw_bytes) => (*event, None, prepare_plaintext_string(raw_bytes)?),
             KeyValue((_key, value)) => match value {
-                Some(bytes) => (true, None, prepare_plaintext_string(bytes)?),
+                Some(bytes) => (
+                    DataEventType::Insert,
+                    None,
+                    prepare_plaintext_string(bytes)?,
+                ),
                 None => return Err(ParseError::EmptyKafkaPayload),
             },
             Diff((addition, key, values)) => (
@@ -431,20 +439,16 @@ impl Parser for IdentityParser {
                 key.as_ref().map(|k| vec![k.clone()]),
                 prepare_plaintext_string(values)?,
             ),
-            TokenizedEntries(_) => return Err(ParseError::UnsupportedReaderContext),
+            TokenizedEntries(_, _) => return Err(ParseError::UnsupportedReaderContext),
         };
 
         let event = match line.as_str() {
             "*COMMIT*" => ParsedEvent::AdvanceTime,
             line => {
                 let values = vec![Value::from_str(line).unwrap()];
-                if addition {
-                    ParsedEvent::Insert((key, values))
-                } else {
-                    match key {
-                        Some(key) => ParsedEvent::Remove((key, values)),
-                        None => return Err(ParseError::RemovalEventWithoutKey),
-                    }
+                match event {
+                    DataEventType::Insert => ParsedEvent::Insert((key, values)),
+                    DataEventType::Delete => ParsedEvent::Delete((key, values)),
                 }
             }
         };
@@ -680,7 +684,7 @@ impl DebeziumMessageParser {
     fn parse_event(
         &mut self,
         value: &JsonValue,
-        is_insertion: bool,
+        event: DataEventType,
     ) -> Result<ParsedEvent, ParseError> {
         let key = match &self.key_field_names {
             None => None,
@@ -701,27 +705,27 @@ impl DebeziumMessageParser {
             &HashMap::new(),
         )?;
 
-        if is_insertion {
-            Ok(ParsedEvent::Insert((key, parsed_values)))
-        } else {
-            Ok(ParsedEvent::Remove((
-                key.ok_or(ParseError::RemovalEventWithoutKey)?,
-                parsed_values,
-            )))
+        match event {
+            DataEventType::Insert => Ok(ParsedEvent::Insert((key, parsed_values))),
+            DataEventType::Delete => Ok(ParsedEvent::Delete((key, parsed_values))),
         }
     }
 
     fn parse_read_or_create(&mut self, value: &JsonValue) -> ParseResult {
-        Ok(vec![self.parse_event(&value["after"], true)?])
+        Ok(vec![
+            self.parse_event(&value["after"], DataEventType::Insert)?
+        ])
     }
 
     fn parse_delete(&mut self, value: &JsonValue) -> ParseResult {
-        Ok(vec![self.parse_event(&value["before"], false)?])
+        Ok(vec![
+            self.parse_event(&value["before"], DataEventType::Delete)?
+        ])
     }
 
     fn parse_update(&mut self, value: &JsonValue) -> ParseResult {
-        let event_before = self.parse_event(&value["before"], false)?;
-        let event_after = self.parse_event(&value["after"], true)?;
+        let event_before = self.parse_event(&value["before"], DataEventType::Delete)?;
+        let event_after = self.parse_event(&value["after"], DataEventType::Insert)?;
 
         Ok(vec![event_before, event_after])
     }
@@ -730,7 +734,15 @@ impl DebeziumMessageParser {
 impl Parser for DebeziumMessageParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
         let raw_value_change = match data {
-            RawBytes(raw_bytes) => {
+            RawBytes(event, raw_bytes) => {
+                // We don't use `event` type here, because it's Debezium message parser,
+                // whose messages can only arrive from Kafka.
+                //
+                // There is no snapshot scenario for Kafka.
+                //
+                // In addition, this branch of `match` condition is only used in unit-tests.
+                assert_eq!(event, &DataEventType::Insert);
+
                 let line = prepare_plaintext_string(raw_bytes)?;
 
                 let key_and_value: Vec<&str> = line.trim().split(&self.separator).collect();
@@ -743,7 +755,7 @@ impl Parser for DebeziumMessageParser {
                 Some(bytes) => prepare_plaintext_string(bytes)?,
                 None => return Err(ParseError::EmptyKafkaPayload),
             },
-            Diff(_) | TokenizedEntries(_) => {
+            Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext);
             }
         };
@@ -816,22 +828,25 @@ impl JsonLinesParser {
 
 impl Parser for JsonLinesParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let (addition, key, line) = {
-            if let RawBytes(line) = data {
+        let (data_event, key, line) = match data {
+            RawBytes(event, line) => {
                 let line = prepare_plaintext_string(line)?;
-                (true, None, line)
-            } else if let KeyValue((_key, value)) = data {
+                (*event, None, line)
+            }
+            KeyValue((_key, value)) => {
                 if let Some(line) = value {
                     let line = prepare_plaintext_string(line)?;
-                    (true, None, line)
+                    (DataEventType::Insert, None, line)
                 } else {
                     return Err(ParseError::EmptyKafkaPayload);
                 }
-            } else if let Diff((addition, key, line)) = data {
+            }
+            Diff((event, key, line)) => {
                 let line = prepare_plaintext_string(line)?;
                 let key = key.as_ref().map(|k| vec![k.clone()]);
-                (*addition, key, line)
-            } else {
+                (*event, key, line)
+            }
+            TokenizedEntries(..) => {
                 return Err(ParseError::UnsupportedReaderContext);
             }
         };
@@ -868,13 +883,9 @@ impl Parser for JsonLinesParser {
             &self.schema,
         )?;
 
-        let event = if addition {
-            ParsedEvent::Insert((key, values))
-        } else {
-            match key {
-                Some(key) => ParsedEvent::Remove((key, values)),
-                None => return Err(ParseError::RemovalEventWithoutKey),
-            }
+        let event = match data_event {
+            DataEventType::Insert => ParsedEvent::Insert((key, values)),
+            DataEventType::Delete => ParsedEvent::Delete((key, values)),
         };
 
         Ok(vec![event])

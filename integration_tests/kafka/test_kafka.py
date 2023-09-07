@@ -307,13 +307,28 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
             self.n_word_repetitions = n_word_repetitions
 
         def __call__(self):
+            return self.topic_stats()["completed_words"] == self.n_words
+
+        def topic_stats(self):
             completed_words = set()
+            nearly_completed_words = set()
+            total_messages = 0
             for raw_entry in kafka_context.read_output_topic():
                 entry = json.loads(raw_entry.value)
                 assert 0 <= entry["count"] <= self.n_word_repetitions
                 if entry["count"] == self.n_word_repetitions:
                     completed_words.add(entry["data"])
-            return len(completed_words) == self.n_words
+                if entry["count"] >= self.n_word_repetitions * 0.95:
+                    nearly_completed_words.add(entry["data"])
+                total_messages += 1
+
+            return {
+                "n_words": self.n_words,
+                "n_word_repetitions": self.n_word_repetitions,
+                "completed_words": len(completed_words),
+                "nearly_completed_words": len(nearly_completed_words),
+                "total_messages": total_messages,
+            }
 
     class WordcountProgram:
         def __init__(self, reader_method, *reader_args, **reader_kwargs):
@@ -345,8 +360,9 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
             else:
                 os.environ["PATHWAY_THREADS"] = str(8)
             kafka_context.fill(generate_wordcount_input(1000, 50))
+            checker = WordcountChecker(1000, 50 * (run_seq_id + 1))
             assert wait_result_with_checker(
-                checker=WordcountChecker(1000, 50 * (run_seq_id + 1)),
+                checker=checker,
                 timeout_sec=60,
                 target=WordcountProgram(
                     pw.io.kafka.read,
@@ -363,13 +379,14 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
                         ),
                     ),
                 },
-            )
+            ), str(checker.topic_stats())
 
         # Change the data format: it used to be Kafka, but now we can switch to a file
         input_file_path = tmp_path / "file_input"
         write_lines(input_file_path, "\n".join(generate_wordcount_input(1000, 50)))
+        checker = WordcountChecker(1000, 50 * (n_kafka_runs + 1))
         assert wait_result_with_checker(
-            checker=WordcountChecker(1000, 50 * (n_kafka_runs + 1)),
+            checker=checker,
             timeout_sec=60,
             target=WordcountProgram(
                 pw.io.plaintext.read,
@@ -382,6 +399,6 @@ def test_kafka_backfilling(tmp_path: pathlib.Path, kafka_context: KafkaTestConte
                     pw.io.PersistentStorageBackend.filesystem(persistent_storage_path),
                 ),
             },
-        )
+        ), str(checker.topic_stats())
     finally:
         del os.environ["PATHWAY_THREADS"]

@@ -1,53 +1,76 @@
 use itertools::Itertools;
 use log::error;
 use std::collections::HashMap;
+use std::mem::take;
 use std::sync::{Arc, Mutex};
 
 use crate::connectors::data_storage::{ReadError, StorageType, WriteError};
-use crate::connectors::snapshot::{SnapshotReader, SnapshotWriter};
+use crate::connectors::snapshot::{SnapshotReader, SnapshotWriterFlushFuture};
 use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::state::MetadataAccessor;
-use crate::persistence::PersistentId;
-
-pub trait PersistenceManager {
-    fn register_input_source(
-        &mut self,
-        persistent_id: PersistentId,
-        storage_type: &StorageType,
-        source: Arc<Mutex<HashMap<u64, OffsetAntichain>>>,
-    );
-    fn register_sink(&mut self) -> usize;
-    fn accept_finalized_timestamp(&mut self, sink_id: usize, timestamp: Option<u64>);
-    fn frontier_for(&self, persistent_id: PersistentId) -> OffsetAntichain;
-
-    fn create_snapshot_readers(
-        &self,
-        persistent_id: PersistentId,
-    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError>;
-
-    fn create_snapshot_writer(
-        &mut self,
-        persistent_id: PersistentId,
-    ) -> Result<Box<dyn SnapshotWriter>, WriteError>;
-}
+use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 type FrontierByTimeForInputSources = Vec<(PersistentId, Arc<Mutex<HashMap<u64, OffsetAntichain>>>)>;
-pub struct SimplePersistenceManager {
+
+/// The main coordinator for state persistence within one worker
+/// It tracks offset frontiers and snapshots and commits them when the
+/// global processing time advances
+pub struct SingleWorkerPersistentStorage {
     metadata_storage: MetadataAccessor,
     config: PersistenceManagerConfig,
 
+    snapshot_writers: HashMap<PersistentId, SharedSnapshotWriter>,
     sink_threshold_times: Vec<Option<u64>>,
     input_sources: FrontierByTimeForInputSources,
 }
 
-impl SimplePersistenceManager {
+/// The information from the first phase of time finalization commit.
+/// Returned from single worker's persistent storage, so that the caller
+/// could only hold the mutex for the short period of time.
+pub struct FrontierCommitData {
+    // Futures, all of which should be waited before the metadata commit.
+    snapshot_futures: Vec<SnapshotWriterFlushFuture>,
+
+    // The timestamp which needs to be committed when saving is successful
+    timestamp: u64,
+}
+
+impl FrontierCommitData {
+    pub fn new(snapshot_futures: Vec<SnapshotWriterFlushFuture>, timestamp: u64) -> Self {
+        Self {
+            snapshot_futures,
+            timestamp,
+        }
+    }
+
+    pub fn prepare(&mut self) -> bool {
+        let mut is_snapshot_saved = true;
+        futures::executor::block_on(async {
+            for mut future in take(&mut self.snapshot_futures) {
+                if !is_snapshot_saved {
+                    future.close();
+                }
+                let flush_result = future.await;
+                if let Err(e) = flush_result {
+                    error!("Failed to flush the snapshot, the data in re-run may duplicate: {e}");
+                    is_snapshot_saved = false;
+                }
+            }
+        });
+
+        is_snapshot_saved
+    }
+}
+
+impl SingleWorkerPersistentStorage {
     pub fn new(config: PersistenceManagerConfig) -> Result<Self, MetadataBackendError> {
         Ok(Self {
             metadata_storage: config.create_metadata_storage()?,
             config,
 
+            snapshot_writers: HashMap::new(),
             sink_threshold_times: Vec::new(),
             input_sources: Vec::new(),
         })
@@ -56,10 +79,8 @@ impl SimplePersistenceManager {
     pub fn last_finalized_timestamp(&self) -> u64 {
         self.metadata_storage.last_advanced_timestamp()
     }
-}
 
-impl PersistenceManager for SimplePersistenceManager {
-    fn register_input_source(
+    pub fn register_input_source(
         &mut self,
         persistent_id: PersistentId,
         storage_type: &StorageType,
@@ -78,26 +99,43 @@ impl PersistenceManager for SimplePersistenceManager {
             .register_input_source(persistent_id, storage_type);
     }
 
-    fn frontier_for(&self, persistent_id: PersistentId) -> OffsetAntichain {
+    pub fn frontier_for(&self, persistent_id: PersistentId) -> OffsetAntichain {
         self.metadata_storage.frontier_for(persistent_id)
     }
 
-    fn register_sink(&mut self) -> usize {
+    pub fn register_sink(&mut self) -> usize {
         self.sink_threshold_times.push(Some(0));
         self.sink_threshold_times.len() - 1
     }
 
-    /// Updates the frontiers of the data sources to the further ones,
-    /// corresponding to the newly closed timestamp. It happens when all data
-    /// for the particular timestamp has been outputted in full.
-    ///
-    /// When the program is restarted, it results in not outputting this data again.
-    fn accept_finalized_timestamp(&mut self, sink_id: usize, reported_timestamp: Option<u64>) {
+    pub fn worker_id(&self) -> usize {
+        self.config.worker_id
+    }
+
+    pub fn update_sink_finalized_time(
+        &mut self,
+        sink_id: usize,
+        reported_timestamp: Option<u64>,
+    ) -> Option<u64> {
         self.sink_threshold_times[sink_id] = reported_timestamp;
-        let finalized_timestamp = self.globally_finalized_timestamp();
+        self.finalized_time_within_worker()
+    }
+
+    /// This method is called when all workers have finished the processing of time `timestamp`.
+    /// If `timestamp` is `None` it means that all output within all workers has finished.
+    pub fn accept_globally_finalized_timestamp(
+        &mut self,
+        timestamp: Option<u64>,
+    ) -> FrontierCommitData {
+        /*
+            Use the timestamp provided, or if it's None use the max timestamp across input sources
+        */
+        let finalized_timestamp = timestamp.unwrap_or(self.last_known_input_time());
         if finalized_timestamp < self.last_finalized_timestamp() {
             error!("Time isn't in the increasing order. Got advancement to {finalized_timestamp} while last advanced timestamp was {}", self.last_finalized_timestamp());
-            return;
+
+            // Empty set of snapshot commit futures and non-changed timestamp
+            return FrontierCommitData::new(vec![], self.last_finalized_timestamp());
         }
 
         for (persistent_id, input_source) in &mut self.input_sources {
@@ -147,47 +185,65 @@ impl PersistenceManager for SimplePersistenceManager {
                 );
             }
         }
+
+        let mut futures = Vec::new();
+        for snapshot_writer in self.snapshot_writers.values() {
+            let flush_future = snapshot_writer.lock().unwrap().flush();
+            futures.push(flush_future);
+        }
+
+        FrontierCommitData::new(futures, finalized_timestamp)
+    }
+
+    pub fn commit_globally_finalized_timestamp(&mut self, commit_data: &FrontierCommitData) {
         self.metadata_storage
-            .accept_finalized_timestamp(finalized_timestamp);
+            .accept_finalized_timestamp(commit_data.timestamp);
+
         if let Err(e) = self.metadata_storage.save_current_state() {
-            error!("Unable to save new frontiers, data on the output may duplicate in re-run. Error: {e}");
+            error!("Failed to save the current state, the data may duplicate in the re-run: {e}");
         }
     }
 
-    fn create_snapshot_readers(
+    pub fn create_snapshot_readers(
         &self,
         persistent_id: PersistentId,
-    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError> {
-        self.config.create_snapshot_readers(persistent_id)
+    ) -> Result<Vec<SnapshotReader>, ReadError> {
+        self.config.create_snapshot_readers(
+            persistent_id,
+            self.metadata_storage.past_runs_threshold_times(),
+        )
     }
 
-    fn create_snapshot_writer(
+    pub fn create_snapshot_writer(
         &mut self,
         persistent_id: PersistentId,
-    ) -> Result<Box<dyn SnapshotWriter>, WriteError> {
-        self.config.create_snapshot_writer(persistent_id)
-    }
-}
-
-impl SimplePersistenceManager {
-    pub fn globally_finalized_timestamp(&self) -> u64 {
-        let min_sink_timestamp = self.sink_threshold_times.iter().flatten().min();
-        if let Some(min_sink_timestamp) = min_sink_timestamp {
-            *min_sink_timestamp
+    ) -> Result<SharedSnapshotWriter, WriteError> {
+        if let Some(snapshot_writer) = self.snapshot_writers.get(&persistent_id) {
+            Ok(snapshot_writer.clone())
         } else {
-            let mut last_timestamp = self.last_finalized_timestamp();
-            for (_, input_source) in &self.input_sources {
-                let local_last_timestamp = *input_source
-                    .lock()
-                    .unwrap()
-                    .keys()
-                    .max()
-                    .unwrap_or(&last_timestamp);
-                if last_timestamp < local_last_timestamp {
-                    last_timestamp = local_last_timestamp;
-                }
-            }
-            last_timestamp
+            let writer = self.config.create_snapshot_writer(persistent_id)?;
+            self.snapshot_writers.insert(persistent_id, writer.clone());
+            Ok(writer)
         }
+    }
+
+    pub fn finalized_time_within_worker(&self) -> Option<u64> {
+        self.sink_threshold_times.iter().flatten().min().copied()
+    }
+
+    pub fn last_known_input_time(&self) -> u64 {
+        let mut last_timestamp = self.last_finalized_timestamp();
+        for (_, input_source) in &self.input_sources {
+            let local_last_timestamp = *input_source
+                .lock()
+                .unwrap()
+                .keys()
+                .max()
+                .unwrap_or(&last_timestamp);
+            if last_timestamp < local_last_timestamp {
+                last_timestamp = local_last_timestamp;
+            }
+        }
+        last_timestamp
     }
 }

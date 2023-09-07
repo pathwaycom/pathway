@@ -4,8 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
+
+## [0.3.2] - 2023-09-07
+
+### Added
+
+- `Table.cast_to_types()` function that can perform `pathway.cast` on multiple columns.
+- `intervals_over` window, which allows to get temporally close data to given times.
+- `demo.replay_csv_with_time` function that can replay a CSV file following the timestamps of a given column.
+
+### Fixed
+
+- Static data is now copied to ensure immutability.
+- Improved error tracing mechanism to work with any type of error.
 
 ## [0.3.1] - 2023-08-29
 

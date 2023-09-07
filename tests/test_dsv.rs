@@ -10,13 +10,17 @@ use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, ParseResult, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::{
-    FilesystemReader, ReadResult, ReadResult::Data, Reader,
+    ConnectorMode, FilesystemReader, ReadResult, ReadResult::Data, Reader,
 };
 use pathway_engine::engine::{Key, Type, Value};
 
 #[test]
 fn test_dsv_read_ok() -> eyre::Result<()> {
-    let mut reader = FilesystemReader::new(PathBuf::from("tests/data/sample.txt"), false, None)?;
+    let mut reader = FilesystemReader::new(
+        PathBuf::from("tests/data/sample.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
         HashMap::new(),
@@ -53,7 +57,11 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
 
 #[test]
 fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(PathBuf::from("tests/data/sample.txt"), false, None)?;
+    let reader = FilesystemReader::new(
+        PathBuf::from("tests/data/sample.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["c".to_string()], ','),
         HashMap::new(),
@@ -70,8 +78,11 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
 
 #[test]
 fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
-    let mut reader =
-        FilesystemReader::new(PathBuf::from("tests/data/sample_str_int.txt"), false, None)?;
+    let mut reader = FilesystemReader::new(
+        PathBuf::from("tests/data/sample_str_int.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
         HashMap::new(),
@@ -103,7 +114,7 @@ fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
 fn test_dsv_not_enough_columns() -> eyre::Result<()> {
     let mut reader = FilesystemReader::new(
         PathBuf::from("tests/data/sample_bad_lines.txt"),
-        false,
+        ConnectorMode::Static,
         None,
     )?;
     let mut parser = DsvParser::new(
@@ -144,7 +155,11 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
 
 #[test]
 fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
-    let mut reader = FilesystemReader::new(PathBuf::from("tests/data/sample.txt"), false, None)?;
+    let mut reader = FilesystemReader::new(
+        PathBuf::from("tests/data/sample.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(None, vec!["a".to_string(), "b".to_string()], ','),
         HashMap::new(),
@@ -182,7 +197,7 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
 fn test_dsv_composite_pkey() -> eyre::Result<()> {
     let mut reader = FilesystemReader::new(
         PathBuf::from("tests/data/sample_composite_pkey.txt"),
-        false,
+        ConnectorMode::Static,
         None,
     )?;
     let mut parser = DsvParser::new(
@@ -240,7 +255,11 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
         InnerSchemaField::new(Type::String, None),
     );
 
-    let mut reader = FilesystemReader::new(PathBuf::from("tests/data/schema.txt"), false, None)?;
+    let mut reader = FilesystemReader::new(
+        PathBuf::from("tests/data/schema.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
@@ -303,7 +322,11 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
         InnerSchemaField::new(Type::String, None),
     );
 
-    let mut reader = FilesystemReader::new(PathBuf::from("tests/data/schema.txt"), false, None)?;
+    let mut reader = FilesystemReader::new(
+        PathBuf::from("tests/data/schema.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),

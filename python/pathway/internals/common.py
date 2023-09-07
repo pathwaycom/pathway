@@ -110,6 +110,7 @@ def udf(fun: Callable):
     The output type of the UDF is determined based on its type annotation.
 
     Example:
+
     >>> import pathway as pw
     >>> @pw.udf
     ... def concat(left: str, right: str) -> str:

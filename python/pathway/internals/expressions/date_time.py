@@ -1377,7 +1377,7 @@ class DateTimeNamespace:
             timestamp: value to be converted to DateTime
             unit: unit of a timestamp. It has to be one of 's', 'ms', 'us', 'ns'
 
-        Returns
+        Returns:
             DateTime
 
         Example:

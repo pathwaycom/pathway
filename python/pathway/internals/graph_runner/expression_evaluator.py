@@ -25,8 +25,8 @@ from pathway.internals import api, asynchronous
 from pathway.internals.dtype import (
     DType,
     NoneType,
+    dtype_equivalence,
     is_optional,
-    sanitize_type,
     unoptionalize_pair,
 )
 from pathway.internals.expression_printer import get_expression_info
@@ -351,12 +351,10 @@ class RowwiseEvaluator(
         target_type = expression._return_type
 
         if (
-            source_type == target_type
-            or Optional[source_type] == target_type
+            dtype_equivalence(target_type, source_type)
+            or dtype_equivalence(DType(Optional[source_type]), target_type)
             or (source_type == NoneType and is_optional(target_type))
             or target_type == Any
-            or sanitize_type(source_type) == sanitize_type(target_type)
-            # FIXME: last arg currently needed for Pointer; remove when not required
         ):
             return arg  # then cast is noop
         if (

@@ -1,3 +1,5 @@
+#![allow(clippy::module_name_repetitions)]
+
 use std::panic::{catch_unwind, panic_any, AssertUnwindSafe};
 use std::{io, thread};
 
@@ -5,7 +7,9 @@ use super::error::{DynError, DynResult, Error, Result, Trace};
 
 pub trait ReportError: Send {
     fn report(&self, error: Error);
+}
 
+pub trait ReportErrorExt: ReportError {
     #[track_caller]
     fn report_and_panic(&self, error: impl Into<Error>) -> ! {
         let error = error.into();
@@ -20,6 +24,43 @@ pub trait ReportError: Send {
         let message = error.to_string();
         self.report(Error::with_trace(error, trace.clone()));
         panic_any(message);
+    }
+
+    fn with_extra<E>(self, extra: E) -> ErrorReporterWithExtra<Self, E>
+    where
+        Self: Sized,
+    {
+        ErrorReporterWithExtra {
+            reporter: self,
+            extra,
+        }
+    }
+}
+
+impl<T: ReportError> ReportErrorExt for T {}
+
+pub struct ErrorReporterWithExtra<R, E> {
+    reporter: R,
+    extra: E,
+}
+
+impl<R, E> ReportError for ErrorReporterWithExtra<R, E>
+where
+    R: ReportError,
+    E: Send,
+{
+    fn report(&self, error: Error) {
+        self.reporter.report(error);
+    }
+}
+
+impl<R, E> ErrorReporterWithExtra<R, E> {
+    pub fn get(&self) -> &E {
+        &self.extra
+    }
+
+    pub fn get_mut(&mut self) -> &mut E {
+        &mut self.extra
     }
 }
 
@@ -64,22 +105,27 @@ impl<T> UnwrapWithReporter<T> for thread::Result<T> {
 }
 
 pub trait SpawnWithReporter {
-    fn spawn_with_reporter(
+    fn spawn_with_reporter<R: ReportError + 'static>(
         self,
-        reporter: impl ReportError + 'static,
-        f: impl FnOnce() -> DynResult<()> + Send + 'static,
+        reporter: R,
+        f: impl FnOnce(&mut R) -> DynResult<()> + Send + 'static,
     ) -> io::Result<thread::JoinHandle<()>>;
 }
 
 impl SpawnWithReporter for thread::Builder {
-    fn spawn_with_reporter(
+    fn spawn_with_reporter<R>(
         self,
-        reporter: impl ReportError + 'static,
-        f: impl FnOnce() -> DynResult<()> + Send + 'static,
-    ) -> io::Result<thread::JoinHandle<()>> {
+        mut reporter: R,
+        f: impl FnOnce(&mut R) -> DynResult<()> + Send + 'static,
+    ) -> io::Result<thread::JoinHandle<()>>
+    where
+        R: ReportError + 'static,
+    {
         self.spawn(move || {
-            catch_unwind(AssertUnwindSafe(|| f().unwrap_with_reporter(&reporter)))
-                .unwrap_with_reporter(&reporter);
+            catch_unwind(AssertUnwindSafe(|| {
+                f(&mut reporter).unwrap_with_reporter(&reporter);
+            }))
+            .unwrap_with_reporter(&reporter);
         })
     }
 }

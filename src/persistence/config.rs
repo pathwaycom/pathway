@@ -1,21 +1,23 @@
 #![allow(clippy::module_name_repetitions)]
 
 use log::{error, info, warn};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Error as IoError;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use s3::bucket::Bucket as S3Bucket;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::connectors::snapshot::{
-    LocalBinarySnapshotReader, LocalBinarySnapshotWriter, SnapshotReader, SnapshotWriter,
+    LocalBinarySnapshotReader, LocalBinarySnapshotWriter, SnapshotReader,
 };
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::metadata_backends::{FilesystemKVStorage, MetadataBackend};
 use crate::persistence::state::MetadataAccessor;
-use crate::persistence::PersistentId;
+use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
 
@@ -68,7 +70,7 @@ impl PersistenceManagerOuterConfig {
 pub struct PersistenceManagerConfig {
     metadata_storage: MetadataStorageConfig,
     stream_storage: StreamStorageConfig,
-    worker_id: usize,
+    pub worker_id: usize,
     total_workers: usize,
 }
 
@@ -98,12 +100,18 @@ impl PersistenceManagerConfig {
     pub fn create_snapshot_readers(
         &self,
         persistent_id: PersistentId,
-    ) -> Result<Vec<Box<dyn SnapshotReader>>, ReadError> {
+        threshold_times: &HashMap<usize, u64>,
+    ) -> Result<Vec<SnapshotReader>, ReadError> {
         match &self.stream_storage {
             StreamStorageConfig::Filesystem(root_path) => {
-                let mut result: Vec<Box<dyn SnapshotReader>> = Vec::new();
-                for path in self.assigned_snapshot_paths(root_path, persistent_id)? {
-                    result.push(Box::new(LocalBinarySnapshotReader::new(path)?));
+                let mut result: Vec<SnapshotReader> = Vec::new();
+                for (worker_id, path) in self.assigned_snapshot_paths(root_path, persistent_id)? {
+                    let reader_impl = Box::new(LocalBinarySnapshotReader::new(path)?);
+                    let Some(threshold_time) = threshold_times.get(&worker_id) else {
+                        error!("No metadata found for worker {worker_id}, snapshot won't be read");
+                        continue;
+                    };
+                    result.push(SnapshotReader::new(reader_impl, *threshold_time)?);
                 }
                 Ok(result)
             }
@@ -114,12 +122,12 @@ impl PersistenceManagerConfig {
     pub fn create_snapshot_writer(
         &mut self,
         persistent_id: PersistentId,
-    ) -> Result<Box<dyn SnapshotWriter>, WriteError> {
+    ) -> Result<SharedSnapshotWriter, WriteError> {
         match &self.stream_storage {
             StreamStorageConfig::Filesystem(root_path) => {
-                Ok(Box::new(LocalBinarySnapshotWriter::new(
+                Ok(Arc::new(Mutex::new(LocalBinarySnapshotWriter::new(
                     &self.snapshot_writer_path(root_path, persistent_id)?,
-                )?))
+                )?)))
             }
             StreamStorageConfig::S3 { .. } => todo!(), // PR 4348
         }
@@ -142,13 +150,13 @@ impl PersistenceManagerConfig {
         &self,
         root_path: &Path,
         persistent_id: PersistentId,
-    ) -> Result<Vec<PathBuf>, IoError> {
+    ) -> Result<HashMap<usize, PathBuf>, IoError> {
         ensure_directory(root_path)?;
 
         let streams_dir = root_path.join("streams");
         ensure_directory(&streams_dir)?;
 
-        let mut assigned_paths = Vec::new();
+        let mut assigned_paths = HashMap::new();
         let paths = fs::read_dir(&streams_dir)?;
         for entry in paths.flatten() {
             let file_type = entry.file_type()?;
@@ -160,7 +168,7 @@ impl PersistenceManagerConfig {
                     continue;
                 };
 
-                let earlier_worker_id: usize = match dir_name.parse() {
+                let parsed_worker_id: usize = match dir_name.parse() {
                     Ok(worker_id) => worker_id,
                     Err(e) => {
                         error!("Could not parse worker id from snapshot directory {entry:?}. Error details: {e}");
@@ -168,16 +176,15 @@ impl PersistenceManagerConfig {
                     }
                 };
 
-                if earlier_worker_id % self.total_workers != self.worker_id {
+                if parsed_worker_id % self.total_workers != self.worker_id {
                     continue;
                 }
-                if earlier_worker_id != self.worker_id {
-                    info!("Assigning snapshot from the former worker {earlier_worker_id} to worker {} due to reduced number of worker threads", self.worker_id);
+                if parsed_worker_id != self.worker_id {
+                    info!("Assigning snapshot from the former worker {parsed_worker_id} to worker {} due to reduced number of worker threads", self.worker_id);
                 }
 
-                let snapshot_path =
-                    streams_dir.join(format!("{earlier_worker_id}/{persistent_id}"));
-                assigned_paths.push(snapshot_path);
+                let snapshot_path = streams_dir.join(format!("{parsed_worker_id}/{persistent_id}"));
+                assigned_paths.insert(parsed_worker_id, snapshot_path);
             } else {
                 warn!("Unexpected object in snapshot directory: {entry:?}");
             }

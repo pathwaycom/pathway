@@ -9,17 +9,18 @@ import numpy as np
 import pathway.internals as pw
 from pathway.internals import api, datetime_types
 from pathway.internals._io_helpers import _form_value_fields
-from pathway.internals.api import PathwayType
+from pathway.internals.api import ConnectorMode, PathwayType
 from pathway.internals.schema import ColumnDefinition, Schema, SchemaProperties
 
-SUPPORTED_INPUT_MODES: Set[str] = set(
-    [
-        "static",
-        "streaming",
-    ]
-)
-
+STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
+SNAPSHOT_MODE_NAME = "streaming_with_deletions"
+
+_INPUT_MODES_MAPPING = {
+    STATIC_MODE_NAME: ConnectorMode.STATIC,
+    STREAMING_MODE_NAME: ConnectorMode.SIMPLE_STREAMING,
+    SNAPSHOT_MODE_NAME: ConnectorMode.STREAMING_WITH_DELETIONS,
+}
 
 _DATA_FORMAT_MAPPING = {
     "csv": "dsv",
@@ -75,15 +76,18 @@ def check_deprecated_kwargs(kwargs: Dict[str, Any], deprecated_kwarg_names: List
         raise TypeError(f"Got unexpected keyword arguments: {unexpected_arg_names}")
 
 
-def need_poll_new_objects(mode: str) -> bool:
-    if mode not in SUPPORTED_INPUT_MODES:
+def internal_connector_mode(mode: str | api.ConnectorMode) -> api.ConnectorMode:
+    if isinstance(mode, api.ConnectorMode):
+        return mode
+    internal_mode = _INPUT_MODES_MAPPING.get(mode)
+    if not internal_mode:
         raise ValueError(
             "Unknown mode: {}. Only {} are supported".format(
-                format, ", ".join(SUPPORTED_INPUT_MODES)
+                mode, ", ".join(_INPUT_MODES_MAPPING.keys())
             )
         )
 
-    return mode == STREAMING_MODE_NAME
+    return internal_mode
 
 
 class CsvParserSettings:
@@ -274,7 +278,7 @@ def construct_s3_data_storage(
     path: str,
     rust_engine_s3_settings: api.AwsS3Settings,
     format: str,
-    poll_new_objects: bool,
+    mode: str | api.ConnectorMode,
     *,
     csv_settings: Optional[CsvParserSettings] = None,
     persistent_id: Optional[str] = None,
@@ -285,7 +289,7 @@ def construct_s3_data_storage(
             path=path,
             aws_s3_settings=rust_engine_s3_settings,
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
-            poll_new_objects=poll_new_objects,
+            mode=internal_connector_mode(mode),
             persistent_id=persistent_id,
         )
     else:
@@ -293,7 +297,7 @@ def construct_s3_data_storage(
             storage_type="s3",
             path=path,
             aws_s3_settings=rust_engine_s3_settings,
-            poll_new_objects=poll_new_objects,
+            mode=internal_connector_mode(mode),
             persistent_id=persistent_id,
         )
 

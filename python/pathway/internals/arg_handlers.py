@@ -6,9 +6,12 @@ from functools import wraps
 
 import pathway.internals.expression as expr
 from pathway.internals.join_mode import JoinMode
+from pathway.internals.trace import trace_user_frame
 
 
 def arg_handler(*, handler):
+    handler = trace_user_frame(handler)
+
     def wrapper(func):
         @wraps(func)
         def inner(*args, **kwargs):

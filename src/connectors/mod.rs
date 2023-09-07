@@ -25,14 +25,14 @@ use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::report_error::{ReportError, SpawnWithReporter};
 use crate::engine::{Key, Value};
 
-use crate::connectors::snapshot::{Event as SnapshotEvent, SnapshotWriter};
+use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::engine::Error as EngineError;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::tracker::{PersistenceManager, SimplePersistenceManager};
-use crate::persistence::{ExternalPersistentId, PersistentId};
+use crate::persistence::tracker::SingleWorkerPersistentStorage;
+use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
 
 use data_format::{ParseResult, ParsedEvent, Parser};
-use data_storage::{ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError};
+use data_storage::{DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError};
 
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
@@ -47,7 +47,7 @@ pub const ARTIFICIAL_TIME_ON_REWIND_START: u64 = 0;
     of random data).
 */
 pub trait CustomReader {
-    fn acquire_custom_data(&mut self) -> ParseResult;
+    fn acquire_custom_data(&mut self) -> (ParseResult, Option<Offset>);
 }
 
 /*
@@ -139,7 +139,7 @@ where
 
     pub fn rewind_from_disk_snapshot(
         persistent_id: PersistentId,
-        persistent_storage: &Arc<Mutex<SimplePersistenceManager>>,
+        persistent_storage: &Arc<Mutex<SingleWorkerPersistentStorage>>,
         sender: &Sender<Entry>,
     ) {
         let snapshot_readers = persistent_storage
@@ -147,21 +147,8 @@ where
             .unwrap()
             .create_snapshot_readers(persistent_id);
 
-        let threshold_time = persistent_storage
-            .lock()
-            .unwrap()
-            .last_finalized_timestamp();
-
-        info!("Persistent rewind allowed up to logical time {threshold_time}");
         if let Ok(snapshot_readers) = snapshot_readers {
             for mut snapshot_reader in snapshot_readers {
-                if threshold_time == 0 {
-                    info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
-                    if let Err(e) = snapshot_reader.truncate() {
-                        error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                    }
-                    return;
-                }
                 let mut entries_read = 0;
                 loop {
                     let entry_read = snapshot_reader.read();
@@ -171,22 +158,14 @@ where
                             info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
                             break;
                         }
-                        SnapshotEvent::AdvanceTime(new_time) => {
-                            if new_time > threshold_time {
-                                if let Err(e) = snapshot_reader.truncate() {
-                                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                                }
-                                info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {entries_read} entries");
-                                break;
-                            }
-                        }
-                        SnapshotEvent::Insert(_, _) | SnapshotEvent::Remove(_, _) => {
+                        SnapshotEvent::Insert(_, _) | SnapshotEvent::Delete(_, _) => {
                             entries_read += 1;
                             let send_res = sender.send(Entry::Snapshot(entry_read));
                             if let Err(e) = send_res {
                                 error!("Failed to send rewind entry: {e}");
                             }
                         }
+                        SnapshotEvent::AdvanceTime(_) => {}
                     }
                 }
             }
@@ -233,7 +212,7 @@ where
 
     pub fn read_snapshot(
         reader: &mut dyn Reader,
-        persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
+        persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
         sender: &Sender<Entry>,
     ) {
         // Rewind the data source
@@ -264,8 +243,8 @@ where
 
     pub fn snapshot_writer(
         reader: &dyn ReaderBuilder,
-        persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
-    ) -> Result<Option<Box<dyn SnapshotWriter>>, WriteError> {
+        persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
+    ) -> Result<Option<SharedSnapshotWriter>, WriteError> {
         if let Some(persistent_storage) = &persistent_storage {
             if let Some(persistent_id) = reader.persistent_id() {
                 Ok(Some(
@@ -291,8 +270,8 @@ where
         mut parser: Box<dyn Parser>,
         mut input_sessions: Vec<InputSession<Timestamp, (Key, Value), isize>>,
         mut universe_session: InputSession<Timestamp, Key, isize>,
-        mut values_to_key: impl FnMut(Option<Vec<Value>>) -> Key + 'static,
-        persistent_storage: Option<Arc<Mutex<SimplePersistenceManager>>>,
+        mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key + 'static,
+        persistent_storage: Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
         connector_id: usize,
         realtime_reader_needed: bool,
         external_persistent_id: &Option<ExternalPersistentId>,
@@ -315,7 +294,7 @@ where
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
-            .spawn_with_reporter(error_reporter, move || {
+            .spawn_with_reporter(error_reporter, move |_reporter| {
                 let sender = guard(sender, |sender| {
                     // ensure that we always unpark the main thread after dropping the sender, so it
                     // notices we are done sending
@@ -356,6 +335,7 @@ where
                         let parsed_entries = vec![ParsedEvent::AdvanceTime];
                         self.on_parsed_data(
                             parsed_entries,
+                            None, // no key generation for time advancement
                             &mut input_sessions,
                             &mut universe_session,
                             &mut values_to_key,
@@ -413,8 +393,8 @@ where
         parser: &mut Box<dyn Parser>,
         input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
         universe_session: &mut InputSession<Timestamp, Key, isize>,
-        values_to_key: impl FnMut(Option<Vec<Value>>) -> Key,
-        snapshot_writer: &mut Option<Box<dyn SnapshotWriter>>,
+        values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
+        snapshot_writer: &mut Option<SharedSnapshotWriter>,
         offsets_by_time_writer: &Mutex<HashMap<Timestamp, OffsetAntichain>>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
     ) {
@@ -429,6 +409,7 @@ where
                     let parsed_entries = vec![ParsedEvent::AdvanceTime];
                     self.on_parsed_data(
                         parsed_entries,
+                        None, // no key generation for time advancement
                         input_sessions,
                         universe_session,
                         values_to_key,
@@ -436,7 +417,7 @@ where
                         connector_monitor,
                     );
                 }
-                ReadResult::Data(reader_context, maybe_offset) => {
+                ReadResult::Data(reader_context, offset) => {
                     let mut parsed_entries = match parser.parse(&reader_context) {
                         Ok(entries) => entries,
                         Err(e) => {
@@ -451,6 +432,7 @@ where
 
                     self.on_parsed_data(
                         parsed_entries,
+                        Some(&offset.clone()),
                         input_sessions,
                         universe_session,
                         values_to_key,
@@ -458,17 +440,14 @@ where
                         connector_monitor,
                     );
 
-                    if let Some((offset_key, offset_value)) = maybe_offset {
-                        if has_persistent_storage && *backfilling_finished {
-                            offsets_by_time_writer
-                                .lock()
-                                .unwrap()
-                                .entry(self.current_timestamp.clone())
-                                .or_insert(OffsetAntichain::new())
-                                .advance_offset(offset_key, offset_value);
-                        }
-                    } else if has_persistent_storage && *backfilling_finished {
-                        warn!("No offset received for message while persistent storage is on");
+                    let (offset_key, offset_value) = offset;
+                    if has_persistent_storage && *backfilling_finished {
+                        offsets_by_time_writer
+                            .lock()
+                            .unwrap()
+                            .entry(self.current_timestamp.clone())
+                            .or_insert(OffsetAntichain::new())
+                            .advance_offset(offset_key, offset_value);
                     }
                 }
             },
@@ -477,6 +456,7 @@ where
                 let parsed_entries = vec![ParsedEvent::AdvanceTime];
                 self.on_parsed_data(
                     parsed_entries,
+                    None, // no key generation for time advancement
                     input_sessions,
                     universe_session,
                     values_to_key,
@@ -488,7 +468,7 @@ where
                 SnapshotEvent::Insert(key, value) => {
                     Self::on_insert(key, value, input_sessions, universe_session);
                 }
-                SnapshotEvent::Remove(key, value) => {
+                SnapshotEvent::Delete(key, value) => {
                     Self::on_remove(key, value, input_sessions, universe_session);
                 }
                 SnapshotEvent::AdvanceTime(_) | SnapshotEvent::Finished => {
@@ -506,20 +486,21 @@ where
         custom_reader: &mut dyn CustomReader,
         input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
         universe_session: &mut InputSession<Timestamp, Key, isize>,
-        mut values_to_key: impl FnMut(Option<Vec<Value>>) -> Key,
-        snapshot_writer: &mut Option<Box<dyn SnapshotWriter>>,
+        mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
+        snapshot_writer: &mut Option<SharedSnapshotWriter>,
     ) {
         loop {
             match custom_reader.acquire_custom_data() {
-                Ok(entries) => self.on_parsed_data(
+                (Ok(entries), maybe_offset) => self.on_parsed_data(
                     entries,
+                    maybe_offset.as_ref(),
                     input_sessions,
                     universe_session,
                     &mut values_to_key,
                     snapshot_writer,
                     &mut None,
                 ),
-                Err(e) => {
+                (Err(e), _) => {
                     error!("Read data parsed unsuccessfully. {e}");
                 }
             };
@@ -532,18 +513,21 @@ where
 
         The callback takes the read result, which is basically the string of raw data.
     */
+    #[allow(clippy::too_many_arguments)]
     pub fn on_data(
         &mut self,
         raw_read_data: &ReaderContext,
+        offset: Option<&Offset>,
         parser: &mut dyn Parser,
         input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
         universe_session: &mut InputSession<Timestamp, Key, isize>,
-        values_to_key: impl FnMut(Option<Vec<Value>>) -> Key,
-        snapshot_writer: &mut Option<Box<dyn SnapshotWriter>>,
+        values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
+        snapshot_writer: &mut Option<SharedSnapshotWriter>,
     ) {
         match parser.parse(raw_read_data) {
             Ok(entries) => self.on_parsed_data(
                 entries,
+                offset,
                 input_sessions,
                 universe_session,
                 values_to_key,
@@ -580,13 +564,15 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_parsed_data(
         &mut self,
         parsed_entries: Vec<ParsedEvent>,
+        offset: Option<&Offset>,
         input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
         universe_session: &mut InputSession<Timestamp, Key, isize>,
-        mut values_to_key: impl FnMut(Option<Vec<Value>>) -> Key,
-        snapshot_writer: &mut Option<Box<dyn SnapshotWriter>>,
+        mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
+        snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
     ) {
         for entry in parsed_entries {
@@ -596,10 +582,15 @@ where
                         error!("There are {} tokens in the entry, but the count of the provided input sessions was {}", values.len(), input_sessions.len());
                         continue;
                     }
-                    let key = values_to_key(raw_key);
+                    let key = values_to_key(raw_key, offset);
                     if let Some(snapshot_writer) = snapshot_writer {
-                        if let Err(e) =
-                            snapshot_writer.write(&SnapshotEvent::Insert(key, values.clone()))
+                        // TODO: if the usage of Mutex+Arc hits the performance, add a buffered accessor here
+                        // It must accumulate the data to the extent of the chunk size, and then unlock the mutex
+                        // once and send the full chunk
+                        if let Err(e) = snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&SnapshotEvent::Insert(key, values.clone()))
                         {
                             error!("Failed to save row ({key}, {values:?}) in persistent buffer. Error: {e}");
                         }
@@ -609,15 +600,17 @@ where
                         connector_monitor.increment();
                     }
                 }
-                ParsedEvent::Remove((raw_key, values)) => {
+                ParsedEvent::Delete((raw_key, values)) => {
                     if values.len() != input_sessions.len() {
                         error!("There are {} tokens in the entry, but the count of the provided input sessions was {}", values.len(), input_sessions.len());
                         continue;
                     }
-                    let key = values_to_key(Some(raw_key));
+                    let key = values_to_key(raw_key, offset);
                     if let Some(snapshot_writer) = snapshot_writer {
-                        if let Err(e) =
-                            snapshot_writer.write(&SnapshotEvent::Remove(key, values.clone()))
+                        if let Err(e) = snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&SnapshotEvent::Delete(key, values.clone()))
                         {
                             error!("Failed to save row ({key}, {values:?}) in persistent buffer. Error: {e}");
                         }
@@ -633,13 +626,12 @@ where
                         connector_monitor.commit();
                     }
                     if let Some(snapshot_writer) = snapshot_writer {
-                        if let Err(e) =
-                            snapshot_writer.write(&SnapshotEvent::AdvanceTime(time_advanced))
+                        if let Err(e) = snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&SnapshotEvent::AdvanceTime(time_advanced))
                         {
                             error!("Failed to save time advancement ({time_advanced}) in persistent buffer. Error: {e}");
-                        }
-                        if let Err(e) = snapshot_writer.flush() {
-                            error!("Failed to flush data into persistent buffer. Error: {e}");
                         }
                     }
                 }

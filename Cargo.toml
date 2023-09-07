@@ -1,6 +1,6 @@
 [package]
 name = "pathway"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 publish = false
 rust-version = "1.71.0"
@@ -22,7 +22,7 @@ arcstr = { version = "1.1.5", default-features = false, features = ["serde", "st
 base32 = "0.4.0"
 bincode = "1.3.3"
 cfg-if = "1.0.0"
-chrono = { version = "0.4.26", features = ["std", "clock"], default-features = false }
+chrono = { version = "0.4.28", features = ["std", "clock"], default-features = false }
 chrono-tz = "0.8.3"
 crossbeam-channel = "0.5.8"
 csv = "1.2.2"
@@ -36,27 +36,27 @@ itertools = "0.11.0"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
 log = { version = "0.4.20", features = ["std"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
-nix = { version = "0.26.2", default-features = false, features = ["fs"] }
+nix = { version = "0.27.1", features = ["fs"] }
 num-integer = "0.1.45"
 numpy = "0.19.0"
 once_cell = "1.18.0"
-ordered-float = { version = "3.9.0", features = ["serde"] }
+ordered-float = { version = "3.9.1", features = ["serde"] }
 pipe = "0.4.0"
-postgres = { version = "0.19.6", features = ["with-chrono-0_4"] }
+postgres = { version = "0.19.7", features = ["with-chrono-0_4"] }
 prometheus-client = "0.21.2"
 pyo3 = { version = "0.19.2", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-asyncio = "0.19.0"
 pyo3-log = "0.8.3"
 rand = "0.8.5"
-rdkafka = { version = "0.33.2", features = ["ssl-vendored", "cmake-build"] }
+rdkafka = { version = "0.34.0", features = ["ssl-vendored", "cmake-build"] }
 rust-s3 = { version = "0.33.0", features = ["sync-native-tls-vendored", "sync-native-tls", "fail-on-err"], default-features = false }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
-serde = { version = "1.0.185", features = ["derive", "rc"] }
+serde = { version = "1.0.188", features = ["derive", "rc"] }
 serde_json = "1.0"
-serde_with = "3.2.0"
+serde_with = "3.3.0"
 smallvec = { version = "1.11.0", features = ["union", "const_generics"] }
-thiserror = "1.0.47"
+thiserror = "1.0.48"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = "1.32.0"
 typed-arena = "2.0.2"

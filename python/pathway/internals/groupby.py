@@ -124,6 +124,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         desugared_expression = self._desugaring.eval_expression(expression)
         return self._joinable_to_group._eval(desugared_expression, context)
 
+    @trace_user_frame
     @desugar
     @arg_handler(handler=reduce_args_handler)
     @contextualized_operator

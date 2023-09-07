@@ -2,8 +2,11 @@
 
 Typical use:
 
->>> pw.demo.replay_csv("./input_stream.csv", value_columns=["name", "age"])
-Table{'name': typing.Any, 'age': typing.Any}
+>>> class InputSchema(pw.Schema):
+...    name: str
+...    age: int
+>>> pw.demo.replay_csv("./input_stream.csv", schema=InputSchema)
+Table{'name': <class 'str'>, 'age': <class 'int'>}
 """
 # Copyright © 2023 Pathway
 
@@ -12,7 +15,7 @@ from __future__ import annotations
 import csv
 import time
 from os import PathLike
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, Optional, Type, Union
 
 import pathway as pw
 
@@ -194,34 +197,32 @@ def range_stream(
 
 def replay_csv(
     path: Union[str, PathLike],
-    value_columns: List[str],
-    schema: Optional[Type[pw.Schema]] = None,
+    *,
+    schema: Type[pw.Schema],
     input_rate: float = 1.0,
 ) -> pw.Table:
-    """
-        Replay a static CSV files as a data stream.
+    """Replay a static CSV files as a data stream.
 
-        Args:
-            path: Path to the file to stream.
-            value_columns: Names of the columns to be extracted from the files.
-            schema: Schema of the resulting table.
-            autocommit_duration_ms: the maximum time between two commits. Every
-              autocommit_duration_ms milliseconds, the updates received by the connector are
-              committed and pushed into Pathway's computation graph.
-            input_rate (float, optional): The rate at which rows are read per second. Defaults to 1.0.
+    Args:
+        path: Path to the file to stream.
+        schema: Schema of the resulting table.
+        autocommit_duration_ms: the maximum time between two commits. Every
+            autocommit_duration_ms milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
+        input_rate (float, optional): The rate at which rows are read per second. Defaults to 1.0.
 
-        Returns:
-            Table: The table read.
+    Returns:
+        Table: The table read.
 
-        Notes:
-            The CSV files should follow a standard CSV settings: the separator is ',', the
-    quotechar is '"', there is no escape, and the line separator is '\r\n'
+    Notes:
+        The CSV files should follow a standard CSV settings: the separator is ',', the
+        quotechar is '"', and there is no escape.
 
     """
 
     autocommit_ms = int(1000.0 / input_rate)
 
-    columns = set(value_columns)
+    columns = set(schema.column_names())
 
     class FileStreamSubject(pw.io.python.ConnectorSubject):
         def run(self):
@@ -234,7 +235,79 @@ def replay_csv(
 
     return pw.io.python.read(
         FileStreamSubject(),
-        value_columns=value_columns,
+        schema=schema,
+        autocommit_duration_ms=autocommit_ms,
+        format="json",
+    )
+
+
+def replay_csv_with_time(
+    path: str,
+    *,
+    schema: Type[pw.Schema],
+    time_column: str,
+    unit: str = "s",
+    autocommit_ms: int = 100,
+) -> pw.Table:
+    """
+    Replay a static CSV files as a data stream while respecting the time between updated based on a timestamp columns.
+    The timestamps in the file should be ordered positive integers.
+
+    Args:
+        path: Path to the file to stream.
+        schema: Schema of the resulting table.
+        time_column: Column containing the timestamps.
+        unit: Unit of the timestamps. Only 's', 'ms', 'us', and 'ns' are supported. Defaults to 's'.
+        autocommit_duration_ms: the maximum time between two commits. Every
+          autocommit_duration_ms milliseconds, the updates received by the connector are
+          committed and pushed into Pathway's computation graph.
+
+    Returns:
+        Table: The table read.
+
+    Notes:
+        The CSV files should follow a standard CSV settings: the separator is ',', the
+        quotechar is '"', and there is no escape.
+
+    """
+
+    if unit not in ["s", "ms", "us", "ns"]:
+        raise ValueError(
+            "demo.replay_csv_with_time: unit should be either 's', 'ms, 'us', or 'ns'."
+        )
+
+    unit_factor = 1
+    match unit:
+        case "ms":
+            unit_factor = 1000
+        case "us":
+            unit_factor = 1_000_000
+        case "ns":
+            unit_factor = 1_000_000_000
+        case _:
+            unit_factor = 1
+
+    columns = set(schema.column_names())
+
+    class FileStreamSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            last_time_value = -1.0
+            with open(path, newline="") as csvfile:
+                csvreader = csv.DictReader(csvfile)
+                for row in csvreader:
+                    values = {key: row[key] for key in columns}
+                    current_value = float(values[time_column])
+                    if last_time_value < 0:
+                        last_time_value = current_value
+                    tts = current_value - last_time_value
+                    tts = tts / unit_factor
+                    last_time_value = current_value
+                    if tts > 0:
+                        time.sleep(tts)
+                    self.next_json(values)
+
+    return pw.io.python.read(
+        FileStreamSubject(),
         schema=schema,
         autocommit_duration_ms=autocommit_ms,
         format="json",

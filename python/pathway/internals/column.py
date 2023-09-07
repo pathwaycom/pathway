@@ -21,11 +21,7 @@ import numpy as np
 import pathway.internals as pw
 from pathway.internals import api, trace
 from pathway.internals.dtype import DType, types_lca
-from pathway.internals.expression import (
-    ColumnExpression,
-    ColumnReference,
-    ColumnRefOrIxExpression,
-)
+from pathway.internals.expression import ColumnExpression, ColumnRefOrIxExpression
 from pathway.internals.helpers import SetOnceProperty, StableSet
 
 if TYPE_CHECKING:
@@ -313,12 +309,6 @@ class UpdateRowsContext(Context):
     ) -> StableSet[Column]:
         return StableSet([self.updates[ref.name]])
 
-    def expression_type(self, expression: ColumnExpression):
-        assert isinstance(expression, ColumnReference)
-        t1 = super().expression_type(expression)
-        t2 = self.updates[expression.name].dtype
-        return types_lca(t1, t2)
-
 
 @dataclass(eq=False, frozen=True)
 class ConcatUnsafeContext(Context):
@@ -334,14 +324,6 @@ class ConcatUnsafeContext(Context):
         self, ref: ColumnRefOrIxExpression
     ) -> StableSet[Column]:
         return StableSet([update[ref.name] for update in self.updates])
-
-    def expression_type(self, expression: ColumnExpression):
-        assert isinstance(expression, ColumnReference)
-        t = super().expression_type(expression)
-        for update in self.updates:
-            up = update[expression.name].dtype
-            t = types_lca(t, up)
-        return t
 
 
 @dataclass(eq=False, frozen=True)

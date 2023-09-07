@@ -3,7 +3,7 @@
 import contextlib
 import os
 import re
-from typing import Type
+from typing import Optional, Type
 
 import pandas as pd
 import pytest
@@ -25,13 +25,13 @@ def test_select_args():
             2"""
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Expected a ColumnReference, found a string. Did you mean this.a instead of 'a'?"
         ),
     ):
-        tab.select("a")
+        tab.select("a")  # cause
 
 
 def test_reduce_args():
@@ -41,37 +41,37 @@ def test_reduce_args():
             2"""
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Expected a ColumnReference, found a string. Did you mean this.a instead of 'a'?"
         ),
     ):
-        tab.reduce("a")
+        tab.reduce("a")  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "In reduce() all positional arguments have to be a ColumnReference."
         ),
     ):
-        tab.reduce(1)
+        tab.reduce(1)  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Expected a ColumnReference, found a string. Did you mean this.a instead of 'a'?"
         ),
     ):
-        tab.groupby().reduce("a")
+        tab.groupby().reduce("a")  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "In reduce() all positional arguments have to be a ColumnReference."
         ),
     ):
-        tab.groupby().reduce(1)
+        tab.groupby().reduce(1)  # cause
 
 
 def test_groupby_extrakwargs():
@@ -81,17 +81,17 @@ def test_groupby_extrakwargs():
             2"""
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.groupby() received extra kwargs.\n"
             + "You probably want to use Table.groupby(...).reduce(**kwargs) to compute output columns."
         ),
     ):
-        tab.groupby(pw.this.a, output=pw.this.a)
+        tab.groupby(pw.this.a, output=pw.this.a)  # cause
 
 
-def test_groupby_extraargs():
+def test_windowby_extraargs():
     t = T(
         """
         shard |  t | tt |  v
@@ -106,13 +106,13 @@ def test_groupby_extraargs():
     """
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.windowby() received extra args.\nIt handles grouping only by a single column."
         ),
     ):
-        t.windowby(
+        t.windowby(  # cause
             t.t,
             t.tt,
             window=pw.temporal.session(predicate=lambda a, b: abs(a - b) <= 1),
@@ -128,16 +128,16 @@ def test_join_args():
     )
     right = left.copy()
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Received `how` argument but was not expecting any.\n"
             + "Consider using a generic join method that handles `how` to decide on a type of a join to be used."
         ),
     ):
-        left.join_left(right, how=pw.JoinMode.LEFT)
+        left.join_left(right, how=pw.JoinMode.LEFT)  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Received `how` argument of join that is a string.\n"
@@ -145,31 +145,31 @@ def test_join_args():
             + " JoinMode.RIGHT or JoinMode.OUTER values."
         ),
     ):
-        left.join(right, how="left")
+        left.join(right, how="left")  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "How argument of join should be one of JoinMode.INNER, JoinMode.LEFT,"
             + " JoinMode.RIGHT or JoinMode.OUTER values."
         ),
     ):
-        left.join(right, how=1)
+        left.join(right, how=1)  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape("The id argument of a join has to be a ColumnReference."),
     ):
-        left.join(right, id=1)
+        left.join(right, id=1)  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Join received extra kwargs.\n"
             + "You probably want to use TableLike.join(...).select(**kwargs) to compute output columns."
         ),
     ):
-        left.join(right, a=left.a)
+        left.join(right, a=left.a)  # cause
 
 
 def test_session_simple():
@@ -187,14 +187,14 @@ def test_session_simple():
     """
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.windowby() received extra kwargs.\n"
             + "You probably want to use Table.windowby(...).reduce(**kwargs) to compute output columns."
         ),
     ):
-        t.windowby(
+        t.windowby(  # cause
             t.t,
             window=pw.temporal.session(predicate=lambda a, b: abs(a - b) <= 1),
             shard=t.shard,
@@ -218,12 +218,17 @@ def test_runtime_type_check_decorator():
 
 
 @contextlib.contextmanager
-def _assert_error_trace(error_type: Type):
+def _assert_error_trace(error_type: Type, match: Optional[str] = ""):
     file_name = os.path.basename(__file__)
     with pytest.raises(
-        error_type, match=rf"(?s).*Occurred here:.*# cause..*{file_name}.*"
-    ):
+        error_type,
+        match=match,
+    ) as e:
         yield
+    assert re.match(
+        rf"(?s).*Occurred here:.*# cause..*{file_name}.*",
+        e.value._pathway_trace_note,
+    )
 
 
 def test_traceback_expression():
@@ -460,7 +465,7 @@ def test_traceback_early_connector_errors(func):
 
 
 def test_groupby_reduce_bad_column():
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "You cannot use <table1>.email in this reduce statement.\n"
@@ -476,7 +481,7 @@ def test_groupby_reduce_bad_column():
         """
         )
 
-        purchases.groupby(purchases.user_id).reduce(
+        purchases.groupby(purchases.user_id).reduce(  # cause
             user_id=pw.this.user_id,
             email=pw.this.email,
             total_amount=pw.reducers.sum(pw.this.amount),
@@ -484,7 +489,7 @@ def test_groupby_reduce_bad_column():
 
 
 def test_filter_bad_expression():
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape("You cannot use <table1>.last_timestamp in this context."),
     ):
@@ -499,7 +504,9 @@ def test_filter_bad_expression():
         last_timestamp = t_input.reduce(
             last_timestamp=pw.reducers.max(t_input.timestamp)
         )
-        t_input.filter(t_input.timestamp >= last_timestamp.last_timestamp - 3600)
+        t_input.filter(  # cause
+            t_input.timestamp >= last_timestamp.last_timestamp - 3600
+        )
 
 
 def test_method_in_pathway_this():
@@ -510,14 +517,14 @@ def test_method_in_pathway_this():
      12
     """
     )
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "join is a method name. It is discouraged to use it as a column name. "
             + "If you really want to use it, use pw.this['join']."
         ),
     ):
-        t1.select(pw.this.join)
+        t1.select(pw.this.join)  # cause
 
 
 def test_table_getitem():
@@ -529,22 +536,22 @@ def test_table_getitem():
         """
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.__getitem__ argument has to be a ColumnReference to the same table or pw.this, or a string "
             + "(or a list of those)."
         ),
     ):
-        tab[tab.copy().a]
+        tab[tab.copy().a]  # cause
 
 
 def test_from_columns():
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape("Table.from_columns() cannot have empty arguments list"),
     ):
-        pw.Table.from_columns()
+        pw.Table.from_columns()  # cause
 
 
 def test_groupby():
@@ -573,7 +580,7 @@ def test_groupby():
 
     assert_table_equality(res, expected)
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.groupby() received id argument and is grouped by a single column,"
@@ -581,17 +588,17 @@ def test_groupby():
             + "Consider using <table>.groupby(id=...), skipping the positional argument."
         ),
     ):
-        res = left.groupby(left.age, id=left.pet).reduce(
+        res = left.groupby(left.age, id=left.pet).reduce(  # cause
             left.pet,
         )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.groupby() cannot have id argument when grouping by multiple columns."
         ),
     ):
-        res = left.groupby(left.age, left.pet, id=left.pet).reduce(
+        res = left.groupby(left.age, left.pet, id=left.pet).reduce(  # cause
             left.pet,
         )
 
@@ -615,33 +622,34 @@ def test_update_cells():
     """
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Columns of the argument in Table.update_cells() not present in the updated table: ['age']."
         ),
     ):
-        left.update_cells(right)
+        left.update_cells(right)  # cause
 
 
 def test_update_types():
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "Table.update_types() argument name has to be an existing table column name."
         ),
     ):
-        T(
+        t = T(
             """
             foor
             22
             24
             """
-        ).update_types(bar=int)
+        )
+        t.update_types(bar=int)  # cause
 
 
-def test_fatten():
-    with pytest.raises(
+def test_flatten():
+    with _assert_error_trace(
         ValueError, match=re.escape("Table.flatten() cannot have empty arguments list.")
     ):
         T(
@@ -650,7 +658,7 @@ def test_fatten():
             22
             24
             """
-        ).flatten()
+        ).flatten()  # cause
 
 
 def test_slices_1():
@@ -663,51 +671,51 @@ def test_slices_1():
         """
     )
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "TableSlice method arguments should refer to table of which the slice was created."
         ),
     ):
-        tab.slice[tab.copy().col]
+        tab.slice[tab.copy().col]  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "TableSlice expects 'col' or this.col argument as column reference."
         ),
     ):
-        tab.slice[pw.left.col]
+        tab.slice[pw.left.col]  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         KeyError,
         match=re.escape(
             "Column name 'foo' not found in a TableSlice({'col': <table1>.col, 'on': <table1>.on})."
         ),
     ):
-        tab.slice.without("foo")
+        tab.slice.without("foo")  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         KeyError,
         match=re.escape(
             "Column name 'foo' not found in a TableSlice({'col': <table1>.col, 'on': <table1>.on})."
         ),
     ):
-        tab.slice.rename({"foo": "bar"})
+        tab.slice.rename({"foo": "bar"})  # cause
 
-    with pytest.raises(
+    with _assert_error_trace(
         ValueError,
         match=re.escape(
             "'select' is a method name. It is discouraged to use it as a column name."
             + " If you really want to use it, use ['select']."
         ),
     ):
-        tab.slice.select
+        tab.slice.select  # cause
 
 
 def test_this():
-    with pytest.raises(
+    with _assert_error_trace(
         TypeError,
         match=re.escape("You cannot instantiate `this` class."),
     ):
-        pw.this()
+        pw.this()  # cause

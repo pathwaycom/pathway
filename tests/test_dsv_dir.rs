@@ -10,7 +10,7 @@ use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::ParsedEvent;
 use pathway_engine::connectors::data_format::{DsvParser, DsvSettings};
-use pathway_engine::connectors::data_storage::CsvFilesystemReader;
+use pathway_engine::connectors::data_storage::{ConnectorMode, CsvFilesystemReader};
 use pathway_engine::engine::Value;
 
 #[test]
@@ -18,8 +18,12 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
-    let reader =
-        CsvFilesystemReader::new(PathBuf::from("tests/data/csvdir"), builder, false, None)?;
+    let reader = CsvFilesystemReader::new(
+        PathBuf::from("tests/data/csvdir"),
+        builder,
+        ConnectorMode::Static,
+        None,
+    )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["key".to_string()]), vec!["foo".to_string()], ','),
         HashMap::new(),
@@ -64,8 +68,12 @@ fn test_single_file_ok() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
-    let reader =
-        CsvFilesystemReader::new(PathBuf::from("tests/data/sample.txt"), builder, false, None)?;
+    let reader = CsvFilesystemReader::new(
+        PathBuf::from("tests/data/sample.txt"),
+        builder,
+        ConnectorMode::Static,
+        None,
+    )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
         HashMap::new(),
@@ -87,7 +95,7 @@ fn test_custom_delimiter() -> eyre::Result<()> {
     let reader = CsvFilesystemReader::new(
         PathBuf::from("tests/data/sql_injection.txt"),
         builder,
-        false,
+        ConnectorMode::Static,
         None,
     )?;
     let parser = DsvParser::new(
@@ -113,7 +121,7 @@ fn test_escape_fields() -> eyre::Result<()> {
     let reader = CsvFilesystemReader::new(
         PathBuf::from("tests/data/csv_fields_escaped.txt"),
         builder,
-        false,
+        ConnectorMode::Static,
         None,
     )?;
     let parser = DsvParser::new(
@@ -158,7 +166,7 @@ fn test_escape_newlines() -> eyre::Result<()> {
     let reader = CsvFilesystemReader::new(
         PathBuf::from("tests/data/csv_escaped_newlines.txt"),
         builder,
-        false,
+        ConnectorMode::Static,
         None,
     )?;
     let parser = DsvParser::new(
@@ -196,7 +204,7 @@ fn test_nonexistent_file() -> eyre::Result<()> {
     let reader = CsvFilesystemReader::new(
         PathBuf::from("tests/data/nonexistent_file.txt"),
         builder,
-        false,
+        ConnectorMode::Static,
         None,
     );
     assert_matches!(reader.unwrap_err().kind(), io::ErrorKind::NotFound);
@@ -212,7 +220,7 @@ fn test_special_fields() -> eyre::Result<()> {
     let reader = CsvFilesystemReader::new(
         PathBuf::from("tests/data/csv_special_fields.txt"),
         builder,
-        false,
+        ConnectorMode::Static,
         None,
     )?;
     let parser = DsvParser::new(

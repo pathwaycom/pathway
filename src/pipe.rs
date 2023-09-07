@@ -1,6 +1,5 @@
-use std::os::unix::prelude::*;
-
 use std::io;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use cfg_if::cfg_if;
 use nix::fcntl::{fcntl, FcntlArg, FdFlag, OFlag};
@@ -37,7 +36,7 @@ impl Pipe {
 fn set_non_blocking(fd: impl AsFd) -> io::Result<()> {
     let fd = fd.as_fd();
     let flags = fcntl(fd.as_raw_fd(), FcntlArg::F_GETFL)?;
-    let flags = unsafe { OFlag::from_bits_unchecked(flags) };
+    let flags = OFlag::from_bits_retain(flags);
     fcntl(fd.as_raw_fd(), FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     Ok(())
 }
@@ -46,7 +45,7 @@ fn set_non_blocking(fd: impl AsFd) -> io::Result<()> {
 fn set_cloexec(fd: impl AsFd) -> io::Result<()> {
     let fd = fd.as_fd();
     let flags = fcntl(fd.as_raw_fd(), FcntlArg::F_GETFD)?;
-    let flags = unsafe { FdFlag::from_bits_unchecked(flags) };
+    let flags = FdFlag::from_bits_retain(flags);
     fcntl(
         fd.as_raw_fd(),
         FcntlArg::F_SETFD(flags | FdFlag::FD_CLOEXEC),

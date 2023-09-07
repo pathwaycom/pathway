@@ -131,7 +131,7 @@ def table_from_pandas(
     return table_from_datasource(
         PandasDataSource(
             schema=schema,
-            data=df,
+            data=df.copy(),
             connector_properties=api.ConnectorProperties(
                 unsafe_trusted_ids=unsafe_trusted_ids,
                 append_only=schema.properties().append_only,

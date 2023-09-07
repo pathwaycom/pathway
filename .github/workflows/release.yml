@@ -1,0 +1,374 @@
+name: Package release
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  start-runner:
+    name: Start self-hosted EC2 runner
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}
+          aws-region: ${{ secrets.EC2_AWS_REGION }}
+      - name: Start EC2 runner
+        id: start-ec2-runner
+        uses: machulav/ec2-github-runner@v2
+        with:
+          mode: start
+          github-token: ${{ secrets.EC2_GH_PERSONAL_TOKEN }}
+          ec2-image-id: ${{ secrets.EC2_AMI }}
+          ec2-instance-type: ${{ secrets.EC2_INSTANCE }}
+          subnet-id: ${{ secrets.EC2_SUBNET_ID }}
+          security-group-id: ${{ secrets.EC2_SECURITY_GROUP_ID }}
+          aws-resource-tags: >
+            [
+              {"Key": "Name", "Value": "ec2-github-runner"},
+              {"Key": "GitHubRepository", "Value": "${{ github.repository }}"}
+            ]
+
+  Build_packages:
+    name: Build packages
+    needs: start-runner
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10"]
+        os:
+          - ubuntu-22.04
+          - ec2-macOS
+          - ${{ needs.start-runner.outputs.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+
+      - name: Git checkout
+        uses: actions/checkout@v3.3.0
+
+      - name: License files
+        run: |
+          rm -f LICENSE_*-LICENSE-*
+          for filename in library_licenses/*; do cp "$filename" "LICENSE_$(basename "${filename}")"; done;
+
+      - name: Build package Ubuntu x86-x64
+        if: ${{ matrix.os == 'ubuntu-22.04'}}
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: 0.14.17
+          command: build
+          args: --release --strip
+          manylinux: auto
+          rustup-components: rust-std
+          working-directory: .
+
+      - name: Build package macOS Apple silicon
+        if: ${{ matrix.os == 'ec2-macOS'}}
+        uses: PyO3/maturin-action@v1
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          DEVELOPER_DIR: /Library/Developer/CommandLineTools
+          SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+        with:
+          maturin-version: 0.14.17
+          command: build
+          args: --release --strip
+          target: universal2-apple-darwin
+          manylinux: auto
+          rustup-components: rust-std
+          working-directory: .
+
+      - name: Build package Ubuntu AArch64
+        if: ${{ matrix.os == needs.start-runner.outputs.label }}
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: 0.14.17
+          command: build
+          args: --release --strip
+          target: aarch64-unknown-linux-gnu
+          manylinux: auto
+          rustup-components: rust-std
+          working-directory: .
+
+      - name: Upload artifact
+        if: ${{ matrix.os == needs.start-runner.outputs.label }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: pathway-arch64
+          path: ./target/wheels/
+
+      - name: Upload artifact
+        if: ${{ matrix.os == 'ubuntu-22.04' }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: pathway-x86-x64
+          path: ./target/wheels/
+
+      - name: Upload artifact
+        if: ${{ matrix.os == 'ec2-macOS' }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: pathway-arm64
+          path: ./target/wheels/
+      
+      - name: Upload artifact
+        if: ${{ matrix.os == needs.start-runner.outputs.label }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: CHANGELOG.md
+          path: CHANGELOG.md
+
+  Verify_Linux:
+    needs: Build_packages
+    name: Verify packages
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@master
+        with:
+          name: pathway-x86-x64
+          path: ./wheels/
+
+      - name: Install and verify Linux package
+        run: |
+          set -ex
+          ENV_NAME="env_"${{ matrix.python-version }}""
+          rm -rf $ENV_NAME
+          python -m venv ${ENV_NAME}
+          source ${ENV_NAME}/bin/activate
+          pip install --prefer-binary ./wheels/pathway-*.whl
+          pip"${{ matrix.python-version }}" install py
+          python -m py --confcutdir $ENV_NAME --pyargs pathway
+
+  Verify_ARM_ARCH:
+    needs:
+      - start-runner
+      - Build_packages
+    name: Verify macOS and Linux
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+        os:
+          - ec2-macOS
+          - ${{ needs.start-runner.outputs.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: create dir for wheels
+        run: |
+          mkdir wheels
+
+      - uses: actions/download-artifact@master
+        if: ${{ matrix.os == 'ec2-macOS' }}
+        with:
+          name: pathway-arm64
+          path: ./wheels/
+
+      - uses: actions/download-artifact@master
+        if: ${{ matrix.os == needs.start-runner.outputs.label }}
+        with:
+          name:  pathway-arch64
+          path: ./wheels/
+
+      - name: Install and verify ${{ matrix.os }} package
+        run: |
+          set -ex
+          # Pathway http monitoring set port
+          ENV_NAME="env_${{ matrix.python-version }}"
+          rm -rf $ENV_NAME
+          python"${{ matrix.python-version }}" -m venv ${ENV_NAME}
+          source ${ENV_NAME}/bin/activate
+          pip"${{ matrix.python-version }}" install --prefer-binary ./wheels/pathway-*.whl
+          pip"${{ matrix.python-version }}" install py
+          python"${{ matrix.python-version }}" -m py --confcutdir $ENV_NAME --pyargs pathway
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          DEVELOPER_DIR: /Library/Developer/CommandLineTools
+          SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+      
+      - name: post cleanup
+        run: rm -rf ./wheels
+
+  Publish:
+    needs:
+      - Verify_Linux
+      - Verify_ARM_ARCH
+      - start-runner
+    environment: PROD
+    name: Publish package
+    strategy:
+     fail-fast: false
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.ARTIFACT_AWS_ROLE }}
+          aws-region: ${{ secrets.ARTIFACT_AWS_REGION }}
+          role-duration-seconds: 1200
+
+      - name: create dir for wheels
+        run: |
+          mkdir wheels
+
+      - uses: actions/download-artifact@master
+        with:
+          name: pathway-x86-x64
+          path: ./wheels/
+
+      - uses: actions/download-artifact@master
+        with:
+          name: pathway-arch64
+          path: ./wheels/
+
+      - uses: actions/download-artifact@master
+        with:
+          name: pathway-arm64
+          path: ./wheels/
+
+      - uses: actions/download-artifact@master
+        with:
+          name: CHANGELOG.md
+          path: .
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1.12.0    
+        with:
+          draft: true
+          artifacts: "./wheels/*.whl"
+          artifactContentType: "raw"
+          allowUpdates: true
+          bodyFile: "CHANGELOG.md"
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
+          packages-dir: './wheels/'
+  
+      - name: Publish package to s3
+        uses: prewk/s3-cp-action@v2
+        with:
+          aws_access_key_id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
+          dest: ${{ secrets.ARTIFACT_AWS_BUCKET }}
+          source: ./wheels/
+          flags: --recursive
+
+      - name: post cleanup
+        run: rm -rf ./wheels
+
+  Update_pip_index:
+    needs:
+      - Publish
+    name: Update pip index
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.ARTIFACT_AWS_ROLE }}
+          aws-region: ${{ secrets.ARTIFACT_AWS_REGION }}
+          role-duration-seconds: 1200
+
+      - name: Generate and upload pip index.html
+        run: |
+          set -ex
+          aws s3 cp ${{ secrets.ARTIFACT_AWS_BUCKET }}/templates/pip-index.html pip-index.html
+          export PACKAGE_LIST_HTML=$(aws s3 ls ${{ secrets.ARTIFACT_AWS_BUCKET }} | awk '/\.whl$/ {href=$4; sub("+","%252B",href); print "<li><a href=\""href"\">"$4"</a></li>"}')
+          perl -i -pe 's/<PACKAGE_LIST>/$ENV{"PACKAGE_LIST_HTML"}/g' pip-index.html
+          aws s3 cp pip-index.html ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
+
+      - name: Publish pip index.html
+        uses: prewk/s3-cp-action@v2
+        with:
+          aws_access_key_id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
+          source: pip-index.html
+          dest:  ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
+
+  stop-runner:
+    name: Stop self-hosted EC2 runner
+    needs:
+      - start-runner
+      - Build_packages
+      - Verify_ARM_ARCH
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    if: ${{ always() }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}
+          aws-region: ${{ secrets.EC2_AWS_REGION }}
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-runner@v2
+        with:
+          mode: stop
+          github-token: ${{ secrets.EC2_GH_PERSONAL_TOKEN }}
+          label: ${{ needs.start-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-runner.outputs.ec2-instance-id }}
+
+  Notify_on_failure:
+    needs:
+      - Build_packages
+      - Verify_Linux
+      - Verify_ARM_ARCH
+      - Publish
+      - Update_pip_index
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Post to a Slack channel
+        id: slack
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          channel-id: ${{ secrets.SLACK_CI_ALERT }}
+          payload: |
+            {
+              "text": "GitHub Action build result: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.event.pull_request.user.login }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "GitHub Action build result: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.event.pull_request.user.login }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,4 +1,4 @@
-use log::error;
+use log::{error, info};
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bincode::{deserialize_from, serialize_into, ErrorKind as BincodeError};
+use futures::channel::oneshot;
+use futures::channel::oneshot::Receiver as OneShotReceiver;
 use serde::{Deserialize, Serialize};
 
 use crate::connectors::data_storage::{ReadError, WriteError};
@@ -17,13 +19,15 @@ use crate::fs_helpers::ensure_directory;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Insert(Key, Vec<Value>),
-    Remove(Key, Vec<Value>),
+    Delete(Key, Vec<Value>),
     AdvanceTime(u64),
     Finished,
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub trait SnapshotReader {
+pub trait SnapshotReaderImpl {
+    /// This method will be called every so often to read the persisted snapshot.
+    /// When there are no entries left, it must return `Event::Finished`.
     fn read(&mut self) -> Result<Event, ReadError>;
 
     /// This method will be called after the snapshot is read until the last entry, which can be
@@ -35,12 +39,20 @@ pub trait SnapshotReader {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub trait SnapshotWriter {
+pub type SnapshotWriterFlushFuture = OneShotReceiver<Result<(), WriteError>>;
+
+#[allow(clippy::module_name_repetitions)]
+pub trait SnapshotWriter: Send {
+    /// A non-blocking call, pushing an entry in the buffer.
+    /// The buffer should not be flushed in the same thread.
     fn write(&mut self, event: &Event) -> Result<(), WriteError>;
 
-    fn flush(&mut self) -> Result<(), WriteError> {
-        Ok(())
-    }
+    /// Flush the entries which are currently present in the buffer.
+    /// The result returned must be waited and return an `Ok()` when the data is uploaded.
+    ///
+    /// We use `futures::channel::oneshot::channel` here instead of Future/Promise
+    /// because it uses modern Rust Futures that are also used by `async`.
+    fn flush(&mut self) -> OneShotReceiver<Result<(), WriteError>>;
 }
 
 pub struct LocalBinarySnapshotReader {
@@ -77,7 +89,7 @@ impl LocalBinarySnapshotReader {
     }
 }
 
-impl SnapshotReader for LocalBinarySnapshotReader {
+impl SnapshotReaderImpl for LocalBinarySnapshotReader {
     fn read(&mut self) -> Result<Event, ReadError> {
         loop {
             match &mut self.reader {
@@ -168,10 +180,63 @@ impl SnapshotWriter for LocalBinarySnapshotWriter {
         })
     }
 
-    fn flush(&mut self) -> Result<(), WriteError> {
-        if let Some(writer) = &mut self.lazy_writer {
-            writer.flush()?;
+    fn flush(&mut self) -> OneShotReceiver<Result<(), WriteError>> {
+        let (sender, receiver) = oneshot::channel();
+
+        let internal_flush_result: Result<(), WriteError> = match &mut self.lazy_writer {
+            Some(ref mut writer) => writer.flush().map_err(WriteError::Io),
+            None => Ok(()),
+        };
+
+        let send_result = sender.send(internal_flush_result);
+        if let Err(unsent_flush_result) = send_result {
+            error!("The receiver no longer waits for the result of this flush: {unsent_flush_result:?}");
         }
-        Ok(())
+
+        receiver
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub struct SnapshotReader {
+    reader_impl: Box<dyn SnapshotReaderImpl>,
+    threshold_time: u64,
+    entries_read: usize,
+}
+
+impl SnapshotReader {
+    pub fn new(
+        mut reader_impl: Box<dyn SnapshotReaderImpl>,
+        threshold_time: u64,
+    ) -> Result<Self, ReadError> {
+        if threshold_time == 0 {
+            info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
+            if let Err(e) = reader_impl.truncate() {
+                error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                return Err(e);
+            }
+        }
+
+        Ok(Self {
+            reader_impl,
+            threshold_time,
+            entries_read: 0,
+        })
+    }
+
+    pub fn read(&mut self) -> Result<Event, ReadError> {
+        let event = self.reader_impl.read()?;
+        if let Event::AdvanceTime(new_time) = event {
+            if new_time > self.threshold_time {
+                if let Err(e) = self.reader_impl.truncate() {
+                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                    return Err(e);
+                }
+                info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {} entries", self.entries_read);
+                return Ok(Event::Finished);
+            }
+        }
+        self.entries_read += 1;
+        Ok(event)
     }
 }

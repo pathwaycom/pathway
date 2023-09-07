@@ -44,6 +44,8 @@ def debug_datasource(debug_data) -> Optional[StaticDataSource]:
     if debug_data is None:
         return None
     elif isinstance(debug_data, pd.DataFrame):
-        return PandasDataSource(data=debug_data, schema=schema_from_pandas(debug_data))
+        return PandasDataSource(
+            data=debug_data.copy(), schema=schema_from_pandas(debug_data)
+        )
     else:
         raise TypeError("not supported type of debug data")

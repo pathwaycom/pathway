@@ -752,8 +752,7 @@ fn handle_one_instance<
             );
         }
     }
-    // log::debug!("final carry {carry_entry:?}");
-    println!("final carry {carry_entry:?}");
+    log::debug!("final carry {carry_entry:?}");
     if !carry_entry.is_empty() {
         if carry_entry.key.is_some() {
             move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
@@ -815,11 +814,6 @@ where
                 let empty: differential_dataflow::trace::implementations::spine_fueled::Spine<
                     Rc<OrdValBatch<K, (Option<K>, Option<K>), <G as ScopeParent>::Timestamp, R>>,
                 > = Trace::new(operator_info.clone(), None, None);
-                let mut source_trace: TraceAgent<
-                    differential_dataflow::trace::implementations::spine_fueled::Spine<
-                        Rc<OrdKeyBatch<K, <G as ScopeParent>::Timestamp, R>>,
-                    >,
-                > = input_arrangement.trace.clone();
 
                 let (mut output_reader, mut output_writer) =
                     TraceAgent::new(empty, operator_info, None);
@@ -836,6 +830,7 @@ where
                             <G::Timestamp as timely::progress::Timestamp>::minimum(),
                         );
 
+                        //merge batches, to use one cursor?
                         let mut total_update_size_ub = 0;
                         for batch in input_buffer.drain(..) {
                             upper_limit.clone_from(batch.upper());
@@ -843,7 +838,6 @@ where
                             total_update_size_ub += batch.len() * 3;
                             batch_storage_list.push(batch);
                         }
-
                         let (mut output_cursor, output_storage) = output_reader.cursor();
                         let (mut cursor, storage) = input_arrangement.trace.bidirectional_cursor();
 
@@ -885,7 +879,7 @@ where
                         let mut target = Antichain::from_elem(
                             <G::Timestamp as timely::progress::Timestamp>::minimum(),
                         );
-                        source_trace.advance_upper(&mut upper_limit);
+                        input_arrangement.trace.advance_upper(&mut upper_limit);
 
                         output_reader.read_upper(&mut target);
 
@@ -904,10 +898,14 @@ where
                         output_writer.insert(res_batch, Some(capability.retain().time().clone()));
                         output_writer.seal(upper_limit.clone());
 
-                        source_trace.set_logical_compaction(upper_limit.borrow());
+                        input_arrangement
+                            .trace
+                            .set_logical_compaction(upper_limit.borrow());
                         output_reader.set_logical_compaction(upper_limit.borrow());
 
-                        source_trace.set_physical_compaction(upper_limit.borrow());
+                        input_arrangement
+                            .trace
+                            .set_physical_compaction(upper_limit.borrow());
                         output_reader.set_physical_compaction(upper_limit.borrow());
                     });
                 }

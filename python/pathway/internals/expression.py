@@ -395,6 +395,8 @@ class InternalColRef:
 class ColumnReference(ColumnRefOrIxExpression):
     """Reference to the column.
 
+    Inherits from ColumnExpression.
+
     Example:
 
     >>> import pathway as pw

@@ -16,7 +16,7 @@ from pathway.io._utils import (
     CsvParserSettings,
     construct_connector_properties,
     construct_schema_and_data_format,
-    need_poll_new_objects,
+    internal_connector_mode,
 )
 
 SUPPORTED_OUTPUT_FORMATS: Set[str] = set(
@@ -203,21 +203,19 @@ def read(
     >>> t = pw.io.fs.read("raw_dataset/lines.txt", format="plaintext")
     """
 
-    poll_new_objects = need_poll_new_objects(mode)
-
     if format == "csv":
         data_storage = api.DataStorage(
             storage_type="csv",
             path=fspath(path),
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
-            poll_new_objects=poll_new_objects,
+            mode=internal_connector_mode(mode),
             persistent_id=persistent_id,
         )
     else:
         data_storage = api.DataStorage(
             storage_type="fs",
             path=fspath(path),
-            poll_new_objects=poll_new_objects,
+            mode=internal_connector_mode(mode),
             persistent_id=persistent_id,
         )
 

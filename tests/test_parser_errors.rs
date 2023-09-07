@@ -1,8 +1,8 @@
 mod helpers;
 use helpers::assert_error_shown_for_reader_context;
 
-use pathway_engine::connectors::data_format::{DebeziumMessageParser, IdentityParser};
-use pathway_engine::connectors::data_storage::ReaderContext;
+use pathway_engine::connectors::data_format::DebeziumMessageParser;
+use pathway_engine::connectors::data_storage::{DataEventType, ReaderContext};
 
 #[test]
 fn test_utf8_decode_error() -> eyre::Result<()> {
@@ -48,22 +48,9 @@ fn test_unsupported_context() -> eyre::Result<()> {
     );
 
     assert_error_shown_for_reader_context(
-        &ReaderContext::TokenizedEntries(vec!["a".to_string()]),
+        &ReaderContext::TokenizedEntries(DataEventType::Insert, vec!["a".to_string()]),
         Box::new(parser),
         "internal error, reader context is not supported in this parser",
-    );
-
-    Ok(())
-}
-
-#[test]
-fn test_incomplete_removal() -> eyre::Result<()> {
-    let parser = IdentityParser::new();
-
-    assert_error_shown_for_reader_context(
-        &ReaderContext::Diff((false, None, Vec::new())),
-        Box::new(parser),
-        "received removal event without a key",
     );
 
     Ok(())

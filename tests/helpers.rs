@@ -10,14 +10,19 @@ use pathway_engine::persistence::config::{
 };
 use pathway_engine::persistence::metadata_backends::FilesystemKVStorage;
 use pathway_engine::persistence::state::MetadataAccessor;
-use pathway_engine::persistence::tracker::{PersistenceManager, SimplePersistenceManager};
+use pathway_engine::persistence::tracker::SingleWorkerPersistentStorage;
 
 use pathway_engine::connectors::data_format::{ParsedEvent, Parser};
-use pathway_engine::connectors::data_storage::{ReadResult, Reader, ReaderBuilder, ReaderContext};
+use pathway_engine::connectors::data_storage::{
+    DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
+};
 use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::{Connector, Entry};
 use pathway_engine::engine::Key;
 use pathway_engine::persistence::frontier::OffsetAntichain;
+use pathway_engine::persistence::sync::{
+    SharedWorkersPersistenceCoordinator, WorkersPersistenceCoordinator,
+};
 
 #[derive(Debug)]
 pub struct FullReadResult {
@@ -29,7 +34,8 @@ pub struct FullReadResult {
 pub fn full_cycle_read(
     reader: Box<dyn ReaderBuilder>,
     parser: &mut dyn Parser,
-    persistent_storage: &Option<Arc<Mutex<SimplePersistenceManager>>>,
+    persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
+    global_tracker: &Option<SharedWorkersPersistenceCoordinator>,
 ) -> FullReadResult {
     let maybe_persistent_id = reader.persistent_id();
 
@@ -71,7 +77,7 @@ pub fn full_cycle_read(
         }
 
         match entry {
-            Entry::Realtime(ReadResult::Data(raw_data, Some((offset_key, offset_value)))) => {
+            Entry::Realtime(ReadResult::Data(raw_data, (offset_key, offset_value))) => {
                 frontier.advance_offset(offset_key.clone(), offset_value.clone());
 
                 let events = parser.parse(raw_data).unwrap();
@@ -82,12 +88,16 @@ pub fn full_cycle_read(
                                 let key = Key::random();
                                 SnapshotEvent::Insert(key, values.clone())
                             }
-                            ParsedEvent::Remove((_, _)) => {
+                            ParsedEvent::Delete((_, _)) => {
                                 todo!("remove isn't supported in this test")
                             }
                             ParsedEvent::AdvanceTime => SnapshotEvent::AdvanceTime(1),
                         };
-                        snapshot_writer.write(&snapshot_event).unwrap();
+                        snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&snapshot_event)
+                            .unwrap();
                     }
                     new_parsed_entries.push(event);
                 }
@@ -117,12 +127,12 @@ pub fn full_cycle_read(
             .unwrap()
             .register_sink();
         for sink_id in 0..=last_sink_id {
-            persistent_storage
-                .clone()
+            global_tracker
+                .as_ref()
                 .unwrap()
                 .lock()
                 .unwrap()
-                .accept_finalized_timestamp(sink_id, Some(2));
+                .accept_finalized_timestamp(0, sink_id, Some(2));
         }
     }
 
@@ -161,12 +171,18 @@ pub fn read_data_from_reader(
 pub fn create_persistence_manager(
     fs_path: &Path,
     recreate: bool,
-) -> Arc<Mutex<SimplePersistenceManager>> {
+) -> (
+    Arc<Mutex<SingleWorkerPersistentStorage>>,
+    SharedWorkersPersistenceCoordinator,
+) {
     if recreate {
         let _ = std::fs::remove_dir_all(fs_path);
     }
-    Arc::new(Mutex::new(
-        SimplePersistenceManager::new(
+
+    let global_tracker = Arc::new(Mutex::new(WorkersPersistenceCoordinator::new()));
+
+    let tracker = Arc::new(Mutex::new(
+        SingleWorkerPersistentStorage::new(
             PersistenceManagerOuterConfig::new(
                 MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
                 StreamStorageConfig::Filesystem(fs_path.to_path_buf()),
@@ -174,7 +190,13 @@ pub fn create_persistence_manager(
             .into_inner(0, 1),
         )
         .expect("Failed to create persistence manager"),
-    ))
+    ));
+    global_tracker
+        .lock()
+        .unwrap()
+        .register_worker(tracker.clone());
+
+    (tracker, global_tracker)
 }
 
 pub fn create_metadata_storage(fs_path: &Path, recreate: bool) -> MetadataAccessor {
@@ -253,7 +275,7 @@ pub fn assert_error_shown_for_raw_data(
     error_formatted_text: &str,
 ) {
     assert_error_shown_for_reader_context(
-        &ReaderContext::from_raw_bytes(raw_data.to_vec()),
+        &ReaderContext::from_raw_bytes(DataEventType::Insert, raw_data.to_vec()),
         parser,
         error_formatted_text,
     );

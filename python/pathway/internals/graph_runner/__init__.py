@@ -6,7 +6,7 @@ from typing import Callable, Iterable, List, Optional, Tuple
 
 from pathway.internals import api, column, environ
 from pathway.internals import parse_graph as graph
-from pathway.internals import table
+from pathway.internals import table, trace
 from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.internals.graph_runner.operator_handler import OperatorHandler
 from pathway.internals.graph_runner.row_transformer_operator_handler import (  # noqa: registers handler for RowTransformerOperator
@@ -101,15 +101,29 @@ class GraphRunner:
             else:
                 persistence_engine_config = None
 
-            return api.run_with_new_graph(
-                logic,
-                event_loop=event_loop,
-                ignore_asserts=self.ignore_asserts,
-                stats_monitor=stats_monitor,
-                monitoring_level=monitoring_level,
-                with_http_server=self.with_http_server,
-                persistence_config=persistence_engine_config,
-            )
+            try:
+                return api.run_with_new_graph(
+                    logic,
+                    event_loop=event_loop,
+                    ignore_asserts=self.ignore_asserts,
+                    stats_monitor=stats_monitor,
+                    monitoring_level=monitoring_level,
+                    with_http_server=self.with_http_server,
+                    persistence_config=persistence_engine_config,
+                )
+            except api.EngineErrorWithTrace as e:
+                error, frame = e.args
+                if frame is not None:
+                    trace.add_pathway_trace_note(
+                        error,
+                        trace.Frame(
+                            filename=frame.file_name,
+                            line_number=frame.line_number,
+                            line=frame.line,
+                            function=frame.function,
+                        ),
+                    )
+                raise error
 
     def build_scope(
         self,

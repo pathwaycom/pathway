@@ -49,9 +49,13 @@ class TableLike(DeprecationSuperclass):
 
         Semantics: Used in situations where Pathway cannot deduce universes are disjoint.
 
-        Returns: self
+        Returns:
+            self
 
-        Note: The assertion works in place.
+        Note:
+            The assertion works in place.
+
+        Example:
 
         >>> import pathway as pw
         >>> t1 = pw.debug.parse_to_table('''
@@ -85,9 +89,11 @@ class TableLike(DeprecationSuperclass):
 
         Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
 
-        Returns: self
+        Returns:
+            self
 
-        Note: The assertion works in place.
+        Note:
+            The assertion works in place.
 
         Example:
 
@@ -120,9 +126,11 @@ class TableLike(DeprecationSuperclass):
 
         Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
 
-        Returns: None
+        Returns:
+            None
 
-        Note: The assertion works in place.
+        Note:
+            The assertion works in place.
 
         Example:
 

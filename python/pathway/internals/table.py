@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from functools import cached_property
+import functools
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -37,7 +37,7 @@ from pathway.internals.decorators import (
     table_to_datasink,
 )
 from pathway.internals.desugaring import combine_args_kwargs, desugar
-from pathway.internals.dtype import DType, is_pointer, unoptionalize
+from pathway.internals.dtype import DType, is_pointer, types_lca, unoptionalize
 from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.ix import IxIndexer
 from pathway.internals.join import Joinable
@@ -157,7 +157,7 @@ class Table(
         return expr.ColumnReference(table=self, column=self._id_column, name="id")
 
     def column_names(self):
-        return self._columns.keys()
+        return self.keys()
 
     def keys(self):
         return self._columns.keys()
@@ -259,9 +259,9 @@ class Table(
         else:
             return self.select(*[self[name] for name in args])
 
+    @trace_user_frame
     @staticmethod
     @runtime_type_check
-    @trace_user_frame
     def from_columns(
         *args: expr.ColumnReference, **kwargs: expr.ColumnReference
     ) -> Table:
@@ -305,8 +305,8 @@ class Table(
                     )
             return table.select(*args, **kwargs)
 
-    @runtime_type_check
     @trace_user_frame
+    @runtime_type_check
     def concat_reindex(self, *tables: Table) -> Table:
         """Concatenate contents of several tables.
 
@@ -345,9 +345,9 @@ class Table(
         universes.promise_are_pairwise_disjoint(*reindexed)
         return Table.concat(*reindexed)
 
+    @trace_user_frame
     @staticmethod
     @runtime_type_check
-    @trace_user_frame
     def empty(**kwargs: DType) -> Table:
         """Creates an empty table with a schema specified by kwargs.
 
@@ -369,6 +369,7 @@ class Table(
         G.universe_solver.register_as_empty(ret._universe)
         return ret
 
+    @trace_user_frame
     @desugar
     @arg_handler(handler=select_args_handler)
     @contextualized_operator
@@ -477,6 +478,7 @@ class Table(
         """
         return TableSlice(dict(**self), self)
 
+    @trace_user_frame
     @desugar
     @runtime_type_check
     def filter(self, filter_expression: expr.ColumnExpression) -> Table:
@@ -675,10 +677,10 @@ class Table(
             pk_columns=self._pk_columns,
         )
 
+    @trace_user_frame
     @desugar
     @arg_handler(handler=groupby_handler)
     @runtime_type_check
-    @trace_user_frame
     def groupby(
         self,
         *args: expr.ColumnReference,
@@ -745,9 +747,9 @@ class Table(
             set_id=id is not None,
         )
 
+    @trace_user_frame
     @desugar
     @arg_handler(handler=reduce_args_handler)
-    @trace_user_frame
     def reduce(
         self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression
     ) -> Table:
@@ -856,9 +858,8 @@ class Table(
         """
         return self.update_cells(other)
 
-    @contextualized_operator
-    @runtime_type_check
     @trace_user_frame
+    @runtime_type_check
     def concat(self, *others: Table) -> Table:
         """Concats `self` with every `other` ∊ `others`.
 
@@ -903,10 +904,26 @@ class Table(
         12  | Tom   | 40
         """
         for other in others:
-            if other._columns.keys() != self._columns.keys():
+            if other.keys() != self.keys():
                 raise ValueError(
                     "columns do not match in the argument of Table.concat()"
                 )
+
+        schema = {
+            key: functools.reduce(
+                types_lca, [other.schema[key] for other in others], self.schema[key]
+            )
+            for key in self.keys()
+        }
+
+        return Table._concat(
+            self.cast_to_types(**schema),
+            *[other.cast_to_types(**schema) for other in others],
+        )
+
+    @trace_user_frame
+    @contextualized_operator
+    def _concat(self, *others: Table) -> Table:
         union_universes = (self._universe, *(other._universe for other in others))
         if not G.universe_solver.query_are_disjoint(*union_universes):
             raise ValueError(
@@ -919,10 +936,7 @@ class Table(
             universe=universe,
             union_universes=union_universes,
             updates=tuple(
-                {
-                    col_name: other._columns[col_name]
-                    for col_name in self._columns.keys()
-                }
+                {col_name: other._columns[col_name] for col_name in self.keys()}
                 for other in others
             ),
         )
@@ -938,7 +952,7 @@ class Table(
         )
         return ret
 
-    @contextualized_operator
+    @trace_user_frame
     @runtime_type_check
     def update_cells(self, other: Table) -> Table:
         """Updates cells of `self`, breaking ties in favor of the values in `other`.
@@ -979,10 +993,22 @@ class Table(
         9   | Bob   | 1
         10  | Alice | 30
         """
-        if names := (set(other._columns.keys()) - set(self._columns.keys())):
+        if names := (set(other.keys()) - set(self.keys())):
             raise ValueError(
                 f"Columns of the argument in Table.update_cells() not present in the updated table: {list(names)}."
             )
+
+        schema = {
+            key: types_lca(self.schema[key], other.schema[key]) for key in other.keys()
+        }
+        return Table._update_cells(
+            self.cast_to_types(**schema), other.cast_to_types(**schema)
+        )
+
+    @trace_user_frame
+    @contextualized_operator
+    @runtime_type_check
+    def _update_cells(self, other: Table) -> Table:
         if not other._universe.is_subset_of(self._universe):
             raise ValueError(
                 "Universes of all the argument of Table.update_cells() need to be"
@@ -994,11 +1020,11 @@ class Table(
         context = clmn.UpdateRowsContext(
             universe=self._universe,
             union_universes=(self._universe,),
-            updates={name: other._columns[name] for name in other._columns.keys()},
+            updates={name: other._columns[name] for name in other.keys()},
         )
         updated_cols = {
             name: self._wrap_column_in_context(context, self._columns[name], name)
-            for name in other._columns.keys()
+            for name in other.keys()
         }
         cols_missing_in_other = {
             name: column
@@ -1009,7 +1035,7 @@ class Table(
             *cols_missing_in_other.items(), *updated_cols.items()
         )
 
-    @contextualized_operator
+    @trace_user_frame
     @runtime_type_check
     def update_rows(self, other: Table) -> Table:
         """Updates rows of `self`, breaking ties in favor for the rows in `other`.
@@ -1049,18 +1075,28 @@ class Table(
         10  | Alice | 30
         12  | Tom   | 40
         """
-        if other._columns.keys() != self._columns.keys():
+        if other.keys() != self.keys():
             raise ValueError(
                 "Columns do not match between argument of Table.update_rows() and the updated table."
             )
+
+        schema = {
+            key: types_lca(self.schema[key], other.schema[key]) for key in self.keys()
+        }
+        return Table._update_rows(
+            self.cast_to_types(**schema), other.cast_to_types(**schema)
+        )
+
+    @trace_user_frame
+    @contextualized_operator
+    @runtime_type_check
+    def _update_rows(self, other: Table) -> Table:
         union_universes = (self._universe, other._universe)
         universe = G.universe_solver.get_union(*union_universes)
         context = clmn.UpdateRowsContext(
             universe=universe,
             union_universes=union_universes,
-            updates={
-                col_name: other._columns[col_name] for col_name in self._columns.keys()
-            },
+            updates={col_name: other._columns[col_name] for col_name in self.keys()},
         )
         columns = {
             name: self._wrap_column_in_context(context, column, name)
@@ -1106,9 +1142,9 @@ class Table(
         columns.update(other)
         return self.select(**columns)
 
+    @trace_user_frame
     @desugar
     @runtime_type_check
-    @trace_user_frame
     def with_id(self, new_index: expr.ColumnReference) -> Table:
         """Set new ids based on another column containing id-typed values.
 
@@ -1147,9 +1183,9 @@ class Table(
         """
         return self._with_new_index(new_index)
 
+    @trace_user_frame
     @desugar
     @runtime_type_check
-    @trace_user_frame
     def with_id_from(self, *args: expr.ColumnExpressionOrValue) -> Table:
         """Compute new ids based on values in columns.
         Ids computed from `columns` must be row-wise unique.
@@ -1196,9 +1232,9 @@ class Table(
             pk_columns=pk_columns,
         )
 
+    @trace_user_frame
     @contextualized_operator
     @runtime_type_check
-    @trace_user_frame
     def _with_new_index(
         self,
         new_index: expr.ColumnExpression,
@@ -1228,10 +1264,10 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
+    @trace_user_frame
     @desugar
     @non_contextualized_operator
     @runtime_type_check
-    @trace_user_frame
     def rename_columns(self, **kwargs: Union[str, expr.ColumnReference]) -> Table:
         """Rename columns according to kwargs.
 
@@ -1352,8 +1388,8 @@ class Table(
         """
         return self.rename_by_dict({name: name + suffix for name in self.keys()})
 
-    @runtime_type_check
     @trace_user_frame
+    @runtime_type_check
     def rename(
         self,
         names_mapping: Optional[Dict[Union[str, expr.ColumnReference], str]] = None,
@@ -1376,10 +1412,10 @@ class Table(
             return self.rename_by_dict(names_mapping=names_mapping)
         return self.rename_columns(**kwargs)
 
+    @trace_user_frame
     @desugar
     @non_contextualized_operator
     @runtime_type_check
-    @trace_user_frame
     def without(self, *columns: Union[str, expr.ColumnReference]) -> Table:
         """Selects all columns without named column references.
 
@@ -1414,9 +1450,9 @@ class Table(
                 new_columns.pop(col)
         return self._with_same_universe(*new_columns.items())
 
+    @trace_user_frame
     @desugar
     @runtime_type_check
-    @trace_user_frame
     def having(self, *indexers: expr.ColumnReference) -> Table:
         """Removes rows so that indexed.ix(indexer) is possible when some rows are missing,
         for each indexer in indexers"""
@@ -1431,6 +1467,8 @@ class Table(
         else:
             return rets[0].intersect(*rets[1:])
 
+    @trace_user_frame
+    @runtime_type_check
     def update_types(self, **kwargs: Any) -> Table:
         """Updates types in schema. Has no effect on the runtime."""
 
@@ -1443,6 +1481,21 @@ class Table(
 
         return self.with_columns(
             **{key: declare_type(val, self[key]) for key, val in kwargs.items()}
+        )
+
+    @runtime_type_check
+    def cast_to_types(self, **kwargs: Any) -> Table:
+        """Casts columns to types."""
+
+        for name in kwargs.keys():
+            if name not in self.keys():
+                raise ValueError(
+                    "Table.cast_to_types() argument name has to be an existing table column name."
+                )
+        from pathway.internals.common import cast
+
+        return self.with_columns(
+            **{key: cast(val, self[key]) for key, val in kwargs.items()}
         )
 
     @contextualized_operator
@@ -1465,9 +1518,9 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
+    @trace_user_frame
     @contextualized_operator
     @runtime_type_check
-    @trace_user_frame
     def with_universe_of(self, other: TableLike) -> Table:
         """Returns a copy of self with exactly the same universe as others.
 
@@ -1497,10 +1550,10 @@ class Table(
         universes.promise_are_equal(self, other)
         return self._unsafe_promise_universe(other._universe)
 
+    @trace_user_frame
     @desugar
     @contextualized_operator
     @runtime_type_check
-    @trace_user_frame
     def flatten(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Performs a flatmap operation on a column or expression given as a first
         argument. Datatype of this column or expression has to be iterable.
@@ -1573,10 +1626,10 @@ class Table(
             id_column=clmn.IdColumn(context),
         )
 
+    @trace_user_frame
     @desugar
     @contextualized_operator
     @runtime_type_check
-    @trace_user_frame
     def _sort_experimental(
         self,
         key: expr.ColumnExpression,
@@ -1648,7 +1701,7 @@ class Table(
             lineage=lineage,
         )
 
-    @cached_property
+    @functools.cached_property
     def _table_restricted_context(self) -> clmn.TableRestrictedRowwiseContext:
         return clmn.TableRestrictedRowwiseContext(self._universe, self)
 
@@ -1690,8 +1743,8 @@ class Table(
         )
 
     def _sort_columns_by_other(self, other: Table):
-        assert self._columns.keys() == other._columns.keys()
-        self._columns = {name: self._columns[name] for name in other._columns.keys()}
+        assert self.keys() == other.keys()
+        self._columns = {name: self._columns[name] for name in other.keys()}
 
     def _operator_dependencies(self) -> StableSet[Table]:
         return StableSet([self])

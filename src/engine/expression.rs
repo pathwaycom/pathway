@@ -57,10 +57,14 @@ impl Expressions {
 fn maybe_argument_slice(source: &[Arc<Expression>]) -> Option<Range<usize>> {
     let mut source = source.iter();
     let first = source.next()?;
-    let Expression::Any(AnyExpression::Argument(first_index)) = **first else { return None };
+    let Expression::Any(AnyExpression::Argument(first_index)) = **first else {
+        return None;
+    };
     let mut next_index = first_index + 1;
     for current in source {
-        let Expression::Any(AnyExpression::Argument(current_index)) = **current else { return None };
+        let Expression::Any(AnyExpression::Argument(current_index)) = **current else {
+            return None;
+        };
         if current_index != next_index {
             return None;
         }

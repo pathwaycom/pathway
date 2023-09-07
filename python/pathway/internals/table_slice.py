@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Dict, List, Union, overload
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.thisclass import ThisMetaclass, this
+from pathway.internals.trace import trace_user_frame
 
 if TYPE_CHECKING:
     from pathway.internals.table import Table
@@ -55,6 +56,7 @@ class TableSlice:
     def __getitem__(self, args: List[Union[str, ColumnReference]]) -> TableSlice:
         ...
 
+    @trace_user_frame
     def __getitem__(
         self, arg: Union[str, ColumnReference] | List[Union[str, ColumnReference]]
     ) -> Union[ColumnReference, TableSlice]:
@@ -63,6 +65,7 @@ class TableSlice:
         else:
             return TableSlice({self._normalize(k): self[k] for k in arg}, self._table)
 
+    @trace_user_frame
     def __getattr__(self, name: str) -> ColumnReference:
         from pathway.internals import Table
 
@@ -75,6 +78,7 @@ class TableSlice:
             raise AttributeError(f"Column name {name!r} not found in {self!r}.")
         return self._mapping[name]
 
+    @trace_user_frame
     @runtime_type_check
     def without(self, *cols: Union[str, ColumnReference]) -> TableSlice:
         mapping = self._mapping.copy()
@@ -85,6 +89,7 @@ class TableSlice:
             mapping.pop(colname)
         return TableSlice(mapping, self._table)
 
+    @trace_user_frame
     @runtime_type_check
     def rename(
         self,
@@ -103,10 +108,12 @@ class TableSlice:
             mapping[new] = self._mapping[old]
         return TableSlice(mapping, self._table)
 
+    @trace_user_frame
     @runtime_type_check
     def with_prefix(self, prefix: str) -> TableSlice:
         return self.rename({name: prefix + name for name in self.keys()})
 
+    @trace_user_frame
     @runtime_type_check
     def with_suffix(self, suffix: str) -> TableSlice:
         return self.rename({name: name + suffix for name in self.keys()})

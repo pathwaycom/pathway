@@ -18,7 +18,7 @@ from ._interval_join import (
     interval_join_outer,
     interval_join_right,
 )
-from ._window import Window, session, sliding, tumbling, windowby
+from ._window import Window, intervals_over, session, sliding, tumbling, windowby
 from ._window_join import (
     WindowJoinResult,
     window_join,
@@ -41,6 +41,7 @@ __all__ = [
     "interval_join_left",
     "interval_join_right",
     "interval_join_outer",
+    "intervals_over",
     "window_join",
     "window_join_inner",
     "window_join_left",

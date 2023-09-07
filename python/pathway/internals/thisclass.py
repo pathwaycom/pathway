@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, overload
 
 from pathway.internals import expression as expr
+from pathway.internals.trace import trace_user_frame
 
 if TYPE_CHECKING:
     from pathway.internals.join import Joinable
@@ -18,6 +19,7 @@ _key_guard_counter = itertools.count()
 
 
 class ThisMetaclass(type):
+    @trace_user_frame
     def __getattr__(self, name: str) -> expr.ColumnReference:
         if name.startswith("__"):
             raise AttributeError
@@ -69,6 +71,7 @@ class ThisMetaclass(type):
     def __getitem__(self, args: List[str | expr.ColumnReference]) -> ThisMetaclass:
         ...
 
+    @trace_user_frame
     def __getitem__(
         self, arg: str | expr.ColumnReference | List[str | expr.ColumnReference]
     ) -> expr.ColumnReference | ThisMetaclass:
@@ -84,6 +87,7 @@ class ThisMetaclass(type):
         else:
             return self._create_mock("__getitem__", [arg], {})
 
+    @trace_user_frame
     def __iter__(self):
         class subclass(self, iter_guard):  # type: ignore[valid-type,misc]
             @classmethod
@@ -98,6 +102,7 @@ class ThisMetaclass(type):
         # _key_guard_counter is necessary, otherwise key-collisions happen
         return [f"{KEY_GUARD}_{next(_key_guard_counter)}"]
 
+    @trace_user_frame
     def __call__(self, *args, **kwargs):
         raise TypeError("You cannot instantiate `this` class.")
 

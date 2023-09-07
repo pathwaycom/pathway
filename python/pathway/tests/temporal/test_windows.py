@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import typing
 
 import pandas as pd
 import pytest
@@ -549,3 +550,93 @@ def test_incorrect_args(dtype, window, error_str):
         + r"\) have to be of types .* but are of types .*",
     ):
         t1.windowby(t1.t, window=window)
+
+
+def test_intervals_over():
+    t = T(
+        """
+        | t |  v
+    1   | 1 |  10
+    2   | 2 |  1
+    3   | 4 |  3
+    4   | 8 |  2
+    5   | 9 |  4
+    6   | 10|  8
+    7   | 1 |  9
+    8   | 2 |  16
+    """
+    )
+    probes = T(
+        """
+    t
+    2
+    4
+    6
+    8
+    10
+    """
+    )
+    result = pw.temporal.windowby(
+        t,
+        t.t,
+        window=pw.temporal.intervals_over(at=probes.t, lower_bound=-2, upper_bound=1),
+    ).reduce(pw.this._pw_window_location, v=pw.reducers.tuple(pw.this.v))
+
+    df = pd.DataFrame(
+        {
+            "_pw_window_location": [2, 4, 6, 8, 10],
+            "v": [(16, 1, 10, 9), (3, 16, 1), (3,), (4, 2), (4, 8, 2)],
+        }
+    )
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(_pw_window_location=int, v=typing.List[int]),
+    )
+    assert_table_equality_wo_index(result, expected)
+
+
+def test_intervals_over_with_shard():
+    t = T(
+        """
+        | t |  v  | shard
+    1   | 1 |  10 | 1
+    2   | 2 |  1  | 1
+    3   | 4 |  3  | 1
+    4   | 8 |  2  | 1
+    5   | 9 |  4  | 2
+    6   | 10|  8  | 2
+    7   | 1 |  9  | 2
+    8   | 2 |  16 | 2
+    """
+    )
+    probes = T(
+        """
+    t
+    2
+    6
+    10
+    """
+    )
+    result = pw.temporal.windowby(
+        t,
+        t.t,
+        window=pw.temporal.intervals_over(at=probes.t, lower_bound=-4, upper_bound=2),
+        shard=pw.this.shard,
+    ).reduce(
+        pw.this._pw_window_location, pw.this._pw_shard, v=pw.reducers.tuple(pw.this.v)
+    )
+
+    df = pd.DataFrame(
+        {
+            "_pw_window_location": [2, 2, 6, 6, 10, 10],
+            "_pw_shard": [1, 2, 1, 2, 1, 2],
+            "v": [(3, 1, 10), (16, 9), (3, 2, 1), (16,), (2,), (8, 4)],
+        }
+    )
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(
+            _pw_window_location=int, _pw_shard=int, v=typing.List[int]
+        ),
+    )
+    assert_table_equality_wo_index(result, expected)

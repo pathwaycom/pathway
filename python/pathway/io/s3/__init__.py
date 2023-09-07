@@ -15,7 +15,7 @@ from pathway.io._utils import (
     construct_connector_properties,
     construct_s3_data_storage,
     construct_schema_and_data_format,
-    need_poll_new_objects,
+    internal_connector_mode,
 )
 
 
@@ -196,11 +196,17 @@ def read(
     ...     schema=InputSchema,
     ... )
     """
+    internal_mode = internal_connector_mode(mode)
+    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
+        raise NotImplementedError(
+            "Snapshot mode is currently unsupported in S3-like connectors"
+        )
+
     data_storage = construct_s3_data_storage(
         path=path,
         rust_engine_s3_settings=aws_s3_settings.settings,
         format=format,
-        poll_new_objects=need_poll_new_objects(mode),
+        mode=internal_mode,
         csv_settings=csv_settings,
         persistent_id=persistent_id,
     )
@@ -300,12 +306,17 @@ def read_from_digital_ocean(
     ...     schema=InputSchema,
     ... )
     """
+    internal_mode = internal_connector_mode(mode)
+    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
+        raise NotImplementedError(
+            "Snapshot mode is currently unsupported in S3-like connectors"
+        )
 
     data_storage = construct_s3_data_storage(
         path=path,
         rust_engine_s3_settings=do_s3_settings.settings,
         format=format,
-        poll_new_objects=need_poll_new_objects(mode),
+        mode=internal_mode,
         csv_settings=csv_settings,
         persistent_id=persistent_id,
     )
@@ -404,12 +415,17 @@ def read_from_wasabi(
     ...     schema=InputSchema,
     ... )
     """
+    internal_mode = internal_connector_mode(mode)
+    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
+        raise NotImplementedError(
+            "Snapshot mode is currently unsupported in S3-like connectors"
+        )
 
     data_storage = construct_s3_data_storage(
         path=path,
         rust_engine_s3_settings=wasabi_s3_settings.settings,
         format=format,
-        poll_new_objects=need_poll_new_objects(mode),
+        mode=internal_mode,
         csv_settings=csv_settings,
         persistent_id=persistent_id,
     )

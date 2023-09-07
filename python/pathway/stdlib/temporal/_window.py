@@ -405,6 +405,66 @@ class _SlidingWindow(Window):
         )
 
 
+@dataclasses.dataclass
+class _IntervalsOverWindow(Window):
+    at: pw.ColumnReference
+    lower_bound: Union[int, float, datetime.timedelta]
+    upper_bound: Union[int, float, datetime.timedelta]
+
+    @runtime_type_check
+    def _apply(
+        self,
+        table: pw.Table,
+        key: pw.ColumnExpression,
+        shard: Optional[pw.ColumnExpression],
+    ) -> pw.GroupedTable:
+        check_joint_types(
+            {
+                "time_expr": (key, TimeEventType),
+                "window.lower_bound": (self.lower_bound, IntervalType),
+                "window.upper_bound": (self.upper_bound, IntervalType),
+                "window.at": (self.at, TimeEventType),
+            }
+        )
+
+        return (
+            temporal.interval_join(
+                self.at.table,
+                table,
+                self.at,
+                key,
+                temporal.interval(self.lower_bound, self.upper_bound),
+            )
+            .select(
+                _pw_window_location=pw.left[self.at.name],
+                _pw_window_start=pw.left[self.at.name] + self.lower_bound,
+                _pw_window_end=pw.left[self.at.name] + self.upper_bound,
+                _pw_shard=shard,
+                *pw.right,
+            )
+            .groupby(
+                pw.this._pw_window_location,
+                pw.this._pw_window_start,
+                pw.this._pw_window_end,
+                pw.this._pw_shard,
+            )
+        )
+
+    @runtime_type_check
+    def _join(
+        self,
+        left: pw.Table,
+        right: pw.Table,
+        left_time_expression: pw.ColumnExpression,
+        right_time_expression: pw.ColumnExpression,
+        *on: pw.ColumnExpression,
+        mode: pw.JoinMode,
+    ) -> temporal.WindowJoinResult:
+        raise NotImplementedError(
+            "window_join doesn't support windows of type intervals_over"
+        )
+
+
 @runtime_type_check
 @trace_user_frame
 def session(
@@ -603,10 +663,72 @@ def tumbling(
     )
 
 
+@runtime_type_check
+@trace_user_frame
+def intervals_over(
+    *,
+    at: pw.ColumnReference,
+    lower_bound: Union[int, float, datetime.timedelta],
+    upper_bound: Union[int, float, datetime.timedelta],
+) -> Window:
+    """Allows grouping together elements within a window.
+
+    Windows are created for each time t in at, by taking values with times
+    within [t+lower_bound, t+upper_bound].
+
+    Args:
+        lower_bound: lower bound for interval
+        upper_bound: upper bound for interval
+        at: column of times for which windows are to be created
+
+    Returns:
+        Window: object to pass as an argument to `.windowby()`
+
+    Examples:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown(
+    ... '''
+    ...     | t |  v
+    ... 1   | 1 |  10
+    ... 2   | 2 |  1
+    ... 3   | 4 |  3
+    ... 4   | 8 |  2
+    ... 5   | 9 |  4
+    ... 6   | 10|  8
+    ... 7   | 1 |  9
+    ... 8   | 2 |  16
+    ... ''')
+    >>> probes = pw.debug.table_from_markdown(
+    ... '''
+    ... t
+    ... 2
+    ... 4
+    ... 6
+    ... 8
+    ... 10
+    ... ''')
+    >>> result = (
+    ...     pw.temporal.windowby(t, t.t, window=pw.temporal.intervals_over(
+    ...         at=probes.t, lower_bound=-2, upper_bound=1
+    ...      ))
+    ...     .reduce(pw.this._pw_window_location, v=pw.reducers.tuple(pw.this.v))
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    _pw_window_location | v
+    2                   | (16, 1, 10, 9)
+    4                   | (3, 16, 1)
+    6                   | (3,)
+    8                   | (4, 2)
+    10                  | (4, 8, 2)
+    """
+    return _IntervalsOverWindow(at, lower_bound, upper_bound)
+
+
+@trace_user_frame
 @desugar
 @arg_handler(handler=windowby_handler)
 @runtime_type_check
-@trace_user_frame
 def windowby(
     self: pw.Table,
     time_expr: pw.ColumnExpression,

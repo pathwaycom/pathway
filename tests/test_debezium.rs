@@ -5,13 +5,16 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use pathway_engine::connectors::data_format::{DebeziumMessageParser, ParsedEvent};
-use pathway_engine::connectors::data_storage::FilesystemReader;
+use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader};
 use pathway_engine::engine::Value;
 
 #[test]
 fn test_debezium_reads_ok() -> eyre::Result<()> {
-    let reader =
-        FilesystemReader::new(PathBuf::from("tests/data/sample_debezium.txt"), false, None)?;
+    let reader = FilesystemReader::new(
+        PathBuf::from("tests/data/sample_debezium.txt"),
+        ConnectorMode::Static,
+        None,
+    )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),
         vec!["first_name".to_string()],
@@ -38,12 +41,18 @@ fn test_debezium_reads_ok() -> eyre::Result<()> {
             Some(vec![Value::Int(1005)]),
             vec![Value::from_str("Sergey")?],
         )),
-        ParsedEvent::Remove((vec![Value::Int(1005)], vec![Value::from_str("Sergey")?])),
+        ParsedEvent::Delete((
+            Some(vec![Value::Int(1005)]),
+            vec![Value::from_str("Sergey")?],
+        )),
         ParsedEvent::Insert((
             Some(vec![Value::Int(1005)]),
             vec![Value::from_str("Siarhei")?],
         )),
-        ParsedEvent::Remove((vec![Value::Int(1005)], vec![Value::from_str("Siarhei")?])),
+        ParsedEvent::Delete((
+            Some(vec![Value::Int(1005)]),
+            vec![Value::from_str("Siarhei")?],
+        )),
     ];
     assert_eq!(changelog, expected_values);
 

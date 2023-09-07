@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import sys
 import traceback
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional
@@ -62,7 +63,7 @@ class Trace:
 
         return Trace(frames=frames, user_frame=user_frame)
 
-    def to_engine(self) -> Optional[api.PyTrace]:
+    def to_engine(self) -> Optional[api.Trace]:
         user_frame = self.user_frame
         if (
             user_frame is None
@@ -73,10 +74,11 @@ class Trace:
         else:
             from pathway.internals import api
 
-            return api.PyTrace(
+            return api.Trace(
                 file_name=user_frame.filename,
                 line_number=user_frame.line_number,
                 line=user_frame.line,
+                function=user_frame.function,
             )
 
 
@@ -86,8 +88,14 @@ def _format_frame(frame: Frame) -> str:
     File: {frame.filename}:{frame.line_number}"""
 
 
-def _reraise_with_user_frame(e: Exception, trace: Optional[Trace] = None):
-    if hasattr(e, "__pathway_wrapped__"):
+def _reraise_with_user_frame(e: Exception, trace: Optional[Trace] = None) -> None:
+    traceback = e.__traceback__
+    if traceback is not None:
+        traceback = traceback.tb_next
+
+    e = e.with_traceback(traceback)
+
+    if hasattr(e, "_pathway_trace_note"):
         raise e
 
     if trace is None:
@@ -95,30 +103,21 @@ def _reraise_with_user_frame(e: Exception, trace: Optional[Trace] = None):
 
     user_frame = trace.user_frame
 
-    if user_frame is None:
-        raise e
+    if user_frame is not None:
+        add_pathway_trace_note(e, user_frame)
+
+    raise e
+
+
+def add_pathway_trace_note(e: Exception, frame: Frame) -> None:
+    note = _format_frame(frame)
+    e._pathway_trace_note = note  # type:ignore[attr-defined]
+    if sys.version_info < (3, 11):
+        import exceptiongroup  # noqa:F401 enable backport
+
+        e.__notes__ = getattr(e, "__notes__", []) + [note]  # type:ignore[attr-defined]
     else:
-        error_type = type(e)
-
-        class Wrapper(error_type):  # type: ignore
-            __name__ = error_type.__name__
-            __qualname__ = error_type.__qualname__
-            __module__ = error_type.__module__
-            __pathway_wrapped__ = e
-
-            __repr__ = Exception.__repr__
-            __str__ = Exception.__str__
-
-            def __init__(self, msg: str):
-                Exception.__init__(self, msg)
-
-        message = f"{e}\n{_format_frame(user_frame)}"
-
-        traceback = e.__traceback__
-        if traceback is not None:
-            traceback = traceback.tb_next
-
-        raise Wrapper(message).with_traceback(traceback) from e.__cause__
+        e.add_note(note)
 
 
 def trace_user_frame(func):

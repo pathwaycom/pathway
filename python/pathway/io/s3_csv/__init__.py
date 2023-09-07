@@ -16,7 +16,7 @@ from pathway.io._utils import (
     check_deprecated_kwargs,
     construct_connector_properties,
     construct_schema_and_data_format,
-    need_poll_new_objects,
+    internal_connector_mode,
 )
 from pathway.io.s3 import AwsS3Settings
 
@@ -146,8 +146,12 @@ def read(
     ...     schema=InputSchema,
     ... )
     """
+    internal_mode = internal_connector_mode(mode)
+    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
+        raise NotImplementedError(
+            "Snapshot mode is currently unsupported in S3-like connectors"
+        )
 
-    poll_new_objects = need_poll_new_objects(mode)
     check_deprecated_kwargs(kwargs, ["poll_new_objects"])
 
     data_storage = api.DataStorage(
@@ -155,7 +159,7 @@ def read(
         path=path,
         aws_s3_settings=aws_s3_settings.settings,
         csv_parser_settings=csv_settings.api_settings if csv_settings else None,
-        poll_new_objects=poll_new_objects,
+        mode=internal_mode,
         persistent_id=persistent_id,
     )
     schema, data_format = construct_schema_and_data_format(

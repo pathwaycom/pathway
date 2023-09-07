@@ -30,19 +30,25 @@ class PathwayType(Enum):
     DURATION: PathwayType
     ARRAY: PathwayType
 
+class ConnectorMode(Enum):
+    STATIC: ConnectorMode
+    SIMPLE_STREAMING: ConnectorMode
+    STREAMING_WITH_DELETIONS: ConnectorMode
+
 class Universe:
     @property
     def id_column(self) -> Column: ...
 
 @dataclasses.dataclass(frozen=True)
-class PyTrace:
+class Trace:
     file_name: str
     line_number: int
     line: str
+    function: str
 
 @dataclasses.dataclass(frozen=True)
 class EvalProperties:
-    trace: Optional[PyTrace] = None
+    trace: Optional[Trace] = None
     dtype: Optional[DType] = None
     append_only: Optional[bool] = False
 
@@ -79,6 +85,10 @@ class MissingValueError(BaseException):
 
 class EngineError(Exception):
     "Marker class to indicate engine error"
+
+class EngineErrorWithTrace(Exception):
+    "Marker class to indicate engine error with trace"
+    args: tuple[Exception, Optional[Trace]]
 
 class Reducer:
     ARG_MIN: Reducer
@@ -468,7 +478,7 @@ def run_with_new_graph(
     ignore_asserts: bool = False,
     monitoring_level: MonitoringLevel = MonitoringLevel.NONE,
     with_http_server: bool = False,
-    persistence_config: PersistenceConfig,
+    persistence_config: Optional[PersistenceConfig] = None,
 ) -> List[CapturedTable]: ...
 def unsafe_make_pointer(arg) -> BasePointer: ...
 

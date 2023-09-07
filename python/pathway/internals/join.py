@@ -111,9 +111,9 @@ class Joinable(TableLike, DesugaringContext):
             pass
         return self._get_colref_by_name(name, AttributeError)
 
+    @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
     @arg_handler(handler=join_kwargs_handler(allow_how=True, allow_id=True))
-    @trace_user_frame
     def join(
         self,
         other: Joinable,
@@ -161,9 +161,9 @@ class Joinable(TableLike, DesugaringContext):
 
         return join.JoinResult._table_join(self, other, *on, mode=how, id=id)
 
+    @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
     @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=True))
-    @trace_user_frame
     def join_inner(
         self,
         other: Joinable,
@@ -206,9 +206,9 @@ class Joinable(TableLike, DesugaringContext):
 
         return join.JoinResult._table_join(self, other, *on, mode=JoinMode.INNER, id=id)
 
+    @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
     @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=True))
-    @trace_user_frame
     def join_left(
         self,
         other: Joinable,
@@ -273,9 +273,9 @@ class Joinable(TableLike, DesugaringContext):
 
         return join.JoinResult._table_join(self, other, *on, mode=JoinMode.LEFT, id=id)
 
+    @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
     @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=True))
-    @trace_user_frame
     def join_right(
         self,
         other: Joinable,
@@ -343,9 +343,9 @@ class Joinable(TableLike, DesugaringContext):
 
         return join.JoinResult._table_join(self, other, *on, mode=JoinMode.RIGHT, id=id)
 
+    @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
     @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=True))
-    @trace_user_frame
     def join_outer(
         self,
         other: Joinable,
@@ -574,10 +574,10 @@ class JoinResult(Joinable, OperatorInput):
         else:
             return self._get_colref_by_name(args, KeyError)
 
+    @trace_user_frame
     @desugar
     @arg_handler(handler=select_args_handler)
     @contextualized_operator
-    @trace_user_frame
     def select(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Computes result of a join.
 
@@ -662,8 +662,8 @@ class JoinResult(Joinable, OperatorInput):
         )
         return FilteredJoinResult(self, filtered_table)
 
-    @desugar
     @trace_user_frame
+    @desugar
     def groupby(
         self,
         *args: expr.ColumnReference,
@@ -721,9 +721,9 @@ class JoinResult(Joinable, OperatorInput):
             id=id,
         )
 
+    @trace_user_frame
     @desugar
     @arg_handler(handler=reduce_args_handler)
-    @trace_user_frame
     def reduce(
         self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression
     ) -> Table:
