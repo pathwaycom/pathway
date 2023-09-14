@@ -8,8 +8,7 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc
-from pathway.internals.dtype import NoneType  # type: ignore
+from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, NONE
 from pathway.tests.utils import T, assert_table_equality, assert_table_equality_wo_index
 
 
@@ -112,8 +111,8 @@ def test_interval_join_time_only(
         11 | 6 | 5
         """
         )
-        left = pw.Table.empty(a=int, b=NoneType)
-        right = pw.Table.empty(a=NoneType, b=int)
+        left = pw.Table.empty(a=int, b=NONE)
+        right = pw.Table.empty(a=NONE, b=int)
 
     if join_type in [pw.JoinMode.LEFT, pw.JoinMode.OUTER]:
         expected = expected.concat_reindex(left)
@@ -526,6 +525,55 @@ def test_interval_join_float(max_time_difference: float) -> None:
        6 | 4 | 9
        7 | 4 | 10
        8 | 4 | 11
+        """
+        )
+    res = t1.interval_join_inner(
+        t2, t1.t, t2.t, pw.temporal.interval(-max_time_difference, max_time_difference)
+    ).select(t1.a, t2.b)
+    assert_table_equality_wo_index(res, expected)
+
+
+@pytest.mark.parametrize("max_time_difference", [1, 1.5])
+def test_interval_join_int_float(max_time_difference: float) -> None:
+    t1 = T(
+        """
+      | a | t
+    0 | 1 | 3
+    1 | 2 | 7
+    """
+    )
+    t2 = T(
+        """
+      | b  | t
+    0 | 1  | 1.6
+    1 | 2  | 2.1
+    2 | 3  | 4.4
+    3 | 4  | 6.1
+    4 | 5  | 7.8
+    5 | 6  | 0.0
+    6 | 7  | 9.2
+    7 | 8  | 8.3
+    """
+    )
+    if max_time_difference == 1:
+        expected = T(
+            """
+         | a | b
+       0 | 1 | 2
+       1 | 2 | 4
+       2 | 2 | 5
+        """
+        )
+    else:
+        expected = T(
+            """
+         | a | b
+       0 | 1 | 1
+       1 | 1 | 2
+       2 | 1 | 3
+       3 | 2 | 4
+       4 | 2 | 5
+       5 | 2 | 8
         """
         )
     res = t1.interval_join_inner(
@@ -1040,17 +1088,17 @@ def test_with_timestamps() -> None:
 @pytest.mark.parametrize(
     "left_type,right_type,lower_bound,upper_bound",
     [
-        (int, int, 1, 1.2),
-        (int, int, -0.1, 1.1),
-        (int, int, -0.1, 1),
-        (int, float, 0, 1),
-        (float, int, 0, 1),
-        (float, float, 1, 0.2),
-        (DateTimeNaive, DateTimeNaive, 1, 2),
-        (DateTimeNaive, DateTimeNaive, datetime.timedelta(days=1), 2),
+        (int, int, 1, datetime.timedelta(days=1)),
+        (int, int, datetime.timedelta(days=-1), datetime.timedelta(days=1)),
+        (int, int, datetime.timedelta(days=-1), 1),
+        (int, DATE_TIME_NAIVE, 0, 1),
+        (DATE_TIME_NAIVE, int, 0, 1),
+        (float, DATE_TIME_NAIVE, 1, 0.2),
+        (DATE_TIME_NAIVE, DATE_TIME_NAIVE, 1, 2),
+        (DATE_TIME_NAIVE, DATE_TIME_NAIVE, datetime.timedelta(days=1), 2),
         (
-            DateTimeUtc,
-            DateTimeNaive,
+            DATE_TIME_UTC,
+            DATE_TIME_NAIVE,
             datetime.timedelta(days=1),
             datetime.timedelta(days=2),
         ),
@@ -1107,18 +1155,13 @@ def test_incorrect_args_specific():
     """
     )
 
-    t1 = t1.with_columns(t=pw.declare_type(DateTimeNaive, pw.this.t))
+    t1 = t1.with_columns(t=pw.declare_type(DATE_TIME_NAIVE, pw.this.t))
     t2 = t2.with_columns(t=pw.declare_type(int, pw.this.t))
 
     expected_error_message = """Arguments (self_time_expression, other_time_expression,
- lower_bound, upper_bound) have to be of types (<class 'int'>, <class 'int'>,
- <class 'int'>, <class 'int'>) or (<class 'float'>, <class 'float'>, <class 'float'>,
- <class 'float'>) or (<class 'pathway.internals.datetime_types.DateTimeNaive'>,
- <class 'pathway.internals.datetime_types.DateTimeNaive'>, <class 'pathway.internals.datetime_types.Duration'>,
- <class 'pathway.internals.datetime_types.Duration'>) or (<class 'pathway.internals.datetime_types.DateTimeUtc'>,
- <class 'pathway.internals.datetime_types.DateTimeUtc'>, <class 'pathway.internals.datetime_types.Duration'>,
- <class 'pathway.internals.datetime_types.Duration'>) but are of types
- (<class 'pathway.internals.datetime_types.DateTimeNaive'>, <class 'int'>, <class 'int'>, <class 'int'>).""".replace(
+ lower_bound, upper_bound) have to be of types (INT, INT, INT, INT) or (FLOAT, FLOAT,
+ FLOAT, FLOAT) or (DATE_TIME_NAIVE, DATE_TIME_NAIVE, DURATION, DURATION) or (DATE_TIME_UTC,
+ DATE_TIME_UTC, DURATION, DURATION) but are of types (DATE_TIME_NAIVE, INT, INT, INT).""".replace(
         "\n", ""
     )
     with pytest.raises(TypeError) as error:

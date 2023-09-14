@@ -22,8 +22,8 @@ from typing import (
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
+from pathway.internals import dtype as dt
 from pathway.internals import groupby, thisclass, universes
-from pathway.internals.api import Pointer
 from pathway.internals.arg_handlers import (
     arg_handler,
     groupby_handler,
@@ -37,7 +37,6 @@ from pathway.internals.decorators import (
     table_to_datasink,
 )
 from pathway.internals.desugaring import combine_args_kwargs, desugar
-from pathway.internals.dtype import DType, is_pointer, types_lca, unoptionalize
 from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.ix import IxIndexer
 from pathway.internals.join import Joinable
@@ -186,9 +185,9 @@ class Table(
         ... 7   | Bob   | dog
         ... ''')
         >>> t1.schema.as_dict()
-        {'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}
+        {'age': INT, 'owner': STR, 'pet': STR}
         >>> t1.schema['age']
-        <class 'int'>
+        INT
         """
         return self._schema
 
@@ -348,7 +347,7 @@ class Table(
     @trace_user_frame
     @staticmethod
     @runtime_type_check
-    def empty(**kwargs: DType) -> Table:
+    def empty(**kwargs: dt.DType) -> Table:
         """Creates an empty table with a schema specified by kwargs.
 
         Args:
@@ -506,7 +505,7 @@ class Table(
         7     | 0
         """
         filter_type = eval_type(filter_expression)
-        if filter_type != DType(bool):
+        if filter_type != dt.BOOL:
             raise TypeError(
                 f"Filter argument of Table.filter() has to be bool, found {filter_type}."
             )
@@ -516,7 +515,7 @@ class Table(
         ) is not None and filter_col.table == self:
             name = filter_col.name
             dtype = self._columns[name].dtype
-            ret = ret.update_types(**{name: unoptionalize(dtype)})
+            ret = ret.update_types(**{name: dt.unoptionalize(dtype)})
         return ret
 
     @contextualized_operator
@@ -911,7 +910,7 @@ class Table(
 
         schema = {
             key: functools.reduce(
-                types_lca, [other.schema[key] for other in others], self.schema[key]
+                dt.types_lca, [other.schema[key] for other in others], self.schema[key]
             )
             for key in self.keys()
         }
@@ -999,7 +998,8 @@ class Table(
             )
 
         schema = {
-            key: types_lca(self.schema[key], other.schema[key]) for key in other.keys()
+            key: dt.types_lca(self.schema[key], other.schema[key])
+            for key in other.keys()
         }
         return Table._update_cells(
             self.cast_to_types(**schema), other.cast_to_types(**schema)
@@ -1079,9 +1079,9 @@ class Table(
             raise ValueError(
                 "Columns do not match between argument of Table.update_rows() and the updated table."
             )
-
         schema = {
-            key: types_lca(self.schema[key], other.schema[key]) for key in self.keys()
+            key: dt.types_lca(self.schema[key], other.schema[key])
+            for key in self.keys()
         }
         return Table._update_rows(
             self.cast_to_types(**schema), other.cast_to_types(**schema)
@@ -1242,7 +1242,7 @@ class Table(
     ) -> Table:
         self._validate_expression(new_index)
         index_type = eval_type(new_index)
-        if not is_pointer(index_type):
+        if not isinstance(index_type, dt.Pointer):
             raise TypeError(
                 f"Pathway supports reindexing Tables with Pointer type only. The type used was {index_type}."
             )
@@ -1637,8 +1637,8 @@ class Table(
     ) -> Table:
         if not isinstance(instance, expr.ColumnExpression):
             instance = expr.ColumnConstExpression(instance)
-        prev_column = clmn.MaterializedColumn(DType(Optional[Pointer]), self._universe)
-        next_column = clmn.MaterializedColumn(DType(Optional[Pointer]), self._universe)
+        prev_column = clmn.MaterializedColumn(dt.Optional(dt.POINTER), self._universe)
+        next_column = clmn.MaterializedColumn(dt.Optional(dt.POINTER), self._universe)
         context = clmn.SortingContext(
             self._universe,
             self._eval(key),
@@ -1891,8 +1891,8 @@ class Table(
         ... 7   | Bob   | dog
         ... ''')
         >>> t1.dtypes()
-        {'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}
+        {'age': INT, 'owner': STR, 'pet': STR}
         >>> t1.schema['age']
-        <class 'int'>
+        INT
         """
         return self.schema.as_dict()

@@ -209,7 +209,7 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
     {
         assert_eq!(
             Value::DateTimeNaive(DateTimeNaive::new(1684147860000000000)).to_postgres_output(),
-            "2023-05-15T10:51:00".to_string()
+            "2023-05-15T10:51:00.000000000".to_string()
         );
 
         let result = formatter.format(
@@ -249,7 +249,7 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
     {
         assert_eq!(
             Value::DateTimeNaive(DateTimeNaive::new(0)).to_postgres_output(),
-            "1970-01-01T00:00:00".to_string()
+            "1970-01-01T00:00:00.000000000".to_string()
         );
 
         let result = formatter.format(
@@ -276,7 +276,7 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
     {
         assert_eq!(
             Value::DateTimeUtc(DateTimeUtc::new(1684147860000000000)).to_postgres_output(),
-            "2023-05-15T10:51:00+0000".to_string()
+            "2023-05-15T10:51:00.000000000+0000".to_string()
         );
 
         let result = formatter.format(
@@ -312,7 +312,7 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
     {
         assert_eq!(
             Value::DateTimeUtc(DateTimeUtc::new(0)).to_postgres_output(),
-            "1970-01-01T00:00:00+0000".to_string()
+            "1970-01-01T00:00:00.000000000+0000".to_string()
         );
 
         let result = formatter.format(

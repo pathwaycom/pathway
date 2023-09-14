@@ -11,16 +11,16 @@ from typing import (
     Callable,
     Dict,
     Iterable,
-    List,
     Optional,
     Tuple,
     Type,
     Union,
 )
 
-from pathway.internals import api, helpers
+from pathway.internals import api
+from pathway.internals import dtype as dt
+from pathway.internals import helpers
 from pathway.internals.api import Value
-from pathway.internals.dtype import DType, dtype_issubclass
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.shadows import inspect, operator
 from pathway.internals.trace import Trace
@@ -40,7 +40,7 @@ class ColumnExpression(OperatorInput, ABC):
     _deps: helpers.SetOnceProperty[
         Iterable[ColumnExpression]
     ] = helpers.SetOnceProperty(wrapper=tuple)
-    _dtype: DType
+    _dtype: dt.DType
 
     def __init__(self):
         self._trace = Trace.from_traceback()
@@ -298,7 +298,7 @@ class ColumnExpression(OperatorInput, ABC):
         ... 3
         ... 4''')
         >>> t1.schema.as_dict()
-        {'val': <class 'int'>}
+        {'val': INT}
         >>> pw.debug.compute_and_print(t1, include_id=False)
         val
         1
@@ -307,7 +307,7 @@ class ColumnExpression(OperatorInput, ABC):
         4
         >>> t2 = t1.select(val = pw.this.val.to_string())
         >>> t2.schema.as_dict()
-        {'val': <class 'str'>}
+        {'val': STR}
         >>> pw.debug.compute_and_print(t2.select(val=pw.this.val + "a"), include_id=False)
         val
         1a
@@ -316,13 +316,13 @@ class ColumnExpression(OperatorInput, ABC):
         4a
         """
         return MethodCallExpression(
-            [
+            (
                 (
-                    Any,
-                    str,
+                    dt.ANY,
+                    dt.STR,
                     api.Expression.to_string,
-                )
-            ],
+                ),
+            ),
             "to_string",
             self,
         )
@@ -590,7 +590,7 @@ class ApplyExpression(ColumnExpression):
                 return_type = inspect.signature(self._fun).return_annotation
             except ValueError:
                 return_type = Any
-        self._return_type = return_type
+        self._return_type = dt.wrap(return_type)
 
         self._args = tuple(_wrap_arg(arg) for arg in args)
 
@@ -609,7 +609,7 @@ class NumbaApplyExpression(ApplyExpression):
     ):
         super().__init__(
             fun,
-            return_type,
+            dt.wrap(return_type),
             *args,
             **kwargs,
         )
@@ -625,7 +625,7 @@ class AsyncApplyExpression(ApplyExpression):
     ):
         super().__init__(
             fun,
-            return_type,
+            dt.wrap(return_type) if return_type is not None else None,
             *args,
             **kwargs,
         )
@@ -637,7 +637,7 @@ class CastExpression(ColumnExpression):
 
     def __init__(self, return_type: Any, expr: ColumnExpressionOrValue):
         super().__init__()
-        self._return_type = return_type
+        self._return_type = dt.wrap(return_type)
         self._expr = _wrap_arg(expr)
         self._deps = [self._expr]
 
@@ -648,7 +648,7 @@ class DeclareTypeExpression(ColumnExpression):
 
     def __init__(self, return_type: Any, expr: ColumnExpressionOrValue):
         super().__init__()
-        self._return_type = return_type
+        self._return_type = dt.wrap(return_type)
         self._expr = _wrap_arg(expr)
         self._deps = [self._expr]
 
@@ -777,13 +777,15 @@ ReturnTypeFunType = Callable[[Tuple[Any, ...]], Any]
 
 
 class MethodCallExpression(ColumnExpression):
-    _fun_mapping: List[Tuple[Any, Any, Callable]]
+    _fun_mapping: Tuple[Tuple[tuple[dt.DType, ...], dt.DType, Callable], ...]
     _name: str
     _args: Tuple[ColumnExpression, ...]
 
     def __init__(
         self,
-        fun_mapping: List[Tuple[Any, Any, Callable]],
+        fun_mapping: Tuple[
+            Tuple[tuple[dt.DType, ...] | dt.DType, dt.DType, Callable], ...
+        ],
         name: str,
         *args: ColumnExpressionOrValue,
     ) -> None:
@@ -821,22 +823,21 @@ class MethodCallExpression(ColumnExpression):
                 )
 
     def _wrap_mapping_key_in_tuple(
-        self, mapping: List[Tuple[Any, Any, Callable]]
-    ) -> List[Tuple[Any, Any, Callable]]:
-        result = []
-        for key, result_dtype, value in mapping:
-            if not isinstance(key, tuple):
-                key = (key,)
-            result.append((key, result_dtype, value))
-        return result
+        self,
+        mapping: tuple[tuple[tuple[dt.DType, ...] | dt.DType, dt.DType, Callable], ...],
+    ) -> tuple[tuple[tuple[dt.DType, ...], dt.DType, Callable], ...]:
+        return tuple(
+            (key if isinstance(key, tuple) else (key,), result_dtype, value)
+            for key, result_dtype, value in mapping
+        )
 
     def get_function(
-        self, dtypes: Tuple[DType, ...]
-    ) -> Optional[Tuple[Tuple[DType, ...], DType, Callable]]:
+        self, dtypes: tuple[dt.DType, ...]
+    ) -> Optional[tuple[tuple[dt.DType, ...], dt.DType, Callable]]:
         for key, target_type, fun in self._fun_mapping:
             assert len(dtypes) == len(key)
             if all(
-                dtype_issubclass(arg_dtype, key_dtype)
+                dt.dtype_issubclass(arg_dtype, key_dtype)
                 for arg_dtype, key_dtype in zip(dtypes, key)
             ):
                 return (key, target_type, fun)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import pathway as pw
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc
+from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
 from pathway.internals.join_mode import JoinMode
 from pathway.tests.utils import (
     T,
@@ -367,10 +367,10 @@ def test_with_timestamps():
 @pytest.mark.parametrize(
     "left_type,right_type",
     [
-        (int, float),
-        (DateTimeNaive, int),
-        (float, DateTimeNaive),
-        (DateTimeNaive, DateTimeUtc),
+        (int, DATE_TIME_UTC),
+        (DATE_TIME_NAIVE, int),
+        (float, DATE_TIME_NAIVE),
+        (DATE_TIME_NAIVE, DATE_TIME_UTC),
     ],
 )
 def test_incorrect_args(left_type, right_type):

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.3.3] - 2023-09-14
+
+### Added
+- Module `pathway.dt` to construct and manipulate DTypes.
+- New argument `keep_queries` in `pw.io.http.rest_connector`.
+
+### Changed
+- Internal representation of DTypes. Inputting types is compatible backwards.
+- Temporal functions now accept arguments of mixed types (ints and floats). For example, `pw.temporal.interval` can use ints while columns it interacts with are floats.
+- Single-element arrays are now treated as arrays, not as scalars.
+
+### Fixed
+- `to_string()` method on datetimes always prints 9 fractional digits.
+- `%f` format code in `strptime()` parses fractional part of a second correctly regardless of the number of digits.
+
 ## [0.3.2] - 2023-09-07
 
 ### Added

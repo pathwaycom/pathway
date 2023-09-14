@@ -235,7 +235,7 @@ class RowReference:
     proper indexes understood by backend.
     """
 
-    id: api.Pointer
+    id: api.BasePointer
 
     _context: api.Context
     _class_arg: rt.ClassArgMeta
@@ -249,7 +249,7 @@ class RowReference:
         context: api.Context,
         mapping: TransformerColumnIndexMapping,
         operator_id: int,
-        id: api.Pointer,
+        id: api.BasePointer,
     ):
         self.id = id
         self._context = context
@@ -261,7 +261,7 @@ class RowReference:
     def transformer(self):
         return TransformerReference(self)
 
-    def _with_class_arg(self, class_arg: rt.ClassArgMeta, id: api.Pointer):
+    def _with_class_arg(self, class_arg: rt.ClassArgMeta, id: api.BasePointer):
         return RowReference(
             class_arg, self._context, self._mapping, self._operator_id, id
         )

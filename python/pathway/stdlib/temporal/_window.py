@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 import pathway.internals as pw
+from pathway.internals import dtype as dt
 from pathway.internals.arg_handlers import arg_handler, windowby_handler
 from pathway.internals.desugaring import desugar
 from pathway.internals.join import validate_join_condition
@@ -100,8 +101,6 @@ class _SessionWindow(Window):
         key: pw.ColumnExpression,
         shard: Optional[pw.ColumnExpression],
     ) -> pw.GroupedTable:
-        target = self._compute_group_repr(table, key, shard)
-
         if self.max_gap is not None:
             check_joint_types(
                 {
@@ -110,6 +109,7 @@ class _SessionWindow(Window):
                 }
             )
 
+        target = self._compute_group_repr(table, key, shard)
         tmp = target.groupby(target._pw_window).reduce(
             _pw_window_start=pw.reducers.min(key),
             _pw_window_end=pw.reducers.max(key),
@@ -316,19 +316,27 @@ class _SlidingWindow(Window):
             }
         )
 
-        target = table.select(_pw_window=pw.apply(self._assign_windows, shard, key))
+        from pathway.internals.type_interpreter import eval_type
+
+        target = table.select(
+            _pw_window=pw.apply_with_type(
+                self._assign_windows,
+                dt.List(
+                    dt.Tuple(
+                        eval_type(shard),  # type:ignore
+                        eval_type(key),
+                        eval_type(key),
+                    )
+                ),
+                shard,
+                key,
+            )
+        )
         target = target.flatten(target._pw_window, *table)
         target = target.with_columns(
             _pw_shard=pw.this._pw_window.get(0),
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
-        )
-        from pathway.internals.type_interpreter import eval_type
-
-        target = target.update_types(
-            _pw_shard=eval_type(shard),  # type: ignore
-            _pw_window_start=eval_type(key),
-            _pw_window_end=eval_type(key),
         )
         return target.groupby(
             target._pw_window,
@@ -360,29 +368,45 @@ class _SlidingWindow(Window):
         )
 
         left_window = left.select(
-            _pw_window=pw.apply(self._assign_windows, None, left_time_expression)
+            _pw_window=pw.apply_with_type(
+                self._assign_windows,
+                dt.List(
+                    dt.Tuple(
+                        dt.NONE,
+                        eval_type(left_time_expression),
+                        eval_type(left_time_expression),
+                    )
+                ),
+                None,
+                left_time_expression,
+            )
         )
         left_window = left_window.flatten(left_window._pw_window, *left)
 
         left_window = left_window.with_columns(
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
-        ).update_types(
-            _pw_window_start=eval_type(left_time_expression),
-            _pw_window_end=eval_type(left_time_expression),
         )
 
         right_window = right.select(
-            _pw_window=pw.apply(self._assign_windows, None, right_time_expression)
+            _pw_window=pw.apply_with_type(
+                self._assign_windows,
+                dt.List(
+                    dt.Tuple(
+                        dt.NONE,
+                        eval_type(right_time_expression),
+                        eval_type(right_time_expression),
+                    )
+                ),
+                None,
+                right_time_expression,
+            )
         )
         right_window = right_window.flatten(right_window._pw_window, *right)
 
         right_window = right_window.with_columns(
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
-        ).update_types(
-            _pw_window_start=eval_type(right_time_expression),
-            _pw_window_end=eval_type(right_time_expression),
         )
 
         for cond in on:

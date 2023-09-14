@@ -180,7 +180,9 @@ def get_expression_info(expression: expr.ColumnExpression) -> str:
 
 
 def _type_name(return_type):
-    if isinstance(return_type, str):
+    from pathway.internals import dtype as dt
+
+    if isinstance(return_type, str) or isinstance(return_type, dt.DType):
         return repr(return_type)
     else:
         return return_type.__name__

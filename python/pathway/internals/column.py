@@ -5,22 +5,12 @@ from __future__ import annotations
 from abc import ABC
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    Iterable,
-    Optional,
-    Tuple,
-    get_args,
-    get_origin,
-)
-
-import numpy as np
+from types import EllipsisType
+from typing import TYPE_CHECKING, Dict, Iterable, Optional, Tuple
 
 import pathway.internals as pw
-from pathway.internals import api, trace
-from pathway.internals.dtype import DType, types_lca
+from pathway.internals import dtype as dt
+from pathway.internals import trace
 from pathway.internals.expression import ColumnExpression, ColumnRefOrIxExpression
 from pathway.internals.helpers import SetOnceProperty, StableSet
 
@@ -62,12 +52,12 @@ class ColumnLineage(Lineage):
 
 
 class Column(ABC):
-    dtype: DType
+    dtype: dt.DType
     universe: Universe
     lineage: SetOnceProperty[ColumnLineage] = SetOnceProperty()
     """Lateinit by operator."""
 
-    def __init__(self, dtype: DType, universe: Universe) -> None:
+    def __init__(self, dtype: dt.DType, universe: Universe) -> None:
         super().__init__()
         self.dtype = dtype
         self.universe = universe
@@ -101,7 +91,7 @@ class ColumnWithContext(Column, ABC):
 
     context: Context
 
-    def __init__(self, dtype: DType, context: Context, universe: Universe):
+    def __init__(self, dtype: dt.DType, context: Context, universe: Universe):
         super().__init__(dtype, universe)
         self.context = context
 
@@ -111,7 +101,7 @@ class ColumnWithContext(Column, ABC):
 
 class IdColumn(ColumnWithContext):
     def __init__(self, context: Context) -> None:
-        super().__init__(DType(api.Pointer), context, context.universe)
+        super().__init__(dt.POINTER, context, context.universe)
 
 
 class ColumnWithExpression(ColumnWithContext):
@@ -205,7 +195,7 @@ class Context:
 
         return TypeInterpreter()
 
-    def expression_type(self, expression: ColumnExpression) -> DType:
+    def expression_type(self, expression: ColumnExpression) -> dt.DType:
         return self.expression_with_type(expression)._dtype
 
     def expression_with_type(self, expression: ColumnExpression) -> ColumnExpression:
@@ -381,18 +371,20 @@ class FlattenContext(Context):
         from pathway.internals import type_interpreter
 
         dtype = type_interpreter.eval_type(flatten_column.expression)
-        if get_origin(dtype) == list:
-            return get_args(dtype)[0]
-        elif get_origin(dtype) == tuple:
-            return_dtype = get_args(dtype)[0]
-            for single_dtype in get_args(dtype)[1:]:
-                if single_dtype != Ellipsis:
-                    return_dtype = types_lca(return_dtype, single_dtype)
+        if isinstance(dtype, dt.List):
+            return dtype.wrapped
+        if isinstance(dtype, dt.Tuple):
+            if dtype == dt.ANY_TUPLE:
+                return dt.ANY
+            assert not isinstance(dtype.args, EllipsisType)
+            return_dtype = dtype.args[0]
+            for single_dtype in dtype.args[1:]:
+                return_dtype = dt.types_lca(return_dtype, single_dtype)
             return return_dtype
-        elif dtype == str:
-            return str
-        elif dtype in {np.ndarray, Any}:
-            return Any
+        elif dtype == dt.STR:
+            return dt.STR
+        elif dtype in {dt.Array(), dt.ANY}:
+            return dt.ANY
         else:
             raise TypeError(
                 f"Cannot flatten column {flatten_column.expression!r} of type {dtype}."

@@ -1060,3 +1060,54 @@ def test_concat_fail(event_loop):
 
     with pytest.raises(Exception):
         api.run_with_new_graph(build, event_loop)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        42,
+        42.0,
+        "",
+        "foo",
+        True,
+        False,
+        (),
+        (42,),
+        (1, 2, 3),
+        np.array([], dtype=int),
+        np.array([42]),
+        np.array([1, 2, 3]),
+        np.array([], dtype=float),
+        np.array([42.0]),
+        np.array([1.0, 2.0, 3.0]),
+    ],
+    ids=repr,
+)
+def test_value_type_via_python(event_loop, value):
+    def build(s):
+        key = api.ref_scalar()
+        universe = s.static_universe([key])
+        column = s.static_column(universe, [(key, value)], dtype=type(value))
+        table = s.table(universe, [column])
+
+        def fun(values):
+            [inner] = values
+            assert type(value) is type(inner)
+            if isinstance(value, np.ndarray):
+                assert value.dtype == inner.dtype
+                assert np.array_equal(value, inner)
+            else:
+                assert value == inner
+            return inner
+
+        new_column = s.map_column(table, fun, api.EvalProperties(dtype=type(value)))
+        new_table = s.table(universe, [new_column])
+
+        return table, new_table
+
+    table, new_table = api.run_with_new_graph(build, event_loop)
+
+    assert_equal_tables_wo_index(
+        table, new_table
+    )  # wo_index knows how to compare arrays

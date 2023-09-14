@@ -133,7 +133,7 @@ fn test_json_date_time_naive_serialization() -> eyre::Result<()> {
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
-        r#"{"a":"2023-05-15T10:51:00","diff":1,"time":0}"#
+        r#"{"a":"2023-05-15T10:51:00.000000000","diff":1,"time":0}"#
     );
     assert_eq!(result.values.len(), 0);
 
@@ -153,7 +153,7 @@ fn test_json_date_time_utc_serialization() -> eyre::Result<()> {
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
-        r#"{"a":"2023-05-15T10:51:00+0000","diff":1,"time":0}"#
+        r#"{"a":"2023-05-15T10:51:00.000000000+0000","diff":1,"time":0}"#
     );
     assert_eq!(result.values.len(), 0);
 

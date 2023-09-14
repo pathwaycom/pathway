@@ -17,6 +17,7 @@ class RestServerSubject(io.python.ConnectorSubject):
     _host: str
     _port: int
     _loop: asyncio.AbstractEventLoop
+    _keep_queries: bool
 
     def __init__(
         self,
@@ -26,6 +27,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         loop: asyncio.AbstractEventLoop,
         tasks: Dict[Any, Any],
         schema: Type[pw.Schema],
+        keep_queries: bool,
         format: str = "raw",
     ) -> None:
         super().__init__()
@@ -35,6 +37,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._loop = loop
         self._tasks = tasks
         self._schema = schema
+        self._keep_queries = keep_queries
         self._format = format
 
     def run(self):
@@ -71,7 +74,8 @@ class RestServerSubject(io.python.ConnectorSubject):
 
         self._add(id, data)
         response = await self._fetch_response(id, event)
-        self._remove(id, data)
+        if not self._keep_queries:
+            self._remove(id, data)
         return web.json_response(status=200, data=response)
 
     async def _fetch_response(self, id, event) -> Any:
@@ -93,6 +97,7 @@ def rest_connector(
     route: str = "/",
     schema: Optional[Type[pw.Schema]] = None,
     autocommit_duration_ms=1500,
+    keep_queries: bool = False,
 ) -> Tuple[pw.Table, Callable]:
     """
     Runs a lightweight HTTP server and inputs a collection from the HTTP endpoint,
@@ -106,7 +111,11 @@ def rest_connector(
         host: TCP/IP host or a sequence of hosts for the created endpoint;
         port: port for the created endpoint;
         route: route which will be listened to by the web server;
-        schema: schema of the resulting table.
+        schema: schema of the resulting table;
+        autocommit_duration_ms: the maximum time between two commits. Every
+          autocommit_duration_ms milliseconds, the updates received by the connector are
+          committed and pushed into Pathway's computation graph;
+        keep_queries: whether to keep queries after processing; defaults to False.
 
     Returns:
         table: the table read;
@@ -130,6 +139,7 @@ def rest_connector(
             loop=loop,
             tasks=tasks,
             schema=schema,
+            keep_queries=keep_queries,
             format=format,
         ),
         schema=schema,

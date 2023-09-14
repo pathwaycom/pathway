@@ -1,10 +1,11 @@
 # Copyright © 2023 Pathway
 
 import math
-from typing import Optional, Union
+from typing import Union
 
 import pathway.internals.expression as expr
 from pathway.internals import api
+from pathway.internals import dtype as dt
 
 
 class NumericalNamespace:
@@ -56,10 +57,10 @@ class NumericalNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (int, int, lambda x: api.Expression.apply(abs, x)),
-                (float, float, lambda x: api.Expression.apply(abs, x)),
-            ],
+            (
+                (dt.INT, dt.INT, lambda x: api.Expression.apply(abs, x)),
+                (dt.FLOAT, dt.FLOAT, lambda x: api.Expression.apply(abs, x)),
+            ),
             "num.abs",
             self._expression,
         )
@@ -123,10 +124,18 @@ class NumericalNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                ((int, int), int, lambda x, y: api.Expression.apply(round, x, y)),
-                ((float, int), float, lambda x, y: api.Expression.apply(round, x, y)),
-            ],
+            (
+                (
+                    (dt.INT, dt.INT),
+                    dt.INT,
+                    lambda x, y: api.Expression.apply(round, x, y),
+                ),
+                (
+                    (dt.FLOAT, dt.INT),
+                    dt.FLOAT,
+                    lambda x, y: api.Expression.apply(round, x, y),
+                ),
+            ),
             "num.round",
             self._expression,
             decimals,
@@ -164,25 +173,25 @@ class NumericalNamespace:
 
         # XXX Update to api.Expression.if_else when a isnan operator is supported.
         return expr.MethodCallExpression(
-            [
-                (int, int, lambda x: x),
+            (
+                (dt.INT, dt.INT, lambda x: x),
                 (
-                    float,
-                    float,
+                    dt.FLOAT,
+                    dt.FLOAT,
                     lambda x: api.Expression.apply(
                         lambda y: float(default_value) if math.isnan(y) else y, x
                     ),
                 ),
                 (
-                    Optional[int],
-                    int,
+                    dt.Optional(dt.INT),
+                    dt.INT,
                     lambda x: api.Expression.apply(
                         lambda y: int(default_value) if y is None else y, x
                     ),
                 ),
                 (
-                    Optional[float],
-                    float,
+                    dt.Optional(dt.FLOAT),
+                    dt.FLOAT,
                     lambda x: api.Expression.apply(
                         lambda y: float(default_value)
                         if ((y is None) or math.isnan(y))
@@ -190,7 +199,7 @@ class NumericalNamespace:
                         x,
                     ),
                 ),
-            ],
+            ),
             "num.fill_na",
             self._expression,
         )

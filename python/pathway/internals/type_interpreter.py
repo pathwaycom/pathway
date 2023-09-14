@@ -5,24 +5,11 @@ from __future__ import annotations
 import datetime
 import warnings
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional, Tuple, TypeVar, get_args, get_origin
+from types import EllipsisType
+from typing import Any, Iterable, Optional, TypeVar
 
-import numpy as np
-
+from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
-from pathway.internals.api import Pointer
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
-from pathway.internals.dtype import (
-    DType,
-    dtype_issubclass,
-    is_optional,
-    is_pointer,
-    is_tuple_like,
-    normalize_tuple_like,
-    types_lca,
-    unoptionalize,
-    unoptionalize_pair,
-)
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.operator_mapping import (
@@ -70,11 +57,12 @@ class TypeInterpreter(IdentityTransform):
         self,
         expression: expr.ColumnReference,
         state: Optional[TypeInterpreterState] = None,
-    ) -> DType:
+    ) -> dt.DType:
         dtype = expression._column.dtype
         assert state is not None
+        assert isinstance(dtype, dt.DType)
         if state.check_colref_to_unoptionalize_from_colrefs(expression):
-            return unoptionalize(dtype)
+            return dt.unoptionalize(dtype)
         return dtype
 
     def eval_unary_op(
@@ -116,11 +104,11 @@ class TypeInterpreter(IdentityTransform):
 
     def _eval_binary_op(
         self,
-        left_dtype: DType,
-        right_dtype: DType,
+        left_dtype: dt.DType,
+        right_dtype: dt.DType,
         operator: Any,
         expression: expr.ColumnExpression,
-    ) -> DType:
+    ) -> dt.DType:
         original_left = left_dtype
         original_right = right_dtype
         if (
@@ -132,31 +120,37 @@ class TypeInterpreter(IdentityTransform):
         if (
             dtype := get_binary_operators_mapping(operator, left_dtype, right_dtype)
         ) is not None:
-            return DType(dtype)
+            return dtype
 
-        left_dtype, right_dtype = unoptionalize_pair(left_dtype, right_dtype)
+        left_dtype, right_dtype = dt.unoptionalize_pair(left_dtype, right_dtype)
 
         if (
             dtype_and_handler := get_binary_operators_mapping_optionals(
                 operator, left_dtype, right_dtype
             )
         ) is not None:
-            return DType(dtype_and_handler[0])
+            return dtype_and_handler[0]
 
         if (
-            get_origin(left_dtype) == get_origin(Tuple)
-            and get_origin(right_dtype) == get_origin(Tuple)
+            isinstance(left_dtype, dt.Tuple)
+            and isinstance(right_dtype, dt.Tuple)
             and operator in tuple_handling_operators
         ):
-            left_args = get_args(left_dtype)
-            right_args = get_args(right_dtype)
-            if len(left_args) == len(right_args):
+            left_args = left_dtype.args
+            right_args = right_dtype.args
+            if (
+                isinstance(left_args, tuple)
+                and isinstance(right_args, tuple)
+                and len(left_args) == len(right_args)
+            ):
                 results = tuple(
                     self._eval_binary_op(left_arg, right_arg, operator, expression)
                     for left_arg, right_arg in zip(left_args, right_args)
+                    if not isinstance(left_arg, EllipsisType)
+                    and not isinstance(right_arg, EllipsisType)
                 )
                 assert all(result == results[0] for result in results)
-                return DType(results[0])
+                return dt.wrap(results[0])
         expression_info = get_expression_info(expression)
         raise TypeError(
             f"Pathway does not support using binary operator {operator.__name__}"
@@ -175,12 +169,14 @@ class TypeInterpreter(IdentityTransform):
         type_ = type(expression._val)
         if isinstance(expression._val, datetime.datetime):
             if expression._val.tzinfo is None:
-                type_ = DateTimeNaive
+                dtype: dt.DType = dt.DATE_TIME_NAIVE
             else:
-                type_ = DateTimeUtc
+                dtype = dt.DATE_TIME_UTC
         elif isinstance(expression._val, datetime.timedelta):
-            type_ = Duration
-        return _wrap(expression, DType(type_))
+            dtype = dt.DURATION
+        else:
+            dtype = dt.wrap(type_)
+        return _wrap(expression, dtype)
 
     def eval_reducer(
         self,
@@ -194,7 +190,7 @@ class TypeInterpreter(IdentityTransform):
     def _eval_reducer(
         self,
         expression: expr.ReducerExpression,
-    ) -> DType:
+    ) -> dt.DType:
         [arg] = expression._args
         return expression._reducer.return_type(arg._dtype)
 
@@ -214,7 +210,7 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.CountExpression:
         expression = super().eval_count(expression, state=state, **kwargs)
-        return _wrap(expression, DType(int))
+        return _wrap(expression, dt.INT)
 
     def eval_apply(
         self,
@@ -249,13 +245,16 @@ class TypeInterpreter(IdentityTransform):
         state: Optional[TypeInterpreterState] = None,
         **kwargs,
     ) -> expr.ColumnCallExpression:
+        dtype = expression._col_expr._column.dtype
+        assert isinstance(dtype, dt.Callable)
         expression = super().eval_call(expression, state=state, **kwargs)
-        arg_annots, ret_type = get_args(expression._col_expr._column.dtype)
-        if arg_annots is not Ellipsis:
+        arg_annots, ret_type = dtype.arg_types, dtype.return_type
+        if not isinstance(arg_annots, EllipsisType):
             arg_annots = arg_annots[1:]  # ignoring self
             for arg_annot, arg in zip(arg_annots, expression._args, strict=True):  # type: ignore
                 arg_dtype = arg._dtype
-                assert dtype_issubclass(arg_dtype, arg_annot)
+                assert not isinstance(arg_annot, EllipsisType)
+                assert dt.dtype_issubclass(arg_dtype, arg_annot)
         return _wrap(expression, ret_type)
 
     def eval_ix(
@@ -267,15 +266,15 @@ class TypeInterpreter(IdentityTransform):
         expression = super().eval_ix(expression, state=state, **kwargs)
         key_dtype = expression._keys_expression._dtype
         if expression._optional:
-            if not dtype_issubclass(key_dtype, DType(Optional[Pointer])):
+            if not dt.dtype_issubclass(key_dtype, dt.Optional(dt.POINTER)):
                 raise TypeError(
                     f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
                 )
-            if not is_optional(key_dtype):
+            if not isinstance(key_dtype, dt.Optional):
                 return _wrap(expression, expression._column.dtype)
-            return _wrap(expression, DType(Optional[expression._column.dtype]))
+            return _wrap(expression, dt.Optional(expression._column.dtype))
         else:
-            if not is_pointer(key_dtype):
+            if not isinstance(key_dtype, dt.Pointer):
                 raise TypeError(
                     f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
                 )
@@ -289,10 +288,12 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.PointerExpression:
         expression = super().eval_pointer(expression, state=state, **kwargs)
         arg_types = [arg._dtype for arg in expression._args]
-        if expression._optional and any(is_optional(arg) for arg in arg_types):
-            return _wrap(expression, DType(Optional[Pointer]))
+        if expression._optional and any(
+            isinstance(arg, dt.Optional) for arg in arg_types
+        ):
+            return _wrap(expression, dt.Optional(dt.POINTER))
         else:
-            return _wrap(expression, DType(Pointer))
+            return _wrap(expression, dt.POINTER)
 
     def eval_cast(
         self,
@@ -322,17 +323,17 @@ class TypeInterpreter(IdentityTransform):
         dtypes = [arg._dtype for arg in expression._args]
         ret_type = dtypes[0]
         non_optional_arg = False
-        for dt in dtypes:
-            ret_type = types_lca(dt, ret_type)
-            if not is_optional(dt):
+        for dtype in dtypes:
+            ret_type = dt.types_lca(dtype, ret_type)
+            if not isinstance(dtype, dt.Optional):
                 # FIXME: do we want to be more radical and return now?
                 # Maybe with a warning that some args are skipped?
                 non_optional_arg = True
-        if ret_type is Any and any(dt is not Any for dt in dtypes):
+        if ret_type is dt.ANY and any(dtype is not dt.ANY for dtype in dtypes):
             raise TypeError(
                 f"Cannot perform pathway.coalesce on columns of types {dtypes}."
             )
-        ret_type = unoptionalize(ret_type) if non_optional_arg else ret_type
+        ret_type = dt.unoptionalize(ret_type) if non_optional_arg else ret_type
         return _wrap(expression, ret_type)
 
     def eval_require(
@@ -350,7 +351,7 @@ class TypeInterpreter(IdentityTransform):
         )
         val = self.eval_expression(expression._val, state=new_state, **kwargs)
         expression = expr.RequireExpression(val, *args)
-        ret_type = DType(Optional[val._dtype])
+        ret_type = dt.Optional(val._dtype)
         return _wrap(expression, ret_type)
 
     def eval_not_none(
@@ -360,7 +361,7 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.IsNotNoneExpression:
         ret = super().eval_not_none(expression, state=state, **kwargs)
-        return _wrap(ret, DType(bool))
+        return _wrap(ret, dt.BOOL)
 
     def eval_none(
         self,
@@ -369,7 +370,7 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.IsNoneExpression:
         ret = super().eval_none(expression, state=state, **kwargs)
-        return _wrap(ret, DType(bool))
+        return _wrap(ret, dt.BOOL)
 
     def eval_ifelse(
         self,
@@ -379,14 +380,14 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.IfElseExpression:
         expression = super().eval_ifelse(expression, state=state, **kwargs)
         if_dtype = expression._if._dtype
-        if if_dtype != DType(bool):
+        if if_dtype != dt.BOOL:
             raise TypeError(
                 f"First argument of pathway.if_else has to be bool, found {if_dtype}."
             )
         then_dtype = expression._then._dtype
         else_dtype = expression._else._dtype
-        lca = types_lca(then_dtype, else_dtype)
-        if lca is Any:
+        lca = dt.types_lca(then_dtype, else_dtype)
+        if lca is dt.ANY:
             raise TypeError(
                 f"Cannot perform pathway.if_else on columns of types {then_dtype} and {else_dtype}."
             )
@@ -400,7 +401,7 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.MakeTupleExpression:
         expression = super().eval_make_tuple(expression, state=state, **kwargs)
         dtypes = tuple(arg._dtype for arg in expression._args)
-        return _wrap(expression, DType(Tuple[dtypes]))
+        return _wrap(expression, dt.Tuple(*dtypes))
 
     def eval_sequence_get(
         self,
@@ -413,68 +414,68 @@ class TypeInterpreter(IdentityTransform):
         index_dtype = expression._index._dtype
         default_dtype = expression._default._dtype
 
-        if is_tuple_like(object_dtype):
-            object_dtype = normalize_tuple_like(object_dtype)
-
-        if get_origin(object_dtype) != tuple and object_dtype not in [
-            Any,
-            np.ndarray,
+        if not isinstance(object_dtype, (dt.Tuple, dt.List)) and object_dtype not in [
+            dt.ANY,
+            dt.Array(),
         ]:
             raise TypeError(f"Object in {expression!r} has to be a sequence.")
-        if index_dtype != int:
+        if index_dtype != dt.INT:
             raise TypeError(f"Index in {expression!r} has to be an int.")
 
-        if object_dtype == np.ndarray:
+        if object_dtype == dt.Array():
             warnings.warn(
                 f"Object in {expression!r} is of type numpy.ndarray but its number of"
                 + " dimensions is not known. Pathway cannot determine the return type"
                 + " and will set Any as the return type. Please use "
                 + "pathway.declare_type to set the correct return type."
             )
-            return _wrap(expression, DType(Any))
+            return _wrap(expression, dt.ANY)
+        if object_dtype == dt.ANY:
+            return _wrap(expression, dt.ANY)
 
-        dtypes = get_args(object_dtype)
+        if isinstance(object_dtype, dt.List):
+            if expression._check_if_exists:
+                return _wrap(expression, dt.Optional(object_dtype.wrapped))
+            else:
+                return _wrap(expression, object_dtype.wrapped)
+        assert isinstance(object_dtype, dt.Tuple)
+        if object_dtype == dt.ANY_TUPLE:
+            return _wrap(expression, dt.ANY)
 
-        if object_dtype == Any or len(dtypes) == 0:
-            return _wrap(expression, DType(Any))
+        assert not isinstance(object_dtype.args, EllipsisType)
+        dtypes = object_dtype.args
 
         if (
             expression._const_index is None
         ):  # no specified position, index is an Expression
+            assert isinstance(dtypes[0], dt.DType)
             return_dtype = dtypes[0]
             for dtype in dtypes[1:]:
-                return_dtype = types_lca(return_dtype, dtype)
+                if isinstance(dtype, dt.DType):
+                    return_dtype = dt.types_lca(return_dtype, dtype)
             if expression._check_if_exists:
-                return_dtype = types_lca(return_dtype, default_dtype)
+                return_dtype = dt.types_lca(return_dtype, default_dtype)
             return _wrap(expression, return_dtype)
 
         try:
-            return_dtype = dtypes[expression._const_index]
-            if return_dtype == Ellipsis:
-                raise IndexError
-            return _wrap(expression, return_dtype)
+            try_ret = dtypes[expression._const_index]
+            return _wrap(expression, try_ret)
         except IndexError:
-            if dtypes[-1] == Ellipsis:
-                return_dtype = dtypes[-2]
-                if expression._check_if_exists:
-                    return_dtype = types_lca(return_dtype, default_dtype)
-                return _wrap(expression, return_dtype)
-            else:
-                message = (
-                    f"Index {expression._const_index} out of range for a tuple of"
-                    + f" type {object_dtype}."
+            message = (
+                f"Index {expression._const_index} out of range for a tuple of"
+                + f" type {object_dtype}."
+            )
+            if expression._check_if_exists:
+                expression_info = get_expression_info(expression)
+                warnings.warn(
+                    message
+                    + " It refers to the following expression:\n"
+                    + expression_info
+                    + "Consider using just the default value without .get()."
                 )
-                if expression._check_if_exists:
-                    expression_info = get_expression_info(expression)
-                    warnings.warn(
-                        message
-                        + " It refers to the following expression:\n"
-                        + expression_info
-                        + "Consider using just the default value without .get()."
-                    )
-                    return _wrap(expression, default_dtype)
-                else:
-                    raise IndexError(message)
+                return _wrap(expression, default_dtype)
+            else:
+                raise IndexError(message)
 
     def eval_method_call(
         self,
@@ -485,7 +486,7 @@ class TypeInterpreter(IdentityTransform):
         expression = super().eval_method_call(expression, state=state, **kwargs)
         dtypes = tuple([arg._dtype for arg in expression._args])
         if (dtypes_and_handler := expression.get_function(dtypes)) is not None:
-            return _wrap(expression, DType(dtypes_and_handler[1]))
+            return _wrap(expression, dt.wrap(dtypes_and_handler[1]))
 
         if len(dtypes) > 0:
             with_arguments = f" with arguments of type {dtypes[1:]}"
@@ -503,7 +504,7 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.UnwrapExpression:
         expression = super().eval_unwrap(expression, state=state, **kwargs)
         dtype = expression._expr._dtype
-        return _wrap(expression, unoptionalize(dtype))
+        return _wrap(expression, dt.unoptionalize(dtype))
 
 
 class JoinTypeInterpreter(TypeInterpreter):
@@ -518,18 +519,18 @@ class JoinTypeInterpreter(TypeInterpreter):
         self,
         expression: expr.ColumnReference,
         state: Optional[TypeInterpreterState] = None,
-    ) -> DType:
+    ) -> dt.DType:
         dtype = expression._column.dtype
         assert state is not None
         if (expression.table == self.left and self.optionalize_left) or (
             expression.table == self.right and self.optionalize_right
         ):
             if not state.check_colref_to_unoptionalize_from_tables(expression):
-                return DType(Optional[dtype])
+                return dt.Optional(dtype)
         return super()._eval_column_val(expression, state=state)
 
 
-def eval_type(expression: expr.ColumnExpression) -> DType:
+def eval_type(expression: expr.ColumnExpression) -> dt.DType:
     return (
         TypeInterpreter()
         .eval_expression(expression, state=TypeInterpreterState())
@@ -540,7 +541,8 @@ def eval_type(expression: expr.ColumnExpression) -> DType:
 ColExprT = TypeVar("ColExprT", bound=expr.ColumnExpression)
 
 
-def _wrap(expression: ColExprT, dtype: DType) -> ColExprT:
+def _wrap(expression: ColExprT, dtype: dt.DType) -> ColExprT:
     assert not hasattr(expression, "_dtype")
+    assert isinstance(dtype, dt.DType)
     expression._dtype = dtype
     return expression

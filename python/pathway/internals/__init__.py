@@ -20,7 +20,6 @@ from pathway.internals.common import (
     udf_async,
     unwrap,
 )
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.decorators import (
     attribute,
     input_attribute,
@@ -114,9 +113,9 @@ __all__ = [
     "schema_builder",
     "column_definition",
     "TableSlice",
-    "DateTimeNaive",
-    "DateTimeUtc",
-    "Duration",
+    "DATE_TIME_NAIVE",
+    "DATE_TIME_UTC",
+    "DURATION",
     "unwrap",
     "SchemaProperties",
 ]

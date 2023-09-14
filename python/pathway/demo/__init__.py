@@ -6,7 +6,7 @@ Typical use:
 ...    name: str
 ...    age: int
 >>> pw.demo.replay_csv("./input_stream.csv", schema=InputSchema)
-Table{'name': <class 'str'>, 'age': <class 'int'>}
+Table{'name': STR, 'age': INT}
 """
 # Copyright © 2023 Pathway
 
@@ -55,19 +55,20 @@ provided the default type is ``pw.Type.ANY``.
     Example:
 
     >>> value_functions = {
-    ...     'id': lambda x: x + 1,
+    ...     'number': lambda x: x + 1,
     ...     'name': lambda x: f'Person {x}',
     ...     'age': lambda x: 20 + x,
     ... }
     >>> class InputSchema(pw.Schema):
-    ...      id: int
+    ...      number: int
     ...      name: str
     ...      age: int
     >>> pw.demo.generate_custom_stream(value_functions, schema=InputSchema, nb_rows=10)
-    Table{'id': <class 'int'>, 'name': <class 'str'>, 'age': <class 'int'>}
+    Table{'number': INT, 'name': STR, 'age': INT}
 
-    In the above example, a data stream is generated with 10 rows, where each row has columns 'id', 'name', and 'age'.
-    The 'id' column contains values incremented by 1 from 1 to 10, the 'name' column contains 'Person'
+    In the above example, a data stream is generated with 10 rows, where each row has columns \
+        'number', 'name', and 'age'.
+    The 'number' column contains values incremented by 1 from 1 to 10, the 'name' column contains 'Person'
     followed by the respective row index, and the 'age' column contains values starting from 20 incremented by
     the row index.
     """
@@ -133,14 +134,14 @@ def noisy_linear_stream(nb_rows: int = 10, input_rate: float = 1.0) -> pw.Table:
     random.seed(0)
 
     def _get_value(i):
-        return i + (2 * random.random() - 1) / 10
+        return float(i + (2 * random.random() - 1) / 10)
 
     class InputSchema(pw.Schema):
         x: float = pw.column_definition(primary_key=True)
         y: float
 
     value_generators = {
-        "x": (lambda x: x),
+        "x": (lambda x: float(x)),
         "y": _get_value,
     }
     autocommit_duration_ms = 1000
@@ -183,7 +184,7 @@ def range_stream(
         value: float
 
     value_generators = {
-        "value": (lambda x: x + offset),
+        "value": (lambda x: float(x + offset)),
     }
     autocommit_duration_ms = 1000
     return generate_custom_stream(
@@ -235,10 +236,10 @@ def replay_csv(
 
     return pw.io.python.read(
         FileStreamSubject(),
-        schema=schema,
+        schema=schema.update_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
-    )
+    ).cast_to_types(**schema)
 
 
 def replay_csv_with_time(
@@ -271,6 +272,10 @@ def replay_csv_with_time(
 
     """
 
+    time_column_type = schema.as_dict().get(time_column, None)
+    if time_column_type != pw.dt.INT:
+        raise ValueError("Invalid schema. Time columns must be int.")
+
     if unit not in ["s", "ms", "us", "ns"]:
         raise ValueError(
             "demo.replay_csv_with_time: unit should be either 's', 'ms, 'us', or 'ns'."
@@ -296,7 +301,7 @@ def replay_csv_with_time(
                 csvreader = csv.DictReader(csvfile)
                 for row in csvreader:
                     values = {key: row[key] for key in columns}
-                    current_value = float(values[time_column])
+                    current_value = int(values[time_column])
                     if last_time_value < 0:
                         last_time_value = current_value
                     tts = current_value - last_time_value
@@ -308,7 +313,7 @@ def replay_csv_with_time(
 
     return pw.io.python.read(
         FileStreamSubject(),
-        schema=schema,
+        schema=schema.update_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
-    )
+    ).cast_to_types(**schema)

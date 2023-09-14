@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from pathway.engine import *
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
+from pathway.internals import dtype as dt
 from pathway.internals.schema import Schema
 
 Value = Union[
@@ -31,9 +31,7 @@ TSchema = TypeVar("TSchema", bound=Schema)
 # XXX: engine calls return BasePointer, not Pointer
 class Pointer(BasePointer, Generic[TSchema]):
     """Pointer to row type.
-
     Example:
-
     >>> import pathway as pw
     >>> t1 = pw.debug.parse_to_table('''
     ... age | owner | pet
@@ -43,8 +41,8 @@ class Pointer(BasePointer, Generic[TSchema]):
     ... 7   | Bob   | dog
     ... ''')
     >>> t2 = t1.select(col=t1.id)
-    >>> t2.schema['col'] is pw.Pointer
-    True
+    >>> t2.schema['col']
+    Pointer
     """
 
     pass
@@ -100,14 +98,14 @@ def static_table_from_pandas(
 
 
 _TYPES_TO_ENGINE_MAPPING: Mapping[Any, PathwayType] = {
-    bool: PathwayType.BOOL,
-    int: PathwayType.INT,
-    float: PathwayType.FLOAT,
-    Pointer: PathwayType.POINTER,
-    str: PathwayType.STRING,
-    DateTimeNaive: PathwayType.DATE_TIME_NAIVE,
-    DateTimeUtc: PathwayType.DATE_TIME_UTC,
-    Duration: PathwayType.DURATION,
-    np.ndarray: PathwayType.ARRAY,
-    Any: PathwayType.ANY,
+    dt.BOOL: PathwayType.BOOL,
+    dt.INT: PathwayType.INT,
+    dt.FLOAT: PathwayType.FLOAT,
+    dt.POINTER: PathwayType.POINTER,
+    dt.STR: PathwayType.STRING,
+    dt.DATE_TIME_NAIVE: PathwayType.DATE_TIME_NAIVE,
+    dt.DATE_TIME_UTC: PathwayType.DATE_TIME_UTC,
+    dt.DURATION: PathwayType.DURATION,
+    dt.Array(): PathwayType.ARRAY,
+    dt.ANY: PathwayType.ANY,
 }

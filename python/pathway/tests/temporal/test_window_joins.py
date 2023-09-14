@@ -1,9 +1,11 @@
 # Copyright © 2023 Pathway
 
+import datetime
+
 import pytest
 
 import pathway as pw
-from pathway.internals.datetime_types import DateTimeNaive
+from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
 from pathway.tests.utils import T, assert_table_equality, assert_table_equality_wo_index
 
 
@@ -893,26 +895,33 @@ def test_window_join_float(w: pw.temporal.Window) -> None:
 @pytest.mark.parametrize(
     "left_type,right_type,window,error_str",
     [
-        (int, int, pw.temporal.tumbling(duration=1.2), ", window.hop"),
         (
             int,
             int,
+            pw.temporal.tumbling(duration=datetime.timedelta(days=1)),
+            ", window.hop",
+        ),
+        (
+            int,
+            DATE_TIME_NAIVE,
             pw.temporal.tumbling(duration=2, offset=1.1),
             ", window.hop, window.offset",
         ),
         (
             int,
             int,
-            pw.temporal.sliding(hop=2, duration=3.5),
+            pw.temporal.sliding(
+                hop=datetime.timedelta(days=1), duration=datetime.timedelta(days=2)
+            ),
             ", window.hop, window.duration",
         ),
-        (int, float, pw.temporal.tumbling(duration=1.2), ", window.hop"),
-        (int, float, pw.temporal.tumbling(duration=1.2), ", window.hop"),
-        (float, int, pw.temporal.session(max_gap=2), ", window.max_gap"),
-        (float, int, pw.temporal.session(predicate=lambda a, b: False), ""),
+        (DATE_TIME_NAIVE, float, pw.temporal.tumbling(duration=1.2), ", window.hop"),
+        (int, DATE_TIME_UTC, pw.temporal.tumbling(duration=1.2), ", window.hop"),
+        (float, DATE_TIME_NAIVE, pw.temporal.session(max_gap=2), ", window.max_gap"),
+        (DATE_TIME_UTC, int, pw.temporal.session(predicate=lambda a, b: False), ""),
         (
-            DateTimeNaive,
-            DateTimeNaive,
+            DATE_TIME_NAIVE,
+            DATE_TIME_NAIVE,
             pw.temporal.sliding(hop=2, duration=3.5),
             ", window.hop, window.duration",
         ),

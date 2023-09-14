@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pathway import (
     ClassArg,
     Table,
@@ -14,6 +12,7 @@ from pathway import (
     this,
     transformer,
 )
+from pathway.dt import Optional
 from pathway.stdlib.indexing.sorting import (
     binsearch_oracle,
     build_sorted_index,
@@ -517,11 +516,11 @@ def test_compute_max_key():
             0   | 3
             """
     ).with_columns(val=items.pointer_from(this.val))
-    expected = expected.update_types(val=Optional[expected.schema["val"]])  # noqa
+    expected = expected.update_types(val=Optional(expected.schema["val"]))  # noqa
 
     assert_table_equality(
-        expected,
         result,
+        expected,
     )
 
 

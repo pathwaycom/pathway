@@ -9,7 +9,8 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway.internals.datetime_types import DateTimeNaive
+from pathway import dt
+from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
 from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
@@ -118,6 +119,35 @@ def test_session_max_gap():
         1     | 3
         3     | 1
         3.4   | 2
+    """
+    )
+    assert_table_equality_wo_index(result, res)
+
+
+def test_session_max_gap_mixed():
+    t = T(
+        """
+            | t
+        1   |  10
+        2   |  11
+        3   |  12
+        4   |  30
+        5   |  34
+        6   |  35
+    """
+    )
+
+    gb = t.windowby(t.t, window=pw.temporal.session(max_gap=1.5))
+    result = gb.reduce(
+        min_t=pw.reducers.min(pw.this.t),
+        count=pw.reducers.count(),
+    )
+    res = T(
+        """
+        min_t | count
+        10    | 3
+        30    | 1
+        34    | 2
     """
     )
     assert_table_equality_wo_index(result, res)
@@ -236,6 +266,39 @@ def test_sliding_larger_hop():
                   |     12           |     16         | 12    | 15    | 4
     """
     )
+    assert_table_equality_wo_index(result, res)
+
+
+def test_sliding_larger_hop_mixed():
+    t = T(
+        """
+            | t
+        0   |  11.3
+        1   |  12.1
+        2   |  13.3
+        3   |  14.7
+        4   |  15.3
+        5   |  16.1
+        6   |  17.8
+    """
+    )
+
+    gb = t.windowby(t.t, window=pw.temporal.sliding(duration=4, hop=6))
+    result = gb.reduce(
+        pw.this._pw_shard,
+        pw.this._pw_window_start,
+        pw.this._pw_window_end,
+        min_t=pw.reducers.min(pw.this.t),
+        max_t=pw.reducers.max(pw.this.t),
+        count=pw.reducers.count(),
+    )
+
+    res = T(
+        """
+        _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
+                  |     12           |     16         | 12.1  | 15.3  | 4
+    """
+    ).update_types(_pw_window_start=dt.FLOAT, _pw_window_end=dt.FLOAT)
     assert_table_equality_wo_index(result, res)
 
 
@@ -513,22 +576,33 @@ def test_windows_with_datetimes(w):
 @pytest.mark.parametrize(
     "dtype,window,error_str",
     [
-        (int, pw.temporal.tumbling(duration=1.2), ", window.hop"),
         (
             int,
-            pw.temporal.tumbling(duration=2, offset=1.1),
+            pw.temporal.tumbling(duration=datetime.timedelta(days=1)),
+            ", window.hop",
+        ),
+        (
+            int,
+            pw.temporal.tumbling(
+                duration=datetime.timedelta(days=1),
+                offset=datetime.datetime(year=1970, month=1, day=1),
+            ),
             ", window.hop, window.offset",
         ),
         (
-            int,
+            DATE_TIME_UTC,
             pw.temporal.sliding(hop=2, duration=3.5),
             ", window.hop, window.duration",
         ),
-        (int, pw.temporal.tumbling(duration=1.2), ", window.hop"),
-        (int, pw.temporal.tumbling(duration=1.2), ", window.hop"),
-        (float, pw.temporal.session(max_gap=2), ", window.max_gap"),
+        (DATE_TIME_NAIVE, pw.temporal.tumbling(duration=1.2), ", window.hop"),
         (
-            DateTimeNaive,
+            int,
+            pw.temporal.tumbling(duration=datetime.timedelta(days=1)),
+            ", window.hop",
+        ),
+        (DATE_TIME_NAIVE, pw.temporal.session(max_gap=2), ", window.max_gap"),
+        (
+            DATE_TIME_NAIVE,
             pw.temporal.sliding(hop=2, duration=3.5),
             ", window.hop, window.duration",
         ),

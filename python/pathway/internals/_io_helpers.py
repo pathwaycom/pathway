@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import List, Type
 
-from pathway.internals import api, schema
-from pathway.internals.dtype import unoptionalize
+from pathway.internals import api
+from pathway.internals import dtype as dt
+from pathway.internals import schema
 from pathway.internals.table import Table
 
 
@@ -24,9 +25,7 @@ def _form_value_fields(schema: Type[schema.Schema]) -> List[api.ValueField]:
 
     # XXX fix mapping schema types to PathwayType
     types = {
-        name: api._TYPES_TO_ENGINE_MAPPING.get(
-            unoptionalize(dtype), api.PathwayType.ANY
-        )
+        name: dt.unoptionalize(dtype).to_engine()
         for name, dtype in schema.as_dict().items()
     }
 

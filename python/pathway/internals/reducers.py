@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List
 from warnings import warn
 
 import numpy as np
 
 from pathway.internals import api
+from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
 from pathway.internals.common import apply_with_type
-from pathway.internals.dtype import DType, dtype_issubclass
 
 
 class UnaryReducer(ABC):
@@ -24,11 +23,11 @@ class UnaryReducer(ABC):
         self.name = name
 
     @abstractmethod
-    def return_type(self, arg_type: DType) -> DType:
+    def return_type(self, arg_type: dt.DType) -> dt.DType:
         ...
 
     @abstractmethod
-    def engine_reducer(self, arg_type: DType) -> api.Reducer:
+    def engine_reducer(self, arg_type: dt.DType) -> api.Reducer:
         ...
 
 
@@ -39,48 +38,50 @@ class UnaryReducerWithDefault(UnaryReducer):
         super().__init__(name=name)
         self._engine_reducer = engine_reducer
 
-    def engine_reducer(self, arg_type: DType) -> api.Reducer:
+    def engine_reducer(self, arg_type: dt.DType) -> api.Reducer:
         return self._engine_reducer
 
 
 class FixedOutputUnaryReducer(UnaryReducerWithDefault):
-    output_type: DType
+    output_type: dt.DType
 
-    def __init__(self, *, output_type: DType, name: str, engine_reducer: api.Reducer):
+    def __init__(
+        self, *, output_type: dt.DType, name: str, engine_reducer: api.Reducer
+    ):
         super().__init__(name=name, engine_reducer=engine_reducer)
         self.output_type = output_type
 
-    def return_type(self, arg_type: DType) -> DType:
+    def return_type(self, arg_type: dt.DType) -> dt.DType:
         return self.output_type
 
 
 class TypePreservingUnaryReducer(UnaryReducerWithDefault):
-    def return_type(self, arg_type: DType) -> DType:
+    def return_type(self, arg_type: dt.DType) -> dt.DType:
         return arg_type
 
 
 class SumReducer(UnaryReducer):
-    def return_type(self, arg_type: DType) -> DType:
-        for allowed_dtype in [DType(float), DType(np.ndarray)]:
-            if dtype_issubclass(arg_type, allowed_dtype):
+    def return_type(self, arg_type: dt.DType) -> dt.DType:
+        for allowed_dtype in [dt.FLOAT, dt.Array()]:
+            if dt.dtype_issubclass(arg_type, allowed_dtype):
                 return arg_type
         raise TypeError(
             f"Pathway does not support using reducer {self}"
             + f" on column of type {arg_type}.\n"
         )
 
-    def engine_reducer(self, arg_type: DType) -> api.Reducer:
-        if arg_type == DType(int):
+    def engine_reducer(self, arg_type: dt.DType) -> api.Reducer:
+        if arg_type == dt.INT:
             return api.Reducer.INT_SUM
-        elif arg_type == DType(np.ndarray):
+        elif arg_type == dt.Array():
             return api.Reducer.ARRAY_SUM
         else:
             return api.Reducer.FLOAT_SUM
 
 
 class TupleWrappingReducer(UnaryReducerWithDefault):
-    def return_type(self, arg_type: DType) -> DType:
-        return DType(List[arg_type])  # type: ignore[valid-type]
+    def return_type(self, arg_type: dt.DType) -> dt.DType:
+        return dt.List(arg_type)  # type: ignore[valid-type]
 
 
 _min = TypePreservingUnaryReducer(name="min", engine_reducer=api.Reducer.MIN)
@@ -91,10 +92,14 @@ _sorted_tuple = TupleWrappingReducer(
 )
 _tuple = TupleWrappingReducer(name="tuple", engine_reducer=api.Reducer.TUPLE)
 _argmin = FixedOutputUnaryReducer(
-    output_type=DType(api.Pointer), name="argmin", engine_reducer=api.Reducer.ARG_MIN
+    output_type=dt.POINTER,
+    name="argmin",
+    engine_reducer=api.Reducer.ARG_MIN,
 )
 _argmax = FixedOutputUnaryReducer(
-    output_type=DType(api.Pointer), name="argmax", engine_reducer=api.Reducer.ARG_MAX
+    output_type=dt.POINTER,
+    name="argmax",
+    engine_reducer=api.Reducer.ARG_MAX,
 )
 _unique = TypePreservingUnaryReducer(name="unique", engine_reducer=api.Reducer.UNIQUE)
 _any = TypePreservingUnaryReducer(name="any", engine_reducer=api.Reducer.ANY)

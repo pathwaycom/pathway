@@ -17,6 +17,7 @@ use std::cmp::{max, Ord};
 use std::rc::Rc;
 use timely::communication::Push;
 use timely::dataflow::channels::pact::Pipeline;
+use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 use timely::dataflow::operators::generic::OutputHandle;
 use timely::dataflow::operators::CapabilityRef;
 use timely::dataflow::operators::Operator;
@@ -28,6 +29,7 @@ use timely::progress::{PathSummary, Timestamp};
 
 type KeyValArr<G, K, V, R> =
     Arranged<G, TraceAgent<Spine<Rc<OrdValBatch<K, V, <G as ScopeParent>::Timestamp, R>>>>>;
+
 #[derive(Debug, Default, Hash, Clone, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct TimeKey<CT, K> {
     pub time: CT,
@@ -214,7 +216,6 @@ where
     CT: ExchangeData + Abelian,
     R: ExchangeData + Abelian,
 {
-    // For each (data, Alt(time), diff) we add a (data, Neu(time), -diff).
     fn prepend_time_to_key(
         &self,
         time_column_extractor: &'static impl Fn(&V) -> CT,
@@ -242,8 +243,8 @@ pub trait TimeColumnBuffer<
     fn postpone(
         &self,
         scope: G,
-        threshold_time_column_extractor: &'static impl Fn(&V) -> CT,
-        current_time_column_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: &'static impl Fn(&V) -> CT,
+        current_time_extractor: &'static impl Fn(&V) -> CT,
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp:
@@ -263,8 +264,8 @@ where
     fn postpone(
         &self,
         mut scope: G,
-        threshold_time_column_extractor: &'static impl Fn(&V) -> CT,
-        current_time_column_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: &'static impl Fn(&V) -> CT,
+        current_time_extractor: &'static impl Fn(&V) -> CT,
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp:
@@ -278,9 +279,9 @@ where
             let ret_in_buffer_timespace_col = postpone_core(
                 self.enter(inner)
                     .concat(&retractions.negate())
-                    .prepend_time_to_key(threshold_time_column_extractor)
+                    .prepend_time_to_key(threshold_time_extractor)
                     .arrange(),
-                current_time_column_extractor,
+                current_time_extractor,
             );
             retractions.set(&ret_in_buffer_timespace_col);
             ret_in_buffer_timespace_col.leave()
@@ -288,15 +289,14 @@ where
     }
 }
 
-fn push_key_values_to_output<T, K, C: Cursor<Time = SelfCompactionTime<T>>, P>(
+fn push_key_values_to_output<K, C: Cursor, P>(
     wrapper: &mut CursorStorageWrapper<C>,
     output: &mut OutputHandle<'_, C::Time, ((K, C::Val), C::Time, C::R), P>,
     capability: &CapabilityRef<'_, C::Time>,
     k: &K,
     time: &Option<C::Time>,
-    total_weight: bool,
+    weight_fun: &'static impl Fn(&mut CursorStorageWrapper<C>) -> Option<C::R>,
 ) where
-    T: Timestamp + Lattice + Clone,
     K: Ord + Clone + Data + 'static,
     C::Val: Ord + Clone + Data + 'static,
     C::Time: Lattice + timely::progress::Timestamp,
@@ -311,11 +311,8 @@ fn push_key_values_to_output<T, K, C: Cursor<Time = SelfCompactionTime<T>>, P>(
     >,
 {
     while wrapper.cursor.val_valid(wrapper.storage) {
-        let weight = if total_weight {
-            key_val_total_weight(wrapper)
-        } else {
-            key_val_total_original_weight(wrapper)
-        };
+        let weight = weight_fun(wrapper);
+
         //rust can't do if let Some(weight) = weight && !weight.is_zero()
         //while we can do if let ... { if !weight.is_zero()} that introduces if-s
         //that can be collapsed, which is bad as well
@@ -347,8 +344,7 @@ pub fn postpone_core<
     R: ExchangeData + Abelian + Diff,
 >(
     mut input_arrangement: KeyValArr<G, TimeKey<CT, K>, V, R>,
-    current_time_column_extractor: &'static impl Fn(&V) -> CT,
-    // ) -> KeyValArr<G, K, V, R>
+    current_time_extractor: &'static impl Fn(&V) -> CT,
 ) -> Collection<G, (K, V), R>
 where
     G: Scope,
@@ -363,7 +359,6 @@ where
             .stream
             .unary(Pipeline, "buffer", move |_capability, _operator_info| {
                 let mut input_buffer = Vec::new();
-                let mut source_trace = input_arrangement.trace.clone();
                 let mut max_column_time: Option<CT> = None;
                 let mut last_arrangement_key: Option<TimeKey<CT, K>> = None;
                 move |input, output| {
@@ -410,7 +405,7 @@ where
                                         };
                                     },
                                 );
-                                let current_column_time = current_time_column_extractor(
+                                let current_column_time = current_time_extractor(
                                     batch_wrapper.cursor.val(batch_wrapper.storage),
                                 );
 
@@ -438,7 +433,7 @@ where
                                     &capability,
                                     k,
                                     &max_curr_time,
-                                    false,
+                                    &key_val_total_original_weight,
                                 );
                                 local_last_arrangement_key =
                                     local_last_arrangement_key.map(|timekey: TimeKey<CT, K>| {
@@ -482,7 +477,7 @@ where
                                     &capability,
                                     k,
                                     &max_curr_time,
-                                    true,
+                                    &key_val_total_weight,
                                 );
                                 input_wrapper.cursor.step_key(input_wrapper.storage);
                             }
@@ -496,13 +491,174 @@ where
 
                         last_arrangement_key = local_last_arrangement_key;
 
-                        source_trace.advance_upper(&mut upper_limit);
+                        input_arrangement.trace.advance_upper(&mut upper_limit);
 
-                        source_trace.set_logical_compaction(upper_limit.borrow());
-                        source_trace.set_physical_compaction(upper_limit.borrow());
+                        input_arrangement
+                            .trace
+                            .set_logical_compaction(upper_limit.borrow());
+                        input_arrangement
+                            .trace
+                            .set_physical_compaction(upper_limit.borrow());
                     });
                 }
             })
     };
     Collection { inner: stream }
+}
+
+pub trait TimeColumnForget<
+    G: Scope,
+    K: ExchangeData + Abelian + Shard,
+    V: ExchangeData + Abelian,
+    R: ExchangeData + Abelian,
+    CT: Abelian + Ord + ExchangeData,
+>
+{
+    fn forget(
+        &self,
+        scope: G,
+        threshold_time_extractor: &'static impl Fn(&V) -> CT,
+        current_time_extractor: &'static impl Fn(&V) -> CT,
+    ) -> Collection<G, (K, V), R>
+    where
+        G::Timestamp:
+            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon;
+}
+
+impl<G, K, V, R, CT> TimeColumnForget<G, K, V, R, CT> for Collection<G, (K, V), R>
+where
+    G: Scope + MaybeTotalScope,
+    G::Timestamp: Lattice,
+    K: ExchangeData + Abelian + Shard,
+    V: ExchangeData + Abelian,
+    CT: ExchangeData + Abelian,
+    R: ExchangeData + Abelian,
+    TimeKey<CT, K>: Hashable,
+{
+    fn forget(
+        &self,
+        scope: G,
+        threshold_time_extractor: &'static impl Fn(&V) -> CT,
+        current_time_extractor: &'static impl Fn(&V) -> CT,
+    ) -> Collection<G, (K, V), R>
+    where
+        G::Timestamp:
+            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+    {
+        self.concat(
+            &self
+                .postpone(scope, threshold_time_extractor, current_time_extractor)
+                .negate(),
+        )
+    }
+}
+pub trait TimeColumnCutoff<
+    G: Scope,
+    K: ExchangeData + Abelian + Shard,
+    V: ExchangeData + Abelian,
+    R: ExchangeData + Abelian,
+    CT: Abelian + Ord + ExchangeData,
+>
+{
+    fn cut_off(
+        &self,
+        scope: G,
+        threshold_time_extractor: &'static impl Fn(&V) -> CT,
+        current_column_extractor: &'static impl Fn(&V) -> CT,
+    ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
+    where
+        G::Timestamp:
+            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon;
+}
+
+impl<G, K, V, R, CT> TimeColumnCutoff<G, K, V, R, CT> for Collection<G, (K, V), R>
+where
+    G: Scope + MaybeTotalScope,
+    G::Timestamp: Lattice,
+    K: ExchangeData + Abelian + Shard,
+    V: ExchangeData + Abelian,
+    CT: ExchangeData + Abelian,
+    R: ExchangeData + Abelian,
+    TimeKey<CT, K>: Hashable,
+{
+    fn cut_off(
+        &self,
+        _scope: G,
+        threshold_time_extractor: &'static impl Fn(&V) -> CT,
+        current_time_extractor: &'static impl Fn(&V) -> CT,
+    ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
+    where
+        G::Timestamp:
+            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+    {
+        ignore_late(self, threshold_time_extractor, current_time_extractor)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn ignore_late<
+    G: ScopeParent,
+    CT: ExchangeData,
+    K: ExchangeData + Shard,
+    V,
+    R: ExchangeData + Abelian + Diff,
+>(
+    input_collection: &Collection<G, (K, V), R>,
+    threshold_time_extractor: &'static impl Fn(&V) -> CT,
+    current_time_extractor: &'static impl Fn(&V) -> CT,
+) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
+where
+    G: Scope,
+    G::Timestamp: Lattice + Ord,
+    CT: ExchangeData + Abelian,
+    K: ExchangeData + Abelian,
+    V: ExchangeData + Abelian,
+{
+    let mut builder =
+        OperatorBuilder::new("ignore_late".to_owned(), input_collection.inner.scope());
+
+    let mut input = builder.new_input(&input_collection.inner, Pipeline);
+    let (mut output, stream) = builder.new_output();
+    let (mut late_output, late_stream) = builder.new_output();
+
+    builder.build(move |_| {
+        let mut input_buffer = Vec::new();
+        let mut max_column_time: Option<CT> = None;
+        move |_frontiers| {
+            let mut output_handle = output.activate();
+            let mut late_output_handle = late_output.activate();
+            input.for_each(|capability, batch| {
+                batch.swap(&mut input_buffer);
+                let mut max_curr_time = None;
+
+                for ((_key, val), time, _weight) in &input_buffer {
+                    let candidate_column_time = current_time_extractor(val);
+                    if max_column_time.is_none()
+                        || &candidate_column_time > max_column_time.as_ref().unwrap()
+                    {
+                        max_column_time = Some(candidate_column_time.clone());
+                    }
+                    //for complex handling this will need some changes, to accommodate anitchains
+                    if max_curr_time.is_none() || max_curr_time.as_ref().unwrap() < time {
+                        max_curr_time = Some(time.clone());
+                    };
+                }
+
+                for entry in input_buffer.drain(..) {
+                    let ((_key, val), _time, _weight) = &entry;
+                    let threshold = threshold_time_extractor(val);
+                    if max_column_time.as_ref().unwrap() < &threshold {
+                        output_handle.session(&capability).give(entry);
+                    } else {
+                        late_output_handle.session(&capability).give(entry);
+                    }
+                }
+            });
+        }
+    });
+
+    (
+        Collection { inner: stream },
+        Collection { inner: late_stream },
+    )
 }

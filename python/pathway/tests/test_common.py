@@ -17,6 +17,7 @@ import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
 from pathway.internals import api
+from pathway.internals import dtype as dt
 from pathway.internals.expression import NumbaApplyExpression
 from pathway.tests.utils import (
     T,
@@ -1014,7 +1015,7 @@ def test_flatten_incorrect_type():
     )
     with pytest.raises(
         TypeError,
-        match=re.escape("Cannot flatten column <table1>.a of type <class 'int'>."),
+        match=re.escape("Cannot flatten column <table1>.a of type INT."),
     ):
         t = t.flatten(t.a)
 
@@ -4199,6 +4200,27 @@ def test_cast(from_: List, to_: List):
     assert_table_equality(table, expected)
 
 
+def test_cast_optional():
+    tab = T(
+        """
+          | a
+        1 | 1
+        2 |
+        3 | 1
+        """
+    )
+    ret = tab.select(a=pw.cast(Optional[float], pw.this.a))
+    expected = T(
+        """
+          | a
+        1 | 1.0
+        2 |
+        3 | 1.0
+        """
+    ).update_types(a=Optional[float])
+    assert_table_equality(ret, expected)
+
+
 def test_lazy_coalesce():
     tab = T(
         """
@@ -4746,7 +4768,7 @@ def test_sequence_get_unchecked_fixed_length_dynamic_index_1():
 
     t2 = t1.select(tup=pw.make_tuple(pw.this.i, pw.this.s), a=pw.this.a)
     t3 = t2.select(r=pw.this.tup[pw.this.a])
-    assert t3.schema.as_dict()["r"] == Any
+    assert t3.schema.as_dict()["r"] == dt.ANY
 
 
 def test_sequence_get_unchecked_fixed_length_dynamic_index_2():
@@ -4794,7 +4816,7 @@ def test_sequence_get_checked_fixed_length_dynamic_index():
     t2 = t1.select(tup=pw.make_tuple(pw.this.a, pw.this.b), c=pw.this.c)
     t3 = t2.select(r=pw.this.tup.get(pw.this.c))
 
-    assert t3.schema.as_dict()["r"] == Optional[int]
+    assert t3.schema.as_dict()["r"] == dt.Optional(dt.INT)
     assert_table_equality_wo_types(t3, expected)
 
 
@@ -4904,9 +4926,7 @@ def test_sequence_get_unchecked_fixed_length_errors():
     with pytest.raises(
         IndexError,
         match=(
-            re.escape(
-                "Index 2 out of range for a tuple of type typing.Tuple[int, int]."
-            )
+            re.escape("Index 2 out of range for a tuple of type Tuple(INT, INT).")
             + r"[\s\S]*"
         ),
     ):
@@ -4936,9 +4956,7 @@ def test_sequence_get_checked_fixed_length_errors():
     with pytest.warns(
         UserWarning,
         match=(
-            re.escape(
-                "Index 2 out of range for a tuple of type typing.Tuple[int, int]."
-            )
+            re.escape("Index 2 out of range for a tuple of type Tuple(INT, INT).")
             + " It refers to the following expression:\n\t"
             + re.escape("(<table1>.tup).get(2, <table1>.c)\n")
             + rf"called in .*{file_name}.*\n"
@@ -5402,6 +5420,7 @@ def test_tuple_reducer_consistency():
     t2 = left_res.select(
         pet=pw.this.pet.get(3), owner=pw.this.owner.get(3), age=pw.this.age.get(3)
     )
+    print(t2.schema)
 
     joined = left.join(
         t2,

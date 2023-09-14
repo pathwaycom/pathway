@@ -450,3 +450,52 @@ def test_to_string_for_optional_type():
 
     res = table.select(a=pw.this.a.to_string())
     assert_table_equality(res, expected)
+
+
+def test_to_string_for_datetime_naive():
+    t = T(
+        """
+          | t
+        1 | 2019-12-31T23:49:59.999999999
+        2 | 2019-12-31T23:49:59.0001
+        3 | 2020-03-04T11:13:00.345612
+        4 | 2023-03-26T12:00:00.000000001
+        """
+    )
+    expected = T(
+        """
+          | t
+        1 | 2019-12-31T23:49:59.999999999
+        2 | 2019-12-31T23:49:59.000100000
+        3 | 2020-03-04T11:13:00.345612000
+        4 | 2023-03-26T12:00:00.000000001
+        """
+    )
+    assert_table_equality(
+        t.select(t=pw.this.t.dt.strptime("%Y-%m-%dT%H:%M:%S.%f").to_string()), expected
+    )
+
+
+def test_to_string_for_datetime_utc():
+    t = T(
+        """
+          | t
+        1 | 2019-12-31T23:49:59.999999999+0100
+        2 | 2019-12-31T23:49:59.0001+0100
+        3 | 2020-03-04T11:13:00.345612+0100
+        4 | 2023-03-26T12:00:00.000000001+0100
+        """
+    )
+    expected = T(
+        """
+          | t
+        1 | 2019-12-31T22:49:59.999999999+0000
+        2 | 2019-12-31T22:49:59.000100000+0000
+        3 | 2020-03-04T10:13:00.345612000+0000
+        4 | 2023-03-26T11:00:00.000000001+0000
+        """
+    )
+    assert_table_equality(
+        t.select(t=pw.this.t.dt.strptime("%Y-%m-%dT%H:%M:%S.%f%z").to_string()),
+        expected,
+    )

@@ -22,9 +22,8 @@ from typing import (
 import numpy as np
 import pandas as pd
 
+from pathway.internals import dtype as dt
 from pathway.internals import trace
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
-from pathway.internals.dtype import DType, NoneType, dtype_issubclass
 from pathway.internals.runtime_type_check import runtime_type_check
 
 if TYPE_CHECKING:
@@ -48,32 +47,34 @@ def schema_from_columns(
     return _schema_builder(_name, __dict)
 
 
-def _type_converter(series):
+def _type_converter(series) -> dt.DType:
+    if series.apply(lambda x: isinstance(x, (tuple, list))).all():
+        return dt.ANY_TUPLE
     if (series.isna() | series.isnull()).all():
-        return NoneType
+        return dt.NONE
     if (series.apply(lambda x: isinstance(x, np.ndarray))).all():
-        return np.ndarray
+        return dt.Array()
     if pd.api.types.is_integer_dtype(series.dtype):
-        ret_type: Type = int
+        ret_type: dt.DType = dt.INT
     elif pd.api.types.is_float_dtype(series.dtype):
-        ret_type = float
+        ret_type = dt.FLOAT
     elif pd.api.types.is_bool_dtype(series.dtype):
-        ret_type = bool
+        ret_type = dt.BOOL
     elif pd.api.types.is_string_dtype(series.dtype):
-        ret_type = str
+        ret_type = dt.STR
     elif pd.api.types.is_datetime64_ns_dtype(series.dtype):
         if series.dt.tz is None:
-            ret_type = DateTimeNaive
+            ret_type = dt.DATE_TIME_NAIVE
         else:
-            ret_type = DateTimeUtc
+            ret_type = dt.DATE_TIME_UTC
     elif pd.api.types.is_timedelta64_dtype(series.dtype):
-        ret_type = Duration
+        ret_type = dt.DURATION
     elif pd.api.types.is_object_dtype(series.dtype):
-        ret_type = Any  # type: ignore
+        ret_type = dt.ANY  # type: ignore
     else:
-        ret_type = Any  # type: ignore
+        ret_type = dt.ANY  # type: ignore
     if series.isna().any() or series.isnull().any():
-        return Optional[ret_type]
+        return dt.Optional(ret_type)
     else:
         return ret_type
 
@@ -112,7 +113,7 @@ def schema_from_types(
     >>> import pathway as pw
     >>> s = pw.schema_from_types(foo=int, bar=str)
     >>> s.as_dict()
-    {'foo': <class 'int'>, 'bar': <class 'str'>}
+    {'foo': INT, 'bar': STR}
     >>> issubclass(s, pw.Schema)
     True
     """
@@ -157,8 +158,8 @@ def _create_column_definitions(schema: SchemaMetaclass):
     columns = {}
 
     for name, annotation in annotations.items():
-        dtype = DType(annotation)
-        column = fields.pop(name, column_definition(dtype=dtype))
+        coldtype = dt.wrap(annotation)
+        column = fields.pop(name, column_definition(dtype=coldtype))
 
         if not isinstance(column, ColumnDefinition):
             raise ValueError(
@@ -168,8 +169,11 @@ def _create_column_definitions(schema: SchemaMetaclass):
         name = column.name or name
 
         if column.dtype is None:
-            column = dataclasses.replace(column, dtype=dtype)
-        elif dtype != column.dtype:
+            column = dataclasses.replace(column, dtype=coldtype)
+        column = dataclasses.replace(column, dtype=dt.wrap(column.dtype))
+        if coldtype != column.dtype:
+            print(coldtype)
+            print(column.dtype)
             raise TypeError(
                 f"type annotation of column `{name}` does not match column definition"
             )
@@ -191,7 +195,7 @@ class SchemaProperties:
 class SchemaMetaclass(type):
     __columns__: Dict[str, ColumnDefinition]
     __properties__: SchemaProperties
-    __types__: Dict[str, DType]
+    __types__: Dict[str, dt.DType]
 
     @trace.trace_user_frame
     def __init__(self, *args, append_only=False, **kwargs) -> None:
@@ -200,7 +204,8 @@ class SchemaMetaclass(type):
         self.__columns__ = _create_column_definitions(self)
         self.__properties__ = SchemaProperties(append_only=append_only)
         self.__types__ = {
-            name: cast(DType, column.dtype) for name, column in self.__columns__.items()
+            name: cast(dt.DType, column.dtype)
+            for name, column in self.__columns__.items()
         }
 
     def __or__(self, other: Type[Schema]) -> Type[Schema]:  # type: ignore
@@ -242,6 +247,17 @@ class SchemaMetaclass(type):
 
     def values(self) -> ValuesView[Any]:
         return self.__types__.values()
+
+    def update_types(self, **kwargs) -> Type[Schema]:
+        columns: Dict[str, ColumnDefinition] = dict(self.__columns__)
+        for name, dtype in kwargs.items():
+            if name not in columns:
+                raise ValueError(
+                    "Schema.update_types() argument name has to be an existing column name."
+                )
+            columns[name] = dataclasses.replace(columns[name], dtype=dt.wrap(dtype))
+
+        return schema_builder(columns=columns, properties=self.__properties__)
 
     def __getitem__(self, name):
         return self.__types__[name]
@@ -299,14 +315,14 @@ class Schema(metaclass=SchemaMetaclass):
     ... 3    8  Alice  cat
     ... 4    7    Bob  dog''')
     >>> t1.schema.as_dict()
-    {'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}
+    {'age': INT, 'owner': STR, 'pet': STR}
     >>> issubclass(t1.schema, pw.Schema)
     True
     >>> class NewSchema(pw.Schema):
     ...   foo: int
     >>> SchemaSum = NewSchema | t1.schema
     >>> SchemaSum.as_dict()
-    {'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, 'foo': <class 'int'>}
+    {'age': INT, 'owner': STR, 'pet': STR, 'foo': INT}
     """
 
     def __init_subclass__(cls, /, append_only: bool = False, **kwargs) -> None:
@@ -326,7 +342,7 @@ def is_subschema(left: Type[Schema], right: Type[Schema]):
     if left.keys() != right.keys():
         return False
     for k in left.keys():
-        if not dtype_issubclass(left[k], right[k]):
+        if not dt.dtype_issubclass(left[k], right[k]):
             return False
     return True
 
@@ -343,11 +359,14 @@ _no_default_value_marker = _Undefined()
 class ColumnDefinition:
     primary_key: bool = False
     default_value: Optional[Any] = _no_default_value_marker
-    dtype: Optional[DType] = DType(Any)
+    dtype: Optional[dt.DType] = dt.ANY
     name: Optional[str] = None
 
     def has_default_value(self) -> bool:
         return self.default_value != _no_default_value_marker
+
+    def __post_init__(self):
+        assert self.dtype is None or isinstance(self.dtype, dt.DType)
 
 
 def column_definition(
@@ -380,11 +399,15 @@ def column_definition(
     ...   timestamp: str = pw.column_definition(name="@timestamp")
     ...   data: str
     >>> NewSchema.as_dict()
-    {'key': <class 'int'>, '@timestamp': <class 'str'>, 'data': <class 'str'>}
+    {'key': INT, '@timestamp': STR, 'data': STR}
     """
+    from pathway.internals import dtype as dt
 
     return ColumnDefinition(
-        dtype=dtype, primary_key=primary_key, default_value=default_value, name=name
+        dtype=dt.wrap(dtype) if dtype is not None else None,
+        primary_key=primary_key,
+        default_value=default_value,
+        name=name,
     )
 
 
@@ -412,7 +435,7 @@ def schema_builder(
     ...   'data': pw.column_definition(dtype=int, default_value=0)
     ... }, name="my_schema")
     >>> schema.as_dict()
-    {'key': <class 'int'>, 'data': <class 'int'>}
+    {'key': INT, 'data': INT}
     """
 
     if name is None:

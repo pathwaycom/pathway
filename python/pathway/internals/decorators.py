@@ -10,10 +10,10 @@ if TYPE_CHECKING:
     from pathway.internals.datasink import DataSink
     from pathway.internals.schema import Schema
 
+from pathway.internals import dtype as dt
 from pathway.internals import operator as op
 from pathway.internals import row_transformer as rt
 from pathway.internals.datasource import EmptyDataSource, StaticDataSource
-from pathway.internals.dtype import DType
 from pathway.internals.helpers import function_spec, with_optional_kwargs
 from pathway.internals.parse_graph import G
 
@@ -68,7 +68,7 @@ def input_attribute(type=float):
     9   | 10
     10  | 11
     """
-    return rt.InputAttribute(dtype=DType(type))
+    return rt.InputAttribute(dtype=dt.wrap(type))
 
 
 def input_method(type=float):
@@ -103,7 +103,7 @@ def input_method(type=float):
     ... 7''')
     >>> t2 = first_transformer(table=t1.select(a=t1.age)).table
     >>> t2.schema.as_dict()
-    {'fun': typing.Callable[..., int]}
+    {'fun': Callable(..., INT)}
     >>> t3 = second_transformer(table=t2.select(m=t2.fun)).table
     >>> pw.debug.compute_and_print(t1 + t3, include_id=False)
     age | val
@@ -112,7 +112,7 @@ def input_method(type=float):
     9   | 18
     10  | 20
     """
-    return rt.InputMethod(dtype=DType(type))
+    return rt.InputMethod(dtype=dt.wrap(type))
 
 
 @with_optional_kwargs
@@ -213,7 +213,7 @@ def method(func, **kwargs):
     ... 7''')
     >>> t2 = simple_transformer(table=t1.select(a=t1.age)).table
     >>> t2.schema.as_dict()
-    {'b': <class 'float'>, 'fun': typing.Callable[..., float]}
+    {'b': FLOAT, 'fun': Callable(..., FLOAT)}
     >>> pw.debug.compute_and_print(t1 + t2.select(t2.b), include_id=False)
     age | b
     7   | 49

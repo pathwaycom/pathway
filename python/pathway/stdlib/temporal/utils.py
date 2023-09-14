@@ -1,9 +1,9 @@
 # Copyright © 2023 Pathway
 
 import datetime
-from typing import Any, Dict, Tuple, Union, get_args
+from typing import Any, Dict, Tuple, Union
 
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
+from pathway.internals import dtype as dt
 from pathway.internals.type_interpreter import eval_type
 
 TimeEventType = Union[int, float, datetime.datetime]
@@ -19,12 +19,12 @@ def get_default_shift(interval: IntervalType) -> TimeEventType:
         return 0.0
 
 
-def _get_possible_types(type: Any) -> Any:
+def _get_possible_types(type: Any) -> Tuple[dt.DType, ...]:
     if type is TimeEventType:
-        return [int, float, DateTimeNaive, DateTimeUtc]
+        return (dt.INT, dt.FLOAT, dt.DATE_TIME_NAIVE, dt.DATE_TIME_UTC)
     if type is IntervalType:
-        return [int, float, Duration, Duration]
-    return get_args(type)
+        return (dt.INT, dt.FLOAT, dt.DURATION, dt.DURATION)
+    raise ValueError("Type has to be either TimeEventType or IntervalType.")
 
 
 def check_joint_types(parameters: Dict[str, Tuple[Any, Any]]) -> None:
@@ -48,7 +48,15 @@ def check_joint_types(parameters: Dict[str, Tuple[Any, Any]]) -> None:
                 for name, (_variable, expected_type) in parameters.items()
             }
         )
-    if not any([types == ex_types for ex_types in expected_types]):
+    for ex_types in expected_types:
+        if all(
+            [
+                dt.dtype_issubclass(dtype, ex_dtype)
+                for (dtype, ex_dtype) in zip(types.values(), ex_types.values())
+            ]
+        ):
+            break
+    else:
         expected_types_string = " or ".join(
             repr(tuple(ex_types.values())) for ex_types in expected_types
         )

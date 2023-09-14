@@ -2,9 +2,11 @@
 
 from typing import Optional, Union
 
+import pandas as pd
+
 import pathway.internals.expression as expr
 from pathway.internals import api
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
+from pathway.internals import dtype as dt
 
 
 class DateTimeNamespace:
@@ -60,10 +62,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_nanosecond),
-                (DateTimeUtc, int, api.Expression.date_time_utc_nanosecond),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_nanosecond),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_nanosecond),
+            ),
             "dt.nanosecond",
             self._expression,
         )
@@ -99,10 +101,14 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_microsecond),
-                (DateTimeUtc, int, api.Expression.date_time_utc_microsecond),
-            ],
+            (
+                (
+                    dt.DATE_TIME_NAIVE,
+                    dt.INT,
+                    api.Expression.date_time_naive_microsecond,
+                ),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_microsecond),
+            ),
             "dt.microsecond",
             self._expression,
         )
@@ -138,10 +144,14 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_millisecond),
-                (DateTimeUtc, int, api.Expression.date_time_utc_millisecond),
-            ],
+            (
+                (
+                    dt.DATE_TIME_NAIVE,
+                    dt.INT,
+                    api.Expression.date_time_naive_millisecond,
+                ),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_millisecond),
+            ),
             "dt.millisecond",
             self._expression,
         )
@@ -177,10 +187,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_second),
-                (DateTimeUtc, int, api.Expression.date_time_utc_second),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_second),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_second),
+            ),
             "dt.second",
             self._expression,
         )
@@ -216,10 +226,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_minute),
-                (DateTimeUtc, int, api.Expression.date_time_utc_minute),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_minute),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_minute),
+            ),
             "dt.minute",
             self._expression,
         )
@@ -251,10 +261,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_hour),
-                (DateTimeUtc, int, api.Expression.date_time_utc_hour),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_hour),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_hour),
+            ),
             "dt.hour",
             self._expression,
         )
@@ -286,10 +296,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_day),
-                (DateTimeUtc, int, api.Expression.date_time_utc_day),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_day),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_day),
+            ),
             "dt.day",
             self._expression,
         )
@@ -321,10 +331,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_month),
-                (DateTimeUtc, int, api.Expression.date_time_utc_month),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_month),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_month),
+            ),
             "dt.month",
             self._expression,
         )
@@ -356,10 +366,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_year),
-                (DateTimeUtc, int, api.Expression.date_time_utc_year),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_year),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_year),
+            ),
             "dt.year",
             self._expression,
         )
@@ -428,10 +438,10 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (DateTimeNaive, int, api.Expression.date_time_naive_timestamp),
-                (DateTimeUtc, int, api.Expression.date_time_utc_timestamp),
-            ],
+            (
+                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_timestamp),
+                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_timestamp),
+            ),
             "dt.timestamp",
             self._expression,
         )
@@ -477,10 +487,18 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                ((DateTimeNaive, str), str, api.Expression.date_time_naive_strftime),
-                ((DateTimeUtc, str), str, api.Expression.date_time_utc_strftime),
-            ],
+            (
+                (
+                    (dt.DATE_TIME_NAIVE, dt.STR),
+                    dt.STR,
+                    api.Expression.date_time_naive_strftime,
+                ),
+                (
+                    (dt.DATE_TIME_UTC, dt.STR),
+                    dt.STR,
+                    api.Expression.date_time_utc_strftime,
+                ),
+            ),
             "dt.strftime",
             self._expression,
             fmt,
@@ -579,13 +597,13 @@ class DateTimeNamespace:
 
         if contains_timezone:
             fun = api.Expression.date_time_utc_strptime
-            return_type: type = DateTimeUtc
+            return_type: dt.DType = dt.DATE_TIME_UTC
         else:
             fun = api.Expression.date_time_naive_strptime
-            return_type = DateTimeNaive
+            return_type = dt.DATE_TIME_NAIVE
 
         return expr.MethodCallExpression(
-            [((str, str), return_type, fun)],
+            (((dt.STR, dt.STR), return_type, fun),),
             "dt.strptime",
             self._expression,
             fmt,
@@ -669,13 +687,13 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (DateTimeNaive, str),
-                    DateTimeUtc,
+                    (dt.DATE_TIME_NAIVE, dt.STR),
+                    dt.DATE_TIME_UTC,
                     api.Expression.date_time_naive_to_utc,
                 ),
-            ],
+            ),
             "dt.to_utc",
             self._expression,
             from_timezone,
@@ -759,13 +777,13 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (DateTimeUtc, str),
-                    DateTimeNaive,
+                    (dt.DATE_TIME_UTC, dt.STR),
+                    dt.DATE_TIME_NAIVE,
                     api.Expression.date_time_utc_to_naive,
                 ),
-            ],
+            ),
             "dt.to_to_naive_in_timezone",
             self._expression,
             timezone,
@@ -773,7 +791,7 @@ class DateTimeNamespace:
 
     def add_duration_in_timezone(
         self,
-        duration: Union[expr.ColumnExpression, Duration],
+        duration: Union[expr.ColumnExpression, pd.Timedelta],
         timezone: Union[expr.ColumnExpression, str],
     ) -> expr.ColumnExpression:
         """Adds Duration to DateTime taking into account time zone.
@@ -818,7 +836,7 @@ class DateTimeNamespace:
 
     def subtract_duration_in_timezone(
         self,
-        duration: Union[expr.ColumnExpression, Duration],
+        duration: Union[expr.ColumnExpression, pd.Timedelta],
         timezone: Union[expr.ColumnExpression, str],
     ) -> expr.ColumnExpression:
         """Subtracts Duration from DateTime taking into account time zone.
@@ -863,7 +881,7 @@ class DateTimeNamespace:
 
     def subtract_date_time_in_timezone(
         self,
-        date_time: Union[expr.ColumnExpression, DateTimeNaive],
+        date_time: Union[expr.ColumnExpression, pd.Timestamp],
         timezone: Union[expr.ColumnExpression, str],
     ) -> expr.ColumnBinaryOpExpression:
         """Subtracts two DateTimeNaives taking into account time zone.
@@ -907,7 +925,7 @@ class DateTimeNamespace:
         return self.to_utc(timezone) - expr._wrap_arg(date_time).dt.to_utc(timezone)
 
     def round(
-        self, duration: Union[expr.ColumnExpression, Duration]
+        self, duration: Union[expr.ColumnExpression, pd.Timedelta]
     ) -> expr.ColumnExpression:
         """Rounds DateTime to precision specified by `duration` argument.
 
@@ -947,25 +965,25 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (DateTimeNaive, Duration),
-                    DateTimeNaive,
+                    (dt.DATE_TIME_NAIVE, dt.DURATION),
+                    dt.DATE_TIME_NAIVE,
                     api.Expression.date_time_naive_round,
                 ),
                 (
-                    (DateTimeUtc, Duration),
-                    DateTimeUtc,
+                    (dt.DATE_TIME_UTC, dt.DURATION),
+                    dt.DATE_TIME_UTC,
                     api.Expression.date_time_utc_round,
                 ),
-            ],
+            ),
             "dt.round",
             self._expression,
             duration,
         )
 
     def floor(
-        self, duration: Union[expr.ColumnExpression, Duration]
+        self, duration: Union[expr.ColumnExpression, pd.Timedelta]
     ) -> expr.ColumnExpression:
         """Truncates DateTime to precision specified by `duration` argument.
 
@@ -1005,18 +1023,18 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (DateTimeNaive, Duration),
-                    DateTimeNaive,
+                    (dt.DATE_TIME_NAIVE, dt.DURATION),
+                    dt.DATE_TIME_NAIVE,
                     api.Expression.date_time_naive_floor,
                 ),
                 (
-                    (DateTimeUtc, Duration),
-                    DateTimeUtc,
+                    (dt.DATE_TIME_UTC, dt.DURATION),
+                    dt.DATE_TIME_UTC,
                     api.Expression.date_time_utc_floor,
                 ),
-            ],
+            ),
             "dt.floor",
             self._expression,
             duration,
@@ -1061,7 +1079,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_nanoseconds)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_nanoseconds),),
             "dt.nanoseconds",
             self._expression,
         )
@@ -1105,7 +1123,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_microseconds)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_microseconds),),
             "dt.microseconds",
             self._expression,
         )
@@ -1149,7 +1167,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_milliseconds)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_milliseconds),),
             "dt.milliseconds",
             self._expression,
         )
@@ -1191,7 +1209,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_seconds)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_seconds),),
             "dt.seconds",
             self._expression,
         )
@@ -1233,7 +1251,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_minutes)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_minutes),),
             "dt.minutes",
             self._expression,
         )
@@ -1277,7 +1295,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_hours)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_hours),),
             "dt.hours",
             self._expression,
         )
@@ -1321,7 +1339,7 @@ class DateTimeNamespace:
         """
 
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_days)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_days),),
             "dt.days",
             self._expression,
         )
@@ -1364,7 +1382,7 @@ class DateTimeNamespace:
         52
         """
         return expr.MethodCallExpression(
-            [(Duration, int, api.Expression.duration_weeks)],
+            ((dt.DURATION, dt.INT, api.Expression.duration_weeks),),
             "dt.weeks",
             self._expression,
         )
@@ -1400,13 +1418,13 @@ class DateTimeNamespace:
         if unit not in ("s", "ms", "us", "ns"):
             raise ValueError(f"unit has to be one of s, ms, us, ns but is {unit}.")
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (int, str),
-                    DateTimeNaive,
+                    (dt.INT, dt.STR),
+                    dt.DATE_TIME_NAIVE,
                     api.Expression.date_time_naive_from_timestamp,
                 ),
-            ],
+            ),
             "datetime_from_timestamp",
             self._expression,
             unit,

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 
 import pandas as pd
 
 import pathway as pw
-from pathway import Pointer, Table, this
+from pathway import Table, this
 from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
@@ -93,5 +93,5 @@ def test_flatten_empty_lists():
 
     assert_table_equality_wo_index(
         tab.flatten(this.col, origin_id=this.id),
-        Table.empty(col=str, origin_id=Pointer),
+        Table.empty(col=Any, origin_id=pw.Pointer),
     )

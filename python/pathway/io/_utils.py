@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Type
 import numpy as np
 
 import pathway.internals as pw
-from pathway.internals import api, datetime_types
+from pathway.internals import api
+from pathway.internals import dtype as dt
 from pathway.internals._io_helpers import _form_value_fields
 from pathway.internals.api import ConnectorMode, PathwayType
 from pathway.internals.schema import ColumnDefinition, Schema, SchemaProperties
@@ -35,10 +36,10 @@ _PATHWAY_TYPE_MAPPING: Dict[PathwayType, Any] = {
     PathwayType.FLOAT: float,
     PathwayType.STRING: str,
     PathwayType.ANY: Any,
-    PathwayType.POINTER: api.Pointer,
-    PathwayType.DATE_TIME_NAIVE: datetime_types.DateTimeNaive,
-    PathwayType.DATE_TIME_UTC: datetime_types.DateTimeUtc,
-    PathwayType.DURATION: datetime_types.Duration,
+    PathwayType.POINTER: api.BasePointer,
+    PathwayType.DATE_TIME_NAIVE: dt.DATE_TIME_NAIVE,
+    PathwayType.DATE_TIME_UTC: dt.DATE_TIME_UTC,
+    PathwayType.DURATION: dt.DURATION,
     PathwayType.ARRAY: np.ndarray,
 }
 
@@ -143,7 +144,8 @@ def _compat_schema(
     if types is not None:
         for name, dtype in types.items():
             columns[name] = dataclasses.replace(
-                columns[name], dtype=_PATHWAY_TYPE_MAPPING.get(dtype, Any)
+                columns[name],
+                dtype=dt.wrap(_PATHWAY_TYPE_MAPPING.get(dtype, Any)),
             )
     if default_values is not None:
         for name, default_value in default_values.items():

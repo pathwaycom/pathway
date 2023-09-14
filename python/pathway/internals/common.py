@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 from typing import Any, Callable, Optional, Union, overload
 
+from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
 from pathway.internals import operator as op
 from pathway.internals import table
@@ -267,7 +268,7 @@ def numba_apply(
 
 def apply_with_type(
     fun: Callable,
-    ret_type: type,
+    ret_type: type | dt.DType,
     *args: expr.ColumnExpressionOrValue,
     **kwargs: expr.ColumnExpressionOrValue,
 ) -> expr.ColumnExpression:
@@ -346,14 +347,17 @@ def declare_type(
     >>> t1 = pw.debug.parse_to_table('''
     ...    val
     ... 1   10
-    ... 2    9
+    ... 2    9.5
     ... 3    8
     ... 4    7''')
     >>> t1.schema.as_dict()
-    {'val': <class 'int'>}
-    >>> t2 = t1.select(val = pw.declare_type(int | float, t1.val))
+    {'val': FLOAT}
+    >>> t2 = t1.filter(t1.val == pw.cast(int, t1.val))
     >>> t2.schema.as_dict()
-    {'val': int | float}
+    {'val': FLOAT}
+    >>> t3 = t2.select(val = pw.declare_type(int, t2.val))
+    >>> t3.schema.as_dict()
+    {'val': INT}
     """
 
     return expr.DeclareTypeExpression(target_type, col)
@@ -372,7 +376,7 @@ def cast(target_type: Any, col: expr.ColumnExpressionOrValue) -> expr.CastExpres
     ... 3    8
     ... 4    7''')
     >>> t1.schema.as_dict()
-    {'val': <class 'int'>}
+    {'val': INT}
     >>> pw.debug.compute_and_print(t1, include_id=False)
     val
     7
@@ -381,7 +385,7 @@ def cast(target_type: Any, col: expr.ColumnExpressionOrValue) -> expr.CastExpres
     10
     >>> t2 = t1.select(val = pw.cast(float, t1.val))
     >>> t2.schema.as_dict()
-    {'val': <class 'float'>}
+    {'val': FLOAT}
     >>> pw.debug.compute_and_print(t2, include_id=False)
     val
     7.0
@@ -530,7 +534,7 @@ def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     ... 3    | None
     ... 4    | 15''')
     >>> t1.schema.as_dict()
-    {'colA': <class 'int'>, 'colB': typing.Optional[int]}
+    {'colA': INT, 'colB': Optional(INT)}
     >>> pw.debug.compute_and_print(t1, include_id=False)
     colA | colB
     1    | 5
@@ -539,14 +543,14 @@ def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     4    | 15
     >>> t2 = t1.filter(t1.colA < 3)
     >>> t2.schema.as_dict()
-    {'colA': <class 'int'>, 'colB': typing.Optional[int]}
+    {'colA': INT, 'colB': Optional(INT)}
     >>> pw.debug.compute_and_print(t2, include_id=False)
     colA | colB
     1    | 5
     2    | 9
     >>> t3 = t2.select(colB = pw.unwrap(t2.colB))
     >>> t3.schema.as_dict()
-    {'colB': <class 'int'>}
+    {'colB': INT}
     >>> pw.debug.compute_and_print(t3, include_id=False)
     colB
     5

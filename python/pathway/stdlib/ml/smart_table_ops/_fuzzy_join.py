@@ -6,7 +6,6 @@ import math
 from enum import IntEnum, auto
 from typing import Any, Callable, Optional
 
-# TODO change to `import pathway as pw` when it is not imported as part of stdlib, OR move the whole file to stdlib
 import pathway.internals as pw
 from pathway.internals.fingerprints import fingerprint
 from pathway.internals.helpers import StableSet
@@ -22,7 +21,7 @@ class Feature(pw.Schema):
 
 
 class Edge(pw.Schema):
-    node: Node
+    node: pw.Pointer[Node]
     feature: pw.Pointer[Feature]
     weight: float
 

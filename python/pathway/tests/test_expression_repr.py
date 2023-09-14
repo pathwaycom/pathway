@@ -124,8 +124,8 @@ def test_cast():
      1   | Alice   | 10
         """
     )
-    assert repr(pw.cast(int, t.pet)) == "pathway.cast(int, <table1>.pet)"
-    assert repr(pw.cast(float, t.pet)) == "pathway.cast(float, <table1>.pet)"
+    assert repr(pw.cast(int, t.pet)) == "pathway.cast(INT, <table1>.pet)"
+    assert repr(pw.cast(float, t.pet)) == "pathway.cast(FLOAT, <table1>.pet)"
 
 
 def test_declare_type():
@@ -136,11 +136,11 @@ def test_declare_type():
         """
     )
     assert (
-        repr(pw.declare_type(int, t.pet)) == "pathway.declare_type(int, <table1>.pet)"
+        repr(pw.declare_type(int, t.pet)) == "pathway.declare_type(INT, <table1>.pet)"
     )
     assert (
         repr(pw.declare_type(float, t.pet))
-        == "pathway.declare_type(float, <table1>.pet)"
+        == "pathway.declare_type(FLOAT, <table1>.pet)"
     )
 
 

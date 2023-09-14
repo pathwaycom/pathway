@@ -4,21 +4,20 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from functools import cached_property, lru_cache
-from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple, Type
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, Type
 
 import pathway
 import pathway.internals.row_transformer_table as tt
+from pathway.internals import dtype as dt
 from pathway.internals import operator as op
 from pathway.internals import parse_graph, schema
-from pathway.internals.api import BasePointer, ref_scalar
+from pathway.internals.api import BasePointer, Pointer, ref_scalar
 from pathway.internals.column import MaterializedColumn, MethodColumn
-from pathway.internals.dtype import DType
 from pathway.internals.schema import Schema, schema_from_types
 from pathway.internals.shadows import inspect
 
 if TYPE_CHECKING:
     from pathway import Table
-    from pathway.internals.api import Pointer
     from pathway.internals.graph_runner.row_transformer_operator_handler import (
         RowReference,
     )
@@ -77,7 +76,7 @@ class RowTransformer:
 
     @classmethod
     @lru_cache
-    def method_call_transformer(cls, n, dtype: DType):
+    def method_call_transformer(cls, n, dtype: dt.DType):
         arg_names = [f"arg_{i}" for i in range(n)]
 
         def func(self):
@@ -194,6 +193,8 @@ class ClassArg(metaclass=ClassArgMeta):
             **{attr.output_name: attr.dtype for attr in cls._output_attributes.values()}
         )
         if output is not Any and not schema.is_subschema(cls.output_schema, output):
+            print(output)
+            print(cls.output_schema)
             raise RuntimeError(
                 f"output schema validation error, received {output.as_dict()} vs expected {cls.output_schema.as_dict()}"  # noqa
             )
@@ -204,6 +205,7 @@ class ClassArg(metaclass=ClassArgMeta):
 class AbstractAttribute(ABC):
     is_method = False
     is_output = False
+    _dtype: Optional[dt.DType] = None
     class_arg: ClassArgMeta  # lateinit by parent ClassArg
 
     def __init__(self, **params) -> None:
@@ -211,7 +213,7 @@ class AbstractAttribute(ABC):
         self.params = params
         self.name = self.params.get("name", None)
         if "dtype" in self.params:
-            self._dtype = self.params["dtype"]
+            self._dtype = dt.wrap(self.params["dtype"])
 
     def __set_name__(self, owner, name):
         assert self.name is None
@@ -224,8 +226,8 @@ class AbstractAttribute(ABC):
         pass
 
     @property
-    def dtype(self) -> DType:
-        return DType(Any)
+    def dtype(self) -> dt.DType:
+        return dt.ANY
 
 
 class ToBeComputedAttribute(AbstractAttribute, ABC):
@@ -244,13 +246,13 @@ class ToBeComputedAttribute(AbstractAttribute, ABC):
         return self.params.get("output_name", self.name)
 
     @cached_property
-    def dtype(self) -> DType:
-        if hasattr(self, "_dtype"):
+    def dtype(self) -> dt.DType:
+        if self._dtype is not None:
             return self._dtype
         else:
             assert self.func is not None
             sig = inspect.signature(self.func)
-            return sig.return_annotation
+            return dt.wrap(sig.return_annotation)
 
 
 class AbstractOutputAttribute(ToBeComputedAttribute, ABC):
@@ -289,8 +291,8 @@ class Method(AbstractOutputAttribute):
         return MethodColumn(self.dtype, universe)
 
     @cached_property
-    def dtype(self) -> DType:
-        return DType(Callable[..., super().dtype])
+    def dtype(self) -> dt.DType:
+        return dt.wrap(Callable[..., super().dtype])
 
 
 class InputAttribute(AbstractAttribute):

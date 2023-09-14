@@ -1,5 +1,6 @@
 # Copyright © 2023 Pathway
 
+import datetime
 import operator
 from typing import Any, List, Tuple
 
@@ -9,8 +10,13 @@ import pytest
 from dateutil import tz
 
 import pathway as pw
+from pathway import dt
 from pathway.debug import table_from_markdown, table_from_pandas
-from pathway.tests.utils import assert_table_equality, assert_table_equality_wo_index
+from pathway.tests.utils import (
+    assert_table_equality,
+    assert_table_equality_wo_index,
+    run_all,
+)
 
 
 @pytest.mark.parametrize(
@@ -159,6 +165,8 @@ def test_date_time(method_name: str, is_naive: bool) -> None:
         "%u",
         "%V",
         "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S.%%f",
+        "%%H:%%M:%%S",  # test that %%sth are not changed to values
     ],
 )
 def test_strftime(fmt_out: str, is_naive: bool) -> None:
@@ -192,9 +200,8 @@ def test_strftime(fmt_out: str, is_naive: bool) -> None:
         df_converted = pd.DataFrame({"ts": df.ts.dt.tz_convert(tz.UTC)})
     df_new = pd.DataFrame({"txt": df_converted.ts.dt.strftime(fmt_out)})
     table = table_from_pandas(df)
-    fmt_out_pw = fmt_out.replace(
-        "%f", "%6f"
-    )  # TODO: do we want to be consistent with python in printing?
+    fmt_out_pw = fmt_out.replace("%f", "%6f")
+    fmt_out_pw = fmt_out_pw.replace("%%6f", "%%f")
     table_pw = table.select(txt=table.ts.dt.strftime(fmt_out_pw))
     table_pd = table_from_pandas(df_new)
     assert_table_equality(table_pw, table_pd)
@@ -246,8 +253,24 @@ def test_strftime_with_format_in_column() -> None:
         (["2023-03-25T16:43:21", "2023-03-26T16:43:21"], "%Y-%m-%dT%H:%M:%S"),
         (["2023-03-25 04:43:21 AM", "2023-03-26 04:43:21 PM"], "%Y-%m-%d %I:%M:%S %p"),
         (
-            ["2023-03-25 16:43:21.123456789", "2023-03-26 16:43:21.123456789"],
+            [
+                "1900-01-01 00:00:00.396",
+                "1900-01-01 00:00:00.396093123",
+                "2023-03-25 16:43:21.123456789",
+                "2023-03-26 16:43:21.123456789",
+                "2023-03-26 16:43:21.12",
+            ],
             "%Y-%m-%d %H:%M:%S.%f",
+        ),
+        (
+            [
+                "1900-01-01 %f00:00:00.396",
+                "1900-01-01 %f00:00:00.396093123",
+                "2023-03-25 %f16:43:21.123456789",
+                "2023-03-26 %f16:43:21.123456789",
+                "2023-03-26 %f16:43:21.12",
+            ],
+            "%Y-%m-%d %%f%H:%M:%S.%f",
         ),
     ],
 )
@@ -256,9 +279,93 @@ def test_strptime_naive(data: List[str], fmt: str) -> None:
     table_pd = table_from_pandas(df)
     table = table_from_pandas(pd.DataFrame({"a": data}))
     table_pw = table.select(ts=table.a.dt.strptime(fmt))
-    if "%Y" not in fmt:
-        table_pw = table_pw.select(ts=table_pw.ts.dt.strftime("%H:%M:%S.%f"))
-        table_pd = table_pd.select(ts=table_pd.ts.dt.strftime("%H:%M:%S.%f"))
+    assert_table_equality(table_pw, table_pd)
+
+
+@pytest.mark.parametrize(
+    "data,fmt",
+    [
+        (["1960-02-03", "2023-03-25", "2023-03-26", "2123-03-26"], "%Y-%m-%d"),
+        (["03.02.1960", "25.03.2023", "26.03.2023", "26.03.2123"], "%d.%m.%Y"),
+        (["02.03.1960", "03.25.2023", "03.26.2023", "03.26.2123"], "%m.%d.%Y"),
+        (["12:34:00", "01:22:12", "13:00:34", "23:59:59"], "%H:%M:%S"),
+        (["12:34:00 PM", "01:22:12 AM", "01:00:34 PM", "11:59:59 PM"], "%I:%M:%S %p"),
+        (
+            ["12:34:00.000000", "01:22:12.12345", "13:00:34.11"],
+            "%H:%M:%S.%f",
+        ),
+        (["2023-03-25 16:43:21", "2023-03-26 16:43:21"], "%Y-%m-%d %H:%M:%S"),
+        (["2023-03-25T16:43:21", "2023-03-26T16:43:21"], "%Y-%m-%dT%H:%M:%S"),
+        (["2023-03-25 04:43:21 AM", "2023-03-26 04:43:21 PM"], "%Y-%m-%d %I:%M:%S %p"),
+        (
+            [
+                "1900-01-01 00:00:00.396",
+                "1900-01-01 00:00:00.396093",
+                "2023-03-25 16:43:21.123456",
+                "2023-03-26 16:43:21.123456",
+                "2023-03-26 16:43:21.12",
+            ],
+            "%Y-%m-%d %H:%M:%S.%f",
+        ),
+    ],
+)
+def test_strptime_naive_with_python_datetime(data: List[str], fmt: str) -> None:
+    table = table_from_pandas(pd.DataFrame({"a": data})).select(
+        ts=pw.this.a.dt.strptime(fmt)
+    )
+
+    @pw.udf
+    def parse_datetime(date_str: str) -> dt.DATE_TIME_NAIVE:
+        return datetime.datetime.strptime(date_str, fmt)  # type: ignore [return-value]
+
+    expected = table_from_pandas(pd.DataFrame({"a": data})).select(
+        ts=parse_datetime(pw.this.a)
+    )
+    assert_table_equality(table, expected)
+
+
+@pytest.mark.parametrize(
+    "data,fmt",
+    [
+        (
+            ["2023-03-25 16:43:21+01:23", "2023-03-26 16:43:21+01:23"],
+            "%Y-%m-%d %H:%M:%S%z",
+        ),
+        (
+            ["2023-03-25T16:43:21+01:23", "2023-03-26T16:43:21+01:23"],
+            "%Y-%m-%dT%H:%M:%S%z",
+        ),
+        (
+            ["2023-03-25 04:43:21 AM +01:23", "2023-03-26 04:43:21 PM +01:23"],
+            "%Y-%m-%d %I:%M:%S %p %z",
+        ),
+        (
+            [
+                "1900-01-01 00:00:00.396-11:05",
+                "1900-01-01 00:00:00.396093123-11:05",
+                "2023-03-25 16:43:21.123456789-11:05",
+                "2023-03-26 16:43:21.123456789-11:05",
+                "2023-03-26 16:43:21.12-11:05",
+            ],
+            "%Y-%m-%d %H:%M:%S.%f%z",
+        ),
+        (
+            [
+                "1900%f01-01 00:00:00.396-11:05",
+                "1900%f01-01 00:00:00.396093123-11:05",
+                "2023%f03-25 16:43:21.123456789-11:05",
+                "2023%f03-26 16:43:21.123456789-11:05",
+                "2023%f03-26 16:43:21.12-11:05",
+            ],
+            "%Y%%f%m-%d %H:%M:%S.%f%z",
+        ),
+    ],
+)
+def test_strptime_time_zone_aware(data: List[str], fmt: str) -> None:
+    df = pd.DataFrame({"ts": pd.to_datetime(data, format=fmt)})
+    table_pd = table_from_pandas(df)
+    table = table_from_pandas(pd.DataFrame({"a": data}))
+    table_pw = table.select(ts=table.a.dt.strptime(fmt))
     assert_table_equality(table_pw, table_pd)
 
 
@@ -279,19 +386,31 @@ def test_strptime_naive(data: List[str], fmt: str) -> None:
         ),
         (
             [
-                "2023-03-25 16:43:21.123456789+01:23",
-                "2023-03-26 16:43:21.123456789+01:23",
+                "1900-01-01 00:00:00.396-11:05",
+                "1900-01-01 00:00:00.396093-11:05",
+                "2023-03-25 16:43:21.1234-11:05",
+                "2023-03-26 16:43:21.12345-11:05",
+                "2023-03-26 16:43:21.12-11:05",
             ],
             "%Y-%m-%d %H:%M:%S.%f%z",
         ),
     ],
 )
-def test_strptime_time_zone_aware(data: List[str], fmt: str) -> None:
-    df = pd.DataFrame({"ts": pd.to_datetime(data, format=fmt)})
-    table_pd = table_from_pandas(df)
-    table = table_from_pandas(pd.DataFrame({"a": data}))
-    table_pw = table.select(ts=table.a.dt.strptime(fmt))
-    assert_table_equality(table_pw, table_pd)
+def test_strptime_time_zone_aware_with_python_datetime(
+    data: List[str], fmt: str
+) -> None:
+    table = table_from_pandas(pd.DataFrame({"a": data})).select(
+        ts=pw.this.a.dt.strptime(fmt)
+    )
+
+    @pw.udf
+    def parse_datetime(date_str: str) -> dt.DATE_TIME_UTC:
+        return datetime.datetime.strptime(date_str, fmt)  # type: ignore [return-value]
+
+    expected = table_from_pandas(pd.DataFrame({"a": data})).select(
+        ts=parse_datetime(pw.this.a)
+    )
+    assert_table_equality(table, expected)
 
 
 def test_strptime_with_format_in_column() -> None:
@@ -321,6 +440,53 @@ def test_strptime_with_format_in_column() -> None:
         date_str=table_with_datetime.date.dt.strftime(fmt_out)
     )
     assert_table_equality_wo_index(res, expected)
+
+
+def test_strptime_naive_errors_on_wrong_specifier() -> None:
+    table_from_pandas(pd.DataFrame({"a": ["2023-03-26 16:43:21-12"]})).select(
+        t=pw.this.a.dt.strptime("%Y-%m-%d %H:%M:%S-%f")
+    )
+    with pytest.raises(
+        ValueError,
+        match="parse error: Cannot use format: %Y-%m-%d %H:%M:%S-%f."
+        + " Using %f without the leading dot is not supported.",
+    ):
+        run_all()
+
+
+def test_strptime_naive_errors_on_wrong_format() -> None:
+    table_from_pandas(pd.DataFrame({"a": ["2023-03-26T16:43:21.12"]})).select(
+        t=pw.this.a.dt.strptime("%Y-%m-%d %H:%M:%S.%f")
+    )
+    with pytest.raises(
+        ValueError,
+        match="parse error: Cannot format date: 2023-03-26T16:43:21.12 using format: %Y-%m-%d %H:%M:%S%.f.",
+    ):
+        run_all()
+
+
+def test_strptime_utc_errors_on_wrong_specifier() -> None:
+    table_from_pandas(pd.DataFrame({"a": ["2023-03-26 16:43:21-12+0100"]})).select(
+        t=pw.this.a.dt.strptime("%Y-%m-%d %H:%M:%S-%f%z")
+    )
+    with pytest.raises(
+        ValueError,
+        match="parse error: Cannot use format: %Y-%m-%d %H:%M:%S-%f%z."
+        + " Using %f without the leading dot is not supported.",
+    ):
+        run_all()
+
+
+def test_strptime_utc_errors_on_wrong_format() -> None:
+    table_from_pandas(pd.DataFrame({"a": ["2023-03-26T16:43:21.12-0100"]})).select(
+        t=pw.this.a.dt.strptime("%Y-%m-%d %H:%M:%S.%f%z")
+    )
+    with pytest.raises(
+        ValueError,
+        match="parse error: Cannot format date: 2023-03-26T16:43:21.12-0100 using"
+        + " format: %Y-%m-%d %H:%M:%S%.f%z.",
+    ):
+        run_all()
 
 
 def test_date_time_naive_to_utc() -> None:

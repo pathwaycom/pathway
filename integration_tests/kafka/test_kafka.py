@@ -5,31 +5,15 @@ import os
 import pathlib
 import random
 
-import pandas as pd
 from utils import KafkaTestContext
 
 import pathway as pw
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import wait_result_with_checker, write_lines
-
-
-def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):
-    expected = (
-        pw.debug._markdown_to_pandas(expected)
-        .set_index(index_col, drop=False)
-        .sort_index()
-    )
-
-    def checker():
-        result = (
-            pd.read_csv(output_path, usecols=[*usecols, *index_col])
-            .convert_dtypes()
-            .set_index(index_col, drop=False)
-            .sort_index()
-        )
-        return expected.equals(result)
-
-    return checker
+from pathway.tests.utils import (
+    expect_csv_checker,
+    wait_result_with_checker,
+    write_lines,
+)
 
 
 def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):

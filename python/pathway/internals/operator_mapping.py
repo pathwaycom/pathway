@@ -1,36 +1,27 @@
 from typing import Any, Callable, Mapping, Optional, Tuple
 
-import numpy as np
-
 from pathway.internals import api
-from pathway.internals.api import _TYPES_TO_ENGINE_MAPPING, Pointer
-from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
-from pathway.internals.dtype import (
-    DType,
-    NoneType,
-    is_optional,
-    types_lca,
-    unoptionalize,
-)
+from pathway.internals import dtype as dt
+from pathway.internals.api import _TYPES_TO_ENGINE_MAPPING
 from pathway.internals.shadows import operator
 
 UnaryOperator = Callable[[Any], Any]
 ApiUnaryOperator = Callable[[api.Expression], api.Expression]
 UnaryOperatorMapping = Mapping[
-    Tuple[UnaryOperator, Any],
-    type,
+    Tuple[UnaryOperator, dt.DType],
+    dt.DType,
 ]
 
 BinaryOperator = Callable[[Any, Any], Any]
 ApiBinaryOperator = Callable[[api.Expression, api.Expression], api.Expression]
 BinaryOperatorMapping = Mapping[
-    Tuple[BinaryOperator, Any, Any],
-    type,
+    Tuple[BinaryOperator, dt.DType, dt.DType],
+    dt.DType,
 ]
 
 OptionalMapping = Mapping[
     BinaryOperator,
-    Tuple[type, ApiBinaryOperator],
+    Tuple[dt.DType, ApiBinaryOperator],
 ]
 
 _unary_operators_to_engine: Mapping[UnaryOperator, api.UnaryOperator] = {
@@ -61,10 +52,10 @@ _binary_operators_to_engine: Mapping[BinaryOperator, api.BinaryOperator] = {
 }
 
 _unary_operators_mapping: UnaryOperatorMapping = {
-    (operator.inv, bool): bool,
-    (operator.neg, int): int,
-    (operator.neg, float): float,
-    (operator.neg, Duration): Duration,
+    (operator.inv, dt.BOOL): dt.BOOL,
+    (operator.neg, dt.INT): dt.INT,
+    (operator.neg, dt.FLOAT): dt.FLOAT,
+    (operator.neg, dt.DURATION): dt.DURATION,
 }
 
 
@@ -74,7 +65,7 @@ def get_unary_operators_mapping(op, operand_dtype, default=None):
 
 def get_unary_expression(expr, op, expr_dtype, default=None):
     op_engine = _unary_operators_to_engine.get(op)
-    expr_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(expr_dtype)
+    expr_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(dt.normalize_dtype(expr_dtype))
     if op_engine is None or expr_dtype_engine is None:
         return default
     expression = api.Expression.unary_expression(expr, op_engine, expr_dtype_engine)
@@ -82,96 +73,96 @@ def get_unary_expression(expr, op, expr_dtype, default=None):
 
 
 _binary_operators_mapping: BinaryOperatorMapping = {
-    (operator.and_, bool, bool): bool,
-    (operator.or_, bool, bool): bool,
-    (operator.xor, bool, bool): bool,
-    (operator.eq, int, int): bool,
-    (operator.ne, int, int): bool,
-    (operator.lt, int, int): bool,
-    (operator.le, int, int): bool,
-    (operator.gt, int, int): bool,
-    (operator.ge, int, int): bool,
-    (operator.eq, bool, bool): bool,
-    (operator.ne, bool, bool): bool,
-    (operator.lt, bool, bool): bool,
-    (operator.le, bool, bool): bool,
-    (operator.gt, bool, bool): bool,
-    (operator.ge, bool, bool): bool,
-    (operator.add, int, int): int,
-    (operator.sub, int, int): int,
-    (operator.mul, int, int): int,
-    (operator.floordiv, int, int): int,
-    (operator.truediv, int, int): float,
-    (operator.mod, int, int): int,
-    (operator.pow, int, int): int,
-    (operator.lshift, int, int): int,
-    (operator.rshift, int, int): int,
-    (operator.and_, int, int): int,
-    (operator.or_, int, int): int,
-    (operator.xor, int, int): int,
-    (operator.eq, float, float): bool,
-    (operator.ne, float, float): bool,
-    (operator.lt, float, float): bool,
-    (operator.le, float, float): bool,
-    (operator.gt, float, float): bool,
-    (operator.ge, float, float): bool,
-    (operator.add, float, float): float,
-    (operator.sub, float, float): float,
-    (operator.mul, float, float): float,
-    (operator.floordiv, float, float): float,
-    (operator.truediv, float, float): float,
-    (operator.mod, float, float): float,
-    (operator.pow, float, float): float,
-    (operator.eq, str, str): bool,
-    (operator.ne, str, str): bool,
-    (operator.lt, str, str): bool,
-    (operator.le, str, str): bool,
-    (operator.gt, str, str): bool,
-    (operator.ge, str, str): bool,
-    (operator.add, str, str): str,
-    (operator.mul, str, int): str,
-    (operator.mul, int, str): str,
-    (operator.eq, Pointer, Pointer): bool,
-    (operator.ne, Pointer, Pointer): bool,
-    (operator.lt, Pointer, Pointer): bool,
-    (operator.le, Pointer, Pointer): bool,
-    (operator.gt, Pointer, Pointer): bool,
-    (operator.ge, Pointer, Pointer): bool,
-    (operator.eq, DateTimeNaive, DateTimeNaive): bool,
-    (operator.ne, DateTimeNaive, DateTimeNaive): bool,
-    (operator.lt, DateTimeNaive, DateTimeNaive): bool,
-    (operator.le, DateTimeNaive, DateTimeNaive): bool,
-    (operator.gt, DateTimeNaive, DateTimeNaive): bool,
-    (operator.ge, DateTimeNaive, DateTimeNaive): bool,
-    (operator.sub, DateTimeNaive, DateTimeNaive): Duration,
-    (operator.add, DateTimeNaive, Duration): DateTimeNaive,
-    (operator.sub, DateTimeNaive, Duration): DateTimeNaive,
-    (operator.eq, DateTimeUtc, DateTimeUtc): bool,
-    (operator.ne, DateTimeUtc, DateTimeUtc): bool,
-    (operator.lt, DateTimeUtc, DateTimeUtc): bool,
-    (operator.le, DateTimeUtc, DateTimeUtc): bool,
-    (operator.gt, DateTimeUtc, DateTimeUtc): bool,
-    (operator.ge, DateTimeUtc, DateTimeUtc): bool,
-    (operator.sub, DateTimeUtc, DateTimeUtc): Duration,
-    (operator.add, DateTimeUtc, Duration): DateTimeUtc,
-    (operator.sub, DateTimeUtc, Duration): DateTimeUtc,
-    (operator.eq, Duration, Duration): bool,
-    (operator.ne, Duration, Duration): bool,
-    (operator.lt, Duration, Duration): bool,
-    (operator.le, Duration, Duration): bool,
-    (operator.gt, Duration, Duration): bool,
-    (operator.ge, Duration, Duration): bool,
-    (operator.add, Duration, Duration): Duration,
-    (operator.add, Duration, DateTimeNaive): DateTimeNaive,
-    (operator.add, Duration, DateTimeUtc): DateTimeUtc,
-    (operator.sub, Duration, Duration): Duration,
-    (operator.mul, Duration, int): Duration,
-    (operator.mul, int, Duration): Duration,
-    (operator.floordiv, Duration, int): Duration,
-    (operator.floordiv, Duration, Duration): int,
-    (operator.truediv, Duration, Duration): float,
-    (operator.mod, Duration, Duration): Duration,
-    (operator.matmul, np.ndarray, np.ndarray): np.ndarray,
+    (operator.and_, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.or_, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.xor, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.eq, dt.INT, dt.INT): dt.BOOL,
+    (operator.ne, dt.INT, dt.INT): dt.BOOL,
+    (operator.lt, dt.INT, dt.INT): dt.BOOL,
+    (operator.le, dt.INT, dt.INT): dt.BOOL,
+    (operator.gt, dt.INT, dt.INT): dt.BOOL,
+    (operator.ge, dt.INT, dt.INT): dt.BOOL,
+    (operator.eq, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.ne, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.lt, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.le, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.gt, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.ge, dt.BOOL, dt.BOOL): dt.BOOL,
+    (operator.add, dt.INT, dt.INT): dt.INT,
+    (operator.sub, dt.INT, dt.INT): dt.INT,
+    (operator.mul, dt.INT, dt.INT): dt.INT,
+    (operator.floordiv, dt.INT, dt.INT): dt.INT,
+    (operator.truediv, dt.INT, dt.INT): dt.FLOAT,
+    (operator.mod, dt.INT, dt.INT): dt.INT,
+    (operator.pow, dt.INT, dt.INT): dt.INT,
+    (operator.lshift, dt.INT, dt.INT): dt.INT,
+    (operator.rshift, dt.INT, dt.INT): dt.INT,
+    (operator.and_, dt.INT, dt.INT): dt.INT,
+    (operator.or_, dt.INT, dt.INT): dt.INT,
+    (operator.xor, dt.INT, dt.INT): dt.INT,
+    (operator.eq, dt.FLOAT, dt.FLOAT): dt.BOOL,
+    (operator.ne, dt.FLOAT, dt.FLOAT): dt.BOOL,
+    (operator.lt, dt.FLOAT, dt.FLOAT): dt.BOOL,
+    (operator.le, dt.FLOAT, dt.FLOAT): dt.BOOL,
+    (operator.gt, dt.FLOAT, dt.FLOAT): dt.BOOL,
+    (operator.ge, dt.FLOAT, dt.FLOAT): dt.BOOL,
+    (operator.add, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.sub, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.mul, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.floordiv, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.truediv, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.mod, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.pow, dt.FLOAT, dt.FLOAT): dt.FLOAT,
+    (operator.eq, dt.STR, dt.STR): dt.BOOL,
+    (operator.ne, dt.STR, dt.STR): dt.BOOL,
+    (operator.lt, dt.STR, dt.STR): dt.BOOL,
+    (operator.le, dt.STR, dt.STR): dt.BOOL,
+    (operator.gt, dt.STR, dt.STR): dt.BOOL,
+    (operator.ge, dt.STR, dt.STR): dt.BOOL,
+    (operator.add, dt.STR, dt.STR): dt.STR,
+    (operator.mul, dt.STR, dt.INT): dt.STR,
+    (operator.mul, dt.INT, dt.STR): dt.STR,
+    (operator.eq, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.ne, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.lt, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.le, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.gt, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.ge, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.eq, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
+    (operator.ne, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
+    (operator.lt, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
+    (operator.le, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
+    (operator.gt, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
+    (operator.ge, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
+    (operator.sub, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.DURATION,
+    (operator.add, dt.DATE_TIME_NAIVE, dt.DURATION): dt.DATE_TIME_NAIVE,
+    (operator.sub, dt.DATE_TIME_NAIVE, dt.DURATION): dt.DATE_TIME_NAIVE,
+    (operator.eq, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.BOOL,
+    (operator.ne, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.BOOL,
+    (operator.lt, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.BOOL,
+    (operator.le, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.BOOL,
+    (operator.gt, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.BOOL,
+    (operator.ge, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.BOOL,
+    (operator.sub, dt.DATE_TIME_UTC, dt.DATE_TIME_UTC): dt.DURATION,
+    (operator.add, dt.DATE_TIME_UTC, dt.DURATION): dt.DATE_TIME_UTC,
+    (operator.sub, dt.DATE_TIME_UTC, dt.DURATION): dt.DATE_TIME_UTC,
+    (operator.eq, dt.DURATION, dt.DURATION): dt.BOOL,
+    (operator.ne, dt.DURATION, dt.DURATION): dt.BOOL,
+    (operator.lt, dt.DURATION, dt.DURATION): dt.BOOL,
+    (operator.le, dt.DURATION, dt.DURATION): dt.BOOL,
+    (operator.gt, dt.DURATION, dt.DURATION): dt.BOOL,
+    (operator.ge, dt.DURATION, dt.DURATION): dt.BOOL,
+    (operator.add, dt.DURATION, dt.DURATION): dt.DURATION,
+    (operator.add, dt.DURATION, dt.DATE_TIME_NAIVE): dt.DATE_TIME_NAIVE,
+    (operator.add, dt.DURATION, dt.DATE_TIME_UTC): dt.DATE_TIME_UTC,
+    (operator.sub, dt.DURATION, dt.DURATION): dt.DURATION,
+    (operator.mul, dt.DURATION, dt.INT): dt.DURATION,
+    (operator.mul, dt.INT, dt.DURATION): dt.DURATION,
+    (operator.floordiv, dt.DURATION, dt.INT): dt.DURATION,
+    (operator.floordiv, dt.DURATION, dt.DURATION): dt.INT,
+    (operator.truediv, dt.DURATION, dt.DURATION): dt.FLOAT,
+    (operator.mod, dt.DURATION, dt.DURATION): dt.DURATION,
+    (operator.matmul, dt.Array(), dt.Array()): dt.Array(),
 }
 
 tuple_handling_operators = {
@@ -184,14 +175,16 @@ tuple_handling_operators = {
 }
 
 
-def get_binary_operators_mapping(op, left, right, default=None) -> DType:
-    return DType(_binary_operators_mapping.get((op, left, right), default))
+def get_binary_operators_mapping(op, left, right, default=None):
+    return _binary_operators_mapping.get(
+        (op, dt.normalize_dtype(left), dt.normalize_dtype(right)), default
+    )
 
 
 def get_binary_expression(left, right, op, left_dtype, right_dtype, default=None):
     op_engine = _binary_operators_to_engine.get(op)
-    left_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(left_dtype)
-    right_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(right_dtype)
+    left_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(dt.normalize_dtype(left_dtype))
+    right_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(dt.normalize_dtype(right_dtype))
     if op_engine is None or left_dtype_engine is None or right_dtype_engine is None:
         return default
 
@@ -202,26 +195,30 @@ def get_binary_expression(left, right, op, left_dtype, right_dtype, default=None
 
 
 _binary_operators_mapping_optionals: OptionalMapping = {
-    operator.eq: (bool, api.Expression.eq),
-    operator.ne: (bool, api.Expression.ne),
+    operator.eq: (dt.BOOL, api.Expression.eq),
+    operator.ne: (dt.BOOL, api.Expression.ne),
 }
 
 
 def get_binary_operators_mapping_optionals(op, left, right, default=None):
-    if left == right or left == NoneType or right == NoneType:
+    if left == right or left == dt.NONE or right == dt.NONE:
         return _binary_operators_mapping_optionals.get(op, default)
     else:
         return default
 
 
 def get_cast_operators_mapping(
-    expr: api.Expression, source_type: DType, target_type: DType, default=None
+    expr: api.Expression, source_type: dt.DType, target_type: dt.DType, default=None
 ) -> Optional[api.Expression]:
-    source_type_engine = _TYPES_TO_ENGINE_MAPPING.get(unoptionalize(source_type))
-    target_type_engine = _TYPES_TO_ENGINE_MAPPING.get(unoptionalize(target_type))
+    source_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
+        dt.normalize_dtype(dt.unoptionalize(source_type))
+    )
+    target_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
+        dt.normalize_dtype(dt.unoptionalize(target_type))
+    )
     if source_type_engine is None or target_type_engine is None:
         return default
-    if is_optional(source_type) and is_optional(target_type):
+    if isinstance(source_type, dt.Optional) and isinstance(target_type, dt.Optional):
         fun = api.Expression.cast_optional
     else:
         fun = api.Expression.cast
@@ -234,12 +231,14 @@ def get_cast_operators_mapping(
 
 
 def common_dtype_in_binary_operator(
-    left_dtype: DType, right_dtype: DType
-) -> Optional[DType]:
+    left_dtype: dt.DType, right_dtype: dt.DType
+) -> Optional[dt.DType]:
     if (
-        left_dtype in [int, Optional[int]] and right_dtype in [float, Optional[float]]
+        left_dtype in [dt.INT, dt.Optional(dt.INT)]
+        and right_dtype in [dt.FLOAT, dt.Optional(dt.FLOAT)]
     ) or (
-        left_dtype in [float, Optional[float]] and right_dtype in [int, Optional[int]]
+        left_dtype in [dt.FLOAT, dt.Optional(dt.FLOAT)]
+        and right_dtype in [dt.INT, dt.Optional(dt.INT)]
     ):
-        return types_lca(left_dtype, right_dtype)
+        return dt.types_lca(left_dtype, right_dtype)
     return None

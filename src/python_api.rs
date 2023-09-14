@@ -252,16 +252,8 @@ impl<'source> FromPyObject<'source> for Value {
         } else if let Ok(b) = ob.extract::<&PyBool>() {
             // Fallback checks from now on
             Ok(Value::Bool(b.is_true()))
-        } else if let Ok(i) = ob.extract::<i64>() {
-            Ok(Value::Int(i))
-        } else if let Ok(f) = ob.extract::<f64>() {
-            // XXX: bigints go here
-            Ok(Value::Float(f.into()))
-        } else if let Ok(k) = ob.extract::<Key>() {
-            Ok(Value::Pointer(k))
-        } else if let Ok(s) = ob.downcast::<PyString>() {
-            Ok(s.to_str()?.into())
         } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i64>>() {
+            // single-element arrays convert to scalars, so we need to check for arrays first
             Ok(Value::from(array.as_array().to_owned()))
         } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i32>>() {
             Ok(Value::from(array.as_array().mapv(i64::from)))
@@ -271,6 +263,15 @@ impl<'source> FromPyObject<'source> for Value {
             Ok(Value::from(array.as_array().to_owned()))
         } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<f32>>() {
             Ok(Value::from(array.as_array().mapv(f64::from)))
+        } else if let Ok(i) = ob.extract::<i64>() {
+            Ok(Value::Int(i))
+        } else if let Ok(f) = ob.extract::<f64>() {
+            // XXX: bigints go here
+            Ok(Value::Float(f.into()))
+        } else if let Ok(k) = ob.extract::<Key>() {
+            Ok(Value::Pointer(k))
+        } else if let Ok(s) = ob.downcast::<PyString>() {
+            Ok(s.to_str()?.into())
         } else if let Ok(t) = ob.extract::<Vec<Self>>() {
             Ok(Value::from(t.as_slice()))
         } else {

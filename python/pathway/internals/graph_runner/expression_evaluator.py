@@ -7,7 +7,6 @@ from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
     ClassVar,
     Dict,
@@ -16,19 +15,12 @@ from typing import (
     Tuple,
     Type,
     cast,
-    get_origin,
 )
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
 from pathway.internals import api, asynchronous
-from pathway.internals.dtype import (
-    DType,
-    NoneType,
-    dtype_equivalence,
-    is_optional,
-    unoptionalize_pair,
-)
+from pathway.internals import dtype as dt
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import ExpressionVisitor
 from pathway.internals.graph_runner.scope_context import ScopeContext
@@ -223,6 +215,7 @@ class RowwiseEvaluator(
         if (
             dtype := common_dtype_in_binary_operator(left_dtype, right_dtype)
         ) is not None:
+            dtype = dt.wrap(dtype)
             left_dtype = dtype
             right_dtype = dtype
             left_expression = expr.CastExpression(dtype, left_expression)
@@ -242,7 +235,7 @@ class RowwiseEvaluator(
         ) is not None:
             return result_expression
 
-        left_dtype_unoptionalized, right_dtype_unoptionalized = unoptionalize_pair(
+        left_dtype_unoptionalized, right_dtype_unoptionalized = dt.unoptionalize_pair(
             left_dtype,
             right_dtype,
         )
@@ -260,8 +253,8 @@ class RowwiseEvaluator(
 
         expression_info = get_expression_info(expression)
         if (
-            get_origin(left_dtype) == get_origin(Tuple)
-            and get_origin(right_dtype) == get_origin(Tuple)
+            isinstance(left_dtype, dt.Tuple)
+            and isinstance(right_dtype, dt.Tuple)
             and expression._operator in tuple_handling_operators
         ):
             warnings.warn(
@@ -351,10 +344,10 @@ class RowwiseEvaluator(
         target_type = expression._return_type
 
         if (
-            dtype_equivalence(target_type, source_type)
-            or dtype_equivalence(DType(Optional[source_type]), target_type)
-            or (source_type == NoneType and is_optional(target_type))
-            or target_type == Any
+            dt.dtype_equivalence(target_type, source_type)
+            or dt.dtype_equivalence(dt.Optional(source_type), target_type)
+            or (source_type == dt.NONE and isinstance(target_type, dt.Optional))
+            or target_type == dt.ANY
         ):
             return arg  # then cast is noop
         if (
@@ -383,8 +376,10 @@ class RowwiseEvaluator(
         dtype = self.expression_type(expression)
         args: List[api.Expression] = []
         for expr_arg in expression._args:
-            if not is_optional(dtype) and is_optional(expr_arg._dtype):
-                arg_dtype = DType(Optional[dtype])
+            if not isinstance(dtype, dt.Optional) and isinstance(
+                expr_arg._dtype, dt.Optional
+            ):
+                arg_dtype = dt.Optional(dtype)
             else:
                 arg_dtype = dtype
             arg_expr = expr.CastExpression(arg_dtype, expr_arg)

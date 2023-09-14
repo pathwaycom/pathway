@@ -37,7 +37,7 @@ class DataPoint(pw.Schema):
 
 
 class Query(pw.Schema):
-    data: DataPoint
+    data: np.ndarray
     k: int
 
 

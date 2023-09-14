@@ -4,6 +4,7 @@ from typing import Iterable, Optional, Union
 
 import pathway.internals.expression as expr
 from pathway.internals import api
+from pathway.internals import dtype as dt
 
 
 class StringNamespace:
@@ -58,9 +59,7 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (str, str, lambda x: api.Expression.apply(str.lower, x)),
-            ],
+            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.lower, x)),),
             "str.lower",
             self._expression,
         )
@@ -93,9 +92,7 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (str, str, lambda x: api.Expression.apply(str.upper, x)),
-            ],
+            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.upper, x)),),
             "str.upper",
             self._expression,
         )
@@ -128,9 +125,7 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (str, str, lambda x: api.Expression.apply(lambda y: y[::-1], x)),
-            ],
+            ((dt.STR, dt.STR, lambda x: api.Expression.apply(lambda y: y[::-1], x)),),
             "str.reverse",
             self._expression,
         )
@@ -163,9 +158,7 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (str, int, lambda x: api.Expression.apply(len, x)),
-            ],
+            ((dt.STR, dt.INT, lambda x: api.Expression.apply(len, x)),),
             "str.len",
             self._expression,
         )
@@ -228,15 +221,15 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, str, str, int),
-                    str,
+                    (dt.STR, dt.STR, dt.STR, dt.INT),
+                    dt.STR,
                     lambda x, y, z, c: api.Expression.apply(
                         lambda s1, s2, s3, cnt: s1.replace(s2, s3, cnt), x, y, z, c
                     ),
                 ),
-            ],
+            ),
             "str.replace",
             self._expression,
             old_value,
@@ -272,13 +265,13 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, str),
-                    bool,
+                    (dt.STR, dt.STR),
+                    dt.BOOL,
                     lambda x, y: api.Expression.apply(str.startswith, x, y),
                 ),
-            ],
+            ),
             "str.starts_with",
             self._expression,
             prefix,
@@ -312,13 +305,13 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, str),
-                    bool,
+                    (dt.STR, dt.STR),
+                    dt.BOOL,
                     lambda x, y: api.Expression.apply(str.endswith, x, y),
                 ),
-            ],
+            ),
             "str.ends_with",
             self._expression,
             suffix,
@@ -349,9 +342,7 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (str, str, lambda x: api.Expression.apply(str.swapcase, x)),
-            ],
+            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.swapcase, x)),),
             "str.swap_case",
             self._expression,
         )
@@ -385,13 +376,13 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, Optional[str]),
-                    str,
+                    (dt.STR, dt.Optional(dt.STR)),
+                    dt.STR,
                     lambda x, y: api.Expression.apply(str.strip, x, y),
                 ),
-            ],
+            ),
             "str.strip",
             self._expression,
             chars,
@@ -418,9 +409,7 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
-                (str, str, lambda x: api.Expression.apply(str.title, x)),
-            ],
+            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.title, x)),),
             "str.title",
             self._expression,
         )
@@ -457,18 +446,18 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
                     (
-                        str,
-                        str,
-                        Optional[int],
-                        Optional[int],
+                        dt.STR,
+                        dt.STR,
+                        dt.Optional(dt.INT),
+                        dt.Optional(dt.INT),
                     ),
-                    int,
+                    dt.INT,
                     lambda *args: api.Expression.apply(str.count, *args),
                 ),
-            ],
+            ),
             "str.count",
             self._expression,
             sub,
@@ -509,18 +498,18 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
                     (
-                        str,
-                        str,
-                        Optional[int],
-                        Optional[int],
+                        dt.STR,
+                        dt.STR,
+                        dt.Optional(dt.INT),
+                        dt.Optional(dt.INT),
                     ),
-                    int,
+                    dt.INT,
                     lambda *args: api.Expression.apply(str.find, *args),
                 ),
-            ],
+            ),
             "str.find",
             self._expression,
             sub,
@@ -561,18 +550,18 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
                     (
-                        str,
-                        str,
-                        Optional[int],
-                        Optional[int],
+                        dt.STR,
+                        dt.STR,
+                        dt.Optional(dt.INT),
+                        dt.Optional(dt.INT),
                     ),
-                    int,
+                    dt.INT,
                     lambda *args: api.Expression.apply(str.rfind, *args),
                 ),
-            ],
+            ),
             "str.rfind",
             self._expression,
             sub,
@@ -625,13 +614,13 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, str),
-                    str,
+                    (dt.STR, dt.STR),
+                    dt.STR,
                     lambda x, y: api.Expression.apply(str.removeprefix, x, y),
                 ),
-            ],
+            ),
             "str.remove_prefix",
             self._expression,
             prefix,
@@ -682,13 +671,13 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, str),
-                    str,
+                    (dt.STR, dt.STR),
+                    dt.STR,
                     lambda x, y: api.Expression.apply(str.removesuffix, x, y),
                 ),
-            ],
+            ),
             "str.remove_suffix",
             self._expression,
             suffix,
@@ -724,10 +713,10 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    (str, int, int),
-                    str,
+                    (dt.STR, dt.INT, dt.INT),
+                    dt.STR,
                     lambda x, y, z: api.Expression.apply(
                         lambda s, slice_start, slice_end: s[slice_start:slice_end],
                         x,
@@ -735,7 +724,7 @@ class StringNamespace:
                         z,
                     ),
                 ),
-            ],
+            ),
             "str.slice",
             self._expression,
             start,
@@ -754,10 +743,10 @@ class StringNamespace:
         >>> df = pd.DataFrame({"a": ["-5", "0", "200"]}, dtype=str)
         >>> table = pw.debug.table_from_pandas(df)
         >>> table.schema.as_dict()
-        {'a': <class 'str'>}
+        {'a': STR}
         >>> table = table.select(a=table.a.str.parse_int())
         >>> table.schema.as_dict()
-        {'a': <class 'int'>}
+        {'a': INT}
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         -5
@@ -765,13 +754,13 @@ class StringNamespace:
         200
         """
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    str,
-                    Optional[int] if optional else int,
+                    dt.STR,
+                    dt.Optional(dt.INT) if optional else dt.INT,
                     lambda x: api.Expression.parse_int(x, optional),
-                )
-            ],
+                ),
+            ),
             "str.parse_int",
             self._expression,
         )
@@ -788,10 +777,10 @@ class StringNamespace:
         >>> df = pd.DataFrame({"a": ["-5", "0.1", "200.999"]}, dtype=str)
         >>> table = pw.debug.table_from_pandas(df)
         >>> table.schema.as_dict()
-        {'a': <class 'str'>}
+        {'a': STR}
         >>> table = table.select(a=table.a.str.parse_float())
         >>> table.schema.as_dict()
-        {'a': <class 'float'>}
+        {'a': FLOAT}
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         -5.0
@@ -799,13 +788,13 @@ class StringNamespace:
         200.999
         """
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    str,
-                    Optional[float] if optional else float,
+                    dt.STR,
+                    dt.Optional(dt.FLOAT) if optional else dt.FLOAT,
                     lambda x: api.Expression.parse_float(x, optional),
-                )
-            ],
+                ),
+            ),
             "str.parse_float",
             self._expression,
         )
@@ -842,7 +831,7 @@ class StringNamespace:
         >>> df = pd.DataFrame({"a": ["0", "TRUE", "on"]}, dtype=str)
         >>> table = pw.debug.table_from_pandas(df)
         >>> table.schema.as_dict()
-        {'a': <class 'str'>}
+        {'a': STR}
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         0
@@ -850,7 +839,7 @@ class StringNamespace:
         on
         >>> table = table.select(a=table.a.str.parse_bool())
         >>> table.schema.as_dict()
-        {'a': <class 'bool'>}
+        {'a': BOOL}
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         False
@@ -861,15 +850,15 @@ class StringNamespace:
         lowercase_false_values = [s.lower() for s in false_values]
 
         return expr.MethodCallExpression(
-            [
+            (
                 (
-                    str,
-                    Optional[bool] if optional else bool,
+                    dt.STR,
+                    dt.Optional(dt.BOOL) if optional else dt.BOOL,
                     lambda x: api.Expression.parse_bool(
                         x, lowercase_true_values, lowercase_false_values, optional
                     ),
-                )
-            ],
+                ),
+            ),
             "str.parse_bool",
             self._expression,
         )

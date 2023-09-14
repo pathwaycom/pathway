@@ -6,7 +6,6 @@ on:
       - 'v*.*.*'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   start-runner:
     name: Start self-hosted EC2 runner
@@ -17,7 +16,7 @@ jobs:
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}
@@ -73,6 +72,7 @@ jobs:
           manylinux: auto
           rustup-components: rust-std
           working-directory: .
+          before-script-linux: yum install -y perl-core
 
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'ec2-macOS'}}
@@ -224,7 +224,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
@@ -293,7 +293,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.ARTIFACT_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.ARTIFACT_AWS_SECRET_ACCESS_KEY }}
@@ -328,7 +328,7 @@ jobs:
     if: ${{ always() }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.EC2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.EC2_ACCESS_KEY_SECRET }}

@@ -74,6 +74,17 @@ pub trait DateTime {
             .unwrap()
             .timestamp_nanos()
     }
+
+    fn sanitize_format_string(format: &str) -> Result<String> {
+        let format = format.replace(".%f", "%.f");
+        if format.matches("%f").count() == format.matches("%%f").count() {
+            Ok(format)
+        } else {
+            Err(Error::ParseError(format!(
+                "Cannot use format: {format}. Using %f without the leading dot is not supported."
+            )))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -87,17 +98,20 @@ impl DateTimeNaive {
     }
 
     pub fn strptime(date_string: &str, format: &str) -> Result<Self> {
-        if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(date_string, format) {
+        let format = Self::sanitize_format_string(format)?;
+        if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(date_string, &format) {
             Ok(Self {
                 timestamp: datetime.timestamp_nanos(),
             })
-        } else if let Ok(date) = chrono::NaiveDate::parse_from_str(date_string, format) {
+        } else if let Ok(date) = chrono::NaiveDate::parse_from_str(date_string, &format) {
             let datetime = date.and_hms_opt(0, 0, 0).unwrap();
             Ok(Self {
                 timestamp: datetime.timestamp_nanos(),
             })
-        } else if let Ok(time) = chrono::NaiveTime::parse_from_str(date_string, format) {
-            let datetime = chrono::Utc::now().date_naive().and_time(time);
+        } else if let Ok(time) = chrono::NaiveTime::parse_from_str(date_string, &format) {
+            let datetime = chrono::NaiveDate::from_ymd_opt(1900, 1, 1)
+                .unwrap()
+                .and_time(time);
             Ok(Self {
                 timestamp: datetime.timestamp_nanos(),
             })
@@ -202,7 +216,7 @@ impl Sub<Duration> for DateTimeNaive {
 
 impl Display for DateTimeNaive {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "{}", self.strftime("%Y-%m-%dT%H:%M:%S%.f"))
+        write!(fmt, "{}", self.strftime("%Y-%m-%dT%H:%M:%S%.9f"))
     }
 }
 
@@ -217,7 +231,8 @@ impl DateTimeUtc {
     }
 
     pub fn strptime(date_string: &str, format: &str) -> Result<Self> {
-        match chrono::DateTime::parse_from_str(date_string, format) {
+        let format = Self::sanitize_format_string(format)?;
+        match chrono::DateTime::parse_from_str(date_string, &format) {
             Ok(datetime) => Ok(Self {
                 timestamp: datetime.timestamp_nanos(),
             }),
@@ -296,7 +311,7 @@ impl Sub<Duration> for DateTimeUtc {
 
 impl Display for DateTimeUtc {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "{}", self.strftime("%Y-%m-%dT%H:%M:%S%.f%z"))
+        write!(fmt, "{}", self.strftime("%Y-%m-%dT%H:%M:%S%.9f%z"))
     }
 }
 

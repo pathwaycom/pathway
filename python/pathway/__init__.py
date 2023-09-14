@@ -6,6 +6,8 @@ import pathway._engine_finder  # noqa: F401  # isort: split
 
 import os
 
+from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, DURATION
+
 # flake8: noqa: E402
 
 if "PYTEST_CURRENT_TEST" not in os.environ:
@@ -16,15 +18,13 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
     filterwarnings("ignore", category=BeartypeDecorHintPep585DeprecationWarning)
 
 
+import pathway.dt as dt
 import pathway.reducers as reducers
 from pathway import debug, demo, io
 from pathway.internals import (
     ClassArg,
     ColumnExpression,
     ColumnReference,
-    DateTimeNaive,
-    DateTimeUtc,
-    Duration,
     FilteredJoinResult,
     GroupedJoinResult,
     GroupedTable,
@@ -143,9 +143,9 @@ __all__ = [
     "column_definition",
     "TableSlice",
     "demo",
-    "DateTimeNaive",
-    "DateTimeUtc",
-    "Duration",
+    "DATE_TIME_NAIVE",
+    "DATE_TIME_UTC",
+    "DURATION",
     "unwrap",
     "SchemaProperties",
 ]

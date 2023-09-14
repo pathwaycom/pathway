@@ -68,6 +68,25 @@ class CsvLinesNumberChecker:
         return len(result) == self.n_lines
 
 
+def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):
+    expected = (
+        pw.debug._markdown_to_pandas(expected)
+        .set_index(index_col, drop=False)
+        .sort_index()
+    )
+
+    def checker():
+        result = (
+            pd.read_csv(output_path, usecols=[*usecols, *index_col])
+            .convert_dtypes()
+            .set_index(index_col, drop=False)
+            .sort_index()
+        )
+        return expected.equals(result)
+
+    return checker
+
+
 @dataclass(frozen=True)
 class TestDataSource(datasource.DataSource):
     __test__ = False

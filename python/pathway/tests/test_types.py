@@ -19,13 +19,9 @@ def test_date_time_naive_schema():
         diff=pw.this.t1 - pw.this.t2
     )
     schema = table_with_datetimes.schema.as_dict()
-    assert (
-        repr(schema["t1"]) == "<class 'pathway.internals.datetime_types.DateTimeNaive'>"
-    )
-    assert (
-        repr(schema["t2"]) == "<class 'pathway.internals.datetime_types.DateTimeNaive'>"
-    )
-    assert repr(schema["diff"]) == "<class 'pathway.internals.datetime_types.Duration'>"
+    assert repr(schema["t1"]) == "DATE_TIME_NAIVE"
+    assert repr(schema["t2"]) == "DATE_TIME_NAIVE"
+    assert repr(schema["diff"]) == "DURATION"
 
 
 def test_date_time_utc_schema():
@@ -43,10 +39,6 @@ def test_date_time_utc_schema():
         diff=pw.this.t1 - pw.this.t2
     )
     schema = table_with_datetimes.schema.as_dict()
-    assert (
-        repr(schema["t1"]) == "<class 'pathway.internals.datetime_types.DateTimeUtc'>"
-    )
-    assert (
-        repr(schema["t2"]) == "<class 'pathway.internals.datetime_types.DateTimeUtc'>"
-    )
-    assert repr(schema["diff"]) == "<class 'pathway.internals.datetime_types.Duration'>"
+    assert repr(schema["t1"]) == "DATE_TIME_UTC"
+    assert repr(schema["t2"]) == "DATE_TIME_UTC"
+    assert repr(schema["diff"]) == "DURATION"
