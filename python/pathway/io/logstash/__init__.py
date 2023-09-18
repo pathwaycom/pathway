@@ -60,7 +60,7 @@ None, no restrictions on request duration will be applied.
     Now, with the pipeline configured, you can stream the changed into Logstash as
     simple as:
 
-    >>> pw.io.logstash.write(table, "http://localhost:8012")
+        >>> pw.io.logstash.write(table, "http://localhost:8012")  # doctest: +SKIP
     """
 
     http_write(

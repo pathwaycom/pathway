@@ -12,7 +12,7 @@ use pathway_engine::connectors::data_format::{
 };
 use pathway_engine::connectors::data_storage::ReaderBuilder;
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, FilesystemReader,
+    ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
 use pathway_engine::engine::Value;
 use pathway_engine::persistence::sync::SharedWorkersPersistenceCoordinator;
@@ -45,8 +45,13 @@ fn csv_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dyn
 }
 
 fn json_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
-    let reader =
-        FilesystemReader::new(input_path.to_path_buf(), ConnectorMode::Static, Some(1)).unwrap();
+    let reader = FilesystemReader::new(
+        input_path.to_path_buf(),
+        ConnectorMode::Static,
+        Some(1),
+        ReadMethod::ByLine,
+    )
+    .unwrap();
     let parser = JsonLinesParser::new(
         Some(vec!["key".to_string()]),
         vec!["value".to_string()],

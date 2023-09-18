@@ -122,7 +122,7 @@ jobs:
         with:
           name: pathway-arm64
           path: ./target/wheels/
-      
+
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         uses: actions/upload-artifact@v3
@@ -153,13 +153,14 @@ jobs:
       - name: Install and verify Linux package
         run: |
           set -ex
-          ENV_NAME="env_"${{ matrix.python-version }}""
-          rm -rf $ENV_NAME
-          python -m venv ${ENV_NAME}
-          source ${ENV_NAME}/bin/activate
-          pip install --prefer-binary ./wheels/pathway-*.whl
-          pip"${{ matrix.python-version }}" install py
-          python -m py --confcutdir $ENV_NAME --pyargs pathway
+          ENV_NAME="testenv_${{ matrix.python-version }}"
+          rm -rf "${ENV_NAME}"
+          python -m venv "${ENV_NAME}"
+          source "${ENV_NAME}/bin/activate"
+          WHEEL=(public/pathway/target/wheels/pathway-*.whl)
+          pip install --prefer-binary "${WHEEL}[tests]"
+          # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
+          python -m pytest --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
 
   Verify_ARM_ARCH:
     needs:
@@ -196,18 +197,20 @@ jobs:
         run: |
           set -ex
           # Pathway http monitoring set port
-          ENV_NAME="env_${{ matrix.python-version }}"
-          rm -rf $ENV_NAME
-          python"${{ matrix.python-version }}" -m venv ${ENV_NAME}
-          source ${ENV_NAME}/bin/activate
-          pip"${{ matrix.python-version }}" install --prefer-binary ./wheels/pathway-*.whl
-          pip"${{ matrix.python-version }}" install py
-          python"${{ matrix.python-version }}" -m py --confcutdir $ENV_NAME --pyargs pathway
+          source .github/workflows/bash_scripts/PATHWAY_MONITORING_HTTP_PORT.sh
+          ENV_NAME="testenv_${{ matrix.python-version }}"
+          rm -rf "${ENV_NAME}"
+          python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
+          source "${ENV_NAME}/bin/activate"
+          WHEEL=(public/pathway/target/wheels/pathway-*.whl)
+          pip install --prefer-binary "${WHEEL}[tests]"
+          # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
+          python -m pytest --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
-      
+
       - name: post cleanup
         run: rm -rf ./wheels
 
@@ -257,7 +260,7 @@ jobs:
           path: .
 
       - name: Create Release
-        uses: ncipollo/release-action@v1.12.0    
+        uses: ncipollo/release-action@v1.12.0
         with:
           draft: true
           artifacts: "./wheels/*.whl"
@@ -270,7 +273,7 @@ jobs:
         with:
           password: ${{ secrets.PYPI_TOKEN }}
           packages-dir: './wheels/'
-  
+
       - name: Publish package to s3
         uses: prewk/s3-cp-action@v2
         with:

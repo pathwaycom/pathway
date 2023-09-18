@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import time
+import uuid
 
 import boto3
 import pandas as pd
@@ -300,3 +301,74 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
     output_contents = read_jsonlines_fields(output_path, ["key", "value"])
     output_contents.sort(key=lambda entry: entry["key"])
     assert output_contents == third_input_part
+
+
+def test_s3_bytes_read(tmp_path: pathlib.Path):
+    input_path = (
+        f"integration_tests/test_s3_bytes_read/{time.time()}-{uuid.uuid4()}/input.txt"
+    )
+    input_full_contents = "abc\n\ndef\nghi\njkl"
+    output_path = tmp_path / "output.json"
+
+    put_aws_object(input_path, input_full_contents)
+    table = pw.io.s3.read(
+        input_path,
+        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
+            bucket_name="aws-integrationtest",
+            access_key="AKIAX67C7K343BP4QUWN",
+            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
+            region="eu-central-1",
+        ),
+        format="binary",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    with open(output_path, "r") as f:
+        result = json.load(f)
+        assert result["data"] == [ord(c) for c in input_full_contents]
+
+
+def test_s3_empty_bytes_read(tmp_path: pathlib.Path):
+    base_path = (
+        f"integration_tests/test_s3_empty_bytes_read/{time.time()}-{uuid.uuid4()}/"
+    )
+
+    put_aws_object(base_path + "input", "")
+    put_aws_object(base_path + "input2", "")
+
+    table = pw.io.s3.read(
+        base_path,
+        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
+            bucket_name="aws-integrationtest",
+            access_key="AKIAX67C7K343BP4QUWN",
+            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
+            region="eu-central-1",
+        ),
+        format="binary",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+
+    rows = []
+
+    def on_change(key, row, time, is_addition):
+        rows.append(row)
+
+    def on_end(*args, **kwargs):
+        pass
+
+    pw.io.subscribe(table, on_change=on_change, on_end=on_end)
+    pw.run()
+
+    assert (
+        rows
+        == [
+            {
+                "data": b"",
+            }
+        ]
+        * 2
+    )

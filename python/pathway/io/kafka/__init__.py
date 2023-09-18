@@ -136,7 +136,6 @@ def read(
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
     >>> t = pw.io.kafka.read(
     ...    rdkafka_settings,
     ...    topic="animals",
@@ -159,7 +158,7 @@ def read(
 
     This way, you get a table which looks as follows:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
     owner pet
     Alice cat
       Bob dog
@@ -184,7 +183,7 @@ def read(
 
     This way, you get a table which looks as follows:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
     owner pet
     Alice cat
       Bob dog
@@ -210,17 +209,15 @@ def read(
     use JSON Pointer and do a connector, which gets the data as follows:
 
     >>> import pathway as pw
-
     >>> class InputSchema(pw.Schema):
     ...   pet_name: str
     ...   pet_height: int
-    ...
     >>> t = pw.io.kafka.read(
     ...    rdkafka_settings,
     ...    topic="animals",
     ...    format="json",
     ...    schema=InputSchema,
-    ...    column_paths={
+    ...    json_field_paths={
     ...        "pet_name": "/pet/name",
     ...        "pet_height": "/pet/measurements/1"
     ...    },
@@ -513,13 +510,17 @@ def write(
     ... }
 
     You want to send a Pathway table t to the Kafka instance.
+
+    >>> import pathway as pw
+    >>> t = pw.debug.parse_to_table("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
+
     To connect to the topic "animals" and send messages, the connector must be used \
         as follows, depending on the format:
 
     JSON version:
 
-    >>> import pathway as pw
-    >>> t = pw.io.kafka.write(
+    >>> pw.io.kafka.write(
+    ...    t,
     ...    rdkafka_settings,
     ...    "animals",
     ...    format="json",

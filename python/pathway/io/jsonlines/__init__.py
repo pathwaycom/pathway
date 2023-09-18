@@ -88,21 +88,19 @@ def read(
     use the ``pw.io.jsonlines.read`` method:
 
     >>> import pathway as pw
-
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
     >>> t = pw.io.jsonlines.read("dataset.jsonlines", schema=InputSchema, mode="static")
 
     Then, you can output the table in order to check the correctness of the read:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
-    id | owner | pet
-    1  | Alice | dog
-    2  | Bob   | dog
-    3  | Bob   | cat
-    4  | Bob   | cat
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
+    owner | pet
+    Alice | dog
+    Bob   | dog
+    Bob   | cat
+    Bob   | cat
 
 
     Now let's try something different. Consider you have site access logs stored in a
@@ -126,7 +124,6 @@ def read(
     >>> class InputSchema(pw.Schema):
     ...   ip: str
     ...   login: str
-    ...
     >>> t = pw.io.jsonlines.read("logs/", schema=InputSchema, mode="static")
 
     The only difference is that you specified the name of the directory instead of the
@@ -143,7 +140,6 @@ def read(
     >>> class InputSchema(pw.Schema):
     ...   ip: str
     ...   login: str
-    ...
     >>> t = pw.io.jsonlines.read("logs/", schema=InputSchema, mode="streaming")
 
     With this method, you obtain a table updated dynamically. The changes in the logs would incur

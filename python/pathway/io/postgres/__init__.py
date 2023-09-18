@@ -82,10 +82,10 @@ def write(table: Table, postgres_settings: dict, table_name: str) -> None:
     Now, having done all the preparation, one can simply call:
 
     >>> pw.io.postgres.write(
-        t,
-        connection_string_parts,
-        "pets",
-    )
+    ...     t,
+    ...     connection_string_parts,
+    ...     "pets",
+    ... )
     """
     data_storage = api.DataStorage(
         storage_type="postgres",
@@ -150,7 +150,7 @@ def write_snapshot(
     After the table is created, all you need is just to set up the output connector:
 
     >>> import pathway as pw
-    >>> pw.io.postgres.write_snapshot(
+    >>> pw.io.postgres.write_snapshot(  # doctest: +SKIP
     ...    stats,
     ...    {
     ...        "host": "localhost",

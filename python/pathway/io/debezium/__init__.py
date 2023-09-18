@@ -100,13 +100,12 @@ def read(
 
     Now, using the settings you can set up a connector. It is as simple as:
 
-
+    >>> import pathway as pw
     >>> class InputSchema(pw.Schema):
     ...   id: str = pw.column_definition(primary_key=True)
     ...   age: int
     ...   owner: str
     ...   pet: str
-
     >>> t = pw.io.debezium.read(
     ...    rdkafka_settings,
     ...    topic_name="pets",
@@ -123,7 +122,7 @@ def read(
     data_storage = api.DataStorage(
         storage_type="kafka",
         rdkafka_settings=rdkafka_settings,
-        topics=[topic_name],
+        topic=topic_name,
         persistent_id=persistent_id,
     )
     schema, data_format_definition = read_schema(

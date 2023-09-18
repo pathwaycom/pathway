@@ -6,7 +6,6 @@ use std::fmt::Display;
 use std::io::Write;
 use std::iter::zip;
 use std::mem::take;
-use std::str::FromStr;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::ReaderContext::{Diff, KeyValue, RawBytes, TokenizedEntries};
@@ -18,6 +17,8 @@ use itertools::Itertools;
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
 use serde_json::Value as JsonValue;
+
+const COMMIT_LITERAL: &str = "*COMMIT*";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParsedEvent {
@@ -315,7 +316,7 @@ impl DsvParser {
             return Ok(Vec::new());
         }
 
-        if line == "*COMMIT*" {
+        if line == COMMIT_LITERAL {
             return Ok(vec![ParsedEvent::AdvanceTime]);
         }
 
@@ -343,7 +344,7 @@ impl DsvParser {
     fn parse_tokenized_entries(&mut self, event: DataEventType, tokens: &[String]) -> ParseResult {
         if tokens.len() == 1 {
             let line = &tokens[0];
-            if line == "*COMMIT*" {
+            if line == COMMIT_LITERAL {
                 return Ok(vec![ParsedEvent::AdvanceTime]);
             }
         }
@@ -408,48 +409,55 @@ impl Parser for DsvParser {
     }
 }
 
-pub struct IdentityParser {}
-
-impl IdentityParser {
-    pub fn new() -> IdentityParser {
-        Self {}
-    }
+pub struct IdentityParser {
+    parse_utf8: bool,
 }
 
-impl Default for IdentityParser {
-    fn default() -> Self {
-        Self::new()
+impl IdentityParser {
+    pub fn new(parse_utf8: bool) -> IdentityParser {
+        Self { parse_utf8 }
+    }
+
+    fn prepare_bytes(&self, bytes: &[u8]) -> Result<Value, ParseError> {
+        if self.parse_utf8 {
+            Ok(Value::String(prepare_plaintext_string(bytes)?.into()))
+        } else {
+            Ok(Value::Bytes(bytes.into()))
+        }
     }
 }
 
 impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let (event, key, line) = match data {
-            RawBytes(event, raw_bytes) => (*event, None, prepare_plaintext_string(raw_bytes)?),
+        let (event, key, value) = match data {
+            RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes)?),
             KeyValue((_key, value)) => match value {
-                Some(bytes) => (
-                    DataEventType::Insert,
-                    None,
-                    prepare_plaintext_string(bytes)?,
-                ),
+                Some(bytes) => (DataEventType::Insert, None, self.prepare_bytes(bytes)?),
                 None => return Err(ParseError::EmptyKafkaPayload),
             },
             Diff((addition, key, values)) => (
                 *addition,
                 key.as_ref().map(|k| vec![k.clone()]),
-                prepare_plaintext_string(values)?,
+                self.prepare_bytes(values)?,
             ),
             TokenizedEntries(_, _) => return Err(ParseError::UnsupportedReaderContext),
         };
 
-        let event = match line.as_str() {
-            "*COMMIT*" => ParsedEvent::AdvanceTime,
-            line => {
-                let values = vec![Value::from_str(line).unwrap()];
-                match event {
-                    DataEventType::Insert => ParsedEvent::Insert((key, values)),
-                    DataEventType::Delete => ParsedEvent::Delete((key, values)),
-                }
+        let is_commit = {
+            if let Value::String(arc_str) = &value {
+                arc_str.as_str() == COMMIT_LITERAL
+            } else {
+                false
+            }
+        };
+
+        let event = if is_commit {
+            ParsedEvent::AdvanceTime
+        } else {
+            let values = vec![value];
+            match event {
+                DataEventType::Insert => ParsedEvent::Insert((key, values)),
+                DataEventType::Delete => ParsedEvent::Delete((key, values)),
             }
         };
 
@@ -576,6 +584,13 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
             let mut items = Vec::with_capacity(t.len());
             for item in t.iter() {
                 items.push(serialize_value_to_json(item)?);
+            }
+            Ok(JsonValue::Array(items))
+        }
+        Value::Bytes(b) => {
+            let mut items = Vec::with_capacity(b.len());
+            for item in b.iter() {
+                items.push(json!(item));
             }
             Ok(JsonValue::Array(items))
         }
@@ -855,7 +870,7 @@ impl Parser for JsonLinesParser {
             return Ok(vec![]);
         }
 
-        if line == "*COMMIT*" {
+        if line == COMMIT_LITERAL {
             return Ok(vec![ParsedEvent::AdvanceTime]);
         }
 

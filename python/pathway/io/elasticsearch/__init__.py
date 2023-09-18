@@ -74,18 +74,19 @@ def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> 
 
     Now suppose we want to send a Pathway table pets to this local instance of
     Elasticsearch.
+    >>> import pathway as pw
+    >>> pets = pw.debug.parse_to_table("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
 
     It can be done as follows:
 
-    >>> import pathway as pw
-    >>> t = pw.io.elasticsearch.write(
+    >>> pw.io.elasticsearch.write(
     ...     table=pets,
     ...     host="http://localhost:9200",
     ...     auth=pw.io.elasticsearch.ElasticSearchAuth.basic("admin", "admin"),
     ...     index_name="animals",
     ... )
 
-    All the updates of table t will be indexed to "animals" as well.
+    All the updates of table ```pets`` will be indexed to "animals" as well.
     """
 
     data_storage = api.DataStorage(

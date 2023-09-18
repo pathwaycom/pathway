@@ -107,11 +107,9 @@ def read(
 
     >>> import os
     >>> import pathway as pw
-    ...
     >>> class InputSchema(pw.Schema):
     ...     owner: str
     ...     pet: str
-    ...
     >>> t = pw.io.minio.read(
     ...     "animals/",
     ...     minio_settings=pw.io.minio.MinIOSettings(

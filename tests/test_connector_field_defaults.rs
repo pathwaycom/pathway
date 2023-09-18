@@ -8,7 +8,7 @@ use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, JsonLinesParser, ParsedEvent,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, FilesystemReader,
+    ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
 use pathway_engine::engine::{Type, Value};
 
@@ -205,6 +205,7 @@ fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -231,6 +232,7 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines_with_skips.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -281,6 +283,7 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines_with_skips.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -325,6 +328,7 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines_with_skips_and_nulls.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),

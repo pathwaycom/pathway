@@ -108,17 +108,17 @@ def read(
     CSV version:
 
     >>> import pathway as pw
-    ...
+    >>>
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
+    >>>
     >>> t = pw.io.redpanda.read(
-        rdkafka_settings,
-        topic="animals",
-        format="csv",
-        schema=InputSchema,
-    )
+    ...     rdkafka_settings,
+    ...     topic="animals",
+    ...     format="csv",
+    ...     schema=InputSchema,
+    ... )
 
     In case of CSV format, the first message must be the header:
 
@@ -135,7 +135,7 @@ def read(
 
     This way, you get a table which looks as follows:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
     owner pet
     Alice cat
       Bob dog
@@ -160,7 +160,7 @@ def read(
 
     This way, you get a table which looks as follows:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
     owner pet
     Alice cat
       Bob dog
@@ -187,17 +187,15 @@ def read(
 
 
     >>> import pathway as pw
-
     >>> class InputSchema(pw.Schema):
     ...    pet_name: str
     ...    pet_height: int
-    ...
     >>> t = pw.io.redpanda.read(
     ...    rdkafka_settings,
     ...    topic="animals",
     ...    format="json",
     ...    schema=InputSchema,
-    ...    column_paths={
+    ...    json_field_paths={
     ...        "pet_name": "/pet/name",
     ...        "pet_height": "/pet/measurements/1"
     ...    },

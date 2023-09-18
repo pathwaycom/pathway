@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use pathway_engine::connectors::data_format::{JsonLinesParser, ParsedEvent};
-use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader};
+use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader, ReadMethod};
 use pathway_engine::engine::Value;
 
 #[test]
@@ -16,6 +16,7 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -53,6 +54,7 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -77,6 +79,7 @@ fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -98,6 +101,7 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -122,6 +126,7 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines_types.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -170,6 +175,7 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
         PathBuf::from("tests/data/json_complex_paths.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
 
     let mut routes = HashMap::new();
@@ -224,6 +230,7 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
         PathBuf::from("tests/data/json_complex_paths.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
 
     let mut routes = HashMap::new();
@@ -263,6 +270,7 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
         PathBuf::from("tests/data/json_complex_paths.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
 
     let mut routes = HashMap::new();
@@ -299,6 +307,7 @@ fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -326,6 +335,7 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
         PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -350,6 +360,7 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
         PathBuf::from("tests/data/json_complex_paths.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = JsonLinesParser::new(
         None,

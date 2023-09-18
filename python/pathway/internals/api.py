@@ -17,6 +17,7 @@ Value = Union[
     int,
     float,
     str,
+    bytes,
     bool,
     BasePointer,
     datetime.datetime,

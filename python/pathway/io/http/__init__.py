@@ -87,11 +87,12 @@ def read(
 
     Raw format:
 
+    >>> import os
     >>> import pathway as pw
-    ... table = pw.io.http.read(
+    >>> table = pw.io.http.read(
     ...   "https://localhost:8000/stream",
     ...   method="GET",
-    ...   headers={"Authorization": f"Bearer {BEARER_TOKEN}"},
+    ...   headers={"Authorization": f"Bearer {os.environ['BEARER_TOKEN']}"},
     ...   format="raw",
     ... )
 
@@ -103,15 +104,13 @@ def read(
     >>> def mapper(msg: bytes) -> bytes:
     ...   result = json.loads(msg.decode())
     ...   return json.dumps({"key": result["id"], "text": result["data"]}).encode()
-    ...
     >>> class InputSchema(pw.Schema):
     ...  key: int
     ...  text: str
-    ...
     >>> t = pw.io.http.read(
     ...   "https://localhost:8000/stream",
     ...   method="GET",
-    ...   headers={"Authorization": f"Bearer {BEARER_TOKEN}"},
+    ...   headers={"Authorization": f"Bearer {os.environ['BEARER_TOKEN']}"},
     ...   schema=InputSchema,
     ...   response_mapper=mapper
     ... )
@@ -204,10 +203,7 @@ def write(
     just two columns: the pet and the owner's name.
 
     >>> import pathway as pw
-    >>> pw.debug.compute_and_print(t, include_id=False)
-    owner pet
-    Alice cat
-      Bob dog
+    >>> pets = pw.debug.parse_to_table("owner pet \\n Alice dog \\n Bob cat \\n Alice cat")
 
     Consider that there is a need to send the stream of changes on such table to the
     external API endpoint (let's pick some exemplary URL for the sake of demonstation).
@@ -216,7 +212,7 @@ def write(
     are sent in POST requests. Then, the communication can be done with a simple code
     snippet:
 
-    >>> t = pw.io.http.write(pets, "http://www.example.com/api/event")
+    >>> pw.io.http.write(pets, "http://www.example.com/api/event")
 
     Now let's do something more custom. Suppose that the API endpoint requires us to
     communicate via PUT method and to pass the values as CGI-parameters. In this case,
@@ -239,7 +235,7 @@ def write(
     ...     "time={table.time}",
     ...     "diff={table.diff}",
     ... ]
-    ... message_template = "\\t".join(message_template_tokens)
+    >>> message_template = "\\t".join(message_template_tokens)
 
     Now, we can use this template and the custom format, this way:
 

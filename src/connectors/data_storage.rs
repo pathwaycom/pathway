@@ -201,7 +201,7 @@ impl StorageType {
             StorageType::CsvFilesystem => CsvFilesystemReader::merge_two_frontiers(lhs, rhs),
             StorageType::Kafka => KafkaReader::merge_two_frontiers(lhs, rhs),
             StorageType::Python => PythonReader::merge_two_frontiers(lhs, rhs),
-            StorageType::S3Lines => S3LinesReader::merge_two_frontiers(lhs, rhs),
+            StorageType::S3Lines => S3GenericReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -372,8 +372,27 @@ impl FileWriter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadMethod {
+    ByLine,
+    Full,
+}
+
+impl ReadMethod {
+    fn read_next_bytes<R>(self, reader: &mut R, buf: &mut Vec<u8>) -> Result<usize, ReadError>
+    where
+        R: BufRead,
+    {
+        match &self {
+            ReadMethod::ByLine => Ok(reader.read_until(b'\n', buf)?),
+            ReadMethod::Full => Ok(reader.read_to_end(buf)?),
+        }
+    }
+}
+
 pub struct FilesystemReader {
     persistent_id: Option<PersistentId>,
+    read_method: ReadMethod,
 
     reader: Option<BufReader<std::fs::File>>,
     filesystem_scanner: FilesystemScanner,
@@ -385,6 +404,7 @@ impl FilesystemReader {
         path: impl Into<PathBuf>,
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
+        read_method: ReadMethod,
     ) -> io::Result<FilesystemReader> {
         let filesystem_scanner = FilesystemScanner::new(path, persistent_id, streaming_mode)?;
 
@@ -394,6 +414,7 @@ impl FilesystemReader {
             reader: None,
             filesystem_scanner,
             total_entries_read: 0,
+            read_method,
         })
     }
 }
@@ -431,9 +452,9 @@ impl Reader for FilesystemReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
         loop {
             if let Some(reader) = &mut self.reader {
-                let mut line = String::new();
-                let len = reader.read_line(&mut line)?;
-                if len > 0 {
+                let mut line = Vec::new();
+                let len = self.read_method.read_next_bytes(reader, &mut line)?;
+                if len > 0 || self.read_method == ReadMethod::Full {
                     self.total_entries_read += 1;
 
                     let offset = (
@@ -448,14 +469,17 @@ impl Reader for FilesystemReader {
                             bytes_offset: reader.stream_position().unwrap(),
                         },
                     );
+                    let data_event_type = self
+                        .filesystem_scanner
+                        .data_event_type()
+                        .expect("scanner action can't be empty");
+
+                    if self.read_method == ReadMethod::Full {
+                        self.reader = None;
+                    }
 
                     return Ok(ReadResult::Data(
-                        ReaderContext::from_raw_bytes(
-                            self.filesystem_scanner
-                                .data_event_type()
-                                .expect("scanner action can't be empty"),
-                            line.into_bytes(),
-                        ),
+                        ReaderContext::from_raw_bytes(data_event_type, line),
                         offset,
                     ));
                 }
@@ -1271,6 +1295,12 @@ pub trait PsqlSerializer {
     fn to_postgres_output(&self) -> String;
 }
 
+impl PsqlSerializer for u8 {
+    fn to_postgres_output(&self) -> String {
+        self.to_string()
+    }
+}
+
 impl PsqlSerializer for i64 {
     fn to_postgres_output(&self) -> String {
         self.to_string()
@@ -1307,6 +1337,7 @@ impl PsqlSerializer for Value {
             Value::String(s) => s.to_string(),
             Value::Pointer(value) => format!("{value:?}"),
             Value::Tuple(vals) => to_postgres_array(vals.iter()),
+            Value::Bytes(array) => to_postgres_array(array.iter()),
             Value::IntArray(array) => to_postgres_array(array.iter()),
             Value::FloatArray(array) => to_postgres_array(array.iter()),
             Value::DateTimeNaive(date_time) => date_time.to_string(),
@@ -1320,6 +1351,7 @@ impl Writer for PsqlWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         let strs = Arena::new();
         let strings = Arena::new();
+        let bytes = Arena::new();
         let chrono_datetimes = Arena::new();
         let chrono_utc_datetimes = Arena::new();
 
@@ -1333,6 +1365,7 @@ impl Writer for PsqlWriter {
                     Value::Int(i) => Ok(i),
                     Value::Float(f) => Ok(f.as_ref()),
                     Value::String(s) => Ok(strs.alloc(&**s)),
+                    Value::Bytes(b) => Ok(bytes.alloc(&**b)),
                     Value::DateTimeNaive(dt) => Ok(chrono_datetimes.alloc(dt.as_chrono_datetime())),
                     Value::DateTimeUtc(dt) => {
                         Ok(chrono_utc_datetimes.alloc(dt.as_chrono_datetime().and_utc()))
@@ -1821,28 +1854,31 @@ impl Writer for NullWriter {
     }
 }
 
-pub struct S3LinesReader {
+pub struct S3GenericReader {
     s3_scanner: S3Scanner,
     poll_new_objects: bool,
+    read_method: ReadMethod,
 
-    line_reader: Option<BufReader<PipeReader>>,
+    reader: Option<BufReader<PipeReader>>,
     persistent_id: Option<PersistentId>,
     total_entries_read: u64,
     current_bytes_read: u64,
 }
 
-impl S3LinesReader {
+impl S3GenericReader {
     pub fn new(
         bucket: S3Bucket,
         objects_prefix: impl Into<String>,
         poll_new_objects: bool,
         persistent_id: Option<PersistentId>,
-    ) -> S3LinesReader {
-        S3LinesReader {
+        read_method: ReadMethod,
+    ) -> S3GenericReader {
+        S3GenericReader {
             s3_scanner: S3Scanner::new(bucket, objects_prefix),
             poll_new_objects,
+            read_method,
 
-            line_reader: None,
+            reader: None,
             persistent_id,
             total_entries_read: 0,
             current_bytes_read: 0,
@@ -1852,7 +1888,7 @@ impl S3LinesReader {
     fn stream_next_object(&mut self) -> Result<bool, ReadError> {
         if let Some(pipe_reader) = self.s3_scanner.stream_next_object()? {
             self.current_bytes_read = 0;
-            self.line_reader = Some(BufReader::new(pipe_reader));
+            self.reader = Some(BufReader::new(pipe_reader));
             Ok(true)
         } else {
             Ok(false)
@@ -1864,7 +1900,7 @@ impl S3LinesReader {
     }
 }
 
-impl Reader for S3LinesReader {
+impl Reader for S3GenericReader {
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
         let offset_value = frontier.get_offset(&OffsetKey::Empty);
         let Some(OffsetValue::S3ObjectPosition {
@@ -1887,8 +1923,10 @@ impl Reader for S3LinesReader {
         let mut reader = BufReader::new(pipe_reader);
         let mut bytes_read = 0;
         while bytes_read < *bytes_offset {
-            let mut current_line = String::new();
-            let len = reader.read_line(&mut current_line)?;
+            let mut current_line = Vec::new();
+            let len = self
+                .read_method
+                .read_next_bytes(&mut reader, &mut current_line)?;
             if len == 0 {
                 break;
             }
@@ -1905,18 +1943,18 @@ impl Reader for S3LinesReader {
 
         self.total_entries_read = *total_entries_read;
         self.current_bytes_read = bytes_read;
-        self.line_reader = Some(reader);
+        self.reader = Some(reader);
 
         Ok(())
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
         loop {
-            match &mut self.line_reader {
-                Some(line_reader) => {
-                    let mut line = String::new();
-                    let len = line_reader.read_line(&mut line)?;
-                    if len > 0 {
+            match &mut self.reader {
+                Some(reader) => {
+                    let mut line = Vec::new();
+                    let len = self.read_method.read_next_bytes(reader, &mut line)?;
+                    if len > 0 || self.read_method == ReadMethod::Full {
                         self.total_entries_read += 1;
                         self.current_bytes_read += len as u64;
 
@@ -1929,8 +1967,12 @@ impl Reader for S3LinesReader {
                             },
                         );
 
+                        if self.read_method == ReadMethod::Full {
+                            self.reader = None;
+                        }
+
                         return Ok(ReadResult::Data(
-                            ReaderContext::from_raw_bytes(DataEventType::Insert, line.into_bytes()), // Currently no deletions for S3
+                            ReaderContext::from_raw_bytes(DataEventType::Insert, line), // Currently no deletions for S3
                             offset,
                         ));
                     }

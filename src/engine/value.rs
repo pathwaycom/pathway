@@ -149,6 +149,7 @@ pub enum Value {
     Float(OrderedFloat<f64>),
     Pointer(Key),
     String(ArcStr),
+    Bytes(Arc<[u8]>),
     Tuple(Arc<[Self]>),
     IntArray(Handle<ArrayD<i64>>),
     FloatArray(Handle<ArrayD<f64>>),
@@ -259,6 +260,7 @@ impl Display for Value {
             Self::Float(OrderedFloat(f)) => write!(fmt, "{f}"),
             Self::Pointer(p) => write!(fmt, "{p:#}"),
             Self::String(s) => write!(fmt, "\"{}\"", s.escape_default()),
+            Self::Bytes(b) => write!(fmt, "{b:?}"),
             Self::Tuple(vals) => write!(fmt, "({})", vals.iter().format(", ")),
             Self::IntArray(array) => write!(fmt, "{array}"),
             Self::FloatArray(array) => write!(fmt, "{array}"),
@@ -302,6 +304,12 @@ impl From<Key> for Value {
 impl From<&str> for Value {
     fn from(s: &str) -> Self {
         Self::String(s.into())
+    }
+}
+
+impl From<&[u8]> for Value {
+    fn from(b: &[u8]) -> Self {
+        Self::Bytes(b.into())
     }
 }
 
@@ -359,6 +367,8 @@ impl From<Duration> for Value {
     }
 }
 
+// Please only append to this list, as the values here are used in hashing,
+// so changing them will result in changed IDs
 #[repr(u8)]
 #[derive(Debug, Copy, Clone)]
 pub enum SimpleType {
@@ -374,6 +384,7 @@ pub enum SimpleType {
     DateTimeNaive,
     DateTimeUtc,
     Duration,
+    Bytes,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -385,6 +396,7 @@ pub enum Type {
     Float,
     Pointer,
     String,
+    Bytes,
     DateTimeNaive,
     DateTimeUtc,
     Duration,
@@ -401,6 +413,7 @@ impl Value {
             Self::Float(_) => SimpleType::Float,
             Self::Pointer(_) => SimpleType::Pointer,
             Self::String(_) => SimpleType::String,
+            Self::Bytes(_) => SimpleType::Bytes,
             Self::Tuple(_) => SimpleType::Tuple,
             Self::IntArray(_) => SimpleType::IntArray,
             Self::FloatArray(_) => SimpleType::FloatArray,
@@ -541,6 +554,7 @@ impl HashInto for Value {
             Self::Float(f) => f.hash_into(hasher),
             Self::Pointer(p) => p.hash_into(hasher),
             Self::String(s) => s.hash_into(hasher),
+            Self::Bytes(b) => b.hash_into(hasher),
             Self::Tuple(vals) => vals.hash_into(hasher),
             Self::IntArray(handle) => handle.hash_into(hasher),
             Self::FloatArray(handle) => handle.hash_into(hasher),

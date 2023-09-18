@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use pathway_engine::connectors::data_format::{DebeziumMessageParser, ParsedEvent};
-use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader};
+use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader, ReadMethod};
 use pathway_engine::engine::Value;
 
 #[test]
@@ -14,6 +14,7 @@ fn test_debezium_reads_ok() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample_debezium.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),

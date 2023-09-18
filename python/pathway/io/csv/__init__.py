@@ -83,16 +83,14 @@ def read(
     use the `pw.io.csv.read` method:
 
     >>> import pathway as pw
-    ...
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
     >>> t = pw.io.csv.read("dataset.csv", schema=InputSchema, mode="static")
 
     Then, you can output the table in order to check the correctness of the read:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
     owner pet
     Alice dog
       Bob dog
@@ -119,7 +117,6 @@ def read(
     >>> class InputSchema(pw.Schema):
     ...   ip: str
     ...   login: str
-    ...
     >>> t = pw.io.csv.read("logs/", schema=InputSchema, mode="static")
 
     The only difference is that you specified the name of the directory instead of the

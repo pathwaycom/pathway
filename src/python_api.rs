@@ -28,7 +28,7 @@ use pyo3::exceptions::{
     PyValueError, PyZeroDivisionError,
 };
 use pyo3::pyclass::CompareOp;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
 use pyo3::{AsPyPointer, PyTypeInfo};
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
@@ -56,8 +56,8 @@ use crate::connectors::data_format::{
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, ElasticSearchWriter, FileWriter, FilesystemReader,
-    KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReaderBuilder,
-    S3CsvReader, S3LinesReader, Writer,
+    KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReadMethod,
+    ReaderBuilder, S3CsvReader, S3GenericReader, Writer,
 };
 use crate::engine::dataflow::config_from_env;
 use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
@@ -227,6 +227,12 @@ impl<'source> FromPyObject<'source> for Value {
                     .expect("type conversion should work for str")
                     .to_str()?,
             ))
+        } else if PyBytes::is_exact_type_of(ob) {
+            Ok(Value::from(
+                ob.downcast::<PyBytes>()
+                    .expect("type conversion should work for bytes")
+                    .as_bytes(),
+            ))
         } else if PyInt::is_exact_type_of(ob) {
             Ok(Value::Int(
                 ob.extract::<i64>()
@@ -272,6 +278,8 @@ impl<'source> FromPyObject<'source> for Value {
             Ok(Value::Pointer(k))
         } else if let Ok(s) = ob.downcast::<PyString>() {
             Ok(s.to_str()?.into())
+        } else if let Ok(bytes) = ob.downcast::<PyBytes>() {
+            Ok(Value::Bytes(bytes.as_bytes().into()))
         } else if let Ok(t) = ob.extract::<Vec<Self>>() {
             Ok(Value::from(t.as_slice()))
         } else {
@@ -311,6 +319,7 @@ impl ToPyObject for Value {
             Self::Float(f) => f.into_py(py),
             Self::Pointer(k) => k.into_py(py),
             Self::String(s) => s.into_py(py),
+            Self::Bytes(b) => PyBytes::new(py, b).into(),
             Self::Tuple(t) => PyTuple::new(py, t.iter()).into(),
             Self::IntArray(a) => PyArray::from_array(py, a).into(),
             Self::FloatArray(a) => PyArray::from_array(py, a).into(),
@@ -348,6 +357,18 @@ impl<'source> FromPyObject<'source> for Type {
 impl IntoPy<PyObject> for Type {
     fn into_py(self, py: Python<'_>) -> PyObject {
         PathwayType(self).into_py(py)
+    }
+}
+
+impl<'source> FromPyObject<'source> for ReadMethod {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyReadMethod>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for ReadMethod {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyReadMethod(self).into_py(py)
     }
 }
 
@@ -1100,6 +1121,17 @@ impl PathwayType {
     pub const DURATION: Type = Type::Duration;
     #[classattr]
     pub const ARRAY: Type = Type::Array;
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]
+pub struct PyReadMethod(ReadMethod);
+
+#[pymethods]
+impl PyReadMethod {
+    #[classattr]
+    pub const BY_LINE: ReadMethod = ReadMethod::ByLine;
+    #[classattr]
+    pub const FULL: ReadMethod = ReadMethod::Full;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ConnectorMode")]
@@ -2978,6 +3010,7 @@ pub struct DataStorage {
     connection_string: Option<String>,
     csv_parser_settings: Option<Py<CsvParserSettings>>,
     mode: ConnectorMode,
+    read_method: ReadMethod,
     aws_s3_settings: Option<Py<AwsS3Settings>>,
     elasticsearch_params: Option<Py<ElasticSearchParams>>,
     parallel_readers: Option<usize>,
@@ -3082,6 +3115,7 @@ pub struct DataFormat {
     table_name: Option<String>,
     column_paths: Option<HashMap<String, String>>,
     field_absence_is_error: bool,
+    parse_utf8: bool,
 }
 
 #[pymethods]
@@ -3095,6 +3129,7 @@ impl DataStorage {
         connection_string = None,
         csv_parser_settings = None,
         mode = ConnectorMode::SimpleStreaming,
+        read_method = ReadMethod::ByLine,
         aws_s3_settings = None,
         elasticsearch_params = None,
         parallel_readers = None,
@@ -3110,6 +3145,7 @@ impl DataStorage {
         connection_string: Option<String>,
         csv_parser_settings: Option<Py<CsvParserSettings>>,
         mode: ConnectorMode,
+        read_method: ReadMethod,
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         parallel_readers: Option<usize>,
@@ -3124,6 +3160,7 @@ impl DataStorage {
             connection_string,
             csv_parser_settings,
             mode,
+            read_method,
             aws_s3_settings,
             elasticsearch_params,
             parallel_readers,
@@ -3145,7 +3182,9 @@ impl DataFormat {
         table_name = None,
         column_paths = None,
         field_absence_is_error = true,
+        parse_utf8 = true,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         format_type: String,
         key_field_names: Option<Vec<String>>,
@@ -3154,6 +3193,7 @@ impl DataFormat {
         table_name: Option<String>,
         column_paths: Option<HashMap<String, String>>,
         field_absence_is_error: bool,
+        parse_utf8: bool,
     ) -> Self {
         DataFormat {
             format_type,
@@ -3163,6 +3203,7 @@ impl DataFormat {
             table_name,
             column_paths,
             field_absence_is_error,
+            parse_utf8,
         }
     }
 }
@@ -3314,16 +3355,21 @@ impl DataStorage {
     fn construct_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => {
-                let storage =
-                    FilesystemReader::new(self.path()?, self.mode, self.internal_persistent_id())?;
+                let storage = FilesystemReader::new(
+                    self.path()?,
+                    self.mode,
+                    self.internal_persistent_id(),
+                    self.read_method,
+                )?;
                 Ok((Box::new(storage), 1))
             }
             "s3" => {
-                let storage = S3LinesReader::new(
+                let storage = S3GenericReader::new(
                     self.s3_bucket(py)?,
                     self.path()?,
                     self.mode.is_polling_enabled(),
                     self.internal_persistent_id(),
+                    self.read_method,
                 );
                 Ok((Box::new(storage), 1))
             }
@@ -3560,7 +3606,7 @@ impl DataFormat {
                 );
                 Ok(Box::new(parser))
             }
-            "identity" => Ok(Box::new(IdentityParser::new())),
+            "identity" => Ok(Box::new(IdentityParser::new(self.parse_utf8))),
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
     }
@@ -3823,6 +3869,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyExpression>()?;
     m.add_class::<PathwayType>()?;
     m.add_class::<PyConnectorMode>()?;
+    m.add_class::<PyReadMethod>()?;
     m.add_class::<PyMonitoringLevel>()?;
     m.add_class::<Universe>()?;
     m.add_class::<Column>()?;

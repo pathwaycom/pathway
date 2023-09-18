@@ -169,7 +169,6 @@ def read(
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
     >>> t = pw.io.s3.read(
     ...     "animals/",
     ...     aws_s3_settings=pw.io.s3.AwsS3Settings(
@@ -293,10 +292,9 @@ def read_from_digital_ocean(
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
-    >>> t = pw.io.s3_csv.read_from_digital_ocean(
+    >>> t = pw.io.s3.read_from_digital_ocean(
     ...     "animals/",
-    ...     do_s3_settings=pw.io.s3_csv.DigitalOceanS3Settings(
+    ...     do_s3_settings=pw.io.s3.DigitalOceanS3Settings(
     ...         bucket_name="datasets",
     ...         region="ams3",
     ...         access_key=os.environ["DO_S3_ACCESS_KEY"],
@@ -402,10 +400,9 @@ def read_from_wasabi(
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
-    >>> t = pw.io.s3_csv.read_from_wasabi(
+    >>> t = pw.io.s3.read_from_wasabi(
     ...     "animals/",
-    ...     wasabi_s3_settings=pw.io.s3_csv.WasabiS3Settings(
+    ...     wasabi_s3_settings=pw.io.s3.WasabiS3Settings(
     ...         bucket_name="datasets",
     ...         region="us-west-1",
     ...         access_key=os.environ["WASABI_S3_ACCESS_KEY"],

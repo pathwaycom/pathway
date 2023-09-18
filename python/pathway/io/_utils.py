@@ -10,7 +10,7 @@ import pathway.internals as pw
 from pathway.internals import api
 from pathway.internals import dtype as dt
 from pathway.internals._io_helpers import _form_value_fields
-from pathway.internals.api import ConnectorMode, PathwayType
+from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
 from pathway.internals.schema import ColumnDefinition, Schema, SchemaProperties
 
 STATIC_MODE_NAME = "static"
@@ -28,6 +28,7 @@ _DATA_FORMAT_MAPPING = {
     "plaintext": "identity",
     "json": "jsonlines",
     "raw": "identity",
+    "binary": "identity",
 }
 
 _PATHWAY_TYPE_MAPPING: Dict[PathwayType, Any] = {
@@ -49,6 +50,7 @@ SUPPORTED_INPUT_FORMATS: Set[str] = set(
         "json",
         "plaintext",
         "raw",
+        "binary",
     ]
 )
 
@@ -89,6 +91,12 @@ def internal_connector_mode(mode: str | api.ConnectorMode) -> api.ConnectorMode:
         )
 
     return internal_mode
+
+
+def internal_read_method(format: str) -> ReadMethod:
+    if format == "binary":
+        return ReadMethod.FULL
+    return ReadMethod.BY_LINE
 
 
 class CsvParserSettings:
@@ -248,6 +256,7 @@ def construct_schema_and_data_format(
             format_type=data_format_type,
             key_field_names=None,
             value_fields=[api.ValueField("data", PathwayType.ANY)],
+            parse_utf8=(format != "binary"),
         )
     schema, api_schema = read_schema(
         schema=schema,
@@ -300,6 +309,7 @@ def construct_s3_data_storage(
             path=path,
             aws_s3_settings=rust_engine_s3_settings,
             mode=internal_connector_mode(mode),
+            read_method=internal_read_method(format),
             persistent_id=persistent_id,
         )
 

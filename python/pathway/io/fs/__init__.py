@@ -17,6 +17,7 @@ from pathway.io._utils import (
     construct_connector_properties,
     construct_schema_and_data_format,
     internal_connector_mode,
+    internal_read_method,
 )
 
 SUPPORTED_OUTPUT_FORMATS: Set[str] = set(
@@ -106,16 +107,14 @@ def read(
     use the ``pw.io.fs.read`` method:
 
     >>> import pathway as pw
-    ...
     >>> class InputSchema(pw.Schema):
     ...   owner: str
     ...   pet: str
-    ...
     >>> t = pw.io.fs.read("dataset.csv", format="csv", schema=InputSchema)
 
     Then, you can output the table in order to check the correctness of the read:
 
-    >>> pw.debug.compute_and_print(t, include_id=False)
+    >>> pw.debug.compute_and_print(t, include_id=False)  # doctest: +SKIP
     owner pet
     Alice dog
       Bob dog
@@ -156,7 +155,6 @@ def read(
     >>> class InputSchema(pw.Schema):
     ...   ip: str
     ...   login: str
-    ...
     >>> t = pw.io.fs.read("logs/", format="csv", schema=InputSchema)
 
     The only difference is that you specified the name of the directory instead of the
@@ -216,6 +214,7 @@ def read(
             storage_type="fs",
             path=fspath(path),
             mode=internal_connector_mode(mode),
+            read_method=internal_read_method(format),
             persistent_id=persistent_id,
         )
 

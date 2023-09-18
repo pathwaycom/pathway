@@ -30,7 +30,7 @@ def write(table: Table) -> None:
 
     If the table is ``table``, the null output can be configured in the following way:
 
-    >>> pw.io.null.write(table)
+    >>> pw.io.null.write(table)  # doctest: +SKIP
     """
 
     data_storage = api.DataStorage(storage_type="null")

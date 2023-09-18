@@ -35,6 +35,10 @@ class ConnectorMode(Enum):
     SIMPLE_STREAMING: ConnectorMode
     STREAMING_WITH_DELETIONS: ConnectorMode
 
+class ReadMethod(Enum):
+    BY_LINE: ReadMethod
+    FULL: ReadMethod
+
 class Universe:
     @property
     def id_column(self) -> Column: ...

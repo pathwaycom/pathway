@@ -10,7 +10,7 @@ use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, ParseResult, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, FilesystemReader, ReadResult, ReadResult::Data, Reader,
+    ConnectorMode, FilesystemReader, ReadMethod, ReadResult, ReadResult::Data, Reader,
 };
 use pathway_engine::engine::{Key, Type, Value};
 
@@ -20,6 +20,7 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -61,6 +62,7 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["c".to_string()], ','),
@@ -82,6 +84,7 @@ fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample_str_int.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -116,6 +119,7 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample_bad_lines.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -159,6 +163,7 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(None, vec!["a".to_string(), "b".to_string()], ','),
@@ -199,6 +204,7 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
         PathBuf::from("tests/data/sample_composite_pkey.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -259,6 +265,7 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
         PathBuf::from("tests/data/schema.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -326,6 +333,7 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
         PathBuf::from("tests/data/schema.txt"),
         ConnectorMode::Static,
         None,
+        ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
