@@ -58,6 +58,9 @@ class TypeInterpreter(IdentityTransform):
         expression: expr.ColumnReference,
         state: Optional[TypeInterpreterState] = None,
     ) -> dt.DType:
+        from pathway.internals.table import Table
+
+        assert isinstance(expression._table, Table)
         dtype = expression._column.dtype
         assert state is not None
         assert isinstance(dtype, dt.DType)
@@ -194,15 +197,6 @@ class TypeInterpreter(IdentityTransform):
         [arg] = expression._args
         return expression._reducer.return_type(arg._dtype)
 
-    def eval_reducer_ix(
-        self,
-        expression: expr.ReducerIxExpression,
-        state: Optional[TypeInterpreterState] = None,
-        **kwargs,
-    ) -> expr.ReducerIxExpression:
-        expression = super().eval_reducer_ix(expression, state=state, **kwargs)
-        return _wrap(expression, self._eval_reducer(expression))
-
     def eval_count(
         self,
         expression: expr.CountExpression,
@@ -257,29 +251,6 @@ class TypeInterpreter(IdentityTransform):
                 assert dt.dtype_issubclass(arg_dtype, arg_annot)
         return _wrap(expression, ret_type)
 
-    def eval_ix(
-        self,
-        expression: expr.ColumnIxExpression,
-        state: Optional[TypeInterpreterState] = None,
-        **kwargs,
-    ) -> expr.ColumnIxExpression:
-        expression = super().eval_ix(expression, state=state, **kwargs)
-        key_dtype = expression._keys_expression._dtype
-        if expression._optional:
-            if not dt.dtype_issubclass(key_dtype, dt.Optional(dt.POINTER)):
-                raise TypeError(
-                    f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
-                )
-            if not isinstance(key_dtype, dt.Optional):
-                return _wrap(expression, expression._column.dtype)
-            return _wrap(expression, dt.Optional(expression._column.dtype))
-        else:
-            if not isinstance(key_dtype, dt.Pointer):
-                raise TypeError(
-                    f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
-                )
-            return _wrap(expression, expression._column.dtype)
-
     def eval_pointer(
         self,
         expression: expr.PointerExpression,
@@ -302,6 +273,15 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.CastExpression:
         expression = super().eval_cast(expression, state=state, **kwargs)
+        return _wrap(expression, expression._return_type)
+
+    def eval_convert(
+        self,
+        expression: expr.ConvertExpression,
+        state: Optional[TypeInterpreterState] = None,
+        **kwargs,
+    ) -> expr.ConvertExpression:
+        expression = super().eval_convert(expression, state=state, **kwargs)
         return _wrap(expression, expression._return_type)
 
     def eval_declare(
@@ -403,79 +383,109 @@ class TypeInterpreter(IdentityTransform):
         dtypes = tuple(arg._dtype for arg in expression._args)
         return _wrap(expression, dt.Tuple(*dtypes))
 
-    def eval_sequence_get(
+    def _eval_json_get(
         self,
-        expression: expr.SequenceGetExpression,
+        expression: expr.GetExpression,
         state: Optional[TypeInterpreterState] = None,
         **kwargs,
-    ) -> expr.SequenceGetExpression:
-        expression = super().eval_sequence_get(expression, state=state, **kwargs)
+    ) -> expr.GetExpression:
+        return _wrap(expression, dt.JSON)
+
+    def eval_get(
+        self,
+        expression: expr.GetExpression,
+        state: Optional[TypeInterpreterState] = None,
+        **kwargs,
+    ) -> expr.GetExpression:
+        expression = super().eval_get(expression, state=state, **kwargs)
         object_dtype = expression._object._dtype
         index_dtype = expression._index._dtype
         default_dtype = expression._default._dtype
 
-        if not isinstance(object_dtype, (dt.Tuple, dt.List)) and object_dtype not in [
-            dt.ANY,
-            dt.Array(),
-        ]:
-            raise TypeError(f"Object in {expression!r} has to be a sequence.")
-        if index_dtype != dt.INT:
-            raise TypeError(f"Index in {expression!r} has to be an int.")
-
-        if object_dtype == dt.Array():
-            warnings.warn(
-                f"Object in {expression!r} is of type numpy.ndarray but its number of"
-                + " dimensions is not known. Pathway cannot determine the return type"
-                + " and will set Any as the return type. Please use "
-                + "pathway.declare_type to set the correct return type."
-            )
-            return _wrap(expression, dt.ANY)
-        if object_dtype == dt.ANY:
-            return _wrap(expression, dt.ANY)
-
-        if isinstance(object_dtype, dt.List):
-            if expression._check_if_exists:
-                return _wrap(expression, dt.Optional(object_dtype.wrapped))
-            else:
-                return _wrap(expression, object_dtype.wrapped)
-        assert isinstance(object_dtype, dt.Tuple)
-        if object_dtype == dt.ANY_TUPLE:
-            return _wrap(expression, dt.ANY)
-
-        assert not isinstance(object_dtype.args, EllipsisType)
-        dtypes = object_dtype.args
-
-        if (
-            expression._const_index is None
-        ):  # no specified position, index is an Expression
-            assert isinstance(dtypes[0], dt.DType)
-            return_dtype = dtypes[0]
-            for dtype in dtypes[1:]:
-                if isinstance(dtype, dt.DType):
-                    return_dtype = dt.types_lca(return_dtype, dtype)
-            if expression._check_if_exists:
-                return_dtype = dt.types_lca(return_dtype, default_dtype)
-            return _wrap(expression, return_dtype)
-
-        try:
-            try_ret = dtypes[expression._const_index]
-            return _wrap(expression, try_ret)
-        except IndexError:
-            message = (
-                f"Index {expression._const_index} out of range for a tuple of"
-                + f" type {object_dtype}."
-            )
-            if expression._check_if_exists:
-                expression_info = get_expression_info(expression)
-                warnings.warn(
-                    message
-                    + " It refers to the following expression:\n"
-                    + expression_info
-                    + "Consider using just the default value without .get()."
+        if object_dtype == dt.JSON:
+            # json
+            if not default_dtype.is_subclass_of(dt.Optional(dt.JSON)):
+                raise TypeError(
+                    f"Default must be of type {dt.Optional(dt.JSON)}, found {default_dtype}."
                 )
-                return _wrap(expression, default_dtype)
+            if not expression._check_if_exists or default_dtype == dt.JSON:
+                return _wrap(expression, dt.JSON)
             else:
-                raise IndexError(message)
+                return _wrap(expression, dt.Optional(dt.JSON))
+        elif object_dtype.equivalent_to(dt.Optional(dt.JSON)):
+            # optional json
+            raise TypeError(f"Cannot get from {dt.Optional(dt.JSON)}.")
+        else:
+            # sequence
+            if not isinstance(
+                object_dtype, (dt.Tuple, dt.List)
+            ) and object_dtype not in [
+                dt.ANY,
+                dt.Array(),
+            ]:
+                raise TypeError(
+                    f"Object in {expression!r} has to be a JSON or sequence."
+                )
+            if index_dtype != dt.INT:
+                raise TypeError(f"Index in {expression!r} has to be an int.")
+
+            if object_dtype == dt.Array():
+                warnings.warn(
+                    f"Object in {expression!r} is of type numpy.ndarray but its number of"
+                    + " dimensions is not known. Pathway cannot determine the return type"
+                    + " and will set Any as the return type. Please use "
+                    + "pathway.declare_type to set the correct return type."
+                )
+                return _wrap(expression, dt.ANY)
+            if object_dtype == dt.ANY:
+                return _wrap(expression, dt.ANY)
+
+            if isinstance(object_dtype, dt.List):
+                if expression._check_if_exists:
+                    return _wrap(expression, dt.Optional(object_dtype.wrapped))
+                else:
+                    return _wrap(expression, object_dtype.wrapped)
+            assert isinstance(object_dtype, dt.Tuple)
+            if object_dtype == dt.ANY_TUPLE:
+                return _wrap(expression, dt.ANY)
+
+            assert not isinstance(object_dtype.args, EllipsisType)
+            dtypes = object_dtype.args
+
+            if (
+                expression._const_index is None
+            ):  # no specified position, index is an Expression
+                assert isinstance(dtypes[0], dt.DType)
+                return_dtype = dtypes[0]
+                for dtype in dtypes[1:]:
+                    if isinstance(dtype, dt.DType):
+                        return_dtype = dt.types_lca(return_dtype, dtype)
+                if expression._check_if_exists:
+                    return_dtype = dt.types_lca(return_dtype, default_dtype)
+                return _wrap(expression, return_dtype)
+
+            if not isinstance(expression._const_index, int):
+                raise IndexError("Index n")
+
+            try:
+                try_ret = dtypes[expression._const_index]
+                return _wrap(expression, try_ret)
+            except IndexError:
+                message = (
+                    f"Index {expression._const_index} out of range for a tuple of"
+                    + f" type {object_dtype}."
+                )
+                if expression._check_if_exists:
+                    expression_info = get_expression_info(expression)
+                    warnings.warn(
+                        message
+                        + " It refers to the following expression:\n"
+                        + expression_info
+                        + "Consider using just the default value without .get()."
+                    )
+                    return _wrap(expression, default_dtype)
+                else:
+                    raise IndexError(message)
 
     def eval_method_call(
         self,

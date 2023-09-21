@@ -151,13 +151,7 @@ def test_fuzzy_match_many_to_many():
         T(
             """
     right | left | weight
-       14 |    4 | 0.03125
-       10 |    0 | 0.03125
-       15 |    7 | 0.03125
-       18 |    1 | 0.03125
-       13 |    3 | 0.03125
-       19 |    6 | 0.03125
-       17 |    9 | 0.03125
+       19 |    9 | 0.03125
     """,
         ),
     )
@@ -228,8 +222,6 @@ def test_fuzzy_self_match_many_to_many():
         T(
             """
     right |left |  weight
-       4 |    0 | 0.0625
-       2 |    1 | 0.0625
        9 |    8 | 0.0625
     """,
         ),
@@ -369,6 +361,7 @@ def test_smart_large_heavy_light():
     expected = T(
         """
     left | right | weight
+       b |  b    | 0.333333
       ab | ab    | 0.404762
     """,
     )

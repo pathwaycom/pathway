@@ -7,7 +7,6 @@ from enum import IntEnum, auto
 from typing import Any, Callable, Optional
 
 import pathway.internals as pw
-from pathway.internals.fingerprints import fingerprint
 from pathway.internals.helpers import StableSet
 
 
@@ -372,7 +371,7 @@ def _fuzzy_match(
     ).select(
         weight=edges_left_light.weight
         * edges_right_light.weight
-        * features_normalized.ix(edges_left_light.feature).weight,
+        * features_normalized.ix(pw.this.feature).weight,
         left=edges_left_light.node,
         right=edges_right_light.node,
     )
@@ -405,16 +404,19 @@ def _fuzzy_match(
         )
     )
 
-    def weight_to_pseudoweight(weight: float, left_id: Any, right_id: Any) -> Any:
-        return (weight, fingerprint(sorted([left_id, right_id]), format="i64"))
+    def weight_to_pseudoweight(weight, left_id, right_id):
+        return pw.if_else(
+            left_id < right_id,
+            pw.make_tuple(weight, left_id, right_id),
+            pw.make_tuple(weight, right_id, left_id),
+        )
 
     node_node = (
         pw.Table.concat_reindex(node_node_light, node_node_heavy)
         .groupby(pw.this.left, pw.this.right)
         .reduce(pw.this.left, pw.this.right, weight=pw.reducers.sum(pw.this.weight))
         .with_columns(
-            weight=pw.apply(
-                weight_to_pseudoweight,
+            weight=weight_to_pseudoweight(
                 pw.this.weight,
                 pw.this.left,
                 pw.this.right,
@@ -438,7 +440,7 @@ def _fuzzy_match(
         node_node = node_node.filter(node_node.left < node_node.right)
 
     node_node = node_node.with_columns(
-        weight=pw.apply_with_type(lambda x: x[0], float, node_node.weight),
+        weight=pw.this.weight[0],
     )
 
     if by_hand_match is not None:

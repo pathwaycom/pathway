@@ -36,6 +36,7 @@ use rdkafka::ClientConfig;
 use s3::bucket::Bucket as S3Bucket;
 use scopeguard::defer;
 use send_wrapper::SendWrapper;
+use serde_json::Value as JsonValue;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -172,6 +173,16 @@ fn value_from_pandas_timedelta(ob: &PyAny) -> PyResult<Value> {
     Ok(Value::Duration(Duration::new(duration)))
 }
 
+fn value_json_from_py_any(ob: &PyAny) -> PyResult<Value> {
+    let py = ob.py();
+    let json_str = get_convert_python_module(py)
+        .call_method1("_json_dumps", (ob,))?
+        .extract()?;
+    let json: JsonValue =
+        serde_json::from_str(json_str).map_err(|_| PyValueError::new_err("malformed json"))?;
+    Ok(Value::from(json))
+}
+
 impl ToPyObject for DateTimeNaive {
     fn to_object(&self, py: Python<'_>) -> PyObject {
         get_convert_python_module(py)
@@ -282,6 +293,8 @@ impl<'source> FromPyObject<'source> for Value {
             Ok(Value::Bytes(bytes.as_bytes().into()))
         } else if let Ok(t) = ob.extract::<Vec<Self>>() {
             Ok(Value::from(t.as_slice()))
+        } else if let Ok(dict) = ob.downcast::<PyDict>() {
+            value_json_from_py_any(dict)
         } else {
             // XXX: check types, not names
             let type_name = ob.get_type().name()?;
@@ -293,6 +306,8 @@ impl<'source> FromPyObject<'source> for Value {
                 return value_from_pandas_timestamp(ob);
             } else if type_name == "Timedelta" {
                 return value_from_pandas_timedelta(ob);
+            } else if type_name == "Json" {
+                return value_json_from_py_any(ob.getattr("value")?);
             }
 
             if let Ok(vec) = ob.extract::<Vec<&PyAny>>() {
@@ -308,6 +323,13 @@ impl<'source> FromPyObject<'source> for Value {
             )))
         }
     }
+}
+
+fn json_to_py_object(py: Python<'_>, json: &JsonValue) -> PyObject {
+    get_convert_python_module(py)
+        .call_method1("_parse_to_json", (json.to_string(),))
+        .unwrap()
+        .into_py(py)
 }
 
 impl ToPyObject for Value {
@@ -326,6 +348,7 @@ impl ToPyObject for Value {
             Self::DateTimeNaive(dt) => dt.into_py(py),
             Self::DateTimeUtc(dt) => dt.into_py(py),
             Self::Duration(d) => d.into_py(py),
+            Self::Json(j) => json_to_py_object(py, j),
         }
     }
 }
@@ -747,7 +770,7 @@ impl PyExpression {
             (UnaryOperator::Neg, Type::Int) => Some(unary_op!(IntExpression::Neg, expr)),
             (UnaryOperator::Neg, Type::Float) => Some(unary_op!(FloatExpression::Neg, expr)),
             (UnaryOperator::Neg, Type::Duration) => Some(unary_op!(DurationExpression::Neg, expr)),
-            (_, _) => None,
+            _ => None,
         }
     }
 
@@ -905,7 +928,7 @@ impl PyExpression {
             }
             (Op::Mod, Tp::Duration, Tp::Duration) => Some(binary_op!(DurationE::Mod, lhs, rhs)),
             (Op::MatMul, Tp::Array, Tp::Array) => Some(binary_op!(AnyE::MatMul, lhs, rhs)),
-            (_, _, _) => None,
+            _ => None,
         }
     }
 
@@ -925,7 +948,7 @@ impl PyExpression {
             (Tp::String, Tp::Int) => Some(unary_op!(IntExpression::CastFromString, expr)),
             (Tp::String, Tp::Float) => Some(unary_op!(FloatExpression::CastFromString, expr)),
             (Tp::String, Tp::Bool) => Some(unary_op!(BoolExpression::CastFromString, expr)),
-            (_, _) => None,
+            _ => None,
         }
     }
 
@@ -941,7 +964,18 @@ impl PyExpression {
                 AnyExpression::CastToOptionalFloatFromOptionalInt,
                 expr
             )),
-            (_, _) => None,
+            _ => None,
+        }
+    }
+
+    #[staticmethod]
+    fn convert_optional(expr: &PyExpression, source_type: Type, target_type: Type) -> Option<Self> {
+        type Tp = Type;
+        match (source_type, target_type) {
+            (Tp::Json, Tp::Int | Tp::Float | Tp::Bool | Tp::String) => {
+                Some(unary_op!(AnyExpression::JsonToOptional, expr, target_type))
+            }
+            _ => None,
         }
     }
 
@@ -1004,6 +1038,36 @@ impl PyExpression {
                 default.inner.clone(),
             ))),
             expr.gil || index.gil || default.gil,
+        )
+    }
+
+    #[staticmethod]
+    fn json_get_item_checked(
+        expr: &PyExpression,
+        index: &PyExpression,
+        default: &PyExpression,
+    ) -> Self {
+        Self::new(
+            Arc::new(Expression::Any(AnyExpression::JsonGetItem(
+                expr.inner.clone(),
+                index.inner.clone(),
+                default.inner.clone(),
+            ))),
+            expr.gil || index.gil || default.gil,
+        )
+    }
+
+    #[staticmethod]
+    fn json_get_item_unchecked(expr: &PyExpression, index: &PyExpression) -> Self {
+        Self::new(
+            Arc::new(Expression::Any(AnyExpression::JsonGetItem(
+                expr.inner.clone(),
+                index.inner.clone(),
+                Arc::new(Expression::Any(AnyExpression::Const(Value::from(
+                    serde_json::Value::Null,
+                )))),
+            ))),
+            expr.gil || index.gil,
         )
     }
 }
@@ -1121,6 +1185,8 @@ impl PathwayType {
     pub const DURATION: Type = Type::Duration;
     #[classattr]
     pub const ARRAY: Type = Type::Array;
+    #[classattr]
+    pub const JSON: Type = Type::Json;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]
@@ -2451,27 +2517,6 @@ impl Grouper {
         Column::new(Grouper::universe(self_, py)?.as_ref(py), column_handle)
     }
 
-    fn reducer_ix_column(
-        self_: PyRef<Self>,
-        reducer: Reducer,
-        ixer: PyRef<Ixer>,
-        column: PyRef<Column>,
-        py: Python,
-    ) -> PyResult<Py<Column>> {
-        check_identity(
-            &self_.scope,
-            &column.universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
-        let column_handle = self_.scope.borrow(py).graph.grouper_reducer_column_ix(
-            self_.handle,
-            reducer,
-            ixer.handle,
-            column.handle,
-        )?;
-        Column::new(Grouper::universe(self_, py)?.as_ref(py), column_handle)
-    }
-
     #[getter]
     fn universe(self_: PyRef<Self>, py: Python) -> PyResult<Py<Universe>> {
         let universe_handle = self_
@@ -3656,6 +3701,8 @@ pub struct EvalProperties {
     #[allow(unused)]
     dtype: Py<PyAny>,
     trace: Option<Py<Trace>>,
+    #[allow(unused)]
+    append_only: bool,
 }
 
 #[pymethods]
@@ -3664,9 +3711,15 @@ impl EvalProperties {
     #[pyo3(signature = (
         dtype,
         trace = None,
+        append_only = false
     ))]
-    fn new(dtype: Py<PyAny>, trace: Option<Py<Trace>>) -> Self {
-        Self { dtype, trace }
+
+    fn new(dtype: Py<PyAny>, trace: Option<Py<Trace>>, append_only: bool) -> Self {
+        Self {
+            dtype,
+            trace,
+            append_only,
+        }
     }
 }
 

@@ -421,14 +421,6 @@ pub trait Graph {
         column_handle: ColumnHandle,
     ) -> Result<ColumnHandle>;
 
-    fn grouper_reducer_column_ix(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle>;
-
     fn ix(
         &self,
         key_column_handle: ColumnHandle,
@@ -798,18 +790,6 @@ impl Graph for ScopedGraph {
         column_handle: ColumnHandle,
     ) -> Result<ColumnHandle> {
         self.try_with(|g| g.grouper_reducer_column(grouper_handle, reducer, column_handle))
-    }
-
-    fn grouper_reducer_column_ix(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.try_with(|g| {
-            g.grouper_reducer_column_ix(grouper_handle, reducer, ixer_handle, column_handle)
-        })
     }
 
     fn ix(

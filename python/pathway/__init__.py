@@ -31,6 +31,7 @@ from pathway.internals import (
     Joinable,
     JoinMode,
     JoinResult,
+    Json,
     MonitoringLevel,
     Pointer,
     Schema,
@@ -42,6 +43,7 @@ from pathway.internals import (
     apply,
     apply_async,
     apply_with_type,
+    assert_table_has_schema,
     asynchronous,
     attribute,
     cast,
@@ -148,6 +150,8 @@ __all__ = [
     "DURATION",
     "unwrap",
     "SchemaProperties",
+    "assert_table_has_schema",
+    "Json",
 ]
 
 

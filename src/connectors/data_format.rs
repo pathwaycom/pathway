@@ -611,6 +611,7 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
         Value::DateTimeNaive(dt) => Ok(json!(dt.to_string())),
         Value::DateTimeUtc(dt) => Ok(json!(dt.to_string())),
         Value::Duration(d) => Ok(json!(d.nanoseconds())),
+        Value::Json(j) => Ok((**j).clone()),
     }
 }
 
@@ -623,24 +624,26 @@ fn values_by_names_from_json(
 ) -> Result<Vec<Value>, ParseError> {
     let mut parsed_values = Vec::with_capacity(field_names.len());
     for value_field in field_names {
-        let default_value = {
+        let (default_value, dtype) = {
             if let Some(schema_item) = schema.get(value_field) {
                 if let Some(default) = &schema_item.default {
-                    Some(default)
+                    (Some(default), schema_item.type_)
                 } else {
-                    None
+                    (None, schema_item.type_)
                 }
             } else {
-                None
+                (None, Type::Any)
             }
         };
 
         let value = if let Some(path) = column_paths.get(value_field) {
             if let Some(value) = payload.pointer(path) {
-                parse_value_from_json(value).ok_or(ParseError::FailedToParseFromJson(
-                    value_field.to_string(),
-                    value.clone(),
-                ))?
+                match dtype {
+                    Type::Json => Value::from(value.clone()),
+                    _ => parse_value_from_json(value).ok_or_else(|| {
+                        ParseError::FailedToParseFromJson(value_field.to_string(), value.clone())
+                    })?,
+                }
             } else if let Some(default) = default_value {
                 default.clone()
             } else if field_absence_is_error {
@@ -656,12 +659,15 @@ fn values_by_names_from_json(
             let value_specified_in_json = payload.get(value_field).is_some();
 
             if value_specified_in_json {
-                parse_value_from_json(&payload[&value_field]).ok_or(
-                    ParseError::FailedToParseFromJson(
-                        value_field.to_string(),
-                        payload[&value_field].clone(),
-                    ),
-                )?
+                match dtype {
+                    Type::Json => Value::from(payload[&value_field].clone()),
+                    _ => parse_value_from_json(&payload[&value_field]).ok_or_else(|| {
+                        ParseError::FailedToParseFromJson(
+                            value_field.to_string(),
+                            payload[&value_field].clone(),
+                        )
+                    })?,
+                }
             } else if let Some(default) = default_value {
                 default.clone()
             } else if field_absence_is_error {

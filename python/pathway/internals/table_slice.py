@@ -118,6 +118,22 @@ class TableSlice:
     def with_suffix(self, suffix: str) -> TableSlice:
         return self.rename({name: name + suffix for name in self.keys()})
 
+    @trace_user_frame
+    def ix(self, expression, *, optional: bool = False, context=None) -> TableSlice:
+        new_table = self._table.ix(expression, optional=optional, context=context)
+        return TableSlice(
+            {name: new_table[colref._name] for name, colref in self._mapping.items()},
+            new_table,
+        )
+
+    @trace_user_frame
+    def ix_ref(self, *args, optional: bool = False, context=None) -> TableSlice:
+        new_table = self._table.ix_ref(*args, optional=optional, context=context)
+        return TableSlice(
+            {name: new_table[colref._name] for name, colref in self._mapping.items()},
+            new_table,
+        )
+
     @property
     def slice(self):
         return self

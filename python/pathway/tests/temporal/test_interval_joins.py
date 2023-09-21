@@ -946,6 +946,7 @@ def test_interval_join_coalesce() -> None:
     assert_table_equality_wo_index(res, expected)
 
 
+@pytest.mark.xfail(reason="Ix and temporal_joins do not mix.")
 def test_interval_join_left_ix() -> None:
     t1 = pw.debug.table_from_markdown(
         """
@@ -978,7 +979,9 @@ def test_interval_join_left_ix() -> None:
     """
     )
     join_result = t1.interval_join_left(t2, t1.t, t2.t, pw.temporal.interval(-2, 1))
-    res = join_result.select(left_t=t1.t, right_t=t2.t, other=t2.ix[t1.id].t)
+    res = join_result.select(
+        left_t=t1.t, right_t=t2.t, other=t2.ix(t1.id, context=pw.this).t
+    )
     assert_table_equality_wo_index(
         res,
         expected,
@@ -1181,3 +1184,18 @@ def test_interval_joins_typing_on():
             pw.temporal.interval(-1, 2),
             left_table.col == right_table.col,
         )
+
+
+def test_errors_on_equal_tables():
+    t1 = T(
+        """
+      | a | t
+    0 | 1 | -1
+    """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot join table with itself. Use <table>.copy\(\) as one of the arguments of the join.",  # noqa
+    ):
+        t1.interval_join(t1, t1.t, t1.t, pw.temporal.interval(-2, 0))

@@ -97,13 +97,11 @@ def _propose_clusters(
     # aggregate the gains for adjacent clusters, adjust for the self loops
     # self loops are counted with weight 0.5, as they were created via graph contraction,
     # which counted each loop twice
-    aggregated_gain = vertex_cluster_edges.groupby(
-        vertex_cluster_edges.u, vertex_cluster_edges.vc
-    ).reduce(
-        vertex_cluster_edges.u,
-        vertex_cluster_edges.vc,
-        gain=pw.reducers.sum(vertex_cluster_edges.weight)
-        + self_loop_contribution.ix(vertex_cluster_edges.u).contr / 2,
+    aggregated_gain = vertex_cluster_edges.groupby(pw.this.u, pw.this.vc).reduce(
+        pw.this.u,
+        pw.this.vc,
+        gain=pw.reducers.sum(pw.this.weight)
+        + self_loop_contribution.ix(pw.this.u).contr / 2,
     )
 
     def louvain_gain(gain, degree, penalty, total):

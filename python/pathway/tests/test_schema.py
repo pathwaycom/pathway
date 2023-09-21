@@ -123,3 +123,12 @@ def test_schema_eq():
     assert A == Same
     assert A == schema_from_builder
     assert A == compat_schema
+
+
+def test_schema_canonical_json():
+    class A(pw.Schema):
+        a: dict
+        b: pw.Json
+
+    assert A.columns()["a"].dtype == pw.dt.JSON
+    assert A.columns()["b"].dtype == pw.dt.JSON

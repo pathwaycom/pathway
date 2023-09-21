@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from functools import cached_property
 from itertools import chain
 from types import EllipsisType
-from typing import TYPE_CHECKING, Dict, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, ClassVar, Dict, Iterable, Optional, Tuple, Type
 
 import pathway.internals as pw
+from pathway.internals import column_properties as cp
 from pathway.internals import dtype as dt
 from pathway.internals import trace
-from pathway.internals.expression import ColumnExpression, ColumnRefOrIxExpression
+from pathway.internals.dtype import DType
+from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
 
 if TYPE_CHECKING:
@@ -52,14 +55,12 @@ class ColumnLineage(Lineage):
 
 
 class Column(ABC):
-    dtype: dt.DType
     universe: Universe
     lineage: SetOnceProperty[ColumnLineage] = SetOnceProperty()
     """Lateinit by operator."""
 
-    def __init__(self, dtype: dt.DType, universe: Universe) -> None:
+    def __init__(self, universe: Universe) -> None:
         super().__init__()
-        self.dtype = dtype
         self.universe = universe
         self._trace = trace.Trace.from_traceback()
 
@@ -73,11 +74,30 @@ class Column(ABC):
         else:
             return self._trace
 
+    @property
+    @abstractmethod
+    def properties(self) -> cp.ColumnProperties:
+        ...
+
+    @property
+    def dtype(self) -> DType:
+        return self.properties.dtype
+
 
 class MaterializedColumn(Column):
     """Column not requiring evaluation."""
 
-    pass
+    def __init__(
+        self,
+        universe: Universe,
+        properties: cp.ColumnProperties,
+    ):
+        super().__init__(universe)
+        self._properties = properties
+
+    @property
+    def properties(self) -> cp.ColumnProperties:
+        return self._properties
 
 
 class MethodColumn(MaterializedColumn):
@@ -91,17 +111,30 @@ class ColumnWithContext(Column, ABC):
 
     context: Context
 
-    def __init__(self, dtype: dt.DType, context: Context, universe: Universe):
-        super().__init__(dtype, universe)
+    def __init__(self, context: Context, universe: Universe):
+        super().__init__(universe)
         self.context = context
 
     def column_dependencies(self) -> StableSet[Column]:
         return super().column_dependencies() | self.context.column_dependencies()
 
+    @cached_property
+    def properties(self) -> cp.ColumnProperties:
+        return self.context.column_properties(self)
+
+    @cached_property
+    @abstractmethod
+    def context_dtype(self) -> DType:
+        ...
+
 
 class IdColumn(ColumnWithContext):
     def __init__(self, context: Context) -> None:
-        super().__init__(dt.POINTER, context, context.universe)
+        super().__init__(context, context.universe)
+
+    @cached_property
+    def context_dtype(self) -> DType:
+        return dt.POINTER
 
 
 class ColumnWithExpression(ColumnWithContext):
@@ -117,8 +150,7 @@ class ColumnWithExpression(ColumnWithContext):
         expression: ColumnExpression,
         lineage: Optional[Lineage] = None,
     ):
-        dtype = context.expression_type(expression)
-        super().__init__(dtype, context, universe)
+        super().__init__(context, universe)
         self.expression = expression
         if lineage is not None:
             self.lineage = lineage
@@ -129,15 +161,19 @@ class ColumnWithExpression(ColumnWithContext):
     def column_dependencies(self) -> StableSet[Column]:
         return super().column_dependencies() | self.expression._column_dependencies()
 
+    @cached_property
+    def context_dtype(self) -> DType:
+        return self.context.expression_type(self.expression)
+
 
 class ColumnWithReference(ColumnWithExpression):
-    expression: ColumnRefOrIxExpression
+    expression: ColumnReference
 
     def __init__(
         self,
         context: Context,
         universe: Universe,
-        expression: ColumnRefOrIxExpression,
+        expression: ColumnReference,
         lineage: Optional[Lineage] = None,
     ):
         super().__init__(context, universe, expression, lineage)
@@ -178,6 +214,8 @@ class Context:
     universe: Universe
     """Resulting universe."""
 
+    _column_properties_evaluator: ClassVar[Type[cp.ColumnPropertiesEvaluator]]
+
     def columns_to_eval(self) -> Iterable[Column]:
         return []
 
@@ -185,9 +223,7 @@ class Context:
         deps = (col.column_dependencies() for col in self.columns_to_eval())
         return StableSet.union(*deps)
 
-    def reference_column_dependencies(
-        self, ref: ColumnRefOrIxExpression
-    ) -> StableSet[Column]:
+    def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet()
 
     def _get_type_interpreter(self):
@@ -205,14 +241,32 @@ class Context:
             expression, state=TypeInterpreterState()
         )
 
+    def column_properties(self, column: ColumnWithContext) -> cp.ColumnProperties:
+        return self._column_properties_evaluator().eval(column)
+
+    def __init_subclass__(
+        cls,
+        /,
+        column_properties_evaluator: Type[
+            cp.ColumnPropertiesEvaluator
+        ] = cp.DefaultPropsEvaluator,
+        **kwargs,
+    ) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._column_properties_evaluator = column_properties_evaluator
+
 
 @dataclass(eq=False, frozen=True)
-class RowwiseContext(Context):
+class RowwiseContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context for basic expressions."""
 
+    ...
+
 
 @dataclass(eq=False, frozen=True)
-class TableRestrictedRowwiseContext(Context):
+class TableRestrictedRowwiseContext(RowwiseContext):
     """Restricts expression to specific table."""
 
     table: pw.Table
@@ -237,7 +291,9 @@ class GroupedContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class FilterContext(Context):
+class FilterContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.filter() operation."""
 
     filtering_column: ColumnWithExpression
@@ -255,6 +311,18 @@ class ReindexContext(Context):
 
     def columns_to_eval(self) -> Iterable[Column]:
         return [self.reindex_column]
+
+
+@dataclass(eq=False, frozen=True)
+class IxContext(Context):
+    """Context of `table.ix() operation."""
+
+    orig_universe: Universe
+    key_column: ColumnWithExpression
+    optional: bool
+
+    def columns_to_eval(self) -> Iterable[Column]:
+        return [self.key_column]
 
 
 @dataclass(eq=False, frozen=True)
@@ -294,9 +362,7 @@ class UpdateRowsContext(Context):
     def __post_init__(self):
         assert len(self.union_universes) > 0
 
-    def reference_column_dependencies(
-        self, ref: ColumnRefOrIxExpression
-    ) -> StableSet[Column]:
+    def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([self.updates[ref.name]])
 
 
@@ -310,17 +376,17 @@ class ConcatUnsafeContext(Context):
     def __post_init__(self):
         assert len(self.union_universes) > 0
 
-    def reference_column_dependencies(
-        self, ref: ColumnRefOrIxExpression
-    ) -> StableSet[Column]:
+    def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([update[ref.name] for update in self.updates])
 
 
 @dataclass(eq=False, frozen=True)
-class PromiseSameUniverseContext(Context):
+class PromiseSameUniverseContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of table.unsafe_promise_same_universe_as() operation."""
 
-    pass
+    ...
 
 
 @dataclass(eq=True, frozen=True)

@@ -107,8 +107,6 @@ _any = TypePreservingUnaryReducer(name="any", engine_reducer=api.Reducer.ANY)
 
 def _generate_unary_reducer(reducer: UnaryReducer):
     def wrapper(arg: expr.ColumnExpression) -> expr.ReducerExpression:
-        if isinstance(arg, expr.ColumnIxExpression):
-            return expr.ReducerIxExpression(reducer, arg)
         return expr.ReducerExpression(reducer, arg)
 
     return wrapper

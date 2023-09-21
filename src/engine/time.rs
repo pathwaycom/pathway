@@ -65,14 +65,16 @@ pub trait DateTime {
         self.as_chrono_datetime()
             .duration_round(duration.as_chrono_duration())
             .unwrap()
-            .timestamp_nanos()
+            .timestamp_nanos_opt()
+            .unwrap()
     }
 
     fn get_truncated_timestamp(&self, duration: Duration) -> i64 {
         self.as_chrono_datetime()
             .duration_trunc(duration.as_chrono_duration())
             .unwrap()
-            .timestamp_nanos()
+            .timestamp_nanos_opt()
+            .unwrap()
     }
 
     fn sanitize_format_string(format: &str) -> Result<String> {
@@ -100,21 +102,15 @@ impl DateTimeNaive {
     pub fn strptime(date_string: &str, format: &str) -> Result<Self> {
         let format = Self::sanitize_format_string(format)?;
         if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(date_string, &format) {
-            Ok(Self {
-                timestamp: datetime.timestamp_nanos(),
-            })
+            Ok(datetime.into())
         } else if let Ok(date) = chrono::NaiveDate::parse_from_str(date_string, &format) {
             let datetime = date.and_hms_opt(0, 0, 0).unwrap();
-            Ok(Self {
-                timestamp: datetime.timestamp_nanos(),
-            })
+            Ok(datetime.into())
         } else if let Ok(time) = chrono::NaiveTime::parse_from_str(date_string, &format) {
             let datetime = chrono::NaiveDate::from_ymd_opt(1900, 1, 1)
                 .unwrap()
                 .and_time(time);
-            Ok(Self {
-                timestamp: datetime.timestamp_nanos(),
-            })
+            Ok(datetime.into())
         } else {
             Err(Error::ParseError(format!(
                 "Cannot format date: {date_string} using format: {format}."
@@ -128,7 +124,7 @@ impl DateTimeNaive {
             let localized = tz.from_local_datetime(&naive_local);
             match localized {
                 LocalResult::Single(localized) | LocalResult::Ambiguous(_, localized) => {
-                    Ok(DateTimeUtc::new(localized.naive_utc().timestamp_nanos()))
+                    Ok(localized.into())
                 }
                 LocalResult::None => {
                     // This NaiveDateTime doesn't exist in a given timezone.
@@ -137,7 +133,7 @@ impl DateTimeNaive {
                     let rounded = moved.duration_round(chrono::Duration::hours(1)).unwrap();
                     let localized = tz.from_local_datetime(&rounded);
                     if let LocalResult::Single(localized) = localized {
-                        Ok(DateTimeUtc::new(localized.naive_utc().timestamp_nanos()))
+                        Ok(localized.into())
                     } else {
                         Err(Error::DateTimeConversionError)
                     }
@@ -171,6 +167,14 @@ impl DateTimeNaive {
             ))),
         }?;
         Ok(Self::new(mult * timestamp))
+    }
+}
+
+impl From<chrono::NaiveDateTime> for DateTimeNaive {
+    fn from(value: chrono::NaiveDateTime) -> Self {
+        Self {
+            timestamp: value.timestamp_nanos_opt().unwrap(),
+        }
     }
 }
 
@@ -233,9 +237,7 @@ impl DateTimeUtc {
     pub fn strptime(date_string: &str, format: &str) -> Result<Self> {
         let format = Self::sanitize_format_string(format)?;
         match chrono::DateTime::parse_from_str(date_string, &format) {
-            Ok(datetime) => Ok(Self {
-                timestamp: datetime.timestamp_nanos(),
-            }),
+            Ok(datetime) => Ok(datetime.into()),
             Err(_) => Err(Error::ParseError(format!(
                 "Cannot format date: {date_string} using format: {format}."
             ))),
@@ -247,7 +249,7 @@ impl DateTimeUtc {
             let naive_utc = self.as_chrono_datetime();
             let localized = tz.from_utc_datetime(&naive_utc);
             let naive_local = localized.naive_local();
-            Ok(DateTimeNaive::new(naive_local.timestamp_nanos()))
+            Ok(naive_local.into())
         } else {
             Err(Error::ParseError(format!(
                 "Cannot parse time zone: {timezone}."
@@ -263,6 +265,14 @@ impl DateTimeUtc {
     #[must_use]
     pub fn truncate(&self, duration: Duration) -> DateTimeUtc {
         Self::new(self.get_truncated_timestamp(duration))
+    }
+}
+
+impl<Tz: chrono::TimeZone> From<chrono::DateTime<Tz>> for DateTimeUtc {
+    fn from(value: chrono::DateTime<Tz>) -> Self {
+        Self {
+            timestamp: value.naive_utc().timestamp_nanos_opt().unwrap(),
+        }
     }
 }
 

@@ -13,6 +13,7 @@ from pathway.internals import operator as op
 from pathway.internals import parse_graph, schema
 from pathway.internals.api import BasePointer, Pointer, ref_scalar
 from pathway.internals.column import MaterializedColumn, MethodColumn
+from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.schema import Schema, schema_from_types
 from pathway.internals.shadows import inspect
 
@@ -259,7 +260,7 @@ class AbstractOutputAttribute(ToBeComputedAttribute, ABC):
     is_output = True
 
     def to_output_column(self, universe: Universe):
-        return MaterializedColumn(self.dtype, universe)
+        return MaterializedColumn(universe, ColumnProperties(dtype=self.dtype))
 
 
 class Attribute(ToBeComputedAttribute):
@@ -288,7 +289,7 @@ class Method(AbstractOutputAttribute):
         return tt.MethodTransformerColumn(self, operator)
 
     def to_output_column(self, universe: Universe):
-        return MethodColumn(self.dtype, universe)
+        return MethodColumn(universe, ColumnProperties(dtype=self.dtype))
 
     @cached_property
     def dtype(self) -> dt.DType:

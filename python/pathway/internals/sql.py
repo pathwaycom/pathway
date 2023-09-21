@@ -35,12 +35,6 @@ class ReducerDetector(IdentityTransform):
         self.contains_reducers = True
         return super().eval_reducer(expression, **kwargs)
 
-    def eval_reducer_ix(
-        self, expression: expr.ReducerIxExpression, **kwargs
-    ) -> expr.ReducerIxExpression:
-        self.contains_reducers = True
-        return super().eval_reducer_ix(expression, **kwargs)
-
     def eval_count(
         self, expression: expr.CountExpression, **kwargs
     ) -> expr.CountExpression:

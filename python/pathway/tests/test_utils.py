@@ -45,7 +45,7 @@ def test_ix_sanitize():
     )
     t_indexer = t_indexer.select(indexer=t_animals.pointer_from(pw.this.indexer))
     ret = t_animals.having(t_indexer.indexer).select(
-        genus=t_animals.ix(t_indexer.indexer).genus
+        genus=t_animals.ix(t_indexer.indexer, context=pw.this).genus
     )
     expected = T(
         """

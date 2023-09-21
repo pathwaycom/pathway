@@ -137,7 +137,7 @@ def reduce_args_handler(self, *args, **kwargs):
 
 def select_args_handler(self, *args, **kwargs):
     for arg in args:
-        if not isinstance(arg, expr.ColumnRefOrIxExpression):
+        if not isinstance(arg, expr.ColumnReference):
             if isinstance(arg, str):
                 raise ValueError(
                     f"Expected a ColumnReference, found a string. Did you mean this.{arg} instead of {repr(arg)}?"

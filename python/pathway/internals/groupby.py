@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 from abc import abstractmethod
 from functools import lru_cache
-from typing import TYPE_CHECKING, Dict, Iterable, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Dict, Iterable, Iterator, Optional, Tuple, cast
 
 from pathway.internals.trace import trace_user_frame
 
@@ -53,6 +53,18 @@ class GroupedJoinable(DesugaringContext, table_like.TableLike, OperatorInput):
     def _operator_dependencies(self) -> StableSet[table.Table]:
         ...
 
+    def __getattr__(self, name):
+        return getattr(self._joinable_to_group, name)
+
+    def __getitem__(self, name):
+        return self._joinable_to_group[name]
+
+    def keys(self):
+        return self._joinable_to_group.keys()
+
+    def __iter__(self) -> Iterator[expr.ColumnReference]:
+        return iter(self._joinable_to_group)
+
 
 class GroupedTable(GroupedJoinable, OperatorInput):
     """Result of a groupby operation on a Table.
@@ -83,7 +95,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         grouping_columns: Tuple[expr.InternalColRef, ...],
         set_id: bool = False,
     ):
-        super().__init__(Universe(), {thisclass.this: table}, table)
+        super().__init__(Universe(), {thisclass.this: self}, table)
         self._grouping_columns = StableSet(grouping_columns)
         self._context = clmn.GroupedContext(
             table=table,

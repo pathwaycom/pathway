@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import types
 import typing
 from abc import ABC
 from types import EllipsisType
@@ -11,7 +12,7 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 
-from pathway.internals import api
+from pathway.internals import api, json
 
 if typing.TYPE_CHECKING:
     from pathway.internals.schema import Schema
@@ -43,6 +44,12 @@ class DType(ABC):
             return cls(*args)
         else:
             return cls(args)  # type: ignore[call-arg]
+
+    def equivalent_to(self, other: DType) -> bool:
+        return dtype_equivalence(self, other)
+
+    def is_subclass_of(self, other: DType) -> bool:
+        return dtype_issubclass(self, other)
 
 
 class _SimpleDType(DType):
@@ -233,6 +240,23 @@ class Tuple(DType):
             return cls._cached_new(args)
 
 
+class Json(DType):
+    def __new__(cls) -> Json:
+        return cls._cached_new()
+
+    def _set_args(self):
+        pass
+
+    def __repr__(self) -> str:
+        return "Json"
+
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.JSON
+
+
+JSON: DType = Json()
+
+
 class List(DType):
     wrapped: DType
 
@@ -315,6 +339,7 @@ def wrap(input_type) -> DType:
     assert input_type != Callable
     assert input_type != Array
     assert input_type != List
+    assert input_type != Json
     if isinstance(input_type, DType):
         return input_type
     if input_type == _NoneType:
@@ -347,7 +372,7 @@ def wrap(input_type) -> DType:
         assert isinstance(ret_type, DType), type(ret_type)
         return Callable(callable_args, ret_type)
     elif (
-        typing.get_origin(input_type) is typing.Union
+        typing.get_origin(input_type) in (typing.Union, types.UnionType)
         and len(typing.get_args(input_type)) == 2
         and isinstance(None, typing.get_args(input_type)[1])
     ):
@@ -356,6 +381,12 @@ def wrap(input_type) -> DType:
         return Optional(arg)
     elif input_type in [list, tuple, typing.List, typing.Tuple]:
         return ANY_TUPLE
+    elif (
+        input_type == json.Json
+        or input_type == dict
+        or typing.get_origin(input_type) == dict
+    ):
+        return JSON
     elif typing.get_origin(input_type) == list:
         args = get_args(input_type)
         (arg,) = args

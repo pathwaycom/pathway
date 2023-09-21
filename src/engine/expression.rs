@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 
 use super::error::{DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
-use super::{Error, Key, Value};
+use super::{Error, Key, Type, Value};
 use crate::mat_mul::mat_mul;
 
 #[derive(Debug)]
@@ -97,6 +97,8 @@ pub enum AnyExpression {
     MakeTuple(Expressions),
     TupleGetItemChecked(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     TupleGetItemUnchecked(Arc<Expression>, Arc<Expression>),
+    JsonGetItem(Arc<Expression>, Arc<Expression>, Arc<Expression>),
+    JsonToOptional(Arc<Expression>, Type),
     ParseStringToInt(Arc<Expression>, bool),
     ParseStringToFloat(Arc<Expression>, bool),
     ParseStringToBool(Arc<Expression>, Vec<String>, Vec<String>, bool),
@@ -347,6 +349,29 @@ fn get_array_element(
     }
 }
 
+fn get_json_item(
+    expr: &Arc<Expression>,
+    index: &Arc<Expression>,
+    values: &[Value],
+) -> DynResult<Option<Value>> {
+    let index = index.eval(values)?;
+    let value = expr.eval(values)?;
+    let json = value.as_json()?;
+    let json = match index {
+        Value::Int(index) => match usize::try_from(index) {
+            Ok(index) => json.get(index),
+            Err(_) => None,
+        },
+        Value::String(index) => json.get(index.as_str()),
+        _ => {
+            return Err(DynError::from(Error::ValueError(format!(
+                "json index must be string or integer, got {index}"
+            ))))
+        }
+    };
+    Ok(json.map(|json| Value::from(json.clone())))
+}
+
 fn mat_mul_wrapper<T>(lhs: &ArrayD<T>, rhs: &ArrayD<T>) -> DynResult<Value>
 where
     T: LinalgScalar,
@@ -401,6 +426,13 @@ impl AnyExpression {
                     Ok(entry)
                 } else {
                     Err(DynError::from(Error::IndexOutOfBounds))
+                }
+            }
+            Self::JsonGetItem(tuple, index, default) => {
+                if let Some(entry) = get_json_item(tuple, index, values)? {
+                    Ok(entry)
+                } else {
+                    Ok(default.eval(values)?)
                 }
             }
             Self::ParseStringToInt(e, optional) => {
@@ -460,6 +492,34 @@ impl AnyExpression {
                 Value::None => Ok(Value::None),
                 val => Err(DynError::from(Error::ValueError(format!(
                     "Cannot cast to float from {val:?}"
+                )))),
+            },
+            Self::JsonToOptional(expr, type_) => match expr.eval(values)? {
+                Value::Json(json) => {
+                    if json.is_null() {
+                        Ok(Value::None)
+                    } else {
+                        let val = match type_ {
+                            Type::Int => json.as_i64().map(Value::from),
+                            Type::Float => json.as_f64().map(Value::from),
+                            Type::Bool => json.as_bool().map(Value::from),
+                            Type::String => json.as_str().map(Value::from),
+                            _ => {
+                                return Err(DynError::from(Error::ValueError(format!(
+                                    "Cannot convert json {json} to {type_:?}"
+                                ))))
+                            }
+                        };
+                        val.ok_or_else(|| {
+                            DynError::from(Error::ValueError(format!(
+                                "Cannot convert json {json} to {type_:?}"
+                            )))
+                        })
+                    }
+                }
+                Value::None => Ok(Value::None),
+                val => Err(DynError::from(Error::ValueError(format!(
+                    "Expected Json or None, found {val:?}"
                 )))),
             },
             Self::MatMul(lhs, rhs) => {

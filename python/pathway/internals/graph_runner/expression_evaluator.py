@@ -5,17 +5,7 @@ from __future__ import annotations
 import warnings
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import (
-    TYPE_CHECKING,
-    Callable,
-    ClassVar,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Type,
-    cast,
-)
+from typing import TYPE_CHECKING, Callable, ClassVar, Dict, List, Optional, Tuple, Type
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
@@ -29,6 +19,7 @@ from pathway.internals.operator_mapping import (
     get_binary_expression,
     get_binary_operators_mapping_optionals,
     get_cast_operators_mapping,
+    get_convert_operators_mapping,
     get_unary_expression,
     tuple_handling_operators,
 )
@@ -37,8 +28,13 @@ if TYPE_CHECKING:
     from pathway.internals.graph_runner.state import ScopeState
 
 
-def column_eval_properties(column: clmn.ColumnWithContext) -> api.EvalProperties:
-    return api.EvalProperties(dtype=column.dtype, trace=column.trace.to_engine())
+def column_eval_properties(column: clmn.Column) -> api.EvalProperties:
+    props = column.properties
+    return api.EvalProperties(
+        trace=column.trace.to_engine(),
+        dtype=props.dtype,
+        append_only=props.append_only,
+    )
 
 
 class ExpressionEvaluator(ABC):
@@ -358,7 +354,34 @@ class RowwiseEvaluator(
             return result_expression
 
         raise TypeError(
-            f"Pathway doesn't support type conversion from {source_type} to {target_type}."
+            f"Pathway doesn't support casting {source_type} to {target_type}."
+        )
+
+    def eval_convert(
+        self,
+        expression: expr.ConvertExpression,
+        eval_state: Optional[RowwiseEvalState] = None,
+    ):
+        arg = self.eval_expression(expression._expr, eval_state=eval_state)
+        source_type = expression._expr._dtype
+        target_type = expression._return_type
+
+        if (
+            dt.dtype_equivalence(target_type, source_type)
+            or dt.dtype_equivalence(dt.Optional(source_type), target_type)
+            or (source_type == dt.NONE and isinstance(target_type, dt.Optional))
+            or target_type == dt.ANY
+        ):
+            return arg
+        if (
+            result_expression := get_convert_operators_mapping(
+                arg, source_type, target_type
+            )
+        ) is not None:
+            return result_expression
+
+        raise TypeError(
+            f"Pathway doesn't support converting {source_type} to {target_type}."
         )
 
     def eval_declare(
@@ -458,35 +481,12 @@ class RowwiseEvaluator(
     ):
         raise RuntimeError("RowwiseEvaluator encountered ReducerExpression")
 
-    def eval_reducer_ix(
-        self,
-        expression: expr.ReducerIxExpression,
-        eval_state: Optional[RowwiseEvalState] = None,
-    ):
-        raise RuntimeError("RowwiseEvaluator encountered ReducerIxExpression")
-
     def eval_count(
         self,
         expression: expr.CountExpression,
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         raise RuntimeError("RowwiseEvaluator encountered CountExpression")
-
-    def eval_ix(
-        self,
-        expression: expr.ColumnIxExpression,
-        eval_state: Optional[RowwiseEvalState] = None,
-    ):
-        keys_col: api.Column = self._column_from_expression(expression._keys_expression)
-        colref = expression._column_expression
-
-        input_universe = self.state.get_universe(colref.table._universe)
-        ixer = self.scope.ix(
-            keys_col, input_universe, strict=True, optional=expression._optional
-        )
-
-        input_column = self.state.get_column(expression._column)
-        return self.eval_dependency(ixer.ix_column(input_column), eval_state=eval_state)
 
     def eval_pointer(
         self,
@@ -513,18 +513,27 @@ class RowwiseEvaluator(
         ]
         return api.Expression.make_tuple(*expressions)
 
-    def eval_sequence_get(
+    def eval_get(
         self,
-        expression: expr.SequenceGetExpression,
+        expression: expr.GetExpression,
         eval_state: Optional[RowwiseEvalState] = None,
     ):
         object = self.eval_expression(expression._object, eval_state=eval_state)
         index = self.eval_expression(expression._index, eval_state=eval_state)
         default = self.eval_expression(expression._default, eval_state=eval_state)
-        if expression._check_if_exists:
-            return api.Expression.sequence_get_item_checked(object, index, default)
+        object_dtype = expression._object._dtype
+
+        if object_dtype == dt.JSON:
+            if expression._check_if_exists:
+                return api.Expression.json_get_item_checked(object, index, default)
+            else:
+                return api.Expression.json_get_item_unchecked(object, index)
         else:
-            return api.Expression.sequence_get_item_unchecked(object, index)
+            assert not object_dtype.equivalent_to(dt.Optional(dt.JSON))
+            if expression._check_if_exists:
+                return api.Expression.sequence_get_item_checked(object, index, default)
+            else:
+                return api.Expression.sequence_get_item_unchecked(object, index)
 
     def eval_method_call(
         self,
@@ -665,6 +674,27 @@ class ReindexEvaluator(ExpressionEvaluator, context_type=clmn.ReindexContext):
         return self.scope.reindex_universe(self.reindexing_column)
 
 
+class IxEvaluator(ExpressionEvaluator, context_type=clmn.IxContext):
+    context: clmn.IxContext
+    key_column: api.Column
+    input_universe: api.Universe
+    ixer: api.Ixer
+
+    def _initialize_from_context(self):
+        self.key_column = self.state.get_column(self.context.key_column)
+        self.input_universe = self.state.get_universe(self.context.orig_universe)
+        self.ixer = self.scope.ix(
+            self.key_column,
+            self.input_universe,
+            strict=True,
+            optional=self.context.optional,
+        )
+
+    def eval(self, column: clmn.ColumnWithExpression) -> api.Column:
+        column_to_ix = self.state.get_column(column.dereference())
+        return self.ixer.ix_column(column_to_ix)
+
+
 class PromiseSameUniverseEvaluator(
     ExpressionEvaluator, context_type=clmn.PromiseSameUniverseContext
 ):
@@ -791,36 +821,6 @@ class GroupedEvaluator(RowwiseEvaluator, context_type=clmn.GroupedContext):
         engine_reducer = expression._reducer.engine_reducer(arg._dtype)
         column = self.grouper.reducer_column(engine_reducer, arg_column)
         return self.eval_dependency(column, eval_state=eval_state)
-
-    def eval_reducer_ix(
-        self,
-        expression: expr.ReducerIxExpression,
-        eval_state: Optional[RowwiseEvalState] = None,
-    ):
-        [arg] = expression._args
-        engine_reducer = expression._reducer.engine_reducer(arg._dtype)
-        rowwise_context = self.context.table._context
-        column = self.context.table._eval(arg, rowwise_context)
-        rowwise = RowwiseEvaluator(
-            rowwise_context, self.scope, self.state, self.scope_context
-        )
-
-        ix_expr: expr.ColumnIxExpression = cast(
-            expr.ColumnIxExpression, column.expression
-        )
-
-        keys_col: api.Column = rowwise._column_from_expression(ix_expr._keys_expression)
-
-        input_column = rowwise.state.get_column(ix_expr._column)
-
-        ixer = rowwise.scope.ix(
-            keys_col, input_column.universe, strict=True, optional=ix_expr._optional
-        )
-
-        result_column = self.grouper.reducer_ix_column(
-            engine_reducer, ixer, input_column
-        )
-        return self.eval_dependency(result_column, eval_state=eval_state)
 
     @cached_property
     def output_universe(self) -> api.Universe:

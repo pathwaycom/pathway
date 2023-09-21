@@ -30,6 +30,7 @@ from pathway.internals.arg_handlers import (
     reduce_args_handler,
     select_args_handler,
 )
+from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.decorators import (
     contextualized_operator,
     empty_from_schema,
@@ -37,8 +38,8 @@ from pathway.internals.decorators import (
     table_to_datasink,
 )
 from pathway.internals.desugaring import combine_args_kwargs, desugar
+from pathway.internals.expression_visitor import collect_tables
 from pathway.internals.helpers import SetOnceProperty, StableSet
-from pathway.internals.ix import IxIndexer
 from pathway.internals.join import Joinable
 from pathway.internals.operator import DebugOperator, OutputHandle
 from pathway.internals.operator_input import OperatorInput
@@ -784,12 +785,21 @@ class Table(
         """
         return self.groupby().reduce(*args, **kwargs)
 
-    @property
-    def ix(self):
-        """Return an object that indexed by `[column]` returns new table reindexed.
+    @trace_user_frame
+    def ix(
+        self, expression: expr.ColumnExpression, *, optional: bool = False, context=None
+    ) -> Table:
+        """Reindexes the table using expression values as keys. Uses keys from context, or tries to infer
+        proper context from the expression.
+        If optional is True, then None in expression values result in None values in the result columns.
+        Missing values in table keys result in RuntimeError.
+
+        Context can be anything that allows for `select` or `reduce`, or `pathway.this` construct
+        (latter results in returning a delayed operation, and should be only used when using `ix` inside
+        join().select() or groupby().reduce() sequence).
 
         Returns:
-            Indexer: an object that when indexed by some column returns a table with rows specified by that column.
+            Reindexed table with the same set of columns.
 
         Example:
 
@@ -812,7 +822,76 @@ class Table(
         hoopoe | atropos
         owl    | hercules
         """
-        return IxIndexer(self)
+
+        if context is None:
+            all_tables = collect_tables(expression)
+            if len(all_tables) == 0:
+                context = thisclass.this
+            elif all(tab == all_tables[0] for tab in all_tables):
+                context = all_tables[0]
+        if context is None:
+            for tab in all_tables:
+                if not isinstance(tab, Table):
+                    raise ValueError("Table expected here.")
+            if len(all_tables) == 0:
+                raise ValueError("Const value provided.")
+            context = all_tables[0]
+            for tab in all_tables:
+                assert context._universe.is_equal_to(tab._universe)
+        if isinstance(context, thisclass.ThisMetaclass):
+            return context._delayed_op(
+                lambda table: self.ix(
+                    expression=expression, optional=optional, context=table
+                ),
+                qualname=f"{self}.ix(...)",
+                name="ix",
+            )
+        if isinstance(context, groupby.GroupedJoinable):
+            key_col = context.reduce(tmp=expression).tmp
+        else:
+            key_col = context.select(tmp=expression).tmp
+        key_dtype = eval_type(key_col)
+        if (
+            optional and not dt.dtype_issubclass(key_dtype, dt.Optional(dt.POINTER))
+        ) or (not optional and not isinstance(key_dtype, dt.Pointer)):
+            raise TypeError(
+                f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
+            )
+        ret = self._ix(key_col, optional)
+        if optional and isinstance(key_dtype, dt.Optional):
+            return ret.update_types(
+                **{name: dt.Optional(ret.schema[name]) for name in ret.keys()}
+            )
+        else:
+            return ret
+
+    def restrict(self, other: Table) -> Table:
+        assert other._universe.is_subset_of(self._universe)
+        return other.select(*[colref for colref in self])
+
+    @contextualized_operator
+    def _ix(
+        self,
+        key_expression: expr.ColumnReference,
+        optional: bool,
+    ) -> Table:
+        key_universe_table = key_expression._table
+        universe = key_universe_table._universe
+        key_column = key_universe_table._eval(key_expression)
+
+        context = clmn.IxContext(universe, self._universe, key_column, optional)
+
+        columns = {
+            name: self._wrap_column_in_context(context, column, name)
+            for name, column in self._columns.items()
+        }
+
+        return Table(
+            columns=columns,
+            universe=universe,
+            pk_columns=self._pk_columns,
+            id_column=clmn.IdColumn(context),
+        )
 
     def __lshift__(self, other: Table) -> Table:
         """Alias to update_cells method.
@@ -1111,6 +1190,7 @@ class Table(
         return ret
 
     @trace_user_frame
+    @desugar
     def with_columns(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Updates columns of `self`, according to args and kwargs.
         See `table.select` specification for evaluation of args and kwargs.
@@ -1600,7 +1680,10 @@ class Table(
 
         universe = Universe()
         flatten_result_column = clmn.MaterializedColumn(
-            clmn.FlattenContext.get_flatten_column_dtype(flatten_column), universe
+            universe,
+            ColumnProperties(
+                dtype=clmn.FlattenContext.get_flatten_column_dtype(flatten_column),
+            ),
         )
         context = clmn.FlattenContext(
             universe=universe,
@@ -1637,8 +1720,12 @@ class Table(
     ) -> Table:
         if not isinstance(instance, expr.ColumnExpression):
             instance = expr.ColumnConstExpression(instance)
-        prev_column = clmn.MaterializedColumn(dt.Optional(dt.POINTER), self._universe)
-        next_column = clmn.MaterializedColumn(dt.Optional(dt.POINTER), self._universe)
+        prev_column = clmn.MaterializedColumn(
+            self._universe, ColumnProperties(dtype=dt.Optional(dt.POINTER))
+        )
+        next_column = clmn.MaterializedColumn(
+            self._universe, ColumnProperties(dtype=dt.Optional(dt.POINTER))
+        )
         context = clmn.SortingContext(
             self._universe,
             self._eval(key),
@@ -1722,8 +1809,11 @@ class Table(
     def _from_schema(cls, schema: Type[Schema]) -> Table:
         universe = Universe()
         columns = {
-            name: clmn.MaterializedColumn(type, universe)
-            for name, type in schema.as_dict().items()
+            name: clmn.MaterializedColumn(
+                universe,
+                schema.column_properties(name),
+            )
+            for name in schema.column_names()
         }
         return cls(columns=columns, universe=universe, pk_columns={}, schema=schema)
 
@@ -1761,7 +1851,7 @@ class Table(
 
     def _materialize(self, universe: Universe):
         columns = {
-            name: clmn.MaterializedColumn(column.dtype, universe)
+            name: clmn.MaterializedColumn(universe, column.properties)
             for (name, column) in self._columns.items()
         }
         return Table(
@@ -1795,8 +1885,18 @@ class Table(
 
     @runtime_type_check
     @trace_user_frame
-    def ix_ref(self, *args: expr.ColumnExpressionOrValue, optional: bool = False):
-        """Returns a row, indexed by its primary keys. Several columns can be used as index.
+    def ix_ref(
+        self, *args: expr.ColumnExpressionOrValue, optional: bool = False, context=None
+    ):
+        """Reindexes the table using expressions as primary keys.
+        Uses keys from context, or tries to infer proper context from the expression.
+        If optional is True, then None in expression values result in None values in the result columns.
+        Missing values in table keys result in RuntimeError.
+
+        Context can be anything that allows for `select` or `reduce`, or `pathway.this` construct
+        (latter results in returning a delayed operation, and should be only used when using `ix` inside
+        join().select() or groupby().reduce() sequence).
+
 
         Args:
             args: Column references.
@@ -1834,7 +1934,7 @@ class Table(
         ... David  | cat
         ... ''')
         >>> t2 = t1.groupby(pw.this.pet).reduce(pw.this.pet, count=pw.reducers.count())
-        >>> t3 = t1.select(*pw.this, new_value=t2.ix_ref(pw.this.pet).count)
+        >>> t3 = t1.select(*pw.this, new_value=t2.ix_ref(t1.pet).count)
         >>> pw.debug.compute_and_print(t3, include_id=False)
         name   | pet | new_value
         Alice  | dog | 1
@@ -1853,7 +1953,7 @@ class Table(
         ... David  | cat
         ... ''')
         >>> t2 = t1.reduce(count=pw.reducers.count())
-        >>> t3 = t1.select(*pw.this, new_value=t2.ix_ref().count)
+        >>> t3 = t1.select(*pw.this, new_value=t2.ix_ref(context=t1).count)
         >>> pw.debug.compute_and_print(t3, include_id=False)
         name   | pet | new_value
         Alice  | dog | 4
@@ -1861,9 +1961,11 @@ class Table(
         Carole | cat | 4
         David  | cat | 4
         """
-        # or maybe ref should stay as a wrapper for a tuple, so that t.ix(ref(*args)) is t.ix(t.pointer_from(*args))
-        # but we disallow select(foo=ref(bar)) and require pointer_from there?
-        return self.ix(self.pointer_from(*args, optional=optional), optional=optional)
+        return self.ix(
+            self.pointer_from(*args, optional=optional),
+            optional=optional,
+            context=context,
+        )
 
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])

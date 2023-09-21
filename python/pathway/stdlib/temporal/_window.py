@@ -451,11 +451,17 @@ class _IntervalsOverWindow(Window):
             }
         )
 
+        if self.at.table == table:
+            at_table = self.at.table.copy()
+            at = at_table[self.at.name]
+        else:
+            at_table = self.at.table
+            at = self.at
         return (
             temporal.interval_join(
-                self.at.table,
+                at_table,
                 table,
-                self.at,
+                at,
                 key,
                 temporal.interval(self.lower_bound, self.upper_bound),
             )

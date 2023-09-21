@@ -4,17 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from functools import wraps
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    Iterable,
-    List,
-    Mapping,
-    Tuple,
-    TypeVar,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Tuple, TypeVar
 
 from pathway.internals import expression as expr
 from pathway.internals.expression_visitor import IdentityTransform
@@ -39,8 +29,26 @@ class ThisDesugaring(DesugaringTransform):
     def eval_column_val(
         self, expression: expr.ColumnReference, **kwargs
     ) -> expr.ColumnReference:
-        table = self._desugar_table(expression.table)
-        return table[expression.name]
+        from pathway.internals import thisclass
+
+        # Below we want to break moment we reach the fix-point
+        # desugaring is hard, since it can desugar delayed-op-on-this to identical delayed-op-on-this
+        # (due to interval join desugaring pw.this to pw.this, which can break desugaring of delayed ix)
+        # and delayed-ops are hard to compare.
+        # But any nontrivial step reduces `depth` of delayed ops, or lands us in `pw.Table` world where
+        # comparisons make sense.
+        while True:
+            expression = expression.table[expression.name]  # magic desugaring slices
+            prev = expression.table
+            table = self._desugar_table(expression.table)
+            expression = table[expression.name]
+            if prev == table or (
+                isinstance(prev, thisclass.ThisMetaclass)
+                and isinstance(table, thisclass.ThisMetaclass)
+                and prev._delay_depth() == table._delay_depth()
+            ):
+                break
+        return expression
 
     def eval_pointer(
         self, expression: expr.PointerExpression, **kwargs
@@ -48,21 +56,20 @@ class ThisDesugaring(DesugaringTransform):
         args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         optional = expression._optional
         desugared_table = self._desugar_table(expression._table)
-        from pathway.internals import table
+        from pathway.internals.table import Table
 
-        return expr.PointerExpression(
-            cast(table.Table, desugared_table), *args, optional=optional
-        )
+        assert isinstance(desugared_table, Table)
+
+        return expr.PointerExpression(desugared_table, *args, optional=optional)
 
     def _desugar_table(
         self, table: table.Joinable | thisclass.ThisMetaclass
     ) -> table.Joinable:
         from pathway.internals import thisclass
 
-        if isinstance(table, thisclass.ThisMetaclass):
-            return table._eval_substitution(self.substitution)
-        else:
+        if not isinstance(table, thisclass.ThisMetaclass):
             return table
+        return table._eval_substitution(self.substitution)
 
 
 class SubstitutionDesugaring(DesugaringTransform):
@@ -109,19 +116,6 @@ class TableReplacementWithNoneDesugaring(IdentityTransform):
             return expr.ColumnConstExpression(None)
         else:
             return super().eval_column_val(expression, **kwargs)
-
-    def eval_ix(
-        self, expression: expr.ColumnIxExpression, **kwargs
-    ) -> expr.ColumnIxExpression:
-        column_expression = super().eval_column_val(
-            expression._column_expression, **kwargs
-        )
-        keys_expression = self.eval_expression(expression._keys_expression, **kwargs)
-        return expr.ColumnIxExpression(
-            column_expression=column_expression,
-            keys_expression=keys_expression,
-            optional=expression._optional,
-        )
 
     def eval_require(
         self, expression: expr.RequireExpression, **kwargs
@@ -201,14 +195,6 @@ class TableReduceDesugaring(TableCallbackDesugaring):
         ]
         return expr.ReducerExpression(expression._reducer, *args)
 
-    def eval_reducer_ix(
-        self, expression: expr.ReducerIxExpression, **kwargs
-    ) -> expr.ReducerIxExpression:
-        select_desugar = TableSelectDesugaring(self.table_like._joinable_to_group)
-        arg = cast(expr.ColumnIxExpression, expression._args[0])
-        arg_ix = select_desugar.eval_ix(arg, **kwargs)
-        return expr.ReducerIxExpression(expression._reducer, arg_ix)
-
 
 ColExprT = TypeVar("ColExprT", bound=expr.ColumnExpression)
 
@@ -260,15 +246,12 @@ def _desugar_this_kwargs(
 
 
 def combine_args_kwargs(
-    args: Iterable[expr.ColumnReference | expr.ColumnIxExpression],
+    args: Iterable[expr.ColumnReference],
     kwargs: Mapping[str, Any],
 ) -> Dict[str, expr.ColumnExpression]:
     all_args = {}
 
     def add(name, expression):
-        from pathway.internals import table
-
-        assert not isinstance(expression, table.Table)
         if name in all_args:
             raise ValueError(f"Duplicate expression value given for {name}")
         if name == "id":

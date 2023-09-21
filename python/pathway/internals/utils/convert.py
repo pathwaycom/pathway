@@ -1,10 +1,12 @@
 # Copyright © 2023 Pathway
 
 from datetime import datetime, timedelta
-from typing import Tuple
+from typing import Any, Tuple
 
 import pandas as pd
 from dateutil import tz
+
+from pathway.internals import json
 
 MICROSECOND = timedelta(microseconds=1)
 
@@ -46,3 +48,18 @@ def _pd_timestamp_from_utc_ns(timestamp: int) -> pd.Timestamp:
 def _pd_timedelta_from_ns(duration: int) -> pd.Timedelta:
     """Accepts duration in ns"""
     return pd.Timedelta(duration)
+
+
+def _parse_to_json(value: str) -> json.Json:
+    """Parse string to value wrapped in pw.Json"""
+    return json.Json.parse(value)
+
+
+def _value_to_json(value: json.JsonValue) -> json.Json:
+    """Returns value wrapped in pw.Json"""
+    return json.Json(value)
+
+
+def _json_dumps(obj: Any) -> str:
+    """Serialize obj as a JSON formatted string."""
+    return json.Json.dumps(obj)

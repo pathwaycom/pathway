@@ -1343,6 +1343,7 @@ impl PsqlSerializer for Value {
             Value::DateTimeNaive(date_time) => date_time.to_string(),
             Value::DateTimeUtc(date_time) => date_time.to_string(),
             Value::Duration(duration) => duration.nanoseconds().to_string(),
+            Value::Json(json) => json.to_string(),
         }
     }
 }

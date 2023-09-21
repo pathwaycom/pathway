@@ -145,6 +145,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Create dir for wheels
+        run: |
+          mkdir wheels
+            
       - uses: actions/download-artifact@master
         with:
           name: pathway-x86-x64
@@ -157,7 +161,7 @@ jobs:
           rm -rf "${ENV_NAME}"
           python -m venv "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
-          WHEEL=(public/pathway/target/wheels/pathway-*.whl)
+          WHEEL=(./wheels/pathway-*.whl)
           pip install --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           python -m pytest --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
@@ -177,7 +181,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - name: create dir for wheels
+      - name: Create dir for wheels
         run: |
           mkdir wheels
 
@@ -202,7 +206,7 @@ jobs:
           rm -rf "${ENV_NAME}"
           python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
-          WHEEL=(public/pathway/target/wheels/pathway-*.whl)
+          WHEEL=(./wheels/pathway-*.whl)
           pip install --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           python -m pytest --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
@@ -235,7 +239,7 @@ jobs:
           aws-region: ${{ secrets.ARTIFACT_AWS_REGION }}
           role-duration-seconds: 1200
 
-      - name: create dir for wheels
+      - name: Create dir for wheels
         run: |
           mkdir wheels
 

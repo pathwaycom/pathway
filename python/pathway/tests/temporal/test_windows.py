@@ -714,3 +714,33 @@ def test_intervals_over_with_shard():
         ),
     )
     assert_table_equality_wo_index(result, expected)
+
+
+def test_intervals_over_works_on_same_table():
+    t = T(
+        """
+        | t
+    1   | 1
+    2   | 2
+    3   | 3
+    4   | 4
+    5   | 5
+    """
+    )
+    result = pw.temporal.windowby(
+        t,
+        t.t,
+        window=pw.temporal.intervals_over(at=t.t, lower_bound=-2, upper_bound=0),
+    ).reduce(pw.this._pw_window_location, v=pw.reducers.sorted_tuple(pw.this.t))
+
+    df = pd.DataFrame(
+        {
+            "_pw_window_location": [1, 2, 3, 4, 5],
+            "v": [(1,), (1, 2), (1, 2, 3), (2, 3, 4), (3, 4, 5)],
+        }
+    )
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(_pw_window_location=int, v=typing.List[int]),
+    )
+    assert_table_equality_wo_index(result, expected)

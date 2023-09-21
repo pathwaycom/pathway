@@ -6,6 +6,10 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use super::error::{DynError, DynResult};
+use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
+use super::{Error, Result};
+
 use arcstr::ArcStr;
 use cfg_if::cfg_if;
 use derivative::Derivative;
@@ -14,11 +18,8 @@ use ndarray::ArrayD;
 use ordered_float::OrderedFloat;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
-
-use super::error::{DynError, DynResult};
-use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
-use super::{Error, Result};
 
 const BASE32_ALPHABET: base32::Alphabet = base32::Alphabet::Crockford;
 
@@ -156,6 +157,7 @@ pub enum Value {
     DateTimeNaive(DateTimeNaive),
     DateTimeUtc(DateTimeUtc),
     Duration(Duration),
+    Json(Handle<JsonValue>),
 }
 
 const _: () = assert!(align_of::<Value>() <= 16);
@@ -249,6 +251,14 @@ impl Value {
             Err(self.type_mismatch("Duration"))
         }
     }
+
+    pub fn as_json(&self) -> DynResult<&JsonValue> {
+        if let Self::Json(json) = self {
+            Ok(json)
+        } else {
+            Err(self.type_mismatch("Json"))
+        }
+    }
 }
 
 impl Display for Value {
@@ -267,6 +277,7 @@ impl Display for Value {
             Self::DateTimeNaive(date_time) => write!(fmt, "{date_time}"),
             Self::DateTimeUtc(date_time) => write!(fmt, "{date_time}"),
             Self::Duration(duration) => write!(fmt, "{duration}"),
+            Self::Json(json) => write!(fmt, "{json}"),
         }
     }
 }
@@ -367,6 +378,12 @@ impl From<Duration> for Value {
     }
 }
 
+impl From<JsonValue> for Value {
+    fn from(json: JsonValue) -> Self {
+        Self::Json(Handle::new(json))
+    }
+}
+
 // Please only append to this list, as the values here are used in hashing,
 // so changing them will result in changed IDs
 #[repr(u8)]
@@ -385,6 +402,7 @@ pub enum SimpleType {
     DateTimeUtc,
     Duration,
     Bytes,
+    Json,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -401,6 +419,7 @@ pub enum Type {
     DateTimeUtc,
     Duration,
     Array,
+    Json,
 }
 
 impl Value {
@@ -420,6 +439,7 @@ impl Value {
             Self::DateTimeNaive(_) => SimpleType::DateTimeNaive,
             Self::DateTimeUtc(_) => SimpleType::DateTimeUtc,
             Self::Duration(_) => SimpleType::Duration,
+            Self::Json(_) => SimpleType::Json,
         }
     }
 }
@@ -561,7 +581,14 @@ impl HashInto for Value {
             Self::DateTimeNaive(date_time) => date_time.hash_into(hasher),
             Self::DateTimeUtc(date_time) => date_time.hash_into(hasher),
             Self::Duration(duration) => duration.hash_into(hasher),
+            Self::Json(json) => json.hash_into(hasher),
         }
+    }
+}
+
+impl HashInto for JsonValue {
+    fn hash_into(&self, hasher: &mut Hasher) {
+        (*self).to_string().hash_into(hasher);
     }
 }
 

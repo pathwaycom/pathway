@@ -255,8 +255,9 @@ def groupby_reduce_majority(
     )
     res = counts.groupby(counts[column_group_name]).reduce(
         counts[column_group_name],
-        majority=counts.ix(pw.reducers.argmax(counts._pw_special_count))[
-            column_val_name
-        ],
+        majority=counts.ix(
+            pw.reducers.argmax(counts._pw_special_count), context=pw.this
+        )[column_val_name],
     )
+
     return res

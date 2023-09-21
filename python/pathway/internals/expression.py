@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from abc import ABC, abstractmethod
+from abc import ABC
 from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
@@ -201,9 +201,15 @@ class ColumnExpression(OperatorInput, ABC):
     # will not do the right thing.
     __iter__ = None
 
-    def __getitem__(self, index: Union[ColumnExpression, int]) -> ColumnExpression:
-        """Extracts element at `index` from an object. The object has to be a Tuple.
-        Errors if no element is present at `index`.
+    def __getitem__(self, index: ColumnExpression | int | str) -> ColumnExpression:
+        """Extracts element at `index` from an object. The object has to be a Tuple or Json.
+
+        Index can be effectively `int` for Tuple and `int` or `str` for Json.
+        For Tuples, using negative index can be used to access elements at the end, moving backwards.
+
+        if no element is present at `index`:
+            - returns `json(null)` for Json
+            - raises error for Tuple
 
         Args:
             index: Position to extract element at.
@@ -227,19 +233,22 @@ class ColumnExpression(OperatorInput, ABC):
         4 | 1 | 4
         7 | 3 | 3
         """
-        return SequenceGetExpression(self, index, check_if_exists=False)
+        return GetExpression(self, index, check_if_exists=False)
 
     def get(
         self,
-        index: Union[ColumnExpression, int],
+        index: ColumnExpression | int | str,
         default: ColumnExpressionOrValue = None,
     ) -> ColumnExpression:
-        """Extracts element at `index` from an object. The object has to be a Tuple.
+        """Extracts element at `index` from an object. The object has to be a Tuple or Json.
         If no element is present at `index`, it returns value specified by a `default` parameter.
+
+        Index can be effectively `int` for Tuple and `int` or `str` for Json.
+        For Tuples, using negative index can be used to access elements at the end, moving backwards.
 
         Args:
             index: Position to extract element at.
-            default: Value returned when no element is at position `index`.
+            default: Value returned when no element is at position `index`. Defaults to None.
 
         Example:
 
@@ -265,7 +274,7 @@ class ColumnExpression(OperatorInput, ABC):
         2 |   |   | 100
         3 |   | 3 | 3
         """
-        return SequenceGetExpression(self, index, default, check_if_exists=True)
+        return GetExpression(self, index, default, check_if_exists=True)
 
     @property
     def dt(self) -> DateTimeNamespace:
@@ -327,16 +336,96 @@ class ColumnExpression(OperatorInput, ABC):
             self,
         )
 
+    def as_int(self) -> ConvertExpression:
+        """Converts value to an int or None if not possible.
+        Currently works for Json columns only.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> class InputSchema(pw.Schema):
+        ...     data: dict
+        >>> dt = pd.DataFrame(data={"data": [{"value": 1}, {"value": 2}]})
+        >>> table = pw.debug.table_from_pandas(dt, schema=InputSchema)
+        >>> result = table.select(result=pw.this.data.get("value").as_int())
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        1
+        2
+        """
+        return ConvertExpression(dt.INT, self)
+
+    def as_float(self) -> ConvertExpression:
+        """Converts value to a float or None if not possible.
+        Currently works for Json columns only.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> class InputSchema(pw.Schema):
+        ...     data: dict
+        >>> dt = pd.DataFrame(data={"data": [{"value": 1.5}, {"value": 3.14}]})
+        >>> table = pw.debug.table_from_pandas(dt, schema=InputSchema)
+        >>> result = table.select(result=pw.this.data.get("value").as_float())
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        1.5
+        3.14
+        """
+        return ConvertExpression(dt.FLOAT, self)
+
+    def as_str(self) -> ConvertExpression:
+        """Converts value to a string or None if not possible.
+        Currently works for Json columns only.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> class InputSchema(pw.Schema):
+        ...     data: dict
+        >>> dt = pd.DataFrame(data={"data": [{"value": "dog"}, {"value": "cat"}]})
+        >>> table = pw.debug.table_from_pandas(dt, schema=InputSchema)
+        >>> result = table.select(result=pw.this.data.get("value").as_str())
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        cat
+        dog
+        """
+        return ConvertExpression(dt.STR, self)
+
+    def as_bool(self) -> ConvertExpression:
+        """Converts value to a bool or None if not possible.
+        Currently works for Json columns only.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>> class InputSchema(pw.Schema):
+        ...     data: dict
+        >>> dt = pd.DataFrame(data={"data": [{"value": True}, {"value": False}]})
+        >>> table = pw.debug.table_from_pandas(dt, schema=InputSchema)
+        >>> result = table.select(result=pw.this.data.get("value").as_bool())
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        False
+        True
+        """
+        return ConvertExpression(dt.BOOL, self)
+
 
 ColumnExpressionOrValue = Union[ColumnExpression, Value]
 
 
 class ColumnCallExpression(ColumnExpression):
     _args: Tuple[ColumnExpression, ...]
-    _col_expr: ColumnRefOrIxExpression
+    _col_expr: ColumnReference
 
     def __init__(
-        self, col_expr: ColumnRefOrIxExpression, args: Iterable[ColumnExpressionOrValue]
+        self, col_expr: ColumnReference, args: Iterable[ColumnExpressionOrValue]
     ):
         super().__init__()
         self._col_expr = col_expr
@@ -353,46 +442,7 @@ class ColumnConstExpression(ColumnExpression):
         self._deps = []
 
 
-class ColumnRefOrIxExpression(ColumnExpression):
-    _column: Column
-
-    def __init__(self, column: Column):
-        super().__init__()
-        self._column = column
-
-    def __call__(self, *args) -> ColumnExpression:
-        return ColumnCallExpression(self, args)
-
-    @property
-    def _column_with_expression_cls(self) -> Type[ColumnWithExpression]:
-        from pathway.internals.column import ColumnWithReference
-
-        return ColumnWithReference
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        ...
-
-
-@dataclasses.dataclass(frozen=True)
-class InternalColRef:
-    _table: Table
-    _name: str
-
-    def to_colref(self) -> ColumnReference:
-        return self._table[self._name]
-
-    def to_original(self) -> InternalColRef:
-        return self.to_colref()._to_original_internal()
-
-    def to_column(self) -> Column:
-        if self._name == "id":
-            return self._table._id_column
-        return self._table._columns[self._name]
-
-
-class ColumnReference(ColumnRefOrIxExpression):
+class ColumnReference(ColumnExpression):
     """Reference to the column.
 
     Inherits from ColumnExpression.
@@ -412,11 +462,13 @@ class ColumnReference(ColumnRefOrIxExpression):
     True
     """
 
+    _column: Column
     _table: Table
     _name: str
 
     def __init__(self, *, column: Column, table: Table, name: str):
-        super().__init__(column)
+        super().__init__()
+        self._column = column
         self._table = table
         self._name = name
         self._deps = []
@@ -477,36 +529,31 @@ class ColumnReference(ColumnRefOrIxExpression):
     def _dependencies_below_reducer(self) -> helpers.StableSet[InternalColRef]:
         return helpers.StableSet()
 
-
-class ColumnIxExpression(ColumnRefOrIxExpression):
-    _keys_expression: ColumnExpression
-    _column_expression: ColumnReference
-    _optional: bool
-
-    def __init__(
-        self,
-        *,
-        keys_expression: ColumnExpression,
-        column_expression: ColumnReference,
-        optional: bool,
-    ):
-        super().__init__(column_expression._column)
-        self._keys_expression = keys_expression
-        self._column_expression = column_expression
-        self._optional = optional
-        self._deps = [self._keys_expression, self._column_expression]
-
-    @lru_cache
-    def _dependencies_above_reducer(self) -> helpers.StableSet[InternalColRef]:
-        return self._keys_expression._dependencies_above_reducer()
-
-    @lru_cache
-    def _dependencies_below_reducer(self) -> helpers.StableSet[InternalColRef]:
-        return self._keys_expression._dependencies_below_reducer()
+    def __call__(self, *args) -> ColumnExpression:
+        return ColumnCallExpression(self, args)
 
     @property
-    def name(self) -> str:
-        return self._column_expression.name
+    def _column_with_expression_cls(self) -> Type[ColumnWithExpression]:
+        from pathway.internals.column import ColumnWithReference
+
+        return ColumnWithReference
+
+
+@dataclasses.dataclass(frozen=True)
+class InternalColRef:
+    _table: Table
+    _name: str
+
+    def to_colref(self) -> ColumnReference:
+        return self._table[self._name]
+
+    def to_original(self) -> InternalColRef:
+        return self.to_colref()._to_original_internal()
+
+    def to_column(self) -> Column:
+        if self._name == "id":
+            return self._table._id_column
+        return self._table._columns[self._name]
 
 
 class ColumnBinaryOpExpression(ColumnExpression):
@@ -557,11 +604,6 @@ class ReducerExpression(ColumnExpression):
         return helpers.StableSet.union(
             *[dep._dependencies_above_reducer() for dep in self._deps]
         )
-
-
-class ReducerIxExpression(ReducerExpression):
-    def __init__(self, reducer: UnaryReducer, arg: ColumnIxExpression):
-        super().__init__(reducer, arg)
 
 
 class CountExpression(ColumnExpression):
@@ -632,12 +674,23 @@ class AsyncApplyExpression(ApplyExpression):
 
 
 class CastExpression(ColumnExpression):
-    _return_type: Any
+    _return_type: dt.DType
     _expr: ColumnExpression
 
     def __init__(self, return_type: Any, expr: ColumnExpressionOrValue):
         super().__init__()
         self._return_type = dt.wrap(return_type)
+        self._expr = _wrap_arg(expr)
+        self._deps = [self._expr]
+
+
+class ConvertExpression(ColumnExpression):
+    _return_type: dt.DType
+    _expr: ColumnExpression
+
+    def __init__(self, return_type: dt.DType, expr: ColumnExpressionOrValue):
+        super().__init__()
+        self._return_type = dt.Optional(return_type)
         self._expr = _wrap_arg(expr)
         self._deps = [self._expr]
 
@@ -745,17 +798,17 @@ class MakeTupleExpression(ColumnExpression):
         self._deps = self._args
 
 
-class SequenceGetExpression(ColumnExpression):
+class GetExpression(ColumnExpression):
     _object: ColumnExpression
     _index: ColumnExpression
     _default: ColumnExpression
     _check_if_exists: bool
-    _const_index: Optional[int]
+    _const_index: Optional[int | str]
 
     def __init__(
         self,
         object: ColumnExpression,
-        index: Union[ColumnExpression, int],
+        index: ColumnExpression | int | str,
         default: ColumnExpressionOrValue = None,
         check_if_exists=True,
     ) -> None:
@@ -765,7 +818,7 @@ class SequenceGetExpression(ColumnExpression):
         self._default = _wrap_arg(default)
         self._check_if_exists = check_if_exists
         if isinstance(self._index, ColumnConstExpression) and isinstance(
-            self._index._val, int
+            self._index._val, (int, str)
         ):
             self._const_index = self._index._val
         else:
@@ -862,7 +915,7 @@ def _wrap_arg(arg: ColumnExpressionOrValue) -> ColumnExpression:
 def smart_name(arg: ColumnExpression) -> Optional[str]:
     from pathway.internals.reducers import _any, _unique
 
-    if isinstance(arg, ColumnRefOrIxExpression):
+    if isinstance(arg, ColumnReference):
         return arg.name
     if isinstance(arg, ReducerExpression) and arg._reducer in [_unique, _any]:
         r_args = arg._args

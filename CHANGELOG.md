@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.4.0] - 2023-09-21
+
+### Added
+- Support for JSON data format, including `pw.Json` type.
+- Methods `as_int()`, `as_float()`, `as_str()`, `as_bool()` to convert values from `Json`.
+
+### Changed
+- Method `get()` and `[]` to support accessing elements in Jsons.
+- Function `pw.assert_table_has_schema` for writing asserts checking, whether given table has the same schema as the one that is given as an argument.
+- **BREAKING**: `ix` and `ix_ref` operations are now standalone transformations of `pw.Table` into `pw.Table`. Most of the usages remain the same, but sometimes user needs to provide a context (when e.g. using them inside `join` or `groupby` operations). `ix` and `ix_ref` are temporarily broken inside temporal joins.
+
+### Fixed
+- Fixed a bug where new-style optional types (e.g. `int | None`) were translated to `Any` dtype.
+
 ## [0.3.4] - 2023-09-18
 
 ### Fixed

@@ -32,7 +32,9 @@ TSchema = TypeVar("TSchema", bound=Schema)
 # XXX: engine calls return BasePointer, not Pointer
 class Pointer(BasePointer, Generic[TSchema]):
     """Pointer to row type.
+
     Example:
+
     >>> import pathway as pw
     >>> t1 = pw.debug.parse_to_table('''
     ... age | owner | pet
@@ -109,4 +111,5 @@ _TYPES_TO_ENGINE_MAPPING: Mapping[Any, PathwayType] = {
     dt.DURATION: PathwayType.DURATION,
     dt.Array(): PathwayType.ARRAY,
     dt.ANY: PathwayType.ANY,
+    dt.JSON: PathwayType.JSON,
 }

@@ -10,7 +10,7 @@ from typing import List, Optional, Type, Union
 
 import pandas as pd
 
-from pathway.internals import api, parse_graph
+from pathway.internals import Json, api, parse_graph
 from pathway.internals.datasource import PandasDataSource
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner import GraphRunner
@@ -37,7 +37,10 @@ def table_to_dicts(table: Table):
 @functools.total_ordering
 class _NoneAwareComparisonWrapper:
     def __init__(self, inner):
-        self.inner = inner
+        if isinstance(inner, dict | Json):
+            self.inner = str(inner)
+        else:
+            self.inner = inner
 
     def __eq__(self, other):
         if not isinstance(other, _NoneAwareComparisonWrapper):

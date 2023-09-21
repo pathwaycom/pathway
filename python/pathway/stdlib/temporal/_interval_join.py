@@ -172,6 +172,10 @@ class IntervalJoinResult(DesugaringContext):
                 "upper_bound": (interval.upper_bound, IntervalType),
             }
         )
+        if left == right:
+            raise ValueError(
+                "Cannot join table with itself. Use <table>.copy() as one of the arguments of the join."
+            )
         if interval.lower_bound == interval.upper_bound:
             raise ValueError(
                 "The difference between lower_bound and upper_bound has to be positive in the Table.interval_join().\n"

@@ -17,16 +17,6 @@ def test_column_reference():
     assert repr(t.pet) == "<table1>.pet"
 
 
-def test_column_ix():
-    t = T(
-        """
-    pet  |  owner  | age
-     1   | Alice   | 10
-        """
-    )
-    assert repr(t.ix[t.age].pet) == "<table1>.ix(<table1>.age).pet"
-
-
 def test_column_binary_op():
     t = T(
         """
@@ -126,6 +116,19 @@ def test_cast():
     )
     assert repr(pw.cast(int, t.pet)) == "pathway.cast(INT, <table1>.pet)"
     assert repr(pw.cast(float, t.pet)) == "pathway.cast(FLOAT, <table1>.pet)"
+
+
+def test_convert():
+    t = T(
+        """
+            | pet
+        1   | foo
+        """
+    )
+    assert repr(t.pet.as_int()) == "pathway.as_int(<table1>.pet)"
+    assert repr(t.pet.as_float()) == "pathway.as_float(<table1>.pet)"
+    assert repr(t.pet.as_str()) == "pathway.as_str(<table1>.pet)"
+    assert repr(t.pet.as_bool()) == "pathway.as_bool(<table1>.pet)"
 
 
 def test_declare_type():

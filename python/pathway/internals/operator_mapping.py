@@ -230,6 +230,27 @@ def get_cast_operators_mapping(
     return expression if expression is not None else default
 
 
+def get_convert_operators_mapping(
+    expr: api.Expression, source_type: dt.DType, target_type: dt.DType
+) -> Optional[api.Expression]:
+    source_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
+        dt.normalize_dtype(dt.unoptionalize(source_type))
+    )
+    target_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
+        dt.normalize_dtype(dt.unoptionalize(target_type))
+    )
+    assert (
+        source_type_engine is not None and target_type_engine is not None
+    ), "invalid pathway type"
+
+    expression = api.Expression.convert_optional(
+        expr,
+        source_type_engine,
+        target_type_engine,
+    )
+    return expression
+
+
 def common_dtype_in_binary_operator(
     left_dtype: dt.DType, right_dtype: dt.DType
 ) -> Optional[dt.DType]:

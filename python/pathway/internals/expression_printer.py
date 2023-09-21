@@ -6,8 +6,10 @@ import itertools
 from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, Iterable
 
+from pathway.internals import dtype as dt
+from pathway.internals import expression as expr
+
 if TYPE_CHECKING:
-    import pathway.internals.expression as expr
     from pathway.internals.table import Table
     from pathway.internals.trace import Trace
 
@@ -33,7 +35,12 @@ class ExpressionFormatter(ExpressionVisitor):
         )
 
     def eval_column_val(self, expression: expr.ColumnReference):
-        return f"<table{self.table_numbers[expression._table]}>.{expression._name}"
+        from pathway.internals.thisclass import ThisMetaclass
+
+        if isinstance(expression._table, ThisMetaclass):
+            return f"{expression._table}.{expression._name}"
+        else:
+            return f"<table{self.table_numbers[expression._table]}>.{expression._name}"
 
     def eval_unary_op(self, expression: expr.ColumnUnaryOpExpression):
         symbol = getattr(expression._operator, "_symbol", expression._operator.__name__)
@@ -53,9 +60,6 @@ class ExpressionFormatter(ExpressionVisitor):
         args = self._eval_args_kwargs(expression._args)
         name = expression._reducer.name
         return f"pathway.reducers.{name}({args})"
-
-    def eval_reducer_ix(self, expression: expr.ReducerIxExpression):
-        return self.eval_reducer(expression)
 
     def eval_count(self, expression: expr.CountExpression):
         return "pathway.reducers.count()"
@@ -81,14 +85,6 @@ class ExpressionFormatter(ExpressionVisitor):
         args = self._eval_args_kwargs(expression._args, kwargs)
         return f"<table{self.table_numbers[expression._table]}>.pointer_from({args})"
 
-    def eval_ix(self, expression: expr.ColumnIxExpression):
-        args = [self.eval_expression(expression._keys_expression)]
-        if expression._optional:
-            args.append("optional=True")
-        args_joined = ", ".join(args)
-        name = expression._column_expression._name
-        return f"<table{self.table_numbers[expression._column_expression._table]}>.ix({args_joined}).{name}"
-
     def eval_call(self, expression: expr.ColumnCallExpression):
         args = self._eval_args_kwargs(expression._args)
         return self.eval_expression(expression._col_expr) + f"({args})"
@@ -96,6 +92,11 @@ class ExpressionFormatter(ExpressionVisitor):
     def eval_cast(self, expression: expr.CastExpression):
         uexpr = self.eval_expression(expression._expr)
         return f"pathway.cast({_type_name(expression._return_type)}, {uexpr})"
+
+    def eval_convert(self, expression: expr.ConvertExpression):
+        uexpr = self.eval_expression(expression._expr)
+        dtype = dt.unoptionalize(expression._return_type)
+        return f"pathway.as_{_type_name(dtype).lower()}({uexpr})"
 
     def eval_declare(self, expression: expr.DeclareTypeExpression):
         uexpr = self.eval_expression(expression._expr)
@@ -147,9 +148,10 @@ class ExpressionFormatter(ExpressionVisitor):
         args = self._eval_args_kwargs(expression._args)
         return f"pathway.make_tuple({args})"
 
-    def eval_sequence_get(self, expression: expr.SequenceGetExpression):
+    def eval_get(self, expression: expr.GetExpression):
         object = self.eval_expression(expression._object)
         args = [expression._index]
+
         if expression._check_if_exists:
             args += [expression._default]
         args_formatted = self._eval_args_kwargs(args)

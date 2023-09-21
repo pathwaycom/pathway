@@ -544,7 +544,6 @@ struct Ixer<S: MaybeTotalScope> {
     none_keys: Option<Collection<S, Key>>,
     ix_key_policy: IxKeyPolicy,
     values_to_keys_arranged: OnceCell<ArrangedByKey<S, Key, Key>>,
-    keys_to_values_arranged: OnceCell<ArrangedByKey<S, Key, Key>>,
 }
 
 impl<S: MaybeTotalScope> Ixer<S> {
@@ -562,7 +561,6 @@ impl<S: MaybeTotalScope> Ixer<S> {
             none_keys,
             ix_key_policy,
             values_to_keys_arranged: OnceCell::new(),
-            keys_to_values_arranged: OnceCell::new(),
         }
     }
 
@@ -572,11 +570,6 @@ impl<S: MaybeTotalScope> Ixer<S> {
                 .map_named("Ixer::values_to_keys_arranged", |(key, value)| (value, key))
                 .arrange()
         })
-    }
-
-    fn keys_to_values_arranged(&self) -> &ArrangedByKey<S, Key, Key> {
-        self.keys_to_values_arranged
-            .get_or_init(|| self.keys_values.arrange())
     }
 }
 struct Joiner<S: MaybeTotalScope> {
@@ -851,7 +844,6 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     ixers_cache: HashMap<(ColumnHandle, UniverseHandle, IxKeyPolicy), IxerHandle>,
     groupers_cache: HashMap<(Vec<ColumnHandle>, Vec<ColumnHandle>, UniverseHandle), GrouperHandle>,
     groupers_id_cache: HashMap<(ColumnHandle, Vec<ColumnHandle>, UniverseHandle), GrouperHandle>,
-    groupers_ixers_cache: HashMap<(GrouperHandle, IxerHandle), ArrangedByKey<S, Key, Key>>,
     concat_cache: HashMap<Vec<UniverseHandle>, ConcatHandle>,
     joiners_cache: HashMap<
         (
@@ -1291,7 +1283,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             ixers_cache: HashMap::new(),
             groupers_cache: HashMap::new(),
             groupers_id_cache: HashMap::new(),
-            groupers_ixers_cache: HashMap::new(),
             concat_cache: HashMap::new(),
             joiners_cache: HashMap::new(),
             ignore_asserts,
@@ -2295,79 +2286,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         );
         grouper.result_keys.get_or_init(|| {
             new_values.map_named("grouper_reducer_column::result_keys", |(key, _value)| key)
-        });
-        let result_universe = self.grouper_universe(grouper_handle)?;
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(result_universe, new_values));
-        Ok(new_column_handle)
-    }
-
-    fn grouper_reducer_column_ix(
-        &mut self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let dataflow_reducer = Self::create_dataflow_reducer(reducer);
-
-        let ixer = self
-            .ixers
-            .get(ixer_handle)
-            .ok_or(Error::InvalidIxerHandle)?;
-        assert!(ixer.ix_key_policy != IxKeyPolicy::SkipMissing);
-
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        if column.universe != ixer.input_universe {
-            return Err(Error::UniverseMismatch);
-        }
-
-        let grouper = self
-            .groupers
-            .get(grouper_handle)
-            .ok_or(Error::InvalidGrouperHandle)?;
-
-        let new_source_key_to_result_key = if let Some(val) = self
-            .groupers_ixers_cache
-            .get(&(grouper_handle, ixer_handle))
-        {
-            val.clone()
-        } else {
-            let new_source_key_to_result_key = ixer
-                .keys_to_values_arranged()
-                .join_core(
-                    grouper.source_key_to_result_key(),
-                    |_source_key, col_key, result_key| once((*col_key, *result_key)),
-                )
-                .arrange_named("grouper_reducer_column_ix::new_source_key_to_result_key");
-            self.groupers_ixers_cache.insert(
-                (grouper_handle, ixer_handle),
-                new_source_key_to_result_key.clone(),
-            );
-            new_source_key_to_result_key
-        };
-
-        if !self.ignore_asserts {
-            self.assert_collections_same_size(
-                &ixer.keys_values,
-                &new_source_key_to_result_key.as_collection(|_k, _v| ()),
-            );
-        };
-
-        let new_values = dataflow_reducer.reduce(
-            self,
-            &new_source_key_to_result_key,
-            column.values_arranged(),
-        );
-
-        grouper.result_keys.get_or_init(|| {
-            new_values.map_named("grouper_reducer_column_ix::result_keys", |(key, _value)| {
-                key
-            })
         });
         let result_universe = self.grouper_universe(grouper_handle)?;
         let new_column_handle = self
@@ -4038,21 +3956,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             .grouper_reducer_column(grouper_handle, reducer, column_handle)
     }
 
-    fn grouper_reducer_column_ix(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().grouper_reducer_column_ix(
-            grouper_handle,
-            reducer,
-            ixer_handle,
-            column_handle,
-        )
-    }
-
     fn ix(
         &self,
         key_column_handle: ColumnHandle,
@@ -4508,21 +4411,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0
             .borrow_mut()
             .grouper_reducer_column(grouper_handle, reducer, column_handle)
-    }
-
-    fn grouper_reducer_column_ix(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().grouper_reducer_column_ix(
-            grouper_handle,
-            reducer,
-            ixer_handle,
-            column_handle,
-        )
     }
 
     fn ix(

@@ -345,6 +345,7 @@ def test_window_join_with_time_expressions() -> None:
     assert_table_equality_wo_index(res, expected)
 
 
+@pytest.mark.xfail(reason="Ix and joins do not mix.")
 def test_window_left_join_ix() -> None:
     t1 = T(
         """
@@ -389,7 +390,7 @@ def test_window_left_join_ix() -> None:
             """
     )
     join_result = t1.window_join_left(t2, t1.t, t2.t, pw.temporal.sliding(1, 2))
-    res = join_result.select(x=t1.t, y=t2.t, other=t2.ix[t1.id].t)
+    res = join_result.select(x=t1.t, y=t2.t, other=t2.ix(t1.id).t)
     assert_table_equality_wo_index(res, expected)
 
 

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, Optional, Union, overload
+from typing import Any, Callable, Optional, Type, Union, overload
 
 from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
 from pathway.internals import operator as op
-from pathway.internals import table
+from pathway.internals import schema, table
 from pathway.internals.asynchronous import (
     AsyncRetryStrategy,
     CacheStrategy,
@@ -557,3 +557,42 @@ def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     9
     """
     return expr.UnwrapExpression(col)
+
+
+def assert_table_has_schema(
+    table: table.Table,
+    schema: Type[schema.Schema],
+    *,
+    allow_superset: bool = False,
+    ignore_primary_keys: bool = True,
+) -> None:
+    """
+    Asserts that the schema of the table is equivalent to the schema given as an argument.
+
+    Args:
+        table: Table for which we are asserting schema.
+        schema: Schema, which we assert that the Table has.
+        allow_superset: if True, the columns of the table can be a superset of columns
+            in schema.
+        ignore_primary_keys: if True, the assert won't check whether table and schema
+            have the same primary keys. The default value is True.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.parse_to_table('''
+    ... age | owner | pet
+    ... 10  | Alice | dog
+    ... 9   | Bob   | dog
+    ... 8   | Alice | cat
+    ... 7   | Bob   | dog
+    ... ''')
+    >>> t2 = t1.select(pw.this.owner, age = pw.cast(float, pw.this.age))
+    >>> schema = pw.schema_builder(
+    ...     {"age": pw.column_definition(dtype=float), "owner": pw.column_definition(dtype=str)}
+    ... )
+    >>> pw.assert_table_has_schema(t2, schema)
+    """
+    table.schema.assert_equal_to(
+        schema, allow_superset=allow_superset, ignore_primary_keys=ignore_primary_keys
+    )

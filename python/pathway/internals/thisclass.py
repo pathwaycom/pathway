@@ -12,8 +12,6 @@ if TYPE_CHECKING:
 
 import itertools
 
-from pathway.internals.ix import IxIndexer
-
 KEY_GUARD = "__pathway_kwargs_hack"
 _key_guard_counter = itertools.count()
 
@@ -58,6 +56,12 @@ class ThisMetaclass(type):
 
     def with_suffix(self, *args, **kwargs):
         return self._create_mock("with_suffix", args, kwargs)
+
+    def ix(self, *args, **kwargs):
+        return self._create_mock("ix", args, kwargs)
+
+    def ix_ref(self, *args, **kwargs):
+        return self._create_mock("ix_ref", args, kwargs)
 
     @property
     def slice(self):
@@ -106,13 +110,6 @@ class ThisMetaclass(type):
     def __call__(self, *args, **kwargs):
         raise TypeError("You cannot instantiate `this` class.")
 
-    @property
-    def ix(self):
-        return IxIndexer(self)
-
-    def ix_ref(self, *args: expr.ColumnExpression):
-        return self.ix(self.pointer_from(*args))
-
     def pointer_from(self, *args: Any, optional=False):
         return expr.PointerExpression(self, *args, optional=optional)  # type: ignore
 
@@ -133,6 +130,14 @@ class ThisMetaclass(type):
     def _create_mock(self, name, args, kwargs) -> ThisMetaclass:
         raise NotImplementedError
 
+    @classmethod
+    def _delayed_op(self, op, *, name=None, qualname=None):
+        raise NotImplementedError
+
+    @classmethod
+    def _delay_depth(self):
+        raise NotImplementedError
+
 
 class _those(metaclass=ThisMetaclass):
     @classmethod
@@ -140,14 +145,34 @@ class _those(metaclass=ThisMetaclass):
         return table
 
     @classmethod
+    def _delay_depth(self):
+        return 0
+
+    @classmethod
     def _create_mock(self, name, args, kwargs):
+        ret = self._delayed_op(
+            lambda table: getattr(table.slice, name)(*args, **kwargs),
+            qualname=f"{self.__qualname__}.{name}(...)",
+            name=name,
+        )
+
+        return ret
+
+    @classmethod
+    def _delayed_op(self, op, *, name=None, qualname=None):
         class subclass(self):  # type: ignore[valid-type,misc]
             @classmethod
             def _eval_table(cls, table):
-                return getattr(super()._eval_table(table).slice, name)(*args, **kwargs)
+                return op(super()._eval_table(table))
 
-        subclass.__qualname__ = self.__qualname__ + "." + name + "(...)"
-        subclass.__name__ = name
+            @classmethod
+            def _delay_depth(self):
+                return super()._delay_depth() + 1
+
+        if name is not None:
+            subclass.__name__ = name
+        if qualname is not None:
+            subclass.__qualname__ = qualname
         return subclass
 
 

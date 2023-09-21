@@ -29,6 +29,7 @@ class PathwayType(Enum):
     DATE_TIME_UTC: PathwayType
     DURATION: PathwayType
     ARRAY: PathwayType
+    JSON: PathwayType
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode
@@ -52,15 +53,15 @@ class Trace:
 
 @dataclasses.dataclass(frozen=True)
 class EvalProperties:
-    trace: Optional[Trace] = None
     dtype: Optional[DType] = None
-    append_only: Optional[bool] = False
+    trace: Optional[Trace] = None
+    append_only: bool = False
 
 @dataclasses.dataclass(frozen=True)
 class ConnectorProperties:
     commit_duration_ms: Optional[int] = None
     unsafe_trusted_ids: Optional[bool] = False
-    append_only: Optional[bool] = False
+    append_only: bool = False
 
 class Column:
     """A Column holds data and conceptually is a Dict[Universe elems, dt]
@@ -163,6 +164,9 @@ class Expression:
     ) -> Optional[Expression]: ...
     @staticmethod
     def cast_optional(
+        expr: Expression, source_type: PathwayType, target_type: PathwayType
+    ) -> Optional[Expression]: ...
+    def convert_optional(
         expr: Expression, source_type: PathwayType, target_type: PathwayType
     ) -> Optional[Expression]: ...
     @staticmethod
@@ -275,6 +279,12 @@ class Expression:
     def sequence_get_item_unchecked(
         expr: Expression, index: Expression
     ) -> Expression: ...
+    @staticmethod
+    def json_get_item_checked(
+        expr: Expression, index: Expression, default: Expression
+    ) -> Expression: ...
+    @staticmethod
+    def json_get_item_unchecked(expr: Expression, index: Expression) -> Expression: ...
     @staticmethod
     def unwrap(expr: Expression) -> Expression: ...
     @staticmethod
@@ -459,9 +469,6 @@ class Grouper:
     def input_column(self, column: Column) -> Column: ...
     def count_column(self) -> Column: ...
     def reducer_column(self, reducer: Reducer, column: Column) -> Column: ...
-    def reducer_ix_column(
-        self, reducer: Reducer, ixer: Ixer, input_column: Column
-    ) -> Column: ...
 
 class Concat:
     @property

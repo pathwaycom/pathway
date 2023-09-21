@@ -42,6 +42,7 @@ _PATHWAY_TYPE_MAPPING: Dict[PathwayType, Any] = {
     PathwayType.DATE_TIME_UTC: dt.DATE_TIME_UTC,
     PathwayType.DURATION: dt.DURATION,
     PathwayType.ARRAY: np.ndarray,
+    PathwayType.JSON: dict,
 }
 
 SUPPORTED_INPUT_FORMATS: Set[str] = set(

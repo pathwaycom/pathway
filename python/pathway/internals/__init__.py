@@ -8,6 +8,7 @@ from pathway.internals.common import (
     apply,
     apply_async,
     apply_with_type,
+    assert_table_has_schema,
     cast,
     coalesce,
     declare_type,
@@ -31,14 +32,13 @@ from pathway.internals.decorators import (
 from pathway.internals.expression import (
     ColumnExpression,
     ColumnExpressionOrValue,
-    ColumnIxExpression,
     ColumnReference,
     ReducerExpression,
-    ReducerIxExpression,
 )
 from pathway.internals.groupby import GroupedJoinResult, GroupedTable
 from pathway.internals.join import FilteredJoinResult, Joinable, JoinResult
 from pathway.internals.join_mode import JoinMode
+from pathway.internals.json import Json
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.operator import iterate_universe
 from pathway.internals.row_transformer import ClassArg
@@ -104,8 +104,6 @@ __all__ = [
     "run",
     "run_all",
     "numba_apply",
-    "ColumnIxExpression",
-    "ReducerIxExpression",
     "__version__",
     "universes",
     "asynchronous",
@@ -118,4 +116,6 @@ __all__ = [
     "DURATION",
     "unwrap",
     "SchemaProperties",
+    "assert_table_has_schema",
+    "Json",
 ]

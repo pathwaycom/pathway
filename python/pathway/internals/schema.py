@@ -24,6 +24,7 @@ import pandas as pd
 
 from pathway.internals import dtype as dt
 from pathway.internals import trace
+from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.runtime_type_check import runtime_type_check
 
 if TYPE_CHECKING:
@@ -158,27 +159,32 @@ def _create_column_definitions(schema: SchemaMetaclass):
     columns = {}
 
     for name, annotation in annotations.items():
-        coldtype = dt.wrap(annotation)
-        column = fields.pop(name, column_definition(dtype=coldtype))
+        col_dtype = dt.wrap(annotation)
+        column = fields.pop(name, column_definition(dtype=col_dtype))
 
         if not isinstance(column, ColumnDefinition):
             raise ValueError(
                 f"`{name}` should be a column definition, found {type(column)}"
             )
 
-        name = column.name or name
+        dtype = column.dtype
+        if dtype is None:
+            dtype = col_dtype
 
-        if column.dtype is None:
-            column = dataclasses.replace(column, dtype=coldtype)
-        column = dataclasses.replace(column, dtype=dt.wrap(column.dtype))
-        if coldtype != column.dtype:
-            print(coldtype)
-            print(column.dtype)
+        if col_dtype != dtype:
             raise TypeError(
                 f"type annotation of column `{name}` does not match column definition"
             )
 
-        columns[name] = column
+        name = column.name or name
+
+        columns[name] = ColumnSchema(
+            primary_key=column.primary_key,
+            default_value=column.default_value,
+            dtype=dt.wrap(dtype),
+            name=name,
+            append_only=schema.__properties__.append_only,
+        )
 
     if fields:
         names = ", ".join(fields.keys())
@@ -193,7 +199,7 @@ class SchemaProperties:
 
 
 class SchemaMetaclass(type):
-    __columns__: Dict[str, ColumnDefinition]
+    __columns__: Dict[str, ColumnSchema]
     __properties__: SchemaProperties
     __types__: Dict[str, dt.DType]
 
@@ -201,8 +207,8 @@ class SchemaMetaclass(type):
     def __init__(self, *args, append_only=False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.__columns__ = _create_column_definitions(self)
         self.__properties__ = SchemaProperties(append_only=append_only)
+        self.__columns__ = _create_column_definitions(self)
         self.__types__ = {
             name: cast(dt.DType, column.dtype)
             for name, column in self.__columns__.items()
@@ -214,11 +220,15 @@ class SchemaMetaclass(type):
     def properties(self) -> SchemaProperties:
         return self.__properties__
 
-    def columns(self) -> Dict[str, ColumnDefinition]:
+    def columns(self) -> Dict[str, ColumnSchema]:
         return dict(self.__columns__)
 
     def column_names(self) -> list[str]:
         return list(self.keys())
+
+    def column_properties(self, name: str) -> ColumnProperties:
+        column = self.__columns__[name]
+        return ColumnProperties(dtype=column.dtype, append_only=column.append_only)
 
     def primary_key_columns(self) -> Optional[list[str]]:
         # There is a distinction between an empty set of columns denoting
@@ -249,7 +259,9 @@ class SchemaMetaclass(type):
         return self.__types__.values()
 
     def update_types(self, **kwargs) -> Type[Schema]:
-        columns: Dict[str, ColumnDefinition] = dict(self.__columns__)
+        columns: Dict[str, ColumnDefinition] = {
+            col.name: col.to_definition() for col in self.__columns__.values()
+        }
         for name, dtype in kwargs.items():
             if name not in columns:
                 raise ValueError(
@@ -299,6 +311,42 @@ class SchemaMetaclass(type):
 
     def __hash__(self) -> int:
         return hash(self._as_tuple())
+
+    def assert_equal_to(
+        self,
+        other: Type[Schema],
+        *,
+        allow_superset: bool = False,
+        ignore_primary_keys: bool = True,
+    ) -> None:
+        self_dict = self.as_dict()
+        other_dict = other.as_dict()
+
+        # Check if self has all columns of other
+        if self_dict.keys() < other_dict.keys():
+            missing_columns = other_dict.keys() - self_dict.keys()
+            raise AssertionError(f"schema does not have columns {missing_columns}")
+
+        # Check if types of columns are the same
+        for col in other_dict:
+            assert other_dict[col] == self_dict[col], (
+                f"type of column {col} does not match - its type is {self_dict[col]} in {self.__name__}",
+                f" and {other_dict[col]} in {other.__name__}",
+            )
+
+        # When allow_superset=False, check that self does not have extra columns
+        if not allow_superset and self_dict.keys() > other_dict.keys():
+            extra_columns = self_dict.keys() - other_dict.keys()
+            raise AssertionError(
+                f"there are extra columns: {extra_columns} which are not present in the provided schema"
+            )
+
+        # Check whether primary keys are the same
+        if not ignore_primary_keys:
+            assert self.primary_key_columns() == other.primary_key_columns(), (
+                f"primary keys in the schemas do not match - they are {self.primary_key_columns()} in {self.__name__}",
+                f" and {other.primary_key_columns()} in {other.__name__}",
+            )
 
 
 class Schema(metaclass=SchemaMetaclass):
@@ -356,14 +404,31 @@ _no_default_value_marker = _Undefined()
 
 
 @dataclass(frozen=True)
+class ColumnSchema:
+    primary_key: bool
+    default_value: Optional[Any]
+    dtype: dt.DType
+    name: str
+    append_only: bool
+
+    def has_default_value(self) -> bool:
+        return self.default_value != _no_default_value_marker
+
+    def to_definition(self) -> ColumnDefinition:
+        return ColumnDefinition(
+            primary_key=self.primary_key,
+            default_value=self.default_value,
+            dtype=self.dtype,
+            name=self.name,
+        )
+
+
+@dataclass(frozen=True)
 class ColumnDefinition:
     primary_key: bool = False
     default_value: Optional[Any] = _no_default_value_marker
     dtype: Optional[dt.DType] = dt.ANY
     name: Optional[str] = None
-
-    def has_default_value(self) -> bool:
-        return self.default_value != _no_default_value_marker
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)

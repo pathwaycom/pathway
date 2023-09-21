@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Type, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, TypeVar
 
 from pathway.internals import expression as expr
+
+if TYPE_CHECKING:
+    from pathway.internals.table import Table
 
 
 class ExpressionVisitor(ABC):
@@ -15,14 +18,13 @@ class ExpressionVisitor(ABC):
             expr.ColumnUnaryOpExpression: self.eval_unary_op,
             expr.ColumnBinaryOpExpression: self.eval_binary_op,
             expr.ReducerExpression: self.eval_reducer,
-            expr.ReducerIxExpression: self.eval_reducer_ix,
             expr.CountExpression: self.eval_count,
             expr.ApplyExpression: self.eval_apply,
             expr.ColumnConstExpression: self.eval_const,
-            expr.ColumnIxExpression: self.eval_ix,
             expr.ColumnCallExpression: self.eval_call,
             expr.PointerExpression: self.eval_pointer,
             expr.CastExpression: self.eval_cast,
+            expr.ConvertExpression: self.eval_convert,
             expr.DeclareTypeExpression: self.eval_declare,
             expr.CoalesceExpression: self.eval_coalesce,
             expr.RequireExpression: self.eval_require,
@@ -30,7 +32,7 @@ class ExpressionVisitor(ABC):
             expr.NumbaApplyExpression: self.eval_numbaapply,
             expr.AsyncApplyExpression: self.eval_async_apply,
             expr.MakeTupleExpression: self.eval_make_tuple,
-            expr.SequenceGetExpression: self.eval_sequence_get,
+            expr.GetExpression: self.eval_get,
             expr.MethodCallExpression: self.eval_method_call,
             expr.IsNotNoneExpression: self.eval_not_none,
             expr.IsNoneExpression: self.eval_none,
@@ -61,10 +63,6 @@ class ExpressionVisitor(ABC):
         ...
 
     @abstractmethod
-    def eval_reducer_ix(self, expression: expr.ReducerIxExpression):
-        ...
-
-    @abstractmethod
     def eval_count(self, expression: expr.CountExpression):
         ...
 
@@ -85,15 +83,15 @@ class ExpressionVisitor(ABC):
         ...
 
     @abstractmethod
-    def eval_ix(self, expression: expr.ColumnIxExpression):
-        ...
-
-    @abstractmethod
     def eval_call(self, expression: expr.ColumnCallExpression):
         ...
 
     @abstractmethod
     def eval_cast(self, expression: expr.CastExpression):
+        ...
+
+    @abstractmethod
+    def eval_convert(self, expression: expr.ConvertExpression):
         ...
 
     @abstractmethod
@@ -125,7 +123,7 @@ class ExpressionVisitor(ABC):
         ...
 
     @abstractmethod
-    def eval_sequence_get(self, expression: expr.SequenceGetExpression):
+    def eval_get(self, expression: expr.GetExpression):
         ...
 
     @abstractmethod
@@ -181,14 +179,6 @@ class IdentityTransform(ExpressionVisitor):
         args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         return expr.ReducerExpression(expression._reducer, *args)
 
-    def eval_reducer_ix(
-        self, expression: expr.ReducerIxExpression, **kwargs
-    ) -> expr.ReducerIxExpression:
-        [arg] = [self.eval_expression(arg, **kwargs) for arg in expression._args]
-        return expr.ReducerIxExpression(
-            expression._reducer, cast(expr.ColumnIxExpression, arg)
-        )
-
     def eval_count(
         self, expression: expr.CountExpression, **kwargs
     ) -> expr.CountExpression:
@@ -237,25 +227,12 @@ class IdentityTransform(ExpressionVisitor):
         optional = expression._optional
         return expr.PointerExpression(expression._table, *expr_args, optional=optional)
 
-    def eval_ix(
-        self, expression: expr.ColumnIxExpression, **kwargs
-    ) -> expr.ColumnIxExpression:
-        column_expression = self.eval_expression(
-            expression._column_expression, **kwargs
-        )
-        keys_expression = self.eval_expression(expression._keys_expression, **kwargs)
-        return expr.ColumnIxExpression(
-            column_expression=column_expression,
-            keys_expression=keys_expression,
-            optional=expression._optional,
-        )
-
     def eval_call(
         self, expression: expr.ColumnCallExpression, **kwargs
     ) -> expr.ColumnCallExpression:
         expr_args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         col_expr = self.eval_expression(expression._col_expr, **kwargs)
-        assert isinstance(col_expr, expr.ColumnRefOrIxExpression)
+        assert isinstance(col_expr, expr.ColumnReference)
         return expr.ColumnCallExpression(col_expr=col_expr, args=expr_args)
 
     def eval_cast(
@@ -263,6 +240,12 @@ class IdentityTransform(ExpressionVisitor):
     ) -> expr.CastExpression:
         result = self.eval_expression(expression._expr, **kwargs)
         return expr.CastExpression(return_type=expression._return_type, expr=result)
+
+    def eval_convert(
+        self, expression: expr.ConvertExpression, **kwargs
+    ) -> expr.ConvertExpression:
+        result = self.eval_expression(expression._expr, **kwargs)
+        return expr.ConvertExpression(return_type=expression._return_type, expr=result)
 
     def eval_declare(
         self, expression: expr.DeclareTypeExpression, **kwargs
@@ -312,10 +295,8 @@ class IdentityTransform(ExpressionVisitor):
         expr_args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         return expr.MakeTupleExpression(*expr_args)
 
-    def eval_sequence_get(
-        self, expression: expr.SequenceGetExpression, **kwargs
-    ) -> expr.SequenceGetExpression:
-        return expr.SequenceGetExpression(
+    def eval_get(self, expression: expr.GetExpression, **kwargs) -> expr.GetExpression:
+        return expr.GetExpression(
             self.eval_expression(expression._object, **kwargs),
             self.eval_expression(expression._index, **kwargs),
             self.eval_expression(expression._default, **kwargs),
@@ -337,3 +318,20 @@ class IdentityTransform(ExpressionVisitor):
     ) -> expr.UnwrapExpression:
         result = self.eval_expression(expression._expr, **kwargs)
         return expr.UnwrapExpression(expr=result)
+
+
+class TableCollector(IdentityTransform):
+    table_list: List[Table]
+
+    def __init__(self):
+        self.table_list = []
+
+    def eval_column_val(self, expression: expr.ColumnReference, **kwargs: Any):
+        self.table_list.append(expression.table)
+        return super().eval_column_val(expression, **kwargs)
+
+
+def collect_tables(expression: expr.ColumnExpression) -> List[Table]:
+    collector = TableCollector()
+    collector.eval_expression(expression)
+    return collector.table_list

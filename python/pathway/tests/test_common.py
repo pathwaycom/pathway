@@ -18,6 +18,7 @@ import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
 from pathway.internals import api
 from pathway.internals import dtype as dt
+from pathway.internals.decorators import empty_from_schema
 from pathway.internals.expression import NumbaApplyExpression
 from pathway.tests.utils import (
     T,
@@ -555,9 +556,8 @@ def test_indexing_single_value_groupby():
     grouped_table = indexed_table.groupby(pw.this.colB).reduce(
         pw.this.colB, sum=pw.reducers.sum(pw.this.colA)
     )
-    returned = indexed_table.select(
-        *pw.this, sum=grouped_table.ix_ref(pw.this.colB).sum
-    )
+    returned = indexed_table + grouped_table.ix_ref(indexed_table.colB)[["sum"]]
+
     expected = T(
         """
     colA   | colB | sum
@@ -583,10 +583,11 @@ def test_indexing_single_value_groupby_hardcoded_value():
     grouped_table = indexed_table.groupby(pw.this.colB).reduce(
         pw.this.colB, sum=pw.reducers.sum(pw.this.colA)
     )
-    returned = indexed_table.select(*pw.this, sum_A=grouped_table.ix_ref("A").sum)
+    returned = indexed_table + grouped_table.ix_ref("A", context=indexed_table)[["sum"]]
+    returned2 = indexed_table.select(*pw.this, sum=grouped_table.ix_ref("A").sum)
     expected = T(
         """
-    colA   | colB | sum_A
+    colA   | colB | sum
     10     | A    | 30
     20     | A    | 30
     30     | B    | 30
@@ -594,6 +595,7 @@ def test_indexing_single_value_groupby_hardcoded_value():
     """
     )
     assert_table_equality_wo_index(returned, expected)
+    assert_table_equality(returned, returned2)
 
 
 def test_indexing_two_values_groupby():
@@ -613,8 +615,9 @@ def test_indexing_two_values_groupby():
     grouped_table = indexed_table.groupby(pw.this.colB, pw.this.colC).reduce(
         pw.this.colB, pw.this.colC, sum=pw.reducers.sum(pw.this.colA)
     )
-    returned = indexed_table.select(
-        *pw.this, sum=grouped_table.ix_ref(pw.this.colB, pw.this.colC).sum
+    returned = (
+        indexed_table
+        + grouped_table.ix_ref(indexed_table.colB, indexed_table.colC)[["sum"]]
     )
     expected = T(
         """
@@ -663,7 +666,7 @@ def test_ixref_optional():
     )
     returned = indexer.select(
         *pw.this,
-        sum=grouped_table.ix_ref(pw.this.refB, pw.this.refC, optional=True).sum,
+        sum=grouped_table.ix_ref(indexer.refB, indexer.refC, optional=True).sum,
     )
     expected = T(
         """
@@ -697,7 +700,8 @@ def test_indexing_two_values_groupby_hardcoded_values():
     """
     )
     returned = tested_table.select(
-        *pw.this, new_value=indexed_table.ix_ref(10, "A").colA
+        *pw.this,
+        new_value=indexed_table.ix_ref(10, "A").colA,
     )
     expected = T(
         """
@@ -1378,9 +1382,7 @@ def test_column_fixpoint():
 def test_rows_fixpoint():
     def min_id_remove(iterated: pw.Table):
         min_id_table = iterated.reduce(min_id=pw.reducers.min(iterated.id))
-        iterated = iterated.filter(
-            iterated.id != min_id_table.ix(min_id_table.pointer_from()).min_id
-        )
+        iterated = iterated.filter(iterated.id != min_id_table.ix_ref().min_id)
         return dict(iterated=iterated)
 
     ret = pw.iterate(
@@ -2522,6 +2524,31 @@ def test_ix_none_in_source():
     assert_table_equality(res, expected)
 
 
+def test_ix_no_select():
+    input = T(
+        """
+            | foo   | bar
+        1   | 1     | 4
+        2   | 1     | 5
+        3   | 2     | 6
+        """
+    ).with_columns(foo=pw.this.pointer_from(pw.this.foo))
+
+    result = input.ix(input.foo)[["bar"]]
+
+    assert_table_equality(
+        result,
+        T(
+            """
+                | bar
+            1   | 4
+            2   | 4
+            3   | 5
+            """
+        ),
+    )
+
+
 def test_ix_self_select():
     input = T(
         """
@@ -2532,7 +2559,7 @@ def test_ix_self_select():
         """
     ).with_columns(foo=pw.this.pointer_from(pw.this.foo))
 
-    result = input.select(result=input.ix(input.foo).bar)
+    result = input.select(result=input.ix(pw.this.foo).bar)
 
     assert_table_equality(
         result,
@@ -2543,6 +2570,34 @@ def test_ix_self_select():
             2   | 4
             3   | 5
             """
+        ),
+    )
+
+
+def test_groupby_ix_this():
+    left = T(
+        """
+    pet  |  owner  | age
+    dog  | Alice   | 10
+    dog  | Bob     | 9
+    cat  | Alice   | 8
+    cat  | Bob     | 7
+    """
+    )
+
+    res = left.groupby(left.pet).reduce(
+        age=pw.reducers.max(pw.this.age),
+        owner=pw.this.ix(pw.reducers.argmax(pw.this.age)).owner,
+    )
+
+    assert_table_equality_wo_index(
+        res,
+        T(
+            """
+        age | owner
+        10  | Alice
+        8   | Alice
+    """
         ),
     )
 
@@ -2980,8 +3035,8 @@ def test_argmin_argmax_tie():
 
     res = table.groupby(table.age).reduce(
         table.age,
-        min=table.ix(pw.reducers.argmin(table.age)).name,
-        max=table.ix(pw.reducers.argmax(table.age)).name,
+        min=table.ix(pw.reducers.argmin(table.age), context=pw.this).name,
+        max=table.ix(pw.reducers.argmax(table.age), context=pw.this).name,
     )
 
     expected = T(
@@ -3508,7 +3563,7 @@ def test_groupby_ix():
     ).with_columns(grouper=pw.this.pointer_from(pw.this.grouper))
     res = tab.groupby(id=tab.grouper).reduce(
         col=pw.reducers.argmax(tab.val),
-        output=tab.ix(pw.reducers.argmax(tab.val)).output,
+        output=tab.ix(pw.reducers.argmax(tab.val), context=pw.this).output,
     )
     expected = T(
         """
@@ -3571,10 +3626,10 @@ def test_join_ix():
     )
 
     ret = left.join(right, left.a == right.id, id=left.id).select(
-        col=right.ix(left.a).b
+        col=right.ix(left.a, context=pw.this).b
     )
 
-    ret3 = right.having(left.a).select(col=right.ix(left.a).b)
+    ret3 = right.having(left.a).select(col=right.ix(left.a, context=pw.this).b)
 
     # below is the desugared version of above computation
     # it works, and it's magic
@@ -3972,8 +4027,8 @@ def test_multiple_having():
 
     assert_table_equality_wo_index(
         indexed_table.having(indexer1.key, indexer2.key).select(
-            col1=indexed_table.ix(indexer1.key).col,
-            col2=indexed_table.ix(indexer2.key).col,
+            col1=indexed_table.ix(indexer1.key, context=pw.this).col,
+            col2=indexed_table.ix(indexer2.key, context=pw.this).col,
         ),
         T(
             """
@@ -5438,3 +5493,135 @@ def test_tuple_reducer_consistency():
             """
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "table_schema, schema, allow_superset, ignore_primary_keys",
+    [
+        (
+            {"col_a": pw.column_definition(dtype=int)},
+            {"col_a": pw.column_definition(dtype=int)},
+            False,
+            False,
+        ),
+        (
+            {
+                "col_a": pw.column_definition(dtype=int),
+                "col_b": pw.column_definition(dtype=float),
+            },
+            {"col_a": pw.column_definition(dtype=int)},
+            True,
+            False,
+        ),
+        (
+            {
+                "col_a": pw.column_definition(dtype=int, primary_key=True),
+                "col_b": pw.column_definition(dtype=float),
+            },
+            {"col_a": pw.column_definition(dtype=int, primary_key=True)},
+            True,
+            False,
+        ),
+        (
+            {
+                "col_a": pw.column_definition(dtype=int, primary_key=True),
+                "col_b": pw.column_definition(dtype=float),
+            },
+            {"col_a": pw.column_definition(dtype=int)},
+            True,
+            True,
+        ),
+    ],
+)
+def test_assert_table_has_schema_passes(
+    table_schema, schema, allow_superset, ignore_primary_keys
+):
+    table_schema = pw.schema_builder(table_schema)
+    table = empty_from_schema(table_schema)
+    schema = pw.schema_builder(schema)
+
+    pw.assert_table_has_schema(
+        table,
+        schema,
+        allow_superset=allow_superset,
+        ignore_primary_keys=ignore_primary_keys,
+    )
+
+
+@pytest.mark.parametrize(
+    "table_schema, schema, allow_superset, ignore_primary_keys",
+    [
+        (
+            {"col_a": pw.column_definition(dtype=int)},
+            {"col_a": pw.column_definition(dtype=float)},
+            False,
+            False,
+        ),
+        (
+            {
+                "col_a": pw.column_definition(dtype=int),
+                "col_b": pw.column_definition(dtype=float),
+            },
+            {"col_a": pw.column_definition(dtype=int)},
+            False,
+            False,
+        ),
+        (
+            {"col_a": pw.column_definition(dtype=int, primary_key=True)},
+            {
+                "col_a": pw.column_definition(dtype=int, primary_key=True),
+                "col_b": pw.column_definition(dtype=float),
+            },
+            True,
+            False,
+        ),
+        (
+            {
+                "col_a": pw.column_definition(dtype=int, primary_key=True),
+                "col_b": pw.column_definition(dtype=float),
+            },
+            {"col_a": pw.column_definition(dtype=int)},
+            True,
+            False,
+        ),
+    ],
+)
+def test_assert_table_has_schema_fails(
+    table_schema, schema, allow_superset, ignore_primary_keys
+):
+    table_schema = pw.schema_builder(table_schema)
+    table = empty_from_schema(table_schema)
+    schema = pw.schema_builder(schema)
+
+    with pytest.raises(AssertionError):
+        pw.assert_table_has_schema(
+            table,
+            schema,
+            allow_superset=allow_superset,
+            ignore_primary_keys=ignore_primary_keys,
+        )
+
+
+def test_assert_table_has_schema_default_arguments():
+    table_schema = pw.schema_builder(
+        {
+            "col_a": pw.column_definition(dtype=int, primary_key=True),
+            "col_b": pw.column_definition(dtype=float),
+        }
+    )
+    table = empty_from_schema(table_schema)
+
+    # checking ignore_primary_keys argument
+    schema = pw.schema_from_types(col_a=int, col_b=float)
+    pw.assert_table_has_schema(
+        table,
+        schema,
+    )
+
+    # checking allow_superset argument
+    schema = pw.schema_from_types(col_a=int, col_b=float, col_c=str)
+    with pytest.raises(AssertionError):
+        pw.assert_table_has_schema(
+            table,
+            schema,
+        )
