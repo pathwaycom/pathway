@@ -84,6 +84,35 @@ def test_unpack_col():
     )
 
 
+def test_unpack_col_schema():
+    class TestSchema(pw.Schema):
+        coord1: int
+        coord2: float
+        coord3: str
+
+    data = T(
+        """
+            | A   | B   | C
+        1   | 11  | 1.1 | abc
+        2   | 12  | 1.2 | def
+        3   | 13  | 1.3 | ghi
+        """
+    )
+    data = data.select(combined=pw.make_tuple(pw.this.A, pw.this.B, pw.this.C))
+    result = unpack_col(data.combined, schema=TestSchema)
+    assert_table_equality(
+        result,
+        T(
+            """
+            | coord1  | coord2 | coord3
+        1   | 11      | 1.1    | abc
+        2   | 12      | 1.2    | def
+        3   | 13      | 1.3    | ghi
+        """
+        ),
+    )
+
+
 def test_apply_all_rows():
     t1 = T(
         """

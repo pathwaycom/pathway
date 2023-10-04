@@ -14,21 +14,13 @@ from .base import (
 )
 
 
+@pytest.mark.parametrize("n_cpus", [1, 2, 4])
+@pytest.mark.parametrize("pstorage_type", [S3_STORAGE_NAME, FS_STORAGE_NAME])
 @pytest.mark.parametrize(
-    "n_backfilling_runs,n_cpus,mode,pstorage_type",
+    "n_backfilling_runs,mode",
     [
-        (3, 1, STREAMING_MODE_NAME, S3_STORAGE_NAME),
-        (3, 2, STREAMING_MODE_NAME, S3_STORAGE_NAME),
-        (3, 4, STREAMING_MODE_NAME, S3_STORAGE_NAME),
-        (3, 1, STATIC_MODE_NAME, S3_STORAGE_NAME),
-        (3, 2, STATIC_MODE_NAME, S3_STORAGE_NAME),
-        (3, 4, STATIC_MODE_NAME, S3_STORAGE_NAME),
-        (3, 1, STREAMING_MODE_NAME, FS_STORAGE_NAME),
-        (3, 2, STREAMING_MODE_NAME, FS_STORAGE_NAME),
-        (3, 4, STREAMING_MODE_NAME, FS_STORAGE_NAME),
-        (3, 1, STATIC_MODE_NAME, FS_STORAGE_NAME),
-        (3, 2, STATIC_MODE_NAME, FS_STORAGE_NAME),
-        (3, 4, STATIC_MODE_NAME, FS_STORAGE_NAME),
+        (3, STREAMING_MODE_NAME),
+        (3, STATIC_MODE_NAME),
     ],
 )
 def test_integration_new_data(

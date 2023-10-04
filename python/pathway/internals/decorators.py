@@ -23,10 +23,6 @@ def contextualized_operator(func):
     return _operator_wrapper(func, op.ContextualizedIntermediateOperator)
 
 
-def non_contextualized_operator(func):
-    return _operator_wrapper(func, op.NonContextualizedIntermediateOperator)
-
-
 def _operator_wrapper(func: Callable, operator_cls: type[op.OperatorFromDef]):
     fn_spec = function_spec(func)
 

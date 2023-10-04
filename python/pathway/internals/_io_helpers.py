@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import boto3
+
 from pathway.internals import api
 from pathway.internals import dtype as dt
 from pathway.internals import schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
+S3_PATH_PREFIX = "s3://"
+S3_DEFAULT_REGION = "us-east-1"
+S3_LOCATION_FIELD = "LocationConstraint"
+
 
 class AwsS3Settings:
     @trace_user_frame
     def __init__(
         self,
-        bucket_name,
         *,
+        bucket_name=None,
         access_key=None,
         secret_access_key=None,
         with_path_style=False,
@@ -38,6 +44,31 @@ class AwsS3Settings:
             with_path_style,
             region,
             endpoint,
+        )
+
+    @classmethod
+    def new_from_path(cls, s3_path: str):
+        starts_with_prefix = s3_path.startswith(S3_PATH_PREFIX)
+        has_extra_chars = len(s3_path) > len(S3_PATH_PREFIX)
+        if not starts_with_prefix or not has_extra_chars:
+            raise ValueError("Incorrect S3 path: {}".format(s3_path))
+        bucket = s3_path[len(S3_PATH_PREFIX) :].split("/")[0]
+
+        # the crate we use on the Rust-engine side can't detect the location
+        # of a bucket, so it's done on the Python side
+        s3_client = boto3.client("s3")
+        location_response = s3_client.get_bucket_location(Bucket=bucket)
+
+        # Buckets in Region us-east-1 have a LocationConstraint of None
+        location_constraint = location_response[S3_LOCATION_FIELD]
+        if location_constraint is None:
+            region = S3_DEFAULT_REGION
+        else:
+            region = location_constraint.split("|")[0]
+
+        return cls(
+            bucket_name=bucket,
+            region=region,
         )
 
 

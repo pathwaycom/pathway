@@ -192,7 +192,6 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
 class NoNewColumnsPathEvaluator(
     PathEvaluator,
     context_types=[
-        clmn.CopyContext,
         clmn.FilterContext,
         clmn.ReindexContext,
         clmn.IntersectContext,

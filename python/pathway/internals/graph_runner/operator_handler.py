@@ -34,7 +34,6 @@ from pathway.internals.operator import (
     DebugOperator,
     InputOperator,
     IterateOperator,
-    NonContextualizedIntermediateOperator,
     Operator,
     OutputOperator,
 )
@@ -278,18 +277,6 @@ class ContextualizedIntermediateOperatorHandler(
 
     def _does_not_need_evaluation(self, column) -> bool:
         return self.state.has_column(column) or self.scope_context.skip_column(column)
-
-
-class NonContextualizedIntermediateOperatorHandler(
-    OperatorHandler[NonContextualizedIntermediateOperator],
-    operator_type=NonContextualizedIntermediateOperator,
-):
-    def _run(
-        self,
-        operator: NonContextualizedIntermediateOperator,
-        output_storages: dict[Table, Storage],
-    ):
-        pass
 
 
 class DebugOperatorHandler(

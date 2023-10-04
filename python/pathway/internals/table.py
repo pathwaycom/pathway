@@ -751,9 +751,8 @@ class Table(
         False
         """
 
-        context = clmn.CopyContext(self._universe)
         columns = {
-            name: self._wrap_column_in_context(context, column, name)
+            name: self._wrap_column_in_context(self._context, column, name)
             for name, column in self._columns.items()
         }
 
@@ -1491,10 +1490,9 @@ class Table(
         for new_name, old_name in mapping.items():
             renamed_columns[new_name] = self._columns[old_name]
 
-        context = clmn.CopyContext(self._universe)
         columns_wrapped = {
             name: self._wrap_column_in_context(
-                context, column, mapping[name] if name in mapping else name
+                self._context, column, mapping[name] if name in mapping else name
             )
             for name, column in renamed_columns.items()
         }
@@ -1638,9 +1636,8 @@ class Table(
             else:
                 assert isinstance(col, str)
                 new_columns.pop(col)
-        context = clmn.CopyContext(self._universe)
         columns_wrapped = {
-            name: self._wrap_column_in_context(context, column, name)
+            name: self._wrap_column_in_context(self._context, column, name)
             for name, column in new_columns.items()
         }
         return self._with_same_universe(*columns_wrapped.items())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable, Sequence
+from typing import Type, overload
 
 import pathway.internals as pw
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -58,21 +59,42 @@ def flatten_column(
     return input_table.flatten(**kwargs)
 
 
-@runtime_type_check
-@trace_user_frame
+@overload
 def unpack_col(
     column: pw.ColumnReference, *unpacked_columns: pw.ColumnReference | str
 ) -> pw.Table:
+    ...
+
+
+@overload
+def unpack_col(
+    column: pw.ColumnReference,
+    *,
+    schema: Type[pw.Schema],
+) -> pw.Table:
+    ...
+
+
+@runtime_type_check
+@trace_user_frame
+def unpack_col(
+    column: pw.ColumnReference,
+    *unpacked_columns: pw.ColumnReference | str,
+    schema: Type[pw.Schema] | None = None,
+) -> pw.Table:
     """Unpacks multiple columns from a single column.
+
+    Arguments unpacked_columns and schema are mutually exclusive
 
     Input:
     - column: Column expression of column containing some sequences
     - unpacked_columns: list of names of output columns
+    - schema: Schema of new columns
 
     Output:
     - Table with columns named by "unpacked_columns" argument
 
-    Example:
+    Examples:
 
     >>> import pathway as pw
     >>> t1 = pw.debug.table_from_markdown(
@@ -94,10 +116,31 @@ def unpack_col(
     Alice  | 25  | dog
     Bob    | 32  | cat
     Carole | 28  | dog
+    >>> class SomeSchema(pw.Schema):
+    ...     name: str
+    ...     age: int
+    ...     pet: str
+    >>> unpack_table = pw.utils.col.unpack_col(t2.user, schema=SomeSchema)
+    >>> pw.debug.compute_and_print(unpack_table, include_id=False)
+    name   | age | pet
+    Alice  | 25  | dog
+    Bob    | 32  | cat
+    Carole | 28  | dog
     """
+
+    if (schema is None) == (len(unpacked_columns) == 0):
+        raise ValueError(
+            "exactly one of the parameters `schema` or `unpacked_columns` must be provided"
+        )
+
+    if schema is not None:
+        unpacked_columns = tuple(schema.column_names())
     colrefs = [pw.this[unpacked_column] for unpacked_column in unpacked_columns]
     kw = {colref.name: column[i] for i, colref in enumerate(colrefs)}
-    return column.table.select(**kw)
+    result = column.table.select(**kw)
+    if schema is not None:
+        result = result.update_types(**schema.typehints())
+    return result
 
 
 # TODO: generalize to apply on groupby: https://github.com/navalgo/IoT-Pathway/issues/1919

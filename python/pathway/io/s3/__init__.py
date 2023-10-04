@@ -19,6 +19,10 @@ from pathway.io._utils import (
     internal_connector_mode,
 )
 
+S3_PATH_PREFIX = "s3://"
+S3_DEFAULT_REGION = "us-east-1"
+S3_LOCATION_FIELD = "LocationConstraint"
+
 
 class DigitalOceanS3Settings:
     @trace_user_frame
@@ -80,9 +84,9 @@ class WasabiS3Settings:
 @trace_user_frame
 def read(
     path: str,
-    aws_s3_settings: AwsS3Settings,
     format: str,
     *,
+    aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
     mode: str = "streaming",
     csv_settings: CsvParserSettings | None = None,
@@ -172,9 +176,14 @@ def read(
             "Snapshot mode is currently unsupported in S3-like connectors"
         )
 
+    if aws_s3_settings:
+        prepared_aws_settings = aws_s3_settings
+    else:
+        prepared_aws_settings = AwsS3Settings.new_from_path(path)
+
     data_storage = construct_s3_data_storage(
         path=path,
-        rust_engine_s3_settings=aws_s3_settings.settings,
+        rust_engine_s3_settings=prepared_aws_settings.settings,
         format=format,
         mode=internal_mode,
         csv_settings=csv_settings,

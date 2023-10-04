@@ -1559,25 +1559,31 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
-        let new_values = table.values().map_wrapped_named(
-            "expression_table::evaluate_expression",
-            wrapper,
-            move |(key, values)| {
-                let args: Vec<Value> = column_paths
-                    .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .collect::<Result<_>>()
-                    .unwrap_with_reporter(&error_reporter);
-                let new_values = expressions.iter().map(|expression_data| {
-                    let result = expression_data
-                        .expression
-                        .eval(&args)
-                        .unwrap_with_reporter_and_trace(&error_reporter, &expression_data.trace);
-                    result
-                });
-                (key, Value::Tuple(new_values.collect()))
-            },
-        );
+        let new_values = table
+            .values()
+            .consolidate_nondecreasing()
+            .map_wrapped_named(
+                "expression_table::evaluate_expression",
+                wrapper,
+                move |(key, values)| {
+                    let args: Vec<Value> = column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter);
+                    let new_values = expressions.iter().map(|expression_data| {
+                        let result = expression_data
+                            .expression
+                            .eval(&args)
+                            .unwrap_with_reporter_and_trace(
+                                &error_reporter,
+                                &expression_data.trace,
+                            );
+                        result
+                    });
+                    (key, Value::Tuple(new_values.collect()))
+                },
+            );
         Ok(self.tables.alloc(Table::from_collection(new_values)))
     }
 

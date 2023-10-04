@@ -226,18 +226,19 @@ def get_pw_program_run_time(
                     needs_polling = False
         finally:
             if mode == STREAMING_MODE_NAME:
-                popen.kill()
+                pw_exit_code = popen.poll()
+                if not pw_exit_code:
+                    popen.kill()
             else:
                 pw_exit_code = popen.wait()
-                if pw_exit_code != 0:
-                    warnings.warn(
-                        f"Warning: pw program terminated with non zero exit code: {pw_exit_code}"
-                    )
-                    assert (
-                        n_retries < 3
-                    ), "Number of retries for S3 reconnection exceeded"
-                    needs_pw_program_launch = True
-                    n_retries += 1
+
+            if pw_exit_code is not None and pw_exit_code != 0:
+                warnings.warn(
+                    f"Warning: pw program terminated with non zero exit code: {pw_exit_code}"
+                )
+                assert n_retries < 3, "Number of retries for S3 reconnection exceeded"
+                needs_pw_program_launch = True
+                n_retries += 1
 
     return time.time() - time_start
 

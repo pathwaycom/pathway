@@ -6,21 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.5.1] - 2023-10-04
+
+### Fixed
+- `select` operates only on consistent states.
+
 ## [0.5.0] - 2023-10-04
 
 ### Added
 - `Schema` method `typehints` that returns dict of mypy-compatible typehints.
-
-### Changed
-- **BREAKING**: renamed `Table` method `dtypes` to `typehints`. It now returns a `dict` of mypy-compatible typehints.
-- **BREAKING**: `Schema.__getitem__` returns a data class `ColumnSchema` containing all related information on particular column.
-
-### Added
 - Support for JSON parsing from CSV sources.
 - `restrict` method in `Table` to restrict table universe to the universe of the other table.
 - Better support for postgresql types in the output connector.
 
 ### Changed
+- **BREAKING**: renamed `Table` method `dtypes` to `typehints`. It now returns a `dict` of mypy-compatible typehints.
+- **BREAKING**: `Schema.__getitem__` returns a data class `ColumnSchema` containing all related information on particular column.
 - **BREAKING**: `tuple` reducer used after intervals_over window now sorts values by time.
 - **BREAKING**: expressions used in `select`, `filter`, `flatten`, `with_columns`, `with_id`, `with_id_from` have to have the same universe as the table. Earlier it was possible to use an expression from a superset of a table universe. To use expressions from wider universes, one can use `restrict` on the expression source table.
 - **BREAKING**: `pw.universes.promise_are_equal(t1, t2)` no longer allows to use references from `t1` and `t2` in a single expression. To change the universe of a table, use `with_universe_of`.

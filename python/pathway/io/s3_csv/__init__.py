@@ -4,29 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from pathway.internals import api, datasource
 from pathway.internals.api import PathwayType
-from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import (
-    CsvParserSettings,
-    check_deprecated_kwargs,
-    construct_connector_properties,
-    construct_schema_and_data_format,
-    internal_connector_mode,
-)
+from pathway.io._utils import CsvParserSettings, construct_schema_and_data_format
 from pathway.io.s3 import AwsS3Settings
+from pathway.io.s3 import read as s3_read
 
 
 @runtime_type_check
 @trace_user_frame
 def read(
     path: str,
-    aws_s3_settings: AwsS3Settings,
     *,
+    aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
     csv_settings: CsvParserSettings | None = None,
     mode: str = "streaming",
@@ -145,40 +138,29 @@ def read(
     ...     schema=InputSchema,
     ... )
     """
-    internal_mode = internal_connector_mode(mode)
-    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
-        raise NotImplementedError(
-            "Snapshot mode is currently unsupported in S3-like connectors"
+
+    # legacy fields are not supported in pw.io.s3 reader, so the
+    # schema should be constructed here
+    if not schema:
+        schema, _ = construct_schema_and_data_format(
+            "csv",
+            schema=schema,
+            csv_settings=csv_settings,
+            value_columns=value_columns,
+            primary_key=id_columns,
+            types=types,
+            default_values=default_values,
         )
 
-    check_deprecated_kwargs(kwargs, ["poll_new_objects"])
-
-    data_storage = api.DataStorage(
-        storage_type="s3_csv",
-        path=path,
-        aws_s3_settings=aws_s3_settings.settings,
-        csv_parser_settings=csv_settings.api_settings if csv_settings else None,
-        mode=internal_mode,
-        persistent_id=persistent_id,
-    )
-    schema, data_format = construct_schema_and_data_format(
+    return s3_read(
+        path,
         format="csv",
+        aws_s3_settings=aws_s3_settings,
         schema=schema,
-        value_columns=value_columns,
-        primary_key=id_columns,
-        types=types,
-        default_values=default_values,
-    )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
-    )
-    return table_from_datasource(
-        datasource.GenericDataSource(
-            datastorage=data_storage,
-            dataformat=data_format,
-            connector_properties=properties,
-            schema=schema,
-        ),
-        debug_datasource=datasource.debug_datasource(debug_data),
+        mode=mode,
+        csv_settings=csv_settings,
+        persistent_id=persistent_id,
+        autocommit_duration_ms=autocommit_duration_ms,
+        debug_data=debug_data,
+        **kwargs,
     )

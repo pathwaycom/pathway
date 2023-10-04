@@ -26,7 +26,6 @@ from pathway.internals.operator import (
     DebugOperator,
     InputOperator,
     IterateOperator,
-    NonContextualizedIntermediateOperator,
     Operator,
     OutputOperator,
     RowTransformerOperator,
@@ -141,13 +140,6 @@ class OperatorStorageGraph:
                 operator, DebugOperator
             ):
                 column_dependencies = self._compute_column_dependencies_output(operator)
-            elif isinstance(
-                operator,
-                NonContextualizedIntermediateOperator,
-            ):
-                column_dependencies = self._compute_column_dependencies_no_new_context(
-                    operator
-                )
             elif isinstance(operator, RowTransformerOperator):
                 column_dependencies = self._compute_column_dependencies_row_transformer(
                     operator, self.scope_context
@@ -251,20 +243,6 @@ class OperatorStorageGraph:
             column_dependencies[table_._universe].update(table_._columns.values())
         return column_dependencies
 
-    def _compute_column_dependencies_no_new_context(
-        self,
-        operator: NonContextualizedIntermediateOperator,
-    ) -> dict[Universe, StableSet[Column]]:
-        column_dependencies: dict[Universe, StableSet[Column]] = defaultdict(StableSet)
-        # can't use column.column_dependencies() because these operators don't wrap
-        # in a new context. Hence, using .column_dependencies() would use context
-        # of the previous operator.
-        for table_ in operator.output_tables:
-            column_dependencies[table_._universe].update(
-                self.column_deps_at_output[operator][table_]
-            )
-        return column_dependencies
-
     def _compute_column_dependencies_row_transformer(
         self,
         operator: RowTransformerOperator,
@@ -352,8 +330,7 @@ class OperatorStorageGraph:
                 self._compute_storage_paths_input(operator, storages)
             elif isinstance(operator, IterateOperator):
                 self._compute_storage_paths_iterate(operator, storages)
-            elif not isinstance(operator, NonContextualizedIntermediateOperator):
-                # NonContextualizedIntermediateOperator don't produce new data, skip
+            else:
                 self._compute_storage_paths_ordinary(operator, storages)
         self.final_storages = storages
 

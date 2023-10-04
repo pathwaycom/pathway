@@ -321,11 +321,6 @@ class TableRestrictedRowwiseContext(RowwiseContext):
 
 
 @dataclass(eq=False, frozen=True)
-class CopyContext(Context):
-    """Context used by operators not changing the columns."""
-
-
-@dataclass(eq=False, frozen=True)
 class GroupedContext(Context):
     """Context of `table.groupby().reduce() operation."""
 

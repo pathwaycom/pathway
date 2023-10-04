@@ -184,6 +184,9 @@ pub enum ReadError {
 
     #[error("malformed data")]
     MalformedData,
+
+    #[error("no objects to read")]
+    NoObjectsToRead,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -1439,14 +1442,30 @@ pub struct S3Scanner {
 }
 
 impl S3Scanner {
-    pub fn new(bucket: S3Bucket, objects_prefix: impl Into<String>) -> Self {
-        S3Scanner {
+    pub fn new(bucket: S3Bucket, objects_prefix: impl Into<String>) -> Result<Self, ReadError> {
+        let objects_prefix = objects_prefix.into();
+
+        let object_lists = bucket
+            .list(objects_prefix.clone(), None)
+            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        let mut has_nonempty_list = false;
+        for list in object_lists {
+            if !list.contents.is_empty() {
+                has_nonempty_list = true;
+                break;
+            }
+        }
+        if !has_nonempty_list {
+            return Err(ReadError::NoObjectsToRead);
+        }
+
+        Ok(S3Scanner {
             bucket,
-            objects_prefix: objects_prefix.into(),
+            objects_prefix,
 
             current_object: None,
             processed_objects: HashSet::new(),
-        }
+        })
     }
 
     pub fn stream_object_from_path_and_bucket(
@@ -1601,9 +1620,9 @@ impl S3CsvReader {
         parser_builder: csv::ReaderBuilder,
         poll_new_objects: bool,
         persistent_id: Option<PersistentId>,
-    ) -> S3CsvReader {
-        S3CsvReader {
-            s3_scanner: S3Scanner::new(bucket, objects_prefix),
+    ) -> Result<S3CsvReader, ReadError> {
+        Ok(S3CsvReader {
+            s3_scanner: S3Scanner::new(bucket, objects_prefix)?,
             poll_new_objects,
 
             parser_builder,
@@ -1612,7 +1631,7 @@ impl S3CsvReader {
             persistent_id,
             deferred_read_result: None,
             total_entries_read: 0,
-        }
+        })
     }
 
     fn stream_next_object(&mut self) -> Result<bool, ReadError> {
@@ -1899,9 +1918,9 @@ impl S3GenericReader {
         poll_new_objects: bool,
         persistent_id: Option<PersistentId>,
         read_method: ReadMethod,
-    ) -> S3GenericReader {
-        S3GenericReader {
-            s3_scanner: S3Scanner::new(bucket, objects_prefix),
+    ) -> Result<S3GenericReader, ReadError> {
+        Ok(S3GenericReader {
+            s3_scanner: S3Scanner::new(bucket, objects_prefix)?,
             poll_new_objects,
             read_method,
 
@@ -1909,7 +1928,7 @@ impl S3GenericReader {
             persistent_id,
             total_entries_read: 0,
             current_bytes_read: 0,
-        }
+        })
     }
 
     fn stream_next_object(&mut self) -> Result<bool, ReadError> {

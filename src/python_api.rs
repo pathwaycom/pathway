@@ -83,6 +83,7 @@ use crate::persistence::config::{
 };
 use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::pipe::{pipe, ReaderType, WriterType};
+use s3::creds::Credentials as AwsCredentials;
 
 mod logging;
 mod numba;
@@ -92,6 +93,7 @@ pub fn with_gil_and_pool<R>(f: impl FnOnce(Python) -> R + Ungil) -> R {
     Python::with_gil(|py| py.with_pool(f))
 }
 
+const S3_PATH_PREFIX: &str = "s3://";
 static CONVERT: GILOnceCell<PyObject> = GILOnceCell::new();
 
 fn get_convert_python_module(py: Python<'_>) -> &PyAny {
@@ -2938,31 +2940,34 @@ pub fn unsafe_make_pointer(value: KeyImpl) -> Key {
 
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct AwsS3Settings {
-    bucket_name: String,
+    bucket_name: Option<String>,
     region: s3::region::Region,
     access_key: Option<String>,
     secret_access_key: Option<String>,
     with_path_style: bool,
+    profile: Option<String>,
 }
 
 #[pymethods]
 impl AwsS3Settings {
     #[new]
     #[pyo3(signature = (
-        bucket_name,
+        bucket_name = None,
         access_key = None,
         secret_access_key = None,
         with_path_style = false,
         region = None,
         endpoint = None,
+        profile = None,
     ))]
     fn new(
-        bucket_name: String,
+        bucket_name: Option<String>,
         access_key: Option<String>,
         secret_access_key: Option<String>,
         with_path_style: bool,
         region: Option<String>,
         endpoint: Option<String>,
+        profile: Option<String>,
     ) -> PyResult<Self> {
         Ok(AwsS3Settings {
             bucket_name,
@@ -2970,6 +2975,7 @@ impl AwsS3Settings {
             access_key,
             secret_access_key,
             with_path_style,
+            profile,
         })
     }
 }
@@ -2997,8 +3003,20 @@ impl AwsS3Settings {
 }
 
 impl AwsS3Settings {
-    fn construct_private_bucket(&self) -> PyResult<S3Bucket> {
-        let credentials = s3::creds::Credentials::new(
+    fn final_bucket_name(&self, deduced_name: Option<&str>) -> PyResult<String> {
+        if let Some(bucket_name) = &self.bucket_name {
+            Ok(bucket_name.to_string())
+        } else if let Some(bucket_name) = deduced_name {
+            Ok(bucket_name.to_string())
+        } else {
+            Err(PyRuntimeError::new_err(
+                "bucket_name not specified and isn't in the s3 path",
+            ))
+        }
+    }
+
+    fn construct_private_bucket(&self, deduced_name: Option<&str>) -> PyResult<S3Bucket> {
+        let credentials = AwsCredentials::new(
             Some(&self.access_key.clone().ok_or(PyRuntimeError::new_err(
                 "access key must be specified for a private bucket",
             ))?),
@@ -3018,18 +3036,44 @@ impl AwsS3Settings {
             PyRuntimeError::new_err(format!("Unable to form credentials to AWS storage: {err}"))
         })?;
 
-        S3Bucket::new(&self.bucket_name, self.region.clone(), credentials).map_err(|err| {
+        self.construct_bucket_with_credentials(credentials, deduced_name)
+    }
+
+    fn construct_bucket_with_credentials(
+        &self,
+        credentials: AwsCredentials,
+        deduced_name: Option<&str>,
+    ) -> PyResult<S3Bucket> {
+        S3Bucket::new(
+            &self.final_bucket_name(deduced_name)?,
+            self.region.clone(),
+            credentials,
+        )
+        .map_err(|err| {
             PyRuntimeError::new_err(format!("Failed to connect to private AWS bucket: {err}"))
         })
     }
 
-    fn construct_public_bucket(&self) -> PyResult<S3Bucket> {
-        S3Bucket::new_public(&self.bucket_name, self.region.clone()).map_err(|err| {
-            PyRuntimeError::new_err(format!("Failed to connect to public AWS bucket: {err}"))
-        })
+    fn construct_public_bucket(&self, deduced_name: Option<&str>) -> PyResult<S3Bucket> {
+        S3Bucket::new_public(&self.final_bucket_name(deduced_name)?, self.region.clone()).map_err(
+            |err| PyRuntimeError::new_err(format!("Failed to connect to public AWS bucket: {err}")),
+        )
     }
 
-    fn construct_bucket(&self) -> PyResult<S3Bucket> {
+    fn deduce_bucket_and_path(s3_path: &str) -> (Option<String>, Option<String>) {
+        if !s3_path.starts_with(S3_PATH_PREFIX) {
+            return (None, Some(s3_path.to_string()));
+        }
+        let bucket_and_path = &s3_path[S3_PATH_PREFIX.len()..];
+        let bucket_and_path_tokenized: Vec<&str> = bucket_and_path.split('/').collect();
+
+        let bucket = bucket_and_path_tokenized[0];
+        let path = bucket_and_path_tokenized[1..].join("/");
+
+        (Some(bucket.to_string()), Some(path))
+    }
+
+    fn construct_bucket(&self, name_override: Option<&str>) -> PyResult<S3Bucket> {
         let has_access_key = self.access_key.is_some();
         let has_secret_access_key = self.secret_access_key.is_some();
         if has_access_key != has_secret_access_key {
@@ -3038,9 +3082,20 @@ impl AwsS3Settings {
 
         let mut bucket = {
             if has_access_key && has_secret_access_key {
-                self.construct_private_bucket()?
+                self.construct_private_bucket(name_override)?
             } else {
-                self.construct_public_bucket()?
+                let aws_credentials = AwsCredentials::from_sts_env("aws-creds")
+                    .or_else(|_| AwsCredentials::from_env())
+                    .or_else(|_| AwsCredentials::from_profile(self.profile.as_deref()))
+                    .or_else(|_| AwsCredentials::from_instance_metadata());
+
+                // first, try to deduce credentials from various sources
+                if let Ok(credentials) = aws_credentials {
+                    self.construct_bucket_with_credentials(credentials, name_override)?
+                } else {
+                    // if there are no credentials, treat the bucket as a public
+                    self.construct_public_bucket(name_override)?
+                }
             }
         };
 
@@ -3468,7 +3523,7 @@ impl DataStorage {
         let path = self
             .path
             .as_ref()
-            .ok_or_else(|| PyValueError::new_err("For fs storage, path must be specified"))?
+            .ok_or_else(|| PyValueError::new_err("For fs/s3 storage, path must be specified"))?
             .as_str();
         Ok(path)
     }
@@ -3485,6 +3540,7 @@ impl DataStorage {
     }
 
     fn s3_bucket(&self, py: pyo3::Python) -> PyResult<S3Bucket> {
+        let (bucket_name, _) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
         let bucket = self
             .aws_s3_settings
             .as_ref()
@@ -3492,7 +3548,7 @@ impl DataStorage {
                 PyValueError::new_err("For AWS storage, aws_s3_settings must be specified")
             })?
             .borrow(py)
-            .construct_bucket()?;
+            .construct_bucket(bucket_name.as_deref())?;
         Ok(bucket)
     }
 
@@ -3550,23 +3606,27 @@ impl DataStorage {
                 Ok((Box::new(storage), 1))
             }
             "s3" => {
+                let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
                 let storage = S3GenericReader::new(
                     self.s3_bucket(py)?,
-                    self.path()?,
+                    deduced_path.unwrap_or(self.path()?.to_string()),
                     self.mode.is_polling_enabled(),
                     self.internal_persistent_id(),
                     self.read_method,
-                );
+                )
+                .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
                 Ok((Box::new(storage), 1))
             }
             "s3_csv" => {
+                let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
                 let storage = S3CsvReader::new(
                     self.s3_bucket(py)?,
-                    self.path()?,
+                    deduced_path.unwrap_or(self.path()?.to_string()),
                     self.build_csv_parser_settings(py),
                     self.mode.is_polling_enabled(),
                     self.internal_persistent_id(),
-                );
+                )
+                .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
                 Ok((Box::new(storage), 1))
             }
             "csv" => {

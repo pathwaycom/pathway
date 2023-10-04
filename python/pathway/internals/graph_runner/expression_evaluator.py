@@ -810,12 +810,6 @@ class TableRestrictedRowwiseEvaluator(
         return super()._dereference(expression)
 
 
-class CopyEvaluator(ExpressionEvaluator, context_type=clmn.CopyContext):
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
-        return self.state.get_table(input_storage)
-
-
 class FilterEvaluator(ExpressionEvaluator, context_type=clmn.FilterContext):
     context: clmn.FilterContext
 

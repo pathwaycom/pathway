@@ -195,10 +195,12 @@ class OperatorFromDef(Operator, ABC):
         return self.func_spec.func.__name__
 
 
-class IntermediateOperator(OperatorFromDef):
-    """Operator producing tables. It should not be used directly. Use
-    ContextualizedIntermediateOperator or NonContextualizedIntermediateOperator depending
-    on your needs.
+class ContextualizedIntermediateOperator(OperatorFromDef):
+    """Operator producing tables with `ColumnWithExpression`s that have not been
+    evaluated yet.
+
+    `@contextualized_operator` can be used to decorate any function so that
+    operator will be created and added to the graph whenever such function is called.
     """
 
     def __init__(self, func_spec, id):
@@ -214,28 +216,6 @@ class IntermediateOperator(OperatorFromDef):
         self._prepare_outputs(result)
 
         return result.scalar_or_tuple()
-
-
-class ContextualizedIntermediateOperator(IntermediateOperator):
-    """Operator producing tables with `ColumnWithExpression`s that have not been
-    evaluated yet.
-
-    `@contextualized_operator` can be used to decorate any function so that
-    operator will be created and added to the graph whenever such function is called.
-    """
-
-    pass
-
-
-class NonContextualizedIntermediateOperator(IntermediateOperator):
-    """Operator producing tables consisting of columns that have been previously
-    evaluated.
-
-    `@non_contextualized_operator` can be used to decorate any function so
-    that operator will be created and added to the graph whenever such function is called.
-    """
-
-    pass
 
 
 class DebugOperator(Operator):
