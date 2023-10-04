@@ -40,12 +40,11 @@ where
     K: ExchangeData + Shard,
 {
     fn shard(&self) -> u64 {
-        self.key.shard()
+        1 // currently there is no support for sharding by instance, we need to centralize buffer to keep column time consistent for all entries in one instance
     }
 }
 
-impl<'a, S, PT: Timestamp<Summary = PT> + PathSummary<PT> + Lattice> MaybeTotalScope
-    for Child<'a, S, SelfCompactionTime<PT>>
+impl<'a, S, PT: Timestamp + Lattice> MaybeTotalScope for Child<'a, S, SelfCompactionTime<PT>>
 where
     S: ScopeParent<Timestamp = PT>,
 {
@@ -74,7 +73,6 @@ impl<T> SelfCompactionTime<T> {
 }
 
 impl<T: PartialOrder> TotalOrder for SelfCompactionTime<T> {}
-// Implement timely dataflow's `PartialOrder` trait.
 use timely::order::PartialOrder;
 impl<T: PartialOrder> PartialOrder for SelfCompactionTime<T> {
     fn less_equal(&self, other: &Self) -> bool {
@@ -86,42 +84,41 @@ impl<T: PartialOrder> PartialOrder for SelfCompactionTime<T> {
     }
 }
 
-// Implement timely dataflow's `PathSummary` trait.
-// This is preparation for the `Timestamp` implementation below.
-impl<T: Timestamp<Summary = T> + PathSummary<T> + Default> PathSummary<SelfCompactionTime<T>>
-    for SelfCompactionTime<T>
-{
+impl<T: Timestamp> PathSummary<SelfCompactionTime<T>> for SelfCompactionTime<T::Summary> {
     fn results_in(&self, timestamp: &SelfCompactionTime<T>) -> Option<SelfCompactionTime<T>> {
         self.time
-            .results_in(&timestamp.clone().to_outer())
+            .results_in(&timestamp.time)
             .map(|val| SelfCompactionTime {
                 time: val,
-                retraction: true,
+                retraction: self.retraction || timestamp.retraction,
             })
     }
 
     fn followed_by(&self, other: &Self) -> Option<Self> {
-        Some(other.clone())
+        self.time
+            .followed_by(&other.time)
+            .map(|val| SelfCompactionTime {
+                time: val,
+                retraction: self.retraction || other.retraction,
+            })
     }
 }
 
-// Implement timely dataflow's `Timestamp` trait.
-
-impl<T: Timestamp<Summary = T> + Default + PathSummary<T>> Timestamp for SelfCompactionTime<T> {
-    type Summary = SelfCompactionTime<T>;
+impl<T: Timestamp> Timestamp for SelfCompactionTime<T> {
+    type Summary = SelfCompactionTime<T::Summary>;
     fn minimum() -> Self {
         SelfCompactionTime::original(T::minimum())
     }
 }
 
-impl<T: Timestamp<Summary = T> + Default + PathSummary<T>> Refines<T> for SelfCompactionTime<T> {
+impl<T: Timestamp> Refines<T> for SelfCompactionTime<T> {
     fn to_inner(other: T) -> Self {
         SelfCompactionTime::original(other)
     }
     fn to_outer(self: SelfCompactionTime<T>) -> T {
         self.time
     }
-    fn summarize(path: SelfCompactionTime<T>) -> <T as Timestamp>::Summary {
+    fn summarize(path: SelfCompactionTime<T::Summary>) -> T::Summary {
         path.time
     }
 }
@@ -194,33 +191,43 @@ impl Epsilon for i32 {
     }
 }
 
+impl Epsilon for u64 {
+    fn epsilon() -> u64 {
+        1
+    }
+}
+
 pub trait TimeColumnSortable<
     G: Scope,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
     R: ExchangeData + Abelian,
-    CT: Abelian + Ord + ExchangeData,
+    CT: Ord + ExchangeData,
+    CTE,
 >
 {
     fn prepend_time_to_key(
         &self,
-        time_column_extractor: &'static impl Fn(&V) -> CT,
-    ) -> Collection<G, (TimeKey<CT, K>, V), R>;
+        time_column_extractor: CTE,
+    ) -> Collection<G, (TimeKey<CT, K>, V), R>
+    where
+        CTE: Fn(&V) -> CT + 'static;
 }
 
-impl<G, K, V, R, CT> TimeColumnSortable<G, K, V, R, CT> for Collection<G, (K, V), R>
+impl<G, K, V, R, CT, CTE> TimeColumnSortable<G, K, V, R, CT, CTE> for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
-    CT: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
+    CT: ExchangeData,
     R: ExchangeData + Abelian,
+    CTE: Fn(&V) -> CT + 'static,
 {
     fn prepend_time_to_key(
         &self,
-        time_column_extractor: &'static impl Fn(&V) -> CT,
+        time_column_extractor: CTE,
     ) -> Collection<G, (TimeKey<CT, K>, V), R> {
-        self.map_ex(|(k, v)| {
+        self.map_ex(move |(k, v)| {
             (
                 TimeKey {
                     time: time_column_extractor(&v),
@@ -234,42 +241,49 @@ where
 
 pub trait TimeColumnBuffer<
     G: Scope,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
     R: ExchangeData + Abelian,
-    CT: Abelian + Ord + ExchangeData,
+    CT: Ord + ExchangeData,
+    TTE,
+    CTE,
 >
 {
     fn postpone(
         &self,
         scope: G,
-        threshold_time_extractor: &'static impl Fn(&V) -> CT,
-        current_time_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: TTE,
+        current_time_extractor: CTE,
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon;
+            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+        TTE: Fn(&V) -> CT + 'static,
+        CTE: Fn(&V) -> CT + 'static;
 }
 
-impl<G, K, V, R, CT> TimeColumnBuffer<G, K, V, R, CT> for Collection<G, (K, V), R>
+impl<G, K, V, R, CT, TTE, CTE> TimeColumnBuffer<G, K, V, R, CT, TTE, CTE>
+    for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
     G::Timestamp: Lattice,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
-    CT: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
+    CT: ExchangeData,
     R: ExchangeData + Abelian,
     TimeKey<CT, K>: Hashable,
 {
     fn postpone(
         &self,
         mut scope: G,
-        threshold_time_extractor: &'static impl Fn(&V) -> CT,
-        current_time_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: TTE,
+        current_time_extractor: CTE,
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp:
             Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+        TTE: Fn(&V) -> CT + 'static,
+        CTE: Fn(&V) -> CT + 'static,
     {
         scope.scoped::<SelfCompactionTime<G::Timestamp>, _, _>("buffer timespace", |inner| {
             let retractions = Variable::new(
@@ -317,16 +331,16 @@ fn push_key_values_to_output<K, C: Cursor, P>(
         //while we can do if let ... { if !weight.is_zero()} that introduces if-s
         //that can be collapsed, which is bad as well
         #[allow(clippy::unnecessary_unwrap)]
+        let curr_val = wrapper.cursor.val(wrapper.storage);
         if weight.is_some() && !weight.clone().unwrap().is_zero() {
-            let curr_val = wrapper.cursor.val(wrapper.storage);
             let time = time.as_ref().unwrap();
+            assert!(time >= capability.time());
+
             output.session(&capability).give((
                 (k.clone(), curr_val.clone()),
                 time.clone(),
-                weight.unwrap(),
+                weight.clone().unwrap(),
             ));
-        } else {
-            eprintln!("seen non forwardable entry {k:?} with weight {weight:?}");
         }
         wrapper.cursor.step_val(wrapper.storage);
     }
@@ -342,17 +356,19 @@ pub fn postpone_core<
     K: ExchangeData + Shard,
     V,
     R: ExchangeData + Abelian + Diff,
+    CTE,
 >(
     mut input_arrangement: KeyValArr<G, TimeKey<CT, K>, V, R>,
-    current_time_extractor: &'static impl Fn(&V) -> CT,
+    current_time_extractor: CTE,
 ) -> Collection<G, (K, V), R>
 where
     G: Scope,
     OT: Timestamp + Lattice + Ord,
     G::Timestamp: Lattice + Ord,
-    CT: ExchangeData + Abelian,
-    K: ExchangeData + Abelian,
-    V: ExchangeData + Abelian,
+    CT: ExchangeData,
+    K: ExchangeData,
+    V: ExchangeData,
+    CTE: Fn(&V) -> CT + 'static,
 {
     let stream = {
         input_arrangement
@@ -451,6 +467,7 @@ where
                         // 1. entries already emitted (skipped by seek_key)
                         // 2. entries to keep for later
                         // 3. entries to emit while processing this batch
+
                         if local_max_column_time.is_some() {
                             input_wrapper.cursor.rewind_keys(input_wrapper.storage);
                             if local_last_arrangement_key.is_some() {
@@ -458,7 +475,13 @@ where
                                     input_wrapper.storage,
                                     local_last_arrangement_key.as_ref().unwrap(),
                                 );
-                                input_wrapper.cursor.step_key(input_wrapper.storage);
+                                let found = input_wrapper.cursor.get_key(input_wrapper.storage);
+                                if found.is_some()
+                                    && found.as_ref().unwrap()
+                                        == &local_last_arrangement_key.as_ref().unwrap()
+                                {
+                                    input_wrapper.cursor.step_key(input_wrapper.storage);
+                                }
                             }
 
                             while input_wrapper.cursor.key_valid(input_wrapper.storage) {
@@ -508,88 +531,94 @@ where
 
 pub trait TimeColumnForget<
     G: Scope,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
     R: ExchangeData + Abelian,
-    CT: Abelian + Ord + ExchangeData,
+    CT: Ord + ExchangeData,
+    TTE,
+    CTE,
 >
 {
     fn forget(
         &self,
-        scope: G,
-        threshold_time_extractor: &'static impl Fn(&V) -> CT,
-        current_time_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: TTE,
+        current_time_extractor: CTE,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon;
+        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        TTE: Fn(&V) -> CT + 'static,
+        CTE: Fn(&V) -> CT + 'static;
 }
 
-impl<G, K, V, R, CT> TimeColumnForget<G, K, V, R, CT> for Collection<G, (K, V), R>
+impl<G, K, V, R, CT, TTE, CTE> TimeColumnForget<G, K, V, R, CT, TTE, CTE>
+    for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
     G::Timestamp: Lattice,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
-    CT: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
+    CT: ExchangeData,
     R: ExchangeData + Abelian,
     TimeKey<CT, K>: Hashable,
 {
     fn forget(
         &self,
-        scope: G,
-        threshold_time_extractor: &'static impl Fn(&V) -> CT,
-        current_time_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: TTE,
+        current_time_extractor: CTE,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        TTE: Fn(&V) -> CT + 'static,
+        CTE: Fn(&V) -> CT + 'static,
     {
-        self.concat(
-            &self
-                .postpone(scope, threshold_time_extractor, current_time_extractor)
-                .negate(),
-        )
+        self.concat(&self.negate().postpone(
+            self.scope(),
+            threshold_time_extractor,
+            current_time_extractor,
+        ))
     }
 }
-pub trait TimeColumnCutoff<
+pub trait TimeColumnFreeze<
     G: Scope,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
     R: ExchangeData + Abelian,
-    CT: Abelian + Ord + ExchangeData,
+    CT: Ord + ExchangeData,
+    CTE,
+    TTE,
 >
 {
-    fn cut_off(
+    fn freeze(
         &self,
-        scope: G,
-        threshold_time_extractor: &'static impl Fn(&V) -> CT,
-        current_column_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: TTE,
+        current_column_extractor: CTE,
     ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
     where
-        G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon;
+        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        TTE: Fn(&V) -> CT + 'static,
+        CTE: Fn(&V) -> CT + 'static;
 }
 
-impl<G, K, V, R, CT> TimeColumnCutoff<G, K, V, R, CT> for Collection<G, (K, V), R>
+impl<G, K, V, R, CT, CTE, TTE> TimeColumnFreeze<G, K, V, R, CT, CTE, TTE>
+    for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
     G::Timestamp: Lattice,
-    K: ExchangeData + Abelian + Shard,
-    V: ExchangeData + Abelian,
-    CT: ExchangeData + Abelian,
+    K: ExchangeData + Shard,
+    V: ExchangeData,
+    CT: ExchangeData,
     R: ExchangeData + Abelian,
     TimeKey<CT, K>: Hashable,
 {
-    fn cut_off(
+    fn freeze(
         &self,
-        _scope: G,
-        threshold_time_extractor: &'static impl Fn(&V) -> CT,
-        current_time_extractor: &'static impl Fn(&V) -> CT,
+        threshold_time_extractor: TTE,
+        current_time_extractor: CTE,
     ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
     where
-        G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        CTE: Fn(&V) -> CT + 'static,
+        TTE: Fn(&V) -> CT + 'static,
     {
         ignore_late(self, threshold_time_extractor, current_time_extractor)
     }
@@ -602,17 +631,21 @@ pub fn ignore_late<
     K: ExchangeData + Shard,
     V,
     R: ExchangeData + Abelian + Diff,
+    CTE,
+    TTE,
 >(
     input_collection: &Collection<G, (K, V), R>,
-    threshold_time_extractor: &'static impl Fn(&V) -> CT,
-    current_time_extractor: &'static impl Fn(&V) -> CT,
+    threshold_time_extractor: TTE,
+    current_time_extractor: CTE,
 ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
 where
     G: Scope,
     G::Timestamp: Lattice + Ord,
-    CT: ExchangeData + Abelian,
-    K: ExchangeData + Abelian,
-    V: ExchangeData + Abelian,
+    CT: ExchangeData,
+    K: ExchangeData,
+    V: ExchangeData,
+    TTE: Fn(&V) -> CT + 'static,
+    CTE: Fn(&V) -> CT + 'static,
 {
     let mut builder =
         OperatorBuilder::new("ignore_late".to_owned(), input_collection.inner.scope());
@@ -630,7 +663,6 @@ where
             input.for_each(|capability, batch| {
                 batch.swap(&mut input_buffer);
                 let mut max_curr_time = None;
-
                 for ((_key, val), time, _weight) in &input_buffer {
                     let candidate_column_time = current_time_extractor(val);
                     if max_column_time.is_none()

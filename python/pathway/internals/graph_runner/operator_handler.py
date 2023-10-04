@@ -9,17 +9,7 @@ Handlers should not be constructed directly. Use `Operator.for_operator()` inste
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import (
-    TYPE_CHECKING,
-    ClassVar,
-    Dict,
-    Generic,
-    List,
-    Optional,
-    Tuple,
-    Type,
-    TypeVar,
-)
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from pathway.internals import api
 from pathway.internals import column as clmn
@@ -30,9 +20,15 @@ from pathway.internals.datasource import (
     GenericDataSource,
     PandasDataSource,
 )
-from pathway.internals.graph_runner.expression_evaluator import ExpressionEvaluator
+from pathway.internals.graph_runner.expression_evaluator import (
+    AutotuplingJoinRowwiseEvaluator,
+    AutotuplingRowwiseEvaluator,
+    ExpressionEvaluator,
+)
+from pathway.internals.graph_runner.path_storage import Storage
 from pathway.internals.graph_runner.scope_context import ScopeContext
 from pathway.internals.graph_runner.state import ScopeState
+from pathway.internals.graph_runner.storage_graph import OperatorStorageGraph
 from pathway.internals.operator import (
     ContextualizedIntermediateOperator,
     DebugOperator,
@@ -42,6 +38,7 @@ from pathway.internals.operator import (
     Operator,
     OutputOperator,
 )
+from pathway.internals.table import Table
 
 if TYPE_CHECKING:
     from pathway.internals.graph_runner import GraphRunner
@@ -55,10 +52,11 @@ class OperatorHandler(ABC, Generic[T]):
     state: ScopeState
     scope_context: ScopeContext
     graph_builder: GraphRunner
-    operator_id: Optional[int]
+    storage_graph: OperatorStorageGraph
+    operator_id: int | None
 
-    _operator_mapping: ClassVar[Dict[Type[Operator], Type[OperatorHandler]]] = {}
-    operator_type: ClassVar[Type[Operator]]
+    _operator_mapping: ClassVar[dict[type[Operator], type[OperatorHandler]]] = {}
+    operator_type: ClassVar[type[Operator]]
 
     def __init__(
         self,
@@ -66,12 +64,14 @@ class OperatorHandler(ABC, Generic[T]):
         state: ScopeState,
         context: ScopeContext,
         graph_builder: GraphRunner,
-        operator_id: Optional[int],
+        storage_graph: OperatorStorageGraph,
+        operator_id: int | None,
     ):
         self.scope = scope
         self.state = state
         self.scope_context = context
         self.graph_builder = graph_builder
+        self.storage_graph = storage_graph
         self.operator_id = operator_id
 
     def __init_subclass__(cls, /, operator_type, **kwargs):
@@ -79,27 +79,39 @@ class OperatorHandler(ABC, Generic[T]):
         cls.operator_type = operator_type
         cls._operator_mapping[operator_type] = cls
 
-    def run(self, operator: T):
+    def run(
+        self,
+        operator: T,
+        output_storages: dict[Table, Storage],
+    ):
         with trace.custom_trace(operator.trace):
-            self._run(operator)
+            self._run(operator, output_storages)
 
     @abstractmethod
-    def _run(self, operator: T):
+    def _run(
+        self,
+        operator: T,
+        output_storages: dict[Table, Storage],
+    ):
         pass
 
     @classmethod
-    def for_operator(cls, operator: Operator) -> Type[OperatorHandler]:
+    def for_operator(cls, operator: Operator) -> type[OperatorHandler]:
         return cls._operator_mapping[type(operator)]
 
 
 class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOperator):
-    def _run(self, operator: InputOperator):
+    def _run(
+        self,
+        operator: InputOperator,
+        output_storages: dict[Table, Storage],
+    ):
         datasource = operator.datasource
 
         if self.graph_builder.debug and operator.debug_datasource is not None:
             if (
-                datasource.schema.as_dict()
-                != operator.debug_datasource.schema.as_dict()
+                datasource.schema._dtypes()
+                != operator.debug_datasource.schema._dtypes()
             ):
                 raise ValueError("wrong schema of debug data")
             for table in operator.output_tables:
@@ -107,22 +119,22 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                 materialized_table = api.static_table_from_pandas(
                     self.scope,
                     operator.debug_datasource.data,
-                    table.schema.as_dict(),
+                    dict(table.schema._dtypes()),
                     operator.debug_datasource.schema.primary_key_columns(),
                     operator.debug_datasource.connector_properties,
                 )
-                self.state.set_table(table, materialized_table)
+                self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, PandasDataSource):
             for table in operator.output_tables:
                 assert table.schema is not None
                 materialized_table = api.static_table_from_pandas(
                     self.scope,
                     datasource.data,
-                    table.schema.as_dict(),
+                    dict(table.schema._dtypes()),
                     datasource.schema.primary_key_columns(),
                     datasource.connector_properties,
                 )
-                self.state.set_table(table, materialized_table)
+                self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, GenericDataSource):
             for table in operator.output_tables:
                 assert table.schema is not None
@@ -131,14 +143,14 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                     datasource.dataformat,
                     datasource.connector_properties,
                 )
-                self.state.set_table(table, materialized_table)
+                self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, EmptyDataSource):
             for table in operator.output_tables:
                 assert table.schema is not None
                 materialized_table = self.scope.empty_table(
-                    table.schema.as_dict().values()
+                    table.schema._dtypes().values()
                 )
-                self.state.set_table(table, materialized_table)
+                self.state.set_table(output_storages[table], materialized_table)
         else:
             RuntimeError("datasource not supported")
 
@@ -146,19 +158,32 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
 class OutputOperatorHandler(
     OperatorHandler[OutputOperator], operator_type=OutputOperator
 ):
-    def _run(self, operator: OutputOperator):
+    def _run(
+        self,
+        operator: OutputOperator,
+        output_storages: dict[Table, Storage],
+    ):
         datasink = operator.datasink
-        table = self.state.get_table(operator.table)
+        table = operator.table
+        input_storage = self.state.get_storage(table._universe)
+        engine_table = self.state.get_table(input_storage)
+        column_paths = [
+            input_storage.get_path(column) for column in table._columns.values()
+        ]
 
         if isinstance(datasink, GenericDataSink):
             self.scope.output_table(
-                table=table,
+                table=engine_table,
+                column_paths=column_paths,
                 data_sink=datasink.datastorage,
                 data_format=datasink.dataformat,
             )
         elif isinstance(datasink, CallbackDataSink):
             self.scope.subscribe_table(
-                table=table, on_change=datasink.on_change, on_end=datasink.on_end
+                table=engine_table,
+                column_paths=column_paths,
+                on_change=datasink.on_change,
+                on_end=datasink.on_end,
             )
         else:
             RuntimeError("datasink not supported")
@@ -168,36 +193,64 @@ class ContextualizedIntermediateOperatorHandler(
     OperatorHandler[ContextualizedIntermediateOperator],
     operator_type=ContextualizedIntermediateOperator,
 ):
+    def _run_legacy(self, table: Table):
+        all_columns_skipped = True
+        for _, column in table._columns.items():
+            if not (
+                self.scope_context.skip_column(column)
+                or isinstance(column, clmn.MaterializedColumn)
+            ):
+                self.evaluate_column(column)
+                all_columns_skipped = False
+
+        if all_columns_skipped:
+            # evaluate output universe if all columns of table was skipped
+            evaluator = self._get_evaluator(table._id_column.context)
+            if self.operator_id is not None:
+                self.scope.probe_universe(evaluator.output_universe, self.operator_id)
+            self.state.set_universe(table._universe, evaluator.output_universe)
+
+        universe = self.state.get_universe(table._universe)
+        self.state.set_column(table._id_column, universe.id_column)
+
+        for _, column in table._columns.items():
+            assert self._does_not_need_evaluation(
+                column
+            ), "some columns were not evaluated"
+
     def _run(
         self,
         operator: ContextualizedIntermediateOperator,
+        output_storages: dict[Table, Storage],
     ):
-        for table in operator.output_tables:
-            all_columns_skipped = True
-            for _, column in table._columns.items():
-                if not (
-                    self.scope_context.skip_column(column)
-                    or isinstance(column, clmn.MaterializedColumn)
-                ):
-                    self.evaluate_column(column)
-                    all_columns_skipped = False
+        for table in operator.intermediate_and_output_tables:
+            context = table._id_column.context
+            evaluator_cls = ExpressionEvaluator.for_context(context)
+            output_storage = output_storages[table]
 
-            if all_columns_skipped:
-                # evaluate output universe if all columns of table was skipped
-                evaluator = self._get_evaluator(table._id_column.context)
-                if self.operator_id is not None:
-                    self.scope.probe_universe(
-                        evaluator.output_universe, self.operator_id
-                    )
-                self.state.set_universe(table._universe, evaluator.output_universe)
+            if isinstance(context, clmn.RowwiseContext):
+                evaluator_cls = AutotuplingRowwiseEvaluator
+            if isinstance(context, clmn.JoinRowwiseContext):
+                evaluator_cls = AutotuplingJoinRowwiseEvaluator
 
-            universe = self.state.get_universe(table._universe)
-            self.state.set_column(table._id_column, universe.id_column)
+            if evaluator_cls.run == ExpressionEvaluator.run:
+                self._run_legacy(table)
+                if output_storage.flattened_output is not None:
+                    output_storage = output_storage.flattened_output
+                self.state.create_table(table._universe, output_storage)
+            else:
+                # TODO implement run for all evaluators and remove the else branch
+                evaluator = evaluator_cls(
+                    context, self.scope, self.state, self.scope_context
+                )
+                storages = []
+                for univ in context.universe_dependencies():
+                    storage = self.state.get_storage(univ)
+                    storages.append(storage)
 
-            for _, column in table._columns.items():
-                assert self._does_not_need_evaluation(
-                    column
-                ), "some columns were not evaluated"
+                output_api_storage = evaluator.run(output_storage, *storages)
+                self.state.set_table(output_storage, output_api_storage)
+                evaluator.flatten_table_storage_if_needed(output_storage)
 
     def evaluate_column(self, column: clmn.Column) -> None:
         if self._does_not_need_evaluation(column):
@@ -216,7 +269,7 @@ class ContextualizedIntermediateOperatorHandler(
 
     def _get_evaluator(self, context: clmn.Context) -> ExpressionEvaluator:
         def create_evaluator(context: clmn.Context):
-            for col in context.columns_to_eval():
+            for col in context.column_dependencies_internal():
                 self.evaluate_column(col)
             eval_cls = ExpressionEvaluator.for_context(context)
             return eval_cls(context, self.scope, self.state, self.scope_context)
@@ -234,14 +287,9 @@ class NonContextualizedIntermediateOperatorHandler(
     def _run(
         self,
         operator: NonContextualizedIntermediateOperator,
+        output_storages: dict[Table, Storage],
     ):
-        for table in operator.output_tables:
-            for _, column in table._columns.items():
-                assert self.state.has_column(column) or self.scope_context.skip_column(
-                    column
-                )
-            universe = self.state.get_universe(table._universe)
-            self.state.set_column(table._id_column, universe.id_column)
+        pass
 
 
 class DebugOperatorHandler(
@@ -254,21 +302,27 @@ class DebugOperatorHandler(
         state: ScopeState,
         context: ScopeContext,
         graph_builder: GraphRunner,
-        operator_id: Optional[int],
+        storage_graph: OperatorStorageGraph,
+        operator_id: int | None,
     ):
-        super().__init__(scope, state, context, graph_builder, operator_id)
+        super().__init__(
+            scope, state, context, graph_builder, storage_graph, operator_id
+        )
 
     def _run(
         self,
         operator: DebugOperator,
+        output_storages: dict[Table, Storage],
     ):
         table = operator.table
+        input_storage = self.state.get_storage(table._universe)
+        engine_table = self.state.get_table(input_storage)
         for name, column in table._columns.items():
-            evaluated_column = self.state.get_column(column)
-            self.scope.debug_column(f"{operator.name}.{name}", evaluated_column)
+            self.scope.debug_column(
+                f"{operator.name}.{name}", engine_table, input_storage.get_path(column)
+            )
 
-        universe = self.state.get_universe(table._universe)
-        self.scope.debug_universe(operator.name, universe)
+        self.scope.debug_universe(operator.name, engine_table)
 
 
 class IterateOperatorHandler(
@@ -277,39 +331,37 @@ class IterateOperatorHandler(
     def _run(
         self,
         operator: IterateOperator,
+        output_storages: dict[Table, Storage],
     ):
         def iterate_logic(
             scope: api.Scope,
-            iterated: List[api.Table],
-            iterated_with_universe: List[api.Table],
-            extra: List[api.Table],
-        ) -> Tuple[List[api.Table], List[api.Table]]:
-            iteration_state = ScopeState()
-            iteration_state.set_tables(operator.iterated_copy, iterated)
-            iteration_state.set_tables(
+            iterated: list[api.LegacyTable],
+            iterated_with_universe: list[api.LegacyTable],
+            extra: list[api.LegacyTable],
+        ) -> tuple[list[api.LegacyTable], list[api.LegacyTable]]:
+            iteration_state = ScopeState(scope)
+            iteration_state.set_legacy_tables(operator.iterated_copy, iterated)
+            iteration_state.set_legacy_tables(
                 operator.iterated_with_universe_copy, iterated_with_universe
             )
-            iteration_state.set_tables(operator.extra_copy, extra)
+            iteration_state.set_legacy_tables(operator.extra_copy, extra)
 
-            nodes, columns = self.graph_builder.tree_shake_tables(
-                operator.scope,
-                operator.result_iterated + operator.result_iterated_with_universe,
-            )
-            iteration_context = self.scope_context.subscope(nodes, columns)
-            self.graph_builder.build_scope(
-                scope,
-                iteration_context,
-                iteration_state,
+            self.storage_graph.get_iterate_subgraph(operator).build_scope(
+                scope, iteration_state, self.graph_builder
             )
 
             return (
-                iteration_state.get_tables(operator.result_iterated),
-                iteration_state.get_tables(operator.result_iterated_with_universe),
+                iteration_state.get_legacy_tables(operator.result_iterated),
+                iteration_state.get_legacy_tables(
+                    operator.result_iterated_with_universe
+                ),
             )
 
-        iterated = self.state.get_tables(operator.iterated)
-        iterated_with_universe = self.state.get_tables(operator.iterated_with_universe)
-        extra = self.state.get_tables(operator.extra)
+        iterated = self.state.get_legacy_tables(operator.iterated)
+        iterated_with_universe = self.state.get_legacy_tables(
+            operator.iterated_with_universe
+        )
+        extra = self.state.get_legacy_tables(operator.extra)
 
         if operator.iteration_limit == 1:
             result = iterate_logic(
@@ -328,6 +380,9 @@ class IterateOperatorHandler(
             )
 
         # store iteration result in outer scope state
-        self.state.set_tables(
+        self.state.set_legacy_tables(
             [source.value for source in operator.outputs], result[0] + result[1]
         )
+
+        for table in operator.output_tables:
+            self.state.create_table(table._universe, output_storages[table])

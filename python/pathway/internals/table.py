@@ -3,22 +3,9 @@
 from __future__ import annotations
 
 import functools
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    Generic,
-    Iterator,
-    List,
-    Mapping,
-    Optional,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-    overload,
-)
+import warnings
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
@@ -34,10 +21,13 @@ from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.decorators import (
     contextualized_operator,
     empty_from_schema,
-    non_contextualized_operator,
     table_to_datasink,
 )
-from pathway.internals.desugaring import combine_args_kwargs, desugar
+from pathway.internals.desugaring import (
+    RestrictUniverseDesugaring,
+    combine_args_kwargs,
+    desugar,
+)
 from pathway.internals.expression_visitor import collect_tables
 from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.join import Joinable
@@ -49,7 +39,7 @@ from pathway.internals.schema import Schema, schema_from_columns, schema_from_ty
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
 from pathway.internals.trace import trace_user_frame
-from pathway.internals.type_interpreter import eval_type
+from pathway.internals.type_interpreter import TypeInterpreterState
 from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
@@ -106,10 +96,10 @@ class Table(
             windowby,
         )
 
-    _columns: Dict[str, clmn.Column]
+    _columns: dict[str, clmn.Column]
     _context: clmn.RowwiseContext
-    _schema: Type[Schema]
-    _pk_columns: Dict[str, clmn.Column]
+    _schema: type[Schema]
+    _pk_columns: dict[str, clmn.Column]
     _id_column: clmn.IdColumn
     _source: SetOnceProperty[OutputHandle] = SetOnceProperty()
     """Lateinit by operator."""
@@ -119,8 +109,8 @@ class Table(
         columns: Mapping[str, clmn.Column],
         universe: Universe,
         pk_columns: Mapping[str, clmn.Column] = {},
-        schema: Optional[Type[Schema]] = None,
-        id_column: Optional[clmn.IdColumn] = None,
+        schema: type[Schema] | None = None,
+        id_column: clmn.IdColumn | None = None,
     ):
         if schema is None:
             schema = schema_from_columns(columns)
@@ -169,10 +159,10 @@ class Table(
         return list(self.column_names())
 
     def __dir__(self):
-        return super().__dir__() + list(self.column_names())
+        return list(super().__dir__()) + list(self.column_names())
 
     @property
-    def schema(self) -> Type[Schema]:
+    def schema(self) -> type[Schema]:
         """Get schema of the table.
 
         Example:
@@ -185,10 +175,10 @@ class Table(
         ... 8   | Alice | cat
         ... 7   | Bob   | dog
         ... ''')
-        >>> t1.schema.as_dict()
-        {'age': INT, 'owner': STR, 'pet': STR}
-        >>> t1.schema['age']
-        INT
+        >>> t1.schema
+        <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}>
+        >>> t1.typehints()['age']
+        <class 'int'>
         """
         return self._schema
 
@@ -206,12 +196,12 @@ class Table(
         ...
 
     @overload
-    def __getitem__(self, args: List[str | expr.ColumnReference]) -> Table:
+    def __getitem__(self, args: list[str | expr.ColumnReference]) -> Table:
         ...
 
     @trace_user_frame
     def __getitem__(
-        self, args: str | expr.ColumnReference | List[str | expr.ColumnReference]
+        self, args: str | expr.ColumnReference | list[str | expr.ColumnReference]
     ) -> expr.ColumnReference | Table:
         """Get columns by name.
 
@@ -281,13 +271,13 @@ class Table(
 
         >>> import pathway as pw
         >>> t1 = pw.Table.empty(age=float, pet=float)
-        >>> t2 = pw.Table.empty(foo=float, bar=float)
+        >>> t2 = pw.Table.empty(foo=float, bar=float).with_universe_of(t1)
         >>> t3 = pw.Table.from_columns(t1.pet, qux=t2.foo)
         >>> pw.debug.compute_and_print(t3, include_id=False)
         pet | qux
         """
         all_args = cast(
-            Dict[str, expr.ColumnReference], combine_args_kwargs(args, kwargs)
+            dict[str, expr.ColumnReference], combine_args_kwargs(args, kwargs)
         )
         if not all_args:
             raise ValueError("Table.from_columns() cannot have empty arguments list")
@@ -505,7 +495,7 @@ class Table(
         label | outdegree
         7     | 0
         """
-        filter_type = eval_type(filter_expression)
+        filter_type = self.eval_type(filter_expression)
         if filter_type != dt.BOOL:
             raise TypeError(
                 f"Filter argument of Table.filter() has to be bool, found {filter_type}."
@@ -528,17 +518,61 @@ class Table(
         universe = self._universe.subset()
         context = clmn.FilterContext(universe, filtering_column, self._universe)
 
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
+        return self._table_with_context(context)
 
-        return Table(
-            columns=columns,
-            universe=universe,
-            pk_columns=self._pk_columns,
-            id_column=clmn.IdColumn(context),
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
+    @contextualized_operator
+    def _forget(
+        self,
+        threshold_column: expr.ColumnExpression,
+        time_column: expr.ColumnExpression,
+    ) -> Table:
+        universe = self._universe.subset()
+        context = clmn.ForgetContext(
+            universe,
+            self._universe,
+            self._eval(threshold_column),
+            self._eval(time_column),
         )
+        return self._table_with_context(context)
+
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
+    @contextualized_operator
+    def _freeze(
+        self,
+        threshold_column: expr.ColumnExpression,
+        time_column: expr.ColumnExpression,
+    ) -> Table:
+        universe = self._universe.subset()
+        context = clmn.FreezeContext(
+            universe,
+            self._universe,
+            self._eval(threshold_column),
+            self._eval(time_column),
+        )
+        return self._table_with_context(context)
+
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
+    @contextualized_operator
+    def _buffer(
+        self,
+        threshold_column: expr.ColumnExpression,
+        time_column: expr.ColumnExpression,
+    ) -> Table:
+        universe = self._universe.subset()
+        context = clmn.BufferContext(
+            universe,
+            self._universe,
+            self._eval(threshold_column),
+            self._eval(time_column),
+        )
+        return self._table_with_context(context)
 
     @contextualized_operator
     @runtime_type_check
@@ -578,18 +612,7 @@ class Table(
             left=self._universe,
             right=other._universe,
         )
-
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-
-        return Table(
-            columns=columns,
-            universe=universe,
-            pk_columns=self._pk_columns,
-            id_column=clmn.IdColumn(context),
-        )
+        return self._table_with_context(context)
 
     @contextualized_operator
     @runtime_type_check
@@ -629,9 +652,65 @@ class Table(
             *tuple(table._universe for table in tables),
         )
         universe = G.universe_solver.get_intersection(*intersecting_universes)
-        context = clmn.IntersectContext(
-            universe=universe,
-            intersecting_universes=intersecting_universes,
+        if universe in intersecting_universes:
+            context: clmn.Context = clmn.RestrictContext(
+                universe=universe,
+                orig_universe=self._universe,
+            )
+        else:
+            context = clmn.IntersectContext(
+                universe=universe,
+                intersecting_universes=intersecting_universes,
+            )
+
+        return self._table_with_context(context)
+
+    @contextualized_operator
+    @runtime_type_check
+    def restrict(self, other: TableLike) -> Table:
+        """Restrict self universe to keys appearing other.
+
+        Args:
+            other: table which univserse is used to restrict universe of self.
+
+        Returns:
+            Table: table with restricted universe, with the same set of columns
+
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.parse_to_table(
+        ...     '''
+        ...   | age  | owner  | pet
+        ... 1 | 10   | Alice  | 1
+        ... 2 | 9    | Bob    | 1
+        ... 3 | 8    | Alice  | 2
+        ... '''
+        ... )
+        >>> t2 = pw.debug.parse_to_table(
+        ...     '''
+        ...   | cost
+        ... 2 | 100
+        ... 3 | 200
+        ... '''
+        ... )
+        >>> t2.promise_universe_is_subset_of(t1)
+        <pathway.Table schema={'cost': <class 'int'>}>
+        >>> t3 = t1.restrict(t2)
+        >>> pw.debug.compute_and_print(t3, include_id=False)
+        age | owner | pet
+        8   | Alice | 2
+        9   | Bob   | 1
+        """
+        if not G.universe_solver.query_is_subset(other._universe, self._universe):
+            raise ValueError(
+                "Table.restrict(): other universe has to be a subset of self universe."
+                + "Consider using Table.promise_universe_is_subset_of() to assert it."
+            )
+        context = clmn.RestrictContext(
+            universe=other._universe,
+            orig_universe=self._universe,
         )
 
         columns = {
@@ -641,12 +720,12 @@ class Table(
 
         return Table(
             columns=columns,
-            universe=universe,
+            universe=other._universe,
             pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
 
-    @non_contextualized_operator
+    @contextualized_operator
     @runtime_type_check
     def copy(self) -> Table:
         """Returns a copy of a table.
@@ -671,8 +750,15 @@ class Table(
         >>> t1 is t2
         False
         """
+
+        context = clmn.CopyContext(self._universe)
+        columns = {
+            name: self._wrap_column_in_context(context, column, name)
+            for name, column in self._columns.items()
+        }
+
         return Table(
-            columns=self._columns.copy(),
+            columns=columns,
             universe=self._universe,
             pk_columns=self._pk_columns,
         )
@@ -684,7 +770,10 @@ class Table(
     def groupby(
         self,
         *args: expr.ColumnReference,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
+        sort_by: expr.ColumnReference | None = None,
+        time_column_threshold: expr.ColumnExpression | None = None,
+        time_column_time: expr.ColumnExpression | None = None,
     ) -> groupby.GroupedTable:
         """Groups table by columns from args.
 
@@ -745,6 +834,9 @@ class Table(
             table=self,
             grouping_columns=args,
             set_id=id is not None,
+            sort_by=sort_by,
+            time_column_threshold=time_column_threshold,
+            time_column_time=time_column_time,
         )
 
     @trace_user_frame
@@ -846,28 +938,26 @@ class Table(
                 qualname=f"{self}.ix(...)",
                 name="ix",
             )
+        restrict_universe = RestrictUniverseDesugaring(context)
+        expression = restrict_universe.eval_expression(expression)
         if isinstance(context, groupby.GroupedJoinable):
             key_col = context.reduce(tmp=expression).tmp
         else:
             key_col = context.select(tmp=expression).tmp
-        key_dtype = eval_type(key_col)
+        key_dtype = self.eval_type(key_col)
         if (
             optional and not dt.dtype_issubclass(key_dtype, dt.Optional(dt.POINTER))
         ) or (not optional and not isinstance(key_dtype, dt.Pointer)):
             raise TypeError(
                 f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
             )
-        ret = self._ix(key_col, optional)
         if optional and isinstance(key_dtype, dt.Optional):
-            return ret.update_types(
-                **{name: dt.Optional(ret.schema[name]) for name in ret.keys()}
+            self_ = self.update_types(
+                **{name: dt.Optional(self.typehints()[name]) for name in self.keys()}
             )
         else:
-            return ret
-
-    def restrict(self, other: Table) -> Table:
-        assert other._universe.is_subset_of(self._universe)
-        return other.select(*[colref for colref in self])
+            self_ = self
+        return self_._ix(key_col, optional)
 
     @contextualized_operator
     def _ix(
@@ -877,21 +967,11 @@ class Table(
     ) -> Table:
         key_universe_table = key_expression._table
         universe = key_universe_table._universe
-        key_column = key_universe_table._eval(key_expression)
+        key_column = key_expression._column
 
         context = clmn.IxContext(universe, self._universe, key_column, optional)
 
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-
-        return Table(
-            columns=columns,
-            universe=universe,
-            pk_columns=self._pk_columns,
-            id_column=clmn.IdColumn(context),
-        )
+        return self._table_with_context(context)
 
     def __lshift__(self, other: Table) -> Table:
         """Alias to update_cells method.
@@ -989,7 +1069,9 @@ class Table(
 
         schema = {
             key: functools.reduce(
-                dt.types_lca, [other.schema[key] for other in others], self.schema[key]
+                dt.types_lca,
+                [other.schema._dtypes()[key] for other in others],
+                self.schema._dtypes()[key],
             )
             for key in self.keys()
         }
@@ -1076,8 +1158,15 @@ class Table(
                 f"Columns of the argument in Table.update_cells() not present in the updated table: {list(names)}."
             )
 
+        if self._universe == other._universe:
+            warnings.warn(
+                "Key sets of self and other in update_cells are the same."
+                + " Using with_columns instead of update_cells."
+            )
+            return self.with_columns(*(other[name] for name in other))
+
         schema = {
-            key: dt.types_lca(self.schema[key], other.schema[key])
+            key: dt.types_lca(self.schema.__dtypes__[key], other.schema.__dtypes__[key])
             for key in other.keys()
         }
         return Table._update_cells(
@@ -1090,28 +1179,29 @@ class Table(
     def _update_cells(self, other: Table) -> Table:
         if not other._universe.is_subset_of(self._universe):
             raise ValueError(
-                "Universes of all the argument of Table.update_cells() need to be"
+                "Universe of the argument of Table.update_cells() needs to be "
                 + "a subset of the universe of the updated table.\n"
-                + "Consider using Table.promise_universes_are_disjoint() to assert this.\n"
+                + "Consider using Table.promise_is_subset_of() to assert this.\n"
                 + "(However, untrue assertion might result in runtime errors.)"
             )
 
-        context = clmn.UpdateRowsContext(
+        union_universes = [self._universe]
+        if other._universe != self._universe:
+            union_universes.append(other._universe)
+        context = clmn.UpdateCellsContext(
             universe=self._universe,
-            union_universes=(self._universe,),
+            union_universes=tuple(union_universes),
             updates={name: other._columns[name] for name in other.keys()},
         )
-        updated_cols = {
-            name: self._wrap_column_in_context(context, self._columns[name], name)
-            for name in other.keys()
-        }
-        cols_missing_in_other = {
-            name: column
+        columns = {
+            name: self._wrap_column_in_context(context, column, name)
             for name, column in self._columns.items()
-            if name not in other._columns
         }
-        return self._with_same_universe(
-            *cols_missing_in_other.items(), *updated_cols.items()
+        return Table(
+            columns=columns,
+            universe=self._universe,
+            pk_columns=self._pk_columns,
+            id_column=clmn.IdColumn(context),
         )
 
     @trace_user_frame
@@ -1158,8 +1248,14 @@ class Table(
             raise ValueError(
                 "Columns do not match between argument of Table.update_rows() and the updated table."
             )
+        if self._universe.is_subset_of(other._universe):
+            warnings.warn(
+                "Universe of self is a subset of universe of other in update_rows. Returning other."
+            )
+            return other
+
         schema = {
-            key: dt.types_lca(self.schema[key], other.schema[key])
+            key: dt.types_lca(self.schema.__dtypes__[key], other.schema.__dtypes__[key])
             for key in self.keys()
         }
         return Table._update_rows(
@@ -1172,7 +1268,12 @@ class Table(
     def _update_rows(self, other: Table) -> Table:
         union_universes = (self._universe, other._universe)
         universe = G.universe_solver.get_union(*union_universes)
-        context = clmn.UpdateRowsContext(
+        context_cls = (
+            clmn.UpdateCellsContext
+            if universe == self._universe
+            else clmn.UpdateRowsContext
+        )
+        context = context_cls(
             universe=universe,
             union_universes=union_universes,
             updates={col_name: other._columns[col_name] for col_name in self.keys()},
@@ -1303,7 +1404,7 @@ class Table(
         # new_index should be a column, so a little workaround
         new_index = self.select(ref_column=self.pointer_from(*args)).ref_column
         if all(isinstance(arg, expr.ColumnReference) for arg in args):
-            args_typed: Tuple[expr.ColumnReference] = args  # type: ignore
+            args_typed: tuple[expr.ColumnReference] = args  # type: ignore
             pk_columns = {arg.name: self._eval(arg) for arg in args_typed}
         else:
             pk_columns = {}
@@ -1321,7 +1422,7 @@ class Table(
         pk_columns: dict[str, clmn.ColumnWithExpression] = {},
     ) -> Table:
         self._validate_expression(new_index)
-        index_type = eval_type(new_index)
+        index_type = self.eval_type(new_index)
         if not isinstance(index_type, dt.Pointer):
             raise TypeError(
                 f"Pathway supports reindexing Tables with Pointer type only. The type used was {index_type}."
@@ -1346,9 +1447,9 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @non_contextualized_operator
+    @contextualized_operator
     @runtime_type_check
-    def rename_columns(self, **kwargs: Union[str, expr.ColumnReference]) -> Table:
+    def rename_columns(self, **kwargs: str | expr.ColumnReference) -> Table:
         """Rename columns according to kwargs.
 
         Columns not in keys(kwargs) are not changed. New name of a column must not be `id`.
@@ -1375,6 +1476,7 @@ class Table(
         Alice | 10        | 1
         Bob   | 9         | 1
         """
+        mapping: dict[str, str] = {}
         for new_name, old_name_col in kwargs.items():
             if isinstance(old_name_col, expr.ColumnReference):
                 old_name = old_name_col.name
@@ -1382,17 +1484,25 @@ class Table(
                 old_name = old_name_col
             if old_name not in self._columns:
                 raise ValueError(f"Column {old_name} does not exist in a given table.")
-            kwargs[new_name] = old_name
+            mapping[new_name] = old_name
         renamed_columns = self._columns.copy()
-        for new_name, old_name in kwargs.items():
+        for new_name, old_name in mapping.items():
             renamed_columns.pop(old_name)
-        for new_name, old_name in kwargs.items():
+        for new_name, old_name in mapping.items():
             renamed_columns[new_name] = self._columns[old_name]
-        return self._with_same_universe(*renamed_columns.items())
+
+        context = clmn.CopyContext(self._universe)
+        columns_wrapped = {
+            name: self._wrap_column_in_context(
+                context, column, mapping[name] if name in mapping else name
+            )
+            for name, column in renamed_columns.items()
+        }
+        return self._with_same_universe(*columns_wrapped.items())
 
     @runtime_type_check
     def rename_by_dict(
-        self, names_mapping: Dict[Union[str, expr.ColumnReference], str]
+        self, names_mapping: dict[str | expr.ColumnReference, str]
     ) -> Table:
         """Rename columns according to a dictionary.
 
@@ -1472,7 +1582,7 @@ class Table(
     @runtime_type_check
     def rename(
         self,
-        names_mapping: Optional[Dict[Union[str, expr.ColumnReference], str]] = None,
+        names_mapping: dict[str | expr.ColumnReference, str] | None = None,
         **kwargs: expr.ColumnExpression,
     ) -> Table:
         """Rename columns according either a dictionary or kwargs.
@@ -1494,9 +1604,9 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @non_contextualized_operator
+    @contextualized_operator
     @runtime_type_check
-    def without(self, *columns: Union[str, expr.ColumnReference]) -> Table:
+    def without(self, *columns: str | expr.ColumnReference) -> Table:
         """Selects all columns without named column references.
 
         Args:
@@ -1528,7 +1638,12 @@ class Table(
             else:
                 assert isinstance(col, str)
                 new_columns.pop(col)
-        return self._with_same_universe(*new_columns.items())
+        context = clmn.CopyContext(self._universe)
+        columns_wrapped = {
+            name: self._wrap_column_in_context(context, column, name)
+            for name, column in new_columns.items()
+        }
+        return self._with_same_universe(*columns_wrapped.items())
 
     @trace_user_frame
     @desugar
@@ -1536,7 +1651,7 @@ class Table(
     def having(self, *indexers: expr.ColumnReference) -> Table:
         """Removes rows so that indexed.ix(indexer) is possible when some rows are missing,
         for each indexer in indexers"""
-        rets: List[Table] = []
+        rets: list[Table] = []
         for indexer in indexers:
             rets.append(self._having(indexer))
         if len(rets) == 0:
@@ -1586,20 +1701,9 @@ class Table(
             universe=universe, orig_universe=self._universe, key_column=indexer._column
         )
 
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-
-        return Table(
-            columns=columns,
-            universe=universe,
-            pk_columns=self._pk_columns,
-            id_column=clmn.IdColumn(context),
-        )
+        return self._table_with_context(context)
 
     @trace_user_frame
-    @contextualized_operator
     @runtime_type_check
     def with_universe_of(self, other: TableLike) -> Table:
         """Returns a copy of self with exactly the same universe as others.
@@ -1627,12 +1731,12 @@ class Table(
         Cat | 3
         Dog | 10
         """
+        if self._universe == other._universe:
+            return self.copy()
         universes.promise_are_equal(self, other)
-        return self._unsafe_promise_universe(other._universe)
+        return self._unsafe_promise_universe(other)
 
     @trace_user_frame
-    @desugar
-    @contextualized_operator
     @runtime_type_check
     def flatten(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Performs a flatmap operation on a column or expression given as a first
@@ -1670,13 +1774,23 @@ class Table(
         o   | 2
         t   | 5
         """
+        intermediate_table = self.select(*args, **kwargs)
         all_args = combine_args_kwargs(args, kwargs)
         if not all_args:
             raise ValueError("Table.flatten() cannot have empty arguments list.")
 
-        all_args_iter = iter(all_args.items())
-        flatten_new_name, flatten_expression = next(all_args_iter)
-        flatten_column = self._eval(flatten_expression)
+        all_names_iter = iter(all_args.keys())
+        flatten_name = next(all_names_iter)
+        return intermediate_table._flatten(flatten_name)
+
+    @desugar
+    @contextualized_operator
+    def _flatten(
+        self,
+        flatten_name: str,
+    ) -> Table:
+        flatten_column = self._columns[flatten_name]
+        assert isinstance(flatten_column, clmn.ColumnWithExpression)
 
         universe = Universe()
         flatten_result_column = clmn.MaterializedColumn(
@@ -1690,22 +1804,21 @@ class Table(
             orig_universe=self._universe,
             flatten_column=flatten_column,
             flatten_result_column=flatten_result_column,
-            inner_context=self._context,
         )
 
-        new_columns = {}
-        for new_name, expression in all_args_iter:
-            self._validate_expression(expression)
-            column = self._eval(expression, context=context)
-            new_columns[new_name] = column
+        columns = {
+            name: self._wrap_column_in_context(context, column, name)
+            for name, column in self._columns.items()
+            if name != flatten_name
+        }
 
         return Table(
             columns={
-                flatten_new_name: flatten_result_column,
-                **new_columns,
+                flatten_name: flatten_result_column,
+                **columns,
             },
             universe=universe,
-            pk_columns={},  # FIXME
+            pk_columns={},
             id_column=clmn.IdColumn(context),
         )
 
@@ -1716,7 +1829,7 @@ class Table(
     def _sort_experimental(
         self,
         key: expr.ColumnExpression,
-        instance: Optional[expr.ColumnExpression] = None,
+        instance: expr.ColumnExpression | None = None,
     ) -> Table:
         if not isinstance(instance, expr.ColumnExpression):
             instance = expr.ColumnConstExpression(instance)
@@ -1753,10 +1866,11 @@ class Table(
         if not hasattr(universe, "lineage"):
             universe.lineage = clmn.Lineage(source=source)
 
-    def _unsafe_promise_universe(self, universe: Universe) -> Table:
-        context = clmn.PromiseSameUniverseContext(universe)
+    @contextualized_operator
+    def _unsafe_promise_universe(self, other: TableLike) -> Table:
+        context = clmn.PromiseSameUniverseContext(other._universe, self._universe)
         columns = {
-            name: self._wrap_column_in_context(context, column, name, column.lineage)
+            name: self._wrap_column_in_context(context, column, name)
             for name, column in self._columns.items()
         }
 
@@ -1769,7 +1883,7 @@ class Table(
 
     def _validate_expression(self, expression: expr.ColumnExpression):
         for dep in expression._dependencies_above_reducer():
-            if not self._universe.is_subset_of(dep.to_colref()._column.universe):
+            if self._universe != dep.to_colref()._column.universe:
                 raise ValueError(f"You cannot use {dep.to_colref()} in this context.")
 
     def _wrap_column_in_context(
@@ -1777,7 +1891,7 @@ class Table(
         context: clmn.Context,
         column: clmn.Column,
         name: str,
-        lineage: Optional[clmn.Lineage] = None,
+        lineage: clmn.Lineage | None = None,
     ) -> clmn.Column:
         """Contextualize column by wrapping it in expression."""
         expression = expr.ColumnReference(table=self, column=column, name=name)
@@ -1788,12 +1902,25 @@ class Table(
             lineage=lineage,
         )
 
+    def _table_with_context(self, context: clmn.Context) -> Table:
+        columns = {
+            name: self._wrap_column_in_context(context, column, name)
+            for name, column in self._columns.items()
+        }
+
+        return Table(
+            columns=columns,
+            universe=context.universe,
+            pk_columns=self._pk_columns,
+            id_column=clmn.IdColumn(context),
+        )
+
     @functools.cached_property
     def _table_restricted_context(self) -> clmn.TableRestrictedRowwiseContext:
         return clmn.TableRestrictedRowwiseContext(self._universe, self)
 
     def _eval(
-        self, expression: expr.ColumnExpression, context: Optional[clmn.Context] = None
+        self, expression: expr.ColumnExpression, context: clmn.Context | None = None
     ) -> clmn.ColumnWithExpression:
         """Desugar expression and wrap it in given context."""
         if context is None:
@@ -1806,7 +1933,7 @@ class Table(
         return column
 
     @classmethod
-    def _from_schema(cls, schema: Type[Schema]) -> Table:
+    def _from_schema(cls, schema: type[Schema]) -> Table:
         universe = Universe()
         columns = {
             name: clmn.MaterializedColumn(
@@ -1818,18 +1945,19 @@ class Table(
         return cls(columns=columns, universe=universe, pk_columns={}, schema=schema)
 
     def __repr__(self) -> str:
-        return "Table" + self.schema.as_dict().__repr__()
+        return f"<pathway.Table schema={dict(self.typehints())}>"
 
     def _with_same_universe(
         self,
-        *columns: Tuple[str, clmn.Column],
-        schema: Optional[Type[Schema]] = None,
+        *columns: tuple[str, clmn.Column],
+        schema: type[Schema] | None = None,
     ) -> Table:
         return Table(
             columns={name: c for (name, c) in columns},
             pk_columns=self._pk_columns,
             universe=self._universe,
             schema=schema,
+            id_column=clmn.IdColumn(self._context),
         )
 
     def _sort_columns_by_other(self, other: Table):
@@ -1842,7 +1970,7 @@ class Table(
     def debug(self, name: str):
         G.add_operator(
             lambda id: DebugOperator(name, id),
-            lambda operator: operator(self),  # type:ignore
+            lambda operator: operator(self),
         )
         return self
 
@@ -1970,15 +2098,12 @@ class Table(
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])
 
-    def _subjoinables(self) -> StableSet[Joinable]:
-        return StableSet([self])
-
     def _substitutions(
-        self, cnt: Iterator
-    ) -> Tuple[Table, Dict[expr.InternalColRef, expr.ColumnExpression]]:
+        self,
+    ) -> tuple[Table, dict[expr.InternalColRef, expr.ColumnExpression]]:
         return self, {}
 
-    def dtypes(self):
+    def typehints(self) -> Mapping[str, Any]:
         """
         Return the types of the columns as a dictionary.
 
@@ -1992,9 +2117,14 @@ class Table(
         ... 8   | Alice | cat
         ... 7   | Bob   | dog
         ... ''')
-        >>> t1.dtypes()
-        {'age': INT, 'owner': STR, 'pet': STR}
-        >>> t1.schema['age']
-        INT
+        >>> t1.typehints()
+        mappingproxy({'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>})
         """
-        return self.schema.as_dict()
+        return self.schema.typehints()
+
+    def eval_type(self, expression: expr.ColumnExpression) -> dt.DType:
+        return (
+            self._context._get_type_interpreter()
+            .eval_expression(expression, state=TypeInterpreterState())
+            ._dtype
+        )

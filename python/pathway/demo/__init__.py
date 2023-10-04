@@ -6,7 +6,7 @@ Typical use:
 ...    name: str
 ...    age: int
 >>> pw.demo.replay_csv("./input_stream.csv", schema=InputSchema)
-Table{'name': STR, 'age': INT}
+<pathway.Table schema={'name': <class 'str'>, 'age': <class 'int'>}>
 """
 # Copyright © 2023 Pathway
 
@@ -14,17 +14,18 @@ from __future__ import annotations
 
 import csv
 import time
+from datetime import datetime
 from os import PathLike
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any
 
 import pathway as pw
 
 
 def generate_custom_stream(
-    value_generators: Dict[str, Any],
+    value_generators: dict[str, Any],
     *,
-    schema: Type[pw.Schema],
-    nb_rows: Optional[int] = None,
+    schema: type[pw.Schema],
+    nb_rows: int | None = None,
     autocommit_duration_ms: int = 1000,
     input_rate: float = 1.0,
 ) -> pw.Table:
@@ -64,7 +65,7 @@ provided the default type is ``pw.Type.ANY``.
     ...      name: str
     ...      age: int
     >>> pw.demo.generate_custom_stream(value_functions, schema=InputSchema, nb_rows=10)
-    Table{'number': INT, 'name': STR, 'age': INT}
+    <pathway.Table schema={'number': <class 'int'>, 'name': <class 'str'>, 'age': <class 'int'>}>
 
     In the above example, a data stream is generated with 10 rows, where each row has columns \
         'number', 'name', and 'age'.
@@ -197,9 +198,9 @@ def range_stream(
 
 
 def replay_csv(
-    path: Union[str, PathLike],
+    path: str | PathLike,
     *,
-    schema: Type[pw.Schema],
+    schema: type[pw.Schema],
     input_rate: float = 1.0,
 ) -> pw.Table:
     """Replay a static CSV files as a data stream.
@@ -239,16 +240,17 @@ def replay_csv(
         schema=schema.update_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
-    ).cast_to_types(**schema)
+    ).cast_to_types(**schema.typehints())
 
 
 def replay_csv_with_time(
     path: str,
     *,
-    schema: Type[pw.Schema],
+    schema: type[pw.Schema],
     time_column: str,
     unit: str = "s",
     autocommit_ms: int = 100,
+    speedup: float = 1,
 ) -> pw.Table:
     """
     Replay a static CSV files as a data stream while respecting the time between updated based on a timestamp columns.
@@ -262,6 +264,7 @@ def replay_csv_with_time(
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway's computation graph.
+        speedup: Produce stream `speedup` times faster than it would result from the time column.
 
     Returns:
         Table: The table read.
@@ -272,9 +275,9 @@ def replay_csv_with_time(
 
     """
 
-    time_column_type = schema.as_dict().get(time_column, None)
-    if time_column_type != pw.dt.INT:
-        raise ValueError("Invalid schema. Time columns must be int.")
+    time_column_type = schema.typehints().get(time_column, None)
+    if time_column_type != int and time_column_type != float:
+        raise ValueError("Invalid schema. Time columns must be int or float.")
 
     if unit not in ["s", "ms", "us", "ns"]:
         raise ValueError(
@@ -291,22 +294,27 @@ def replay_csv_with_time(
             unit_factor = 1_000_000_000
         case _:
             unit_factor = 1
+    speedup *= unit_factor
 
     columns = set(schema.column_names())
 
     class FileStreamSubject(pw.io.python.ConnectorSubject):
         def run(self):
-            last_time_value = -1.0
             with open(path, newline="") as csvfile:
                 csvreader = csv.DictReader(csvfile)
+                firstrow = next(iter(csvreader))
+                values = {key: firstrow[key] for key in columns}
+                first_time_value = float(values[time_column])
+                real_start_time = datetime.now().timestamp()
+                self.next_json(values)
+
                 for row in csvreader:
                     values = {key: row[key] for key in columns}
-                    current_value = int(values[time_column])
-                    if last_time_value < 0:
-                        last_time_value = current_value
-                    tts = current_value - last_time_value
-                    tts = tts / unit_factor
-                    last_time_value = current_value
+                    current_value = float(values[time_column])
+                    expected_time_from_start = current_value - first_time_value
+                    expected_time_from_start /= speedup
+                    real_time_from_start = datetime.now().timestamp() - real_start_time
+                    tts = expected_time_from_start - real_time_from_start
                     if tts > 0:
                         time.sleep(tts)
                     self.next_json(values)
@@ -316,4 +324,4 @@ def replay_csv_with_time(
         schema=schema.update_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
-    ).cast_to_types(**schema)
+    ).cast_to_types(**schema.typehints())

@@ -53,7 +53,7 @@ features = ["pyo3/extension-module"]
 python_version = "3.11"
 exclude = ["target", "examples", "python/pathway/tests", "integration_tests"]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "pathway"
-ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true

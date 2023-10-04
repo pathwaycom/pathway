@@ -2,7 +2,7 @@
 
 import datetime
 import operator
-from typing import Any, List, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -10,8 +10,8 @@ import pytest
 from dateutil import tz
 
 import pathway as pw
-from pathway import dt
 from pathway.debug import table_from_markdown, table_from_pandas
+from pathway.internals import dtype as dt
 from pathway.tests.utils import (
     assert_table_equality,
     assert_table_equality_wo_index,
@@ -274,7 +274,7 @@ def test_strftime_with_format_in_column() -> None:
         ),
     ],
 )
-def test_strptime_naive(data: List[str], fmt: str) -> None:
+def test_strptime_naive(data: list[str], fmt: str) -> None:
     df = pd.DataFrame({"ts": pd.to_datetime(data, format=fmt)})
     table_pd = table_from_pandas(df)
     table = table_from_pandas(pd.DataFrame({"a": data}))
@@ -309,7 +309,7 @@ def test_strptime_naive(data: List[str], fmt: str) -> None:
         ),
     ],
 )
-def test_strptime_naive_with_python_datetime(data: List[str], fmt: str) -> None:
+def test_strptime_naive_with_python_datetime(data: list[str], fmt: str) -> None:
     table = table_from_pandas(pd.DataFrame({"a": data})).select(
         ts=pw.this.a.dt.strptime(fmt)
     )
@@ -361,7 +361,7 @@ def test_strptime_naive_with_python_datetime(data: List[str], fmt: str) -> None:
         ),
     ],
 )
-def test_strptime_time_zone_aware(data: List[str], fmt: str) -> None:
+def test_strptime_time_zone_aware(data: list[str], fmt: str) -> None:
     df = pd.DataFrame({"ts": pd.to_datetime(data, format=fmt)})
     table_pd = table_from_pandas(df)
     table = table_from_pandas(pd.DataFrame({"a": data}))
@@ -397,7 +397,7 @@ def test_strptime_time_zone_aware(data: List[str], fmt: str) -> None:
     ],
 )
 def test_strptime_time_zone_aware_with_python_datetime(
-    data: List[str], fmt: str
+    data: list[str], fmt: str
 ) -> None:
     table = table_from_pandas(pd.DataFrame({"a": data})).select(
         ts=pw.this.a.dt.strptime(fmt)
@@ -792,7 +792,7 @@ def test_date_time_round(
         ("dt.strptime", "%Y-%m-%d %H:%M:%S"),
     ],
 )
-def test_fail_if_used_with_wrong_type(method_with_args: Tuple[str]) -> None:
+def test_fail_if_used_with_wrong_type(method_with_args: tuple[str]) -> None:
     method = method_with_args[0]
     namespace, method_name = method.split(".")
     args = method_with_args[1:]

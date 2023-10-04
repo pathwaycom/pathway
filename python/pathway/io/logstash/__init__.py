@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -19,8 +17,8 @@ def write(
     endpoint: str,
     n_retries: int = 0,
     retry_policy: RetryPolicy = RetryPolicy.default(),
-    connect_timeout_ms: Optional[int] = None,
-    request_timeout_ms: Optional[int] = None,
+    connect_timeout_ms: int | None = None,
+    request_timeout_ms: int | None = None,
 ) -> None:
     """Sends the stream of updates from the table to \
 `HTTP input <https://www.elastic.co/guide/en/logstash/current/plugins-inputs-http.html>`

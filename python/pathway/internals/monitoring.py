@@ -3,7 +3,7 @@
 import contextlib
 import logging
 from enum import Enum
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 from rich import box
 from rich.align import Align
@@ -21,7 +21,7 @@ from pathway.internals import api
 class ConsolePrintingToBuffer(Console):
     def __init__(self) -> None:
         super().__init__()
-        self.logs: List[Table] = []
+        self.logs: list[Table] = []
 
     def print(self, *records, **kwargs) -> None:
         self.logs.extend(records)
@@ -55,7 +55,7 @@ class LogsOutput:
 class MonitoringOutput:
     def __init__(
         self,
-        node_names: List[Tuple[int, str]],
+        node_names: list[tuple[int, str]],
         data: Any,
         now: int,
     ) -> None:
@@ -63,7 +63,7 @@ class MonitoringOutput:
         self.data = data
         self.now = now
 
-    def get_latency(self, time: int) -> Optional[int]:
+    def get_latency(self, time: int | None) -> int | None:
         if time is not None:
             return max(0, self.now - time)
         return None
@@ -160,7 +160,7 @@ class MonitoringOutput:
 
 
 class StatsMonitor:
-    def __init__(self, node_names: List[Tuple[int, str]]) -> None:
+    def __init__(self, node_names: list[tuple[int, str]]) -> None:
         self.layout = Layout(name="root")
         if len(node_names) > 0:
             ratio = 2
@@ -186,7 +186,7 @@ class StatsMonitor:
 @contextlib.contextmanager
 def monitor_stats(
     monitoring_level: api.MonitoringLevel,
-    node_names: List[Tuple[int, str]],
+    node_names: list[tuple[int, str]],
     default_logging: bool,
     refresh_per_second: int = 4,
 ):

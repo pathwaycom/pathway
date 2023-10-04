@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -107,7 +105,7 @@ def write(table: Table, postgres_settings: dict, table_name: str) -> None:
 
 
 def write_snapshot(
-    table: Table, postgres_settings: dict, table_name: str, primary_key: List[str]
+    table: Table, postgres_settings: dict, table_name: str, primary_key: list[str]
 ) -> None:
     """Maintains a snapshot of a table within a Postgres table.
 

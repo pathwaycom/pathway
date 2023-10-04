@@ -6,8 +6,9 @@ import asyncio
 import functools
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, Type
+from typing import Any, ClassVar
 
 import pathway.internals as pw
 import pathway.io as io
@@ -31,9 +32,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
     _apply: Callable
     _loop: asyncio.AbstractEventLoop
     _transformer: AsyncTransformer
-    _state: Dict[BasePointer, Any]
-    _tasks: Dict[BasePointer, asyncio.Task]
-    _invoke: Callable[..., Awaitable[Dict[str, Any]]]
+    _state: dict[BasePointer, Any]
+    _tasks: dict[BasePointer, asyncio.Task]
+    _invoke: Callable[..., Awaitable[dict[str, Any]]]
 
     def __init__(self, transformer: AsyncTransformer) -> None:
         super().__init__()
@@ -43,9 +44,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
 
     def set_options(
         self,
-        capacity: Optional[int] = None,
-        retry_strategy: Optional[asynchronous.AsyncRetryStrategy] = None,
-        cache_strategy: Optional[asynchronous.CacheStrategy] = None,
+        capacity: int | None = None,
+        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
+        cache_strategy: asynchronous.CacheStrategy | None = None,
     ):
         self._invoke = asynchronous.async_options(
             capacity=capacity,
@@ -74,9 +75,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
 
                 async def task(
                     key: BasePointer,
-                    values: Dict[str, Any],
+                    values: dict[str, Any],
                     addition: bool,
-                    previous_task: Optional[asyncio.Task],
+                    previous_task: asyncio.Task | None,
                 ):
                     if addition is False:
                         # Remove last values if this is not addition
@@ -115,7 +116,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
         self._upsert(key, data, status)
 
     def _upsert(
-        self, key: BasePointer, data: Dict, status=_AsyncStatus.SUCCESS
+        self, key: BasePointer, data: dict, status=_AsyncStatus.SUCCESS
     ) -> None:
         data = {**data, _ASYNC_STATUS_COLUMN: status.value}
         payload = json.dumps(data).encode()
@@ -128,7 +129,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
             payload = json.dumps(self._state[key]).encode()
             self._remove(key, payload)
 
-    def _assert_result_against_schema(self, result: Dict) -> None:
+    def _assert_result_against_schema(self, result: dict) -> None:
         if result.keys() != self._transformer.output_schema.keys():
             raise ValueError("result of async function does not match output schema")
 
@@ -136,7 +137,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
         self._transformer.close()
 
     def on_subscribe_change(
-        self, key: BasePointer, row: Dict[str, Any], time: int, is_addition: bool
+        self, key: BasePointer, row: dict[str, Any], time: int, is_addition: bool
     ) -> Any:
         self._put_request((key, row, is_addition))
 
@@ -190,7 +191,7 @@ class AsyncTransformer(ABC):
     45
     """
 
-    output_schema: ClassVar[Type[pw.Schema]]
+    output_schema: ClassVar[type[pw.Schema]]
     _connector: _AsyncConnector
     _input_table: pw.Table
 
@@ -199,7 +200,7 @@ class AsyncTransformer(ABC):
         self._connector = _AsyncConnector(self)
         self._input_table = input_table
 
-    def __init_subclass__(cls, /, output_schema: Type[pw.Schema], **kwargs):
+    def __init_subclass__(cls, /, output_schema: type[pw.Schema], **kwargs):
         super().__init_subclass__(**kwargs)
         cls.output_schema = output_schema
 
@@ -216,7 +217,7 @@ class AsyncTransformer(ABC):
         pass
 
     @abstractmethod
-    async def invoke(self, *args, **kwargs) -> Dict[str, Any]:
+    async def invoke(self, *args, **kwargs) -> dict[str, Any]:
         """
         Called for every row of input_table. The arguments will correspond to the
         columns in the input table.
@@ -227,9 +228,9 @@ class AsyncTransformer(ABC):
 
     def with_options(
         self,
-        capacity: Optional[int] = None,
-        retry_strategy: Optional[asynchronous.AsyncRetryStrategy] = None,
-        cache_strategy: Optional[asynchronous.CacheStrategy] = None,
+        capacity: int | None = None,
+        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
+        cache_strategy: asynchronous.CacheStrategy | None = None,
     ) -> AsyncTransformer:
         """
         Sets async options.
@@ -252,7 +253,7 @@ class AsyncTransformer(ABC):
             self._output_table.update_types(**{_ASYNC_STATUS_COLUMN: str})
             .filter(pw.this[_ASYNC_STATUS_COLUMN] == _AsyncStatus.SUCCESS.value)
             .without(pw.this[_ASYNC_STATUS_COLUMN])
-            .update_types(**self.output_schema)
+            .update_types(**self.output_schema.typehints())
         )
 
     @functools.cached_property

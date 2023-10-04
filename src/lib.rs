@@ -7,6 +7,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 pub mod connectors;
+pub mod deepcopy;
 pub mod engine;
 pub mod persistence;
 pub mod python_api;
@@ -14,6 +15,7 @@ pub mod python_api;
 mod fs_helpers;
 mod mat_mul;
 mod pipe;
+mod timestamp;
 
 #[cfg(not(feature = "standard-allocator"))]
 mod jemalloc {

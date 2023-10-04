@@ -3,7 +3,8 @@
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Dict, Optional, Tuple, Type
+from collections.abc import Callable
+from typing import Any
 from uuid import uuid4
 
 from aiohttp import web
@@ -25,8 +26,8 @@ class RestServerSubject(io.python.ConnectorSubject):
         port: int,
         route: str,
         loop: asyncio.AbstractEventLoop,
-        tasks: Dict[Any, Any],
-        schema: Type[pw.Schema],
+        tasks: dict[Any, Any],
+        schema: type[pw.Schema],
         keep_queries: bool,
         format: str = "raw",
     ) -> None:
@@ -95,10 +96,10 @@ def rest_connector(
     port: int,
     *,
     route: str = "/",
-    schema: Optional[Type[pw.Schema]] = None,
+    schema: type[pw.Schema] | None = None,
     autocommit_duration_ms=1500,
     keep_queries: bool = False,
-) -> Tuple[pw.Table, Callable]:
+) -> tuple[pw.Table, Callable]:
     """
     Runs a lightweight HTTP server and inputs a collection from the HTTP endpoint,
     configured by the parameters of this method.
@@ -123,7 +124,7 @@ def rest_connector(
     """
 
     loop = asyncio.new_event_loop()
-    tasks: Dict[Any, Any] = {}
+    tasks: dict[Any, Any] = {}
 
     if schema is None:
         format = "raw"
@@ -149,7 +150,7 @@ def rest_connector(
 
     def response_writer(responses: pw.Table):
         def on_change(
-            key: BasePointer, row: Dict[str, Any], time: int, is_addition: bool
+            key: BasePointer, row: dict[str, Any], time: int, is_addition: bool
         ):
             if not is_addition:
                 return

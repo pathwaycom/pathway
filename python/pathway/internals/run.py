@@ -1,6 +1,5 @@
 # Copyright © 2023 Pathway
 
-from typing import Optional
 
 from pathway.internals import parse_graph
 from pathway.internals.graph_runner import GraphRunner
@@ -15,7 +14,7 @@ def run(
     monitoring_level: MonitoringLevel = MonitoringLevel.AUTO,
     with_http_server: bool = False,
     default_logging: bool = True,
-    persistence_config: Optional[PersistenceConfig] = None,
+    persistence_config: PersistenceConfig | None = None,
 ):
     """Runs the computation graph.
 

@@ -26,6 +26,9 @@ pub enum Error {
     #[error("invalid column handle")]
     InvalidColumnHandle,
 
+    #[error("invalid table handle")]
+    InvalidTableHandle,
+
     #[error("invalid grouper handle")]
     InvalidGrouperHandle,
 
@@ -65,6 +68,15 @@ pub enum Error {
     #[error("graph is not capable of iteration")]
     IterationNotPossible,
 
+    #[error("freeze is not supported inside iterate")]
+    FreezeNotSupportedInIteration,
+
+    #[error("forget is not supported inside iterate")]
+    ForgetNotSupportedInIteration,
+
+    #[error("buffer is not supported inside iterate")]
+    BufferNotSupportedInIteration,
+
     #[error("wrong id assignment")]
     BadIdAssign,
 
@@ -95,13 +107,13 @@ pub enum Error {
         actual: &'static str,
     },
 
-    #[error("key missing in universe: {0:#}")]
+    #[error("key missing in universe: {0}")]
     KeyMissingInUniverse(Key),
 
-    #[error("key missing in column: {0:#}")]
+    #[error("key missing in column: {0}")]
     KeyMissingInColumn(Key),
 
-    #[error("duplicate key: {0:#}")]
+    #[error("duplicate key: {0}")]
     DuplicateKey(Key),
 
     #[error("worker panic: {0}")]
@@ -112,6 +124,9 @@ pub enum Error {
 
     #[error("index out of bounds")]
     IndexOutOfBounds,
+
+    #[error("this method cannot extract from key, use extract instead")]
+    ExtractFromValueNotSupportedForKey,
 
     #[error("division by zero")]
     DivisionByZero,

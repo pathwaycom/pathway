@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use pathway_engine::connectors::data_format::{Formatter, FormatterError, PsqlUpdatesFormatter};
-use pathway_engine::connectors::data_storage::PsqlSerializer;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Value};
 
 #[test]
@@ -33,8 +32,6 @@ fn test_psql_format_strings() -> eyre::Result<()> {
         vec!["b".to_string(), "c".to_string()],
     );
 
-    assert_eq!(Value::from_str("x")?.to_postgres_output(), "x".to_string());
-
     let result = formatter.format(
         &Key::from_str("1")?,
         &[Value::from_str("x")?, Value::from_str("y")?],
@@ -55,7 +52,6 @@ fn test_psql_format_null() -> eyre::Result<()> {
     let mut formatter =
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
-    assert_eq!(Value::None.to_postgres_output(), "null");
     {
         let result = formatter.format(&Key::from_str("1")?, &[Value::None], 0, 1)?;
         assert_eq!(
@@ -74,7 +70,6 @@ fn test_psql_format_bool() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        assert_eq!(Value::Bool(true).to_postgres_output(), "t".to_string());
         let result = formatter.format(&Key::from_str("1")?, &[Value::Bool(true)], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -83,7 +78,6 @@ fn test_psql_format_bool() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(Value::Bool(false).to_postgres_output(), "f".to_string());
         let result = formatter.format(&Key::from_str("1")?, &[Value::Bool(false)], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -101,8 +95,6 @@ fn test_psql_format_int() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        assert_eq!(Value::Int(123).to_postgres_output(), "123".to_string());
-
         let result = formatter.format(&Key::from_str("1")?, &[Value::Int(123)], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -111,8 +103,6 @@ fn test_psql_format_int() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(Value::Int(-2).to_postgres_output(), "-2".to_string());
-
         let result = formatter.format(&Key::from_str("1")?, &[Value::Int(-2)], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -121,8 +111,6 @@ fn test_psql_format_int() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(Value::Int(0).to_postgres_output(), "0".to_string());
-
         let result = formatter.format(&Key::from_str("1")?, &[Value::Int(0)], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -140,8 +128,6 @@ fn test_psql_format_floats() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        assert_eq!(Value::from(5.5).to_postgres_output(), "5.5".to_string());
-
         let result = formatter.format(&Key::from_str("1")?, &[Value::from(5.5)], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -160,11 +146,6 @@ fn test_psql_format_pointers() -> eyre::Result<()> {
 
     {
         let key = pathway_engine::engine::Key(1);
-
-        assert_eq!(
-            Value::Pointer(key).to_postgres_output(),
-            "Key(1)".to_string()
-        );
 
         let result = formatter.format(&Key::from_str("1")?, &[Value::Pointer(key)], 0, 1)?;
         assert_eq!(
@@ -189,7 +170,6 @@ fn test_psql_format_tuple() -> eyre::Result<()> {
 
         let tuple_value = Value::from(values.as_slice());
 
-        assert_eq!(tuple_value.to_postgres_output(), "{t,null}".to_string());
         let result = formatter.format(&Key::from_str("1")?, &[tuple_value], 0, 1)?;
         assert_eq!(
             result.payloads,
@@ -207,11 +187,6 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        assert_eq!(
-            Value::DateTimeNaive(DateTimeNaive::new(1684147860000000000)).to_postgres_output(),
-            "2023-05-15T10:51:00.000000000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::DateTimeNaive(DateTimeNaive::new(
@@ -227,11 +202,6 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(
-            Value::DateTimeNaive(DateTimeNaive::new(1684147883546378921)).to_postgres_output(),
-            "2023-05-15T10:51:23.546378921".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::DateTimeNaive(DateTimeNaive::new(
@@ -247,11 +217,6 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(
-            Value::DateTimeNaive(DateTimeNaive::new(0)).to_postgres_output(),
-            "1970-01-01T00:00:00.000000000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::DateTimeNaive(DateTimeNaive::new(0))],
@@ -274,11 +239,6 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        assert_eq!(
-            Value::DateTimeUtc(DateTimeUtc::new(1684147860000000000)).to_postgres_output(),
-            "2023-05-15T10:51:00.000000000+0000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::DateTimeUtc(DateTimeUtc::new(1684147860000000000))],
@@ -292,11 +252,6 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(
-            Value::DateTimeUtc(DateTimeUtc::new(1684147883546378921)).to_postgres_output(),
-            "2023-05-15T10:51:23.546378921+0000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::DateTimeUtc(DateTimeUtc::new(1684147883546378921))],
@@ -310,11 +265,6 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(
-            Value::DateTimeUtc(DateTimeUtc::new(0)).to_postgres_output(),
-            "1970-01-01T00:00:00.000000000+0000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::DateTimeUtc(DateTimeUtc::new(0))],
@@ -337,11 +287,6 @@ fn test_psql_format_duration() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        assert_eq!(
-            Value::Duration(Duration::new(1197780000000000)).to_postgres_output(),
-            "1197780000000000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::Duration(Duration::new(1197780000000000))],
@@ -355,11 +300,6 @@ fn test_psql_format_duration() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(
-            Value::Duration(Duration::new(-1197780000000000)).to_postgres_output(),
-            "-1197780000000000".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::Duration(Duration::new(-1197780000000000))],
@@ -373,11 +313,6 @@ fn test_psql_format_duration() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        assert_eq!(
-            Value::Duration(Duration::new(0)).to_postgres_output(),
-            "0".to_string()
-        );
-
         let result = formatter.format(
             &Key::from_str("1")?,
             &[Value::Duration(Duration::new(0))],

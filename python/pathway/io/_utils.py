@@ -2,9 +2,7 @@
 
 import dataclasses
 import warnings
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
-
-import numpy as np
+from typing import Any
 
 import pathway.internals as pw
 from pathway.internals import api
@@ -31,46 +29,44 @@ _DATA_FORMAT_MAPPING = {
     "binary": "identity",
 }
 
-_PATHWAY_TYPE_MAPPING: Dict[PathwayType, Any] = {
-    PathwayType.INT: int,
-    PathwayType.BOOL: bool,
-    PathwayType.FLOAT: float,
-    PathwayType.STRING: str,
-    PathwayType.ANY: Any,
-    PathwayType.POINTER: api.BasePointer,
+_PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
+    PathwayType.INT: dt.INT,
+    PathwayType.BOOL: dt.BOOL,
+    PathwayType.FLOAT: dt.FLOAT,
+    PathwayType.STRING: dt.STR,
+    PathwayType.ANY: dt.ANY,
+    PathwayType.POINTER: dt.POINTER,
     PathwayType.DATE_TIME_NAIVE: dt.DATE_TIME_NAIVE,
     PathwayType.DATE_TIME_UTC: dt.DATE_TIME_UTC,
     PathwayType.DURATION: dt.DURATION,
-    PathwayType.ARRAY: np.ndarray,
-    PathwayType.JSON: dict,
+    PathwayType.ARRAY: dt.ARRAY,
+    PathwayType.JSON: dt.JSON,
 }
 
-SUPPORTED_INPUT_FORMATS: Set[str] = set(
-    [
-        "csv",
-        "json",
-        "plaintext",
-        "raw",
-        "binary",
-    ]
-)
+SUPPORTED_INPUT_FORMATS: set[str] = {
+    "csv",
+    "json",
+    "plaintext",
+    "raw",
+    "binary",
+}
 
 
 class RawDataSchema(pw.Schema):
     data: Any
 
 
-def get_data_format_type(format: str, supported_formats: Set[str]):
+def get_data_format_type(format: str, supported_formats: set[str]):
     if format not in _DATA_FORMAT_MAPPING or format not in supported_formats:
         raise ValueError(f"data format `{format}` not supported")
     return _DATA_FORMAT_MAPPING[format]
 
 
-def check_deprecated_kwargs(kwargs: Dict[str, Any], deprecated_kwarg_names: List[str]):
+def check_deprecated_kwargs(kwargs: dict[str, Any], deprecated_kwarg_names: list[str]):
     for kwarg_name in deprecated_kwarg_names:
         if kwarg_name in kwargs:
             warnings.warn(
-                "'{}' is deprecated and will be ignored".format(kwarg_name),
+                f"'{kwarg_name}' is deprecated and will be ignored",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -135,12 +131,12 @@ class CsvParserSettings:
 
 
 def _compat_schema(
-    value_columns: Optional[List[str]],
-    primary_key: Optional[List[str]],
-    types: Optional[Dict[str, api.PathwayType]],
-    default_values: Optional[Dict[str, Any]],
+    value_columns: list[str] | None,
+    primary_key: list[str] | None,
+    types: dict[str, api.PathwayType] | None,
+    default_values: dict[str, Any] | None,
 ):
-    columns: Dict[str, ColumnDefinition] = {
+    columns: dict[str, ColumnDefinition] = {
         name: pw.column_definition(primary_key=True) for name in primary_key or {}
     }
     columns.update(
@@ -154,7 +150,7 @@ def _compat_schema(
         for name, dtype in types.items():
             columns[name] = dataclasses.replace(
                 columns[name],
-                dtype=dt.wrap(_PATHWAY_TYPE_MAPPING.get(dtype, Any)),
+                dtype=_PATHWAY_TYPE_MAPPING.get(dtype, dt.ANY),
             )
     if default_values is not None:
         for name, default_value in default_values.items():
@@ -166,12 +162,12 @@ def _compat_schema(
 
 def _read_schema(
     *,
-    schema: Optional[Type[Schema]],
-    value_columns: Optional[List[str]],
-    primary_key: Optional[List[str]],
-    types: Optional[Dict[str, api.PathwayType]],
-    default_values: Optional[Dict[str, Any]],
-) -> Type[Schema]:
+    schema: type[Schema] | None,
+    value_columns: list[str] | None,
+    primary_key: list[str] | None,
+    types: dict[str, api.PathwayType] | None,
+    default_values: dict[str, Any] | None,
+) -> type[Schema]:
     kwargs = locals()
     deprecated_kwargs = ["value_columns", "primary_key", "types", "default_values"]
 
@@ -201,12 +197,12 @@ def _read_schema(
 
 def read_schema(
     *,
-    schema: Optional[Type[Schema]],
-    value_columns: Optional[List[str]],
-    primary_key: Optional[List[str]],
-    types: Optional[Dict[str, api.PathwayType]],
-    default_values: Optional[Dict[str, Any]],
-) -> Tuple[Type[Schema], Dict[str, Any]]:
+    schema: type[Schema] | None,
+    value_columns: list[str] | None,
+    primary_key: list[str] | None,
+    types: dict[str, api.PathwayType] | None,
+    default_values: dict[str, Any] | None,
+) -> tuple[type[Schema], dict[str, Any]]:
     schema = _read_schema(
         schema=schema,
         value_columns=value_columns,
@@ -227,14 +223,14 @@ def read_schema(
 def construct_schema_and_data_format(
     format: str,
     *,
-    schema: Optional[Type[Schema]] = None,
-    csv_settings: Optional[CsvParserSettings] = None,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
-) -> Tuple[Type[Schema], api.DataFormat]:
+    schema: type[Schema] | None = None,
+    csv_settings: CsvParserSettings | None = None,
+    json_field_paths: dict[str, str] | None = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
+) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
     if data_format_type == "identity":
@@ -249,9 +245,7 @@ def construct_schema_and_data_format(
         ]
         for param in unexpected_params:
             if param in kwargs and kwargs[param] is not None:
-                raise ValueError(
-                    "Unexpected argument for plaintext format: {}".format(param)
-                )
+                raise ValueError(f"Unexpected argument for plaintext format: {param}")
 
         return RawDataSchema, api.DataFormat(
             format_type=data_format_type,
@@ -292,8 +286,8 @@ def construct_s3_data_storage(
     format: str,
     mode: str | api.ConnectorMode,
     *,
-    csv_settings: Optional[CsvParserSettings] = None,
-    persistent_id: Optional[str] = None,
+    csv_settings: CsvParserSettings | None = None,
+    persistent_id: str | None = None,
 ):
     if format == "csv":
         return api.DataStorage(
@@ -317,7 +311,7 @@ def construct_s3_data_storage(
 
 def construct_connector_properties(
     schema_properties: SchemaProperties = SchemaProperties(),
-    commit_duration_ms: Optional[int] = None,
+    commit_duration_ms: int | None = None,
     unsafe_trusted_ids: bool = False,
 ):
     return api.ConnectorProperties(

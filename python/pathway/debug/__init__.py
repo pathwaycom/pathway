@@ -6,7 +6,6 @@ import functools
 import io
 import re
 from os import PathLike
-from typing import List, Optional, Type, Union
 
 import pandas as pd
 
@@ -119,9 +118,9 @@ def table_to_pandas(table: Table):
 @trace_user_frame
 def table_from_pandas(
     df: pd.DataFrame,
-    id_from: Optional[List[str]] = None,
+    id_from: list[str] | None = None,
     unsafe_trusted_ids: bool = False,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
 ) -> Table:
     if id_from is not None and schema is not None:
         raise ValueError("parameters `schema` and `id_from` are mutually exclusive")
@@ -168,7 +167,7 @@ def parse_to_table(
     table_def,
     id_from=None,
     unsafe_trusted_ids=False,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
 ) -> Table:
     df = _markdown_to_pandas(table_def)
     return table_from_pandas(
@@ -178,7 +177,7 @@ def parse_to_table(
 
 @runtime_type_check
 def table_from_parquet(
-    path: Union[str, PathLike],
+    path: str | PathLike,
     id_from=None,
     unsafe_trusted_ids=False,
 ) -> Table:
@@ -191,7 +190,7 @@ def table_from_parquet(
 
 
 @runtime_type_check
-def table_to_parquet(table: Table, filename: Union[str, PathLike]):
+def table_to_parquet(table: Table, filename: str | PathLike):
     """
     Converts a Pathway Table into a pandas DataFrame and then writes it to Parquet
     """

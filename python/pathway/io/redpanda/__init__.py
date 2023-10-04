@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any
 
 from pathway.internals.api import PathwayType
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -16,20 +16,20 @@ from pathway.io import kafka
 @trace_user_frame
 def read(
     rdkafka_settings: dict,
-    topic: Optional[Union[str, List[str]]] = None,
+    topic: str | list[str] | None = None,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     format="raw",
     debug_data=None,
-    autocommit_duration_ms: Optional[int] = 1500,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    parallel_readers: Optional[int] = None,
-    persistent_id: Optional[str] = None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
-    topic_names: Optional[List[str]] = None,
+    autocommit_duration_ms: int | None = 1500,
+    json_field_paths: dict[str, str] | None = None,
+    parallel_readers: int | None = None,
+    persistent_id: str | None = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
+    topic_names: list[str] | None = None,
 ) -> Table:
     """Reads table from a set of topics in Redpanda.
     There are three formats currently supported: "raw", "csv", and "json".

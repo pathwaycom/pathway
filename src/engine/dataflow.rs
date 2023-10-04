@@ -10,18 +10,19 @@ use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats};
 use crate::connectors::Connector;
 use crate::connectors::ARTIFICIAL_TIME_ON_REWIND_START;
+use crate::engine::dataflow::operators::time_column::{
+    Epsilon, TimeColumnForget, TimeColumnFreeze,
+};
 use crate::engine::value::HashInto;
 use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
-use crate::persistence::sync::{
-    SharedWorkersPersistenceCoordinator, WorkersPersistenceCoordinator,
-};
+use crate::persistence::sync::SharedWorkersPersistenceCoordinator;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
 use crate::persistence::ExternalPersistentId;
 
 use std::any::type_name;
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -66,20 +67,20 @@ use timely::dataflow::operators::{Exchange, Filter, Inspect, Operator, Probe};
 use timely::dataflow::scopes::Child;
 use timely::order::Product;
 use timely::progress::timestamp::Refines;
-use timely::progress::Timestamp;
+use timely::progress::{PathSummary, Timestamp};
 use timely::{execute, CommunicationConfig, Config, WorkerConfig};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::complex_columns::complex_columns;
 use self::maybe_total::MaybeTotalScope;
 use self::operators::prev_next::add_prev_next_pointers;
-use self::operators::MaybeTotal;
+use self::operators::time_column::TimeColumnBuffer;
 use self::operators::{ArrangeWithTypes, MapWrapped};
 use self::operators::{ConsolidateNondecreasing, Reshard};
+use self::operators::{ConsolidateNondecreasingMap, MaybeTotal};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
-use super::graph::FlattenHandle;
 use super::http_server::maybe_run_http_server_thread;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
@@ -89,9 +90,10 @@ use super::reduce::{
 };
 use super::report_error::{ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithReporter};
 use super::{
-    BatchWrapper, ColumnHandle, ComplexColumn, ConcatHandle, Error, Expression, Graph,
-    GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType, JoinerHandle, Key,
-    OperatorStats, ProberStats, Reducer, Result, Table, UniverseHandle, Value, VennUniverseHandle,
+    BatchWrapper, ColumnHandle, ColumnPath, ComplexColumn, ConcatHandle, Error, Expression,
+    ExpressionData, Graph, GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType, Key,
+    LegacyTable, OperatorStats, ProberStats, Reducer, Result, TableHandle, UniverseHandle, Value,
+    VennUniverseHandle,
 };
 
 pub type WakeupReceiver = Receiver<Box<dyn FnOnce() -> DynResult<()> + Send + Sync + 'static>>;
@@ -139,7 +141,6 @@ type Var<S, D, R = isize> = Variable<S, D, R>;
 
 type Keys<S> = Collection<S, Key>;
 type KeysArranged<S> = ArrangedBySelf<S, Key>;
-type KeysSession<S> = Session<S, Key>;
 type KeysVar<S> = Var<S, Key>;
 type GenericValues<S> = Collection<S, (Key, Value)>;
 type ValuesArranged<S> = ArrangedByKey<S, Key, Value>;
@@ -360,10 +361,12 @@ enum ColumnData<S: MaybeTotalScope> {
         collection: Values<S>,
         arranged: OnceCell<ValuesArranged<S>>,
         consolidated: OnceCell<Values<S>>,
+        keys: OnceCell<Keys<S>>,
     },
     Arranged {
         arranged: ValuesArranged<S>,
         collection: OnceCell<Values<S>>,
+        keys: OnceCell<Keys<S>>,
     },
     Universe {
         universe_data: Rc<UniverseData<S>>,
@@ -379,6 +382,7 @@ impl<S: MaybeTotalScope> ColumnData<S> {
             collection,
             arranged: OnceCell::new(),
             consolidated: OnceCell::new(),
+            keys: OnceCell::new(),
         }
     }
 
@@ -386,6 +390,7 @@ impl<S: MaybeTotalScope> ColumnData<S> {
         Self::Arranged {
             collection: OnceCell::new(),
             arranged,
+            keys: OnceCell::new(),
         }
     }
 
@@ -426,6 +431,21 @@ impl<S: MaybeTotalScope> ColumnData<S> {
                 arranged.get_or_init(|| self.collection().arrange())
             }
         }
+    }
+
+    fn keys(&self) -> &Keys<S> {
+        match self {
+            Self::Collection { keys, .. } | Self::Arranged { keys, .. } => keys.get_or_init(|| {
+                self.collection()
+                    .map_named("ColumnData -> Keys", |(key, _value)| key)
+            }),
+            Self::Universe { universe_data, .. } => universe_data.collection(),
+        }
+    }
+
+    fn keys_arranged(&self) -> KeysArranged<S> {
+        self.keys().arrange()
+        // FIXME: maybe sth better if it is possible to extract arranged keys from an arranged collection
     }
 
     fn consolidated(&self) -> &Values<S> {
@@ -478,6 +498,49 @@ impl<S: MaybeTotalScope> Column<S> {
 
     fn values_consolidated(&self) -> &Values<S> {
         self.data.consolidated()
+    }
+}
+
+type TableData<S> = ColumnData<S>;
+
+#[derive(Clone)]
+struct Table<S: MaybeTotalScope> {
+    data: Rc<TableData<S>>,
+}
+
+impl<S: MaybeTotalScope> Table<S> {
+    fn from_collection(values: impl Into<Values<S>>) -> Self {
+        let data = Rc::new(ColumnData::from_collection(values.into()));
+        Self { data }
+    }
+
+    fn from_data(data: Rc<ColumnData<S>>) -> Self {
+        Self { data }
+    }
+
+    fn from_arranged(values: ValuesArranged<S>) -> Self {
+        let data = Rc::new(ColumnData::from_arranged(values));
+        Self { data }
+    }
+
+    fn values(&self) -> &Values<S> {
+        self.data.collection()
+    }
+
+    fn values_arranged(&self) -> &ValuesArranged<S> {
+        self.data.arranged()
+    }
+
+    fn values_consolidated(&self) -> &Values<S> {
+        self.data.consolidated()
+    }
+
+    fn keys(&self) -> &Keys<S> {
+        self.data.keys()
+    }
+
+    fn keys_arranged(&self) -> KeysArranged<S> {
+        self.data.keys_arranged()
     }
 }
 
@@ -572,51 +635,6 @@ impl<S: MaybeTotalScope> Ixer<S> {
         })
     }
 }
-struct Joiner<S: MaybeTotalScope> {
-    left_universe: UniverseHandle,
-    right_universe: UniverseHandle,
-    result_universe: UniverseHandle,
-    left_result_total: Collection<S, (Key, Key)>,
-    right_result_total: Collection<S, (Key, Key)>,
-    left_key_to_result_key: OnceCell<ArrangedByKey<S, Key, Key>>,
-    right_key_to_result_key: OnceCell<ArrangedByKey<S, Key, Key>>,
-    left_filler: Option<Values<S>>,
-    right_filler: Option<Values<S>>,
-}
-
-impl<S: MaybeTotalScope> Joiner<S> {
-    fn new(
-        left_universe: UniverseHandle,
-        right_universe: UniverseHandle,
-        result_universe: UniverseHandle,
-        left_result_total: Collection<S, (Key, Key)>,
-        right_result_total: Collection<S, (Key, Key)>,
-        left_filler: Option<Values<S>>,
-        right_filler: Option<Values<S>>,
-    ) -> Self {
-        Self {
-            left_universe,
-            right_universe,
-            result_universe,
-            left_result_total,
-            right_result_total,
-            left_key_to_result_key: OnceCell::new(),
-            right_key_to_result_key: OnceCell::new(),
-            left_filler,
-            right_filler,
-        }
-    }
-
-    fn left_key_to_result_key(&self) -> &ArrangedByKey<S, Key, Key> {
-        self.left_key_to_result_key
-            .get_or_init(|| self.left_result_total.arrange())
-    }
-
-    fn right_key_to_result_key(&self) -> &ArrangedByKey<S, Key, Key> {
-        self.right_key_to_result_key
-            .get_or_init(|| self.right_result_total.arrange())
-    }
-}
 
 struct Concat {
     source_universes: Vec<UniverseHandle>,
@@ -629,33 +647,6 @@ impl Concat {
             source_universes,
             result_universe,
         }
-    }
-}
-
-struct Flatten<S: MaybeTotalScope> {
-    universe_handle: UniverseHandle,
-    source_key_to_result_key_values: KeyAndKeyWithTupleCollection<S>,
-    source_key_to_result_key: OnceCell<ArrangedByKey<S, Key, Key>>,
-}
-
-impl<S: MaybeTotalScope> Flatten<S> {
-    fn new(
-        universe_handle: UniverseHandle,
-        source_key_to_result_key_values: KeyAndKeyWithTupleCollection<S>,
-    ) -> Self {
-        Self {
-            universe_handle,
-            source_key_to_result_key_values,
-            source_key_to_result_key: OnceCell::new(),
-        }
-    }
-
-    fn source_key_to_result_key(&self) -> &ArrangedByKey<S, Key, Key> {
-        self.source_key_to_result_key.get_or_init(|| {
-            self.source_key_to_result_key_values
-                .as_key_collection()
-                .arrange_named("Flatten::source_key_to_result_key")
-        })
     }
 }
 
@@ -827,11 +818,10 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     scope: S,
     universes: Arena<Universe<S>, UniverseHandle>,
     columns: Arena<Column<S>, ColumnHandle>,
+    tables: Arena<Table<S>, TableHandle>,
     groupers: Arena<Grouper<S>, GrouperHandle>,
-    joiners: Arena<Joiner<S>, JoinerHandle>,
     ixers: Arena<Ixer<S>, IxerHandle>,
     concats: Arena<Concat, ConcatHandle>,
-    flattens: Arena<Flatten<S>, FlattenHandle>,
     venn_universes: Arena<VennUniverse<S>, VennUniverseHandle>,
     pollers: Vec<Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>>,
     connector_threads: Vec<JoinHandle<()>>,
@@ -845,16 +835,6 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     groupers_cache: HashMap<(Vec<ColumnHandle>, Vec<ColumnHandle>, UniverseHandle), GrouperHandle>,
     groupers_id_cache: HashMap<(ColumnHandle, Vec<ColumnHandle>, UniverseHandle), GrouperHandle>,
     concat_cache: HashMap<Vec<UniverseHandle>, ConcatHandle>,
-    joiners_cache: HashMap<
-        (
-            Vec<ColumnHandle>,
-            UniverseHandle,
-            Vec<ColumnHandle>,
-            UniverseHandle,
-            JoinType,
-        ),
-        JoinerHandle,
-    >,
     ignore_asserts: bool,
     persistence_config: Option<PersistenceManagerConfig>,
     worker_persistent_storage: WorkerPersistentStorage,
@@ -1266,11 +1246,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             scope,
             universes: Arena::new(),
             columns: Arena::new(),
+            tables: Arena::new(),
             groupers: Arena::new(),
-            joiners: Arena::new(),
             ixers: Arena::new(),
             concats: Arena::new(),
-            flattens: Arena::new(),
             venn_universes: Arena::new(),
             pollers: Vec::new(),
             connector_threads: Vec::new(),
@@ -1284,7 +1263,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             groupers_cache: HashMap::new(),
             groupers_id_cache: HashMap::new(),
             concat_cache: HashMap::new(),
-            joiners_cache: HashMap::new(),
             ignore_asserts,
             persistence_config,
             worker_persistent_storage,
@@ -1306,6 +1284,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
     fn empty_column(&mut self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
         self.static_column(universe_handle, Vec::new())
+    }
+
+    fn empty_table(&mut self) -> Result<TableHandle> {
+        self.static_table(Vec::new())
     }
 
     #[track_caller]
@@ -1414,6 +1396,25 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(column_handle)
     }
 
+    fn static_table(&mut self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
+        let worker_count = self.scope.peers();
+        let worker_index = self.scope.index();
+        let values = values
+            .into_iter()
+            .filter(move |(k, _v)| k.shard_as_usize() % worker_count == worker_index)
+            .map(|(key, values)| {
+                (
+                    (key, Value::from(values.as_slice())),
+                    S::Timestamp::minimum(),
+                    1,
+                )
+            })
+            .to_stream(&mut self.scope)
+            .as_collection()
+            .probe_with(&mut self.input_probe);
+        Ok(self.tables.alloc(Table::from_collection(values)))
+    }
+
     fn tuples(
         &mut self,
         universe_handle: UniverseHandle,
@@ -1465,6 +1466,31 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 Ok(TupleCollection::More(more))
             },
         )?
+    }
+
+    fn extract_columns(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<TupleCollection<S>> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let result = table
+            .values()
+            .map_named("extract_columns::extract", move |(key, values)| {
+                let extracted_values: Arc<[Value]> = column_paths
+                    .iter()
+                    .map(|path| path.extract(&key, &values))
+                    .try_collect()
+                    .unwrap_with_reporter(&error_reporter);
+                (key, extracted_values)
+            });
+        Ok(TupleCollection::More(result))
     }
 
     fn expression_column(
@@ -1519,38 +1545,212 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(new_column_handle)
     }
 
-    fn async_apply_column(
+    fn expression_table(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        expressions: Vec<ExpressionData>,
+        wrapper: BatchWrapper,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let new_values = table.values().map_wrapped_named(
+            "expression_table::evaluate_expression",
+            wrapper,
+            move |(key, values)| {
+                let args: Vec<Value> = column_paths
+                    .iter()
+                    .map(|path| path.extract(&key, &values))
+                    .collect::<Result<_>>()
+                    .unwrap_with_reporter(&error_reporter);
+                let new_values = expressions.iter().map(|expression_data| {
+                    let result = expression_data
+                        .expression
+                        .eval(&args)
+                        .unwrap_with_reporter_and_trace(&error_reporter, &expression_data.trace);
+                    result
+                });
+                (key, Value::Tuple(new_values.collect()))
+            },
+        );
+        Ok(self.tables.alloc(Table::from_collection(new_values)))
+    }
+
+    fn columns_to_table(
+        &mut self,
+        universe_handle: UniverseHandle,
+        columns: Vec<(ColumnHandle, ColumnPath)>,
+    ) -> Result<TableHandle> {
+        fn produce_nested_tuple(
+            paths: &[(usize, Vec<usize>)],
+            depth: usize,
+            data: &Arc<[Value]>,
+        ) -> Value {
+            if paths.len() == 1 && paths.first().unwrap().1.len() == depth {
+                let id = paths.first().unwrap().0;
+                return data[id].clone();
+            }
+            let mut path_prefix = 0;
+            let mut i = 0;
+            let mut j = 0;
+            let mut result = Vec::new();
+            while i < paths.len() {
+                while i < paths.len() && path_prefix == paths[i].1[depth] {
+                    i += 1;
+                }
+                path_prefix += 1;
+                if i == j {
+                    // emulate unused cols
+                    result.push(Value::Tuple(Arc::from([])));
+                    continue;
+                }
+                assert!(j < i); //there is at least one entry
+                result.push(produce_nested_tuple(&paths[j..i], depth + 1, data));
+                j = i;
+            }
+            Value::from(result.as_slice())
+        }
+
+        let column_handles: Vec<ColumnHandle> = columns.iter().map(|(handle, _)| *handle).collect();
+        let tuples_collection = self.tuples(universe_handle, &column_handles)?;
+        let tuples: Collection<S, (Key, Arc<[Value]>)> = match tuples_collection {
+            TupleCollection::Zero(c) => {
+                c.map_named("columns_to_table:zero", |key| (key, [].as_slice().into()))
+            }
+            TupleCollection::One(c) => c.map_named("columns_to_table:one", |(key, value)| {
+                (key, [value].as_slice().into())
+            }),
+            TupleCollection::Two(c) => c.map_named("columns_to_table:two", |(key, values)| {
+                (key, values.as_slice().into())
+            }),
+            TupleCollection::More(c) => c,
+        };
+        let mut paths: Vec<(usize, Vec<usize>)> = columns
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, path))| match path {
+                ColumnPath::ValuePath(path) => Ok((i, path)),
+                ColumnPath::Key => Err(Error::ValueError(
+                    "It is not allowed to use ids in column to table".into(),
+                )),
+            })
+            .collect::<Result<_>>()?;
+        paths.sort_by(|(_, path_i), (_, path_j)| path_i.partial_cmp(path_j).unwrap());
+
+        let table_values = tuples.map_named("columns_to_table:pack", move |(key, values)| {
+            (key, produce_nested_tuple(&paths, 0, &values))
+        });
+
+        Ok(self.tables.alloc(Table::from_collection(table_values)))
+    }
+
+    fn table_column(
+        &mut self,
+        universe_handle: UniverseHandle,
+        table_handle: TableHandle,
+        column_path: ColumnPath,
+    ) -> Result<ColumnHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let error_reporter = self.error_reporter.clone();
+        let values = table
+            .values()
+            .map_named("table_column::extract", move |(key, tuple)| {
+                (
+                    key,
+                    column_path
+                        .extract(&key, &tuple)
+                        .unwrap_with_reporter(&error_reporter),
+                )
+            });
+        let handle = self
+            .columns
+            .alloc(Column::from_collection(universe_handle, values));
+        Ok(handle)
+    }
+
+    fn table_universe(&mut self, table_handle: TableHandle) -> Result<UniverseHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let universe_handle = self
+            .universes
+            .alloc(Universe::from_collection(table.keys().clone()));
+
+        Ok(universe_handle)
+    }
+
+    fn flatten_table_storage(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let table_values =
+            table
+                .values()
+                .map_named("flatten_table_storage:flatten", move |(key, values)| {
+                    let new_values: Arc<[Value]> = column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values).unwrap_or(Value::None))
+                        .collect();
+                    // FIXME: unwrap_or needed now to support ExternalMaterializedColumns in iterate
+                    (key, Value::Tuple(new_values))
+                });
+        let table_handle = self.tables.alloc(Table::from_collection(table_values));
+        Ok(table_handle)
+    }
+
+    fn async_apply_table(
         &mut self,
         function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
-        universe_handle: UniverseHandle,
-        column_handles: &[ColumnHandle],
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
         trace: Trace,
-    ) -> Result<ColumnHandle> where {
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
         let trace = Arc::new(trace);
-        let values = self
-            .tuples(universe_handle, column_handles)?
-            .as_collection()
-            .map_named_async("expression_column::apply_async", move |(key, values)| {
+        let new_values = table.values().map_named_async(
+            "expression_column::apply_async",
+            move |(key, values)| {
+                let args: Vec<Value> = column_paths
+                    .iter()
+                    .map(|path| path.extract(&key, &values))
+                    .collect::<Result<_>>()
+                    .unwrap_with_reporter_and_trace(&error_reporter, &trace);
                 let error_reporter = error_reporter.clone();
                 let function = function.clone();
                 let trace = trace.clone();
                 let future = async move {
                     let value = async {
-                        function(key, &values)
+                        function(key, &args)
                             .await
                             .unwrap_with_reporter_and_trace(&error_reporter, &trace)
                     }
                     .await;
-                    (key, value)
+                    (key, Value::from([value].as_slice()))
                 };
                 Box::pin(future)
-            });
-
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(universe_handle, values));
-        Ok(new_column_handle)
+            },
+        );
+        Ok(self.tables.alloc(Table::from_collection(new_values)))
     }
 
     fn id_column(&mut self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
@@ -1586,6 +1786,128 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(new_universe_handle)
     }
 
+    fn filter_table(
+        &mut self,
+        table_handle: TableHandle,
+        filtering_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let new_table = table.values().flat_map(move |(key, values)| {
+            if filtering_column_path
+                .extract(&key, &values)
+                .unwrap_with_reporter(&error_reporter)
+                .as_bool()
+                .unwrap_with_reporter(&error_reporter)
+            {
+                Some((key, values))
+            } else {
+                None
+            }
+        });
+        Ok(self.tables.alloc(Table::from_collection(new_table)))
+    }
+
+    fn forget(
+        &mut self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle>
+    where
+        <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
+            + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
+            + Epsilon,
+    {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        //TODO: report errors
+        let _error_reporter = self.error_reporter.clone();
+
+        let new_table = table.values().consolidate_nondecreasing().forget(
+            move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
+            move |val| current_time_column_path.extract_from_value(val).unwrap(),
+        );
+
+        Ok(self.tables.alloc(Table::from_collection(new_table)))
+    }
+
+    fn freeze(
+        &mut self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle>
+    where
+        <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
+            + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
+            + Epsilon,
+    {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        //TODO: report errors
+        let _error_reporter = self.error_reporter.clone();
+        let gathered = table.values().inner.exchange(|_| 0).as_collection();
+        #[allow(clippy::disallowed_methods)]
+        let consolidated =
+            <Collection<S, (Key, Value)> as differential_dataflow::operators::arrange::Arrange<
+                S,
+                Key,
+                Value,
+                isize,
+            >>::arrange_core::<
+                Pipeline,
+                OrdValSpine<Key, Value, <S as MaybeTotalScope>::MaybeTotalTimestamp, isize>,
+            >(&gathered, Pipeline, "consolidate_without_shard")
+            .consolidate_nondecreasing_map(|k, v| (*k, v.clone()));
+
+        let (on_time, _late) = consolidated.freeze(
+            move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
+            move |val| current_time_column_path.extract_from_value(val).unwrap(),
+        );
+
+        Ok(self.tables.alloc(Table::from_collection(on_time)))
+    }
+
+    fn buffer(
+        &mut self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle>
+    where
+        <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
+            + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
+            + Epsilon,
+    {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        //TODO: report errors
+        let _error_reporter = self.error_reporter.clone();
+
+        let new_table = table.values().consolidate_nondecreasing().postpone(
+            table.values().scope(),
+            move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
+            move |val| current_time_column_path.extract_from_value(val).unwrap(),
+        );
+
+        Ok(self.tables.alloc(Table::from_collection(new_table)))
+    }
+
     fn restrict_column(
         &mut self,
         universe_handle: UniverseHandle,
@@ -1612,6 +1934,42 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .columns
             .alloc(Column::from_collection(universe_handle, new_values));
         Ok(new_column_handle)
+    }
+
+    fn restrict_or_override_table_universe(
+        &mut self,
+        original_table_handle: TableHandle,
+        new_table_handle: TableHandle,
+        same_universes: bool,
+    ) -> Result<TableHandle> {
+        let original_table = self
+            .tables
+            .get(original_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let new_table = self
+            .tables
+            .get(new_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let new_values = new_table.values_arranged().join_core(
+            original_table.values_arranged(),
+            |key, new_values, orig_values| {
+                once((
+                    *key,
+                    Value::from([new_values.clone(), orig_values.clone()].as_slice()),
+                ))
+            },
+        );
+
+        if !self.ignore_asserts {
+            self.assert_keys_match_values(new_table.keys(), &new_values);
+            if same_universes {
+                self.assert_keys_match_values(original_table.keys(), &new_values);
+            }
+        };
+
+        Ok(self.tables.alloc(Table::from_collection(new_values)))
     }
 
     fn intersect_universe(
@@ -1646,6 +2004,34 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let new_universe_handle = self.universes.alloc(Universe::new(new_keys));
         Ok(new_universe_handle)
+    }
+
+    fn intersect_tables(
+        &mut self,
+        table_handle: TableHandle,
+        other_table_handles: Vec<TableHandle>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let mut new_values = table.data.clone();
+        for other_table_handle in other_table_handles {
+            let other_table = self
+                .tables
+                .get(other_table_handle)
+                .ok_or(Error::InvalidTableHandle)?;
+            new_values = Rc::new(ColumnData::from_collection(
+                new_values
+                    .arranged()
+                    .join_core(&other_table.keys_arranged(), |k, values, ()| {
+                        once((*k, values.clone()))
+                    })
+                    .into(),
+            ));
+        }
+
+        Ok(self.tables.alloc(Table::from_data(new_values)))
     }
 
     fn union_universe(&mut self, universe_handles: &[UniverseHandle]) -> Result<UniverseHandle> {
@@ -1696,6 +2082,67 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .alloc(Universe::from_collection(new_universe_keys));
 
         Ok(new_universe_handle)
+    }
+
+    fn reindex_table(
+        &mut self,
+        table_handle: TableHandle,
+        reindexing_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let new_values =
+            table
+                .values()
+                .map_named("reindex_universe::new_values", move |(key, values)| {
+                    let value = reindexing_column_path
+                        .extract(&key, &values)
+                        .unwrap_with_reporter(&error_reporter);
+                    (
+                        value.as_pointer().unwrap_with_reporter(&error_reporter),
+                        values,
+                    )
+                });
+
+        if !self.ignore_asserts {
+            let new_keys = new_values.map_named("reindex_table:new_keys", |(key, _)| key);
+            self.assert_keys_are_distinct(&new_keys);
+        };
+
+        Ok(self.tables.alloc(Table::from_collection(new_values)))
+    }
+
+    fn subtract_table(
+        &mut self,
+        left_table_handle: TableHandle,
+        right_table_handle: TableHandle,
+    ) -> Result<TableHandle> {
+        let left_table = self
+            .tables
+            .get(left_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let right_table = self
+            .tables
+            .get(right_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let intersection = left_table
+            .values_arranged()
+            .join_core(&right_table.keys_arranged(), |k, values, ()| {
+                once((*k, values.clone()))
+            });
+
+        let new_values = left_table
+            .values()
+            .as_generic()
+            .concat(&intersection.negate());
+
+        Ok(self.tables.alloc(Table::from_collection(new_values)))
     }
 
     fn venn_universes(
@@ -1845,10 +2292,27 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(column_handle)
     }
 
-    fn flatten(
+    fn concat_tables(&mut self, table_handles: &[TableHandle]) -> Result<TableHandle> {
+        let table_collections: Vec<_> = table_handles
+            .iter()
+            .map(|handle| {
+                let table = self.tables.get(*handle).ok_or(Error::InvalidTableHandle)?;
+                Ok(table.values().as_generic().clone())
+            })
+            .collect::<Result<_>>()?;
+        let table = Table::from_collection(concatenate(&mut self.scope, table_collections));
+        if !self.ignore_asserts {
+            self.assert_keys_are_distinct(table.keys());
+        };
+        let table_handle = self.tables.alloc(table);
+        Ok(table_handle)
+    }
+
+    fn flatten_table(
         &mut self,
-        column_handle: ColumnHandle,
-    ) -> Result<(UniverseHandle, ColumnHandle, FlattenHandle)> {
+        table_handle: TableHandle,
+        flatten_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
         fn flatten_ndarray<T>(array: &ArrayD<T>) -> Vec<Value>
         where
             T: Clone,
@@ -1865,79 +2329,38 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
         }
 
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
 
-        let source_key_to_result_key_value = column.values().flat_map(|(key, value)| {
+        let error_reporter = self.error_reporter.clone();
+
+        let new_table = table.values().flat_map(move |(key, values)| {
+            let value = flatten_column_path
+                .extract(&key, &values)
+                .unwrap_with_reporter(&error_reporter);
             let wrapped = match value {
-                Value::IntArray(array) => flatten_ndarray(&array),
-                Value::FloatArray(array) => flatten_ndarray(&array),
-                Value::Tuple(array) => (*array).to_vec(),
-                Value::String(s) => (*s)
+                Value::IntArray(array) => Ok(flatten_ndarray(&array)),
+                Value::FloatArray(array) => Ok(flatten_ndarray(&array)),
+                Value::Tuple(array) => Ok((*array).to_vec()),
+                Value::String(s) => Ok((*s)
                     .chars()
                     .map(|c| Value::from(ArcStr::from(c.to_string())))
-                    .collect(),
-                _ => panic!("Pathway can't flatten this value {value:?}"),
-            };
-            wrapped.into_iter().enumerate().map(move |(i, value)| {
+                    .collect()),
+                value => Err(Error::ValueError(format!(
+                    "Pathway can't flatten this value {value:?}"
+                ))),
+            }
+            .unwrap_with_reporter(&error_reporter);
+            wrapped.into_iter().enumerate().map(move |(i, entry)| {
                 (
-                    key,
-                    KeyWith(
-                        Tuple::Two([Value::from(key), Value::from(i64::try_from(i).unwrap())])
-                            .key(),
-                        value,
-                    ),
+                    Key::for_values(&[Value::from(key), Value::from(i64::try_from(i).unwrap())]),
+                    Value::Tuple([values.clone(), entry].into_iter().collect()),
                 )
             })
         });
-        let source_key_to_result_key_value_wrapped =
-            KeyAndKeyWithTupleCollection::One(source_key_to_result_key_value);
-
-        let new_keys_values =
-            source_key_to_result_key_value_wrapped.as_key_with_values_collection();
-        let new_keys = new_keys_values.as_key_collection();
-        let new_universe_handle = self.universes.alloc(Universe::from_collection(new_keys));
-
-        let new_column = Column::from_collection(
-            new_universe_handle,
-            new_keys_values.as_key_with_value_collection(0),
-        );
-        let new_column_handle = self.columns.alloc(new_column);
-
-        let flatten_handle = self.flattens.alloc(Flatten::new(
-            new_universe_handle,
-            source_key_to_result_key_value_wrapped,
-        ));
-
-        Ok((new_universe_handle, new_column_handle, flatten_handle))
-    }
-
-    fn explode(
-        &mut self,
-        flatten_handle: FlattenHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let flatten = self
-            .flattens
-            .get(flatten_handle)
-            .ok_or(Error::InvalidConcatHandle)?;
-
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-
-        let new_values = flatten.source_key_to_result_key().join_core(
-            column.values_arranged(),
-            |_source_key, result_key, value| once((*result_key, value.clone())),
-        );
-
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(flatten.universe_handle, new_values));
-        Ok(new_column_handle)
+        Ok(self.tables.alloc(Table::from_collection(new_table)))
     }
 
     fn sort(
@@ -1988,6 +2411,67 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok((prev_column_handle, next_column_handle))
     }
 
+    fn sort_table(
+        &mut self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let instance_key_id_arranged = table
+            .values()
+            .map_named(
+                "sort_table::instance_key_id_arranged",
+                move |(id, values)| {
+                    let instance = instance_column_path
+                        .extract(&id, &values)
+                        .unwrap_with_reporter(&error_reporter);
+                    let key = key_column_path
+                        .extract(&id, &values)
+                        .unwrap_with_reporter(&error_reporter);
+                    SortingCell::new(instance, key, id)
+                },
+            )
+            .arrange();
+
+        let prev_next: ArrangedByKey<S, Key, [Value; 2]> =
+            add_prev_next_pointers(instance_key_id_arranged, &|a, b| a.instance == b.instance)
+                .as_collection(|current, prev_next| {
+                    let prev = prev_next
+                        .0
+                        .clone()
+                        .map_or(Value::None, |prev| Value::Pointer(prev.id));
+                    let next = prev_next
+                        .1
+                        .clone()
+                        .map_or(Value::None, |next| Value::Pointer(next.id));
+                    (current.id, [prev, next])
+                })
+                .arrange();
+
+        let new_values = table
+            .values_arranged()
+            .join_core(&prev_next, |key, values, prev_next| {
+                once((
+                    *key,
+                    Value::Tuple(
+                        [values.clone()]
+                            .into_iter()
+                            .chain(prev_next.clone())
+                            .collect(),
+                    ),
+                ))
+            });
+
+        Ok(self.tables.alloc(Table::from_collection(new_values)))
+    }
+
     fn reindex_column(
         &mut self,
         column_to_reindex_handle: ColumnHandle,
@@ -2034,55 +2518,83 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(new_column_handle)
     }
 
-    fn update_rows(
+    fn update_rows_arrange(
         &mut self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        updates_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+    ) -> Result<ArrangedByKey<S, Key, (bool, Value)>> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let update = self
+            .tables
+            .get(update_handle)
+            .ok_or(Error::InvalidTableHandle)?;
 
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        let updates = self
-            .columns
-            .get(updates_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-
-        let both_arranged: ArrangedByKey<S, Key, (bool, Value)> = column
+        Ok(table
             .values()
-            .map_named("update_rows::updated", |(k, v)| (k, (true, v)))
+            .map_named("update_rows_arrange::table", |(k, v)| (k, (false, v)))
             .concat(
-                &updates
-                    .data
-                    .clone()
-                    .collection()
-                    .map_named("update_rows::updates", |(k, v)| (k, (false, v))),
+                &update
+                    .values()
+                    .map_named("update_rows_arrange::update", |(k, v)| (k, (true, v))),
             )
-            .arrange_named("update_rows::both");
-        let updated_values =
-            both_arranged.reduce_abelian("update_rows::updated", move |_key, input, output| {
-                let ((_is_left, value), _count) = input[0];
+            .arrange_named("update_rows_arrange::both"))
+    }
+
+    fn update_rows_table(
+        &mut self,
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+    ) -> Result<TableHandle> {
+        let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
+
+        let updated_values = both_arranged.reduce_abelian(
+            "update_rows_table::updated",
+            move |_key, input, output| {
+                let ((_is_right, value), _count) = input.last().unwrap();
                 output.push((value.clone(), 1));
-            });
+            },
+        );
 
-        if !self.ignore_asserts {
-            self.assert_keys_match_values(
-                universe.keys(),
-                &updated_values.as_collection(|k, v: &Value| (*k, v.clone())),
-            );
-        };
+        Ok(self.tables.alloc(Table::from_arranged(updated_values)))
+    }
 
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_arranged(universe_handle, updated_values));
+    fn update_cells_table(
+        &mut self,
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        update_paths: Vec<ColumnPath>,
+    ) -> Result<TableHandle> {
+        let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
-        Ok(new_column_handle)
+        let error_reporter = self.error_reporter.clone();
+
+        let updated_values = both_arranged.reduce_abelian(
+            "update_cells_table::updated",
+            move |key, input, output| {
+                let ((_is_right, values), _count) = input[0];
+                let maybe_update: Vec<_> = match input.get(1) {
+                    Some(((_is_right, updates), _count)) => update_paths
+                        .iter()
+                        .map(|path| path.extract(key, updates))
+                        .collect::<Result<_>>(),
+                    None => column_paths
+                        .iter()
+                        .map(|path| path.extract(key, values))
+                        .collect::<Result<_>>(),
+                }
+                .unwrap_with_reporter(&error_reporter);
+
+                let result =
+                    Value::Tuple([values.clone()].into_iter().chain(maybe_update).collect());
+                output.push((result, 1));
+            },
+        );
+
+        Ok(self.tables.alloc(Table::from_arranged(updated_values)))
     }
 
     fn override_column_universe(
@@ -2120,8 +2632,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             Reducer::ArgMin => Rc::new(ArgMinReducer),
             Reducer::Max => Rc::new(MaxReducer),
             Reducer::ArgMax => Rc::new(ArgMaxReducer),
-            Reducer::SortedTuple => Rc::new(SortedTupleReducer),
-            Reducer::Tuple => Rc::new(TupleReducer),
+            Reducer::SortedTuple(skip_nones) => Rc::new(SortedTupleReducer::new(skip_nones)),
+            Reducer::Tuple(skip_nones) => Rc::new(TupleReducer::new(skip_nones)),
             Reducer::Any => Rc::new(AnyReducer),
         }
     }
@@ -2265,25 +2777,31 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &mut self,
         grouper_handle: GrouperHandle,
         reducer: Reducer,
-        column_handle: ColumnHandle,
+        column_handles: Vec<ColumnHandle>,
     ) -> Result<ColumnHandle> {
         let grouper = self
             .groupers
             .get(grouper_handle)
             .ok_or(Error::InvalidGrouperHandle)?;
         let dataflow_reducer = Self::create_dataflow_reducer(reducer);
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        if column.universe != grouper.source_universe {
-            return Err(Error::UniverseMismatch);
+        let columns = column_handles
+            .into_iter()
+            .map(|column_handle| {
+                self.columns
+                    .get(column_handle)
+                    .ok_or(Error::InvalidColumnHandle)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for column in &columns {
+            if column.universe != grouper.source_universe {
+                return Err(Error::UniverseMismatch);
+            }
         }
-        let new_values = dataflow_reducer.reduce(
-            self,
-            grouper.source_key_to_result_key(),
-            column.values_arranged(),
-        );
+
+        let columns_values: Vec<_> = columns.into_iter().map(Column::values_arranged).collect();
+
+        let new_values =
+            dataflow_reducer.reduce(self, grouper.source_key_to_result_key(), columns_values);
         grouper.result_keys.get_or_init(|| {
             new_values.map_named("grouper_reducer_column::result_keys", |(key, _value)| key)
         });
@@ -2416,39 +2934,57 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn join(
+    fn join_tables(
         &mut self,
-        left_universe_handle: UniverseHandle,
-        left_column_handles: &[ColumnHandle],
-        right_universe_handle: UniverseHandle,
-        right_column_handles: &[ColumnHandle],
+        left_table_handle: TableHandle,
+        right_table_handle: TableHandle,
+        left_column_paths: Vec<ColumnPath>,
+        right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
-    ) -> Result<JoinerHandle> {
-        if left_column_handles.len() != right_column_handles.len() {
-            return Err(Error::DifferentJoinConditionLengths);
-        }
-        let cache_key = (
-            left_column_handles.to_owned(),
-            left_universe_handle,
-            right_column_handles.to_owned(),
-            right_universe_handle,
-            join_type,
-        );
-        if let Some(val) = self.joiners_cache.get(&cache_key) {
-            return Ok(*val);
-        }
-        let join_left = self
-            .tuples(left_universe_handle, left_column_handles)?
-            .map(|key, tuple| (Key::for_values(tuple), key));
-        let join_key_to_left_key_arranged: ArrangedByKey<S, Key, Key> = join_left.arrange();
-        let join_right = self
-            .tuples(right_universe_handle, right_column_handles)?
-            .map(|key, tuple| (Key::for_values(tuple), key));
-        let join_key_to_right_key_arranged: ArrangedByKey<S, Key, Key> = join_right.arrange();
-        let join_left_right = join_key_to_left_key_arranged.join_core(
-            &join_key_to_right_key_arranged,
-            |join_key, left_key, right_key| once((*join_key, *left_key, *right_key)),
-        );
+    ) -> Result<TableHandle> {
+        let left_table = self
+            .tables
+            .get(left_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let right_table = self
+            .tables
+            .get(right_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter_left = self.error_reporter.clone();
+        let error_reporter_right = self.error_reporter.clone();
+
+        let join_left =
+            left_table
+                .values()
+                .map_named("join_tables::join_left", move |(key, values)| {
+                    let join_key_parts: Vec<_> = left_column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter_left);
+                    let join_key = Key::for_values(&join_key_parts);
+                    (join_key, (key, values))
+                });
+        let join_left_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_left.arrange();
+        let join_right =
+            right_table
+                .values()
+                .map_named("join_tables::join_right", move |(key, values)| {
+                    let join_key_parts: Vec<_> = right_column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter_right);
+                    let join_key = Key::for_values(&join_key_parts);
+                    (join_key, (key, values))
+                });
+        let join_right_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_right.arrange();
+
+        let join_left_right = join_left_arranged
+            .join_core(&join_right_arranged, |join_key, left_key, right_key| {
+                once((*join_key, left_key.clone(), right_key.clone()))
+            });
 
         let left_right_to_result_fn = match join_type {
             JoinType::LeftKeysFull | JoinType::LeftKeysSubset => |(left_key, _right_key)| left_key,
@@ -2458,257 +2994,177 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         };
         let result_left_right = join_left_right.map_named(
             "join::result_left_right",
-            move |(_join_key, left_key, right_key)| {
+            move |(_join_key, (left_key, left_values), (right_key, right_values))| {
                 (
                     left_right_to_result_fn((left_key, right_key)),
-                    left_key,
-                    right_key,
+                    Value::from(
+                        [
+                            Value::Pointer(left_key),
+                            left_values,
+                            Value::Pointer(right_key),
+                            right_values,
+                        ]
+                        .as_slice(),
+                    ),
                 )
             },
-        );
-        let result_keys = result_left_right.map_named(
-            "join::result_keys",
-            |(result_key, _left_key, _right_key)| result_key,
         );
 
         let left_outer = || {
             join_left
-                .map_named("join::left_outer left", |(_join_key, left_key)| left_key)
+                .map_named(
+                    "join_tables::left_outer_left",
+                    |(_join_key, left_key_values)| left_key_values,
+                )
                 .concat(
                     &join_left_right
                         .map_named(
-                            "join::left_outer right",
-                            |(_join_key, left_key, _right_key)| left_key,
+                            "join::left_outer_res",
+                            |(_join_key, left_key_values, _right_key_values)| left_key_values,
                         )
                         .distinct()
                         .negate(),
                 )
         };
-        let left_result_outer = match join_type {
+        let result_left_outer = match join_type {
             JoinType::LeftOuter | JoinType::FullOuter => Some(left_outer().map_named(
-                "join::left_result_outer",
-                |left_key| {
+                "join::result_left_outer",
+                |(left_key, left_values)| {
                     let result_key = Key::for_values(&[Value::from(left_key), Value::None]);
-                    (left_key, result_key)
+                    (left_key, left_values, result_key)
                 },
             )),
             JoinType::LeftKeysFull => Some(
-                left_outer().map_named("join::left_result_outer", |left_key| (left_key, left_key)),
+                left_outer().map_named("join::result_left_outer", |(left_key, left_values)| {
+                    (left_key, left_values, left_key)
+                }),
             ),
             _ => None,
-        };
-
-        let result_keys = if let Some(left_result_outer) = &left_result_outer {
-            result_keys.concat(
-                &left_result_outer
-                    .map_named("join::result_keys", |(_left_key, result_key)| result_key),
+        }
+        .map(|result_left_outer| {
+            result_left_outer.map_named(
+                "join::result_left_outer_reorder",
+                |(left_key, left_values, result_key)| {
+                    (
+                        result_key,
+                        Value::from(
+                            [
+                                Value::Pointer(left_key),
+                                left_values,
+                                Value::None,
+                                Value::None,
+                            ]
+                            .as_slice(),
+                        ),
+                    )
+                },
             )
+        });
+        let result_left_right = if let Some(result_left_outer) = result_left_outer {
+            result_left_right.concat(&result_left_outer)
         } else {
-            result_keys
+            result_left_right
         };
 
         let right_outer = || {
             join_right
-                .map_named("join::right_outer right", |(_join_key, right_key)| {
-                    right_key
-                })
+                .map_named(
+                    "join::right_outer_right",
+                    |(_join_key, right_key_values)| right_key_values,
+                )
                 .concat(
                     &join_left_right
                         .map_named(
-                            "join::right_outer left",
-                            |(_join_key, _left_key, right_key)| right_key,
+                            "join::right_outer_res",
+                            |(_join_key, _left_key, right_key_values)| right_key_values,
                         )
                         .distinct()
                         .negate(),
                 )
         };
-        let right_result_outer = match join_type {
+        let result_right_outer = match join_type {
             JoinType::RightOuter | JoinType::FullOuter => Some(right_outer().map_named(
                 "join::right_result_outer",
-                |right_key| {
+                |(right_key, right_values)| {
+                    let result_key = Key::for_values(&[Value::None, Value::from(right_key)]);
                     (
-                        right_key,
-                        Key::for_values(&[Value::from(None::<Key>), Value::from(right_key)]),
+                        result_key,
+                        Value::from(
+                            [
+                                Value::None,
+                                Value::None,
+                                Value::Pointer(right_key),
+                                right_values,
+                            ]
+                            .as_slice(),
+                        ),
                     )
                 },
             )),
             _ => None,
         };
-
-        let result_keys = if let Some(right_result_outer) = &right_result_outer {
-            result_keys.concat(
-                &right_result_outer
-                    .map_named("join::result_keys", |(_right_key, result_key)| result_key),
-            )
+        let result_left_right = if let Some(result_right_outer) = result_right_outer {
+            result_left_right.concat(&result_right_outer)
         } else {
-            result_keys
+            result_left_right
         };
 
-        let result_universe_handle = match join_type {
+        let result_table = Table::from_collection(result_left_right);
+
+        match join_type {
             JoinType::LeftKeysFull => {
-                let left_universe = &self.universes[left_universe_handle];
-                if !self.ignore_asserts {
-                    self.assert_keys_match(left_universe.keys(), &result_keys);
-                };
-                left_universe_handle
+                self.assert_keys_match(left_table.keys(), result_table.keys());
             }
-            JoinType::LeftKeysSubset => {
-                if !self.ignore_asserts {
-                    self.assert_keys_are_distinct(&result_keys);
-                };
-                self.universes.alloc(Universe::from_collection(result_keys))
-            }
-            _ => self.universes.alloc(Universe::from_collection(result_keys)),
-        };
-
-        let left_result_inner = result_left_right.map_named(
-            "join::left_result_inner",
-            |(result_key, left_key, _right_key)| (left_key, result_key),
-        );
-
-        let left_result_total = if let Some(left_result_outer) = &left_result_outer {
-            left_result_inner.concat(left_result_outer)
-        } else {
-            left_result_inner
-        };
-
-        let left_filler = left_result_outer.map(|left_result_outer| {
-            left_result_outer.map_named("join::left_filler", |(_left_key, result_key)| {
-                (result_key, Value::None)
-            })
-        });
-
-        let right_result_inner = result_left_right.map_named(
-            "join::right_result_inner",
-            |(result_key, _left_key, right_key)| (right_key, result_key),
-        );
-
-        let right_result_total = if let Some(right_result_outer) = &right_result_outer {
-            right_result_inner.concat(right_result_outer)
-        } else {
-            right_result_inner
-        };
-
-        let right_filler = right_result_outer.map(|right_result_outer| {
-            right_result_outer.map_named("join::right_filler", |(_right_key, result_key)| {
-                (result_key, Value::None)
-            })
-        });
-
-        let joiner_handle = self.joiners.alloc(Joiner::new(
-            left_universe_handle,
-            right_universe_handle,
-            result_universe_handle,
-            left_result_total,
-            right_result_total,
-            left_filler.map(Into::into),
-            right_filler.map(Into::into),
-        ));
-        self.joiners_cache.insert(cache_key, joiner_handle);
-        Ok(joiner_handle)
-    }
-
-    fn joiner_universe(&mut self, joiner_handle: JoinerHandle) -> Result<UniverseHandle> {
-        let joiner = self
-            .joiners
-            .get(joiner_handle)
-            .ok_or(Error::InvalidJoinerHandle)?;
-        Ok(joiner.result_universe)
-    }
-
-    fn joiner_column(
-        &self,
-        universe_handle: UniverseHandle,
-        source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        value_filler: Option<&Values<S>>,
-        result_universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<Column<S>> {
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        if column.universe != universe_handle {
-            return Err(Error::UniverseMismatch);
+            JoinType::LeftKeysSubset => self.assert_keys_are_distinct(result_table.keys()),
+            _ => {}
         }
-        let new_values = source_key_to_result_key.join_core(
-            column.values_arranged(),
-            |_source_key, result_key, value| once((*result_key, value.clone())),
-        );
-        let new_values = if let Some(value_filler) = value_filler {
-            new_values.concat(value_filler)
-        } else {
-            new_values
-        };
-        let new_column = Column::from_collection(result_universe_handle, new_values);
-        Ok(new_column)
-    }
 
-    fn joiner_left_column(
-        &mut self,
-        joiner_handle: JoinerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let joiner = self
-            .joiners
-            .get(joiner_handle)
-            .ok_or(Error::InvalidJoinerHandle)?;
-        let new_column_handle = self.columns.alloc(self.joiner_column(
-            joiner.left_universe,
-            joiner.left_key_to_result_key(),
-            joiner.right_filler.as_ref(),
-            joiner.result_universe,
-            column_handle,
-        )?);
-        Ok(new_column_handle)
-    }
-
-    fn joiner_right_column(
-        &mut self,
-        joiner_handle: JoinerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let joiner = self
-            .joiners
-            .get(joiner_handle)
-            .ok_or(Error::InvalidJoinerHandle)?;
-        let new_column_handle = self.columns.alloc(self.joiner_column(
-            joiner.right_universe,
-            joiner.right_key_to_result_key(),
-            joiner.left_filler.as_ref(),
-            joiner.result_universe,
-            column_handle,
-        )?);
-        Ok(new_column_handle)
+        Ok(self.tables.alloc(result_table))
     }
 
     fn complex_columns(&mut self, inputs: Vec<ComplexColumn>) -> Result<Vec<ColumnHandle>> {
         complex_columns(self, inputs)
     }
 
-    fn debug_universe(&self, tag: String, universe_handle: UniverseHandle) -> Result<()> {
+    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
         let worker = self.scope.index();
-        let universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-        println!("[{worker}][{tag}] {universe_handle:?}");
-        universe.keys().inspect(move |(key, time, diff)| {
-            println!("[{worker}][{tag}] @{time:?} {diff:+} {key:#}");
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        println!("[{worker}][{tag}] {table_handle:?}");
+        table.keys().inspect(move |(key, time, diff)| {
+            println!("[{worker}][{tag}] @{time:?} {diff:+} {key}");
         });
         Ok(())
     }
 
-    fn debug_column(&self, tag: String, column_handle: ColumnHandle) -> Result<()> {
+    fn debug_column(
+        &self,
+        tag: String,
+        table_handle: TableHandle,
+        column_path: ColumnPath,
+    ) -> Result<()> {
         let worker = self.scope.index();
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        println!("[{worker}][{tag}] {column_handle:?}");
-        column.values().inspect(move |((key, value), time, diff)| {
-            println!("[{worker}][{tag}] @{time:?} {diff:+} {key:#} {value}");
-        });
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let error_reporter = self.error_reporter.clone();
+        println!("[{worker}][{tag}] {table_handle:?} {column_path:?}");
+        table
+            .values()
+            .map_named("debug_column", move |(key, values)| {
+                (
+                    key,
+                    column_path
+                        .extract(&key, &values)
+                        .unwrap_with_reporter(&error_reporter),
+                )
+            })
+            .inspect(move |((key, value), time, diff)| {
+                println!("[{worker}][{tag}] @{time:?} {diff:+} {key} {value}");
+            });
         Ok(())
     }
 
@@ -2754,6 +3210,27 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(())
     }
 
+    fn on_table_data(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        mut function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
+    ) -> Result<()> {
+        let handle = self.flatten_table_storage(table_handle, column_paths)?;
+
+        let table = self.tables.get(handle).ok_or(Error::InvalidColumnHandle)?;
+        table
+            .values_consolidated()
+            .inner
+            .exchange(|_| 0)
+            .inspect(move |((key, value), _time, diff)| {
+                function(key, value.as_tuple().unwrap(), *diff).unwrap();
+            })
+            .probe_with(&mut self.output_probe);
+
+        Ok(())
+    }
+
     fn probe_universe(
         &mut self,
         universe_handle: UniverseHandle,
@@ -2787,7 +3264,7 @@ trait DataflowReducer<S: MaybeTotalScope> {
         self: Rc<Self>,
         graph: &DataflowGraphInner<S>,
         source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        values: &ValuesArranged<S>,
+        values: Vec<&ValuesArranged<S>>,
     ) -> Values<S>;
 }
 
@@ -2796,14 +3273,29 @@ impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
         self: Rc<Self>,
         graph: &DataflowGraphInner<S>,
         source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        values: &ValuesArranged<S>,
+        values: Vec<&ValuesArranged<S>>,
     ) -> Values<S> {
-        let joined = source_key_to_result_key.join_core(values, {
+        let first: ArrangedByKey<S, _, _> = values[0]
+            .as_collection(|key, value| (*key, value.clone()))
+            .map_ex(|(key, value)| (key, vec![value]))
+            .arrange();
+        let rest = &values[1..];
+
+        let values: ArrangedByKey<S, _, _> = rest.iter().fold(first, |acc, vs| {
+            acc.join_core(vs, |key, v_acc, v| {
+                let mut new_vec = v_acc.clone();
+                new_vec.push(v.clone());
+                once((*key, new_vec))
+            })
+            .arrange()
+        });
+
+        let joined = source_key_to_result_key.join_core(&values, {
             let self_ = self.clone();
-            move |source_key, result_key, value| {
-                let state = self_.init(source_key, value).unwrap_or_else(|| {
+            move |source_key, result_key, value_vec| {
+                let state = self_.init(source_key, value_vec).unwrap_or_else(|| {
                     panic!(
-                        "{reducer_type}::init() failed for {value:?} of key {source_key:?}",
+                        "{reducer_type}::init() failed for {value_vec:?} of key {source_key:?}",
                         reducer_type = type_name::<R>()
                     )
                 }); // XXX
@@ -2836,8 +3328,9 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
         self: Rc<Self>,
         _graph: &DataflowGraphInner<S>,
         source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        values: &ValuesArranged<S>,
+        values: Vec<&ValuesArranged<S>>,
     ) -> Values<S> {
+        let values = values[0];
         source_key_to_result_key
             .join_core(values, {
                 let self_ = self.clone();
@@ -2875,7 +3368,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         commit_duration: Option<Duration>,
         parallel_readers: usize,
         external_persistent_id: &Option<ExternalPersistentId>,
-    ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
+    ) -> Result<TableHandle> {
         let has_persistent_storage = self.worker_persistent_storage.is_some();
         if let Some(external_persistent_id) = external_persistent_id {
             if !has_persistent_storage {
@@ -2885,20 +3378,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             return Err(Error::PersistentIdNotAssigned(reader.storage_type()));
         }
 
-        let (universe_session, keys): (KeysSession<S>, Keys<S>) = self.scope.new_collection();
-        let keys = keys.reshard();
-        keys.probe_with(&mut self.input_probe);
-
-        let mut column_sessions = Vec::new();
-        let mut column_values = Vec::new();
-        for _ in 0..parser.column_count() {
-            let (column_session, column_collection): (ValuesSession<S>, GenericValues<S>) =
-                self.scope.new_collection();
-            let column_collection = column_collection.reshard();
-            column_collection.probe_with(&mut self.input_probe);
-            column_sessions.push(column_session);
-            column_values.push(column_collection);
-        }
+        let (input_session, table_values): (ValuesSession<S>, GenericValues<S>) =
+            self.scope.new_collection();
+        let table_values = table_values.reshard();
+        table_values.probe_with(&mut self.input_probe);
 
         let realtime_reader_needed = self.scope.index() < parallel_readers;
         let persisted_table =
@@ -2908,12 +3391,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             let persistent_id = reader.persistent_id();
             let reader_storage_type = reader.storage_type();
 
-            let connector = Connector::<S::Timestamp>::new(commit_duration);
+            let connector = Connector::<S::Timestamp>::new(commit_duration, parser.column_count());
             let state = connector.run(
                 reader,
                 parser,
-                column_sessions,
-                universe_session,
+                input_session,
                 move |values, offset| match values {
                     None => {
                         let (offset_key, offset_value) =
@@ -2959,34 +3441,22 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             self.connector_monitors.push(state.connector_monitor);
         }
 
-        let universe = Universe::from_collection(keys);
-        let universe_handle = self.universes.alloc(universe);
-
-        let mut column_handles = Vec::new();
-        for column_values in column_values {
-            let column_handle = self
-                .columns
-                .alloc(Column::from_collection(universe_handle, column_values));
-            column_handles.push(column_handle);
-        }
-
-        Ok((universe_handle, column_handles))
+        Ok(self.tables.alloc(Table::from_collection(table_values)))
     }
 
     fn output_table(
         &mut self,
         mut data_sink: Box<dyn Writer>,
         mut data_formatter: Box<dyn Formatter>,
-        universe_handle: UniverseHandle,
-        column_handles: &[ColumnHandle],
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
-        let output_columns = self.tuples(universe_handle, column_handles)?;
+        let output_columns = self
+            .extract_columns(table_handle, column_paths)?
+            .as_collection();
         let single_threaded = data_sink.single_threaded();
 
-        let output = output_columns
-            .as_collection()
-            .consolidate_nondecreasing()
-            .inner;
+        let output = output_columns.consolidate_nondecreasing().inner;
         let inspect_output = {
             if single_threaded {
                 output.exchange(|_| 0)
@@ -3044,7 +3514,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                                             sink_id.expect(
                                                 "undefined sink_id while using persistent storage",
                                             ),
-                                            t.map(|x| max(x, 1) - 1),
+                                            t,
                                         );
                                 }
 
@@ -3092,13 +3562,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         Ok(())
     }
 
-    fn subscribe_column(
+    fn subscribe_table(
         &mut self,
         wrapper: BatchWrapper,
         mut callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
         mut on_end: Box<dyn FnMut() -> DynResult<()>>,
-        universe_handle: UniverseHandle,
-        column_handles: &[ColumnHandle],
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
         let mut vector = Vec::new();
 
@@ -3110,8 +3580,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             .as_ref()
             .map(|m| m.lock().unwrap().register_sink());
         let global_persistent_storage = self.global_persistent_storage.clone();
-        self.tuples(universe_handle, column_handles)?
+        self.extract_columns(table_handle, column_paths)?
             .as_collection()
+            .consolidate_nondecreasing()
             .inner
             .probe_with(&mut self.output_probe)
             .sink(Pipeline, "SubscribeColumn", move |input| {
@@ -3147,12 +3618,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
     fn iterate<'a>(
         &'a mut self,
-        iterated: Vec<Table>,
-        iterated_with_universe: Vec<Table>,
-        extra: Vec<Table>,
+        iterated: Vec<LegacyTable>,
+        iterated_with_universe: Vec<LegacyTable>,
+        extra: Vec<LegacyTable>,
         limit: Option<u32>,
         logic: IterationLogic<'a>,
-    ) -> Result<(Vec<Table>, Vec<Table>)> {
+    ) -> Result<(Vec<LegacyTable>, Vec<LegacyTable>)> {
         let mut scope = self.scope.clone();
         if let Some(v) = limit {
             if v <= 1 {
@@ -3170,10 +3641,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
             let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
-            let inner_iterated: Vec<IteratedTable<_, _>> = state.create_tables(iterated)?;
-            let inner_iterated_with_universe: Vec<IteratedWithUniverseTable<_, _>> =
+            let inner_iterated: Vec<IteratedLegacyTable<_, _>> = state.create_tables(iterated)?;
+            let inner_iterated_with_universe: Vec<IteratedWithUniverseLegacyTable<_, _>> =
                 state.create_tables(iterated_with_universe)?;
-            let inner_extra: Vec<ExtraTable<_, _>> = state.create_tables(extra)?;
+            let inner_extra: Vec<ExtraLegacyTable<_, _>> = state.create_tables(extra)?;
             drop(subgraph_ref);
             let iterated_handles = extract_handles(inner_iterated.iter());
             let iterated_with_universe_handles =
@@ -3523,16 +3994,17 @@ impl<'c, S: MaybeTotalScope> IteratedColumn<S, Child<'c, S, Product<S::Timestamp
     }
 }
 
-struct InnerTable<U: InnerUniverse, C: InnerColumn> {
+struct InnerLegacyTable<U: InnerUniverse, C: InnerColumn> {
     universe: U,
     columns: Vec<C>,
 }
 
-type IteratedTable<O, I> = InnerTable<ImportedUniverse<O, I>, IteratedColumn<O, I>>;
-type IteratedWithUniverseTable<O, I> = InnerTable<IteratedUniverse<O, I>, IteratedColumn<O, I>>;
-type ExtraTable<O, I> = InnerTable<ImportedUniverse<O, I>, ImportedColumn<O, I>>;
+type IteratedLegacyTable<O, I> = InnerLegacyTable<ImportedUniverse<O, I>, IteratedColumn<O, I>>;
+type IteratedWithUniverseLegacyTable<O, I> =
+    InnerLegacyTable<IteratedUniverse<O, I>, IteratedColumn<O, I>>;
+type ExtraLegacyTable<O, I> = InnerLegacyTable<ImportedUniverse<O, I>, ImportedColumn<O, I>>;
 
-impl<U: InnerUniverse, C: InnerColumn<Outer = U::Outer, Inner = U::Inner>> InnerTable<U, C> {
+impl<U: InnerUniverse, C: InnerColumn<Outer = U::Outer, Inner = U::Inner>> InnerLegacyTable<U, C> {
     fn create(
         state: &mut BeforeIterate<U::Outer, U::Inner>,
         universe_handle: UniverseHandle,
@@ -3548,7 +4020,7 @@ impl<U: InnerUniverse, C: InnerColumn<Outer = U::Outer, Inner = U::Inner>> Inner
 }
 
 impl<'c, S: MaybeTotalScope, U>
-    InnerTable<U, IteratedColumn<S, Child<'c, S, Product<S::Timestamp, u32>>>>
+    InnerLegacyTable<U, IteratedColumn<S, Child<'c, S, Product<S::Timestamp, u32>>>>
 where
     U: InnerUniverse<Outer = S, Inner = Child<'c, S, Product<S::Timestamp, u32>>>,
 {
@@ -3602,7 +4074,7 @@ where
     fn create_tables<U, C>(
         &mut self,
         tables: impl IntoIterator<Item = (UniverseHandle, impl IntoIterator<Item = ColumnHandle>)>,
-    ) -> Result<Vec<InnerTable<U, C>>>
+    ) -> Result<Vec<InnerLegacyTable<U, C>>>
     where
         U: InnerUniverse<Outer = S, Inner = Child<'c, S, T>>,
         C: InnerColumn<Outer = S, Inner = Child<'c, S, T>>,
@@ -3610,7 +4082,7 @@ where
         tables
             .into_iter()
             .map(|(universe_handle, column_handles)| {
-                InnerTable::create(self, universe_handle, column_handles)
+                InnerLegacyTable::create(self, universe_handle, column_handles)
             })
             .collect::<Result<_>>()
     }
@@ -3656,8 +4128,8 @@ impl<'g, 'c, S: MaybeTotalScope> AfterIterate<'g, S, Child<'c, S, Product<S::Tim
 }
 
 fn extract_handles<U, C>(
-    tables: impl IntoIterator<Item = impl Borrow<InnerTable<U, C>>>,
-) -> Vec<Table>
+    tables: impl IntoIterator<Item = impl Borrow<InnerLegacyTable<U, C>>>,
+) -> Vec<LegacyTable>
 where
     U: InnerUniverse,
     C: InnerColumn<Outer = U::Outer, Inner = U::Inner>,
@@ -3714,6 +4186,10 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0.borrow_mut().empty_column(universe_handle)
     }
 
+    fn empty_table(&self) -> Result<TableHandle> {
+        self.0.borrow_mut().empty_table()
+    }
+
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle> {
         self.0.borrow_mut().static_universe(keys)
     }
@@ -3724,6 +4200,10 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         values: Vec<(Key, Value)>,
     ) -> Result<ColumnHandle> {
         self.0.borrow_mut().static_column(universe_handle, values)
+    }
+
+    fn static_table(&self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
+        self.0.borrow_mut().static_table(values)
     }
 
     fn expression_column(
@@ -3743,16 +4223,63 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         )
     }
 
-    fn async_apply_column(
+    fn expression_table(
         &self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        expressions: Vec<ExpressionData>,
+        wrapper: BatchWrapper,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .expression_table(table_handle, column_paths, expressions, wrapper)
+    }
+
+    fn columns_to_table(
+        &self,
         universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
-        trace: Trace,
+        columns: Vec<(ColumnHandle, ColumnPath)>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .columns_to_table(universe_handle, columns)
+    }
+
+    fn table_column(
+        &self,
+        universe_handle: UniverseHandle,
+        table_handle: TableHandle,
+        column_path: ColumnPath,
     ) -> Result<ColumnHandle> {
         self.0
             .borrow_mut()
-            .async_apply_column(function, universe_handle, &column_handles, trace)
+            .table_column(universe_handle, table_handle, column_path)
+    }
+
+    fn table_universe(&self, table_handle: TableHandle) -> Result<UniverseHandle> {
+        self.0.borrow_mut().table_universe(table_handle)
+    }
+
+    fn flatten_table_storage(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .flatten_table_storage(table_handle, column_paths)
+    }
+
+    fn async_apply_table(
+        &self,
+        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        trace: Trace,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .async_apply_table(function, table_handle, column_paths, trace)
     }
 
     fn filter_universe(
@@ -3765,6 +4292,43 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             .filter_universe(universe_handle, column_handle)
     }
 
+    fn filter_table(
+        &self,
+        table_handle: TableHandle,
+        filtering_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .filter_table(table_handle, filtering_column_path)
+    }
+
+    fn forget(
+        &self,
+        _table_handle: TableHandle,
+        _threshold_time_column_path: ColumnPath,
+        _current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        Err(Error::ForgetNotSupportedInIteration)
+    }
+
+    fn freeze(
+        &self,
+        _table_handle: TableHandle,
+        _threshold_time_column_path: ColumnPath,
+        _current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        Err(Error::FreezeNotSupportedInIteration)
+    }
+
+    fn buffer(
+        &self,
+        _table_handle: TableHandle,
+        _threshold_time_column_path: ColumnPath,
+        _current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        Err(Error::BufferNotSupportedInIteration)
+    }
+
     fn restrict_column(
         &self,
         universe_handle: UniverseHandle,
@@ -3773,6 +4337,19 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0
             .borrow_mut()
             .restrict_column(universe_handle, column_handle)
+    }
+
+    fn restrict_or_override_table_universe(
+        &self,
+        original_table_handle: TableHandle,
+        new_table_handle: TableHandle,
+        same_universes: bool,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().restrict_or_override_table_universe(
+            original_table_handle,
+            new_table_handle,
+            same_universes,
+        )
     }
 
     fn override_column_universe(
@@ -3791,6 +4368,26 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
 
     fn intersect_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
         self.0.borrow_mut().intersect_universe(universe_handles)
+    }
+
+    fn intersect_tables(
+        &self,
+        table_handle: TableHandle,
+        other_table_handles: Vec<TableHandle>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .intersect_tables(table_handle, other_table_handles)
+    }
+
+    fn subtract_table(
+        &self,
+        left_table_handle: TableHandle,
+        right_table_handle: TableHandle,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .subtract_table(left_table_handle, right_table_handle)
     }
 
     fn union_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
@@ -3852,19 +4449,18 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             .concat_column(concat_handle, &column_handles)
     }
 
-    fn flatten(
-        &self,
-        column_handle: ColumnHandle,
-    ) -> Result<(UniverseHandle, ColumnHandle, FlattenHandle)> {
-        self.0.borrow_mut().flatten(column_handle)
+    fn concat_tables(&self, table_handles: Vec<TableHandle>) -> Result<TableHandle> {
+        self.0.borrow_mut().concat_tables(&table_handles)
     }
 
-    fn explode(
+    fn flatten_table(
         &self,
-        flatten_handle: FlattenHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().explode(flatten_handle, column_handle)
+        table_handle: TableHandle,
+        flatten_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .flatten_table(table_handle, flatten_column_path)
     }
 
     fn sort(
@@ -3875,6 +4471,17 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0
             .borrow_mut()
             .sort(key_column_handle, instance_column_handle)
+    }
+
+    fn sort_table(
+        &self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .sort_table(table_handle, key_column_path, instance_column_path)
     }
 
     fn reindex_universe(&self, column_handle: ColumnHandle) -> Result<UniverseHandle> {
@@ -3894,15 +4501,39 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         )
     }
 
-    fn update_rows(
+    fn reindex_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        updates_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
+        table_handle: TableHandle,
+        reindexing_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .update_rows(universe_handle, column_handle, updates_handle)
+            .reindex_table(table_handle, reindexing_column_path)
+    }
+
+    fn update_rows_table(
+        &self,
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .update_rows_table(table_handle, update_handle)
+    }
+
+    fn update_cells_table(
+        &self,
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        update_paths: Vec<ColumnPath>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().update_cells_table(
+            table_handle,
+            update_handle,
+            column_paths,
+            update_paths,
+        )
     }
 
     fn group_by(
@@ -3949,11 +4580,11 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         &self,
         grouper_handle: GrouperHandle,
         reducer: Reducer,
-        column_handle: ColumnHandle,
+        column_handles: Vec<ColumnHandle>,
     ) -> Result<ColumnHandle> {
         self.0
             .borrow_mut()
-            .grouper_reducer_column(grouper_handle, reducer, column_handle)
+            .grouper_reducer_column(grouper_handle, reducer, column_handles)
     }
 
     fn ix(
@@ -3979,55 +4610,31 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0.borrow_mut().ixer_universe(ixer_handle)
     }
 
-    fn join(
+    fn join_tables(
         &self,
-        left_universe_handle: UniverseHandle,
-        left_column_handles: Vec<ColumnHandle>,
-        right_universe_handle: UniverseHandle,
-        right_column_handles: Vec<ColumnHandle>,
+        left_table_handle: TableHandle,
+        right_table_handle: TableHandle,
+        left_column_paths: Vec<ColumnPath>,
+        right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
-    ) -> Result<JoinerHandle> {
-        self.0.borrow_mut().join(
-            left_universe_handle,
-            &left_column_handles,
-            right_universe_handle,
-            &right_column_handles,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().join_tables(
+            left_table_handle,
+            right_table_handle,
+            left_column_paths,
+            right_column_paths,
             join_type,
         )
     }
 
-    fn joiner_universe(&self, joiner_handle: JoinerHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().joiner_universe(joiner_handle)
-    }
-
-    fn joiner_left_column(
-        &self,
-        joiner_handle: JoinerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .joiner_left_column(joiner_handle, column_handle)
-    }
-
-    fn joiner_right_column(
-        &self,
-        joiner_handle: JoinerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .joiner_right_column(joiner_handle, column_handle)
-    }
-
     fn iterate<'a>(
         &'a self,
-        _iterated: Vec<Table>,
-        _iterated_with_universe: Vec<Table>,
-        _extra: Vec<Table>,
+        _iterated: Vec<LegacyTable>,
+        _iterated_with_universe: Vec<LegacyTable>,
+        _extra: Vec<LegacyTable>,
         _limit: Option<u32>,
         _logic: IterationLogic<'a>,
-    ) -> Result<(Vec<Table>, Vec<Table>)> {
+    ) -> Result<(Vec<LegacyTable>, Vec<LegacyTable>)> {
         Err(Error::IterationNotPossible)
     }
 
@@ -4035,12 +4642,17 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0.borrow_mut().complex_columns(inputs)
     }
 
-    fn debug_universe(&self, tag: String, universe_handle: UniverseHandle) -> Result<()> {
-        self.0.borrow().debug_universe(tag, universe_handle)
+    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
+        self.0.borrow().debug_universe(tag, table_handle)
     }
 
-    fn debug_column(&self, tag: String, column_handle: ColumnHandle) -> Result<()> {
-        self.0.borrow().debug_column(tag, column_handle)
+    fn debug_column(
+        &self,
+        tag: String,
+        table_handle: TableHandle,
+        column_path: ColumnPath,
+    ) -> Result<()> {
+        self.0.borrow().debug_column(tag, table_handle, column_path)
     }
 
     fn connector_table(
@@ -4050,17 +4662,17 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _commit_duration: Option<Duration>,
         _parallel_readers: usize,
         _external_persistent_id: &Option<ExternalPersistentId>,
-    ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
+    ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
     }
 
-    fn subscribe_column(
+    fn subscribe_table(
         &self,
         _wrapper: BatchWrapper,
         _callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
         _on_end: Box<dyn FnMut() -> DynResult<()>>,
-        _universe_handle: UniverseHandle,
-        _column_handles: Vec<ColumnHandle>,
+        _table_handle: TableHandle,
+        _column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
     }
@@ -4069,8 +4681,8 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         &self,
         mut _data_sink: Box<dyn Writer>,
         mut _data_formatter: Box<dyn Formatter>,
-        _universe_handle: UniverseHandle,
-        _column_handles: Vec<ColumnHandle>,
+        _table_handle: TableHandle,
+        _column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
     }
@@ -4091,6 +4703,17 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
     ) -> Result<()> {
         self.0.borrow_mut().on_column_data(column_handle, function)
+    }
+
+    fn on_table_data(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
+    ) -> Result<()> {
+        self.0
+            .borrow_mut()
+            .on_table_data(table_handle, column_paths, function)
     }
 
     fn attach_prober(
@@ -4154,6 +4777,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0.borrow_mut().empty_column(universe_handle)
     }
 
+    fn empty_table(&self) -> Result<TableHandle> {
+        self.0.borrow_mut().empty_table()
+    }
+
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle> {
         self.0.borrow_mut().static_universe(keys)
     }
@@ -4164,6 +4791,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         values: Vec<(Key, Value)>,
     ) -> Result<ColumnHandle> {
         self.0.borrow_mut().static_column(universe_handle, values)
+    }
+
+    fn static_table(&self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
+        self.0.borrow_mut().static_table(values)
     }
 
     fn expression_column(
@@ -4183,33 +4814,76 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         )
     }
 
-    fn async_apply_column(
+    fn expression_table(
         &self,
-        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        expressions: Vec<ExpressionData>,
+        wrapper: BatchWrapper,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .expression_table(table_handle, column_paths, expressions, wrapper)
+    }
+
+    fn columns_to_table(
+        &self,
         universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
-        trace: Trace,
+        columns: Vec<(ColumnHandle, ColumnPath)>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .columns_to_table(universe_handle, columns)
+    }
+
+    fn table_column(
+        &self,
+        universe_handle: UniverseHandle,
+        table_handle: TableHandle,
+        column_path: ColumnPath,
     ) -> Result<ColumnHandle> {
         self.0
             .borrow_mut()
-            .async_apply_column(function, universe_handle, &column_handles, trace)
+            .table_column(universe_handle, table_handle, column_path)
     }
 
-    fn subscribe_column(
+    fn table_universe(&self, table_handle: TableHandle) -> Result<UniverseHandle> {
+        self.0.borrow_mut().table_universe(table_handle)
+    }
+
+    fn flatten_table_storage(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .flatten_table_storage(table_handle, column_paths)
+    }
+
+    fn async_apply_table(
+        &self,
+        function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        trace: Trace,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .async_apply_table(function, table_handle, column_paths, trace)
+    }
+
+    fn subscribe_table(
         &self,
         wrapper: BatchWrapper,
         callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
         on_end: Box<dyn FnMut() -> DynResult<()>>,
-        universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
-        self.0.borrow_mut().subscribe_column(
-            wrapper,
-            callback,
-            on_end,
-            universe_handle,
-            &column_handles,
-        )
+        self.0
+            .borrow_mut()
+            .subscribe_table(wrapper, callback, on_end, table_handle, column_paths)
     }
 
     fn filter_universe(
@@ -4222,6 +4896,55 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             .filter_universe(universe_handle, column_handle)
     }
 
+    fn filter_table(
+        &self,
+        table_handle: TableHandle,
+        filtering_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .filter_table(table_handle, filtering_column_path)
+    }
+
+    fn forget(
+        &self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().forget(
+            table_handle,
+            threshold_time_column_path,
+            current_time_column_path,
+        )
+    }
+
+    fn freeze(
+        &self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().freeze(
+            table_handle,
+            threshold_time_column_path,
+            current_time_column_path,
+        )
+    }
+
+    fn buffer(
+        &self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().buffer(
+            table_handle,
+            threshold_time_column_path,
+            current_time_column_path,
+        )
+    }
+
     fn restrict_column(
         &self,
         universe_handle: UniverseHandle,
@@ -4230,6 +4953,19 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0
             .borrow_mut()
             .restrict_column(universe_handle, column_handle)
+    }
+
+    fn restrict_or_override_table_universe(
+        &self,
+        original_table_handle: TableHandle,
+        new_table_handle: TableHandle,
+        same_universes: bool,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().restrict_or_override_table_universe(
+            original_table_handle,
+            new_table_handle,
+            same_universes,
+        )
     }
 
     fn override_column_universe(
@@ -4248,6 +4984,26 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
 
     fn intersect_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
         self.0.borrow_mut().intersect_universe(universe_handles)
+    }
+
+    fn intersect_tables(
+        &self,
+        table_handle: TableHandle,
+        other_table_handles: Vec<TableHandle>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .intersect_tables(table_handle, other_table_handles)
+    }
+
+    fn subtract_table(
+        &self,
+        left_table_handle: TableHandle,
+        right_table_handle: TableHandle,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .subtract_table(left_table_handle, right_table_handle)
     }
 
     fn union_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
@@ -4309,19 +5065,18 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             .concat_column(concat_handle, &column_handles)
     }
 
-    fn flatten(
-        &self,
-        column_handle: ColumnHandle,
-    ) -> Result<(UniverseHandle, ColumnHandle, FlattenHandle)> {
-        self.0.borrow_mut().flatten(column_handle)
+    fn concat_tables(&self, table_handles: Vec<TableHandle>) -> Result<TableHandle> {
+        self.0.borrow_mut().concat_tables(&table_handles)
     }
 
-    fn explode(
+    fn flatten_table(
         &self,
-        flatten_handle: FlattenHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().explode(flatten_handle, column_handle)
+        table_handle: TableHandle,
+        flatten_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .flatten_table(table_handle, flatten_column_path)
     }
 
     fn sort(
@@ -4332,6 +5087,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0
             .borrow_mut()
             .sort(key_column_handle, instance_column_handle)
+    }
+
+    fn sort_table(
+        &self,
+        table_handle: TableHandle,
+        key_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .sort_table(table_handle, key_column_path, instance_column_path)
     }
 
     fn reindex_universe(&self, column_handle: ColumnHandle) -> Result<UniverseHandle> {
@@ -4351,15 +5117,39 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         )
     }
 
-    fn update_rows(
+    fn reindex_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        updates_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
+        table_handle: TableHandle,
+        reindexing_column_path: ColumnPath,
+    ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .update_rows(universe_handle, column_handle, updates_handle)
+            .reindex_table(table_handle, reindexing_column_path)
+    }
+
+    fn update_rows_table(
+        &self,
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .update_rows_table(table_handle, update_handle)
+    }
+
+    fn update_cells_table(
+        &self,
+        table_handle: TableHandle,
+        update_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        update_paths: Vec<ColumnPath>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().update_cells_table(
+            table_handle,
+            update_handle,
+            column_paths,
+            update_paths,
+        )
     }
 
     fn group_by(
@@ -4406,11 +5196,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         &self,
         grouper_handle: GrouperHandle,
         reducer: Reducer,
-        column_handle: ColumnHandle,
+        column_handles: Vec<ColumnHandle>,
     ) -> Result<ColumnHandle> {
         self.0
             .borrow_mut()
-            .grouper_reducer_column(grouper_handle, reducer, column_handle)
+            .grouper_reducer_column(grouper_handle, reducer, column_handles)
     }
 
     fn ix(
@@ -4436,55 +5226,31 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0.borrow_mut().ixer_universe(ixer_handle)
     }
 
-    fn join(
+    fn join_tables(
         &self,
-        left_universe_handle: UniverseHandle,
-        left_column_handles: Vec<ColumnHandle>,
-        right_universe_handle: UniverseHandle,
-        right_column_handles: Vec<ColumnHandle>,
+        left_table_handle: TableHandle,
+        right_table_handle: TableHandle,
+        left_column_paths: Vec<ColumnPath>,
+        right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
-    ) -> Result<JoinerHandle> {
-        self.0.borrow_mut().join(
-            left_universe_handle,
-            &left_column_handles,
-            right_universe_handle,
-            &right_column_handles,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().join_tables(
+            left_table_handle,
+            right_table_handle,
+            left_column_paths,
+            right_column_paths,
             join_type,
         )
     }
 
-    fn joiner_universe(&self, joiner_handle: JoinerHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().joiner_universe(joiner_handle)
-    }
-
-    fn joiner_left_column(
-        &self,
-        joiner_handle: JoinerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .joiner_left_column(joiner_handle, column_handle)
-    }
-
-    fn joiner_right_column(
-        &self,
-        joiner_handle: JoinerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .joiner_right_column(joiner_handle, column_handle)
-    }
-
     fn iterate<'a>(
         &'a self,
-        iterated: Vec<Table>,
-        iterated_with_universe: Vec<Table>,
-        extra: Vec<Table>,
+        iterated: Vec<LegacyTable>,
+        iterated_with_universe: Vec<LegacyTable>,
+        extra: Vec<LegacyTable>,
         limit: Option<u32>,
         logic: IterationLogic<'a>,
-    ) -> Result<(Vec<Table>, Vec<Table>)> {
+    ) -> Result<(Vec<LegacyTable>, Vec<LegacyTable>)> {
         self.0
             .borrow_mut()
             .iterate(iterated, iterated_with_universe, extra, limit, logic)
@@ -4494,12 +5260,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0.borrow_mut().complex_columns(inputs)
     }
 
-    fn debug_universe(&self, tag: String, universe_handle: UniverseHandle) -> Result<()> {
-        self.0.borrow().debug_universe(tag, universe_handle)
+    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
+        self.0.borrow().debug_universe(tag, table_handle)
     }
 
-    fn debug_column(&self, tag: String, column_handle: ColumnHandle) -> Result<()> {
-        self.0.borrow().debug_column(tag, column_handle)
+    fn debug_column(
+        &self,
+        tag: String,
+        table_handle: TableHandle,
+        column_path: ColumnPath,
+    ) -> Result<()> {
+        self.0.borrow().debug_column(tag, table_handle, column_path)
     }
 
     fn connector_table(
@@ -4509,7 +5280,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         commit_duration: Option<Duration>,
         parallel_readers: usize,
         external_persistent_id: &Option<ExternalPersistentId>,
-    ) -> Result<(UniverseHandle, Vec<ColumnHandle>)> {
+    ) -> Result<TableHandle> {
         self.0.borrow_mut().connector_table(
             reader,
             parser,
@@ -4523,15 +5294,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         &self,
         data_sink: Box<dyn Writer>,
         data_formatter: Box<dyn Formatter>,
-        universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
-        self.0.borrow_mut().output_table(
-            data_sink,
-            data_formatter,
-            universe_handle,
-            &column_handles,
-        )
+        self.0
+            .borrow_mut()
+            .output_table(data_sink, data_formatter, table_handle, column_paths)
     }
 
     fn on_universe_data(
@@ -4550,6 +5318,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
     ) -> Result<()> {
         self.0.borrow_mut().on_column_data(column_handle, function)
+    }
+
+    fn on_table_data(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
+    ) -> Result<()> {
+        self.0
+            .borrow_mut()
+            .on_table_data(table_handle, column_paths, function)
     }
 
     fn attach_prober(
@@ -4679,7 +5458,7 @@ where
     };
     let global_persistent_storage = persistence_config
         .as_ref()
-        .map(|_| Arc::new(Mutex::new(WorkersPersistenceCoordinator::new())));
+        .map(|cfg| Arc::new(Mutex::new(cfg.create_workers_persistence_coordinator())));
 
     let guards = execute(config, move |worker| {
         catch_unwind(AssertUnwindSafe(|| {

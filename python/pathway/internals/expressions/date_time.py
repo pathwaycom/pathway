@@ -1,6 +1,5 @@
 # Copyright © 2023 Pathway
 
-from typing import Optional, Union
 
 import pandas as pd
 
@@ -446,7 +445,7 @@ class DateTimeNamespace:
             self._expression,
         )
 
-    def strftime(self, fmt: Union[expr.ColumnExpression, str]) -> expr.ColumnExpression:
+    def strftime(self, fmt: expr.ColumnExpression | str) -> expr.ColumnExpression:
         """Converts a DateTime to a string.
 
         Args:
@@ -506,8 +505,8 @@ class DateTimeNamespace:
 
     def strptime(
         self,
-        fmt: Union[expr.ColumnExpression, str],
-        contains_timezone: Optional[bool] = None,
+        fmt: expr.ColumnExpression | str,
+        contains_timezone: bool | None = None,
     ) -> expr.ColumnExpression:
         """Converts a string to a DateTime. If the string contains a timezone and
         a %z specifier is used, timezone-aware DateTime is created.
@@ -610,7 +609,7 @@ class DateTimeNamespace:
         )
 
     def to_utc(
-        self, from_timezone: Union[expr.ColumnExpression, str]
+        self, from_timezone: expr.ColumnExpression | str
     ) -> expr.ColumnExpression:
         """Converts DateTimeNaive to UTC from time zone provided as `from_timezone`
         argument. If the given DateTime doesn't exist in the provided time zone it is
@@ -700,7 +699,7 @@ class DateTimeNamespace:
         )
 
     def to_naive_in_timezone(
-        self, timezone: Union[expr.ColumnExpression, str]
+        self, timezone: expr.ColumnExpression | str
     ) -> expr.ColumnExpression:
         """Converts DateTimeUtc to time zone specified as `timezone` argument.
 
@@ -791,8 +790,8 @@ class DateTimeNamespace:
 
     def add_duration_in_timezone(
         self,
-        duration: Union[expr.ColumnExpression, pd.Timedelta],
-        timezone: Union[expr.ColumnExpression, str],
+        duration: expr.ColumnExpression | pd.Timedelta,
+        timezone: expr.ColumnExpression | str,
     ) -> expr.ColumnExpression:
         """Adds Duration to DateTime taking into account time zone.
 
@@ -836,8 +835,8 @@ class DateTimeNamespace:
 
     def subtract_duration_in_timezone(
         self,
-        duration: Union[expr.ColumnExpression, pd.Timedelta],
-        timezone: Union[expr.ColumnExpression, str],
+        duration: expr.ColumnExpression | pd.Timedelta,
+        timezone: expr.ColumnExpression | str,
     ) -> expr.ColumnExpression:
         """Subtracts Duration from DateTime taking into account time zone.
 
@@ -881,8 +880,8 @@ class DateTimeNamespace:
 
     def subtract_date_time_in_timezone(
         self,
-        date_time: Union[expr.ColumnExpression, pd.Timestamp],
-        timezone: Union[expr.ColumnExpression, str],
+        date_time: expr.ColumnExpression | pd.Timestamp,
+        timezone: expr.ColumnExpression | str,
     ) -> expr.ColumnBinaryOpExpression:
         """Subtracts two DateTimeNaives taking into account time zone.
 
@@ -925,7 +924,7 @@ class DateTimeNamespace:
         return self.to_utc(timezone) - expr._wrap_arg(date_time).dt.to_utc(timezone)
 
     def round(
-        self, duration: Union[expr.ColumnExpression, pd.Timedelta]
+        self, duration: expr.ColumnExpression | pd.Timedelta
     ) -> expr.ColumnExpression:
         """Rounds DateTime to precision specified by `duration` argument.
 
@@ -983,7 +982,7 @@ class DateTimeNamespace:
         )
 
     def floor(
-        self, duration: Union[expr.ColumnExpression, pd.Timedelta]
+        self, duration: expr.ColumnExpression | pd.Timedelta
     ) -> expr.ColumnExpression:
         """Truncates DateTime to precision specified by `duration` argument.
 

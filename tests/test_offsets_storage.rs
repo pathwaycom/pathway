@@ -486,7 +486,7 @@ fn test_global_finalized_timestamp() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .accept_finalized_timestamp(0, mock_sink_id, None);
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 8);
+    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 9);
 
     Ok(())
 }
@@ -556,7 +556,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .accept_finalized_timestamp(0, sink_id_1, None);
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 7);
+    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 8);
 
     Ok(())
 }

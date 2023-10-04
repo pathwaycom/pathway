@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Type
-
 import pandas as pd
 
 import pathway.internals as pw
@@ -40,7 +38,7 @@ def _create_input_table(*input: pw.Table):
     return _add_tables(*result)
 
 
-def _argument_index(func_spec: FunctionSpec, arg: Optional[str | int]) -> Optional[int]:
+def _argument_index(func_spec: FunctionSpec, arg: str | int | None) -> int | None:
     if isinstance(arg, str):
         try:
             return func_spec.arg_names.index(arg)
@@ -55,14 +53,14 @@ def _argument_index(func_spec: FunctionSpec, arg: Optional[str | int]) -> Option
 def _pandas_transformer(
     *inputs: pw.Table,
     func_spec: FunctionSpec,
-    output_schema: Type[schema.Schema],
-    output_universe: Optional[str | int],
+    output_schema: type[schema.Schema],
+    output_universe: str | int | None,
 ) -> pw.Table:
     output_universe_arg_index = _argument_index(func_spec, output_universe)
     func = func_spec.func
 
     def process_pandas_output(
-        result: pd.DataFrame | pd.Series, pandas_input: List[pd.DataFrame] = []
+        result: pd.DataFrame | pd.Series, pandas_input: list[pd.DataFrame] = []
     ):
         if isinstance(result, pd.Series):
             result = pd.DataFrame(result)
@@ -117,13 +115,13 @@ def _pandas_transformer(
     if output_universe_arg_index is not None:
         output = output.with_universe_of(inputs[output_universe_arg_index])
 
-    output = output.update_types(**output_schema)  # type: ignore
+    output = output.update_types(**output_schema.typehints())
 
     return output
 
 
 def pandas_transformer(
-    output_schema: Type[schema.Schema], output_universe: Optional[str | int] = None
+    output_schema: type[schema.Schema], output_universe: str | int | None = None
 ):
     """Decorator that turns python function operating on pandas.DataFrame into pathway transformer.
 

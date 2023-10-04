@@ -1,6 +1,6 @@
 # Copyright © 2023 Pathway
 
-from typing import Iterable, Optional, Union
+from collections.abc import Iterable
 
 import pathway.internals.expression as expr
 from pathway.internals import api
@@ -165,9 +165,9 @@ class StringNamespace:
 
     def replace(
         self,
-        old_value: Union[expr.ColumnExpression, str],
-        new_value: Union[expr.ColumnExpression, str],
-        count: Union[expr.ColumnExpression, int] = -1,
+        old_value: expr.ColumnExpression | str,
+        new_value: expr.ColumnExpression | str,
+        count: expr.ColumnExpression | int = -1,
         /,
     ) -> expr.ColumnExpression:
         """Returns the a string where the occurrences of the old_value substrings are
@@ -239,7 +239,7 @@ class StringNamespace:
 
     def startswith(
         self,
-        prefix: Union[expr.ColumnExpression, str],
+        prefix: expr.ColumnExpression | str,
     ) -> expr.ColumnExpression:
         """Returns True if the string starts with prefix.
 
@@ -279,7 +279,7 @@ class StringNamespace:
 
     def endswith(
         self,
-        suffix: Union[expr.ColumnExpression, str],
+        suffix: expr.ColumnExpression | str,
     ) -> expr.ColumnExpression:
         """Returns True if the string ends with suffix.
 
@@ -348,7 +348,7 @@ class StringNamespace:
         )
 
     def strip(
-        self, chars: Optional[Union[expr.ColumnExpression, str]] = None
+        self, chars: expr.ColumnExpression | str | None = None
     ) -> expr.ColumnExpression:
         """Returns a copy of the string with specified leading and trailing characters
         removed. If no arguments are passed, remove the leading and trailing whitespaces.
@@ -416,9 +416,9 @@ class StringNamespace:
 
     def count(
         self,
-        sub: Union[expr.ColumnExpression, str],
-        start: Optional[Union[expr.ColumnExpression, int]] = None,
-        end: Optional[Union[expr.ColumnExpression, int]] = None,
+        sub: expr.ColumnExpression | str,
+        start: expr.ColumnExpression | int | None = None,
+        end: expr.ColumnExpression | int | None = None,
     ) -> expr.ColumnExpression:
         """Returns the number of non-overlapping occurrences of substring sub in the range [start, end).
         Optional arguments start and end are interpreted as in slice notation.
@@ -467,9 +467,9 @@ class StringNamespace:
 
     def find(
         self,
-        sub: Union[expr.ColumnExpression, str],
-        start: Optional[Union[expr.ColumnExpression, int]] = None,
-        end: Optional[Union[expr.ColumnExpression, int]] = None,
+        sub: expr.ColumnExpression | str,
+        start: expr.ColumnExpression | int | None = None,
+        end: expr.ColumnExpression | int | None = None,
     ) -> expr.ColumnExpression:
         """Return the lowest index in the string where substring sub is found within
         the slice s[start:end]. Optional arguments start and end are interpreted as in
@@ -519,9 +519,9 @@ class StringNamespace:
 
     def rfind(
         self,
-        sub: Union[expr.ColumnExpression, str],
-        start: Optional[Union[expr.ColumnExpression, int]] = None,
-        end: Optional[Union[expr.ColumnExpression, int]] = None,
+        sub: expr.ColumnExpression | str,
+        start: expr.ColumnExpression | int | None = None,
+        end: expr.ColumnExpression | int | None = None,
     ) -> expr.ColumnExpression:
         """Return the highest index in the string where substring sub is found within
         the slice s[start:end]. Optional arguments start and end are interpreted as in
@@ -571,7 +571,7 @@ class StringNamespace:
 
     def removeprefix(
         self,
-        prefix: Union[expr.ColumnExpression, str],
+        prefix: expr.ColumnExpression | str,
         /,
     ) -> expr.ColumnExpression:
         """If the string starts with prefix, returns a copy of the string without the prefix.
@@ -628,7 +628,7 @@ class StringNamespace:
 
     def removesuffix(
         self,
-        suffix: Union[expr.ColumnExpression, str],
+        suffix: expr.ColumnExpression | str,
         /,
     ) -> expr.ColumnExpression:
         """If the string ends with suffix, returns a copy of the string without the suffix.
@@ -685,8 +685,8 @@ class StringNamespace:
 
     def slice(
         self,
-        start: Union[expr.ColumnExpression, int],
-        end: Union[expr.ColumnExpression, int],
+        start: expr.ColumnExpression | int,
+        end: expr.ColumnExpression | int,
         /,
     ) -> expr.ColumnExpression:
         """Return a slice of the string.
@@ -742,11 +742,11 @@ class StringNamespace:
         >>> import pandas as pd
         >>> df = pd.DataFrame({"a": ["-5", "0", "200"]}, dtype=str)
         >>> table = pw.debug.table_from_pandas(df)
-        >>> table.schema.as_dict()
-        {'a': STR}
+        >>> table.typehints()
+        mappingproxy({'a': <class 'str'>})
         >>> table = table.select(a=table.a.str.parse_int())
-        >>> table.schema.as_dict()
-        {'a': INT}
+        >>> table.typehints()
+        mappingproxy({'a': <class 'int'>})
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         -5
@@ -776,11 +776,11 @@ class StringNamespace:
         >>> import pandas as pd
         >>> df = pd.DataFrame({"a": ["-5", "0.1", "200.999"]}, dtype=str)
         >>> table = pw.debug.table_from_pandas(df)
-        >>> table.schema.as_dict()
-        {'a': STR}
+        >>> table.typehints()
+        mappingproxy({'a': <class 'str'>})
         >>> table = table.select(a=table.a.str.parse_float())
-        >>> table.schema.as_dict()
-        {'a': FLOAT}
+        >>> table.typehints()
+        mappingproxy({'a': <class 'float'>})
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         -5.0
@@ -830,16 +830,16 @@ class StringNamespace:
         >>> import pandas as pd
         >>> df = pd.DataFrame({"a": ["0", "TRUE", "on"]}, dtype=str)
         >>> table = pw.debug.table_from_pandas(df)
-        >>> table.schema.as_dict()
-        {'a': STR}
+        >>> table.typehints()
+        mappingproxy({'a': <class 'str'>})
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         0
         TRUE
         on
         >>> table = table.select(a=table.a.str.parse_bool())
-        >>> table.schema.as_dict()
-        {'a': BOOL}
+        >>> table.typehints()
+        mappingproxy({'a': <class 'bool'>})
         >>> pw.debug.compute_and_print(table, include_id=False)
         a
         False

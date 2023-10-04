@@ -24,8 +24,8 @@ pub enum Reducer {
     ArgMin,
     Max,
     ArgMax,
-    SortedTuple,
-    Tuple,
+    SortedTuple(bool),
+    Tuple(bool),
     Any,
 }
 
@@ -40,7 +40,7 @@ pub trait SemigroupReducerImpl: 'static {
 pub trait ReducerImpl: 'static {
     type State: ExchangeData;
 
-    fn init(&self, key: &Key, value: &Value) -> Option<Self::State>;
+    fn init(&self, key: &Key, values: &[Value]) -> Option<Self::State>;
 
     fn combine<'a>(
         &self,
@@ -48,6 +48,37 @@ pub trait ReducerImpl: 'static {
     ) -> Self::State;
 
     fn finish(&self, state: Self::State) -> Value;
+}
+
+pub trait UnaryReducerImpl: 'static {
+    type State: ExchangeData;
+
+    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State>;
+
+    fn combine<'a>(
+        &self,
+        values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
+    ) -> Self::State;
+
+    fn finish(&self, state: Self::State) -> Value;
+}
+
+impl<T: UnaryReducerImpl> ReducerImpl for T {
+    type State = <Self as UnaryReducerImpl>::State;
+    fn init(&self, key: &Key, values: &[Value]) -> Option<Self::State> {
+        self.init_unary(key, &values[0])
+    }
+
+    fn combine<'a>(
+        &self,
+        values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
+    ) -> <Self as UnaryReducerImpl>::State {
+        <Self as UnaryReducerImpl>::combine(self, values)
+    }
+
+    fn finish(&self, state: Self::State) -> Value {
+        <Self as UnaryReducerImpl>::finish(self, state)
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -102,10 +133,10 @@ impl SemigroupReducerImpl for IntSumReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct FloatSumReducer;
 
-impl ReducerImpl for FloatSumReducer {
+impl UnaryReducerImpl for FloatSumReducer {
     type State = OrderedFloat<f64>;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         match value {
             Value::Float(f) => Some(*f),
             _ => None,
@@ -186,10 +217,10 @@ impl<'a> From<ArraySumState<'a>> for Value {
     }
 }
 
-impl ReducerImpl for ArraySumReducer {
+impl UnaryReducerImpl for ArraySumReducer {
     type State = Value;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(value.clone())
     }
 
@@ -213,10 +244,10 @@ impl ReducerImpl for ArraySumReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct UniqueReducer;
 
-impl ReducerImpl for UniqueReducer {
+impl UnaryReducerImpl for UniqueReducer {
     type State = Option<Value>;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(Some(value.clone()))
     }
 
@@ -244,10 +275,10 @@ impl ReducerImpl for UniqueReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct MinReducer;
 
-impl ReducerImpl for MinReducer {
+impl UnaryReducerImpl for MinReducer {
     type State = Value;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(value.clone())
     }
 
@@ -271,10 +302,10 @@ impl ReducerImpl for MinReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct ArgMinReducer;
 
-impl ReducerImpl for ArgMinReducer {
+impl UnaryReducerImpl for ArgMinReducer {
     type State = (Value, Key);
 
-    fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State> {
         Some((value.clone(), *key))
     }
 
@@ -307,10 +338,10 @@ cfg_if! {
 
 pub struct AnyReducer;
 
-impl ReducerImpl for AnyReducer {
+impl UnaryReducerImpl for AnyReducer {
     type State = (Key, Value);
 
-    fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State> {
         Some((*key, value.clone()))
     }
 
@@ -334,10 +365,10 @@ impl ReducerImpl for AnyReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct MaxReducer;
 
-impl ReducerImpl for MaxReducer {
+impl UnaryReducerImpl for MaxReducer {
     type State = Value;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
         Some(value.clone())
     }
 
@@ -361,10 +392,10 @@ impl ReducerImpl for MaxReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct ArgMaxReducer;
 
-impl ReducerImpl for ArgMaxReducer {
+impl UnaryReducerImpl for ArgMaxReducer {
     type State = (Value, Key);
 
-    fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State> {
         Some((value.clone(), *key))
     }
 
@@ -386,13 +417,25 @@ impl ReducerImpl for ArgMaxReducer {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SortedTupleReducer;
+pub struct SortedTupleReducer {
+    skip_nones: bool,
+}
 
-impl ReducerImpl for SortedTupleReducer {
+impl SortedTupleReducer {
+    pub fn new(skip_nones: bool) -> Self {
+        Self { skip_nones }
+    }
+}
+
+impl UnaryReducerImpl for SortedTupleReducer {
     type State = Vec<Value>;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
-        Some(vec![value.clone()])
+    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+        if *value == Value::None && self.skip_nones {
+            Some(vec![])
+        } else {
+            Some(vec![value.clone()])
+        }
     }
 
     fn combine<'a>(
@@ -417,13 +460,27 @@ impl ReducerImpl for SortedTupleReducer {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TupleReducer;
+pub struct TupleReducer {
+    skip_nones: bool,
+}
+
+impl TupleReducer {
+    pub fn new(skip_nones: bool) -> Self {
+        Self { skip_nones }
+    }
+}
 
 impl ReducerImpl for TupleReducer {
-    type State = Vec<(Key, Value)>;
+    type State = Vec<(Option<Value>, Key, Value)>;
 
-    fn init(&self, key: &Key, value: &Value) -> Option<Self::State> {
-        Some(vec![(*key, value.clone())])
+    fn init(&self, key: &Key, values: &[Value]) -> Option<Self::State> {
+        if values[0] == Value::None && self.skip_nones {
+            Some(vec![])
+        } else if values.len() > 1 {
+            Some(vec![(Some(values[1].clone()), *key, values[0].clone())])
+        } else {
+            Some(vec![(None, *key, values[0].clone())])
+        }
     }
 
     fn combine<'a>(
@@ -442,10 +499,10 @@ impl ReducerImpl for TupleReducer {
     }
 
     fn finish(&self, mut state: Self::State) -> Value {
-        state.sort_by_key(|(key, _)| *key);
+        state.sort();
         state
             .into_iter()
-            .map(|(_, value)| value)
+            .map(|(_, _, value)| value)
             .collect::<Vec<Value>>()
             .as_slice()
             .into()

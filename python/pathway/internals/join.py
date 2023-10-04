@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterator
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pathway.internals.trace import trace_user_frame
 
@@ -44,10 +45,6 @@ from pathway.internals.universe import Universe
 class Joinable(TableLike, DesugaringContext):
     @abstractmethod
     def _subtables(self) -> StableSet[Table]:
-        ...
-
-    @abstractmethod
-    def _subjoinables(self) -> StableSet[Joinable]:
         ...
 
     @abstractmethod
@@ -118,7 +115,7 @@ class Joinable(TableLike, DesugaringContext):
         self,
         other: Joinable,
         *on: expr.ColumnExpression,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
         how: JoinMode = JoinMode.INNER,
     ) -> JoinResult:
         """Join self with other using the given join expression.
@@ -168,7 +165,7 @@ class Joinable(TableLike, DesugaringContext):
         self,
         other: Joinable,
         *on: expr.ColumnExpression,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """Inner-joins two tables or join results.
 
@@ -213,7 +210,7 @@ class Joinable(TableLike, DesugaringContext):
         self,
         other: Joinable,
         *on: expr.ColumnExpression,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """
         Left-joins two tables or join results.
@@ -280,7 +277,7 @@ class Joinable(TableLike, DesugaringContext):
         self,
         other: Joinable,
         *on: expr.ColumnExpression,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """
         Outer-joins two tables or join results.
@@ -350,7 +347,7 @@ class Joinable(TableLike, DesugaringContext):
         self,
         other: Joinable,
         *on: expr.ColumnExpression,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """Outer-joins two tables or join results.
 
@@ -417,8 +414,8 @@ class Joinable(TableLike, DesugaringContext):
 
     @abstractmethod
     def _substitutions(
-        self, cnt: Iterator
-    ) -> Tuple[Table, Dict[expr.InternalColRef, expr.ColumnExpression]]:
+        self,
+    ) -> tuple[Table, dict[expr.InternalColRef, expr.ColumnExpression]]:
         ...
 
 
@@ -448,37 +445,37 @@ class JoinResult(Joinable, OperatorInput):
     9   | L
     """
 
-    _context: clmn.JoinContext
+    _inner_table: Table
+    _columns_mapping: dict[clmn.InternalColRef, expr.ColumnReference]
     _left_table: Table
     _right_table: Table
     _original_left: Joinable
     _original_right: Joinable
-    _substitution: Dict[thisclass.ThisMetaclass, Joinable]
+    _substitution: dict[thisclass.ThisMetaclass, Joinable]
     _chained_join_desugaring: SubstitutionDesugaring
     _joined_on_names: StableSet[str]
     _all_colnames: StableSet[str]
-    _id_colref_table: Table
     _join_mode: JoinMode
 
     def __init__(
         self,
         _universe: Universe,
-        _context: clmn.JoinContext,
+        _inner_table: Table,
+        _columns_mapping: dict[clmn.InternalColRef, expr.ColumnReference],
         _left_table: Table,
         _right_table: Table,
         _original_left: Joinable,
         _original_right: Joinable,
-        _substitution: Dict[thisclass.ThisMetaclass, Joinable],
-        _chained_join_desugaring: SubstitutionDesugaring,
+        _substitution: dict[thisclass.ThisMetaclass, Joinable],
         _joined_on_names: StableSet[str],
         _join_mode: JoinMode,
     ):
         super().__init__(_universe)
-        self._context = _context
+        self._inner_table = _inner_table
+        self._columns_mapping = _columns_mapping
         self._left_table = _left_table
         self._right_table = _right_table
         self._substitution = {**_substitution, thisclass.this: self}
-        self._chained_join_desugaring = _chained_join_desugaring
         self._joined_on_names = _joined_on_names
         self._join_mode = _join_mode
         self._original_left = _original_left
@@ -487,21 +484,13 @@ class JoinResult(Joinable, OperatorInput):
         self._all_colnames = StableSet.union(
             _original_left.keys(), _original_right.keys()
         )
-        from pathway.internals.common import coalesce
-
-        self._id_colref_table = self.select(
-            **{
-                name: coalesce(thisclass.left[name], thisclass.right[name])
-                for name in self._joined_on_names
-                if name != "id"
-            }
-        )
+        self._chained_join_desugaring = SubstitutionDesugaring(self._substitutions()[1])
 
     @staticmethod
     def _compute_universe(
         left_table: Table,
         right_table: Table,
-        id: Optional[clmn.Column],
+        id: clmn.Column | None,
         mode: JoinMode,
     ) -> Universe:
         if id is left_table._id_column:
@@ -522,23 +511,8 @@ class JoinResult(Joinable, OperatorInput):
             assert id is None
             return Universe()
 
-    def _eval(self, expression: expr.ColumnExpression) -> clmn.ColumnWithExpression:
-        expression = self._chained_join_desugaring.eval_expression(expression)
-        return expression._column_with_expression_cls(
-            context=self._context,
-            universe=self._universe,
-            expression=expression,
-        )
-
     def _subtables(self) -> StableSet[Table]:
         return self._original_left._subtables() | self._original_right._subtables()
-
-    def _subjoinables(self) -> StableSet[Joinable]:
-        return (
-            self._original_left._subjoinables()
-            | self._original_right._subjoinables()
-            | StableSet([self])
-        )
 
     def keys(self):
         common_colnames = self._original_left.keys() & self._original_right.keys()
@@ -550,12 +524,12 @@ class JoinResult(Joinable, OperatorInput):
         exception_type,
     ) -> expr.ColumnReference:
         if name == "id":
-            return self._id_colref_table.id
+            return self._inner_table.id
         elif name in self._joined_on_names:
             if self._join_mode is JoinMode.INNER:
                 return self._original_left[name]
             else:
-                return self._id_colref_table[name]
+                return self._inner_table[name]
         elif name in self._original_left.keys() and name in self._original_right.keys():
             raise exception_type(
                 f"Column {name} appears on both left and right inputs of join."
@@ -577,7 +551,6 @@ class JoinResult(Joinable, OperatorInput):
     @trace_user_frame
     @desugar
     @arg_handler(handler=select_args_handler)
-    @contextualized_operator
     def select(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Computes result of a join.
 
@@ -609,19 +582,15 @@ class JoinResult(Joinable, OperatorInput):
         age | owner_name | size
         9   | Bob        | L
         """
-        columns: Dict[str, clmn.Column] = {}
+        expressions: dict[str, expr.ColumnExpression] = {}
 
         all_args = combine_args_kwargs(args, kwargs)
 
         for new_name, expression in all_args.items():
-            columns[new_name] = self._eval(expression)
-        from pathway.internals.table import Table
-
-        return Table(
-            columns=columns,
-            universe=self._context.universe,
-            id_column=clmn.IdColumn(self._context),
-        )
+            expressions[new_name] = self._chained_join_desugaring.eval_expression(
+                expression
+            )
+        return self._inner_table.select(**expressions)
 
     @lru_cache
     def _operator_dependencies(self) -> StableSet[Table]:
@@ -632,7 +601,7 @@ class JoinResult(Joinable, OperatorInput):
 
     @desugar
     @trace_user_frame
-    def filter(self, filter_expression: expr.ColumnExpression) -> FilteredJoinResult:
+    def filter(self, filter_expression: expr.ColumnExpression) -> JoinResult:
         """Filters rows, keeping the ones satisfying the predicate.
 
         Example:
@@ -657,17 +626,38 @@ class JoinResult(Joinable, OperatorInput):
         9   | L
         10  | M
         """
-        filtered_table = self.select(tmp_filter=filter_expression).filter(
-            thisclass.this.tmp_filter
+        desugared_filter_expression = self._chained_join_desugaring.eval_expression(
+            filter_expression
         )
-        return FilteredJoinResult(self, filtered_table)
+        inner_table = self._inner_table.filter(desugared_filter_expression)
+        new_columns_mapping = {}
+        for int_ref, expression in self._columns_mapping.items():
+            new_columns_mapping[int_ref] = inner_table[expression.name]
+        new_columns_mapping[inner_table.id._to_internal()] = inner_table.id
+
+        inner_table._context = clmn.JoinRowwiseContext.from_mapping(
+            inner_table._universe, new_columns_mapping
+        )  # FIXME don't set _context property of table
+
+        return JoinResult(
+            _universe=inner_table._universe,
+            _inner_table=inner_table,
+            _columns_mapping=new_columns_mapping,
+            _left_table=self._left_table,
+            _right_table=self._right_table,
+            _original_left=self._original_left,
+            _original_right=self._original_right,
+            _substitution=self._substitution,
+            _joined_on_names=self._joined_on_names,
+            _join_mode=self._join_mode,
+        )
 
     @trace_user_frame
     @desugar
     def groupby(
         self,
         *args: expr.ColumnReference,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
     ) -> GroupedJoinResult:
         """Groups join result by columns from args.
 
@@ -771,24 +761,83 @@ class JoinResult(Joinable, OperatorInput):
         return self.groupby().reduce(*args, **kwargs)
 
     def _substitutions(
-        self, cnt: Iterator
-    ) -> Tuple[Table, Dict[expr.InternalColRef, expr.ColumnExpression]]:
-        subs: Dict[expr.InternalColRef, str] = {}  # old to new
-        for subjoinable in self._subjoinables():
-            for expression in subjoinable:
-                subs[expression._to_internal()] = f"c{next(cnt)}"
-            subs[subjoinable.id._to_internal()] = f"c{next(cnt)}"
-        tab = self.select(
-            **{
-                new_name: expression.to_colref()
-                for expression, new_name in subs.items()
-            },
-        )
-        subs_full: Dict[expr.InternalColRef, expr.ColumnExpression] = {
-            expression: tab[new_name] for expression, new_name in subs.items()
+        self,
+    ) -> tuple[Table, dict[expr.InternalColRef, expr.ColumnExpression]]:
+        return self._inner_table, {
+            int_ref: expression for int_ref, expression in self._columns_mapping.items()
         }
-        subs_full[self.id._to_internal()] = tab.id
-        return tab, subs_full
+
+    @desugar
+    @arg_handler(handler=select_args_handler)
+    @contextualized_operator
+    @staticmethod
+    def _join(
+        context: clmn.JoinContext, *args: expr.ColumnReference, **kwargs: Any
+    ) -> Table:
+        """Used internally to create an internal Table containing result of a join."""
+        columns: dict[str, clmn.Column] = {}
+
+        all_args = combine_args_kwargs(args, kwargs)
+
+        for new_name, expression in all_args.items():
+            columns[new_name] = expression._column_with_expression_cls(
+                context=context,
+                universe=context.universe,
+                expression=expression,
+            )
+        from pathway.internals.table import Table
+
+        return Table(
+            columns=columns,
+            universe=context.universe,
+            id_column=clmn.IdColumn(context),
+        )
+
+    @staticmethod
+    def _prepare_inner_table_with_mapping(
+        context: clmn.JoinContext,
+        original_left: Joinable,
+        original_right: Joinable,
+        common_column_names: StableSet[str],
+    ) -> tuple[Table, dict[expr.InternalColRef, expr.ColumnReference]]:
+        left_table, left_substitutions = original_left._substitutions()
+        right_table, right_substitutions = original_right._substitutions()
+        cnt = itertools.count(0)
+        expressions: dict[str, expr.ColumnExpression] = {}
+        colref_to_name_mapping: dict[expr.InternalColRef, str] = {}
+        for table, subs in [
+            (left_table, left_substitutions),
+            (right_table, right_substitutions),
+        ]:
+            if len(subs) == 0:  # tables have empty subs, so set them here
+                for ref in table:
+                    subs[ref._to_internal()] = ref
+            subs_total = subs | {table.id._to_internal(): table.id}
+            for int_ref, expression in subs_total.items():
+                inner_name = f"_pw_{next(cnt)}"
+                expressions[inner_name] = expression
+                colref_to_name_mapping[int_ref] = inner_name
+        from pathway.internals.common import coalesce
+
+        for name in common_column_names:
+            if name != "id":
+                expressions[name] = coalesce(original_left[name], original_right[name])
+
+        inner_table = JoinResult._join(context, **expressions)
+        final_mapping = {
+            colref: inner_table[name] for colref, name in colref_to_name_mapping.items()
+        }
+        for name in common_column_names:
+            if name != "id":
+                colref = inner_table[name]
+                final_mapping[colref._to_internal()] = colref
+        final_mapping[inner_table.id._to_internal()] = inner_table.id
+
+        inner_table._context = clmn.JoinRowwiseContext.from_mapping(
+            inner_table._universe, final_mapping
+        )  # FIXME don't set _context property of table
+
+        return (inner_table, final_mapping)
 
     @staticmethod
     def _table_join(
@@ -796,24 +845,22 @@ class JoinResult(Joinable, OperatorInput):
         right: Joinable,
         *on: expr.ColumnExpression,
         mode: JoinMode,
-        id: Optional[expr.ColumnReference] = None,
+        id: expr.ColumnReference | None = None,
     ) -> JoinResult:
         if left == right:
             raise ValueError(
                 "Cannot join table with itself. Use <table>.copy() as one of the arguments of the join."
             )
 
-        cnt: Iterator = itertools.count(0)
-
-        left_table, left_substitutions = left._substitutions(cnt)
-        right_table, right_substitutions = right._substitutions(cnt)
+        left_table, left_substitutions = left._substitutions()
+        right_table, right_substitutions = right._substitutions()
 
         chained_join_desugaring = SubstitutionDesugaring(
             {**left_substitutions, **right_substitutions}
         )
 
         if id is not None:
-            id = cast(expr.ColumnReference, chained_join_desugaring.eval_expression(id))
+            id = chained_join_desugaring.eval_expression(id)
             id_column = id._column
         else:
             id_column = None
@@ -828,13 +875,7 @@ class JoinResult(Joinable, OperatorInput):
             if cond_left.name == cond_right.name:
                 common_column_names.add(cond_left.name)
 
-        on_ = tuple(
-            cast(
-                expr.ColumnBinaryOpExpression,
-                chained_join_desugaring.eval_expression(cond),
-            )
-            for cond in on_
-        )
+        on_ = tuple(chained_join_desugaring.eval_expression(cond) for cond in on_)
 
         for cond in on_:
             validate_join_condition(cond, left_table, right_table)
@@ -859,7 +900,7 @@ class JoinResult(Joinable, OperatorInput):
         right_context_table = clmn.ContextTable(
             universe=right._universe, columns=on_right
         )
-        substitution: Dict[thisclass.ThisMetaclass, Joinable] = {
+        substitution: dict[thisclass.ThisMetaclass, Joinable] = {
             thisclass.left: left,
             thisclass.right: right,
         }
@@ -888,57 +929,24 @@ class JoinResult(Joinable, OperatorInput):
                 mode in [JoinMode.LEFT, JoinMode.OUTER],
                 mode in [JoinMode.RIGHT, JoinMode.OUTER],
             )
+        inner_table, columns_mapping = JoinResult._prepare_inner_table_with_mapping(
+            context,
+            left,
+            right,
+            common_column_names,
+        )
         return JoinResult(
             universe,
-            context,
+            inner_table,
+            columns_mapping,
             left_table,
             right_table,
             left,
             right,
             substitution,
-            chained_join_desugaring,
             common_column_names,
             mode,
         )
-
-
-class FilteredJoinResult(JoinResult):
-    _context: clmn.JoinFilterContext
-    _join_result: JoinResult
-
-    def __init__(
-        self,
-        join_result: JoinResult,
-        filtering: Table,
-    ):
-        universe = filtering._universe
-        self._filtering = filtering
-        self._join_result = join_result
-        new_context = clmn.JoinFilterContext(
-            **{  # type: ignore
-                **vars(
-                    join_result._context,
-                ),
-                "universe": universe,
-                "filtering_column": filtering._id_column,
-            }
-        )
-        super().__init__(
-            universe,
-            new_context,
-            join_result._left_table,
-            join_result._right_table,
-            join_result._original_left,
-            join_result._original_right,
-            join_result._substitution,
-            join_result._chained_join_desugaring,
-            join_result._joined_on_names,
-            join_result._join_mode,
-        )
-
-    @lru_cache
-    def _operator_dependencies(self) -> StableSet[Table]:
-        return self._join_result._operator_dependencies() | [self._filtering]
 
 
 def validate_shape(cond: expr.ColumnExpression) -> expr.ColumnBinaryOpExpression:
@@ -956,7 +964,7 @@ def validate_shape(cond: expr.ColumnExpression) -> expr.ColumnBinaryOpExpression
 
 def validate_join_condition(
     cond: expr.ColumnExpression, left: Table, right: Table
-) -> Tuple[expr.ColumnReference, expr.ColumnReference, expr.ColumnBinaryOpExpression]:
+) -> tuple[expr.ColumnReference, expr.ColumnReference, expr.ColumnBinaryOpExpression]:
     eval_type(cond)
     cond = validate_shape(cond)
     cond_left = cast(expr.ColumnReference, cond._left)

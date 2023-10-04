@@ -2,7 +2,6 @@ use log::{error, info, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
-use std::iter::zip;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender, TryRecvError};
@@ -30,6 +29,7 @@ use crate::engine::Error as EngineError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
+use crate::timestamp::current_unix_timestamp_ms;
 
 use data_format::{ParseResult, ParsedEvent, Parser};
 use data_storage::{DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError};
@@ -82,6 +82,7 @@ impl<Timestamp> StartedConnectorState<Timestamp> {
 pub struct Connector<Timestamp> {
     commit_duration: Option<Duration>,
     current_timestamp: Timestamp,
+    num_columns: usize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -100,39 +101,30 @@ where
         The implementation for pull model of data acquisition: we explicitly inquiry the source about the newly
         arrived data.
     */
-    pub fn new(commit_duration: Option<Duration>) -> Self {
+    pub fn new(commit_duration: Option<Duration>, num_columns: usize) -> Self {
         Connector {
             commit_duration,
             current_timestamp: Default::default(),
+            num_columns,
         }
     }
 
     fn advance_time(
         &mut self,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
     ) -> u64 {
-        let current_timestamp = SystemTime::now();
-        let unix_timestamp = current_timestamp
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("System time should be after the Unix epoch");
-
-        let new_timestamp = u64::try_from(unix_timestamp.as_millis())
+        let new_timestamp = u64::try_from(current_unix_timestamp_ms())
             .expect("number of milliseconds should fit in 64 bits");
 
-        if self.current_timestamp.less_equal(&new_timestamp.into()) {
+        let timestamp_updated = self.current_timestamp.less_than(&new_timestamp.into());
+        if timestamp_updated {
             self.current_timestamp = new_timestamp.into();
         } else {
             warn!("The current timestamp is lower than the last one saved. Commits won't work.");
         }
 
-        universe_session.advance_to(self.current_timestamp.clone());
-        universe_session.flush();
-
-        for input_session in &mut *input_sessions {
-            input_session.advance_to(self.current_timestamp.clone());
-            input_session.flush();
-        }
+        input_session.advance_to(self.current_timestamp.clone());
+        input_session.flush();
 
         self.current_timestamp.clone().into()
     }
@@ -212,7 +204,7 @@ where
 
     pub fn read_snapshot(
         reader: &mut dyn Reader,
-        persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
+        persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
         sender: &Sender<Entry>,
     ) {
         // Rewind the data source
@@ -243,7 +235,7 @@ where
 
     pub fn snapshot_writer(
         reader: &dyn ReaderBuilder,
-        persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
+        persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
     ) -> Result<Option<SharedSnapshotWriter>, WriteError> {
         if let Some(persistent_storage) = &persistent_storage {
             if let Some(persistent_id) = reader.persistent_id() {
@@ -268,8 +260,7 @@ where
         mut self,
         reader: Box<dyn ReaderBuilder>,
         mut parser: Box<dyn Parser>,
-        mut input_sessions: Vec<InputSession<Timestamp, (Key, Value), isize>>,
-        mut universe_session: InputSession<Timestamp, Key, isize>,
+        mut input_session: InputSession<Timestamp, (Key, Value), isize>,
         mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key + 'static,
         persistent_storage: Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
         connector_id: usize,
@@ -277,7 +268,7 @@ where
         external_persistent_id: &Option<ExternalPersistentId>,
         error_reporter: impl ReportError + 'static,
     ) -> Result<StartedConnectorState<Timestamp>, EngineError> {
-        assert_eq!(input_sessions.len(), parser.column_count());
+        assert_eq!(self.num_columns, parser.column_count());
 
         let main_thread = thread::current();
         let (sender, receiver) = mpsc::channel();
@@ -289,8 +280,9 @@ where
         );
         let reader_name = reader.name(external_persistent_id, connector_id);
 
-        let mut snapshot_writer = Self::snapshot_writer(reader.as_ref(), &persistent_storage)
-            .map_err(EngineError::SnapshotWriterError)?;
+        let mut snapshot_writer =
+            Self::snapshot_writer(reader.as_ref(), persistent_storage.as_ref())
+                .map_err(EngineError::SnapshotWriterError)?;
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
@@ -303,7 +295,7 @@ where
                 });
 
                 let mut reader = reader.build()?;
-                Self::read_snapshot(&mut *reader, &persistent_storage, &sender);
+                Self::read_snapshot(&mut *reader, persistent_storage.as_ref(), &sender);
                 if realtime_reader_needed {
                     Self::read_realtime_updates(&mut *reader, &sender, &main_thread);
                 }
@@ -336,8 +328,7 @@ where
                         self.on_parsed_data(
                             parsed_entries,
                             None, // no key generation for time advancement
-                            &mut input_sessions,
-                            &mut universe_session,
+                            &mut input_session,
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
@@ -361,8 +352,7 @@ where
                             entry,
                             &mut backfilling_finished,
                             &mut parser,
-                            &mut input_sessions,
-                            &mut universe_session,
+                            &mut input_session,
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &offsets_by_time_writer,
@@ -391,8 +381,7 @@ where
         entry: Entry,
         backfilling_finished: &mut bool,
         parser: &mut Box<dyn Parser>,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
         values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         offsets_by_time_writer: &Mutex<HashMap<Timestamp, OffsetAntichain>>,
@@ -410,8 +399,7 @@ where
                     self.on_parsed_data(
                         parsed_entries,
                         None, // no key generation for time advancement
-                        input_sessions,
-                        universe_session,
+                        input_session,
                         values_to_key,
                         snapshot_writer,
                         connector_monitor,
@@ -433,15 +421,15 @@ where
                     self.on_parsed_data(
                         parsed_entries,
                         Some(&offset.clone()),
-                        input_sessions,
-                        universe_session,
+                        input_session,
                         values_to_key,
                         snapshot_writer,
                         connector_monitor,
                     );
 
                     let (offset_key, offset_value) = offset;
-                    if has_persistent_storage && *backfilling_finished {
+                    if has_persistent_storage {
+                        assert!(*backfilling_finished);
                         offsets_by_time_writer
                             .lock()
                             .unwrap()
@@ -452,29 +440,32 @@ where
                 }
             },
             Entry::RewindFinishSentinel => {
+                assert!(!*backfilling_finished);
                 *backfilling_finished = true;
                 let parsed_entries = vec![ParsedEvent::AdvanceTime];
                 self.on_parsed_data(
                     parsed_entries,
                     None, // no key generation for time advancement
-                    input_sessions,
-                    universe_session,
+                    input_session,
                     values_to_key,
                     snapshot_writer,
                     connector_monitor,
                 );
             }
-            Entry::Snapshot(snapshot) => match snapshot {
-                SnapshotEvent::Insert(key, value) => {
-                    Self::on_insert(key, value, input_sessions, universe_session);
-                }
-                SnapshotEvent::Delete(key, value) => {
-                    Self::on_remove(key, value, input_sessions, universe_session);
-                }
-                SnapshotEvent::AdvanceTime(_) | SnapshotEvent::Finished => {
-                    unreachable!()
-                }
-            },
+            Entry::Snapshot(snapshot) => {
+                assert!(!*backfilling_finished);
+                match snapshot {
+                    SnapshotEvent::Insert(key, value) => {
+                        Self::on_insert(key, value, input_session);
+                    }
+                    SnapshotEvent::Delete(key, value) => {
+                        Self::on_remove(key, value, input_session);
+                    }
+                    SnapshotEvent::AdvanceTime(_) | SnapshotEvent::Finished => {
+                        unreachable!()
+                    }
+                };
+            }
         }
     }
 
@@ -484,8 +475,7 @@ where
     pub fn run_with_custom_reader(
         &mut self,
         custom_reader: &mut dyn CustomReader,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
         mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
     ) {
@@ -494,8 +484,7 @@ where
                 (Ok(entries), maybe_offset) => self.on_parsed_data(
                     entries,
                     maybe_offset.as_ref(),
-                    input_sessions,
-                    universe_session,
+                    input_session,
                     &mut values_to_key,
                     snapshot_writer,
                     &mut None,
@@ -519,8 +508,7 @@ where
         raw_read_data: &ReaderContext,
         offset: Option<&Offset>,
         parser: &mut dyn Parser,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
         values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
     ) {
@@ -528,8 +516,7 @@ where
             Ok(entries) => self.on_parsed_data(
                 entries,
                 offset,
-                input_sessions,
-                universe_session,
+                input_session,
                 values_to_key,
                 snapshot_writer,
                 &mut None,
@@ -543,25 +530,17 @@ where
     fn on_insert(
         key: Key,
         values: Vec<Value>,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
     ) {
-        universe_session.insert(key);
-        for (input_session, value) in zip(input_sessions.iter_mut(), values) {
-            input_session.insert((key, value));
-        }
+        input_session.insert((key, Value::Tuple(values.into())));
     }
 
     fn on_remove(
         key: Key,
         values: Vec<Value>,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
     ) {
-        universe_session.remove(key);
-        for (input_session, value) in zip(input_sessions.iter_mut(), values) {
-            input_session.remove((key, value));
-        }
+        input_session.remove((key, Value::Tuple(values.into())));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -569,8 +548,7 @@ where
         &mut self,
         parsed_entries: Vec<ParsedEvent>,
         offset: Option<&Offset>,
-        input_sessions: &mut [InputSession<Timestamp, (Key, Value), isize>],
-        universe_session: &mut InputSession<Timestamp, Key, isize>,
+        input_session: &mut InputSession<Timestamp, (Key, Value), isize>,
         mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
@@ -578,8 +556,8 @@ where
         for entry in parsed_entries {
             match entry {
                 ParsedEvent::Insert((raw_key, values)) => {
-                    if values.len() != input_sessions.len() {
-                        error!("There are {} tokens in the entry, but the count of the provided input sessions was {}", values.len(), input_sessions.len());
+                    if values.len() != self.num_columns {
+                        error!("There are {} tokens in the entry, but the expected number of tokens was {}", values.len(), self.num_columns);
                         continue;
                     }
                     let key = values_to_key(raw_key, offset);
@@ -595,14 +573,14 @@ where
                             error!("Failed to save row ({key}, {values:?}) in persistent buffer. Error: {e}");
                         }
                     }
-                    Self::on_insert(key, values, input_sessions, universe_session);
+                    Self::on_insert(key, values, input_session);
                     if let Some(ref mut connector_monitor) = connector_monitor {
                         connector_monitor.increment();
                     }
                 }
                 ParsedEvent::Delete((raw_key, values)) => {
-                    if values.len() != input_sessions.len() {
-                        error!("There are {} tokens in the entry, but the count of the provided input sessions was {}", values.len(), input_sessions.len());
+                    if values.len() != self.num_columns {
+                        error!("There are {} tokens in the entry, but the expected number of tokens was {}", values.len(), self.num_columns);
                         continue;
                     }
                     let key = values_to_key(raw_key, offset);
@@ -615,13 +593,13 @@ where
                             error!("Failed to save row ({key}, {values:?}) in persistent buffer. Error: {e}");
                         }
                     }
-                    Self::on_remove(key, values, input_sessions, universe_session);
+                    Self::on_remove(key, values, input_session);
                     if let Some(ref mut connector_monitor) = connector_monitor {
                         connector_monitor.increment();
                     }
                 }
                 ParsedEvent::AdvanceTime => {
-                    let time_advanced = self.advance_time(input_sessions, universe_session);
+                    let time_advanced = self.advance_time(input_session);
                     if let Some(ref mut connector_monitor) = connector_monitor {
                         connector_monitor.commit();
                     }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import pathway.internals as pw
 from pathway.internals.arg_handlers import (
@@ -64,8 +64,8 @@ class WindowJoinResult(DesugaringContext):
     """
 
     _join_result: pw.JoinResult
-    _table_substitution: Dict[pw.TableLike, pw.Table]
-    _substitution: Dict[ThisMetaclass, pw.Joinable]
+    _table_substitution: dict[pw.TableLike, pw.Table]
+    _substitution: dict[ThisMetaclass, pw.Joinable]
 
     def __init__(
         self,

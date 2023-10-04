@@ -65,8 +65,8 @@ fn json_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dy
 fn full_cycle_read_kv(
     format: TestedFormat,
     input_path: &Path,
-    persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
-    global_tracker: &Option<SharedWorkersPersistenceCoordinator>,
+    persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
+    global_tracker: Option<&SharedWorkersPersistenceCoordinator>,
 ) -> FullReadResult {
     let (reader, mut parser) = match format {
         TestedFormat::Csv => csv_reader_parser_pair(input_path),
@@ -89,8 +89,8 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &input_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -113,8 +113,8 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &input_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         eprintln!("data stream after: {:?}", data_stream.new_parsed_entries);
         assert_eq!(
@@ -156,8 +156,8 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &inputs_dir_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -197,8 +197,8 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Csv,
             &inputs_dir_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -231,8 +231,8 @@ fn test_json_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &input_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -255,8 +255,8 @@ fn test_json_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &input_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -296,8 +296,8 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -327,8 +327,8 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -369,8 +369,8 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -398,8 +398,8 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(
             TestedFormat::Json,
             &inputs_dir_path,
-            &Some(tracker),
-            &Some(global_tracker),
+            Some(&tracker),
+            Some(&global_tracker),
         );
         assert_eq!(
             data_stream.new_parsed_entries,

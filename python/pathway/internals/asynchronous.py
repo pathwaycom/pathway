@@ -8,8 +8,9 @@ import inspect
 import os
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, ClassVar, Optional, Set
+from typing import ClassVar
 
 import diskcache
 
@@ -72,9 +73,9 @@ def with_cache_strategy(func, cache_strategy: CacheStrategy) -> Callable:
 
 
 def async_options(
-    capacity: Optional[int] = None,
-    retry_strategy: Optional[AsyncRetryStrategy] = None,
-    cache_strategy: Optional[CacheStrategy] = None,
+    capacity: int | None = None,
+    retry_strategy: AsyncRetryStrategy | None = None,
+    cache_strategy: CacheStrategy | None = None,
 ):
     def decorator(func):
         if retry_strategy is not None:
@@ -176,12 +177,12 @@ class CacheStrategy(ABC):
 
 class DiskCache(CacheStrategy):
     _cache: diskcache.Cache
-    _name: Optional[str]
+    _name: str | None
 
-    _custom_names: ClassVar[Set[str]] = set()
+    _custom_names: ClassVar[set[str]] = set()
 
     @trace.trace_user_frame
-    def __init__(self, name: Optional[str] = None) -> None:
+    def __init__(self, name: str | None = None) -> None:
         super().__init__()
         if name is not None:
             if name in self._custom_names:

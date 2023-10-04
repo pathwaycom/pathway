@@ -1,27 +1,27 @@
-from typing import Any, Callable, Mapping, Optional, Tuple
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from pathway.internals import api
 from pathway.internals import dtype as dt
-from pathway.internals.api import _TYPES_TO_ENGINE_MAPPING
 from pathway.internals.shadows import operator
 
 UnaryOperator = Callable[[Any], Any]
 ApiUnaryOperator = Callable[[api.Expression], api.Expression]
 UnaryOperatorMapping = Mapping[
-    Tuple[UnaryOperator, dt.DType],
+    tuple[UnaryOperator, dt.DType],
     dt.DType,
 ]
 
 BinaryOperator = Callable[[Any, Any], Any]
 ApiBinaryOperator = Callable[[api.Expression, api.Expression], api.Expression]
 BinaryOperatorMapping = Mapping[
-    Tuple[BinaryOperator, dt.DType, dt.DType],
+    tuple[BinaryOperator, dt.DType, dt.DType],
     dt.DType,
 ]
 
 OptionalMapping = Mapping[
     BinaryOperator,
-    Tuple[dt.DType, ApiBinaryOperator],
+    tuple[dt.DType, ApiBinaryOperator],
 ]
 
 _unary_operators_to_engine: Mapping[UnaryOperator, api.UnaryOperator] = {
@@ -63,9 +63,9 @@ def get_unary_operators_mapping(op, operand_dtype, default=None):
     return _unary_operators_mapping.get((op, operand_dtype), default)
 
 
-def get_unary_expression(expr, op, expr_dtype, default=None):
+def get_unary_expression(expr, op, expr_dtype: dt.DType, default=None):
     op_engine = _unary_operators_to_engine.get(op)
-    expr_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(dt.normalize_dtype(expr_dtype))
+    expr_dtype_engine = expr_dtype.to_engine()
     if op_engine is None or expr_dtype_engine is None:
         return default
     expression = api.Expression.unary_expression(expr, op_engine, expr_dtype_engine)
@@ -162,7 +162,7 @@ _binary_operators_mapping: BinaryOperatorMapping = {
     (operator.floordiv, dt.DURATION, dt.DURATION): dt.INT,
     (operator.truediv, dt.DURATION, dt.DURATION): dt.FLOAT,
     (operator.mod, dt.DURATION, dt.DURATION): dt.DURATION,
-    (operator.matmul, dt.Array(), dt.Array()): dt.Array(),
+    (operator.matmul, dt.ARRAY, dt.ARRAY): dt.ARRAY,
 }
 
 tuple_handling_operators = {
@@ -181,10 +181,12 @@ def get_binary_operators_mapping(op, left, right, default=None):
     )
 
 
-def get_binary_expression(left, right, op, left_dtype, right_dtype, default=None):
+def get_binary_expression(
+    left, right, op, left_dtype: dt.DType, right_dtype: dt.DType, default=None
+):
     op_engine = _binary_operators_to_engine.get(op)
-    left_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(dt.normalize_dtype(left_dtype))
-    right_dtype_engine = _TYPES_TO_ENGINE_MAPPING.get(dt.normalize_dtype(right_dtype))
+    left_dtype_engine = left_dtype.to_engine()
+    right_dtype_engine = right_dtype.to_engine()
     if op_engine is None or left_dtype_engine is None or right_dtype_engine is None:
         return default
 
@@ -209,13 +211,10 @@ def get_binary_operators_mapping_optionals(op, left, right, default=None):
 
 def get_cast_operators_mapping(
     expr: api.Expression, source_type: dt.DType, target_type: dt.DType, default=None
-) -> Optional[api.Expression]:
-    source_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
-        dt.normalize_dtype(dt.unoptionalize(source_type))
-    )
-    target_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
-        dt.normalize_dtype(dt.unoptionalize(target_type))
-    )
+) -> api.Expression | None:
+    source_type_engine = dt.unoptionalize(source_type).to_engine()
+    target_type_engine = dt.unoptionalize(target_type).to_engine()
+
     if source_type_engine is None or target_type_engine is None:
         return default
     if isinstance(source_type, dt.Optional) and isinstance(target_type, dt.Optional):
@@ -232,13 +231,10 @@ def get_cast_operators_mapping(
 
 def get_convert_operators_mapping(
     expr: api.Expression, source_type: dt.DType, target_type: dt.DType
-) -> Optional[api.Expression]:
-    source_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
-        dt.normalize_dtype(dt.unoptionalize(source_type))
-    )
-    target_type_engine = _TYPES_TO_ENGINE_MAPPING.get(
-        dt.normalize_dtype(dt.unoptionalize(target_type))
-    )
+) -> api.Expression | None:
+    source_type_engine = dt.unoptionalize(source_type).to_engine()
+    target_type_engine = dt.unoptionalize(target_type).to_engine()
+
     assert (
         source_type_engine is not None and target_type_engine is not None
     ), "invalid pathway type"
@@ -253,7 +249,7 @@ def get_convert_operators_mapping(
 
 def common_dtype_in_binary_operator(
     left_dtype: dt.DType, right_dtype: dt.DType
-) -> Optional[dt.DType]:
+) -> dt.DType | None:
     if (
         left_dtype in [dt.INT, dt.Optional(dt.INT)]
         and right_dtype in [dt.FLOAT, dt.Optional(dt.FLOAT)]

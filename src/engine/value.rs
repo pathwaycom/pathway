@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::convert::Infallible;
-use std::fmt::{self, Display};
+use std::fmt::{self, Debug, Display};
 use std::mem::{align_of, size_of};
 use std::ops::Deref;
 use std::str::FromStr;
@@ -33,7 +33,7 @@ cfg_if! {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Key(pub KeyImpl);
 
 impl Key {
@@ -80,11 +80,14 @@ impl Key {
 
 impl Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if f.alternate() {
-            write!(f, "^")?;
-        }
         let encoded = base32::encode(BASE32_ALPHABET, &self.0.to_le_bytes());
-        write!(f, "{encoded}")
+        write!(f, "^{encoded}")
+    }
+}
+
+impl Debug for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -268,7 +271,7 @@ impl Display for Value {
             Self::Bool(b) => write!(fmt, "{}", if *b { "True" } else { "False" }),
             Self::Int(i) => write!(fmt, "{i}"),
             Self::Float(OrderedFloat(f)) => write!(fmt, "{f}"),
-            Self::Pointer(p) => write!(fmt, "{p:#}"),
+            Self::Pointer(p) => write!(fmt, "{p}"),
             Self::String(s) => write!(fmt, "\"{}\"", s.escape_default()),
             Self::Bytes(b) => write!(fmt, "{b:?}"),
             Self::Tuple(vals) => write!(fmt, "({})", vals.iter().format(", ")),

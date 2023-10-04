@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use log::error;
+use log::{error, info};
 use std::collections::HashMap;
 use std::mem::take;
 use std::sync::{Arc, Mutex};
@@ -130,8 +130,9 @@ impl SingleWorkerPersistentStorage {
         /*
             Use the timestamp provided, or if it's None use the max timestamp across input sources
         */
-        let finalized_timestamp = timestamp.unwrap_or(self.last_known_input_time());
-        if finalized_timestamp < self.last_finalized_timestamp() {
+        let finalized_timestamp = timestamp.unwrap_or(self.last_known_input_time() + 1);
+        let prev_finalized_timestamp = self.last_finalized_timestamp();
+        if finalized_timestamp < prev_finalized_timestamp {
             error!("Time isn't in the increasing order. Got advancement to {finalized_timestamp} while last advanced timestamp was {}", self.last_finalized_timestamp());
 
             // Empty set of snapshot commit futures and non-changed timestamp
@@ -154,7 +155,8 @@ impl SingleWorkerPersistentStorage {
                 let mut timestamps_to_flush = Vec::new();
 
                 for timestamp in frontiers_by_time.keys() {
-                    if *timestamp <= finalized_timestamp {
+                    assert!(*timestamp >= prev_finalized_timestamp, "Found offsets for timestamp {} which is smaller than {prev_finalized_timestamp}", *timestamp);
+                    if *timestamp < finalized_timestamp {
                         timestamps_to_flush.push(*timestamp);
                     }
                 }
@@ -178,6 +180,7 @@ impl SingleWorkerPersistentStorage {
                 NB: the mutex for offsets storage is now released.
             */
             for (antichain_item_key, antichain_item_value) in &current_advancement {
+                info!("Save offset: ({antichain_item_key:?}, {antichain_item_value:?})");
                 self.metadata_storage.save_offset(
                     *persistent_id,
                     antichain_item_key,

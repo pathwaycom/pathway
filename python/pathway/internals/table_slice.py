@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Union, overload
+from typing import TYPE_CHECKING, overload
 
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -49,17 +49,17 @@ class TableSlice:
         return self._mapping.keys()
 
     @overload
-    def __getitem__(self, args: Union[str, ColumnReference]) -> ColumnReference:
+    def __getitem__(self, args: str | ColumnReference) -> ColumnReference:
         ...
 
     @overload
-    def __getitem__(self, args: List[Union[str, ColumnReference]]) -> TableSlice:
+    def __getitem__(self, args: list[str | ColumnReference]) -> TableSlice:
         ...
 
     @trace_user_frame
     def __getitem__(
-        self, arg: Union[str, ColumnReference] | List[Union[str, ColumnReference]]
-    ) -> Union[ColumnReference, TableSlice]:
+        self, arg: str | ColumnReference | list[str | ColumnReference]
+    ) -> ColumnReference | TableSlice:
         if isinstance(arg, (ColumnReference, str)):
             return self._mapping[self._normalize(arg)]
         else:
@@ -80,7 +80,7 @@ class TableSlice:
 
     @trace_user_frame
     @runtime_type_check
-    def without(self, *cols: Union[str, ColumnReference]) -> TableSlice:
+    def without(self, *cols: str | ColumnReference) -> TableSlice:
         mapping = self._mapping.copy()
         for col in cols:
             colname = self._normalize(col)
@@ -93,7 +93,7 @@ class TableSlice:
     @runtime_type_check
     def rename(
         self,
-        rename_dict: Dict[Union[str, ColumnReference], Union[str, ColumnReference]],
+        rename_dict: dict[str | ColumnReference, str | ColumnReference],
     ) -> TableSlice:
         rename_dict_normalized = {
             self._normalize(old): self._normalize(new)
@@ -138,7 +138,7 @@ class TableSlice:
     def slice(self):
         return self
 
-    def _normalize(self, arg: Union[str, ColumnReference]):
+    def _normalize(self, arg: str | ColumnReference):
         if isinstance(arg, ColumnReference):
             if isinstance(arg.table, ThisMetaclass):
                 if arg.table != this:

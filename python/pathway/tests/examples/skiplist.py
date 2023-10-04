@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import pathway as pw
 from pathway.internals.fingerprints import fingerprint
@@ -23,7 +24,7 @@ class Node(pw.Schema):
 
 class Shortcuts(pw.Schema):
     shortcut_val: Any
-    shortcut_next: Optional[pw.Pointer[Shortcuts]]
+    shortcut_next: pw.Pointer[Shortcuts] | None
 
 
 @pw.transformer
@@ -57,7 +58,7 @@ class shortcut_transformer:
                 )
 
         @pw.output_attribute(output_name="shortcut_next")
-        def new_shortcut_next(self) -> Optional[pw.Pointer[Shortcuts]]:
+        def new_shortcut_next(self) -> pw.Pointer[Shortcuts] | None:
             ret, _ = self._shortcut
             return ret
 
@@ -73,8 +74,8 @@ def compute_shortcuts(
     nodes = nodes + nodes.select(hash=pw.apply(hash, nodes.id))
 
     shortcuts_init = nodes.select(
-        shortcut_next=pw.declare_type(Shortcuts.as_dict()["shortcut_next"], nodes.next),
-        shortcut_val=pw.declare_type(Shortcuts.as_dict()["shortcut_val"], nodes.val),
+        shortcut_next=pw.declare_type(Shortcuts["shortcut_next"], nodes.next),
+        shortcut_val=pw.declare_type(Shortcuts["shortcut_val"], nodes.val),
     )  # can take unnamed args (columns), then no renaming applied
 
     # Iterate takes transformer and a dict of args

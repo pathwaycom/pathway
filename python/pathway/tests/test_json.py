@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import pathlib
 import re
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway import dt
 from pathway.debug import table_from_pandas
-from pathway.tests.utils import T, assert_table_equality, run_all
+from pathway.tests.utils import (
+    T,
+    assert_table_equality,
+    assert_table_equality_wo_index,
+    run_all,
+    write_lines,
+)
 
 
 def _json_table_from_list(data):
@@ -27,7 +33,7 @@ def _json_table_from_list(data):
     schema = pw.schema_builder(
         columns={
             "key": pw.column_definition(dtype=int, primary_key=True),
-            **{name: pw.column_definition(dtype=dt.JSON) for name in data[0]},
+            **{name: pw.column_definition(dtype=pw.Json) for name in data[0]},
         }
     )
 
@@ -65,7 +71,7 @@ def test_json_get_none():
     input = _json_table(data=[{}])
 
     with pytest.raises(
-        TypeError, match=re.escape(f"Cannot get from {dt.Optional(dt.JSON)}.")
+        TypeError, match=re.escape(f"Cannot get from {pw.Json | None}.")
     ):
         input.select(result=pw.this.data.get("a").get("b"))
 
@@ -117,7 +123,7 @@ def test_json_get_wo_default():
     )
 
     with pytest.raises(
-        TypeError, match=re.escape(rf"Cannot get from {dt.Optional(dt.JSON)}.")
+        TypeError, match=re.escape(rf"Cannot get from {pw.Json | None}.")
     ):
         input.select(result=pw.this.data.get("a").get("b"))
 
@@ -137,7 +143,7 @@ def test_json_dict_get_int_index():
                 | result
             1   |
             """
-        ).update_types(result=dt.Optional(dt.JSON)),
+        ).update_types(result=Optional[pw.Json]),
         result,
     )
 
@@ -157,7 +163,7 @@ def test_json_array_get_str_index():
                 | result
             1   |
             """
-        ).update_types(result=dt.Optional(dt.JSON)),
+        ).update_types(result=Optional[pw.Json]),
         result,
     )
 
@@ -171,7 +177,7 @@ def test_json_get_wrong_default():
 
     with pytest.raises(
         TypeError,
-        match=re.escape(rf"Default must be of type {dt.Optional(dt.JSON)}, found INT."),
+        match=re.escape(rf"Default must be of type {pw.Json | None}, found {int}."),
     ):
         input.select(result=pw.this.data.get("a", 42).get("b"))
 
@@ -228,7 +234,7 @@ def test_json_get_item_optional_json():
 
     with pytest.raises(
         TypeError,
-        match=re.escape(f"Cannot get from {dt.Optional(dt.JSON)}."),
+        match=re.escape(f"Cannot get from {pw.Json | None}."),
     ):
         input.select(result=pw.this.data.get("a")["b"])
 
@@ -279,7 +285,7 @@ def test_json_as_type(from_, to_, method):
         schema=pw.schema_builder(
             columns={
                 "key": pw.column_definition(primary_key=True, dtype=int),
-                "result": pw.column_definition(dtype=dt.Optional(to_dtype)),
+                "result": pw.column_definition(dtype=Optional[to_dtype]),
             }
         ),
     ).without(pw.this.key)
@@ -369,12 +375,12 @@ def test_json_input():
             1   | 1 | 2 | 1.5 | True | foo  | 2
             """
         ).update_types(
-            a=dt.Optional(int),
-            b=dt.Optional(int),
-            c=dt.Optional(float),
-            d=dt.Optional(bool),
-            e=dt.Optional(str),
-            f=dt.Optional(int),
+            a=Optional[int],
+            b=Optional[int],
+            c=Optional[float],
+            d=Optional[bool],
+            e=Optional[str],
+            f=Optional[int],
         ),
         result,
     )
@@ -451,7 +457,7 @@ def test_json_recursive():
             2   | 2
             3   | 3
             """
-        ).update_types(ret=dt.Optional(int)),
+        ).update_types(ret=Optional[int]),
         result,
     )
 
@@ -482,6 +488,73 @@ def test_json_nested():
             2   | 2
             3   | 3
             """
-        ).update_types(ret=dt.Optional(int)),
+        ).update_types(ret=Optional[int]),
+        result,
+    )
+
+
+@pytest.mark.parametrize(
+    "delimiter",
+    [",", ";", "\t"],
+)
+def test_json_in_csv(tmp_path: pathlib.Path, delimiter: str):
+    values = [
+        ('"{""a"": 1,""b"": ""foo"", ""c"": null, ""d"": [1,2,3]}"', dict),
+        ('"[1,2,3]"', list),
+        ("[]", list),
+        ("1", int),
+        ('"42"', int),
+        ("1.5", float),
+        ('""""""', str),
+        ('"""42"""', str),
+        ('"""foo"""', str),
+        ('"""true"""', str),
+        ("true", bool),
+        ('"false"', bool),
+        ("null", type(None)),
+    ]
+
+    if delimiter != ",":
+        values += [
+            ('{"value": 1, "b": "foo", "c": null, "d": [1,2,3]}', dict),
+            ("[1,2,3]", list),
+        ]
+
+    headers = [f"c{i}" for i in range(0, len(values))]
+    input_path = tmp_path / "input.csv"
+    write_lines(
+        input_path,
+        [
+            delimiter.join(headers),
+            delimiter.join([v[0] for v in values]),
+        ],
+    )
+
+    schema = pw.schema_builder(
+        {name: pw.column_definition(dtype=pw.Json) for name in [c for c in headers]}
+    )
+    table = pw.io.csv.read(
+        input_path,
+        schema=schema,
+        mode="static",
+        csv_settings=pw.io.csv.CsvParserSettings(delimiter=delimiter),
+    )
+
+    @pw.udf
+    def assert_types(**kwargs) -> bool:
+        result = all(isinstance(arg, pw.Json) for arg in kwargs.values())
+        for v, t in zip(kwargs.values(), [v[1] for v in values]):
+            assert isinstance(v.value, t)
+        return result
+
+    result = table.select(ret=assert_types(**table))
+
+    assert_table_equality_wo_index(
+        T(
+            """
+                | ret
+            1   | True
+            """
+        ),
         result,
     )

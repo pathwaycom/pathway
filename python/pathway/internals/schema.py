@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
+import csv
 import dataclasses
+import itertools
 from collections import ChainMap
+from collections.abc import Callable, Iterable, KeysView, Mapping
 from dataclasses import dataclass
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    KeysView,
-    List,
-    Mapping,
-    Optional,
-    Type,
-    ValuesView,
-    cast,
-    get_type_hints,
-)
+from pydoc import locate
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, get_type_hints
+from warnings import warn
 
 import numpy as np
 import pandas as pd
@@ -37,8 +31,8 @@ def _cls_fields(cls):
 
 def schema_from_columns(
     columns: Mapping[str, clmn.Column],
-    _name: Optional[str] = None,
-) -> Type[Schema]:
+    _name: str | None = None,
+) -> type[Schema]:
     if _name is None:
         _name = "schema_from_columns(" + str(list(columns.keys())) + ")"
     __dict = {
@@ -48,13 +42,13 @@ def schema_from_columns(
     return _schema_builder(_name, __dict)
 
 
-def _type_converter(series) -> dt.DType:
+def _type_converter(series: pd.Series) -> dt.DType:
     if series.apply(lambda x: isinstance(x, (tuple, list))).all():
         return dt.ANY_TUPLE
     if (series.isna() | series.isnull()).all():
         return dt.NONE
     if (series.apply(lambda x: isinstance(x, np.ndarray))).all():
-        return dt.Array()
+        return dt.ARRAY
     if pd.api.types.is_integer_dtype(series.dtype):
         ret_type: dt.DType = dt.INT
     elif pd.api.types.is_float_dtype(series.dtype):
@@ -71,9 +65,9 @@ def _type_converter(series) -> dt.DType:
     elif pd.api.types.is_timedelta64_dtype(series.dtype):
         ret_type = dt.DURATION
     elif pd.api.types.is_object_dtype(series.dtype):
-        ret_type = dt.ANY  # type: ignore
+        ret_type = dt.ANY
     else:
-        ret_type = dt.ANY  # type: ignore
+        ret_type = dt.ANY
     if series.isna().any() or series.isnull().any():
         return dt.Optional(ret_type)
     else:
@@ -83,14 +77,14 @@ def _type_converter(series) -> dt.DType:
 def schema_from_pandas(
     dframe: pd.DataFrame,
     *,
-    id_from: Optional[List[str]] = None,
-    name: Optional[str] = None,
-) -> Type[Schema]:
+    id_from: list[str] | None = None,
+    name: str | None = None,
+) -> type[Schema]:
     if name is None:
         name = "schema_from_pandas(" + str(dframe.columns) + ")"
     if id_from is None:
         id_from = []
-    columns: Dict[str, ColumnDefinition] = {
+    columns: dict[str, ColumnDefinition] = {
         name: column_definition(dtype=_type_converter(dframe[name]))
         for name in dframe.columns
     }
@@ -104,17 +98,17 @@ def schema_from_pandas(
 
 @runtime_type_check
 def schema_from_types(
-    _name: Optional[str] = None,
+    _name: str | None = None,
     **kwargs,
-) -> Type[Schema]:
+) -> type[Schema]:
     """Constructs schema from kwargs: field=type.
 
     Example:
 
     >>> import pathway as pw
     >>> s = pw.schema_from_types(foo=int, bar=str)
-    >>> s.as_dict()
-    {'foo': INT, 'bar': STR}
+    >>> s
+    <pathway.Schema types={'foo': <class 'int'>, 'bar': <class 'str'>}>
     >>> issubclass(s, pw.Schema)
     True
     """
@@ -127,7 +121,7 @@ def schema_from_types(
     return _schema_builder(_name, __dict)
 
 
-def schema_add(*schemas: Type[Schema]) -> Type[Schema]:
+def schema_add(*schemas: type[Schema]) -> type[Schema]:
     annots_list = [get_type_hints(schema) for schema in schemas]
     annotations = dict(ChainMap(*annots_list))
 
@@ -149,7 +143,7 @@ def schema_add(*schemas: Type[Schema]) -> Type[Schema]:
     )
 
 
-def _create_column_definitions(schema: SchemaMetaclass):
+def _create_column_definitions(schema: SchemaMetaclass) -> dict[str, ColumnSchema]:
     localns = locals()
     #  Update locals to handle recursive Schema definitions
     localns[schema.__name__] = schema
@@ -199,9 +193,10 @@ class SchemaProperties:
 
 
 class SchemaMetaclass(type):
-    __columns__: Dict[str, ColumnSchema]
+    __columns__: dict[str, ColumnSchema]
     __properties__: SchemaProperties
-    __types__: Dict[str, dt.DType]
+    __dtypes__: dict[str, dt.DType]
+    __types__: dict[str, Any]
 
     @trace.trace_user_frame
     def __init__(self, *args, append_only=False, **kwargs) -> None:
@@ -209,19 +204,19 @@ class SchemaMetaclass(type):
 
         self.__properties__ = SchemaProperties(append_only=append_only)
         self.__columns__ = _create_column_definitions(self)
-        self.__types__ = {
-            name: cast(dt.DType, column.dtype)
-            for name, column in self.__columns__.items()
+        self.__dtypes__ = {
+            name: column.dtype for name, column in self.__columns__.items()
         }
+        self.__types__ = {k: v.typehint for k, v in self.__dtypes__.items()}
 
-    def __or__(self, other: Type[Schema]) -> Type[Schema]:  # type: ignore
+    def __or__(self, other: type[Schema]) -> type[Schema]:  # type: ignore
         return schema_add(self, other)  # type: ignore
 
     def properties(self) -> SchemaProperties:
         return self.__properties__
 
-    def columns(self) -> Dict[str, ColumnSchema]:
-        return dict(self.__columns__)
+    def columns(self) -> Mapping[str, ColumnSchema]:
+        return MappingProxyType(self.__columns__)
 
     def column_names(self) -> list[str]:
         return list(self.keys())
@@ -230,7 +225,7 @@ class SchemaMetaclass(type):
         column = self.__columns__[name]
         return ColumnProperties(dtype=column.dtype, append_only=column.append_only)
 
-    def primary_key_columns(self) -> Optional[list[str]]:
+    def primary_key_columns(self) -> list[str] | None:
         # There is a distinction between an empty set of columns denoting
         # the primary key and None. If any (including empty) set of keys if provided,
         # then it will be used to compute the primary key.
@@ -242,24 +237,18 @@ class SchemaMetaclass(type):
         ]
         return pkey_fields if pkey_fields else None
 
-    def default_values(self) -> Dict[str, Any]:
+    def default_values(self) -> dict[str, Any]:
         return {
             name: column.default_value
             for name, column in self.__columns__.items()
             if column.has_default_value()
         }
 
-    def types(self) -> list[Any]:
-        return list(self.__types__.values())
-
     def keys(self) -> KeysView[str]:
         return self.__columns__.keys()
 
-    def values(self) -> ValuesView[Any]:
-        return self.__types__.values()
-
-    def update_types(self, **kwargs) -> Type[Schema]:
-        columns: Dict[str, ColumnDefinition] = {
+    def update_types(self, **kwargs) -> type[Schema]:
+        columns: dict[str, ColumnDefinition] = {
             col.name: col.to_definition() for col in self.__columns__.values()
         }
         for name, dtype in kwargs.items():
@@ -271,19 +260,22 @@ class SchemaMetaclass(type):
 
         return schema_builder(columns=columns, properties=self.__properties__)
 
-    def __getitem__(self, name):
-        return self.__types__[name]
+    def __getitem__(self, name) -> ColumnSchema:
+        return self.__columns__[name]
 
-    def as_dict(self):
-        return self.__types__.copy()
+    def _dtypes(self) -> Mapping[str, dt.DType]:
+        return MappingProxyType(self.__dtypes__)
+
+    def typehints(self) -> Mapping[str, Any]:
+        return MappingProxyType(self.__types__)
 
     def __repr__(self):
-        return self.__name__ + str(self.__types__)
+        return f"<pathway.Schema types={self.__types__}>"
 
     def __str__(self):
         col_names = [k for k in self.keys()]
         max_lens = [
-            max(len(column_name), len(str(self[column_name])))
+            max(len(column_name), len(str(self.__dtypes__[column_name])))
             for column_name in col_names
         ]
         res = " | ".join(
@@ -295,7 +287,7 @@ class SchemaMetaclass(type):
         res = res.rstrip() + "\n"
         res = res + " | ".join(
             [
-                (str(self[column_name])).ljust(max_len)
+                (str(self.__dtypes__[column_name])).ljust(max_len)
                 for (column_name, max_len) in zip(col_names, max_lens)
             ]
         )
@@ -312,15 +304,74 @@ class SchemaMetaclass(type):
     def __hash__(self) -> int:
         return hash(self._as_tuple())
 
+    def generate_class(self, class_name: str | None = None) -> str:
+        """Generates class with the definition of given schema and returns it as a string.
+
+        Arguments:
+            class_name: name of the class with the schema. If not provided, name created
+            during schema generation will be used.
+        """
+
+        def render_column_definition(name: str, definition: ColumnDefinition):
+            properties = [
+                f"{field.name}={repr(definition.__getattribute__(field.name))}"
+                for field in dataclasses.fields(definition)
+                if field.name not in ("name", "dtype")
+                and definition.__getattribute__(field.name) != field.default
+            ]
+
+            column_definition = f"\t{name}: dt.{definition.dtype} = pw.column_definition({','.join(properties)})"
+            return column_definition
+
+        if class_name is None:
+            class_name = self.__name__
+
+        if not class_name.isidentifier():
+            warn(
+                f'Name {class_name} is not a valid name for a class. Using "CustomSchema" instead'
+            )
+            class_name = "CustomSchema"
+
+        class_definition = f"class {class_name}(pw.Schema):\n"
+
+        class_definition += "\n".join(
+            [
+                render_column_definition(name, definition.to_definition())
+                for name, definition in self.__columns__.items()
+            ]
+        )
+
+        return class_definition
+
+    def generate_class_to_file(self, path: str, class_name: str | None = None):
+        """Generates class with the definition of given schema and saves it to a file.
+        Used for persisting definition for schemas, which were automatically generated.
+
+        Note: This function generates also necessary imports, while
+            :func:`~pathway.Schema.generate_class` does not.
+
+        Arguments:
+            path: path of the file, in which the schema class definition will be saved.
+            class_name: name of the class with the schema. If not provided, name created
+            during schema generation will be used.
+        """
+        class_definition = (
+            "import pathway as pw\nfrom pathway.internals import dtype as dt\n\n"
+            + self.generate_class(class_name)
+        )
+
+        with open(path, mode="w") as f:
+            f.write(class_definition)
+
     def assert_equal_to(
         self,
-        other: Type[Schema],
+        other: type[Schema],
         *,
         allow_superset: bool = False,
         ignore_primary_keys: bool = True,
     ) -> None:
-        self_dict = self.as_dict()
-        other_dict = other.as_dict()
+        self_dict = self.typehints()
+        other_dict = other.typehints()
 
         # Check if self has all columns of other
         if self_dict.keys() < other_dict.keys():
@@ -362,15 +413,15 @@ class Schema(metaclass=SchemaMetaclass):
     ... 2    9    Bob  dog
     ... 3    8  Alice  cat
     ... 4    7    Bob  dog''')
-    >>> t1.schema.as_dict()
-    {'age': INT, 'owner': STR, 'pet': STR}
+    >>> t1.schema
+    <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}>
     >>> issubclass(t1.schema, pw.Schema)
     True
     >>> class NewSchema(pw.Schema):
     ...   foo: int
     >>> SchemaSum = NewSchema | t1.schema
-    >>> SchemaSum.as_dict()
-    {'age': INT, 'owner': STR, 'pet': STR, 'foo': INT}
+    >>> SchemaSum
+    <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, 'foo': <class 'int'>}>
     """
 
     def __init_subclass__(cls, /, append_only: bool = False, **kwargs) -> None:
@@ -382,15 +433,15 @@ def _schema_builder(
     _dict: dict[str, Any],
     *,
     properties: SchemaProperties = SchemaProperties(),
-) -> Type[Schema]:
-    return SchemaMetaclass(_name, (Schema,), _dict, append_only=properties.append_only)  # type: ignore
+) -> type[Schema]:
+    return SchemaMetaclass(_name, (Schema,), _dict, append_only=properties.append_only)
 
 
-def is_subschema(left: Type[Schema], right: Type[Schema]):
+def is_subschema(left: type[Schema], right: type[Schema]):
     if left.keys() != right.keys():
         return False
     for k in left.keys():
-        if not dt.dtype_issubclass(left[k], right[k]):
+        if not dt.dtype_issubclass(left.__dtypes__[k], right.__dtypes__[k]):
             return False
     return True
 
@@ -406,7 +457,7 @@ _no_default_value_marker = _Undefined()
 @dataclass(frozen=True)
 class ColumnSchema:
     primary_key: bool
-    default_value: Optional[Any]
+    default_value: Any | None
     dtype: dt.DType
     name: str
     append_only: bool
@@ -422,13 +473,17 @@ class ColumnSchema:
             name=self.name,
         )
 
+    @property
+    def typehint(self):
+        return self.dtype.typehint
+
 
 @dataclass(frozen=True)
 class ColumnDefinition:
     primary_key: bool = False
-    default_value: Optional[Any] = _no_default_value_marker
-    dtype: Optional[dt.DType] = dt.ANY
-    name: Optional[str] = None
+    default_value: Any | None = _no_default_value_marker
+    dtype: dt.DType | None = dt.ANY
+    name: str | None = None
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)
@@ -437,9 +492,9 @@ class ColumnDefinition:
 def column_definition(
     *,
     primary_key: bool = False,
-    default_value: Optional[Any] = _no_default_value_marker,
-    dtype: Optional[Any] = None,
-    name: Optional[str] = None,
+    default_value: Any | None = _no_default_value_marker,
+    dtype: Any | None = None,
+    name: str | None = None,
 ) -> Any:  # Return any so that mypy does not complain
     """Creates column definition
 
@@ -463,8 +518,8 @@ def column_definition(
     ...   key: int = pw.column_definition(primary_key=True)
     ...   timestamp: str = pw.column_definition(name="@timestamp")
     ...   data: str
-    >>> NewSchema.as_dict()
-    {'key': INT, '@timestamp': STR, 'data': STR}
+    >>> NewSchema
+    <pathway.Schema types={'key': <class 'int'>, '@timestamp': <class 'str'>, 'data': <class 'str'>}>
     """
     from pathway.internals import dtype as dt
 
@@ -477,11 +532,11 @@ def column_definition(
 
 
 def schema_builder(
-    columns: Dict[str, ColumnDefinition],
+    columns: dict[str, ColumnDefinition],
     *,
-    name: Optional[str] = None,
+    name: str | None = None,
     properties: SchemaProperties = SchemaProperties(),
-) -> Type[Schema]:
+) -> type[Schema]:
     """Allows to build schema inline, from a dictionary of column definitions.
 
     Args:
@@ -495,12 +550,11 @@ def schema_builder(
     Example:
 
     >>> import pathway as pw
-    >>> schema = pw.schema_builder(columns={
+    >>> pw.schema_builder(columns={
     ...   'key': pw.column_definition(dtype=int, primary_key=True),
     ...   'data': pw.column_definition(dtype=int, default_value=0)
     ... }, name="my_schema")
-    >>> schema.as_dict()
-    {'key': INT, 'data': INT}
+    <pathway.Schema types={'key': <class 'int'>, 'data': <class 'int'>}>
     """
 
     if name is None:
@@ -508,10 +562,150 @@ def schema_builder(
 
     __annotations = {name: c.dtype or Any for name, c in columns.items()}
 
-    __dict: Dict[str, Any] = {
+    __dict: dict[str, Any] = {
         "__metaclass__": SchemaMetaclass,
         "__annotations__": __annotations,
         **columns,
     }
 
     return _schema_builder(name, __dict, properties=properties)
+
+
+def schema_from_dict(
+    columns: dict,
+    *,
+    name: str | None = None,
+    properties: dict | SchemaProperties = SchemaProperties(),
+) -> type[Schema]:
+    """Allows to build schema inline, from a dictionary of column definitions.
+    Compared to pw.schema_builder, this one uses simpler structure of the dictionary,
+    which allows it to be loaded from JSON file.
+
+    Args:
+        columns: dictionary of column definitions. The keys in this dictionary are names
+            of the columns, and the values are either:
+            - type of the column
+            - dictionary with keys: "dtype", "primary_key", "default_value" and values,
+            respectively, type of the column, whether it is a primary key, and column's
+            default value.
+            The type can be given both by python class, or string with class name - that
+            is both int and "int" are accepted.
+        name: schema name.
+        properties: schema properties, given either as instance of SchemaProperties class
+            or a dict specyfing arguments of SchemaProperties class.
+
+    Returns:
+        Schema
+
+    Example:
+
+    >>> import pathway as pw
+    >>> pw.schema_from_dict(columns={
+    ...   'key': {"dtype": "int", "primary_key": True},
+    ...   'data': {"dtype": "int", "default_value": 0}
+    ... }, name="my_schema")
+    <pathway.Schema types={'key': <class 'int'>, 'data': <class 'int'>}>
+    """
+
+    def get_dtype(dtype) -> dt.DType:
+        if isinstance(dtype, str):
+            dtype = locate(dtype)
+        return dt.wrap(dtype)
+
+    def create_column_definition(entry):
+        if not isinstance(entry, dict):
+            entry = {"dtype": entry}
+        entry["dtype"] = get_dtype(entry.get("dtype", Any))
+
+        return column_definition(**entry)
+
+    column_definitions = {
+        column_name: create_column_definition(value)
+        for (column_name, value) in columns.items()
+    }
+
+    if isinstance(properties, dict):
+        properties = SchemaProperties(**properties)
+
+    return schema_builder(column_definitions, name=name, properties=properties)
+
+
+def _is_parsable_to(s: str, parse_fun: Callable):
+    try:
+        parse_fun(s)
+        return True
+    except ValueError:
+        return False
+
+
+def schema_from_csv(
+    path: str,
+    *,
+    name: str | None = None,
+    properties: SchemaProperties = SchemaProperties(),
+    delimiter: str = ",",
+    comment_character: str | None = None,
+    escape: str | None = None,
+    num_parsed_rows: int | None = None,
+):
+    """Allows to generate schema based on a CSV file.
+    The names of the columns are taken from the header of the CSV file.
+    Types of columns are inferred from the values, by checking if they can be parsed.
+    Currently supported types are str, int and float.
+
+    Args:
+        path: path to the CSV file.
+        name: schema name.
+        properties: schema properties.
+        delimiter: delimiter used in CSV file. Defaults to ",".
+        comment_character: character used in CSV file to denote comments.
+          Defaults to None
+        escape: escape character used in CSV file. Defaults to None.
+        num_parsed_rows: number of rows, which will be parsed when inferring types. When
+            set to None, all rows will be parsed. When set to 0, types of all columns
+            will be set to str. Defaults to None.
+
+    Returns:
+        Schema
+    """
+
+    def remove_comments_from_file(f: Iterable[str], comment_char: str | None):
+        for line in f:
+            if line.lstrip()[0] != comment_char:
+                yield line
+
+    with open(path) as f:
+        csv_reader = csv.DictReader(
+            remove_comments_from_file(f, comment_character),
+            delimiter=delimiter,
+            escapechar=escape,
+            quoting=csv.QUOTE_NONE,
+        )
+        if csv_reader.fieldnames is None:
+            raise ValueError("can't generate Schema based on an empty CSV file")
+        column_names = csv_reader.fieldnames
+        if num_parsed_rows is None:
+            csv_data = list(csv_reader)
+        else:
+            csv_data = list(itertools.islice(csv_reader, num_parsed_rows))
+
+    def choose_type(entries: list[str]):
+        if len(entries) == 0:
+            return Any
+        if all(_is_parsable_to(s, int) for s in entries):
+            return int
+        if all(_is_parsable_to(s, float) for s in entries):
+            return float
+        return str
+
+    column_types = {
+        column_name: choose_type([row[column_name] for row in csv_data])
+        for column_name in column_names
+    }
+
+    columns = {
+        column_name: column_definition(dtype=column_types[column_name])
+        for column_name in column_names
+    }
+
+    return schema_builder(columns, name=name, properties=properties)

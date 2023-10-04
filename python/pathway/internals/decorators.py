@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Callable, Optional, Type
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathway import Table
@@ -26,14 +27,14 @@ def non_contextualized_operator(func):
     return _operator_wrapper(func, op.NonContextualizedIntermediateOperator)
 
 
-def _operator_wrapper(func: Callable, operator_cls: Type[op.OperatorFromDef]):
+def _operator_wrapper(func: Callable, operator_cls: type[op.OperatorFromDef]):
     fn_spec = function_spec(func)
 
     @wraps(func)
     def wrapper(*args, **kwargs):
         return G.add_operator(
             lambda id: operator_cls(fn_spec, id),
-            lambda operator: operator(*args, **kwargs),  # type: ignore
+            lambda operator: operator(*args, **kwargs),
         )
 
     return wrapper
@@ -102,8 +103,8 @@ def input_method(type=float):
     ... 8
     ... 7''')
     >>> t2 = first_transformer(table=t1.select(a=t1.age)).table
-    >>> t2.schema.as_dict()
-    {'fun': Callable(..., INT)}
+    >>> t2.schema
+    <pathway.Schema types={'fun': typing.Callable[..., int]}>
     >>> t3 = second_transformer(table=t2.select(m=t2.fun)).table
     >>> pw.debug.compute_and_print(t1 + t3, include_id=False)
     age | val
@@ -212,8 +213,8 @@ def method(func, **kwargs):
     ... 8
     ... 7''')
     >>> t2 = simple_transformer(table=t1.select(a=t1.age)).table
-    >>> t2.schema.as_dict()
-    {'b': FLOAT, 'fun': Callable(..., FLOAT)}
+    >>> t2.schema
+    <pathway.Schema types={'b': <class 'float'>, 'fun': typing.Callable[..., float]}>
     >>> pw.debug.compute_and_print(t1 + t2.select(t2.b), include_id=False)
     age | b
     7   | 49
@@ -232,18 +233,18 @@ def method(func, **kwargs):
 
 def table_from_datasource(
     datasource,
-    debug_datasource: Optional[StaticDataSource] = None,
+    debug_datasource: StaticDataSource | None = None,
 ):
     return G.add_operator(
         lambda id: op.InputOperator(datasource, id, debug_datasource),
-        lambda operator: operator(),  # type:ignore
+        lambda operator: operator(),
     )
 
 
 def table_to_datasink(table: Table, datasink: DataSink):
     return G.add_operator(
         lambda id: op.OutputOperator(datasink, id),
-        lambda operator: operator(table),  # type:ignore
+        lambda operator: operator(table),
     )
 
 
@@ -279,5 +280,5 @@ def transformer(cls):
     return rt.RowTransformer.from_class(cls)
 
 
-def empty_from_schema(schema: Type[Schema]) -> Table:
+def empty_from_schema(schema: type[Schema]) -> Table:
     return table_from_datasource(EmptyDataSource(schema))

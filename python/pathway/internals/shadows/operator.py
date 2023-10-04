@@ -60,7 +60,7 @@ xor = _binary_boolean_wrap(operator.xor, "^")
 
 
 def neg(expr: float) -> float:  # type: ignore  # we replace the other signature
-    return operator.neg(expr)  # type: ignore
+    return operator.neg(expr)
 
 
 neg._symbol = "-"  # type: ignore[attr-defined]

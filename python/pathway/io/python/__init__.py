@@ -4,7 +4,7 @@ import json
 import threading
 from abc import ABC, abstractmethod
 from queue import Queue
-from typing import Any, Dict, List, Optional, Set, Type
+from typing import Any
 
 from pathway.internals import api, datasource
 from pathway.internals.api import BasePointer, PathwayType
@@ -19,12 +19,10 @@ from pathway.io._utils import (
     read_schema,
 )
 
-SUPPORTED_INPUT_FORMATS: Set[str] = set(
-    [
-        "json",
-        "raw",
-    ]
-)
+SUPPORTED_INPUT_FORMATS: set[str] = {
+    "json",
+    "raw",
+}
 
 
 class ConnectorSubject(ABC):
@@ -51,7 +49,7 @@ class ConnectorSubject(ABC):
         """Called after the end of the :py:meth:`run` function."""
         pass
 
-    def next_json(self, message: Dict) -> None:
+    def next_json(self, message: dict) -> None:
         """Sends a message.
 
         Args:
@@ -77,14 +75,14 @@ class ConnectorSubject(ABC):
 
     def commit(self) -> None:
         """Sends a commit message."""
-        self.next_bytes("*COMMIT*".encode())
+        self.next_bytes(b"*COMMIT*")
 
     def close(self) -> None:
         """Sends a sentinel message.
 
         Should be called to indicate that no new messages will be sent.
         """
-        self.next_bytes("*FINISH*".encode())
+        self.next_bytes(b"*FINISH*")
 
     def start(self) -> None:
         """Runs a separate thread with function feeding data into buffer.
@@ -101,7 +99,7 @@ class ConnectorSubject(ABC):
 
         threading.Thread(target=target).start()
 
-    def _add(self, key: Optional[BasePointer], message: Any) -> None:
+    def _add(self, key: BasePointer | None, message: Any) -> None:
         self._buffer.put((True, key, message))
 
     def _remove(self, key: BasePointer, message: Any) -> None:
@@ -132,15 +130,15 @@ class ConnectorSubject(ABC):
 def read(
     subject: ConnectorSubject,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     format: str = "json",
     autocommit_duration_ms: int = 1500,
     debug_data=None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
-    persistent_id: Optional[str] = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
+    persistent_id: str | None = None,
 ):
     """Reads a table from a ConnectorSubject.
 

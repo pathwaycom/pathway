@@ -4,7 +4,8 @@ import copy
 import datetime
 import itertools
 import operator
-from typing import Any, Callable, List, Mapping, Optional, Tuple
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -75,7 +76,7 @@ from pathway.tests.utils import T, assert_table_equality, run_all
         ),
     ],
 )
-def test_unary(op_fun: Callable, data: List[Any]) -> None:
+def test_unary(op_fun: Callable, data: list[Any]) -> None:
     df = pd.DataFrame({"a": data})
     table = table_from_pandas(df)
     if op_fun == operator.not_:
@@ -100,7 +101,7 @@ def _check_pandas_pathway_return_the_same(
     df: pd.DataFrame,
     op_fun: Any,
     dtypes: Mapping[str, type] = {},
-    res_dtype: Optional[type] = None,
+    res_dtype: type | None = None,
 ):
     table = table_from_pandas(copy.deepcopy(df))
     table = _change_dtypes(table, dtypes)
@@ -1037,7 +1038,7 @@ def test_datetime_utc_sub_const(const: Any) -> None:
 
 
 def run_matrix_multiplcation(
-    pairs: List[Tuple[np.ndarray, np.ndarray]], dtype: type
+    pairs: list[tuple[np.ndarray, np.ndarray]], dtype: type
 ) -> None:
     pairs_T = list(zip(*pairs))
     a = [a_i.astype(dtype) for a_i in pairs_T[0]]
@@ -1060,7 +1061,7 @@ def run_matrix_multiplcation(
 def test_matrix_multiplication_2d_by_2d(dtype: type) -> None:
     np.random.seed(42)
     r = np.random.randn
-    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+    pairs: list[tuple[np.ndarray, np.ndarray]] = [
         (r(3, 3), r(3, 3)),
         (r(4, 2), r(2, 3)),
         (r(4, 1), r(1, 4)),
@@ -1078,7 +1079,7 @@ def test_matrix_multiplication_2d_by_2d(dtype: type) -> None:
 def test_matrix_multiplication_2d_by_1d(dtype: type) -> None:
     np.random.seed(42)
     r = np.random.randn
-    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+    pairs: list[tuple[np.ndarray, np.ndarray]] = [
         (r(3, 3), r(3)),
         (r(4, 2), r(2)),
         (r(4, 4), r(4)),
@@ -1094,7 +1095,7 @@ def test_matrix_multiplication_2d_by_1d(dtype: type) -> None:
 def test_matrix_multiplication_1d_by_2d(dtype: type) -> None:
     np.random.seed(42)
     r = np.random.randn
-    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+    pairs: list[tuple[np.ndarray, np.ndarray]] = [
         (r(3), r(3, 3)),
         (r(2), r(2, 3)),
         (r(2), r(2, 4)),
@@ -1108,7 +1109,7 @@ def test_matrix_multiplication_1d_by_2d(dtype: type) -> None:
 
 @pytest.mark.parametrize("dtype", [int, float])
 def test_matrix_multiplication_1d_by_1d(dtype: type) -> None:
-    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+    pairs: list[tuple[np.ndarray, np.ndarray]] = [
         (np.ones(2), np.ones(2)),
         (np.ones(3), np.ones(3)),
         (np.ones(4), np.ones(4)),
@@ -1123,7 +1124,7 @@ def test_matrix_multiplication_1d_by_1d(dtype: type) -> None:
 def test_matrix_multiplication_multidimensional(dtype: type) -> None:
     np.random.seed(42)
     r = np.random.randn
-    pairs: List[Tuple[np.ndarray, np.ndarray]] = [
+    pairs: list[tuple[np.ndarray, np.ndarray]] = [
         (r(3, 4, 5), r(3, 5, 6)),
         (r(4, 5), r(3, 5, 6)),
         (r(3, 4, 5), r(5, 6)),
@@ -1148,7 +1149,7 @@ def test_matrix_multiplication_multidimensional(dtype: type) -> None:
         (np.zeros((4, 5)), np.zeros(())),
         (np.zeros(3), np.zeros(())),
         (np.zeros((2, 3)), np.zeros(2)),
-        (np.zeros((3)), np.zeros((2, 3))),
+        (np.zeros(3), np.zeros((2, 3))),
         (np.zeros(()), np.zeros(1)),
         (np.zeros(()), np.zeros((1, 2))),
     ],

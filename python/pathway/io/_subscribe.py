@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 from pathway.internals import datasink
 from pathway.internals.api import BasePointer
@@ -10,7 +11,7 @@ from pathway.internals.api import BasePointer
 
 class OnChangeCallback(Protocol):
     def __call__(
-        self, key: BasePointer, row: Dict[str, Any], time: int, is_addition: bool
+        self, key: BasePointer, row: dict[str, Any], time: int, is_addition: bool
     ) -> Any:
         ...
 

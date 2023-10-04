@@ -1,8 +1,8 @@
 import os
 from dataclasses import KW_ONLY, dataclass
-from typing import Optional, Union
 
 from pathway.internals import api
+from pathway.internals._io_helpers import AwsS3Settings
 
 
 class PersistentStorageBackend:
@@ -17,19 +17,29 @@ class PersistentStorageBackend:
     def __init__(
         self,
         engine_data_storage: api.DataStorage,
-        fs_path: Optional[Union[str, os.PathLike[str]]],
+        fs_path: str | os.PathLike[str] | None = None,
     ):
         self._engine_data_storage = engine_data_storage
         self._fs_path = fs_path
 
     @classmethod
-    def filesystem(cls, path: Union[str, os.PathLike[str]]):
+    def filesystem(cls, path: str | os.PathLike[str]):
         return cls(
             api.DataStorage(
                 storage_type="fs",
                 path=os.fspath(path),
             ),
             fs_path=path,
+        )
+
+    @classmethod
+    def s3(cls, root_path: str, bucket_settings: AwsS3Settings):
+        return cls(
+            api.DataStorage(
+                storage_type="s3",
+                aws_s3_settings=bucket_settings.settings,
+                path=root_path,
+            ),
         )
 
     @property
@@ -50,12 +60,14 @@ class PersistenceConfig:
     """
 
     _: KW_ONLY
+    refresh_duration_ms: int = 0
     metadata_storage: PersistentStorageBackend
     snapshot_storage: PersistentStorageBackend
 
     @classmethod
-    def single_backend(cls, backend: PersistentStorageBackend):
+    def single_backend(cls, backend: PersistentStorageBackend, refresh_duration_ms=0):
         return cls(
+            refresh_duration_ms=refresh_duration_ms,
             metadata_storage=backend,
             snapshot_storage=backend,
         )
@@ -63,6 +75,7 @@ class PersistenceConfig:
     @property
     def engine_config(self):
         return api.PersistenceConfig(
+            refresh_duration_ms=self.refresh_duration_ms,
             metadata_storage=self.metadata_storage.engine_data_storage,
             stream_storage=self.snapshot_storage.engine_data_storage,
         )

@@ -12,13 +12,13 @@ import pandas as pd
 import pathway as pw
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import write_lines
+from pathway.tests.utils import get_aws_s3_settings, write_lines
 
 
 def put_aws_object(path, contents):
     s3_client = boto3.client(
         "s3",
-        aws_access_key_id="AKIAX67C7K343BP4QUWN",
+        aws_access_key_id=os.environ["AWS_S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
     )
     s3_client.put_object(
@@ -31,7 +31,7 @@ def put_aws_object(path, contents):
 def put_minio_object(path, contents):
     s3_client = boto3.client(
         "s3",
-        aws_access_key_id="iqrK7CK8iUURqs1cB2wd",
+        aws_access_key_id=os.environ["MINIO_S3_ACCESS_KEY"],
         aws_secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
         endpoint_url="https://minio-api.deploys.pathway.com",
     )
@@ -48,7 +48,7 @@ def create_jsonlines(input_dicts):
 
 def read_jsonlines_fields(path, keys_to_extract):
     result = []
-    with open(path, "r") as f:
+    with open(path) as f:
         for row in f:
             original_json = json.loads(row)
             processed_json = {}
@@ -70,12 +70,7 @@ def test_s3_read_write(tmp_path: pathlib.Path):
 
     table = pw.io.s3_csv.read(
         input_s3_path,
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            bucket_name="aws-integrationtest",
-            access_key="AKIAX67C7K343BP4QUWN",
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            region="eu-central-1",
-        ),
+        aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
@@ -111,7 +106,7 @@ def test_minio_read_write(tmp_path: pathlib.Path):
         input_s3_path,
         minio_settings=pw.io.minio.MinIOSettings(
             bucket_name="minio-integrationtest",
-            access_key="iqrK7CK8iUURqs1cB2wd",
+            access_key=os.environ["MINIO_S3_ACCESS_KEY"],
             secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
             endpoint="minio-api.deploys.pathway.com",
         ),
@@ -135,19 +130,14 @@ def test_minio_read_write(tmp_path: pathlib.Path):
 
 def test_s3_backfilling(tmp_path: pathlib.Path):
     pathway_persistent_storage = tmp_path / "PStorage"
-    s3_folder_path = "integration_tests/test_s3_backfilling/{}".format(time.time())
+    s3_folder_path = f"integration_tests/test_s3_backfilling/{time.time()}"
     s3_input_path = s3_folder_path + "/input.csv"
 
     input_contents = "key,value\n1,Hello\n2,World"
     put_aws_object(s3_input_path, input_contents)
     table = pw.io.s3_csv.read(
         s3_folder_path,
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            bucket_name="aws-integrationtest",
-            access_key="AKIAX67C7K343BP4QUWN",
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            region="eu-central-1",
-        ),
+        aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
@@ -166,12 +156,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     put_aws_object(s3_input_path, input_contents)
     table = pw.io.s3_csv.read(
         s3_folder_path,
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            bucket_name="aws-integrationtest",
-            access_key="AKIAX67C7K343BP4QUWN",
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            region="eu-central-1",
-        ),
+        aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
@@ -194,12 +179,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     put_aws_object(s3_input_path_2, input_contents_2)
     table = pw.io.s3_csv.read(
         s3_folder_path,
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            bucket_name="aws-integrationtest",
-            access_key="AKIAX67C7K343BP4QUWN",
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            region="eu-central-1",
-        ),
+        aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
@@ -227,7 +207,9 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
 
 
 def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
-    pathway_persistent_storage = str(tmp_path / "PStorage")
+    pstorage_s3_path = (
+        "integration_tests/test_s3_json_read_write_pstorage_full/{}".format(time.time())
+    )
     input_s3_path = "integration_tests/test_s3_json_read_write/{}".format(time.time())
     output_path = tmp_path / "output.json"
 
@@ -239,12 +221,7 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
         G.clear()
         table = pw.io.s3.read(
             input_s3_path,
-            aws_s3_settings=pw.io.s3.AwsS3Settings(
-                bucket_name="aws-integrationtest",
-                access_key="AKIAX67C7K343BP4QUWN",
-                secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-                region="eu-central-1",
-            ),
+            aws_s3_settings=get_aws_s3_settings(),
             format="json",
             schema=InputSchema,
             mode="static",
@@ -254,7 +231,10 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
         pw.run(
             monitoring_level=MonitoringLevel.NONE,
             persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+                pw.io.PersistentStorageBackend.s3(
+                    root_path=pstorage_s3_path,
+                    bucket_settings=get_aws_s3_settings(),
+                ),
             ),
         )
 
@@ -313,12 +293,7 @@ def test_s3_bytes_read(tmp_path: pathlib.Path):
     put_aws_object(input_path, input_full_contents)
     table = pw.io.s3.read(
         input_path,
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            bucket_name="aws-integrationtest",
-            access_key="AKIAX67C7K343BP4QUWN",
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            region="eu-central-1",
-        ),
+        aws_s3_settings=get_aws_s3_settings(),
         format="binary",
         mode="static",
         autocommit_duration_ms=1000,
@@ -326,7 +301,7 @@ def test_s3_bytes_read(tmp_path: pathlib.Path):
     pw.io.jsonlines.write(table, output_path)
     pw.run()
 
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         result = json.load(f)
         assert result["data"] == [ord(c) for c in input_full_contents]
 
@@ -341,12 +316,7 @@ def test_s3_empty_bytes_read(tmp_path: pathlib.Path):
 
     table = pw.io.s3.read(
         base_path,
-        aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            bucket_name="aws-integrationtest",
-            access_key="AKIAX67C7K343BP4QUWN",
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            region="eu-central-1",
-        ),
+        aws_s3_settings=get_aws_s3_settings(),
         format="binary",
         mode="static",
         autocommit_duration_ms=1000,

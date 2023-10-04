@@ -6,7 +6,7 @@ import functools
 import os
 import pathlib
 import re
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 from unittest import mock
 
 import numpy as np
@@ -758,8 +758,10 @@ def test_select_universes():
     """
     ).promise_universe_is_subset_of(t1)
 
+    t1_restricted = t1.restrict(t2)
+
     assert_table_equality(
-        t2.select(t1.col),
+        t2.select(t1_restricted.col),
         T(
             """
        | col
@@ -773,6 +775,9 @@ def test_select_universes():
         t1.select(t2.col)
 
 
+@pytest.mark.xfail(
+    reason="Columns from a superset of the current universe can't be used"
+)
 def test_select_op_universes():
     t1 = T(
         """
@@ -827,6 +832,37 @@ def test_select_column_ix_args():
     assert_table_equality(t2, expected)
 
 
+def test_select_in_multiple_independent_tables():
+    t = T(
+        """
+         a  |  c  | b
+        1.1 | 1.2 | 1
+        2.0 | 2.3 | 2
+        3.0 | 3.4 | 0
+        4.0 | 4.5 | 3
+        """
+    )
+
+    u = t.select(a=pw.this.a + pw.this.c, x=10)
+    v = u.select(a=pw.this.a, x=20)
+    t = t.select(pw.this.c, pw.this.b)
+    t += v
+    t += t.select(z=pw.this.a + pw.this.x, u=u.x)
+    t = t.without(pw.this.b)
+
+    expected = T(
+        """
+         c  |  a  |  x |   z  |  u
+        1.2 | 2.3 | 20 | 22.3 | 10
+        2.3 | 4.3 | 20 | 24.3 | 10
+        3.4 | 6.4 | 20 | 26.4 | 10
+        4.5 | 8.5 | 20 | 28.5 | 10
+        """
+    )
+
+    assert_table_equality(t, expected)
+
+
 def test_concat():
     t1 = T(
         """
@@ -839,6 +875,35 @@ def test_concat():
         """
     lower | upper
     c     | C
+    """
+    )
+
+    res = pw.Table.concat_reindex(t1, t2)
+
+    expected = T(
+        """
+    lower | upper
+    a     | A
+    b     | B
+    c     | C
+        """,
+    )
+
+    assert_table_equality_wo_index(res, expected)
+
+
+def test_concat_reversed_columns():
+    t1 = T(
+        """
+    lower | upper
+    a     | A
+    b     | B
+    """
+    )
+    t2 = T(
+        """
+    upper | lower
+    C     | c
     """
     )
 
@@ -904,6 +969,27 @@ def test_concat_unsafe_collision():
         pw.Table.concat(t1, t2)
 
 
+def test_concat_errors_on_intersecting_universes():
+    t1 = T(
+        """
+       | lower | upper
+    1  | a     | A
+    2  | b     | B
+    """
+    )
+    t2 = T(
+        """
+       | lower | upper
+    1  | c     | C
+    """
+    )
+
+    pw.universes.promise_are_pairwise_disjoint(t1, t2)
+    pw.Table.concat(t1, t2)
+    with pytest.raises(KeyError, match="duplicate key"):
+        run_all()
+
+
 @pytest.mark.parametrize("dtype", [np.int64, np.float64])
 def test_flatten(dtype: Any):
     df = pd.DataFrame(
@@ -924,7 +1010,7 @@ def test_flatten(dtype: Any):
             "other": [-1, -1, -3, -3, -4, -4, -4, -5, -5, -5, -5, -5],
         }
     )
-    new_dtype = List[int] if dtype == np.int64 else List[float]
+    new_dtype = list[int] if dtype == np.int64 else list[float]
     t1 = table_from_pandas(df).with_columns(
         array=pw.declare_type(new_dtype, pw.this.array)
     )
@@ -997,7 +1083,7 @@ def test_flatten_explode(mul: int, dtype: Any):
     )
     t1 = table_from_pandas(df).with_columns(
         array=pw.declare_type(
-            {np.int64: List[int], np.float64: List[float]}[dtype], pw.this.array
+            {np.int64: list[int], np.float64: list[float]}[dtype], pw.this.array
         )
     )
     t1 = t1.flatten(
@@ -1302,8 +1388,9 @@ def test_reindex():
     """
     ).select(new_id=t1.pointer_from(pw.this.new_id))
     pw.universes.promise_is_subset_of(t1, t2)
+    t2_restricted = t2.restrict(t1)
     assert_table_equality(
-        t1.with_id(t2.new_id),
+        t1.with_id(t2_restricted.new_id),
         T(
             """
                 | col
@@ -1318,7 +1405,7 @@ def test_reindex():
         t1.with_id(t1.id + 1),
     with pytest.raises(ValueError):
         # old style is not supported
-        t1.select(id=t2.new_id),
+        t1.select(id=t2_restricted.new_id),
 
 
 def test_reindex_no_columns():
@@ -1339,9 +1426,10 @@ def test_reindex_no_columns():
         """
     ).select(new_id=t1.pointer_from(pw.this.new_id))
     pw.universes.promise_is_subset_of(t1, t2)
+    t2_restricted = t2.restrict(t1)
 
     assert_table_equality(
-        t1.with_id(t2.new_id),
+        t1.with_id(t2_restricted.new_id),
         T(
             """
                 |
@@ -1507,6 +1595,41 @@ def test_iterate_with_limit(limit):
     )
 
     assert_table_equality(ret, expected_ret)
+
+
+def test_iterate_with_same_universe_outside():
+    t = T(
+        """
+        a | c | b
+        1 | 0 | 4
+        2 | 3 | 5
+        3 | 4 | 7
+        4 | 2 | 10
+        """
+    )
+
+    u = t.select(x=pw.this.c * 3)
+
+    def f(t: pw.Table):
+        t = t.select(pw.this.b, a=pw.this.a * 2, c=pw.this.c * 2)
+        return dict(t=t)
+
+    t = pw.iterate(f, iteration_limit=2, t=t).t
+
+    t = t.select(pw.this.a, u.x)
+
+    assert_table_equality(
+        t,
+        T(
+            """
+         a |  x
+         4 |  0
+         8 |  9
+        12 | 12
+        16 |  6
+        """
+        ),
+    )
 
 
 def test_apply():
@@ -2700,8 +2823,8 @@ def test_groupby_filter_singlecol():
 
     left_res = (
         left.filter(left.age > 6)
-        .groupby(left.pet)
-        .reduce(left.pet, ageagg=pw.reducers.sum(left.age))
+        .groupby(pw.this.pet)
+        .reduce(pw.this.pet, ageagg=pw.reducers.sum(pw.this.age))
     )
 
     assert_table_equality_wo_index(
@@ -3274,6 +3397,39 @@ def test_intersect_no_columns():
     )
 
 
+def test_intersect_subset():
+    t1 = T(
+        """
+            | col
+        1   | 11
+        2   | 12
+        3   | 13
+        """
+    )
+    t2 = T(
+        """
+            | col
+        2   | 11
+        3   | 11
+        """
+    )
+    pw.universes.promise_is_subset_of(t2, t1)
+
+    res = t1.intersect(t2)
+
+    assert_table_equality(
+        res,
+        T(
+            """
+                | col
+            2   | 12
+            3   | 13
+            """
+        ),
+    )
+    assert res._universe == t2._universe
+
+
 def test_update_cells():
     old = T(
         """
@@ -3347,6 +3503,39 @@ def test_update_cells_ids_dont_match():
     )
     with pytest.raises(Exception):
         old.update_cells(update)
+
+
+def test_update_cells_warns_when_using_with_columns():
+    old = T(
+        """
+            | pet  |  owner  | age
+        1   |  1   | Alice   | 10
+        4   |  1   | Bob     | 7
+        """
+    )
+    update = T(
+        """
+            | owner  | age
+        1   | Eve    | 10
+        4   | Eve    | 3
+        """
+    ).with_universe_of(old)
+    expected = T(
+        """
+            | pet  |  owner  | age
+        1   |  1   | Eve     | 10
+        4   |  1   | Eve     | 3
+        """
+    ).with_universe_of(old)
+
+    with pytest.warns(
+        UserWarning,
+        match="Key sets of self and other in update_cells are the same."
+        + " Using with_columns instead of update_cells.",
+    ):
+        new = old.update_cells(update)
+    assert_table_equality(new, expected)
+    assert_table_equality(old << update, expected)
 
 
 def test_update_rows():
@@ -3450,6 +3639,73 @@ def test_update_rows_columns_dont_match():
     )
     with pytest.raises(Exception):
         old.update_rows(update)
+
+
+def test_update_rows_subset():
+    old = T(
+        """
+            | pet  |  owner  | age
+        1   |  1   | Alice   | 10
+        2   |  1   | Bob     | 9
+        3   |  2   | Alice   | 8
+        4   |  1   | Bob     | 7
+        """
+    )
+    update = T(
+        """
+            | pet |  owner  | age
+        1   | 7   | Bob     | 11
+        """
+    )
+    pw.universes.promise_is_subset_of(update, old)
+    expected = T(
+        """
+            | pet  |  owner  | age
+        1   |  7   | Bob     | 11
+        2   |  1   | Bob     | 9
+        3   |  2   | Alice   | 8
+        4   |  1   | Bob     | 7
+        """
+    )
+
+    new = old.update_rows(update)
+    assert_table_equality(new, expected)
+    assert new._universe == old._universe
+
+
+def test_update_rows_warns_when_nooperation():
+    old = T(
+        """
+            | pet  |  owner  | age
+        1   |  1   | Alice   | 10
+        2   |  1   | Bob     | 9
+        """
+    )
+    update = T(
+        """
+            | pet |  owner  | age
+        1   |  7  | Bob     | 11
+        2   |  1  | Alice   | 15
+        5   | 0   | Eve     | 10
+        """
+    )
+    pw.universes.promise_is_subset_of(old, update)
+    expected = T(
+        """
+            | pet |  owner  | age
+        1   |  7  | Bob     | 11
+        2   |  1  | Alice   | 15
+        5   |  0  | Eve     | 10
+        """
+    )
+
+    with pytest.warns(
+        UserWarning,
+        match="Universe of self is a subset of universe of other in update_rows. Returning other.",
+    ):
+        new = old.update_rows(update)
+    assert_table_equality(new, expected)
+    assert new._universe == update._universe
 
 
 def test_with_columns():
@@ -3607,6 +3863,7 @@ def test_groupby_foreign_column():
     )
 
 
+@pytest.mark.xfail(reason="waits for autotupling in joins")
 def test_join_ix():
     left = T(
         """
@@ -3641,11 +3898,10 @@ def test_join_ix():
         keys_table.join_column == right.id,
         id=keys_table.id,
     ).select(right.b)
-    ret2 = (
-        left.join(right, left.a == right.id, id=left.id)
-        .promise_universe_is_subset_of(desugared_ix)
-        .select(col=desugared_ix.b)
-    )
+    tmp = left.join(
+        right, left.a == right.id, id=left.id
+    ).promise_universe_is_subset_of(desugared_ix)
+    ret2 = tmp.select(col=desugared_ix.restrict(tmp).b)
     assert_table_equality(
         ret,
         T(
@@ -4240,11 +4496,11 @@ def test_desugaring_this_star_groupby_01():
         (["", "False", "True", "12", "abc"], [False, True, True, True, True]),
     ],
 )
-def test_cast(from_: List, to_: List):
+def test_cast(from_: list, to_: list):
     from_dtype = type(from_[0])
     to_dtype = type(to_[0])
 
-    def move_to_pathway_with_the_right_type(list: List, dtype: Any):
+    def move_to_pathway_with_the_right_type(list: list, dtype: Any):
         df = pd.DataFrame({"a": list}, dtype=dtype)
         table = table_from_pandas(df)
         return table
@@ -4572,9 +4828,6 @@ def test_outerjoin_filter_1():
                   11 |        11
                   12 |        12
             """
-        ).update_types(
-            left_val=Optional[int],
-            right_val=Optional[int],
         ),
     )
 
@@ -4786,7 +5039,7 @@ def test_make_tuple():
     expected = t.select(
         zip_column=pw.apply_with_type(
             three_args_tuple,
-            Tuple[int, int, Optional[str]],  # type: ignore[arg-type]
+            tuple[int, int, Optional[str]],  # type: ignore[arg-type]
             pw.this.A * 2,
             pw.this.B,
             pw.this.C,
@@ -4823,7 +5076,7 @@ def test_sequence_get_unchecked_fixed_length_dynamic_index_1():
 
     t2 = t1.select(tup=pw.make_tuple(pw.this.i, pw.this.s), a=pw.this.a)
     t3 = t2.select(r=pw.this.tup[pw.this.a])
-    assert t3.schema.as_dict()["r"] == dt.ANY
+    assert t3.schema._dtypes() == {"r": dt.ANY}
 
 
 def test_sequence_get_unchecked_fixed_length_dynamic_index_2():
@@ -4871,11 +5124,11 @@ def test_sequence_get_checked_fixed_length_dynamic_index():
     t2 = t1.select(tup=pw.make_tuple(pw.this.a, pw.this.b), c=pw.this.c)
     t3 = t2.select(r=pw.this.tup.get(pw.this.c))
 
-    assert t3.schema.as_dict()["r"] == dt.Optional(dt.INT)
+    assert t3.schema._dtypes() == {"r": dt.Optional(dt.INT)}
     assert_table_equality_wo_types(t3, expected)
 
 
-def _create_tuple(n: int) -> Tuple[int, ...]:
+def _create_tuple(n: int) -> tuple[int, ...]:
     return tuple(range(n, 0, -1))
 
 
@@ -4981,7 +5234,7 @@ def test_sequence_get_unchecked_fixed_length_errors():
     with pytest.raises(
         IndexError,
         match=(
-            re.escape("Index 2 out of range for a tuple of type Tuple(INT, INT).")
+            re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}.")
             + r"[\s\S]*"
         ),
     ):
@@ -5011,7 +5264,7 @@ def test_sequence_get_checked_fixed_length_errors():
     with pytest.warns(
         UserWarning,
         match=(
-            re.escape("Index 2 out of range for a tuple of type Tuple(INT, INT).")
+            re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}.")
             + " It refers to the following expression:\n\t"
             + re.escape("(<table1>.tup).get(2, <table1>.c)\n")
             + rf"called in .*{file_name}.*\n"
@@ -5431,26 +5684,53 @@ def test_unwrap_with_nones():
         run_all()
 
 
-def test_tuple_reducer():
+@pytest.mark.parametrize(
+    "reducer, skip_nones, expected",
+    [
+        (
+            pw.reducers.tuple,
+            False,
+            [(1, -1, None), (7, 4, 4)],
+        ),
+        (
+            pw.reducers.tuple,
+            True,
+            [(1, -1), (7, 4, 4)],
+        ),
+        (
+            pw.reducers.sorted_tuple,
+            False,
+            [(None, -1, 1), (4, 4, 7)],
+        ),
+        (
+            pw.reducers.sorted_tuple,
+            True,
+            [(-1, 1), (4, 4, 7)],
+        ),
+    ],
+)
+def test_tuple_reducer(reducer, skip_nones, expected):
     t = pw.debug.table_from_markdown(
         """
-       | colA | colB
-    3  | valA | -1
-    2  | valA | 1
-    5  | valA | 2
-    4  | valB | 4
-    6  | valB | 4
-    1  | valB | 7
-    """
+           | colA | colB
+        3  | valA | -1
+        2  | valA | 1
+        5  | valA |
+        4  | valB | 4
+        6  | valB | 4
+        1  | valB | 7
+        """,
     )
 
-    df = pd.DataFrame({"tuple": [(1, -1, 2), (7, 4, 4)]})
+    df = pd.DataFrame({"tuple": expected})
     expected = pw.debug.table_from_pandas(
         df,
-        schema=pw.schema_from_types(tuple=List[int]),
+        schema=pw.schema_from_types(
+            tuple=list[int] if skip_nones else list[Optional[int]]
+        ),
     )
 
-    res = t.groupby(t.colA).reduce(tuple=pw.reducers.tuple(t.colB))
+    res = t.groupby(t.colA).reduce(tuple=reducer(t.colB, skip_nones=skip_nones))
     assert_table_equality_wo_index(res, expected)
 
 
@@ -5625,3 +5905,57 @@ def test_assert_table_has_schema_default_arguments():
             table,
             schema,
         )
+
+
+@pytest.mark.parametrize(
+    "reducer, expected, expected_type",
+    [
+        (
+            pw.reducers.tuple,
+            [(1, 3), (3, 2), (3, 2, 9)],
+            list[int],
+        ),
+        (
+            pw.reducers.min,
+            [1, 2, 2],
+            int,
+        ),
+        (
+            pw.reducers.any,
+            [3, 2, 9],
+            int,
+        ),
+    ],
+)
+def test_reducers_ix(reducer, expected, expected_type):
+    values = T(
+        """
+        | v
+    1   | 1
+    2   | 2
+    3   | 6
+    4   | 3
+    5   | 9
+    """
+    )
+    t = T(
+        """
+        | t |  ptr
+    1   | 1 |  4
+    2   | 2 |  1
+    3   | 3 |  4
+    4   | 3 |  2
+    5   | 2 |  4
+    6   | 3 |  5
+    7   | 1 |  2
+    """
+    ).select(pw.this.t, ptr=values.pointer_from(pw.this.ptr))
+    result = t.groupby(t.t).reduce(v=reducer(values.ix(t.ptr).v))
+
+    df = pd.DataFrame({"v": expected})
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(v=expected_type),
+    )
+
+    assert_table_equality_wo_index(result, expected)

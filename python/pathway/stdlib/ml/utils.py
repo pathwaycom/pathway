@@ -8,7 +8,8 @@ import pathway.internals as pw
 def classifier_accuracy(predicted_labels, exact_labels):
     pw.universes.promise_is_subset_of(predicted_labels, exact_labels)
     comparative_results = predicted_labels.select(
-        predicted_label=predicted_labels.predicted_label, label=exact_labels.label
+        predicted_label=predicted_labels.predicted_label,
+        label=exact_labels.restrict(predicted_labels).label,
     )
     comparative_results = comparative_results + comparative_results.select(
         match=comparative_results.label == comparative_results.predicted_label

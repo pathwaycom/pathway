@@ -3,7 +3,7 @@
 import json
 import random
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import requests
 
@@ -41,10 +41,10 @@ class Sender:
         request_method: str,
         n_retries: int,
         retry_policy: RetryPolicy,
-        connect_timeout_ms: Optional[int],
-        request_timeout_ms: Optional[int],
+        connect_timeout_ms: int | None,
+        request_timeout_ms: int | None,
         allow_redirects: bool,
-        retry_codes: Optional[Tuple],
+        retry_codes: tuple | None,
     ) -> None:
         self._request_method = request_method
         self._n_retries = n_retries
@@ -58,13 +58,13 @@ class Sender:
     def send(
         self,
         url: str,
-        headers: Optional[Dict[str, str]] = None,
-        data: Optional[Any] = None,
+        headers: dict[str, str] | None = None,
+        data: Any | None = None,
         stream: bool = False,
     ) -> requests.Response:
         headers = headers or {}
         if "User-Agent" not in headers:
-            headers["User-Agent"] = "pathway/{}".format(pw.__version__)
+            headers["User-Agent"] = f"pathway/{pw.__version__}"
         retry_policy = self._retry_policy
         for n_attempt in range(0, self._n_retries + 1):
             try:
@@ -90,14 +90,14 @@ class Sender:
 
     @staticmethod
     def format_timeouts_tuple(
-        connect_timeout_ms: Optional[int], request_timeout_ms: Optional[int]
+        connect_timeout_ms: int | None, request_timeout_ms: int | None
     ):
         connect_timeout = connect_timeout_ms * 1e-3 if connect_timeout_ms else None
         request_timeout = request_timeout_ms * 1e-3 if request_timeout_ms else None
         return (connect_timeout, request_timeout)
 
 
-def unescape(message: str, row: Dict[str, Any], time: int, is_addition: bool):
+def unescape(message: str, row: dict[str, Any], time: int, is_addition: bool):
     message = message.replace("{table.time}", str(time))
     message = message.replace("{table.diff}", "1" if is_addition else "-1")
     for k, v in row.items():
@@ -107,11 +107,11 @@ def unescape(message: str, row: Dict[str, Any], time: int, is_addition: bool):
 
 
 def prepare_request_payload(
-    row: Dict[str, Any],
+    row: dict[str, Any],
     time: int,
     is_addition: bool,
     req_format: str,
-    text: Optional[str],
+    text: str | None,
 ):
     if req_format == "json":
         row["time"] = time
@@ -120,4 +120,4 @@ def prepare_request_payload(
     elif req_format == "custom":
         return unescape(text or "", row, time, is_addition)
     else:
-        raise ValueError("Unknown payload format: {}".format(req_format))
+        raise ValueError(f"Unknown payload format: {req_format}")

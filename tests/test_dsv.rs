@@ -318,8 +318,8 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
 #[test]
 fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
     let mut schema = HashMap::new();
-    schema.insert("bool".to_string(), InnerSchemaField::new(Type::Int, None));
-    schema.insert("int".to_string(), InnerSchemaField::new(Type::Bool, None));
+    schema.insert("bool".to_string(), InnerSchemaField::new(Type::Bool, None));
+    schema.insert("int".to_string(), InnerSchemaField::new(Type::Int, None));
     schema.insert(
         "float".to_string(),
         InnerSchemaField::new(Type::Float, None),
@@ -330,14 +330,14 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
     );
 
     let mut reader = FilesystemReader::new(
-        PathBuf::from("tests/data/schema.txt"),
+        PathBuf::from("tests/data/incorrect_types.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
-            Some(vec!["key".to_string()]),
+            None,
             vec![
                 "bool".to_string(),
                 "int".to_string(),
@@ -367,7 +367,7 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
             if let Err(e) = row_parse_result {
                 assert_eq!(
                     format!("{e}"),
-                    r#"failed to parse value "true" according to the type "int" in schema: invalid digit found in string"#
+                    r#"failed to parse value "zzz" at field "int" according to the type Int in schema: invalid digit found in string"#
                 );
             } else {
                 panic!("The parsing should have been finished with error");

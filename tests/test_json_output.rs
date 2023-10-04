@@ -91,7 +91,7 @@ fn test_json_pointer_serialization() -> eyre::Result<()> {
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
-        r#"{"a":"Key(1)","diff":1,"time":0}"#
+        r#"{"a":"^04000000000000000000000000","diff":1,"time":0}"#
     );
     assert_eq!(result.values.len(), 0);
 

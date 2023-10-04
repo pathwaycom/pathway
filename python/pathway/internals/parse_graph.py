@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pathway.internals import operator, trace
 from pathway.internals.helpers import FunctionSpec, StableSet
@@ -14,7 +15,7 @@ from pathway.internals.universe_solver import UniverseSolver
 class Scope:
     """Keeps all nodes of one scope."""
 
-    _nodes: Dict[int, operator.Operator]
+    _nodes: dict[int, operator.Operator]
 
     def __init__(self):
         self.source = []
@@ -37,9 +38,9 @@ class Scope:
     def debug_nodes(self):
         return (node for node in self.nodes if isinstance(node, operator.DebugOperator))
 
-    def relevant_nodes(self, *operators: operator.Operator) -> List[operator.Operator]:
+    def relevant_nodes(self, *operators: operator.Operator) -> list[operator.Operator]:
         visited: StableSet[operator.Operator] = StableSet()
-        stack: List[operator.Operator] = list(StableSet(operators))
+        stack: list[operator.Operator] = list(StableSet(operators))
         while stack:
             node = stack.pop()
             if node in visited:
@@ -59,10 +60,10 @@ class ParseGraph:
     """Relates Tables and Operations."""
 
     node_id_sequence: itertools.count
-    scopes: List[Scope]
-    _scope_stack: List[Scope]
+    scopes: list[Scope]
+    _scope_stack: list[Scope]
     universe_solver: UniverseSolver
-    cache: Dict[Any, Any]
+    cache: dict[Any, Any]
 
     def __init__(self) -> None:
         self.clear()
@@ -97,7 +98,7 @@ class ParseGraph:
         self,
         body: FunctionSpec,
         clb: Callable[[operator.IterateOperator], Any],
-        iteration_limit: Optional[int] = None,
+        iteration_limit: int | None = None,
     ):
         """Adds iterate operator.
 
@@ -136,9 +137,7 @@ class ParseGraph:
         rows = []
         for scope_index, scope in enumerate(self.scopes):
             for node in scope.nodes:
-                output_schemas = [
-                    table.schema.as_dict() for table in node.output_tables
-                ]
+                output_schemas = [table.schema for table in node.output_tables]
                 rows.append((scope_index, node, output_schemas))
         return "\n".join(
             [

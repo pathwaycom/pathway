@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import datetime
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import EllipsisType
-from typing import Any, Iterable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import IdentityTransform
+from pathway.internals.json import Json
 from pathway.internals.operator_mapping import (
     common_dtype_in_binary_operator,
     get_binary_operators_mapping,
@@ -19,6 +21,9 @@ from pathway.internals.operator_mapping import (
     get_unary_operators_mapping,
     tuple_handling_operators,
 )
+
+if TYPE_CHECKING:
+    from pathway.internals.table import Table
 
 
 @dataclass(eq=True, frozen=True)
@@ -47,7 +52,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_column_val(
         self,
         expression: expr.ColumnReference,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ColumnReference:
         expression = super().eval_column_val(expression, state=state, **kwargs)
@@ -56,7 +61,7 @@ class TypeInterpreter(IdentityTransform):
     def _eval_column_val(
         self,
         expression: expr.ColumnReference,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
     ) -> dt.DType:
         from pathway.internals.table import Table
 
@@ -71,7 +76,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_unary_op(
         self,
         expression: expr.ColumnUnaryOpExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ColumnUnaryOpExpression:
         expression = super().eval_unary_op(expression, state=state, **kwargs)
@@ -84,7 +89,7 @@ class TypeInterpreter(IdentityTransform):
         expression_info = get_expression_info(expression)
         raise TypeError(
             f"Pathway does not support using unary operator {operator_fun.__name__}"
-            + f" on column of type {expression._dtype}.\n"
+            + f" on column of type {expression._dtype.typehint}.\n"
             + "It refers to the following expression:\n"
             + expression_info
         )
@@ -92,7 +97,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_binary_op(
         self,
         expression: expr.ColumnBinaryOpExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ColumnBinaryOpExpression:
         expression = super().eval_binary_op(expression, state=state, **kwargs)
@@ -157,7 +162,7 @@ class TypeInterpreter(IdentityTransform):
         expression_info = get_expression_info(expression)
         raise TypeError(
             f"Pathway does not support using binary operator {operator.__name__}"
-            + f" on columns of types {original_left}, {original_right}.\n"
+            + f" on columns of types {original_left.typehint}, {original_right.typehint}.\n"
             + "It refers to the following expression:\n"
             + expression_info
         )
@@ -165,7 +170,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_const(
         self,
         expression: expr.ColumnConstExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ColumnConstExpression:
         expression = super().eval_const(expression, state=state, **kwargs)
@@ -184,7 +189,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_reducer(
         self,
         expression: expr.ReducerExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ReducerExpression:
         expression = super().eval_reducer(expression, state=state, **kwargs)
@@ -194,13 +199,12 @@ class TypeInterpreter(IdentityTransform):
         self,
         expression: expr.ReducerExpression,
     ) -> dt.DType:
-        [arg] = expression._args
-        return expression._reducer.return_type(arg._dtype)
+        return expression._reducer.return_type([arg._dtype for arg in expression._args])
 
     def eval_count(
         self,
         expression: expr.CountExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.CountExpression:
         expression = super().eval_count(expression, state=state, **kwargs)
@@ -209,7 +213,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_apply(
         self,
         expression: expr.ApplyExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ApplyExpression:
         expression = super().eval_apply(expression, state=state, **kwargs)
@@ -218,7 +222,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_numbaapply(
         self,
         expression: expr.NumbaApplyExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.NumbaApplyExpression:
         expression = super().eval_numbaapply(expression, state=state, **kwargs)
@@ -227,7 +231,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_async_apply(
         self,
         expression: expr.AsyncApplyExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.AsyncApplyExpression:
         expression = super().eval_async_apply(expression, state=state, **kwargs)
@@ -236,7 +240,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_call(
         self,
         expression: expr.ColumnCallExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ColumnCallExpression:
         dtype = expression._col_expr._column.dtype
@@ -245,7 +249,7 @@ class TypeInterpreter(IdentityTransform):
         arg_annots, ret_type = dtype.arg_types, dtype.return_type
         if not isinstance(arg_annots, EllipsisType):
             arg_annots = arg_annots[1:]  # ignoring self
-            for arg_annot, arg in zip(arg_annots, expression._args, strict=True):  # type: ignore
+            for arg_annot, arg in zip(arg_annots, expression._args, strict=True):
                 arg_dtype = arg._dtype
                 assert not isinstance(arg_annot, EllipsisType)
                 assert dt.dtype_issubclass(arg_dtype, arg_annot)
@@ -254,7 +258,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_pointer(
         self,
         expression: expr.PointerExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.PointerExpression:
         expression = super().eval_pointer(expression, state=state, **kwargs)
@@ -269,7 +273,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_cast(
         self,
         expression: expr.CastExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.CastExpression:
         expression = super().eval_cast(expression, state=state, **kwargs)
@@ -278,7 +282,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_convert(
         self,
         expression: expr.ConvertExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.ConvertExpression:
         expression = super().eval_convert(expression, state=state, **kwargs)
@@ -287,7 +291,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_declare(
         self,
         expression: expr.DeclareTypeExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.DeclareTypeExpression:
         expression = super().eval_declare(expression, state=state, **kwargs)
@@ -296,7 +300,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_coalesce(
         self,
         expression: expr.CoalesceExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.CoalesceExpression:
         expression = super().eval_coalesce(expression, state=state, **kwargs)
@@ -311,7 +315,7 @@ class TypeInterpreter(IdentityTransform):
                 non_optional_arg = True
         if ret_type is dt.ANY and any(dtype is not dt.ANY for dtype in dtypes):
             raise TypeError(
-                f"Cannot perform pathway.coalesce on columns of types {dtypes}."
+                f"Cannot perform pathway.coalesce on columns of types {[dtype.typehint for dtype in dtypes]}."
             )
         ret_type = dt.unoptionalize(ret_type) if non_optional_arg else ret_type
         return _wrap(expression, ret_type)
@@ -319,7 +323,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_require(
         self,
         expression: expr.RequireExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.RequireExpression:
         assert state is not None
@@ -337,7 +341,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_not_none(
         self,
         expression: expr.IsNotNoneExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.IsNotNoneExpression:
         ret = super().eval_not_none(expression, state=state, **kwargs)
@@ -346,7 +350,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_none(
         self,
         expression: expr.IsNoneExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.IsNoneExpression:
         ret = super().eval_none(expression, state=state, **kwargs)
@@ -355,28 +359,28 @@ class TypeInterpreter(IdentityTransform):
     def eval_ifelse(
         self,
         expression: expr.IfElseExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.IfElseExpression:
         expression = super().eval_ifelse(expression, state=state, **kwargs)
         if_dtype = expression._if._dtype
         if if_dtype != dt.BOOL:
             raise TypeError(
-                f"First argument of pathway.if_else has to be bool, found {if_dtype}."
+                f"First argument of pathway.if_else has to be bool, found {if_dtype.typehint}."
             )
         then_dtype = expression._then._dtype
         else_dtype = expression._else._dtype
         lca = dt.types_lca(then_dtype, else_dtype)
         if lca is dt.ANY:
             raise TypeError(
-                f"Cannot perform pathway.if_else on columns of types {then_dtype} and {else_dtype}."
+                f"Cannot perform pathway.if_else on columns of types {then_dtype.typehint} and {else_dtype.typehint}."
             )
         return _wrap(expression, lca)
 
     def eval_make_tuple(
         self,
         expression: expr.MakeTupleExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.MakeTupleExpression:
         expression = super().eval_make_tuple(expression, state=state, **kwargs)
@@ -386,7 +390,7 @@ class TypeInterpreter(IdentityTransform):
     def _eval_json_get(
         self,
         expression: expr.GetExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.GetExpression:
         return _wrap(expression, dt.JSON)
@@ -394,7 +398,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_get(
         self,
         expression: expr.GetExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.GetExpression:
         expression = super().eval_get(expression, state=state, **kwargs)
@@ -406,7 +410,7 @@ class TypeInterpreter(IdentityTransform):
             # json
             if not default_dtype.is_subclass_of(dt.Optional(dt.JSON)):
                 raise TypeError(
-                    f"Default must be of type {dt.Optional(dt.JSON)}, found {default_dtype}."
+                    f"Default must be of type {Json | None}, found {default_dtype.typehint}."
                 )
             if not expression._check_if_exists or default_dtype == dt.JSON:
                 return _wrap(expression, dt.JSON)
@@ -414,14 +418,14 @@ class TypeInterpreter(IdentityTransform):
                 return _wrap(expression, dt.Optional(dt.JSON))
         elif object_dtype.equivalent_to(dt.Optional(dt.JSON)):
             # optional json
-            raise TypeError(f"Cannot get from {dt.Optional(dt.JSON)}.")
+            raise TypeError(f"Cannot get from {Json | None}.")
         else:
             # sequence
             if not isinstance(
                 object_dtype, (dt.Tuple, dt.List)
             ) and object_dtype not in [
                 dt.ANY,
-                dt.Array(),
+                dt.ARRAY,
             ]:
                 raise TypeError(
                     f"Object in {expression!r} has to be a JSON or sequence."
@@ -429,7 +433,7 @@ class TypeInterpreter(IdentityTransform):
             if index_dtype != dt.INT:
                 raise TypeError(f"Index in {expression!r} has to be an int.")
 
-            if object_dtype == dt.Array():
+            if object_dtype == dt.ARRAY:
                 warnings.warn(
                     f"Object in {expression!r} is of type numpy.ndarray but its number of"
                     + " dimensions is not known. Pathway cannot determine the return type"
@@ -473,7 +477,7 @@ class TypeInterpreter(IdentityTransform):
             except IndexError:
                 message = (
                     f"Index {expression._const_index} out of range for a tuple of"
-                    + f" type {object_dtype}."
+                    + f" type {object_dtype.typehint}."
                 )
                 if expression._check_if_exists:
                     expression_info = get_expression_info(expression)
@@ -490,7 +494,7 @@ class TypeInterpreter(IdentityTransform):
     def eval_method_call(
         self,
         expression: expr.MethodCallExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.MethodCallExpression:
         expression = super().eval_method_call(expression, state=state, **kwargs)
@@ -499,17 +503,19 @@ class TypeInterpreter(IdentityTransform):
             return _wrap(expression, dt.wrap(dtypes_and_handler[1]))
 
         if len(dtypes) > 0:
-            with_arguments = f" with arguments of type {dtypes[1:]}"
+            with_arguments = (
+                f" with arguments of type {[dtype.typehint for dtype in dtypes[1:]]}"
+            )
         else:
             with_arguments = ""
         raise AttributeError(
-            f"Column of type {dtypes[0]} has no attribute {expression._name}{with_arguments}."
+            f"Column of type {dtypes[0].typehint} has no attribute {expression._name}{with_arguments}."
         )
 
     def eval_unwrap(
         self,
         expression: expr.UnwrapExpression,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.UnwrapExpression:
         expression = super().eval_unwrap(expression, state=state, **kwargs)
@@ -518,6 +524,11 @@ class TypeInterpreter(IdentityTransform):
 
 
 class JoinTypeInterpreter(TypeInterpreter):
+    left: Table
+    right: Table
+    optionalize_left: bool
+    optionalize_right: bool
+
     def __init__(self, left, right, optionalize_left, optionalize_right):
         self.left = left
         self.right = right
@@ -528,15 +539,45 @@ class JoinTypeInterpreter(TypeInterpreter):
     def _eval_column_val(
         self,
         expression: expr.ColumnReference,
-        state: Optional[TypeInterpreterState] = None,
+        state: TypeInterpreterState | None = None,
     ) -> dt.DType:
         dtype = expression._column.dtype
         assert state is not None
         if (expression.table == self.left and self.optionalize_left) or (
             expression.table == self.right and self.optionalize_right
         ):
-            if not state.check_colref_to_unoptionalize_from_tables(expression):
-                return dt.Optional(dtype)
+            return dt.Optional(dtype)
+        return super()._eval_column_val(expression, state=state)
+
+
+class JoinRowwiseTypeInterpreter(TypeInterpreter):
+    temporary_column_to_original: dict[expr.InternalColRef, expr.InternalColRef]
+    original_column_to_temporary: dict[expr.InternalColRef, expr.ColumnReference]
+
+    def __init__(
+        self,
+        temporary_column_to_original: dict[expr.InternalColRef, expr.InternalColRef],
+        original_column_to_temporary: dict[expr.InternalColRef, expr.ColumnReference],
+    ) -> None:
+        self.temporary_column_to_original = temporary_column_to_original
+        self.original_column_to_temporary = original_column_to_temporary
+        super().__init__()
+
+    def _eval_column_val(
+        self,
+        expression: expr.ColumnReference,
+        state: TypeInterpreterState | None = None,
+    ) -> dt.DType:
+        assert state is not None
+        if expression._to_internal() in self.temporary_column_to_original:
+            # if clause needed because of external columns from ix() that are not in
+            # self.temporary_column_to_original
+            original = self.temporary_column_to_original[expression._to_internal()]
+            tmp_id_colref = self.original_column_to_temporary[
+                original._table.id._to_internal()
+            ]
+            if state.check_colref_to_unoptionalize_from_colrefs(tmp_id_colref):
+                return original.to_colref()._column.dtype
         return super()._eval_column_val(expression, state=state)
 
 

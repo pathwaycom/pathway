@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 import pathway as pw
 from pathway.stdlib.graphs.bellman_ford import bellman_ford
@@ -565,6 +566,7 @@ be replaced with something else))
 """
 
 
+@pytest.mark.xfail(reason="waits for autotupling in joins")
 def test_louvain_one_step_01():
     vertices: pw.Table[Vertex] = T(
         """
@@ -627,6 +629,7 @@ def test_louvain_one_step_01():
     assert_table_equality_wo_index(cmp, expected)
 
 
+@pytest.mark.xfail(reason="waits for autotupling in joins")
 def test_louvain_one_step_02():
     vertices: pw.Table[Vertex] = T(
         """
@@ -688,6 +691,7 @@ def test_louvain_one_step_02():
     assert_table_equality_wo_index(cmp, expected)
 
 
+@pytest.mark.xfail(reason="waits for autotupling in joins")
 def test_louvain_level_01():
     vertices: pw.Table[Vertex] = T(
         """
@@ -738,6 +742,7 @@ def test_louvain_level_01():
     )
 
 
+@pytest.mark.xfail(reason="waits for autotupling in joins")
 def test_louvain_level_02():
     vertices: pw.Table[Vertex] = T(
         """

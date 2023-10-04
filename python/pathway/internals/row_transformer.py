@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from functools import cached_property, lru_cache
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any
 
 import pathway
 import pathway.internals.row_transformer_table as tt
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class RowTransformer:
-    args: Dict[str, Type[ClassArg]]
+    args: dict[str, type[ClassArg]]
     name: str
 
     def __init__(self, name, args, **kwargs) -> None:
@@ -53,18 +53,18 @@ class RowTransformer:
 
         return parse_graph.G.add_operator(
             lambda id: op.RowTransformerOperator(id, self),
-            lambda operator: operator(tables),  # type: ignore
+            lambda operator: operator(tables),
         )
 
     @cached_property
-    def class_args(self) -> Dict[str, Type[ClassArg]]:
+    def class_args(self) -> dict[str, type[ClassArg]]:
         return {
             name: arg for name, arg in self.args.items() if issubclass(arg, ClassArg)
         }
 
     def _match_args_to_properties(
-        self, args: Tuple[Any, ...], kwargs: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
         result = {}
         for arg, (param_name, param) in zip(args, self.args.items()):
             assert param_name not in kwargs
@@ -106,17 +106,17 @@ class RowTransformer:
 
 
 class ClassArgMeta(type):
-    input_schema: Type[Schema]
-    output_schema: Type[Schema]
+    input_schema: type[Schema]
+    output_schema: type[Schema]
 
     name: str  # lateinit by __set_name__
     _index: int  # lateinit by parent RowTransformer
     transformer: RowTransformer
 
-    _attributes: Dict[str, AbstractAttribute]
+    _attributes: dict[str, AbstractAttribute]
 
     @property
-    def _output_attributes(self) -> Dict[str, AbstractOutputAttribute]:
+    def _output_attributes(self) -> dict[str, AbstractOutputAttribute]:
         return {
             name: attr
             for name, attr in self._attributes.items()
@@ -197,7 +197,7 @@ class ClassArg(metaclass=ClassArgMeta):
             print(output)
             print(cls.output_schema)
             raise RuntimeError(
-                f"output schema validation error, received {output.as_dict()} vs expected {cls.output_schema.as_dict()}"  # noqa
+                f"output schema validation error, received {output.as_typehints()} vs expected {cls.output_schema.typehints()}"  # noqa
             )
         for attr in cls._attributes.values():
             attr.class_arg = cls
@@ -206,7 +206,7 @@ class ClassArg(metaclass=ClassArgMeta):
 class AbstractAttribute(ABC):
     is_method = False
     is_output = False
-    _dtype: Optional[dt.DType] = None
+    _dtype: dt.DType | None = None
     class_arg: ClassArgMeta  # lateinit by parent ClassArg
 
     def __init__(self, **params) -> None:
@@ -293,7 +293,7 @@ class Method(AbstractOutputAttribute):
 
     @cached_property
     def dtype(self) -> dt.DType:
-        return dt.wrap(Callable[..., super().dtype])
+        return dt.Callable(..., super().dtype)
 
 
 class InputAttribute(AbstractAttribute):
@@ -312,9 +312,9 @@ class InputMethod(AbstractAttribute):
         return tt.InputMethodTransformerColumn(self, operator, input_table)
 
 
-def attrs_of_type(cls: Type, type_: Type):
+def attrs_of_type(cls: type, type_: type):
     for name in dir(cls):
         attr = getattr(cls, name)
         if isinstance(attr, type_):
-            assert name == attr.name
+            assert name == attr.name  # type: ignore[attr-defined]
             yield attr

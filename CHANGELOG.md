@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.5.0] - 2023-10-04
+
+### Added
+- `Schema` method `typehints` that returns dict of mypy-compatible typehints.
+
+### Changed
+- **BREAKING**: renamed `Table` method `dtypes` to `typehints`. It now returns a `dict` of mypy-compatible typehints.
+- **BREAKING**: `Schema.__getitem__` returns a data class `ColumnSchema` containing all related information on particular column.
+
+### Added
+- Support for JSON parsing from CSV sources.
+- `restrict` method in `Table` to restrict table universe to the universe of the other table.
+- Better support for postgresql types in the output connector.
+
+### Changed
+- **BREAKING**: `tuple` reducer used after intervals_over window now sorts values by time.
+- **BREAKING**: expressions used in `select`, `filter`, `flatten`, `with_columns`, `with_id`, `with_id_from` have to have the same universe as the table. Earlier it was possible to use an expression from a superset of a table universe. To use expressions from wider universes, one can use `restrict` on the expression source table.
+- **BREAKING**: `pw.universes.promise_are_equal(t1, t2)` no longer allows to use references from `t1` and `t2` in a single expression. To change the universe of a table, use `with_universe_of`.
+- **BREAKING**: `ix` and `ix_ref` are temporarily broken inside joins (both temporal and ordinary).
+- `select`, `filter`, `concat` keep columns as a single stream. The work for other operators is ongoing.
+
+### Fixed
+- Optional types other than string correctly output to PostgreSQL.
+
 ## [0.4.1] - 2023-09-25
 
 ### Added
@@ -16,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Support for JSON data format, including `pw.Json` type.
 - Methods `as_int()`, `as_float()`, `as_str()`, `as_bool()` to convert values from `Json`.
+- New argument `skip_nones` for `tuple` and `sorted_tuple` reducers.
+- New argument `is_outer` for `intervals_over` window.
+- `pw.schema_from_dict` and `pw.schema_from_csv` for generating schema based, respectively, on provided definition as a dictionary and CSV file with sample data.
+- `generate_class` method in `Schema` class for generating schema class code.
 
 ### Changed
 - Method `get()` and `[]` to support accessing elements in Jsons.

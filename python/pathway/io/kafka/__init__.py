@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 import warnings
-from typing import Any, Dict, List, Optional, Set, Type, Union
+from typing import Any
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -20,32 +20,30 @@ from pathway.io._utils import (
     construct_schema_and_data_format,
 )
 
-SUPPORTED_INPUT_FORMATS: Set[str] = set(
-    [
-        "csv",
-        "json",
-        "raw",
-    ]
-)
+SUPPORTED_INPUT_FORMATS: set[str] = {
+    "csv",
+    "json",
+    "raw",
+}
 
 
 @runtime_type_check
 @trace_user_frame
 def read(
     rdkafka_settings: dict,
-    topic: Optional[Union[str, List[str]]] = None,
+    topic: str | list[str] | None = None,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     format="raw",
     debug_data=None,
-    autocommit_duration_ms: Optional[int] = 1500,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    parallel_readers: Optional[int] = None,
-    persistent_id: Optional[str] = None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
+    autocommit_duration_ms: int | None = 1500,
+    json_field_paths: dict[str, str] | None = None,
+    parallel_readers: int | None = None,
+    persistent_id: str | None = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
     **kwargs,
 ) -> Table:
     """Generalized method to read the data from the given topic in Kafka.
@@ -279,13 +277,13 @@ def simple_read(
     topic: str,
     *,
     read_only_new: bool = False,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     format="raw",
     debug_data=None,
-    autocommit_duration_ms: Optional[int] = 1500,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    parallel_readers: Optional[int] = None,
-    persistent_id: Optional[str] = None,
+    autocommit_duration_ms: int | None = 1500,
+    json_field_paths: dict[str, str] | None = None,
+    parallel_readers: int | None = None,
+    persistent_id: str | None = None,
 ) -> Table:
     """Simplified method to read data from Kafka. Only requires the server address and
     the topic name. If you have any kind of authentication or require fine-tuning of the
@@ -369,13 +367,13 @@ def read_from_upstash(
     topic: str,
     *,
     read_only_new: bool = False,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     format="raw",
     debug_data=None,
-    autocommit_duration_ms: Optional[int] = 1500,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    parallel_readers: Optional[int] = None,
-    persistent_id: Optional[str] = None,
+    autocommit_duration_ms: int | None = 1500,
+    json_field_paths: dict[str, str] | None = None,
+    parallel_readers: int | None = None,
+    persistent_id: str | None = None,
 ) -> Table:
     """Simplified method to read data from Kafka instance hosted in Upstash. It requires
     endpoint address and topic along with credentials.
@@ -553,7 +551,7 @@ def write(
             delimiter=delimiter,
         )
     else:
-        raise ValueError("Unsupported format: {}".format(format))
+        raise ValueError(f"Unsupported format: {format}")
 
     table.to(
         datasink.GenericDataSink(

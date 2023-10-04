@@ -8,7 +8,7 @@ import random
 import sys
 import threading
 import time
-from typing import Any, Dict
+from typing import Any
 from unittest import mock
 
 import pandas as pd
@@ -37,7 +37,7 @@ def start_streaming_inputs(inputs_path, n_files, stream_interval, data_format):
 
     def stream_inputs():
         for i in range(n_files):
-            file_path = inputs_path / "{}.csv".format(i)
+            file_path = inputs_path / f"{i}.csv"
             if data_format == "json":
                 payload = {"k": i, "v": i}
                 with open(file_path, "w") as streamed_file:
@@ -52,9 +52,9 @@ def start_streaming_inputs(inputs_path, n_files, stream_interval, data_format):
                 write_csv(file_path, data)
             elif data_format == "plaintext":
                 with open(file_path, "w") as f:
-                    f.write("{}".format(i))
+                    f.write(f"{i}")
             else:
-                raise ValueError("Unknown format: {}".format(data_format))
+                raise ValueError(f"Unknown format: {data_format}")
 
             time.sleep(stream_interval)
 
@@ -512,7 +512,7 @@ def test_async_transformer():
         ret: int
 
     class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-        async def invoke(self, value: int) -> Dict[str, Any]:
+        async def invoke(self, value: int) -> dict[str, Any]:
             await asyncio.sleep(random.uniform(0, 0.1))
             return dict(ret=value + 1)
 
@@ -548,7 +548,7 @@ def test_async_transformer_idempotency():
         ret: int
 
     class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-        async def invoke(self, value: int) -> Dict[str, Any]:
+        async def invoke(self, value: int) -> dict[str, Any]:
             await asyncio.sleep(random.uniform(0, 0.1))
             return dict(ret=value + 1)
 
@@ -583,7 +583,7 @@ def test_async_transformer_filter_failures():
         ret: int
 
     class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-        async def invoke(self, value: int) -> Dict[str, Any]:
+        async def invoke(self, value: int) -> dict[str, Any]:
             await asyncio.sleep(random.uniform(0, 0.1))
             if value == 2:
                 raise Exception
@@ -619,7 +619,7 @@ def test_async_transformer_assert_schema_error():
         ret: int
 
     class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-        async def invoke(self, value: int) -> Dict[str, Any]:
+        async def invoke(self, value: int) -> dict[str, Any]:
             await asyncio.sleep(random.uniform(0, 0.1))
             return dict(foo=value + 1)
 
@@ -649,7 +649,7 @@ def test_async_transformer_disk_cache(tmp_path: pathlib.Path):
             ret: int
 
         class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-            async def invoke(self, value: int) -> Dict[str, Any]:
+            async def invoke(self, value: int) -> dict[str, Any]:
                 counter()
                 await asyncio.sleep(random.uniform(0, 0.1))
                 return dict(ret=value + 1)
@@ -883,11 +883,11 @@ def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
 def test_pathway_type_mapping():
     import inspect
 
-    from pathway.internals.api import _TYPES_TO_ENGINE_MAPPING, PathwayType
+    from pathway.internals.api import PathwayType
     from pathway.io._utils import _PATHWAY_TYPE_MAPPING
 
     assert all(
-        t in _PATHWAY_TYPE_MAPPING and t in _TYPES_TO_ENGINE_MAPPING.values()
+        t == _PATHWAY_TYPE_MAPPING[t].to_engine()
         for _, t in inspect.getmembers(PathwayType)
         if isinstance(t, PathwayType)
     )
@@ -1348,9 +1348,9 @@ def test_bytes_read(tmp_path: pathlib.Path):
     pw.io.jsonlines.write(table, output_path)
     pw.run()
 
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         result = json.load(f)
-        assert result["data"] == [ord(c) for c in input_full_contents]
+        assert result["data"] == [ord(c) for c in (input_full_contents + "\n")]
 
 
 def test_binary_data_in_subscribe(tmp_path: pathlib.Path):
@@ -1378,6 +1378,41 @@ def test_binary_data_in_subscribe(tmp_path: pathlib.Path):
 
     assert rows == [
         {
-            "data": input_full_contents.encode("utf-8"),
+            "data": (input_full_contents + "\n").encode("utf-8"),
         }
     ]
+
+
+def test_bool_values_parsing_in_csv(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+
+    various_formats_input = """key,value
+1,true
+2,TRUE
+3,T
+4,1
+5,t
+6,FALSE
+7,false
+8,f
+9,F
+10,0"""
+    write_lines(input_path, various_formats_input)
+
+    class InputSchema(pw.Schema):
+        key: int
+        value: bool
+
+    table = pw.io.fs.read(
+        input_path,
+        format="csv",
+        mode="static",
+        schema=InputSchema,
+    )
+    pw.io.csv.write(table, output_path)
+    pw.run()
+    result = pd.read_csv(
+        output_path, usecols=["key", "value"], index_col=["key"]
+    ).sort_index()
+    assert list(result["value"]) == [True] * 5 + [False] * 5

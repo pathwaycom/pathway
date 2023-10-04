@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import sys
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import pathway.internals as pw
 from pathway.internals import dtype as dt
@@ -14,13 +16,12 @@ from pathway.internals.desugaring import desugar
 from pathway.internals.join import validate_join_condition
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.trace import trace_user_frame
-from pathway.stdlib import temporal
-from pathway.stdlib.temporal.utils import (
-    IntervalType,
-    TimeEventType,
-    check_joint_types,
-    get_default_shift,
-)
+from pathway.internals.type_interpreter import eval_type
+
+from ._interval_join import interval, interval_join
+from ._window_join import WindowJoinResult
+from .temporal_behavior import WindowBehavior
+from .utils import IntervalType, TimeEventType, check_joint_types, get_default_shift
 
 
 class Window(ABC):
@@ -29,7 +30,8 @@ class Window(ABC):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        shard: Optional[pw.ColumnExpression],
+        behavior: WindowBehavior | None,
+        shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         ...
 
@@ -42,7 +44,7 @@ class Window(ABC):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
-    ) -> temporal.WindowJoinResult:
+    ) -> WindowJoinResult:
         ...
 
 
@@ -51,8 +53,8 @@ _SessionPredicateType = Callable[[Any, Any], bool]
 
 @dataclasses.dataclass
 class _SessionWindow(Window):
-    predicate: Optional[_SessionPredicateType]
-    max_gap: Optional[IntervalType]
+    predicate: _SessionPredicateType | None
+    max_gap: IntervalType | None
 
     def _merge(
         self, cur: pw.ColumnExpression, next: pw.ColumnExpression
@@ -66,7 +68,7 @@ class _SessionWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        shard: Optional[pw.ColumnExpression],
+        shard: pw.ColumnExpression | None,
     ) -> pw.Table:
         target = table.select(key=key, instance=shard)
         import pathway.stdlib.indexing
@@ -99,7 +101,8 @@ class _SessionWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        shard: Optional[pw.ColumnExpression],
+        behavior: WindowBehavior | None,
+        shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         if self.max_gap is not None:
             check_joint_types(
@@ -138,7 +141,7 @@ class _SessionWindow(Window):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
-    ) -> temporal.WindowJoinResult:
+    ) -> WindowJoinResult:
         def maybe_make_tuple(
             conditions: Sequence[pw.ColumnExpression],
         ) -> pw.ColumnExpression:
@@ -157,8 +160,8 @@ class _SessionWindow(Window):
             }
         )
 
-        left_on: List[pw.ColumnReference] = []
-        right_on: List[pw.ColumnReference] = []
+        left_on: list[pw.ColumnReference] = []
+        right_on: list[pw.ColumnReference] = []
         for cond in on:
             cond_left, cond_right, _ = validate_join_condition(cond, left, right)
             left_on.append(cond_left)
@@ -193,12 +196,12 @@ class _SessionWindow(Window):
 
         left_session_ids = (
             session_ids.filter(session_ids.is_left)
-            .with_id(session_ids.original_id)
+            .with_id(pw.this.original_id)
             .with_universe_of(left)
         )
         right_session_ids = (
             session_ids.filter(~session_ids.is_left)
-            .with_id(session_ids.original_id)
+            .with_id(pw.this.original_id)
             .with_universe_of(right)
         )
 
@@ -228,7 +231,7 @@ class _SessionWindow(Window):
             mode=mode,
         )
 
-        return temporal.WindowJoinResult(
+        return WindowJoinResult(
             join_result, left, right, left_with_session_id, right_with_session_id
         )
 
@@ -236,17 +239,17 @@ class _SessionWindow(Window):
 @dataclasses.dataclass
 class _SlidingWindow(Window):
     hop: IntervalType
-    duration: Optional[IntervalType]
-    ratio: Optional[int]
-    offset: Optional[TimeEventType]
+    duration: IntervalType | None
+    ratio: int | None
+    offset: TimeEventType | None
     shift: TimeEventType
 
     def __init__(
         self,
         hop: IntervalType,
-        duration: Optional[IntervalType],
-        offset: Optional[TimeEventType],
-        ratio: Optional[int],
+        duration: IntervalType | None,
+        offset: TimeEventType | None,
+        ratio: int | None,
     ) -> None:
         if offset is None:
             self.shift = get_default_shift(hop)
@@ -271,7 +274,7 @@ class _SlidingWindow(Window):
 
     def _assign_windows(
         self, shard: Any, key: TimeEventType
-    ) -> List[Tuple[Any, TimeEventType, TimeEventType]]:
+    ) -> list[tuple[Any, TimeEventType, TimeEventType]]:
         """Returns the list of all the windows the given key belongs to.
 
         Each window is a tuple (window_start, window_end) describing the range
@@ -305,7 +308,8 @@ class _SlidingWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        shard: Optional[pw.ColumnExpression],
+        behavior: WindowBehavior | None,
+        shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         check_joint_types(
             {
@@ -315,35 +319,57 @@ class _SlidingWindow(Window):
                 "window.offset": (self.offset, TimeEventType),
             }
         )
-
-        from pathway.internals.type_interpreter import eval_type
-
         target = table.select(
             _pw_window=pw.apply_with_type(
                 self._assign_windows,
                 dt.List(
                     dt.Tuple(
-                        eval_type(shard),  # type:ignore
+                        eval_type(shard),  # type: ignore
                         eval_type(key),
                         eval_type(key),
                     )
                 ),
                 shard,
                 key,
-            )
+            ),
+            _pw_key=key,
         )
-        target = target.flatten(target._pw_window, *table)
+        target = target.flatten(target._pw_window, _pw_key=target._pw_key, *table)
         target = target.with_columns(
             _pw_shard=pw.this._pw_window.get(0),
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
         )
-        return target.groupby(
+
+        if behavior is not None:
+            if behavior.cutoff is not None:
+                target = target.with_columns(
+                    _pw_cutoff_threshold=target._pw_window_end + behavior.cutoff
+                )
+                target = target._forget(target._pw_cutoff_threshold, target._pw_key)
+
+            if behavior.delay is not None:
+                target = target._buffer(
+                    target._pw_window_start + behavior.delay, target._pw_key
+                )
+
+        time_column_threshold = None
+        time_column_time = None
+
+        if behavior is not None and behavior.keep_results:
+            time_column_threshold = pw.this._pw_cutoff_threshold
+            time_column_time = pw.this._pw_key
+
+        target = target.groupby(
             target._pw_window,
             target._pw_shard,
             target._pw_window_start,
             target._pw_window_end,
+            time_column_threshold=time_column_threshold,
+            time_column_time=time_column_time,
         )
+
+        return target
 
     @runtime_type_check
     def _join(
@@ -354,7 +380,7 @@ class _SlidingWindow(Window):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
-    ) -> temporal.WindowJoinResult:
+    ) -> WindowJoinResult:
         from pathway.internals.type_interpreter import eval_type
 
         check_joint_types(
@@ -424,23 +450,23 @@ class _SlidingWindow(Window):
             mode=mode,
         )
 
-        return temporal.WindowJoinResult(
-            join_result, left, right, left_window, right_window
-        )
+        return WindowJoinResult(join_result, left, right, left_window, right_window)
 
 
 @dataclasses.dataclass
 class _IntervalsOverWindow(Window):
     at: pw.ColumnReference
-    lower_bound: Union[int, float, datetime.timedelta]
-    upper_bound: Union[int, float, datetime.timedelta]
+    lower_bound: int | float | datetime.timedelta
+    upper_bound: int | float | datetime.timedelta
+    is_outer: bool
 
     @runtime_type_check
     def _apply(
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        shard: Optional[pw.ColumnExpression],
+        behavior: WindowBehavior | None,
+        shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         check_joint_types(
             {
@@ -458,18 +484,20 @@ class _IntervalsOverWindow(Window):
             at_table = self.at.table
             at = self.at
         return (
-            temporal.interval_join(
+            interval_join(
                 at_table,
                 table,
                 at,
                 key,
-                temporal.interval(self.lower_bound, self.upper_bound),
+                interval(self.lower_bound, self.upper_bound),
+                how=pw.JoinMode.LEFT if self.is_outer else pw.JoinMode.INNER,
             )
             .select(
                 _pw_window_location=pw.left[self.at.name],
                 _pw_window_start=pw.left[self.at.name] + self.lower_bound,
                 _pw_window_end=pw.left[self.at.name] + self.upper_bound,
                 _pw_shard=shard,
+                _pw_key=key,
                 *pw.right,
             )
             .groupby(
@@ -477,6 +505,7 @@ class _IntervalsOverWindow(Window):
                 pw.this._pw_window_start,
                 pw.this._pw_window_end,
                 pw.this._pw_shard,
+                sort_by=pw.this._pw_key,
             )
         )
 
@@ -489,7 +518,7 @@ class _IntervalsOverWindow(Window):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
-    ) -> temporal.WindowJoinResult:
+    ) -> WindowJoinResult:
         raise NotImplementedError(
             "window_join doesn't support windows of type intervals_over"
         )
@@ -499,8 +528,8 @@ class _IntervalsOverWindow(Window):
 @trace_user_frame
 def session(
     *,
-    predicate: Optional[_SessionPredicateType] = None,
-    max_gap: Optional[Union[int, float, datetime.timedelta]] = None,
+    predicate: _SessionPredicateType | None = None,
+    max_gap: int | float | datetime.timedelta | None = None,
 ) -> Window:
     """Allows grouping together elements within a window across ordered time-like
     data column by locally grouping adjacent elements either based on a maximum time
@@ -562,10 +591,10 @@ def session(
 @runtime_type_check
 @trace_user_frame
 def sliding(
-    hop: Union[int, float, datetime.timedelta],
-    duration: Optional[Union[int, float, datetime.timedelta]] = None,
-    ratio: Optional[int] = None,
-    offset: Optional[Union[int, float, datetime.datetime]] = None,
+    hop: int | float | datetime.timedelta,
+    duration: int | float | datetime.timedelta | None = None,
+    ratio: int | None = None,
+    offset: int | float | datetime.datetime | None = None,
 ) -> Window:
     """Allows grouping together elements within a window of a given length sliding
     across ordered time-like data column according to a specified interval (hop)
@@ -638,8 +667,8 @@ def sliding(
 @runtime_type_check
 @trace_user_frame
 def tumbling(
-    duration: Union[int, float, datetime.timedelta],
-    offset: Optional[Union[int, float, datetime.datetime]] = None,
+    duration: int | float | datetime.timedelta,
+    offset: int | float | datetime.datetime | None = None,
 ) -> Window:
     """Allows grouping together elements within a window of a given length tumbling
     across ordered time-like data column starting from a given offset.
@@ -698,18 +727,23 @@ def tumbling(
 def intervals_over(
     *,
     at: pw.ColumnReference,
-    lower_bound: Union[int, float, datetime.timedelta],
-    upper_bound: Union[int, float, datetime.timedelta],
+    lower_bound: int | float | datetime.timedelta,
+    upper_bound: int | float | datetime.timedelta,
+    is_outer: bool = True,
 ) -> Window:
     """Allows grouping together elements within a window.
 
     Windows are created for each time t in at, by taking values with times
     within [t+lower_bound, t+upper_bound].
 
+    Note: If a tuple reducer will be used on grouped elements within a window, values
+    in the tuple will be sorted according to their time column.
+
     Args:
         lower_bound: lower bound for interval
         upper_bound: upper bound for interval
         at: column of times for which windows are to be created
+        is_outer: decides whether empty windows should return None or be omitted
 
     Returns:
         Window: object to pass as an argument to `.windowby()`
@@ -746,13 +780,13 @@ def intervals_over(
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
     _pw_window_location | v
-    2                   | (16, 1, 10, 9)
-    4                   | (3, 16, 1)
+    2                   | (9, 10, 16, 1)
+    4                   | (16, 1, 3)
     6                   | (3,)
-    8                   | (4, 2)
-    10                  | (4, 8, 2)
+    8                   | (2, 4)
+    10                  | (2, 4, 8)
     """
-    return _IntervalsOverWindow(at, lower_bound, upper_bound)
+    return _IntervalsOverWindow(at, lower_bound, upper_bound, is_outer)
 
 
 @trace_user_frame
@@ -764,7 +798,8 @@ def windowby(
     time_expr: pw.ColumnExpression,
     *,
     window: Window,
-    shard: Optional[pw.ColumnExpression] = None,
+    behavior: WindowBehavior | None = None,
+    shard: pw.ColumnExpression | None = None,
 ) -> pw.GroupedTable:
     """
     Create a GroupedTable by windowing the table (based on `expr` and `window`),
@@ -805,5 +840,5 @@ def windowby(
     0     | 8     | 8     | 3
     1     | 1     | 16    | 2
     """
-
-    return window._apply(self, time_expr, shard)
+    print(f"behavior in windowby {behavior}", file=sys.stderr)
+    return window._apply(self, time_expr, behavior, shard)

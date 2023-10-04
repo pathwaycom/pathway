@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import collections
-import types
+import datetime
 import typing
-from abc import ABC
-from types import EllipsisType
+from abc import ABC, abstractmethod
+from functools import cached_property
+from types import EllipsisType, NoneType, UnionType
 from warnings import warn
 
 import numpy as np
-import pandas as pd
 
-from pathway.internals import api, json
+from pathway.internals import api, datetime_types
+from pathway.internals import json as js
 
 if typing.TYPE_CHECKING:
     from pathway.internals.schema import Schema
@@ -21,14 +22,16 @@ if typing.TYPE_CHECKING:
 class DType(ABC):
     _cache: dict[typing.Any, DType] = {}
 
-    def to_engine(self) -> api.PathwayType:
-        return api.PathwayType.ANY
+    def to_engine(self) -> api.PathwayType | None:
+        return None
 
-    def __call__(self, *args, **kwargs):
-        raise RuntimeError("Not implemented.")
+    @abstractmethod
+    def is_value_compatible(self, arg) -> bool:
+        ...
 
+    @abstractmethod
     def _set_args(self, *args):
-        raise RuntimeError("Not implemented.")
+        ...
 
     @classmethod
     def _cached_new(cls, *args):
@@ -51,6 +54,11 @@ class DType(ABC):
     def is_subclass_of(self, other: DType) -> bool:
         return dtype_issubclass(self, other)
 
+    @property
+    @abstractmethod
+    def typehint(self) -> typing.Any:
+        ...
+
 
 class _SimpleDType(DType):
     wrapped: type
@@ -69,6 +77,11 @@ class _SimpleDType(DType):
     def __new__(cls, wrapped: type) -> _SimpleDType:
         return cls._cached_new(wrapped)
 
+    def is_value_compatible(self, arg):
+        if isinstance(arg, int) and self.wrapped == float:
+            return True
+        return isinstance(arg, self.wrapped)
+
     def to_engine(self) -> api.PathwayType:
         return {
             INT: api.PathwayType.INT,
@@ -77,8 +90,9 @@ class _SimpleDType(DType):
             FLOAT: api.PathwayType.FLOAT,
         }[self]
 
-    def __call__(self, arg):
-        return self.wrapped(arg)
+    @property
+    def typehint(self) -> type:
+        return self.wrapped
 
 
 INT: DType = _SimpleDType(int)
@@ -97,7 +111,11 @@ class _NoneDType(DType):
     def __new__(cls) -> _NoneDType:
         return cls._cached_new()
 
-    def __call__(self):
+    def is_value_compatible(self, arg):
+        return arg is None
+
+    @property
+    def typehint(self) -> None:
         return None
 
 
@@ -111,15 +129,25 @@ class _AnyDType(DType):
     def _set_args(self):
         pass
 
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.ANY
+
     def __new__(cls) -> _AnyDType:
         return cls._cached_new()
+
+    def is_value_compatible(self, arg):
+        return True
+
+    @property
+    def typehint(self) -> typing.Any:
+        return typing.Any
 
 
 ANY: DType = _AnyDType()
 
 
 class Callable(DType):
-    arg_types: EllipsisType | tuple[DType | EllipsisType, ...]
+    arg_types: EllipsisType | tuple[DType, ...]
     return_type: DType
 
     def __repr__(self):
@@ -132,10 +160,7 @@ class Callable(DType):
         if isinstance(arg_types, EllipsisType):
             self.arg_types = ...
         else:
-            self.arg_types = tuple(
-                Ellipsis if isinstance(dtype, EllipsisType) else wrap(dtype)
-                for dtype in arg_types
-            )
+            self.arg_types = tuple(wrap(dtype) for dtype in arg_types)
         self.return_type = wrap(return_type)
 
     def __new__(
@@ -144,6 +169,19 @@ class Callable(DType):
         return_type: DType,
     ) -> Callable:
         return cls._cached_new(arg_types, return_type)
+
+    def is_value_compatible(self, arg):
+        return callable(arg)
+
+    @cached_property
+    def typehint(self) -> typing.Any:
+        if isinstance(self.arg_types, EllipsisType):
+            return typing.Callable[..., self.return_type.typehint]
+        else:
+            return typing.Callable[
+                [dtype.typehint for dtype in self.arg_types],
+                self.return_type.typehint,
+            ]
 
 
 class Array(DType):
@@ -159,12 +197,21 @@ class Array(DType):
     def __new__(cls) -> Array:
         return cls._cached_new()
 
+    def is_value_compatible(self, arg):
+        return isinstance(arg, np.ndarray)
+
+    @property
+    def typehint(self) -> type[np.ndarray]:
+        return np.ndarray
+
+
+ARRAY: DType = Array()
 
 T = typing.TypeVar("T")
 
 
 class Pointer(DType, typing.Generic[T]):
-    wrapped: typing.Optional[typing.Type[Schema]] = None
+    wrapped: type[Schema] | None = None
 
     def __repr__(self):
         if self.wrapped is not None:
@@ -178,8 +225,18 @@ class Pointer(DType, typing.Generic[T]):
     def to_engine(self) -> api.PathwayType:
         return api.PathwayType.POINTER
 
-    def __new__(cls, wrapped: typing.Optional[typing.Type[Schema]] = None) -> Pointer:
+    def __new__(cls, wrapped: type[Schema] | None = None) -> Pointer:
         return cls._cached_new(wrapped)
+
+    def is_value_compatible(self, arg):
+        return isinstance(arg, api.BasePointer)
+
+    @cached_property
+    def typehint(self) -> type[api.Pointer]:
+        if self.wrapped is None:
+            return api.Pointer
+        else:
+            return api.Pointer[self.wrapped]  # type: ignore[name-defined]
 
 
 POINTER: DType = Pointer()
@@ -195,49 +252,59 @@ class Optional(DType):
         return f"Optional({self.wrapped})"
 
     def _set_args(self, wrapped):
-        self.wrapped = wrap(wrapped)
+        self.wrapped = wrapped
 
     def __new__(cls, arg: DType) -> DType:  # type:ignore[misc]
+        arg = wrap(arg)
         if arg == NONE or isinstance(arg, Optional) or arg == ANY:
             return arg
         return cls._cached_new(arg)
 
-    def __call__(self, arg):
+    def is_value_compatible(self, arg):
         if arg is None:
-            return None
-        else:
-            return self.wrapped(arg)
+            return True
+        return self.wrapped.is_value_compatible(arg)
+
+    @cached_property
+    def typehint(self) -> type[UnionType]:
+        return self.wrapped.typehint | None
 
 
 class Tuple(DType):
-    args: tuple[DType, ...] | EllipsisType
+    args: tuple[DType, ...]
 
     def __init__(self, *args):
         super().__init__()
 
     def __repr__(self):
-        if isinstance(self.args, EllipsisType):
-            return "Tuple"
-        else:
-            return f"Tuple({', '.join(str(arg) for arg in self.args)})"
+        return f"Tuple({', '.join(str(arg) for arg in self.args)})"
 
     def _set_args(self, args):
-        if isinstance(args, EllipsisType):
-            self.args = ...
-        else:
-            self.args = tuple(wrap(arg) for arg in args)
+        self.args = args
 
     def __new__(cls, *args: DType | EllipsisType) -> Tuple | List:  # type: ignore[misc]
         if any(isinstance(arg, EllipsisType) for arg in args):
-            if len(args) == 2:
-                arg, placeholder = args
-                assert isinstance(placeholder, EllipsisType)
-                assert isinstance(arg, DType)
-                return List(arg)
-            assert len(args) == 1
-            return cls._cached_new(Ellipsis)
+            arg, placeholder = args
+            assert isinstance(placeholder, EllipsisType)
+            assert isinstance(arg, DType)
+            return List(arg)
         else:
-            return cls._cached_new(args)
+            return cls._cached_new(tuple(wrap(arg) for arg in args))
+
+    def is_value_compatible(self, arg):
+        if not isinstance(arg, (tuple, list)):
+            return False
+        elif len(self.args) != len(arg):
+            return False
+        else:
+            return all(
+                subdtype.is_value_compatible(subvalue)
+                for subdtype, subvalue in zip(self.args, arg)
+            )
+
+    @cached_property
+    def typehint(self) -> type[tuple]:
+        return tuple[tuple(arg.typehint for arg in self.args)]  # type: ignore[misc]
 
 
 class Json(DType):
@@ -247,11 +314,18 @@ class Json(DType):
     def _set_args(self):
         pass
 
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.JSON
+
     def __repr__(self) -> str:
         return "Json"
 
-    def to_engine(self) -> api.PathwayType:
-        return api.PathwayType.JSON
+    def is_value_compatible(self, arg):
+        return isinstance(arg, js.Json)
+
+    @property
+    def typehint(self) -> type[js.Json]:
+        return js.Json
 
 
 JSON: DType = Json()
@@ -264,13 +338,24 @@ class List(DType):
         return f"List({self.wrapped})"
 
     def __new__(cls, wrapped: DType) -> List:
-        return cls._cached_new(wrapped)
+        return cls._cached_new(wrap(wrapped))
 
     def _set_args(self, wrapped):
-        self.wrapped = wrap(wrapped)
+        self.wrapped = wrapped
+
+    def is_value_compatible(self, arg):
+        return isinstance(arg, (tuple, list)) and all(
+            self.wrapped.is_value_compatible(val) for val in arg
+        )
+
+    @cached_property
+    def typehint(self) -> type[list]:
+        return list[self.wrapped.typehint]  # type: ignore[name-defined]
 
 
-ANY_TUPLE: DType = Tuple(...)
+ANY_TUPLE: DType = List._cached_new(
+    ANY
+)  # List(ANY) but this requires `wrap()` to exist
 
 
 class _DateTimeNaive(DType):
@@ -283,10 +368,15 @@ class _DateTimeNaive(DType):
     def __new__(cls) -> _DateTimeNaive:
         return cls._cached_new()
 
-    def __call__(self, arg):
-        ret = pd.Timestamp(arg)
-        assert ret.tzinfo is None
-        return ret
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.DATE_TIME_NAIVE
+
+    def is_value_compatible(self, arg):
+        return isinstance(arg, datetime.datetime) and arg.tzinfo is None
+
+    @property
+    def typehint(self) -> type[datetime_types.DateTimeNaive]:
+        return datetime_types.DateTimeNaive
 
 
 DATE_TIME_NAIVE = _DateTimeNaive()
@@ -302,10 +392,15 @@ class _DateTimeUtc(DType):
     def __new__(cls) -> _DateTimeUtc:
         return cls._cached_new()
 
-    def __call__(self, arg):
-        ret = pd.Timestamp(arg)
-        assert ret.tzinfo is not None
-        return ret
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.DATE_TIME_UTC
+
+    def is_value_compatible(self, arg):
+        return isinstance(arg, datetime.datetime) and arg.tzinfo is not None
+
+    @property
+    def typehint(self) -> type[datetime_types.DateTimeUtc]:
+        return datetime_types.DateTimeUtc
 
 
 DATE_TIME_UTC = _DateTimeUtc()
@@ -321,14 +416,18 @@ class _Duration(DType):
     def __new__(cls) -> _Duration:
         return cls._cached_new()
 
-    def __call__(self, arg):
-        return pd.Timedelta(arg)
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.DURATION
+
+    def is_value_compatible(self, arg):
+        return isinstance(arg, datetime.timedelta)
+
+    @property
+    def typehint(self) -> type[datetime_types.Duration]:
+        return datetime_types.Duration
 
 
 DURATION = _Duration()
-
-
-_NoneType = type(None)
 
 
 def wrap(input_type) -> DType:
@@ -342,7 +441,7 @@ def wrap(input_type) -> DType:
     assert input_type != Json
     if isinstance(input_type, DType):
         return input_type
-    if input_type == _NoneType:
+    if input_type in (NoneType, None):
         return NONE
     elif input_type == typing.Any:
         return ANY
@@ -365,14 +464,14 @@ def wrap(input_type) -> DType:
             return Callable(..., ANY)
         arg_types, ret_type = c_args
         if isinstance(arg_types, Tuple):
-            callable_args = arg_types.args
+            callable_args: tuple[DType, ...] | EllipsisType = arg_types.args
         else:
             assert isinstance(arg_types, EllipsisType)
             callable_args = arg_types
         assert isinstance(ret_type, DType), type(ret_type)
         return Callable(callable_args, ret_type)
     elif (
-        typing.get_origin(input_type) in (typing.Union, types.UnionType)
+        typing.get_origin(input_type) in (typing.Union, UnionType)
         and len(typing.get_args(input_type)) == 2
         and isinstance(None, typing.get_args(input_type)[1])
     ):
@@ -382,7 +481,7 @@ def wrap(input_type) -> DType:
     elif input_type in [list, tuple, typing.List, typing.Tuple]:
         return ANY_TUPLE
     elif (
-        input_type == json.Json
+        input_type == js.Json
         or input_type == dict
         or typing.get_origin(input_type) == dict
     ):
@@ -399,10 +498,20 @@ def wrap(input_type) -> DType:
         else:
             return Tuple(*[wrap(arg) for arg in args])
     elif input_type == np.ndarray:
-        return Array()
+        return ARRAY
     else:
-        dtype = {int: INT, bool: BOOL, str: STR, float: FLOAT}.get(input_type, ANY)
+        dtype = {
+            int: INT,
+            bool: BOOL,
+            str: STR,
+            float: FLOAT,
+            datetime_types.Duration: DURATION,
+            datetime_types.DateTimeNaive: DATE_TIME_NAIVE,
+            datetime_types.DateTimeUtc: DATE_TIME_UTC,
+        }.get(input_type, ANY)
         if dtype == ANY:
+            # TODO ideally below line would be uncommented
+            # raise TypeError(f"Unsupported type {input_type}.")
             warn(f"Unsupported type {input_type}, falling back to ANY.")
         return dtype
 
@@ -435,10 +544,7 @@ def dtype_tuple_equivalence(left: Tuple | List, right: Tuple | List) -> bool:
         rargs = right.args
     if len(largs) != len(rargs):
         return False
-    return all(
-        dtype_equivalence(typing.cast(DType, l_arg), typing.cast(DType, r_arg))
-        for l_arg, r_arg in zip(largs, rargs)
-    )
+    return all(dtype_equivalence(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
 
 
 def dtype_issubclass(left: DType, right: DType) -> bool:
@@ -512,11 +618,11 @@ def normalize_dtype(dtype: DType) -> DType:
     if isinstance(dtype, Pointer):
         return POINTER
     if isinstance(dtype, Array):
-        return Array()
+        return ARRAY
     return dtype
 
 
-def unoptionalize_pair(left_dtype: DType, right_dtype) -> typing.Tuple[DType, DType]:
+def unoptionalize_pair(left_dtype: DType, right_dtype) -> tuple[DType, DType]:
     """
     Unpacks type out of typing.Optional and matches
     a second type with it if it is an EmptyType.

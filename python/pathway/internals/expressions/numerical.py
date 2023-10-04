@@ -1,7 +1,6 @@
 # Copyright © 2023 Pathway
 
 import math
-from typing import Union
 
 import pathway.internals.expression as expr
 from pathway.internals import api
@@ -65,9 +64,7 @@ class NumericalNamespace:
             self._expression,
         )
 
-    def round(
-        self, decimals: Union[expr.ColumnExpression, int] = 0
-    ) -> expr.ColumnExpression:
+    def round(self, decimals: expr.ColumnExpression | int = 0) -> expr.ColumnExpression:
         """Round the values in a column of a table to the specified number of decimals.
 
         Args:
@@ -141,7 +138,7 @@ class NumericalNamespace:
             decimals,
         )
 
-    def fill_na(self, default_value: Union[int, float]) -> expr.ColumnExpression:
+    def fill_na(self, default_value: int | float) -> expr.ColumnExpression:
         """Fill the missing values (None or NaN) in a column of a table with a specified default value.
 
         Args:

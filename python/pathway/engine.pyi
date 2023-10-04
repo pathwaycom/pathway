@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any, Callable, Iterable, List, Optional, Tuple, Union
 
 from pathway.internals.api import CapturedTable, Value
+from pathway.internals.column_path import ColumnPath
 from pathway.internals.dtype import DType
 from pathway.internals.monitoring import StatsMonitor
 
@@ -73,8 +74,8 @@ class Column:
     @property
     def universe(self) -> Universe: ...
 
-class Table:
-    """A `Table` is a thin wrapper over a list of Columns.
+class LegacyTable:
+    """A `LegacyTable` is a thin wrapper over a list of Columns.
 
     universe and columns are public fields - tables can be constructed
     """
@@ -84,6 +85,9 @@ class Table:
     def universe(self) -> Universe: ...
     @property
     def columns(self) -> List[Column]: ...
+
+class Table:
+    """Table with tuples containing values from multiple columns."""
 
 class MissingValueError(BaseException):
     "Marker class to indicate missing attributes"
@@ -103,8 +107,10 @@ class Reducer:
     FLOAT_SUM: Reducer
     ARRAY_SUM: Reducer
     INT_SUM: Reducer
-    SORTED_TUPLE: Reducer
-    TUPLE: Reducer
+    @staticmethod
+    def sorted_tuple(skip_nones: bool) -> Reducer: ...
+    @staticmethod
+    def tuple(skip_nones: bool) -> Reducer: ...
     UNIQUE: Reducer
     ANY: Reducer
 
@@ -140,6 +146,8 @@ class Expression:
     def argument(index: int) -> Expression: ...
     @staticmethod
     def apply(fun: Callable, /, *args: Expression) -> Expression: ...
+    @staticmethod
+    def unsafe_numba_apply(fun: Callable, /, *args: Expression) -> Expression: ...
     @staticmethod
     def is_none(expr: Expression) -> Expression: ...
     @staticmethod
@@ -240,10 +248,6 @@ class Expression:
     @staticmethod
     def date_time_utc_floor(expr: Expression, duration: Expression) -> Expression: ...
     @staticmethod
-    def _duration_get_in_unit(
-        expr: Expression, values: Any, num_nanoseconds: int
-    ) -> int: ...
-    @staticmethod
     def duration_nanoseconds(expr: Expression) -> Expression: ...
     @staticmethod
     def duration_microseconds(expr: Expression) -> Expression: ...
@@ -329,16 +333,16 @@ class Scope:
     def empty_table(self, dtypes: Iterable[DType]) -> Table: ...
     def iterate(
         self,
-        iterated: List[Table],
-        iterated_with_universe: List[Table],
-        extra: List[Table],
+        iterated: List[LegacyTable],
+        iterated_with_universe: List[LegacyTable],
+        extra: List[LegacyTable],
         logic: Callable[
-            [Scope, List[Table], List[Table], List[Table]],
-            Tuple[List[Table], List[Table]],
+            [Scope, List[LegacyTable], List[LegacyTable], List[LegacyTable]],
+            Tuple[List[LegacyTable], List[LegacyTable]],
         ],
         *,
         limit: Optional[int] = None,
-    ) -> Tuple[List[Table], List[Table]]:
+    ) -> Tuple[List[LegacyTable], List[LegacyTable]]:
         """Fixed-point iteration
 
         logic is called with a new scope, clones of tables from iterated,
@@ -354,44 +358,101 @@ class Scope:
     def static_column(
         self, universe: Universe, rows: Iterable[Tuple[BasePointer, Any]], dt: DType
     ) -> Column: ...
+    def static_table(
+        self,
+        universe: Universe,
+        rows: Iterable[Tuple[BasePointer, List[Value]]],
+        dt: DType,
+    ) -> Table: ...
     def map_column(
         self,
-        table: Table,
+        table: LegacyTable,
         function: Callable[[Tuple[Value, ...]], Value],
         properties: EvalProperties,
     ) -> Column: ...
     def expression_column(
-        self, table: Table, expression: Expression, properties: EvalProperties
+        self, table: LegacyTable, expression: Expression, properties: EvalProperties
     ) -> Column: ...
-    def async_map_column(
-        self, table: Table, function: Callable[..., Value], properties: EvalProperties
-    ): ...
-    def unsafe_map_column_numba(
-        self, table: Table, function: Any, properties: EvalProperties
+    def expression_table(
+        self,
+        table: Table,
+        column_paths: List[ColumnPath],
+        expressions: List[Tuple[Expression, EvalProperties]],
+    ) -> Table: ...
+    def columns_to_table(
+        self, universe: Universe, columns: List[Tuple[Column, ColumnPath]]
+    ) -> Table: ...
+    def table_column(
+        self, universe: Universe, table: Table, column_path: ColumnPath
     ) -> Column: ...
+    def table_universe(self, table: Table) -> Universe: ...
+    def flatten_table_storage(
+        self, table: Table, column_paths: List[ColumnPath]
+    ) -> Table: ...
+    def async_apply_table(
+        self,
+        table: Table,
+        column_paths: List[ColumnPath],
+        function: Callable[..., Value],
+        properties: EvalProperties,
+    ) -> Table: ...
     def filter_universe(self, universe: Universe, column: Column) -> Universe: ...
+    def filter_table(self, table: Table, path: ColumnPath) -> Table: ...
+    def forget(
+        self,
+        table: Table,
+        threshold_time_path: ColumnPath,
+        current_time_path: ColumnPath,
+    ) -> Table: ...
+    def freeze(
+        self,
+        table: Table,
+        threshold_time_path: ColumnPath,
+        current_time_path: ColumnPath,
+    ) -> Table: ...
+    def buffer(
+        self,
+        table: Table,
+        threshold_time_path: ColumnPath,
+        current_time_path: ColumnPath,
+    ) -> Table: ...
     def intersect_universe(
         self, universe: Universe, *universes: Universe
     ) -> Universe: ...
+    def intersect_tables(self, table: Table, tables: Iterable[Table]) -> Table: ...
     def union_universe(self, universe: Universe, *universes: Universe) -> Universe: ...
     def venn_universes(
         self, left_universe: Universe, right_universe: Universe
     ) -> VennUniverses: ...
+    def subtract_table(self, left_table: Table, right_table: Table) -> Table: ...
     def reindex_universe(self, column: Column) -> Universe: ...
     def restrict_column(
         self,
         universe: Universe,
         column: Column,
     ) -> Column: ...
+    def restrict_table(
+        self,
+        orig_table: Table,
+        new_table: Table,
+    ) -> Table: ...
     def override_column_universe(
         self, universe: Universe, column: Column
     ) -> Column: ...
+    def override_table_universe(
+        self,
+        orig_table: Table,
+        new_table: Table,
+    ) -> Table: ...
     def reindex_column(
         self,
         column_to_reindex: Column,
         reindexing_column: Column,
         reindexing_universe: Universe,
     ) -> Column: ...
+    def reindex_table(
+        self, table: Table, reindexing_column_path: ColumnPath
+    ) -> Table: ...
     def connector_table(
         self,
         data_source: DataStorage,
@@ -399,12 +460,12 @@ class Scope:
         properties: ConnectorProperties,
     ) -> Table: ...
     @staticmethod
-    def table(universe: Universe, columns: List[Column]) -> Table: ...
+    def table(universe: Universe, columns: List[Column]) -> LegacyTable: ...
 
     # Grouping and joins
 
     def group_by(
-        self, table: Table, requested_columns: List[Column], set_id: bool = False
+        self, table: LegacyTable, requested_columns: List[Column], set_id: bool = False
     ) -> Grouper:
         """
         Args:
@@ -418,14 +479,16 @@ class Scope:
         strict: bool,
         optional: bool,
     ) -> Ixer: ...
-    def join(
+    def join_tables(
         self,
-        left_table: Table,
-        right_table: Table,
+        left_storage: Table,
+        right_storage: Table,
+        left_paths: List[ColumnPath],
+        right_paths: List[ColumnPath],
         assign_id: bool = False,
         left_ear: bool = False,
         right_ear: bool = False,
-    ) -> Joiner: ...
+    ) -> Table: ...
 
     # Transformers
 
@@ -433,30 +496,45 @@ class Scope:
 
     # Updates
 
-    def update_rows(
-        self, universe: Universe, column: Column, updates: Column
-    ) -> Column:
-        """Updates rows of `column`, breaking ties in favor of `updates`"""
-        ...
-    def debug_universe(self, name: str, universe: Universe): ...
-    def debug_column(self, name: str, column: Column): ...
+    def update_rows_table(self, table: Table, update: Table) -> Table: ...
+    def update_cells_table(
+        self,
+        table: Table,
+        update: Table,
+        table_columns: List[ColumnPath],
+        update_columns: List[ColumnPath],
+    ) -> Table: ...
+    def debug_universe(self, name: str, table: Table): ...
+    def debug_column(self, name: str, table: Table, column_path: ColumnPath): ...
     def concat(self, universes: Iterable[Universe]) -> Concat: ...
+    def concat_tables(self, tables: Iterable[Table]) -> Table: ...
     def flatten(self, flatten_column: Column) -> Flatten: ...
+    def flatten_table(self, table: Table, path: ColumnPath) -> Table: ...
     def sort(
         self, key_column: Column, instance_column: Column
     ) -> Tuple[Column, Column]: ...
+    def sort_table(
+        self,
+        table: Table,
+        key_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
+    ) -> Table: ...
     def probe_universe(self, universe: Universe, operator_id: int): ...
     def probe_column(self, column: Column, operator_id: int): ...
-    def subscribe_table(self, table: Table, on_change: Callable, on_end: Callable): ...
-    def output_table(
-        self, table: Table, data_sink: DataStorage, data_format: DataFormat
+    def subscribe_table(
+        self,
+        table: Table,
+        column_paths: Iterable[ColumnPath],
+        on_change: Callable,
+        on_end: Callable,
     ): ...
-
-class Joiner:
-    @property
-    def universe(self) -> Universe: ...
-    def select_left_column(self, column: Column) -> Column: ...
-    def select_right_column(self, column: Column) -> Column: ...
+    def output_table(
+        self,
+        table: Table,
+        column_paths: Iterable[ColumnPath],
+        data_sink: DataStorage,
+        data_format: DataFormat,
+    ): ...
 
 class Ixer:
     @property
@@ -468,7 +546,7 @@ class Grouper:
     def universe(self) -> Universe: ...
     def input_column(self, column: Column) -> Column: ...
     def count_column(self) -> Column: ...
-    def reducer_column(self, reducer: Reducer, column: Column) -> Column: ...
+    def reducer_column(self, reducer: Reducer, columns: List[Column]) -> Column: ...
 
 class Concat:
     @property
@@ -482,7 +560,7 @@ class Flatten:
     def explode_column(self, column: Column) -> Column: ...
 
 def run_with_new_graph(
-    logic: Callable[[Scope], Iterable[Table]],
+    logic: Callable[[Scope], Iterable[tuple[Table, list[ColumnPath]]]],
     event_loop: asyncio.AbstractEventLoop,
     stats_monitor: Optional[StatsMonitor] = None,
     *,

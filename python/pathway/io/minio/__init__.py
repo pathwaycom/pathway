@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Type
+from typing import Any
 
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
@@ -58,12 +58,12 @@ def read(
     minio_settings: MinIOSettings,
     format: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     mode: str = "streaming",
-    csv_settings: Optional[CsvParserSettings] = None,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[str] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
+    csv_settings: CsvParserSettings | None = None,
+    json_field_paths: dict[str, str] | None = None,
+    persistent_id: str | None = None,
+    autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
 ) -> Table:
     """Reads a table from one or several objects in CSV format from S3 bucket in MinIO.

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Sequence
-from typing import Callable, List, Optional, Union
+from collections.abc import Callable, Sequence
 
 import pathway.internals as pw
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -15,7 +14,7 @@ from pathway.internals.trace import trace_user_frame
 @trace_user_frame
 def flatten_column(
     column: pw.ColumnReference,
-    origin_id: Optional[Union[str, pw.ColumnReference]] = pw.this.origin_id,
+    origin_id: str | pw.ColumnReference | None = pw.this.origin_id,
 ) -> pw.Table:
     """Deprecated: use pw.Table.flatten instead.
 
@@ -62,7 +61,7 @@ def flatten_column(
 @runtime_type_check
 @trace_user_frame
 def unpack_col(
-    column: pw.ColumnReference, *unpacked_columns: Union[pw.ColumnReference, str]
+    column: pw.ColumnReference, *unpacked_columns: pw.ColumnReference | str
 ) -> pw.Table:
     """Unpacks multiple columns from a single column.
 
@@ -106,8 +105,8 @@ def unpack_col(
 @trace_user_frame
 def multiapply_all_rows(
     *cols: pw.ColumnReference,
-    fun: Callable[..., List[Sequence]],
-    result_col_names: List[Union[str, pw.ColumnReference]],
+    fun: Callable[..., list[Sequence]],
+    result_col_names: list[str | pw.ColumnReference],
 ) -> pw.Table:
     """Applies a function to all the data in selected columns at once, returning multiple columns.
     This transformer is meant to be run infrequently on a relativelly small tables.
@@ -172,7 +171,7 @@ def multiapply_all_rows(
 def apply_all_rows(
     *cols: pw.ColumnReference,
     fun: Callable[..., Sequence],
-    result_col_name: Union[str, pw.ColumnReference],
+    result_col_name: str | pw.ColumnReference,
 ) -> pw.Table:
     """Applies a function to all the data in selected columns at once, returning a single column.
     This transformer is meant to be run infrequently on a relativelly small tables.

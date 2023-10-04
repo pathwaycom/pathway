@@ -1,7 +1,6 @@
 # Copyright © 2023 Pathway
 
 import datetime
-from typing import List
 
 import pandas as pd
 import pytest
@@ -285,7 +284,7 @@ from pathway.tests.utils import assert_table_equality
         ("Pacific/Tongatapu", ["2016-11-06 01:59:59"]),
     ],
 )
-def test_non_existing_date_time_conversion(timezone: str, dates: List[str]) -> None:
+def test_non_existing_date_time_conversion(timezone: str, dates: list[str]) -> None:
     fmt = "%Y-%m-%d %H:%M:%S"
     df = pd.DataFrame({"date_string": dates})
     table = table_from_pandas(df)

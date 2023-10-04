@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 from statistics import mode
-from typing import List, Tuple
 
 import numpy as np
 
@@ -110,7 +109,7 @@ def knn_lsh_generic_classifier_train(
                 )
             )
 
-        def merge_buckets(*tuples: List[Tuple]) -> Tuple:
+        def merge_buckets(*tuples: list[tuple]) -> tuple:
             return tuple(StableSet(sum(tuples, ())))
 
         flattened = result.select(
@@ -154,7 +153,7 @@ def knn_lsh_generic_classifier_train(
                     ret = np.array(self.ids)[knn_ids]
                     return ret
 
-        knn_result = compute_knns_transformer(  # type: ignore
+        knn_result: pw.Table = compute_knns_transformer(  # type: ignore
             training_data=data, flattened=flattened
         ).flattened.select(pw.this.knns_ids, flattened.query_id)
 
@@ -166,7 +165,7 @@ def knn_lsh_generic_classifier_train(
 
         knn_result_with_empty_results = knn_result_with_empty_results.with_columns(
             knns_ids=pw.coalesce(pw.this.knns_ids, np.array(()))
-        ).update_types(knns_ids=knn_result.schema["knns_ids"])
+        ).update_types(knns_ids=knn_result.typehints()["knns_ids"])
         # return knn_result
         return knn_result_with_empty_results
 
@@ -186,7 +185,7 @@ def knn_lsh_euclidean_classifier_train(data: pw.Table, d, M, L, A):
     )
 
 
-def knn_lsh_classify(knn_model, data_labels, queries, k):
+def knn_lsh_classify(knn_model, data_labels: pw.Table, queries: pw.Table, k):
     """Classify the queries.
     Use the knn_model to extract the k closest datapoints.
     The queries are then labeled using a majority vote between the labels
@@ -199,7 +198,7 @@ def knn_lsh_classify(knn_model, data_labels, queries, k):
     result = (
         take_majority_label(labels=data_labels, knn_table=knns)  # type: ignore
         .knn_table.with_id(knns.query_id)
-        .update_types(predicted_label=data_labels.schema["label"])
+        .update_types(predicted_label=data_labels.typehints()["label"])
     )
 
     return result

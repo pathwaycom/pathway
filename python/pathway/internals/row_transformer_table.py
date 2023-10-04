@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import pathway.internals.column as clmn
 from pathway.internals.helpers import StableSet
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from pathway.internals.table import Table
 
 
-@dataclass(frozen=True)  # type: ignore[misc] # https://github.com/python/mypy/issues/5374
+@dataclass(frozen=True)
 class TransformerColumn(ABC):
     attribute: rt.AbstractAttribute
     """attribute from which the column was created"""
@@ -50,7 +50,7 @@ class InputTransformerColumn(TransformerColumn, ABC):
         return self.input_table._get_column(self.attribute.name)
 
 
-@dataclass(frozen=True)  # type: ignore[misc]
+@dataclass(frozen=True)
 class TransformerColumnWithDependenecies(TransformerColumn, ABC):
     def dependencies(self) -> StableSet[TransformerColumn]:
         result: StableSet[TransformerColumn] = StableSet()
@@ -104,7 +104,7 @@ class InputAttributeTransformerColumn(InputTransformerColumn):
 @dataclass(frozen=True)
 class TransformerTable:
     universe: Universe
-    columns: List[TransformerColumn]
+    columns: list[TransformerColumn]
 
     def _input_method_columns(self):
         return [c for c in self.columns if isinstance(c, InputMethodTransformerColumn)]

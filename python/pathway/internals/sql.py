@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple, Type
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import sqlglot
 import sqlglot.expressions as sql_expr
@@ -13,6 +14,7 @@ from sqlglot.optimizer import qualify_columns
 
 from pathway.internals import expression as expr
 from pathway.internals import if_else, reducers, table, thisclass
+from pathway.internals.desugaring import TableSubstitutionDesugaring
 from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.shadows import operator
@@ -20,7 +22,7 @@ from pathway.internals.shadows import operator
 _tmp_table_cnt = itertools.count()
 
 if TYPE_CHECKING:
-    ContextType = Dict[str, table.Table]
+    ContextType = dict[str, table.Table]
 
 
 class ReducerDetector(IdentityTransform):
@@ -42,7 +44,7 @@ class ReducerDetector(IdentityTransform):
         return super().eval_count(expression, **kwargs)
 
 
-_expression_handlers: Dict[Type[sql_expr.Expression], Callable] = {}
+_expression_handlers: dict[type[sql_expr.Expression], Callable] = {}
 
 
 def _run(node: sql_expr.Expression, context: ContextType) -> Any:
@@ -67,7 +69,7 @@ def register(nodetype):
 @register(nodetype=sql_expr.If)
 def _if(
     node: sql_expr.If, context: ContextType
-) -> Tuple[expr.ColumnExpression, expr.ColumnExpression]:
+) -> tuple[expr.ColumnExpression, expr.ColumnExpression]:
     return _run(node.this, context), _run(node.args.pop("true"), context)
 
 
@@ -127,7 +129,7 @@ def _count(node: sql_expr.Count, context: ContextType) -> expr.ReducerExpression
 
 
 @register(nodetype=sql_expr.Group)
-def _group(node: sql_expr.Group, context: ContextType) -> List[expr.ColumnExpression]:
+def _group(node: sql_expr.Group, context: ContextType) -> list[expr.ColumnExpression]:
     return [_run(e, context) for e in node.expressions]
 
 
@@ -173,12 +175,12 @@ def _column(node: sql_expr.Column, context: ContextType) -> expr.ColumnReference
 
 
 @register(nodetype=sql_expr.With)
-def _with(node: sql_expr.With, context: ContextType) -> List[Dict[str, table.Table]]:
+def _with(node: sql_expr.With, context: ContextType) -> list[dict[str, table.Table]]:
     return [_cte(e, context) for e in node.expressions]
 
 
 @register(nodetype=sql_expr.CTE)
-def _cte(node: sql_expr.CTE, context: ContextType) -> Dict[str, table.Table]:
+def _cte(node: sql_expr.CTE, context: ContextType) -> dict[str, table.Table]:
     ret, context = _run(node.this, context)
     return {node.alias: ret}
 
@@ -191,7 +193,7 @@ def _tablealias(node: sql_expr.TableAlias, context: ContextType):
 @register(nodetype=sql_expr.Alias)
 def _alias(
     node: sql_expr.Alias, context: ContextType
-) -> Dict[str, expr.ColumnExpression]:
+) -> dict[str, expr.ColumnExpression]:
     return {node.alias: _run(node.this, context)}
 
 
@@ -299,7 +301,7 @@ def _neq(node: sql_expr.NEQ, context: ContextType) -> expr.ColumnBinaryOpExpress
 
 
 @register(nodetype=sql_expr.From)
-def _from(node: sql_expr.From, context: ContextType) -> Tuple[table.Table, ContextType]:
+def _from(node: sql_expr.From, context: ContextType) -> tuple[table.Table, ContextType]:
     tabs = []
     for expression in node.expressions:
         tab, context = _run(expression, context)
@@ -313,7 +315,7 @@ def _from(node: sql_expr.From, context: ContextType) -> Tuple[table.Table, Conte
 @register(nodetype=sql_expr.Subquery)
 def _subquery(
     node: sql_expr.Subquery, context: ContextType
-) -> Tuple[table.Table, ContextType]:
+) -> tuple[table.Table, ContextType]:
     context = _with_block(node, context)
     tab, _ = _run(node.args.pop("this"), context)
     tab, context = _alias_block(node, tab, context)
@@ -326,7 +328,7 @@ def _subquery(
 @register(nodetype=sql_expr.Table)
 def _table(
     node: sql_expr.Table, context: ContextType
-) -> Tuple[table.Joinable, ContextType]:
+) -> tuple[table.Joinable, ContextType]:
     name = _identifier(node.args.pop("this"), context)
     tab = context[name]
     tab, context = _alias_block(node, tab, context)
@@ -341,7 +343,7 @@ def _table(
 @register(nodetype=sql_expr.Union)
 def _union(
     node: sql_expr.Union, context: ContextType
-) -> Tuple[table.Table, ContextType]:
+) -> tuple[table.Table, ContextType]:
     orig_context = context
     context = _with_block(node, context)
     left, _ = _run(node.args.pop("this"), context)
@@ -357,7 +359,7 @@ def _union(
 @register(nodetype=sql_expr.Intersect)
 def _intersect(
     node: sql_expr.Intersect, context: ContextType
-) -> Tuple[table.Table, ContextType]:
+) -> tuple[table.Table, ContextType]:
     orig_context = context
     context = _with_block(node, context)
     left, _ = _run(node.args.pop("this"), context)
@@ -381,7 +383,7 @@ def _join(node: sql_expr.Join, _context: ContextType) -> Callable:
 
             def _rec(
                 op: sql_expr.And | sql_expr.EQ,
-            ) -> List[expr.ColumnBinaryOpExpression]:
+            ) -> list[expr.ColumnBinaryOpExpression]:
                 if isinstance(op, sql_expr.And):
                     return _rec(op.this) + _rec(op.expression)
                 else:
@@ -502,7 +504,7 @@ def _process_field_for_subqueries(field, tab, context, orig_context, agg_fun):
 @register(nodetype=sql_expr.Select)
 def _select(
     node: sql_expr.Select, context: ContextType
-) -> Tuple[table.Table, ContextType]:
+) -> tuple[table.Table, ContextType]:
     orig_context = context
 
     # WITH block
@@ -539,7 +541,15 @@ def _select(
         tab_filter_where = tab_joined_where.select(
             filter_col=_where(where_field, context_subqueries_where)
         ).with_universe_of(tab)
-        tab = tab.filter(tab_filter_where.filter_col)
+        tab_filtered = tab.filter(tab_filter_where.filter_col)
+        table_replacer = TableSubstitutionDesugaring({tab: tab_filtered})
+        expr_args = [table_replacer.eval_expression(e) for e in expr_args]
+        if groupby is not None:
+            groupby = [table_replacer.eval_expression(e) for e in groupby]
+        expr_kwargs = {
+            name: table_replacer.eval_expression(e) for name, e in expr_kwargs.items()
+        }
+        tab = tab_filtered
 
     # HAVING block
     if (having_field := node.args.pop("having", None)) is not None:
@@ -572,11 +582,13 @@ def _select(
         having_field, tab, context, orig_context, "MIN"
     )
     grouped_having = tab_joined_having.groupby(*groupby)
-    result = result.with_universe_of(grouped_having.reduce())
+    reduced = grouped_having.reduce()
+    if result._universe != reduced._universe:
+        result = result.with_universe_of(reduced)
     having_col = _HavingHelper(result).eval_expression(
         _having(having_field, context_subqueries_having)
     )
-    having_tab = grouped_having.reduce(filter_col=having_col)
+    having_tab = grouped_having.reduce(**result, filter_col=having_col)
     result = result.filter(having_tab.filter_col)
 
     return result, orig_context
@@ -642,13 +654,13 @@ def sql(query: str, **kwargs: table.Table) -> table.Table:
     '''
 
     kwargs = {name: tab.copy() for name, tab in kwargs.items()}
-    root: sql_expr.Expression = sqlglot.parse_one(query)  # type: ignore
+    root: sql_expr.Expression = sqlglot.parse_one(query)
     if root is None:
         raise RuntimeError(f"parsing {query} failed")
     try:
         root = qualify_columns.qualify_columns(
             root,
-            {name: tab.schema.as_dict() for name, tab in kwargs.items()},
+            {name: tab.schema.typehints() for name, tab in kwargs.items()},
         )
     except OptimizeError:
         pass
@@ -668,7 +680,7 @@ def _with_block(node: sql_expr.Expression, context: ContextType) -> ContextType:
 
 def _joins_block(
     node: sql_expr.Expression, tab: table.Joinable, context: ContextType
-) -> Tuple[table.Joinable, ContextType]:
+) -> tuple[table.Joinable, ContextType]:
     if (joins_field := node.args.pop("joins", None)) is not None:
         for arg in joins_field:
             fun = _join(arg, context)
@@ -678,7 +690,7 @@ def _joins_block(
 
 def _alias_block(
     node: sql_expr.Expression, tab: table.Table, context: ContextType
-) -> Tuple[table.Table, ContextType]:
+) -> tuple[table.Table, ContextType]:
     if (alias_field := node.args.pop("alias", None)) is not None:
         alias = _run(alias_field, context)
         assert isinstance(alias, str)

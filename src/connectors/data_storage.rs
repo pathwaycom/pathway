@@ -1,7 +1,5 @@
-use itertools::Itertools;
 use rand::Rng;
 use rdkafka::util::Timeout;
-use s3::command::Command as S3Command;
 use s3::error::S3Error;
 use std::any::type_name;
 use std::borrow::Cow;
@@ -26,7 +24,6 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::SystemTime;
-use typed_arena::Arena;
 
 use chrono::{DateTime, FixedOffset};
 use log::{error, warn};
@@ -35,7 +32,7 @@ use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
-use crate::engine::time::DateTime as InternalDateTime;
+use crate::deepcopy::DeepCopy;
 use crate::engine::Value;
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::frontier::OffsetAntichain;
@@ -108,6 +105,16 @@ mod inotify_support {
     }
 }
 
+#[derive(Debug)]
+pub enum S3CommandName {
+    ListObjectsV2,
+    GetObject,
+    DeleteObject,
+    InitiateMultipartUpload,
+    PutMultipartChunk,
+    CompleteMultipartUpload,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
     Insert,
@@ -167,7 +174,7 @@ pub enum ReadError {
     Csv(#[from] csv::Error),
 
     #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
-    S3(S3Command<'static>, S3Error),
+    S3(S3CommandName, S3Error),
 
     #[error(transparent)]
     Py(#[from] PyErr),
@@ -326,6 +333,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     Kafka(#[from] KafkaError),
+
+    #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
+    S3(S3CommandName, S3Error),
 
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
@@ -1291,90 +1301,100 @@ impl PsqlWriter {
     }
 }
 
-pub trait PsqlSerializer {
-    fn to_postgres_output(&self) -> String;
-}
+mod to_sql {
+    use std::error::Error;
 
-impl PsqlSerializer for u8 {
-    fn to_postgres_output(&self) -> String {
-        self.to_string()
-    }
-}
+    use bytes::BytesMut;
+    use chrono::{DateTime, NaiveDateTime, Utc};
+    use ordered_float::OrderedFloat;
+    use postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type, WrongType};
 
-impl PsqlSerializer for i64 {
-    fn to_postgres_output(&self) -> String {
-        self.to_string()
-    }
-}
+    use crate::engine::time::DateTime as _;
+    use crate::engine::Value;
 
-impl PsqlSerializer for f64 {
-    fn to_postgres_output(&self) -> String {
-        self.to_string()
-    }
-}
-
-fn to_postgres_array<'a>(iter: impl IntoIterator<Item = &'a (impl PsqlSerializer + 'a)>) -> String {
-    let iter = iter.into_iter();
-    format!(
-        "{{{}}}",
-        iter.map(PsqlSerializer::to_postgres_output).format(",")
-    )
-}
-
-impl PsqlSerializer for Value {
-    fn to_postgres_output(&self) -> String {
-        match &self {
-            Value::None => "null".to_string(),
-            Value::Bool(b) => {
-                if *b {
-                    "t".to_string()
-                } else {
-                    "f".to_string()
-                }
+    impl ToSql for Value {
+        fn to_sql(
+            &self,
+            ty: &Type,
+            out: &mut BytesMut,
+        ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+            macro_rules! try_forward {
+                ($type:ty, $expr:expr) => {
+                    if <$type as ToSql>::accepts(ty) {
+                        let value: $type = $expr.try_into()?;
+                        assert!(matches!(self.encode_format(ty), Format::Binary));
+                        assert!(matches!(value.encode_format(ty), Format::Binary));
+                        return value.to_sql(ty, out);
+                    }
+                };
             }
-            Value::Int(i) => i.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::String(s) => s.to_string(),
-            Value::Pointer(value) => format!("{value:?}"),
-            Value::Tuple(vals) => to_postgres_array(vals.iter()),
-            Value::Bytes(array) => to_postgres_array(array.iter()),
-            Value::IntArray(array) => to_postgres_array(array.iter()),
-            Value::FloatArray(array) => to_postgres_array(array.iter()),
-            Value::DateTimeNaive(date_time) => date_time.to_string(),
-            Value::DateTimeUtc(date_time) => date_time.to_string(),
-            Value::Duration(duration) => duration.nanoseconds().to_string(),
-            Value::Json(json) => json.to_string(),
+            #[allow(clippy::match_same_arms)]
+            match self {
+                Self::None => return Ok(IsNull::Yes),
+                Self::Bool(b) => {
+                    try_forward!(bool, *b);
+                }
+                Self::Int(i) => {
+                    try_forward!(i64, *i);
+                    try_forward!(i32, *i);
+                    try_forward!(i16, *i);
+                    try_forward!(i8, *i);
+                    #[allow(clippy::cast_precision_loss)]
+                    {
+                        try_forward!(f64, *i as f64);
+                        try_forward!(f32, *i as f32);
+                    }
+                }
+                Self::Float(OrderedFloat(f)) => {
+                    try_forward!(f64, *f);
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        try_forward!(f32, *f as f32);
+                    }
+                }
+                Self::Pointer(p) => {
+                    try_forward!(String, p.to_string());
+                }
+                Self::String(s) => {
+                    try_forward!(&str, s.as_str());
+                }
+                Self::Bytes(b) => {
+                    try_forward!(&[u8], &b[..]);
+                }
+                Self::Tuple(t) => {
+                    try_forward!(&[Value], &t[..]);
+                }
+                Self::IntArray(_) => {}   // TODO
+                Self::FloatArray(_) => {} // TODO
+                Self::DateTimeNaive(dt) => {
+                    try_forward!(NaiveDateTime, dt.as_chrono_datetime());
+                }
+                Self::DateTimeUtc(dt) => {
+                    try_forward!(DateTime<Utc>, dt.as_chrono_datetime().and_utc());
+                }
+                Self::Duration(_) => {} // TODO
+                Self::Json(j) => {
+                    try_forward!(&serde_json::Value, &**j);
+                }
+            };
+            Err(Box::new(WrongType::new::<Self>(ty.clone())))
         }
+
+        fn accepts(_ty: &Type) -> bool {
+            true // we double-check anyway
+        }
+
+        to_sql_checked!();
     }
 }
 
 impl Writer for PsqlWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let strs = Arena::new();
-        let strings = Arena::new();
-        let bytes = Arena::new();
-        let chrono_datetimes = Arena::new();
-        let chrono_utc_datetimes = Arena::new();
-
         let params: Vec<_> = data
             .values
             .iter()
-            .map(|value| -> Result<&(dyn ToSql + Sync), WriteError> {
-                match value {
-                    Value::None => Ok(&Option::<String>::None),
-                    Value::Bool(b) => Ok(b),
-                    Value::Int(i) => Ok(i),
-                    Value::Float(f) => Ok(f.as_ref()),
-                    Value::String(s) => Ok(strs.alloc(&**s)),
-                    Value::Bytes(b) => Ok(bytes.alloc(&**b)),
-                    Value::DateTimeNaive(dt) => Ok(chrono_datetimes.alloc(dt.as_chrono_datetime())),
-                    Value::DateTimeUtc(dt) => {
-                        Ok(chrono_utc_datetimes.alloc(dt.as_chrono_datetime().and_utc()))
-                    }
-                    other => Ok(strings.alloc(other.to_postgres_output())),
-                }
-            })
-            .try_collect()?;
+            .map(|v| v as &(dyn ToSql + Sync))
+            .collect();
 
         for payload in &data.payloads {
             let query = from_utf8(payload)?;
@@ -1395,9 +1415,15 @@ impl Writer for PsqlWriter {
     }
 }
 
-struct CurrentlyProcessedS3Object {
+pub struct CurrentlyProcessedS3Object {
     loader_thread: std::thread::JoinHandle<Result<(), ReadError>>,
     path: Arc<String>,
+}
+
+impl CurrentlyProcessedS3Object {
+    pub fn finalize(self) -> Result<(), ReadError> {
+        self.loader_thread.join().expect("s3 thread join failed")
+    }
 }
 
 pub struct S3Scanner {
@@ -1423,39 +1449,39 @@ impl S3Scanner {
         }
     }
 
-    fn list_objects_command(&self) -> S3Command<'static> {
-        S3Command::ListObjectsV2 {
-            prefix: self.objects_prefix.to_string(),
-            delimiter: None,
-            continuation_token: None,
-            start_after: None,
-            max_keys: None,
-        }
-    }
-
-    fn stream_object_from_path(&mut self, object_path_ref: &str) -> PipeReader {
-        let bucket_clone = self.bucket.clone();
+    pub fn stream_object_from_path_and_bucket(
+        object_path_ref: &str,
+        bucket: S3Bucket,
+    ) -> (CurrentlyProcessedS3Object, PipeReader) {
         let object_path = object_path_ref.to_string();
 
         let (pipe_reader, mut pipe_writer) = pipe::pipe();
         let loader_thread = thread::Builder::new()
             .name(format!("pathway:s3_get-{object_path_ref}"))
             .spawn(move || {
-                let code = bucket_clone
+                let code = bucket
                     .get_object_to_writer(&object_path, &mut pipe_writer)
-                    .map_err(|e| ReadError::S3(S3Command::GetObject, e))?;
+                    .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))?;
                 if code != 200 {
-                    return Err(ReadError::S3(S3Command::GetObject, S3Error::HttpFail));
+                    return Err(ReadError::S3(S3CommandName::GetObject, S3Error::HttpFail));
                 }
                 Ok(())
             })
             .expect("s3 thread creation failed");
 
-        self.current_object = Some(CurrentlyProcessedS3Object {
-            loader_thread,
-            path: Arc::new(object_path_ref.to_string()),
-        });
+        (
+            CurrentlyProcessedS3Object {
+                loader_thread,
+                path: Arc::new(object_path_ref.to_string()),
+            },
+            pipe_reader,
+        )
+    }
 
+    fn stream_object_from_path(&mut self, object_path_ref: &str) -> PipeReader {
+        let (current_object, pipe_reader) =
+            Self::stream_object_from_path_and_bucket(object_path_ref, self.bucket.deep_copy());
+        self.current_object = Some(current_object);
         pipe_reader
     }
 
@@ -1467,7 +1493,7 @@ impl S3Scanner {
         let object_lists = self
             .bucket
             .list(self.objects_prefix.to_string(), None)
-            .map_err(|e| ReadError::S3(self.list_objects_command(), e))?;
+            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
 
         let mut selected_object: Option<(DateTime<FixedOffset>, String)> = None;
         for list in &object_lists {
@@ -1513,7 +1539,7 @@ impl S3Scanner {
         let object_lists = self
             .bucket
             .list(self.objects_prefix.to_string(), None)
-            .map_err(|e| ReadError::S3(self.list_objects_command(), e))?;
+            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
         let mut threshold_modification_time = None;
         for list in &object_lists {
             for object in &list.contents {

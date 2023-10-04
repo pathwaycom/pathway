@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import pathway.internals.row_transformer as rt
 from pathway.internals import api, trace, universe
 from pathway.internals.graph_runner.operator_handler import OperatorHandler
+from pathway.internals.graph_runner.path_storage import Storage
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.operator import RowTransformerOperator
 from pathway.internals.row_transformer_table import (
@@ -19,12 +20,17 @@ from pathway.internals.row_transformer_table import (
     TransformerColumnWithDependenecies,
     TransformerTable,
 )
+from pathway.internals.table import Table
 
 
 class RowTransformerOperatorHandler(
     OperatorHandler[RowTransformerOperator], operator_type=RowTransformerOperator
 ):
-    def _run(self, operator: RowTransformerOperator):
+    def _run(
+        self,
+        operator: RowTransformerOperator,
+        output_storages: dict[Table, Storage],
+    ):
         inputs = self._get_inputs(operator)
         result = self.scope.complex_columns(inputs)
 
@@ -33,10 +39,14 @@ class RowTransformerOperatorHandler(
             number_of_cols = len(table._columns)
             universe = self.state.get_universe(table._universe)
             cols = result[first_col : first_col + number_of_cols]
-            self.state.set_table(table, api.Table(universe, cols))
+            self.state.set_legacy_table(table, api.LegacyTable(universe, cols))
             first_col += number_of_cols
+            output_storage = output_storages[table]
+            if output_storage.flattened_output is not None:
+                output_storage = output_storage.flattened_output
+            self.state.create_table(table._universe, output_storage)
 
-    def _get_inputs(self, operator: RowTransformerOperator) -> List[api.ComplexColumn]:
+    def _get_inputs(self, operator: RowTransformerOperator) -> list[api.ComplexColumn]:
         """Gathers all input tables associated with all transformerClassArgs along with their dependencies."""
         dependency_tables = [
             table.dependency_table for table in operator.transformer_inputs
@@ -56,8 +66,8 @@ class RowTransformerOperatorHandler(
 
     def complex_table(
         self, table: TransformerTable, mapping: TransformerColumnIndexMapping
-    ) -> List[api.ComplexColumn]:
-        columns: List[api.ComplexColumn] = []
+    ) -> list[api.ComplexColumn]:
+        columns: list[api.ComplexColumn] = []
 
         for column in table.columns:
             input_column: api.ComplexColumn
@@ -79,8 +89,8 @@ class RowTransformerOperatorHandler(
 
     def complex_dependency_table(
         self, table: TransformerTable, mapping
-    ) -> List[api.ComplexColumn]:
-        columns: List[api.ComplexColumn] = []
+    ) -> list[api.ComplexColumn]:
+        columns: list[api.ComplexColumn] = []
 
         for column in table.columns:
             input_column: api.ComplexColumn
@@ -170,7 +180,7 @@ class TransformerColumnIndexMapping:
     to the index of the corresponding column passed in the input list to the api.
     """
 
-    _mapping: Dict[Tuple[int, int, str], int]
+    _mapping: dict[tuple[int, int, str], int]
 
     def __init__(self) -> None:
         self._mapping = {}
@@ -188,7 +198,7 @@ class TransformerColumnIndexMapping:
                 index += 1
         return mapping
 
-    def _set(self, key: Tuple[int, int, str], value: int):
+    def _set(self, key: tuple[int, int, str], value: int):
         if key in self._mapping:
             assert self._mapping[key] == value
             return

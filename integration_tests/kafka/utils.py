@@ -1,6 +1,6 @@
 # Copyright © 2023 Pathway
 
-from typing import Iterable, List, Tuple, Union
+from collections.abc import Iterable
 from uuid import uuid4
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
@@ -33,7 +33,7 @@ class KafkaTestContext:
     def _delete_topic(self, name: str) -> None:
         self._admin.delete_topics(topics=[name])
 
-    def send(self, message: Union[str, Tuple[str, str]]) -> None:
+    def send(self, message: str | tuple[str, str]) -> None:
         if isinstance(message, tuple):
             (key, value) = message
         else:
@@ -44,13 +44,14 @@ class KafkaTestContext:
         self._delete_topic(self._input_topic)
         self._create_topic(self._input_topic, num_partitions)
 
-    def fill(self, messages: Iterable[Union[str, Tuple[str, str]]]) -> None:
+    def fill(self, messages: Iterable[str | tuple[str, str]]) -> None:
         for msg in messages:
             self.send(msg)
+        self._producer.flush()
 
-    def read_output_topic(self, poll_timeout_ms: int = 1000) -> List[str]:
+    def read_topic(self, topic, poll_timeout_ms: int = 1000) -> list[str]:
         consumer = KafkaConsumer(
-            self.output_topic,
+            topic,
             auto_offset_reset="earliest",
             bootstrap_servers=kafka_settings["bootstrap_servers"],
         )
@@ -61,10 +62,16 @@ class KafkaTestContext:
                 break
             for topic_partition, new_messages in poll_result.items():
                 assert (
-                    topic_partition.topic == self.output_topic
+                    topic_partition.topic == topic
                 ), "Poller returns messages from an unexpected topic"
                 messages += new_messages
         return messages
+
+    def read_output_topic(self, poll_timeout_ms: int = 1000) -> list[str]:
+        return self.read_topic(self._output_topic, poll_timeout_ms)
+
+    def read_input_topic(self, poll_timeout_ms: int = 1000) -> list[str]:
+        return self.read_topic(self._input_topic, poll_timeout_ms)
 
     def teardown(self) -> None:
         self._delete_topic(self.input_topic)

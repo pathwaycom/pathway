@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, List
+from typing import Any
 
 
 class DataSink(ABC):
@@ -19,5 +20,5 @@ class GenericDataSink(DataSink):
 
 @dataclass(frozen=True)
 class CallbackDataSink(DataSink):
-    on_change: Callable[[str, List[Any], int, int], Any]
+    on_change: Callable[[str, list[Any], int, int], Any]
     on_end: Callable[[], Any]

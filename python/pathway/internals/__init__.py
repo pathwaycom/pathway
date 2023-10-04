@@ -21,6 +21,7 @@ from pathway.internals.common import (
     udf_async,
     unwrap,
 )
+from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.decorators import (
     attribute,
     input_attribute,
@@ -36,7 +37,7 @@ from pathway.internals.expression import (
     ReducerExpression,
 )
 from pathway.internals.groupby import GroupedJoinResult, GroupedTable
-from pathway.internals.join import FilteredJoinResult, Joinable, JoinResult
+from pathway.internals.join import Joinable, JoinResult
 from pathway.internals.join_mode import JoinMode
 from pathway.internals.json import Json
 from pathway.internals.monitoring import MonitoringLevel
@@ -48,6 +49,8 @@ from pathway.internals.schema import (
     SchemaProperties,
     column_definition,
     schema_builder,
+    schema_from_csv,
+    schema_from_dict,
     schema_from_types,
 )
 from pathway.internals.sql import sql
@@ -80,7 +83,6 @@ __all__ = [
     "GroupedTable",
     "GroupedJoinResult",
     "JoinResult",
-    "FilteredJoinResult",
     "IntervalJoinResult",
     "Table",
     "TableLike",
@@ -116,6 +118,11 @@ __all__ = [
     "DURATION",
     "unwrap",
     "SchemaProperties",
+    "schema_from_csv",
+    "schema_from_dict",
     "assert_table_has_schema",
+    "DateTimeNaive",
+    "DateTimeUtc",
+    "Duration",
     "Json",
 ]

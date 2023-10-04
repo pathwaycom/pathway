@@ -4,18 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 from abc import ABC
+from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Dict,
-    Iterable,
-    Optional,
-    Tuple,
-    Type,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, Union
 
 from pathway.internals import api
 from pathway.internals import dtype as dt
@@ -81,7 +72,7 @@ class ColumnExpression(OperatorInput, ABC):
         return helpers.StableSet(expression_dependencies)
 
     @property
-    def _column_with_expression_cls(self) -> Type[ColumnWithExpression]:
+    def _column_with_expression_cls(self) -> type[ColumnWithExpression]:
         from pathway.internals.column import ColumnWithExpression
 
         return ColumnWithExpression
@@ -306,8 +297,8 @@ class ColumnExpression(OperatorInput, ABC):
         ... 2
         ... 3
         ... 4''')
-        >>> t1.schema.as_dict()
-        {'val': INT}
+        >>> t1.schema
+        <pathway.Schema types={'val': <class 'int'>}>
         >>> pw.debug.compute_and_print(t1, include_id=False)
         val
         1
@@ -315,8 +306,8 @@ class ColumnExpression(OperatorInput, ABC):
         3
         4
         >>> t2 = t1.select(val = pw.this.val.to_string())
-        >>> t2.schema.as_dict()
-        {'val': STR}
+        >>> t2.schema
+        <pathway.Schema types={'val': <class 'str'>}>
         >>> pw.debug.compute_and_print(t2.select(val=pw.this.val + "a"), include_id=False)
         val
         1a
@@ -421,7 +412,7 @@ ColumnExpressionOrValue = Union[ColumnExpression, Value]
 
 
 class ColumnCallExpression(ColumnExpression):
-    _args: Tuple[ColumnExpression, ...]
+    _args: tuple[ColumnExpression, ...]
     _col_expr: ColumnReference
 
     def __init__(
@@ -533,7 +524,7 @@ class ColumnReference(ColumnExpression):
         return ColumnCallExpression(self, args)
 
     @property
-    def _column_with_expression_cls(self) -> Type[ColumnWithExpression]:
+    def _column_with_expression_cls(self) -> type[ColumnWithExpression]:
         from pathway.internals.column import ColumnWithReference
 
         return ColumnWithReference
@@ -587,13 +578,21 @@ class ColumnUnaryOpExpression(ColumnExpression):
 
 class ReducerExpression(ColumnExpression):
     _reducer: UnaryReducer
-    _arg: ColumnExpression
+    _args: tuple[ColumnExpression, ...]
+    # needed only for repr
+    _kwargs: dict[str, ColumnExpression]
 
-    def __init__(self, reducer: UnaryReducer, *args: ColumnExpressionOrValue):
+    def __init__(
+        self,
+        reducer: UnaryReducer,
+        *args: ColumnExpressionOrValue,
+        **kwargs: ColumnExpressionOrValue,
+    ):
         super().__init__()
         self._reducer = reducer
         self._args = tuple(_wrap_arg(arg) for arg in args)
         self._deps = self._args
+        self._kwargs = {k: _wrap_arg(v) for k, v in kwargs.items()}
 
     @lru_cache
     def _dependencies_above_reducer(self) -> helpers.StableSet[InternalColRef]:
@@ -614,8 +613,8 @@ class CountExpression(ColumnExpression):
 
 class ApplyExpression(ColumnExpression):
     _return_type: Any
-    _args: Tuple[ColumnExpression, ...]
-    _kwargs: Dict[str, ColumnExpression]
+    _args: tuple[ColumnExpression, ...]
+    _kwargs: dict[str, ColumnExpression]
     _fun: Callable
 
     def __init__(
@@ -775,7 +774,7 @@ class IsNotNoneExpression(ColumnExpression):
 
 class PointerExpression(ColumnExpression):
     _table: Table
-    _args: Tuple[ColumnExpression, ...]
+    _args: tuple[ColumnExpression, ...]
     _optional: bool
 
     def __init__(
@@ -790,7 +789,7 @@ class PointerExpression(ColumnExpression):
 
 
 class MakeTupleExpression(ColumnExpression):
-    _args: Tuple[ColumnExpression, ...]
+    _args: tuple[ColumnExpression, ...]
 
     def __init__(self, *args: ColumnExpressionOrValue):
         super().__init__()
@@ -803,7 +802,7 @@ class GetExpression(ColumnExpression):
     _index: ColumnExpression
     _default: ColumnExpression
     _check_if_exists: bool
-    _const_index: Optional[int | str]
+    _const_index: int | str | None
 
     def __init__(
         self,
@@ -826,18 +825,18 @@ class GetExpression(ColumnExpression):
         self._deps = (self._object, self._index, self._default)
 
 
-ReturnTypeFunType = Callable[[Tuple[Any, ...]], Any]
+ReturnTypeFunType = Callable[[tuple[Any, ...]], Any]
 
 
 class MethodCallExpression(ColumnExpression):
-    _fun_mapping: Tuple[Tuple[tuple[dt.DType, ...], dt.DType, Callable], ...]
+    _fun_mapping: tuple[tuple[tuple[dt.DType, ...], dt.DType, Callable], ...]
     _name: str
-    _args: Tuple[ColumnExpression, ...]
+    _args: tuple[ColumnExpression, ...]
 
     def __init__(
         self,
-        fun_mapping: Tuple[
-            Tuple[tuple[dt.DType, ...] | dt.DType, dt.DType, Callable], ...
+        fun_mapping: tuple[
+            tuple[tuple[dt.DType, ...] | dt.DType, dt.DType, Callable], ...
         ],
         name: str,
         *args: ColumnExpressionOrValue,
@@ -886,7 +885,7 @@ class MethodCallExpression(ColumnExpression):
 
     def get_function(
         self, dtypes: tuple[dt.DType, ...]
-    ) -> Optional[tuple[tuple[dt.DType, ...], dt.DType, Callable]]:
+    ) -> tuple[tuple[dt.DType, ...], dt.DType, Callable] | None:
         for key, target_type, fun in self._fun_mapping:
             assert len(dtypes) == len(key)
             if all(
@@ -912,7 +911,7 @@ def _wrap_arg(arg: ColumnExpressionOrValue) -> ColumnExpression:
     return arg
 
 
-def smart_name(arg: ColumnExpression) -> Optional[str]:
+def smart_name(arg: ColumnExpression) -> str | None:
     from pathway.internals.reducers import _any, _unique
 
     if isinstance(arg, ColumnReference):
@@ -925,7 +924,7 @@ def smart_name(arg: ColumnExpression) -> Optional[str]:
     return None
 
 
-def get_column_filtered_by_is_none(arg: ColumnExpression) -> Optional[ColumnReference]:
+def get_column_filtered_by_is_none(arg: ColumnExpression) -> ColumnReference | None:
     if isinstance(arg, IsNotNoneExpression) and isinstance(
         filter_col := arg._expr, ColumnReference
     ):

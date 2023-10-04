@@ -34,8 +34,8 @@ pub struct FullReadResult {
 pub fn full_cycle_read(
     reader: Box<dyn ReaderBuilder>,
     parser: &mut dyn Parser,
-    persistent_storage: &Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
-    global_tracker: &Option<SharedWorkersPersistenceCoordinator>,
+    persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
+    global_tracker: Option<&SharedWorkersPersistenceCoordinator>,
 ) -> FullReadResult {
     let maybe_persistent_id = reader.persistent_id();
 
@@ -118,21 +118,24 @@ pub fn full_cycle_read(
     assert!(rewind_finish_sentinel_seen);
 
     if maybe_persistent_id.is_some() && has_persistent_storage {
-        offsets.lock().unwrap().insert(1, frontier);
-
-        let last_sink_id = persistent_storage
-            .clone()
+        let prev_finalized_time = persistent_storage
             .unwrap()
             .lock()
             .unwrap()
-            .register_sink();
+            .last_finalized_timestamp();
+        offsets
+            .lock()
+            .unwrap()
+            .insert(prev_finalized_time + 1, frontier);
+
+        let last_sink_id = persistent_storage.unwrap().lock().unwrap().register_sink();
         for sink_id in 0..=last_sink_id {
             global_tracker
                 .as_ref()
                 .unwrap()
                 .lock()
                 .unwrap()
-                .accept_finalized_timestamp(0, sink_id, Some(2));
+                .accept_finalized_timestamp(0, sink_id, Some(prev_finalized_time + 2));
         }
     }
 
@@ -179,11 +182,14 @@ pub fn create_persistence_manager(
         let _ = std::fs::remove_dir_all(fs_path);
     }
 
-    let global_tracker = Arc::new(Mutex::new(WorkersPersistenceCoordinator::new()));
+    let global_tracker = Arc::new(Mutex::new(WorkersPersistenceCoordinator::new(
+        Duration::ZERO,
+    )));
 
     let tracker = Arc::new(Mutex::new(
         SingleWorkerPersistentStorage::new(
             PersistenceManagerOuterConfig::new(
+                Duration::ZERO,
                 MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
                 StreamStorageConfig::Filesystem(fs_path.to_path_buf()),
             )

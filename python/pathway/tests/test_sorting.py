@@ -12,7 +12,7 @@ from pathway import (
     this,
     transformer,
 )
-from pathway.dt import Optional
+from pathway.internals import dtype as dt
 from pathway.stdlib.indexing.sorting import (
     binsearch_oracle,
     build_sorted_index,
@@ -516,7 +516,7 @@ def test_compute_max_key():
             0   | 3
             """
     ).with_columns(val=items.pointer_from(this.val))
-    expected = expected.update_types(val=Optional(expected.schema["val"]))  # noqa
+    expected = expected.update_types(val=dt.Optional(expected.typehints()["val"]))
 
     assert_table_equality(
         result,

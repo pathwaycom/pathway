@@ -113,8 +113,8 @@ def _propose_clusters(
         gain=pw.apply(
             louvain_gain,
             aggregated_gain.gain,
-            vertex_degrees.ix(aggregated_gain.u).degree,
-            cluster_penalties.ix(aggregated_gain.vc).unscaled_penalty,
+            vertex_degrees.ix(aggregated_gain.u, context=pw.this).degree,
+            cluster_penalties.ix(aggregated_gain.vc, context=pw.this).unscaled_penalty,
             total_weight.m,
         ),
     )
@@ -175,9 +175,9 @@ def _one_step(
     candidate_moves = proposed_clusters.filter(
         proposed_clusters.c != clustering.ix(proposed_clusters.id).c
     ).with_columns(
-        u=proposed_clusters.id,
-        uc=clustering.ix(proposed_clusters.id).c,
-        vc=proposed_clusters.c,
+        u=pw.this.id,
+        uc=clustering.ix(pw.this.id).c,
+        vc=pw.this.c,
     )
 
     """
@@ -206,7 +206,7 @@ def _one_step(
             (candidate_moves.r == cluster_max_priority.ix(candidate_moves.uc).r)
             | (candidate_moves.r == cluster_max_priority.ix(candidate_moves.vc).r)
         )
-        .with_id(candidate_moves.u)
+        .with_id(pw.this.u)
         .select(c=pw.this.vc)
     )
 
@@ -272,8 +272,8 @@ def exact_modularity(G: Graph, C: pw.Table[Clustering], round_digits=16) -> pw.T
     score = clusters.join(total_weight, id=clusters.id).select(
         modularity=pw.apply(
             cluster_modularity,
-            cluster_internal.ix(clusters.id).internal,
-            cluster_degrees.ix(clusters.id).degree,
+            cluster_internal.ix(pw.this.id).internal,
+            cluster_degrees.ix(pw.this.id).degree,
             total_weight.m,
         )
     )

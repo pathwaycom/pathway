@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any
 
 import pathway as pw
 from pathway.internals.api import PathwayType
@@ -16,18 +16,18 @@ from pathway.io._utils import CsvParserSettings, check_deprecated_kwargs
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: Union[str, PathLike],
-    value_columns: Optional[List[str]] = None,
+    path: str | PathLike,
+    value_columns: list[str] | None = None,
     *,
-    schema: Optional[Type[pw.Schema]] = None,
-    csv_settings: Optional[CsvParserSettings] = None,
+    schema: type[pw.Schema] | None = None,
+    csv_settings: CsvParserSettings | None = None,
     mode: str = "streaming",
-    autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[str] = None,
+    autocommit_duration_ms: int | None = 1500,
+    persistent_id: str | None = None,
     debug_data=None,
-    id_columns: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
+    id_columns: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
     **kwargs,
 ) -> Table:
     """Reads a table from one or several files with delimiter-separated values.
@@ -163,7 +163,7 @@ def read(
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, filename: Union[str, PathLike]) -> None:
+def write(table: Table, filename: str | PathLike) -> None:
     """Writes `table`'s stream of updates to a file in delimiter-separated values format.
 
     Args:

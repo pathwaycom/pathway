@@ -7,7 +7,7 @@ import functools
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathway.internals import api
@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 @dataclass
 class Frame:
     filename: str
-    line_number: Optional[int]
-    line: Optional[str]
+    line_number: int | None
+    line: str | None
     function: str
 
     def is_external(self) -> bool:
@@ -39,8 +39,8 @@ class Frame:
 
 @dataclass
 class Trace:
-    frames: List[Frame]
-    user_frame: Optional[Frame]
+    frames: list[Frame]
+    user_frame: Frame | None
 
     @staticmethod
     def from_traceback():
@@ -54,7 +54,7 @@ class Trace:
             for e in traceback.extract_stack()[:-1]
         ]
 
-        user_frame: Optional[Frame] = None
+        user_frame: Frame | None = None
         for frame in frames:
             if frame.is_marker():
                 break
@@ -63,7 +63,7 @@ class Trace:
 
         return Trace(frames=frames, user_frame=user_frame)
 
-    def to_engine(self) -> Optional[api.Trace]:
+    def to_engine(self) -> api.Trace | None:
         user_frame = self.user_frame
         if (
             user_frame is None
@@ -88,7 +88,7 @@ def _format_frame(frame: Frame) -> str:
     File: {frame.filename}:{frame.line_number}"""
 
 
-def _reraise_with_user_frame(e: Exception, trace: Optional[Trace] = None) -> None:
+def _reraise_with_user_frame(e: Exception, trace: Trace | None = None) -> None:
     traceback = e.__traceback__
     if traceback is not None:
         traceback = traceback.tb_next

@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 from collections import namedtuple
+from collections.abc import Iterable, Iterator, MutableSet
 from functools import partial, wraps
-from typing import Dict, Generic, Iterable, Iterator, MutableSet, TypeVar, Union
+from typing import Generic, TypeVar
 
 from pathway.internals import arg_tuple
 from pathway.internals.shadows import inspect
@@ -78,7 +79,7 @@ def fn_arg_tuple(fn_spec: FunctionSpec, args, kwargs):
 
 
 class StableSet(MutableSet[T]):
-    _inner: Dict[T, None]
+    _inner: dict[T, None]
 
     def __init__(self, /, iterable: Iterable[T] = ()):
         self._inner = dict.fromkeys(iterable)
@@ -109,10 +110,10 @@ class StableSet(MutableSet[T]):
     def copy(self) -> StableSet[T]:
         return StableSet(self)
 
-    def __or__(self, other: Iterable[T2]) -> StableSet[Union[T, T2]]:
+    def __or__(self, other: Iterable[T2]) -> StableSet[T | T2]:
         return super().__or__(other)  # type: ignore
 
-    def __ior__(self, other: Iterable[T2]) -> StableSet[Union[T, T2]]:
+    def __ior__(self, other: Iterable[T2]) -> StableSet[T | T2]:
         return super().__ior__(other)  # type: ignore
 
     def update(self, *sets: Iterable[T]) -> None:

@@ -18,14 +18,15 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
     filterwarnings("ignore", category=BeartypeDecorHintPep585DeprecationWarning)
 
 
-import pathway.dt as dt
 import pathway.reducers as reducers
 from pathway import debug, demo, io
 from pathway.internals import (
     ClassArg,
     ColumnExpression,
     ColumnReference,
-    FilteredJoinResult,
+    DateTimeNaive,
+    DateTimeUtc,
+    Duration,
     GroupedJoinResult,
     GroupedTable,
     Joinable,
@@ -65,6 +66,8 @@ from pathway.internals import (
     run,
     run_all,
     schema_builder,
+    schema_from_csv,
+    schema_from_dict,
     schema_from_types,
     sql,
     this,
@@ -101,7 +104,6 @@ __all__ = [
     "iterate",
     "iterate_universe",
     "JoinResult",
-    "FilteredJoinResult",
     "IntervalJoinResult",
     "method",
     "output_attribute",
@@ -150,7 +152,12 @@ __all__ = [
     "DURATION",
     "unwrap",
     "SchemaProperties",
+    "schema_from_csv",
+    "schema_from_dict",
     "assert_table_has_schema",
+    "DateTimeNaive",
+    "DateTimeUtc",
+    "Duration",
     "Json",
 ]
 

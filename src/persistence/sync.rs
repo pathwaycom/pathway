@@ -1,17 +1,22 @@
 use log::error;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
 
 #[derive(Default)]
 pub struct WorkersPersistenceCoordinator {
+    refresh_frequency: Duration,
+    last_flush_at: Option<SystemTime>,
     worker_persistence_managers: Vec<Arc<Mutex<SingleWorkerPersistentStorage>>>,
     last_timestamp_flushed: Option<u64>,
 }
 
 impl WorkersPersistenceCoordinator {
-    pub fn new() -> Self {
+    pub fn new(refresh_frequency: Duration) -> Self {
         Self {
+            refresh_frequency,
+            last_flush_at: None,
             worker_persistence_managers: Vec::new(),
             last_timestamp_flushed: Some(0),
         }
@@ -67,32 +72,51 @@ impl WorkersPersistenceCoordinator {
         let global_finalized_timestamp = self.global_closed_timestamp();
 
         if global_finalized_timestamp != self.last_timestamp_flushed {
-            self.last_timestamp_flushed = global_finalized_timestamp;
-            let mut worker_futures = Vec::new();
+            let current_timestamp = SystemTime::now();
+            let should_refresh = self.last_flush_at.map_or(true, |last_timestamp| {
+                current_timestamp.duration_since(last_timestamp).unwrap() >= self.refresh_frequency
+            }) || reported_timestamp.is_none();
+            if should_refresh {
+                self.last_flush_at = Some(current_timestamp);
 
-            for persistence_manager in &self.worker_persistence_managers {
-                let commit_data = persistence_manager
-                    .lock()
-                    .unwrap()
-                    .accept_globally_finalized_timestamp(global_finalized_timestamp);
-                worker_futures.push(commit_data);
-            }
+                self.last_timestamp_flushed = global_finalized_timestamp;
+                let mut worker_futures = Vec::new();
 
-            for (tracker, commit_data) in self
-                .worker_persistence_managers
-                .iter()
-                .zip(worker_futures.iter_mut())
-            {
-                let is_prepared = commit_data.prepare();
-                let mut tracker = tracker.lock().unwrap();
-                if !is_prepared {
-                    error!(
-                        "Failed to prepare frontier commit for worker {}",
-                        tracker.worker_id()
-                    );
-                    continue;
+                for persistence_manager in &self.worker_persistence_managers {
+                    let commit_data = persistence_manager
+                        .lock()
+                        .unwrap()
+                        .accept_globally_finalized_timestamp(global_finalized_timestamp);
+                    worker_futures.push(commit_data);
                 }
-                tracker.commit_globally_finalized_timestamp(commit_data);
+
+                // Ensure all snapshots are written to the required point
+                for (tracker, commit_data) in self
+                    .worker_persistence_managers
+                    .iter()
+                    .zip(worker_futures.iter_mut())
+                {
+                    let is_prepared = commit_data.prepare();
+                    if !is_prepared {
+                        error!(
+                            "Failed to prepare frontier commit for worker {}",
+                            tracker.lock().unwrap().worker_id()
+                        );
+                        return;
+                    }
+                }
+
+                // Then commit all frontiers
+                for (tracker, commit_data) in self
+                    .worker_persistence_managers
+                    .iter()
+                    .zip(worker_futures.iter_mut())
+                {
+                    tracker
+                        .lock()
+                        .unwrap()
+                        .commit_globally_finalized_timestamp(commit_data);
+                }
             }
         }
     }

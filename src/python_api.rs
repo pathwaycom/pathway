@@ -9,7 +9,7 @@ use pyo3::sync::GILOnceCell;
 use std::os::unix::prelude::*;
 
 use csv::ReaderBuilder as CsvReaderBuilder;
-use differential_dataflow::consolidation::{consolidate, consolidate_updates};
+use differential_dataflow::consolidation::consolidate_updates;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
     http::{
@@ -42,7 +42,6 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Read};
-use std::iter::zip;
 use std::mem::take;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -66,10 +65,10 @@ use crate::engine::graph::ScopedContext;
 use crate::engine::progress_reporter::MonitoringLevel;
 use crate::engine::time::DateTime;
 use crate::engine::{
-    run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ConcatHandle, DateTimeNaive,
-    DateTimeUtc, Duration, FlattenHandle, GrouperHandle, IxKeyPolicy, IxerHandle, JoinType,
-    JoinerHandle, Key, KeyImpl, PointerExpression, Reducer, ScopedGraph, Type, UniverseHandle,
-    Value, VennUniverseHandle,
+    run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ColumnPath, ConcatHandle,
+    DateTimeNaive, DateTimeUtc, Duration, ExpressionData, GrouperHandle, IxKeyPolicy, IxerHandle,
+    JoinType, Key, KeyImpl, PointerExpression, Reducer, ScopedGraph, TableHandle, Type,
+    UniverseHandle, Value, VennUniverseHandle,
 };
 use crate::engine::{AnyExpression, Context as EngineContext};
 use crate::engine::{BoolExpression, Error as EngineError};
@@ -78,7 +77,7 @@ use crate::engine::{Computer as EngineComputer, Expressions};
 use crate::engine::{DateTimeNaiveExpression, DateTimeUtcExpression, DurationExpression};
 use crate::engine::{Expression, IntExpression};
 use crate::engine::{FloatExpression, Graph};
-use crate::engine::{StringExpression, Table as EngineTable};
+use crate::engine::{LegacyTable as EngineLegacyTable, StringExpression};
 use crate::persistence::config::{
     MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
 };
@@ -467,12 +466,12 @@ where
     iterable.iter()?.map(|obj| obj?.extract()).collect()
 }
 
-fn engine_tables_from_py_iterable(iterable: &PyAny) -> PyResult<Vec<EngineTable>> {
+fn engine_tables_from_py_iterable(iterable: &PyAny) -> PyResult<Vec<EngineLegacyTable>> {
     let py = iterable.py();
     iterable
         .iter()?
         .map(|table| {
-            let table: PyRef<Table> = table?.extract()?;
+            let table: PyRef<LegacyTable> = table?.extract()?;
             Ok(table.to_engine(py))
         })
         .collect()
@@ -484,7 +483,7 @@ pub struct BasePointer(Key);
 #[pymethods]
 impl BasePointer {
     pub fn __str__(&self) -> String {
-        format!("{:#}", self.0)
+        self.0.to_string()
     }
 
     pub fn __repr__(&self) -> String {
@@ -543,11 +542,15 @@ impl PyReducer {
     #[classattr]
     pub const ARRAY_SUM: Reducer = Reducer::ArraySum;
 
-    #[classattr]
-    pub const SORTED_TUPLE: Reducer = Reducer::SortedTuple;
+    #[staticmethod]
+    fn sorted_tuple(skip_nones: bool) -> Reducer {
+        Reducer::SortedTuple(skip_nones)
+    }
 
-    #[classattr]
-    pub const TUPLE: Reducer = Reducer::Tuple;
+    #[staticmethod]
+    fn tuple(skip_nones: bool) -> Reducer {
+        Reducer::Tuple(skip_nones)
+    }
 
     #[classattr]
     pub const UNIQUE: Reducer = Reducer::Unique;
@@ -757,6 +760,18 @@ impl PyExpression {
             ))),
             true,
         )
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (function, *args))]
+    fn unsafe_numba_apply(function: &PyAny, args: Vec<PyRef<PyExpression>>) -> PyResult<Self> {
+        let args = args
+            .into_iter()
+            .map(|expr| expr.inner.clone())
+            .collect_vec();
+        let num_args = args.len();
+        let inner = unsafe { numba::get_numba_expression(function, args.into(), num_args) }?;
+        Ok(Self::new(inner, false))
     }
 
     #[staticmethod]
@@ -1352,7 +1367,7 @@ impl Column {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
-pub struct Table {
+pub struct LegacyTable {
     #[pyo3(get)] // ?
     universe: Py<Universe>,
 
@@ -1361,7 +1376,7 @@ pub struct Table {
 }
 
 #[pymethods]
-impl Table {
+impl LegacyTable {
     #[new]
     pub fn new(
         universe: &PyCell<Universe>,
@@ -1379,7 +1394,7 @@ impl Table {
 
     pub fn __repr__(&self, py: Python) -> String {
         format!(
-            "<Table universe={:?} columns=[{}]>",
+            "<LegacyTable universe={:?} columns=[{}]>",
             self.universe.borrow(py).handle,
             self.columns.iter().format_with(", ", |column, f| {
                 f(&format_args!("{:?}", column.borrow(py).handle))
@@ -1388,7 +1403,7 @@ impl Table {
     }
 }
 
-impl Table {
+impl LegacyTable {
     fn to_engine(&self, py: Python) -> (UniverseHandle, Vec<ColumnHandle>) {
         let universe = self.universe.borrow(py);
         let column_handles = self.columns.iter().map(|c| c.borrow(py).handle).collect();
@@ -1410,9 +1425,57 @@ impl Table {
         Self::new(universe, columns)
     }
 
-    fn from_engine(scope: &PyCell<Scope>, table: EngineTable) -> Self {
+    fn from_engine(scope: &PyCell<Scope>, table: EngineLegacyTable) -> Self {
         let (universe_handle, column_handles) = table;
         Self::from_handles(scope, universe_handle, column_handles).unwrap()
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct Table {
+    scope: Py<Scope>,
+    handle: TableHandle,
+}
+
+impl Table {
+    fn new(scope: &PyCell<Scope>, handle: TableHandle) -> PyResult<Py<Self>> {
+        let py = scope.py();
+        if let Some(table) = scope.borrow().tables.borrow().get(&handle) {
+            return Ok(table.clone());
+        }
+        let res = Py::new(
+            py,
+            Self {
+                scope: scope.into(),
+                handle,
+            },
+        )?;
+        scope
+            .borrow()
+            .tables
+            .borrow_mut()
+            .insert(handle, res.clone());
+        Ok(res)
+    }
+}
+
+impl<'source> FromPyObject<'source> for ColumnPath {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        if ob.getattr("is_key").is_ok_and(|is_key| {
+            is_key
+                .extract::<&PyBool>()
+                .expect("is_key field in ColumnPath should be bool")
+                .is_true()
+        }) {
+            Ok(Self::Key)
+        } else if let Ok(path) = ob.getattr("path").and_then(PyAny::extract) {
+            Ok(Self::ValuePath(path))
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "can't convert {} to ColumnPath",
+                ob.get_type().name()?
+            )))
+        }
     }
 }
 
@@ -1670,6 +1733,7 @@ pub struct Scope {
     // empty_universe: Lazy<Py<Universe>>,
     universes: RefCell<HashMap<UniverseHandle, Py<Universe>>>,
     columns: RefCell<HashMap<ColumnHandle, Py<Column>>>,
+    tables: RefCell<HashMap<TableHandle, Py<Table>>>,
     persistent_ids: RefCell<HashSet<ExternalPersistentId>>,
     event_loop: PyObject,
 }
@@ -1682,6 +1746,7 @@ impl Scope {
             graph: SendWrapper::new(ScopedGraph::new()),
             universes: RefCell::new(HashMap::new()),
             columns: RefCell::new(HashMap::new()),
+            tables: RefCell::new(HashMap::new()),
             persistent_ids: RefCell::new(HashSet::new()),
             event_loop,
         }
@@ -1690,6 +1755,7 @@ impl Scope {
     fn clear_caches(&self) {
         self.universes.borrow_mut().clear();
         self.columns.borrow_mut().clear();
+        self.tables.borrow_mut().clear();
     }
 }
 
@@ -1697,19 +1763,12 @@ impl Scope {
 impl Scope {
     pub fn empty_table(
         self_: &PyCell<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] dtypes: Vec<&PyAny>,
-    ) -> PyResult<Table> {
-        let py = self_.py();
-        let universe_handle = self_.borrow().graph.empty_universe()?;
-        let universe = Universe::new(self_, universe_handle)?;
-        let columns = dtypes
-            .into_iter()
-            .map(|_dt| {
-                let handle = self_.borrow().graph.empty_column(universe_handle)?;
-                Column::new(universe.as_ref(py), handle)
-            })
-            .collect::<PyResult<_>>()?;
-        Table::new(universe.as_ref(py), columns)
+        #[allow(unused)]
+        #[pyo3(from_py_with = "from_py_iterable")]
+        dtypes: Vec<&PyAny>,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_.borrow().graph.empty_table()?;
+        Table::new(self_, table_handle)
     }
 
     pub fn static_universe(
@@ -1734,12 +1793,23 @@ impl Scope {
         Column::new(universe, handle)
     }
 
+    pub fn static_table(
+        self_: &PyCell<Self>,
+        #[pyo3(from_py_with = "from_py_iterable")] values: Vec<(Key, Vec<Value>)>,
+        #[allow(unused)]
+        #[pyo3(from_py_with = "from_py_iterable")]
+        dtypes: Vec<&PyAny>,
+    ) -> PyResult<Py<Table>> {
+        let handle = self_.borrow().graph.static_table(values)?;
+        Table::new(self_, handle)
+    }
+
     pub fn connector_table(
         self_: &PyCell<Self>,
         data_source: &PyCell<DataStorage>,
         data_format: &PyCell<DataFormat>,
         properties: ConnectorProperties,
-    ) -> PyResult<Table> {
+    ) -> PyResult<Py<Table>> {
         let py = self_.py();
 
         let persistent_id = data_source.borrow().persistent_id.clone();
@@ -1759,7 +1829,7 @@ impl Scope {
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(py)?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
-        let (universe_handle, column_handles) = self_.borrow().graph.connector_table(
+        let table_handle = self_.borrow().graph.connector_table(
             reader_impl,
             parser_impl,
             properties
@@ -1768,30 +1838,21 @@ impl Scope {
             parallel_readers,
             &persistent_id,
         )?;
-
-        let universe = Universe::new(self_, universe_handle)?;
-
-        let mut columns = Vec::new();
-        for column_handle in column_handles {
-            let column = Column::new(universe.as_ref(py), column_handle)?;
-            columns.push(column);
-        }
-
-        Ok(Table { universe, columns })
+        Table::new(self_, table_handle)
     }
 
     #[allow(clippy::type_complexity)]
     #[pyo3(signature = (iterated, iterated_with_universe, extra, logic, *, limit = None))]
     pub fn iterate(
         self_: &PyCell<Self>,
-        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated: Vec<EngineTable>,
+        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated: Vec<EngineLegacyTable>,
         #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated_with_universe: Vec<
-            EngineTable,
+            EngineLegacyTable,
         >,
-        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] extra: Vec<EngineTable>,
+        #[pyo3(from_py_with = "engine_tables_from_py_iterable")] extra: Vec<EngineLegacyTable>,
         logic: &PyAny,
         limit: Option<u32>,
-    ) -> PyResult<(Vec<Py<Table>>, Vec<Py<Table>>)> {
+    ) -> PyResult<(Vec<Py<LegacyTable>>, Vec<Py<LegacyTable>>)> {
         let py = self_.py();
         let (result, result_with_universe) = self_.borrow().graph.iterate(
             iterated,
@@ -1806,15 +1867,15 @@ impl Scope {
                 scope.borrow().graph.scoped(graph, || {
                     let iterated = iterated
                         .into_iter()
-                        .map(|table| Table::from_engine(scope, table))
+                        .map(|table| LegacyTable::from_engine(scope, table))
                         .collect::<Vec<_>>();
                     let iterated_with_universe = iterated_with_universe
                         .into_iter()
-                        .map(|table| Table::from_engine(scope, table))
+                        .map(|table| LegacyTable::from_engine(scope, table))
                         .collect::<Vec<_>>();
                     let extra = extra
                         .into_iter()
-                        .map(|table| Table::from_engine(scope, table))
+                        .map(|table| LegacyTable::from_engine(scope, table))
                         .collect::<Vec<_>>();
                     let (result, result_with_universe): (&PyAny, &PyAny) = logic
                         .call1((scope, iterated, iterated_with_universe, extra))?
@@ -1822,14 +1883,14 @@ impl Scope {
                     let result = result
                         .iter()?
                         .map(|table| {
-                            let table: PyRef<Table> = table?.extract()?;
+                            let table: PyRef<LegacyTable> = table?.extract()?;
                             Ok(table.to_engine(py))
                         })
                         .collect::<PyResult<_>>()?;
                     let result_with_universe = result_with_universe
                         .iter()?
                         .map(|table| {
-                            let table: PyRef<Table> = table?.extract()?;
+                            let table: PyRef<LegacyTable> = table?.extract()?;
                             Ok(table.to_engine(py))
                         })
                         .collect::<PyResult<_>>()?;
@@ -1839,18 +1900,18 @@ impl Scope {
         )?;
         let result = result
             .into_iter()
-            .map(|table| Py::new(py, Table::from_engine(self_, table)))
+            .map(|table| Py::new(py, LegacyTable::from_engine(self_, table)))
             .collect::<PyResult<_>>()?;
         let result_with_universe = result_with_universe
             .into_iter()
-            .map(|table| Py::new(py, Table::from_engine(self_, table)))
+            .map(|table| Py::new(py, LegacyTable::from_engine(self_, table)))
             .collect::<PyResult<_>>()?;
         Ok((result, result_with_universe))
     }
 
     pub fn map_column(
         self_: &PyCell<Self>,
-        table: &Table,
+        table: &LegacyTable,
         function: Py<PyAny>,
         properties: EvalProperties,
     ) -> PyResult<Py<Column>> {
@@ -1878,19 +1939,16 @@ impl Scope {
         Column::new(universe, handle)
     }
 
-    pub fn async_map_column(
+    pub fn async_apply_table(
         self_: &PyCell<Self>,
-        table: &Table,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         function: Py<PyAny>,
         properties: EvalProperties,
-    ) -> PyResult<Py<Column>> {
+    ) -> PyResult<Py<Table>> {
         let py = self_.py();
-        let universe = table.universe.as_ref(py);
-        let universe_ref = universe.borrow();
-        check_identity(self_, &universe_ref.scope, "scope mismatch")?;
-        let column_handles = table.columns.iter().map(|c| c.borrow(py).handle).collect();
         let event_loop = self_.borrow().event_loop.clone();
-        let handle = self_.borrow().graph.async_apply_column(
+        let table_handle = self_.borrow().graph.async_apply_table(
             Arc::new(move |_, values| {
                 let future = with_gil_and_pool(|py| {
                     let event_loop = event_loop.clone();
@@ -1907,25 +1965,16 @@ impl Scope {
                     with_gil_and_pool(|py| result.extract::<Value>(py).map_err(DynError::from))
                 })
             }),
-            universe_ref.handle,
-            column_handles,
+            table.handle,
+            column_paths,
             properties.trace(py)?,
         )?;
-        Column::new(universe, handle)
-    }
-
-    pub fn unsafe_map_column_numba(
-        self_: &PyCell<Self>,
-        table: &Table,
-        function: &PyAny,
-        properties: EvalProperties,
-    ) -> PyResult<Py<Column>> {
-        unsafe { numba::unsafe_map_column(self_, table, function, properties) }
+        Table::new(self_, table_handle)
     }
 
     pub fn expression_column(
         self_: &PyCell<Self>,
-        table: &Table,
+        table: &LegacyTable,
         expression: &PyExpression,
         properties: EvalProperties,
     ) -> PyResult<Py<Column>> {
@@ -1949,6 +1998,90 @@ impl Scope {
         Column::new(universe, handle)
     }
 
+    #[pyo3(signature = (table, column_paths, expressions))]
+    pub fn expression_table(
+        self_: &PyCell<Self>,
+        table: &Table,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = "from_py_iterable")] expressions: Vec<(
+            PyRef<PyExpression>,
+            EvalProperties,
+        )>,
+    ) -> PyResult<Py<Table>> {
+        let py = self_.py();
+        let gil = expressions
+            .iter()
+            .any(|(expression, _properties)| expression.gil);
+        let wrapper = if gil {
+            BatchWrapper::WithGil
+        } else {
+            BatchWrapper::None
+        };
+        let expressions: Vec<ExpressionData> = expressions
+            .into_iter()
+            .map(|(expression, properties)| {
+                Ok(ExpressionData::new(
+                    expression.inner.clone(),
+                    properties.trace(py)?,
+                ))
+            })
+            .collect::<PyResult<_>>()?;
+        let table_handle = self_.borrow().graph.expression_table(
+            table.handle,
+            column_paths,
+            expressions,
+            wrapper,
+        )?;
+        Table::new(self_, table_handle)
+    }
+
+    pub fn columns_to_table(
+        self_: &PyCell<Self>,
+        universe: &PyCell<Universe>,
+        #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<(PyRef<Column>, ColumnPath)>,
+    ) -> PyResult<Py<Table>> {
+        let columns_with_handles = columns
+            .into_iter()
+            .map(|(column, path)| (column.handle, path))
+            .collect();
+        let table_handle = self_
+            .borrow()
+            .graph
+            .columns_to_table(universe.borrow().handle, columns_with_handles)?;
+        Table::new(self_, table_handle)
+    }
+
+    pub fn table_column(
+        self_: &PyCell<Self>,
+        universe: &PyCell<Universe>,
+        table: PyRef<Table>,
+        column_path: ColumnPath,
+    ) -> PyResult<Py<Column>> {
+        let handle = self_.borrow().graph.table_column(
+            universe.borrow().handle,
+            table.handle,
+            column_path,
+        )?;
+        Column::new(universe, handle)
+    }
+
+    pub fn table_universe(self_: &PyCell<Self>, table: PyRef<Table>) -> PyResult<Py<Universe>> {
+        let universe_handle = self_.borrow().graph.table_universe(table.handle)?;
+        Universe::new(self_, universe_handle)
+    }
+
+    pub fn flatten_table_storage(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_
+            .borrow()
+            .graph
+            .flatten_table_storage(table.handle, column_paths)?;
+        Table::new(self_, table_handle)
+    }
+
     #[allow(clippy::unused_self)]
     pub fn filter_universe(
         self_: &PyCell<Self>,
@@ -1962,6 +2095,60 @@ impl Scope {
             .graph
             .filter_universe(universe.handle, column.handle)?;
         Universe::new(self_, new_universe_handle)
+    }
+
+    pub fn filter_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        filtering_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_
+            .borrow()
+            .graph
+            .filter_table(table.handle, filtering_column_path)?;
+        Table::new(self_, new_table_handle)
+    }
+
+    pub fn forget(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        threshold_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let new_storage_handle = self_.borrow().graph.forget(
+            table.handle,
+            threshold_column_path,
+            current_time_column_path,
+        )?;
+        Table::new(self_, new_storage_handle)
+    }
+
+    pub fn freeze(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        threshold_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let new_storage_handle = self_.borrow().graph.freeze(
+            table.handle,
+            threshold_column_path,
+            current_time_column_path,
+        )?;
+        Table::new(self_, new_storage_handle)
+    }
+
+    pub fn buffer(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        threshold_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let new_storage_handle = self_.borrow().graph.buffer(
+            table.handle,
+            threshold_column_path,
+            current_time_column_path,
+        )?;
+        Table::new(self_, new_storage_handle)
     }
 
     #[pyo3(signature = (*universes))]
@@ -1980,6 +2167,31 @@ impl Scope {
             .collect::<PyResult<_>>()?;
         let universe_handle = self_.borrow().graph.intersect_universe(universe_handles)?;
         Universe::new(self_, universe_handle)
+    }
+
+    pub fn intersect_tables(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] tables: Vec<PyRef<Table>>,
+    ) -> PyResult<Py<Table>> {
+        let table_handles = tables.into_iter().map(|table| table.handle).collect();
+        let result_table_handle = self_
+            .borrow()
+            .graph
+            .intersect_tables(table.handle, table_handles)?;
+        Table::new(self_, result_table_handle)
+    }
+
+    pub fn subtract_table(
+        self_: &PyCell<Self>,
+        left_table: PyRef<Table>,
+        right_table: PyRef<Table>,
+    ) -> PyResult<Py<Table>> {
+        let result_table_handle = self_
+            .borrow()
+            .graph
+            .subtract_table(left_table.handle, right_table.handle)?;
+        Table::new(self_, result_table_handle)
     }
 
     #[pyo3(signature = (*universes))]
@@ -2035,18 +2247,25 @@ impl Scope {
         })
     }
 
-    pub fn flatten(self_: &PyCell<Self>, flatten_column: PyRef<Column>) -> PyResult<Flatten> {
-        let (new_universe_handle, flattened_column_handle, flatten_handle) =
-            self_.borrow().graph.flatten(flatten_column.handle)?;
-        let new_universe = Universe::new(self_, new_universe_handle)?;
-        let flattened_column =
-            Column::new(new_universe.as_ref(self_.py()), flattened_column_handle)?;
-        Ok(Flatten {
-            scope: self_.into(),
-            universe: new_universe,
-            flattened_column,
-            handle: flatten_handle,
-        })
+    pub fn concat_tables(
+        self_: &PyCell<Self>,
+        #[pyo3(from_py_with = "from_py_iterable")] tables: Vec<PyRef<Table>>,
+    ) -> PyResult<Py<Table>> {
+        let table_handles = tables.into_iter().map(|table| table.handle).collect();
+        let table_handle = self_.borrow().graph.concat_tables(table_handles)?;
+        Table::new(self_, table_handle)
+    }
+
+    pub fn flatten_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        flatten_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_
+            .borrow()
+            .graph
+            .flatten_table(table.handle, flatten_column_path)?;
+        Table::new(self_, new_table_handle)
     }
 
     pub fn sort(
@@ -2062,6 +2281,20 @@ impl Scope {
         let next_column = Column::new(universe, next_column_handle)?;
 
         Ok((prev_column, next_column))
+    }
+
+    pub fn sort_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        key_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle =
+            self_
+                .borrow()
+                .graph
+                .sort_table(table.handle, key_column_path, instance_column_path)?;
+        Table::new(self_, new_table_handle)
     }
 
     pub fn reindex_universe<'py>(
@@ -2112,6 +2345,18 @@ impl Scope {
         Column::new(reindexing_universe, new_column_handle)
     }
 
+    pub fn reindex_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        reindexing_column_path: ColumnPath,
+    ) -> PyResult<Py<Table>> {
+        let result_table_handle = self_
+            .borrow()
+            .graph
+            .reindex_table(table.handle, reindexing_column_path)?;
+        Table::new(self_, result_table_handle)
+    }
+
     pub fn restrict_column<'py>(
         self_: &'py PyCell<Self>,
         universe: &'py PyCell<Universe>,
@@ -2127,6 +2372,32 @@ impl Scope {
             .graph
             .restrict_column(universe_ref.handle, column_ref.handle)?;
         Column::new(universe, new_column_handle)
+    }
+
+    pub fn restrict_table(
+        self_: &PyCell<Self>,
+        orig_table: PyRef<Table>,
+        new_table: PyRef<Table>,
+    ) -> PyResult<Py<Table>> {
+        let result_table_handle = self_.borrow().graph.restrict_or_override_table_universe(
+            orig_table.handle,
+            new_table.handle,
+            false,
+        )?;
+        Table::new(self_, result_table_handle)
+    }
+
+    pub fn override_table_universe(
+        self_: &PyCell<Self>,
+        orig_table: PyRef<Table>,
+        new_table: PyRef<Table>,
+    ) -> PyResult<Py<Table>> {
+        let result_table_handle = self_.borrow().graph.restrict_or_override_table_universe(
+            orig_table.handle,
+            new_table.handle,
+            true,
+        )?;
+        Table::new(self_, result_table_handle)
     }
 
     pub fn override_column_universe<'py>(
@@ -2150,7 +2421,7 @@ impl Scope {
         self_: &'py PyCell<Self>,
         universe: &'py PyCell<Universe>,
         columns: &'py PyAny,
-    ) -> PyResult<Table> {
+    ) -> PyResult<LegacyTable> {
         check_identity(self_, &universe.borrow().scope, "scope mismatch")?;
         let columns = columns
             .iter()?
@@ -2159,13 +2430,13 @@ impl Scope {
                 Self::restrict_column(self_, universe, column)
             })
             .collect::<PyResult<_>>()?;
-        Table::new(universe, columns)
+        LegacyTable::new(universe, columns)
     }
 
     #[pyo3(signature = (table, requested_columns, set_id = false))]
     pub fn group_by(
         self_: &PyCell<Self>,
-        table: PyRef<Table>,
+        table: PyRef<LegacyTable>,
         #[pyo3(from_py_with = "from_py_iterable")] requested_columns: Vec<PyRef<Column>>,
         set_id: bool,
     ) -> PyResult<Grouper> {
@@ -2227,46 +2498,27 @@ impl Scope {
         })
     }
 
-    #[pyo3(signature = (left_table, right_table, assign_id = false, left_ear = false, right_ear = false))]
-    pub fn join(
+    #[pyo3(signature = (left_table, right_table, left_column_paths, right_column_paths, assign_id = false, left_ear = false, right_ear = false))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn join_tables(
         self_: &PyCell<Self>,
-        py: Python,
         left_table: PyRef<Table>,
         right_table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] left_column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = "from_py_iterable")] right_column_paths: Vec<ColumnPath>,
         assign_id: bool,
         left_ear: bool,
         right_ear: bool,
-    ) -> PyResult<Joiner> {
-        let self_ref = self_.borrow();
-        let left_universe = left_table.universe.borrow(py);
-        check_identity(self_, &left_universe.scope, "scope mismatch")?;
-        let right_universe = right_table.universe.borrow(py);
-        check_identity(self_, &right_universe.scope, "scope mismatch")?;
-        let left_column_handles = left_table
-            .columns
-            .iter()
-            .map(|c| c.borrow(py).handle)
-            .collect();
-        let right_column_handles = right_table
-            .columns
-            .iter()
-            .map(|c| c.borrow(py).handle)
-            .collect();
+    ) -> PyResult<Py<Table>> {
         let join_type = JoinType::from_assign_left_right(assign_id, left_ear, right_ear)?;
-        let joiner_handle = self_ref.graph.join(
-            left_universe.handle,
-            left_column_handles,
-            right_universe.handle,
-            right_column_handles,
+        let table_handle = self_.borrow().graph.join_tables(
+            left_table.handle,
+            right_table.handle,
+            left_column_paths,
+            right_column_paths,
             join_type,
         )?;
-        let universe_handle = self_ref.graph.joiner_universe(joiner_handle)?;
-        let universe = Universe::new(self_, universe_handle)?;
-        Ok(Joiner {
-            scope: self_.into(),
-            handle: joiner_handle,
-            universe,
-        })
+        Table::new(self_, table_handle)
     }
 
     fn complex_columns(
@@ -2294,64 +2546,62 @@ impl Scope {
     pub fn debug_universe<'py>(
         self_: &'py PyCell<Self>,
         name: String,
-        universe: &'py PyCell<Universe>,
+        table: &'py PyCell<Table>,
     ) -> PyResult<()> {
-        check_identity(self_, &universe.borrow().scope, "scope mismatch")?;
+        check_identity(self_, &table.borrow().scope, "scope mismatch")?;
         Ok(self_
             .borrow()
             .graph
-            .debug_universe(name, universe.borrow().handle)?)
+            .debug_universe(name, table.borrow().handle)?)
     }
 
     pub fn debug_column<'py>(
         self_: &'py PyCell<Self>,
         name: String,
-        column: &'py PyCell<Column>,
+        table: &'py PyCell<Table>,
+        column_path: ColumnPath,
     ) -> PyResult<()> {
-        let py = self_.py();
-        check_identity(
-            self_,
-            &column.borrow().universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
+        check_identity(self_, &table.borrow().scope, "scope mismatch")?;
         Ok(self_
             .borrow()
             .graph
-            .debug_column(name, column.borrow().handle)?)
+            .debug_column(name, table.borrow().handle, column_path)?)
     }
 
-    pub fn update_rows<'py>(
-        self_: &'py PyCell<Self>,
-        universe: &'py PyCell<Universe>,
-        column: &'py PyCell<Column>,
-        updates: &'py PyCell<Column>,
-    ) -> PyResult<Py<Column>> {
-        let py = self_.py();
+    pub fn update_rows_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        update: PyRef<Table>,
+    ) -> PyResult<Py<Table>> {
+        let result_table_handle = self_
+            .borrow()
+            .graph
+            .update_rows_table(table.handle, update.handle)?;
 
-        check_identity(self_, &universe.borrow().scope, "scope mismatch")?;
-        check_identity(
-            self_,
-            &column.borrow().universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
-        check_identity(
-            self_,
-            &updates.borrow().universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
-
-        let handle = self_.borrow().graph.update_rows(
-            universe.borrow().handle,
-            column.borrow().handle,
-            updates.borrow().handle,
-        )?;
-
-        Column::new(universe, handle)
+        Table::new(self_, result_table_handle)
     }
 
-    pub fn output_table<'py>(
-        self_: &'py PyCell<Self>,
-        table: &'py PyCell<Table>,
+    pub fn update_cells_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        update: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = "from_py_iterable")] update_paths: Vec<ColumnPath>,
+    ) -> PyResult<Py<Table>> {
+        let result_table_handle = self_.borrow().graph.update_cells_table(
+            table.handle,
+            update.handle,
+            column_paths,
+            update_paths,
+        )?;
+
+        Table::new(self_, result_table_handle)
+    }
+
+    pub fn output_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         data_sink: &PyCell<DataStorage>,
         data_format: &PyCell<DataFormat>,
     ) -> PyResult<()> {
@@ -2360,35 +2610,22 @@ impl Scope {
         let sink_impl = data_sink.borrow().construct_writer(py)?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
 
-        let mut column_handles = Vec::new();
-        for column in &table.borrow().columns {
-            column_handles.push(column.borrow(py).handle);
-        }
-
-        let universe_handle = table.borrow().universe.borrow(py).handle;
-        self_.borrow().graph.output_table(
-            sink_impl,
-            format_impl,
-            universe_handle,
-            column_handles,
-        )?;
+        self_
+            .borrow()
+            .graph
+            .output_table(sink_impl, format_impl, table.handle, column_paths)?;
 
         Ok(())
     }
 
     pub fn subscribe_table(
         self_: &PyCell<Self>,
-        table: &Table,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         on_change: Py<PyAny>,
         on_end: Py<PyAny>,
     ) -> PyResult<()> {
-        let py = self_.py();
-        let universe = table.universe.as_ref(py);
-        let universe_ref = universe.borrow();
-        check_identity(self_, &universe_ref.scope, "scope mismatch")?;
-
-        let column_handles = table.columns.iter().map(|c| c.borrow(py).handle).collect();
-        self_.borrow().graph.subscribe_column(
+        self_.borrow().graph.subscribe_table(
             BatchWrapper::WithGil,
             Box::new(move |key, values, time, diff| {
                 with_gil_and_pool(|py| {
@@ -2408,8 +2645,8 @@ impl Scope {
                     Ok(())
                 })
             }),
-            universe_ref.handle,
-            column_handles,
+            table.handle,
+            column_paths,
         )?;
         Ok(())
     }
@@ -2501,18 +2738,22 @@ impl Grouper {
     fn reducer_column(
         self_: PyRef<Self>,
         reducer: Reducer,
-        column: PyRef<Column>,
+        columns: Vec<PyRef<Column>>,
         py: Python,
     ) -> PyResult<Py<Column>> {
-        check_identity(
-            &self_.scope,
-            &column.universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
+        for column in &columns {
+            check_identity(
+                &self_.scope,
+                &column.universe.borrow(py).scope,
+                "scope mismatch",
+            )?;
+        }
+
+        let input_column_handles = columns.into_iter().map(|column| column.handle).collect();
         let column_handle = self_.scope.borrow(py).graph.grouper_reducer_column(
             self_.handle,
             reducer,
-            column.handle,
+            input_column_handles,
         )?;
         Column::new(Grouper::universe(self_, py)?.as_ref(py), column_handle)
     }
@@ -2528,117 +2769,42 @@ impl Grouper {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
-pub struct Joiner {
-    scope: Py<Scope>,
-    handle: JoinerHandle,
-    #[pyo3(get)]
-    universe: Py<Universe>,
-}
-
-#[pymethods]
-impl Joiner {
-    fn select_left_column(self_: PyRef<Self>, column: PyRef<Column>) -> PyResult<Py<Column>> {
-        let py = self_.py();
-        check_identity(
-            &self_.scope,
-            &column.universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
-        let column_handle = self_
-            .scope
-            .borrow(py)
-            .graph
-            .joiner_left_column(self_.handle, column.handle)?;
-        Column::new(self_.universe.as_ref(py), column_handle)
-    }
-
-    fn select_right_column(self_: PyRef<Self>, column: PyRef<Column>) -> PyResult<Py<Column>> {
-        let py = self_.py();
-        check_identity(
-            &self_.scope,
-            &column.universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
-        let column_handle = self_
-            .scope
-            .borrow(py)
-            .graph
-            .joiner_right_column(self_.handle, column.handle)?;
-        Column::new(self_.universe.as_ref(py), column_handle)
-    }
-}
-
-type CapturedData<T> = Arc<Mutex<Vec<T>>>;
-type CapturedUniverseData = CapturedData<(Key, isize)>;
-type CapturedColumnData = CapturedData<(Key, Value, isize)>;
-type CapturedTableData = (CapturedUniverseData, Vec<CapturedColumnData>);
+type CapturedTableData = Arc<Mutex<Vec<(Key, Arc<[Value]>, isize)>>>;
 
 fn capture_table_data(
-    py: Python,
     graph: &dyn Graph,
     table: PyRef<Table>,
+    column_paths: Vec<ColumnPath>,
 ) -> PyResult<CapturedTableData> {
-    let universe_data = Arc::new(Mutex::new(Vec::new()));
+    let table_data = Arc::new(Mutex::new(Vec::new()));
     {
-        let universe_data = universe_data.clone();
-        graph.on_universe_data(
-            table.universe.borrow(py).handle,
-            Box::new(move |key, diff| {
-                universe_data.lock().unwrap().push((*key, diff));
+        let table_data = table_data.clone();
+        graph.on_table_data(
+            table.handle,
+            column_paths,
+            Box::new(move |key, values, diff| {
+                table_data
+                    .lock()
+                    .unwrap()
+                    .push((*key, Arc::from(values), diff));
                 Ok(())
             }),
         )?;
     }
-    let mut all_column_data = Vec::new();
-    for column in &table.columns {
-        let column = column.borrow(py);
-        let column_data = Arc::new(Mutex::new(Vec::new()));
-        {
-            let column_data = column_data.clone();
-            graph.on_column_data(
-                column.handle,
-                Box::new(move |key, data, diff| {
-                    column_data.lock().unwrap().push((*key, data.clone(), diff));
-                    Ok(())
-                }),
-            )?;
-        }
-        all_column_data.push(column_data);
-    }
-    Ok((universe_data, all_column_data))
+    Ok(table_data)
 }
 
 pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Py<PyDict>> {
-    let mut combined_universe_data = Vec::new();
-    let mut combined_all_column_data = Vec::new();
-    for (universe_data, all_column_data) in table_data {
-        combined_universe_data.extend(take(&mut *universe_data.lock().unwrap()));
-        combined_all_column_data.resize_with(all_column_data.len(), Vec::new);
-        for (combined_column_data, column_data) in
-            zip(&mut combined_all_column_data, all_column_data)
-        {
-            combined_column_data.extend(take(&mut *column_data.lock().unwrap()));
-        }
+    let mut combined_table_data = Vec::new();
+    for single_table_data in table_data {
+        combined_table_data.extend(take(&mut *single_table_data.lock().unwrap()));
     }
-    consolidate(&mut combined_universe_data);
-    for column_data in &mut combined_all_column_data {
-        consolidate_updates(column_data);
-        assert_eq!(column_data.len(), combined_universe_data.len());
-    }
+    consolidate_updates(&mut combined_table_data);
     with_gil_and_pool(|py| {
         let dict = PyDict::new(py);
-        for (i, (key, diff)) in combined_universe_data.into_iter().enumerate() {
+        for (key, values, diff) in combined_table_data {
             assert_eq!(diff, 1);
-            let tuple = PyTuple::new(
-                py,
-                combined_all_column_data.iter().map(|column_data| {
-                    let (data_key, ref data, diff) = column_data[i];
-                    assert_eq!(data_key, key);
-                    assert_eq!(diff, 1);
-                    data.clone()
-                }),
-            );
+            let tuple = PyTuple::new(py, values.iter());
             dict.set_item(key, tuple)?;
         }
         Ok(dict.into())
@@ -2686,7 +2852,7 @@ pub fn run_with_new_graph(
 
                     let captured_tables = Python::with_gil(|py| {
                         let our_scope = PyCell::new(py, Scope::new(None, event_loop.clone()))?;
-                        let tables: Vec<PyRef<Table>> =
+                        let tables: Vec<(PyRef<Table>, Vec<ColumnPath>)> =
                             our_scope.borrow().graph.scoped(graph, || {
                                 let args = PyTuple::new(py, [our_scope]);
                                 from_py_iterable(logic.as_ref(py).call1(args)?)
@@ -2694,7 +2860,7 @@ pub fn run_with_new_graph(
                         our_scope.borrow().clear_caches();
                         tables
                             .into_iter()
-                            .map(|table| capture_table_data(py, graph, table))
+                            .map(|(table, paths)| capture_table_data(graph, table, paths))
                             .try_collect()
                     })?;
                     Ok((thread_state, captured_tables))
@@ -2751,39 +2917,6 @@ impl Concat {
             .borrow(py)
             .graph
             .concat_column(self_.handle, column_handles)?;
-        Column::new(self_.universe.as_ref(py), column_handle)
-    }
-}
-
-#[pyclass(module = "pathway.engine", frozen)]
-pub struct Flatten {
-    scope: Py<Scope>,
-    #[pyo3(get)]
-    universe: Py<Universe>,
-    flattened_column: Py<Column>,
-    handle: FlattenHandle,
-}
-
-#[pymethods]
-impl Flatten {
-    fn get_flattened_column(self_: PyRef<Self>) -> PyResult<Py<Column>> {
-        let py = self_.py();
-        let column = self_.flattened_column.borrow(py);
-        Column::new(column.universe.as_ref(py), column.handle)
-    }
-
-    fn explode_column(self_: PyRef<Self>, column: PyRef<Column>) -> PyResult<Py<Column>> {
-        let py = self_.py();
-        check_identity(
-            &self_.scope,
-            &column.universe.borrow(py).scope,
-            "scope mismatch",
-        )?;
-        let column_handle = self_
-            .scope
-            .borrow(py)
-            .graph
-            .explode(self_.handle, column.handle)?;
         Column::new(self_.universe.as_ref(py), column_handle)
     }
 }
@@ -3066,6 +3199,7 @@ pub struct DataStorage {
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct PersistenceConfig {
+    refresh_duration: ::std::time::Duration,
     metadata_storage: DataStorage,
     stream_storage: DataStorage,
 }
@@ -3075,11 +3209,17 @@ impl PersistenceConfig {
     #[new]
     #[pyo3(signature = (
         *,
+        refresh_duration_ms,
         metadata_storage,
         stream_storage,
     ))]
-    fn new(metadata_storage: DataStorage, stream_storage: DataStorage) -> Self {
+    fn new(
+        refresh_duration_ms: u64,
+        metadata_storage: DataStorage,
+        stream_storage: DataStorage,
+    ) -> Self {
         Self {
+            refresh_duration: ::std::time::Duration::from_millis(refresh_duration_ms),
             metadata_storage,
             stream_storage,
         }
@@ -3089,6 +3229,7 @@ impl PersistenceConfig {
 impl PersistenceConfig {
     fn prepare(self, py: pyo3::Python) -> PyResult<PersistenceManagerOuterConfig> {
         Ok(PersistenceManagerOuterConfig::new(
+            self.refresh_duration,
             self.metadata_storage
                 .construct_metadata_storage_config(py)?,
             self.stream_storage.construct_stream_storage_config(py)?,
@@ -3494,12 +3635,18 @@ impl DataStorage {
 
     fn construct_metadata_storage_config(
         &self,
-        _py: pyo3::Python,
+        py: pyo3::Python,
     ) -> PyResult<MetadataStorageConfig> {
-        // _py is not removed, because we will need it anyway with adding more storages
-
         match self.storage_type.as_ref() {
             "fs" => Ok(MetadataStorageConfig::Filesystem(self.path()?.into())),
+            "s3" => {
+                let bucket = self.s3_bucket(py)?;
+                let path = self.path()?;
+                Ok(MetadataStorageConfig::S3 {
+                    bucket,
+                    root_path: path.into(),
+                })
+            }
             other => Err(PyValueError::new_err(format!(
                 "Unsupported metadata storage format: {other:?}"
             ))),
@@ -3926,16 +4073,15 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyMonitoringLevel>()?;
     m.add_class::<Universe>()?;
     m.add_class::<Column>()?;
+    m.add_class::<LegacyTable>()?;
     m.add_class::<Table>()?;
     m.add_class::<Computer>()?;
     m.add_class::<Scope>()?;
-    m.add_class::<Joiner>()?;
     m.add_class::<Grouper>()?;
     m.add_class::<Ixer>()?;
     m.add_class::<Context>()?;
     m.add_class::<VennUniverses>()?;
     m.add_class::<Concat>()?;
-    m.add_class::<Flatten>()?;
 
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<ElasticSearchParams>()?;

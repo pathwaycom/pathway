@@ -18,8 +18,9 @@ def get_differences(events):
         )
     )
 
-    differences = events.having(sorted_events.prev).select(
-        delta=events.timestamp - pw.this.timestamp
+    events_with_prev = events.having(sorted_events.prev)
+    differences = events_with_prev.select(
+        delta=events.restrict(events_with_prev).timestamp - pw.this.timestamp
     )
     return sorted_events, differences
 

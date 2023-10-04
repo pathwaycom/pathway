@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
-from typing import Any, Optional, Type
+from typing import Any
 
 import pandas as pd
 
@@ -14,7 +14,7 @@ from pathway.internals.schema import Schema, schema_from_pandas
 
 @dataclass(frozen=True)
 class DataSource(ABC):
-    schema: Type[Schema]
+    schema: type[Schema]
 
 
 class StaticDataSource(DataSource, ABC):
@@ -40,7 +40,7 @@ class EmptyDataSource(DataSource):
     ...
 
 
-def debug_datasource(debug_data) -> Optional[StaticDataSource]:
+def debug_datasource(debug_data) -> StaticDataSource | None:
     if debug_data is None:
         return None
     elif isinstance(debug_data, pd.DataFrame):

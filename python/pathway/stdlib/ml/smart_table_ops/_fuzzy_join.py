@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from enum import IntEnum, auto
-from typing import Any, Callable, Optional
+from typing import Any
 
 import pathway.internals as pw
 from pathway.internals.helpers import StableSet
@@ -106,7 +107,7 @@ def fuzzy_match_tables(
     left_table: pw.Table,
     right_table: pw.Table,
     *,
-    by_hand_match: Optional[pw.Table[JoinResult]] = None,
+    by_hand_match: pw.Table[JoinResult] | None = None,
     normalization=FuzzyJoinNormalization.LOGWEIGHT,
     feature_generation=FuzzyJoinFeatureGeneration.AUTO,
     left_projection: dict[str, str] = {},
@@ -178,7 +179,7 @@ def _fuzzy_match_tables(
     left_table: pw.Table,
     right_table: pw.Table,
     *,
-    by_hand_match: Optional[pw.Table[JoinResult]] = None,
+    by_hand_match: pw.Table[JoinResult] | None = None,
     normalization=FuzzyJoinNormalization.LOGWEIGHT,
     feature_generation=FuzzyJoinFeatureGeneration.AUTO,
 ) -> pw.Table[JoinResult]:
@@ -199,7 +200,7 @@ def smart_fuzzy_match(
     left_col: pw.ColumnReference,
     right_col: pw.ColumnReference,
     *,
-    by_hand_match: Optional[pw.Table[JoinResult]] = None,
+    by_hand_match: pw.Table[JoinResult] | None = None,
     normalization=FuzzyJoinNormalization.LOGWEIGHT,
     feature_generation=FuzzyJoinFeatureGeneration.AUTO,
     HEAVY_LIGHT_THRESHOLD=100,
@@ -213,7 +214,7 @@ def smart_fuzzy_match(
     else:
         tabs = [left, right]
     processed = []
-    features: pw.Table = None  # type: ignore
+    features: pw.Table | None = None
     for tab, col in zip(tabs, [left_col, right_col]):
         edges = tab.select(feature=pw.apply(feature_generation.generate, col)).flatten(
             pw.this.feature, origin_id=pw.this.id
@@ -234,6 +235,7 @@ def smart_fuzzy_match(
         else:
             features = features.update_rows(features_tmp)
         processed.append(edges)
+    assert features is not None
     if self_match:
         [edges] = processed
         return fuzzy_self_match(edges, features, by_hand_match, HEAVY_LIGHT_THRESHOLD)
@@ -247,7 +249,7 @@ def smart_fuzzy_match(
 def fuzzy_self_match(
     edges: pw.Table[Edge],
     features: pw.Table[Feature],
-    by_hand_match: Optional[pw.Table[JoinResult]] = None,
+    by_hand_match: pw.Table[JoinResult] | None = None,
     HEAVY_LIGHT_THRESHOLD=100,
 ) -> pw.Table[JoinResult]:
     return _fuzzy_match(
@@ -264,7 +266,7 @@ def fuzzy_match(
     edges_left: pw.Table[Edge],
     edges_right: pw.Table[Edge],
     features: pw.Table[Feature],
-    by_hand_match: Optional[pw.Table[JoinResult]] = None,
+    by_hand_match: pw.Table[JoinResult] | None = None,
     HEAVY_LIGHT_THRESHOLD=100,
 ) -> pw.Table[JoinResult]:
     return _fuzzy_match(
@@ -320,7 +322,7 @@ def _fuzzy_match(
     features: pw.Table[Feature],
     symmetric: bool,
     HEAVY_LIGHT_THRESHOLD,
-    by_hand_match: Optional[pw.Table[JoinResult]] = None,
+    by_hand_match: pw.Table[JoinResult] | None = None,
 ) -> pw.Table[JoinResult]:
     if symmetric:
         assert edges_left is edges_right
@@ -364,7 +366,11 @@ def _fuzzy_match(
 
     features_normalized = features.select(
         weight=features.weight
-        * pw.apply(_normalize_weight, features_cnt.cnt, features.normalization_type)
+        * pw.apply(
+            _normalize_weight,
+            features_cnt.restrict(features).cnt,
+            features.normalization_type,
+        )
     )
     node_node_light: pw.Table[JoinResult] = edges_left_light.join(
         edges_right_light, edges_left_light.feature == edges_right_light.feature

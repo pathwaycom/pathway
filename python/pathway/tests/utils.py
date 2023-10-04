@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import collections
 import multiprocessing
+import os
 import pathlib
 import platform
 import re
 import sys
 import time
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Callable, Tuple, Union
+from typing import Any, Callable, Iterable
 
 import numpy as np
 import pandas as pd
@@ -37,6 +39,101 @@ xfail_on_darwin = pytest.mark.xfail(
 xfail_no_numba = pytest.mark.xfail(_numba_missing, reason="unable to import numba")
 
 
+@dataclass(order=True)
+class DiffEntry:
+    key: api.BasePointer
+    order: int
+    insertion: bool
+    row: dict[str, api.Value]
+
+    @staticmethod
+    def create(
+        pk_table: pw.Table,
+        pk_columns: dict[str, api.Value],
+        order: int,
+        insertion: bool,
+        row: dict[str, api.Value],
+    ) -> DiffEntry:
+        key = api.ref_scalar(*pk_columns.values())
+        return DiffEntry(key, order, insertion, row)
+
+    def final_cleanup_entry(self):
+        return DiffEntry(self.key, self.order + 1, False, self.row)
+
+    @staticmethod
+    def create_id_from(
+        pk_table: pw.Table,
+        pk_columns: dict[str, api.Value],
+    ) -> api.BasePointer:
+        return api.ref_scalar(*pk_columns.values())
+
+
+# This class is an abstract subclass of OnChangeCallback, which takes a list of entries
+# representing a stream, groups them by key, and orders them by (order, insertion);
+# Such organized representation of a stream is kept in `state`.
+#
+# Remarks: the orders associated with any fixed key may differ from the times in the stream
+# (as it's difficult to impose precise times to be present in the engine);
+# the requirement is that for a fixed key, the ordering (by order, insertion) of entries
+# should be the same as the same as what we expect to see in the output
+class CheckKeyEntriesInStreamCallback(pw.io._subscribe.OnChangeCallback):
+    state: collections.defaultdict[api.BasePointer, collections.deque[DiffEntry]]
+
+    def __init__(self, state_list: Iterable[DiffEntry]):
+        super().__init__()
+        state_list = sorted(state_list)
+        self.state = collections.defaultdict(lambda: collections.deque())
+        for entry in state_list:
+            self.state[entry.key].append(entry)
+
+    @abstractmethod
+    def __call__(
+        self,
+        key: api.BasePointer,
+        row: dict[str, api.Value],
+        time: int,
+        is_addition: bool,
+    ) -> Any:
+        pass
+
+
+class CheckKeyConsistentInStreamCallback(CheckKeyEntriesInStreamCallback):
+    def __call__(
+        self,
+        key: api.BasePointer,
+        row: dict[str, api.Value],
+        time: int,
+        is_addition: bool,
+    ) -> Any:
+        q = self.state.get(key)
+        assert (
+            q
+        ), f"Got unexpected entry {key=} {row=} {time=} {is_addition=}, expected entries= {self.state!r}"
+
+        while True:
+            entry = q.popleft()
+            if (is_addition, row) == (entry.insertion, entry.row):
+                if not q:
+                    self.state.pop(key)
+                break
+            else:
+                assert (
+                    q
+                ), f"Skipping over entries emptied the set of expected entries for {key=} and state = {self.state!r}"
+
+    def on_end(self):
+        assert not self.state, f"Non empty final state = {self.state!r}"
+
+
+# assert_key_entries_in_stream_consistent verifies for each key, whether:
+# - a sequence of updates in the table is a subsequence
+# of the sequence of updates defined in expected
+# - the final entry for both stream and list is the same
+def assert_key_entries_in_stream_consistent(expected: list[DiffEntry], table: pw.Table):
+    callback = CheckKeyConsistentInStreamCallback(expected)
+    pw.io.subscribe(table, callback, callback.on_end)
+
+
 def assert_equal_tables(t0: api.CapturedTable, t1: api.CapturedTable):
     assert t0 == t1
 
@@ -48,7 +145,7 @@ def make_value_hashable(val: api.Value):
         return val
 
 
-def make_row_hashable(row: Tuple[api.Value, ...]):
+def make_row_hashable(row: tuple[api.Value, ...]):
     return tuple(make_value_hashable(val) for val in row)
 
 
@@ -92,11 +189,16 @@ class TestDataSource(datasource.DataSource):
     __test__ = False
 
 
+def apply_defaults_for_run_kwargs(kwargs):
+    kwargs.setdefault("debug", True)
+    kwargs.setdefault("monitoring_level", pw.MonitoringLevel.NONE)
+
+
 def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
     def inner(table: Table, expected: Table, **kwargs):
-        table_schema_dict = table.schema.as_dict()
-        expected_schema_dict = expected.schema.as_dict()
-        columns_schema_dict = schema_from_columns(table._columns).as_dict()
+        table_schema_dict = table.schema.typehints()
+        expected_schema_dict = expected.schema.typehints()
+        columns_schema_dict = schema_from_columns(table._columns).typehints()
         if assert_schemas:
             if columns_schema_dict != table_schema_dict:
                 raise RuntimeError(
@@ -121,10 +223,11 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
                 f"Mismatched column names, {list(table.column_names())} vs {list(expected.column_names())}"
             )
 
+        apply_defaults_for_run_kwargs(kwargs)
         print("We will do GraphRunner with the following kwargs: ", kwargs)
 
         [captured_table, captured_expected] = GraphRunner(
-            table._source.graph, monitoring_level=pw.MonitoringLevel.NONE, **kwargs
+            table._source.graph, **kwargs
         ).run_tables(table, expected)
         return verifier(captured_table, captured_expected)
 
@@ -160,14 +263,12 @@ assert_table_equality_wo_index_types = run_graph_and_validate_result(
 
 
 def run(**kwargs):
-    kwargs.setdefault("debug", True)
-    kwargs.setdefault("monitoring_level", pw.MonitoringLevel.NONE)
+    apply_defaults_for_run_kwargs(kwargs)
     pw.run(**kwargs)
 
 
 def run_all(**kwargs):
-    kwargs.setdefault("debug", True)
-    kwargs.setdefault("monitoring_level", pw.MonitoringLevel.NONE)
+    apply_defaults_for_run_kwargs(kwargs)
     pw.run_all(**kwargs)
 
 
@@ -201,11 +302,23 @@ def wait_result_with_checker(checker, timeout_sec, target=run, args=(), kwargs={
     return succeeded
 
 
-def write_csv(path: Union[str, pathlib.Path], table_def: str, *, sep=","):
+def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):
     df = _markdown_to_pandas(table_def)
-    df.to_csv(path, sep=sep, encoding="utf-8")
+    df.to_csv(path, encoding="utf-8", **kwargs)
 
 
-def write_lines(path: Union[str, pathlib.Path], data: str):
+def write_lines(path: str | pathlib.Path, data: str | list[str]):
+    if isinstance(data, str):
+        data = [data]
+    data = [row + "\n" for row in data]
     with open(path, "w+") as f:
         f.writelines(data)
+
+
+def get_aws_s3_settings():
+    return pw.io.s3.AwsS3Settings(
+        bucket_name="aws-integrationtest",
+        access_key=os.environ["AWS_S3_ACCESS_KEY"],
+        secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
+        region="eu-central-1",
+    )

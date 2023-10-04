@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
+import json as _json  # otherwise its easy to mistake `json` and `Json`
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, ClassVar
 
 
-class _JsonEncoder(json.JSONEncoder):
+class _JsonEncoder(_json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Json):
             return obj.value
@@ -39,7 +39,7 @@ class Json:
     _value: JsonValue
 
     def __str__(self) -> str:
-        return json.dumps(self.value)
+        return _json.dumps(self.value)
 
     def __repr__(self) -> str:
         return f"pw.Json({self.value!r})"
@@ -53,11 +53,11 @@ class Json:
 
     @staticmethod
     def parse(value: str | bytes | bytearray) -> Json:
-        return Json(json.loads(value))
+        return Json(_json.loads(value))
 
     @staticmethod
     def dumps(obj: Any) -> str:
-        return json.dumps(obj, cls=_JsonEncoder)
+        return _json.dumps(obj, cls=_JsonEncoder)
 
 
 JsonValue = (
@@ -67,4 +67,4 @@ JsonValue = (
 
 Json.NULL = Json(None)
 
-all = ["Json"]
+__all__ = ["Json", "JsonValue"]

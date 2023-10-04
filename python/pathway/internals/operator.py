@@ -4,17 +4,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from typing import (
-    TYPE_CHECKING,
-    Collection,
-    Dict,
-    Iterable,
-    List,
-    Optional,
-    Tuple,
-    Type,
-)
+from functools import cached_property
+from itertools import chain
+from typing import TYPE_CHECKING
 
 import pathway.internals as pw
 import pathway.internals.row_transformer_table as tt
@@ -66,16 +60,14 @@ class InputHandle(InOut):
     value: OperatorInput
 
     def __init__(self, operator, name, value):
+        assert isinstance(value, OperatorInput)
         super().__init__(operator, name)
         self.value = value
 
     @property
     def dependencies(self) -> StableSet[Operator]:
-        if isinstance(self.value, OperatorInput):
-            input_tables = self.value._operator_dependencies()
-            return StableSet(table._source.operator for table in input_tables)
-        else:
-            return StableSet()
+        input_tables = self.value._operator_dependencies()
+        return StableSet(table._source.operator for table in input_tables)
 
 
 class OutputHandle(InOut):
@@ -95,8 +87,8 @@ class Operator(ABC):
     Inputs and outputs retain their original order.
     """
 
-    _inputs: Dict[str, InputHandle]
-    _outputs: Dict[str, OutputHandle]
+    _inputs: dict[str, InputHandle]
+    _outputs: dict[str, OutputHandle]
     trace: Trace
     graph: SetOnceProperty[ParseGraph] = SetOnceProperty()
     id: int
@@ -111,6 +103,18 @@ class Operator(ABC):
     def output_tables(self) -> Iterable[pw.Table]:
         return (output.value for output in self.outputs)
 
+    @cached_property
+    def intermediate_and_output_tables(self) -> Iterable[pw.Table]:
+        return list(
+            chain(
+                *(
+                    table._id_column.context.intermediate_tables()
+                    for table in self.output_tables
+                ),
+                self.output_tables,
+            )
+        )
+
     @property
     def input_tables(self) -> StableSet[pw.Table]:
         return StableSet.union(
@@ -118,11 +122,11 @@ class Operator(ABC):
         )
 
     @property
-    def inputs(self) -> List[InputHandle]:
+    def inputs(self) -> list[InputHandle]:
         return list(self._inputs.values())
 
     @property
-    def outputs(self) -> List[OutputHandle]:
+    def outputs(self) -> list[OutputHandle]:
         return list(self._outputs.values())
 
     def get_input(self, name: str) -> InputHandle:
@@ -147,9 +151,8 @@ class Operator(ABC):
     def _prepare_outputs(self, outputs: ArgTuple):
         for name, value in outputs.items():
             assert isinstance(value, pw.Table)
-            value_type: pw.Table = value  # type: ignore
-            output = OutputHandle(self, name, value_type)
-            value_type._set_source(output)
+            output = OutputHandle(self, name, value)
+            value._set_source(output)
             self._outputs[name] = output
 
     def _is_valid_operator_input(self, value):
@@ -256,13 +259,13 @@ class InputOperator(Operator):
     """Holds a definition of external datasource."""
 
     datasource: DataSource
-    debug_datasource: Optional[StaticDataSource]
+    debug_datasource: StaticDataSource | None
 
     def __init__(
         self,
         datasource: DataSource,
         id: int,
-        debug_datasource: Optional[StaticDataSource] = None,
+        debug_datasource: StaticDataSource | None = None,
     ) -> None:
         super().__init__(id)
         self.datasource = datasource
@@ -290,7 +293,7 @@ class OutputOperator(Operator):
         return ArgTuple.empty()
 
 
-@dataclass  # type: ignore[misc] # https://github.com/python/mypy/issues/5374
+@dataclass
 class iterate_universe(OperatorInput):
     table: pw.Table
 
@@ -304,7 +307,7 @@ class IterateOperator(OperatorFromDef):
     scope: Scope
     """Subscope holding nodes created by iteration logic."""
 
-    iteration_limit: Optional[int]
+    iteration_limit: int | None
 
     iterated: ArgTuple
     iterated_with_universe: ArgTuple
@@ -317,14 +320,14 @@ class IterateOperator(OperatorFromDef):
     result_iterated: ArgTuple
     result_iterated_with_universe: ArgTuple
 
-    _universe_mapping: Dict[Universe, Universe]
+    _universe_mapping: dict[Universe, Universe]
 
     def __init__(
         self,
         func_spec: FunctionSpec,
         id: int,
         scope: Scope,
-        iteration_limit: Optional[int] = None,
+        iteration_limit: int | None = None,
     ):
         super().__init__(func_spec, id)
         self.scope = scope
@@ -360,10 +363,10 @@ class IterateOperator(OperatorFromDef):
                 "not all arguments marked as iterated returned from iteration"
             )
         for name, table in result.items():
-            input_table = input[name]
+            input_table: pw.Table = input[name]
             assert isinstance(table, pw.Table)
-            input_schema = input_table.schema.as_dict()
-            result_schema = table.schema.as_dict()
+            input_schema = input_table.schema._dtypes()
+            result_schema = table.schema._dtypes()
             if input_schema != result_schema:
                 raise ValueError(
                     f"output: {result_schema}  of the iterated function does not correspond to the input: {input_schema}"  # noqa
@@ -430,14 +433,14 @@ class RowTransformerOperator(Operator):
     """Corresponds to `example_row_transformer(input, ...)`."""
 
     transformer: rt.RowTransformer
-    transformer_inputs: List[tt.TransformerTable]
+    transformer_inputs: list[tt.TransformerTable]
 
     def __init__(self, id: int, transformer: rt.RowTransformer) -> None:
         super().__init__(id)
         self.transformer = transformer
         self.transformer_inputs = []
 
-    def __call__(self, tables: Dict[str, pw.Table]):
+    def __call__(self, tables: dict[str, pw.Table]):
         input_tables, output_tables = self._prepare_tables(tables)
 
         self.transformer_inputs = list(input_tables.values())
@@ -450,9 +453,9 @@ class RowTransformerOperator(Operator):
 
     def _prepare_tables(
         self, tables_dict: dict[str, pw.Table]
-    ) -> Tuple[Dict[str, tt.TransformerTable], Dict[str, pw.Table]]:
-        input_tables: Dict[str, tt.TransformerTable] = {}
-        output_tables: Dict[str, pw.Table] = {}
+    ) -> tuple[dict[str, tt.TransformerTable], dict[str, pw.Table]]:
+        input_tables: dict[str, tt.TransformerTable] = {}
+        output_tables: dict[str, pw.Table] = {}
 
         for class_arg in self.transformer.class_args.values():
             param_table = tables_dict[class_arg.name]
@@ -474,7 +477,7 @@ class RowTransformerOperator(Operator):
         attributes: Collection[rt.AbstractAttribute],
         param_table: pw.Table,
     ) -> tt.TransformerTable:
-        columns: List[tt.TransformerColumn] = [
+        columns: list[tt.TransformerColumn] = [
             attr.to_transformer_column(self, param_table) for attr in attributes
         ]
         return tt.TransformerTable(param_table._universe, columns=columns)
@@ -483,7 +486,7 @@ class RowTransformerOperator(Operator):
         self,
         attributes: Collection[rt.AbstractOutputAttribute],
         param_table: pw.Table,
-        schema: Type[Schema],
+        schema: type[Schema],
     ):
         columns = {
             attr.output_name: attr.to_output_column(param_table._universe)
@@ -491,7 +494,7 @@ class RowTransformerOperator(Operator):
         }
         return param_table._with_same_universe(*columns.items(), schema=schema)
 
-    def all_columns(self) -> List[tt.TransformerColumn]:
+    def all_columns(self) -> list[tt.TransformerColumn]:
         columns = []
         for table in self.transformer_inputs:
             for column in table.columns:

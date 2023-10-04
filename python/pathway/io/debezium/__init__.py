@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 from pathway.internals import api, datasource
 from pathway.internals.api import PathwayType
@@ -20,14 +20,14 @@ def read(
     rdkafka_settings: dict,
     topic_name: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     debug_data=None,
-    autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[str] = None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
+    autocommit_duration_ms: int | None = 1500,
+    persistent_id: str | None = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
 ) -> Table:
     """
     Connector, which takes a topic in the format of Debezium

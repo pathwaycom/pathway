@@ -3,7 +3,6 @@
 import contextlib
 import os
 import re
-from typing import Optional, Type
 
 import pandas as pd
 import pytest
@@ -218,7 +217,7 @@ def test_runtime_type_check_decorator():
 
 
 @contextlib.contextmanager
-def _assert_error_trace(error_type: Type, match: Optional[str] = ""):
+def _assert_error_trace(error_type: type, match: str | None = ""):
     file_name = os.path.basename(__file__)
     with pytest.raises(
         error_type,

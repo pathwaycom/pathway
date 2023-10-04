@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from pathway.internals.expression import ColumnReference
 from pathway.internals.trace import trace_user_frame
@@ -28,7 +28,7 @@ def _compute_interpolate(table_with_prev_next: Table) -> Table:
             next_value = pw.input_attribute()
 
             @pw.output_attribute
-            def interpolated_value(self) -> Optional[float]:
+            def interpolated_value(self) -> float | None:
                 if self.value is not None:
                     return self.value
                 t = self.timestamp

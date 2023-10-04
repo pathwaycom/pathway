@@ -87,7 +87,11 @@ def test_reducer():
     assert repr(pw.reducers.sum(t.pet)) == "pathway.reducers.sum(<table1>.pet)"
     assert (
         repr(pw.reducers.sorted_tuple(t.pet))
-        == "pathway.reducers.sorted_tuple(<table1>.pet)"
+        == "pathway.reducers.sorted_tuple(<table1>.pet, skip_nones=False)"
+    )
+    assert (
+        repr(pw.reducers.tuple(t.pet, skip_nones=True))
+        == "pathway.reducers.tuple(<table1>.pet, skip_nones=True)"
     )
     assert repr(pw.reducers.count()) == "pathway.reducers.count()"
     assert repr(pw.reducers.argmin(t.pet)) == "pathway.reducers.argmin(<table1>.pet)"

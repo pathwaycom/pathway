@@ -1,7 +1,7 @@
 # Copyright © 2023 Pathway
 
 import datetime
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -146,7 +146,7 @@ def test_interval_join_time_only(
 )
 @pytest.mark.parametrize("bounds", [(0, 0), (1, 1), (1, 0), (15, -10)])
 def test_interval_join_non_positive_time_errors(
-    join_type: pw.JoinMode, bounds: Tuple[int, int]
+    join_type: pw.JoinMode, bounds: tuple[int, int]
 ) -> None:
     t1 = T(
         """
@@ -194,7 +194,7 @@ def test_interval_join_non_positive_time_errors(
         (-3, -2),
     ],
 )
-def test_interval_join_non_symmetric(bounds: Tuple[int, int]) -> None:
+def test_interval_join_non_symmetric(bounds: tuple[int, int]) -> None:
     t1 = T(
         """
       | a | t
@@ -238,7 +238,7 @@ def test_interval_join_non_symmetric(bounds: Tuple[int, int]) -> None:
     expected = expected.filter(
         (expected.left_t + bounds[0] <= expected.right_t)
         & (expected.right_t <= expected.left_t + bounds[1])
-    ).select(expected.a, expected.b)
+    ).select(pw.this.a, pw.this.b)
 
     res = t1.interval_join_inner(
         t2, t1.t, t2.t, pw.temporal.interval(bounds[0], bounds[1])
@@ -1196,6 +1196,6 @@ def test_errors_on_equal_tables():
 
     with pytest.raises(
         ValueError,
-        match="Cannot join table with itself. Use <table>.copy\(\) as one of the arguments of the join.",  # noqa
+        match=r"Cannot join table with itself. Use <table>.copy\(\) as one of the arguments of the join.",  # noqa
     ):
         t1.interval_join(t1, t1.t, t1.t, pw.temporal.interval(-2, 0))

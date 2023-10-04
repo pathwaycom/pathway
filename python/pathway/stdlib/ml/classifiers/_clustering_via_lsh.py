@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 import numpy as np
 
 import pathway as pw
@@ -53,7 +51,7 @@ def clustering_via_lsh(
         )
     )
 
-    def clustering(data: List[np.ndarray], weights: List[float]) -> List[float]:
+    def clustering(data: list[np.ndarray], weights: list[float]) -> list[float]:
         from sklearn.cluster import KMeans
 
         kmeans = KMeans(n_clusters=3, init="k-means++", random_state=0)

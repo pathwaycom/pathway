@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, Optional, Type, Union, overload
+from collections.abc import Callable
+from typing import Any, overload
 
 from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
@@ -23,8 +24,8 @@ from pathway.internals.trace import trace_user_frame
 @runtime_type_check
 def iterate(
     func,
-    iteration_limit: Optional[int] = None,
-    **kwargs: Union[table.Table, op.iterate_universe],
+    iteration_limit: int | None = None,
+    **kwargs: table.Table | op.iterate_universe,
 ):
     """Iterate function until fixed point.
     Function has to take only named arguments, Tables, and return a dict of Tables.
@@ -150,19 +151,19 @@ def udf_async(fun: Callable) -> Callable:
 @overload
 def udf_async(
     *,
-    capacity: Optional[int] = None,
-    retry_strategy: Optional[AsyncRetryStrategy] = None,
-    cache_strategy: Optional[CacheStrategy] = None,
+    capacity: int | None = None,
+    retry_strategy: AsyncRetryStrategy | None = None,
+    cache_strategy: CacheStrategy | None = None,
 ) -> Callable[[Callable], Callable]:
     ...
 
 
 def udf_async(
-    fun: Optional[Callable] = None,
+    fun: Callable | None = None,
     *,
-    capacity: Optional[int] = None,
-    retry_strategy: Optional[AsyncRetryStrategy] = None,
-    cache_strategy: Optional[CacheStrategy] = None,
+    capacity: int | None = None,
+    retry_strategy: AsyncRetryStrategy | None = None,
+    cache_strategy: CacheStrategy | None = None,
 ):
     r"""Create a Python asynchronous UDF (universal data function) out of a callable.
 
@@ -350,14 +351,14 @@ def declare_type(
     ... 2    9.5
     ... 3    8
     ... 4    7''')
-    >>> t1.schema.as_dict()
-    {'val': FLOAT}
+    >>> t1.schema
+    <pathway.Schema types={'val': <class 'float'>}>
     >>> t2 = t1.filter(t1.val == pw.cast(int, t1.val))
-    >>> t2.schema.as_dict()
-    {'val': FLOAT}
+    >>> t2.schema
+    <pathway.Schema types={'val': <class 'float'>}>
     >>> t3 = t2.select(val = pw.declare_type(int, t2.val))
-    >>> t3.schema.as_dict()
-    {'val': INT}
+    >>> t3.schema
+    <pathway.Schema types={'val': <class 'int'>}>
     """
 
     return expr.DeclareTypeExpression(target_type, col)
@@ -375,8 +376,8 @@ def cast(target_type: Any, col: expr.ColumnExpressionOrValue) -> expr.CastExpres
     ... 2    9
     ... 3    8
     ... 4    7''')
-    >>> t1.schema.as_dict()
-    {'val': INT}
+    >>> t1.schema
+    <pathway.Schema types={'val': <class 'int'>}>
     >>> pw.debug.compute_and_print(t1, include_id=False)
     val
     7
@@ -384,8 +385,8 @@ def cast(target_type: Any, col: expr.ColumnExpressionOrValue) -> expr.CastExpres
     9
     10
     >>> t2 = t1.select(val = pw.cast(float, t1.val))
-    >>> t2.schema.as_dict()
-    {'val': FLOAT}
+    >>> t2.schema
+    <pathway.Schema types={'val': <class 'float'>}>
     >>> pw.debug.compute_and_print(t2, include_id=False)
     val
     7.0
@@ -533,8 +534,8 @@ def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     ... 2    | 9
     ... 3    | None
     ... 4    | 15''')
-    >>> t1.schema.as_dict()
-    {'colA': INT, 'colB': Optional(INT)}
+    >>> t1.schema
+    <pathway.Schema types={'colA': <class 'int'>, 'colB': int | None}>
     >>> pw.debug.compute_and_print(t1, include_id=False)
     colA | colB
     1    | 5
@@ -542,15 +543,15 @@ def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     3    |
     4    | 15
     >>> t2 = t1.filter(t1.colA < 3)
-    >>> t2.schema.as_dict()
-    {'colA': INT, 'colB': Optional(INT)}
+    >>> t2.schema
+    <pathway.Schema types={'colA': <class 'int'>, 'colB': int | None}>
     >>> pw.debug.compute_and_print(t2, include_id=False)
     colA | colB
     1    | 5
     2    | 9
     >>> t3 = t2.select(colB = pw.unwrap(t2.colB))
-    >>> t3.schema.as_dict()
-    {'colB': INT}
+    >>> t3.schema
+    <pathway.Schema types={'colB': <class 'int'>}>
     >>> pw.debug.compute_and_print(t3, include_id=False)
     colB
     5
@@ -561,7 +562,7 @@ def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
 
 def assert_table_has_schema(
     table: table.Table,
-    schema: Type[schema.Schema],
+    schema: type[schema.Schema],
     *,
     allow_superset: bool = False,
     ignore_primary_keys: bool = True,

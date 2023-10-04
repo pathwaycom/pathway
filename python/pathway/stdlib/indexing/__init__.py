@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from .sorting import (  # type: ignore
+from .sorting import (
     SortedIndex,
     binsearch_oracle,
     build_sorted_index,

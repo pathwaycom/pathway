@@ -1,0 +1,313 @@
+# Copyright © 2023 Pathway
+
+from __future__ import annotations
+
+import itertools
+from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from typing import ClassVar
+
+import pathway.internals.column as clmn
+import pathway.internals.expression as expr
+import pathway.internals.operator as op
+from pathway.internals.column_path import ColumnPath
+from pathway.internals.graph_runner.path_storage import Storage
+from pathway.internals.table import Table
+from pathway.internals.universe import Universe
+
+
+def compute_paths(
+    output_columns: Iterable[clmn.Column],
+    input_storages: dict[Universe, Storage],
+    operator: op.Operator,
+    context: clmn.Context,
+):
+    evaluator: PathEvaluator
+    match operator:
+        case op.InputOperator():
+            evaluator = FlatStoragePathEvaluator(context)
+        case op.RowTransformerOperator():
+            evaluator = AddNewColumnsPathEvaluator(context)
+        case op.ContextualizedIntermediateOperator():
+            evaluator = PathEvaluator.for_context(context)(context)
+        case _:
+            raise ValueError(
+                f"Operator {operator} in update_storage() but it shouldn't produce tables."
+            )
+    return evaluator.compute(output_columns, input_storages)
+
+
+def iterate(
+    output_columns: Iterable[clmn.Column],
+    input_storage: Storage,
+    output_table: Table,
+    input_table: Table,
+) -> Storage:
+    column_names = {column: name for name, column in output_table._columns.items()}
+    paths = {}
+    for column in output_columns:
+        column_name = column_names.get(column)
+        if column_name is not None:
+            source_column = input_table._columns[column_name]
+            path = input_storage.get_path(source_column)
+        else:
+            path = input_storage.get_path(column)
+        paths[column] = path
+    storage = Storage(output_table._universe, paths)
+    return storage
+
+
+class PathEvaluator(ABC):
+    context: clmn.Context
+
+    def __init__(self, context: clmn.Context) -> None:
+        super().__init__()
+        self.context = context
+
+    @abstractmethod
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        ...
+
+    _context_mapping: ClassVar[dict[type[clmn.Context], type[PathEvaluator]]] = {}
+
+    def __init_subclass__(cls, /, context_types=[], **kwargs):
+        super().__init_subclass__(**kwargs)
+        for context_type in context_types:
+            cls._context_mapping[context_type] = cls
+
+    @classmethod
+    def for_context(cls, context: clmn.Context) -> type[PathEvaluator]:
+        return cls._context_mapping[type(context)]
+
+
+class FlatStoragePathEvaluator(
+    PathEvaluator,
+    context_types=[
+        clmn.GroupedContext,
+    ],
+):
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        return Storage.flat(self.context.universe, output_columns)
+
+
+class AddNewColumnsPathEvaluator(
+    PathEvaluator,
+    context_types=[
+        clmn.TableRestrictedRowwiseContext,
+        clmn.RowwiseContext,
+        clmn.JoinRowwiseContext,
+        clmn.SortingContext,
+    ],
+):
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        input_storage = input_storages.get(self.context.universe)
+        paths = {}
+        counter = itertools.count(start=1)
+        for column in output_columns:
+            if input_storage is not None and input_storage.has_column(column):
+                paths[column] = (0,) + input_storage.get_path(column)
+            else:
+                paths[column] = ColumnPath((next(counter),))
+        return Storage(self.context.universe, paths)
+
+
+class NoNewColumnsMultipleSourcesPathEvaluator(
+    PathEvaluator,
+    context_types=[clmn.UpdateRowsContext, clmn.ConcatUnsafeContext],
+):
+    context: clmn.ConcatUnsafeContext | clmn.UpdateRowsContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        context = self.context
+        output_columns_list = list(output_columns)
+        source_universe = context.union_universes[0]
+        # ensure that keeping structure is possible,
+        # i.e. all sources have the same path to required columns
+        keep_structure = True
+        for column in output_columns_list:
+            assert isinstance(column, clmn.ColumnWithReference)
+            source_column = column.expression._column
+            path = input_storages[source_column.universe].get_path(source_column)
+            for dep in column.reference_column_dependencies():
+                if input_storages[dep.universe].get_path(dep) != path:
+                    keep_structure = False
+                    break
+            if not keep_structure:
+                break
+
+        if isinstance(context, clmn.ConcatUnsafeContext):
+            updates = context.updates
+        else:
+            updates = (context.updates,)
+
+        if not keep_structure:
+            names = []
+            source_columns: list[list[clmn.Column]] = [[]]
+            for column in output_columns_list:
+                assert isinstance(column, clmn.ColumnWithExpression)
+                assert isinstance(column.expression, expr.ColumnReference)
+                names.append(column.expression.name)
+                source_columns[0].append(column.dereference())
+            for columns in updates:
+                source_columns.append([columns[name] for name in names])
+
+            flattened_inputs = []
+            assert len(input_storages) == len(source_columns)
+            for universe, cols in zip(input_storages.keys(), source_columns):
+                flattened_storage = Storage.flat(universe, cols)
+                flattened_inputs.append(flattened_storage)
+        else:
+            flattened_inputs = None
+
+        evaluator: PathEvaluator
+        if keep_structure:
+            evaluator = NoNewColumnsPathEvaluator(context)
+        else:
+            evaluator = FlatStoragePathEvaluator(context)
+
+        storage = evaluator.compute(
+            output_columns_list,
+            {source_universe: input_storages[source_universe]},
+        )
+
+        return storage.with_flattened_inputs(flattened_inputs)
+
+
+class NoNewColumnsPathEvaluator(
+    PathEvaluator,
+    context_types=[
+        clmn.CopyContext,
+        clmn.FilterContext,
+        clmn.ReindexContext,
+        clmn.IntersectContext,
+        clmn.DifferenceContext,
+        clmn.HavingContext,
+        clmn.ForgetContext,
+        clmn.FreezeContext,
+        clmn.BufferContext,
+    ],
+):
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        input_storage = next(iter(input_storages.values()))
+        # for contexts using _no_new_columns universe_dependencies[0]
+        # has to contain columns to transfer to new storage
+        paths: dict[clmn.Column, ColumnPath] = {}
+        for column in output_columns:
+            assert isinstance(column, clmn.ColumnWithReference)
+            source_column = column.expression._column
+            paths[column] = input_storage.get_path(source_column)
+        return Storage(self.context.universe, paths)
+
+
+class UpdateCellsPathEvaluator(PathEvaluator, context_types=[clmn.UpdateCellsContext]):
+    context: clmn.UpdateCellsContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        input_storage = input_storages[self.context.universe]
+        counter = itertools.count(start=1)
+        paths = {}
+        for column in output_columns:
+            if column in input_storage.get_columns():
+                paths[column] = (0,) + input_storage.get_path(column)
+            elif (
+                isinstance(column, clmn.ColumnWithReference)
+                and column.expression.name not in self.context.updates
+            ):
+                source_column = column.expression._column
+                paths[column] = (0,) + input_storage.get_path(source_column)
+            else:
+                paths[column] = ColumnPath((next(counter),))
+        return Storage(self.context.universe, paths)
+
+
+class JoinPathEvaluator(PathEvaluator, context_types=[clmn.JoinContext]):
+    context: clmn.JoinContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        if self.context.assign_id:
+            left_universe = self.context.left_table._universe
+            input_storage = input_storages[left_universe]
+            return AddNewColumnsPathEvaluator(self.context).compute(
+                output_columns, {left_universe: input_storage}
+            )
+        else:
+            return FlatStoragePathEvaluator(self.context).compute(
+                output_columns, input_storages
+            )
+
+
+class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
+    context: clmn.FlattenContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        input_storage = input_storages[self.context.orig_universe]
+        paths = {}
+        for column in output_columns:
+            if column == self.context.flatten_result_column:
+                paths[column] = ColumnPath((1,))
+            else:
+                assert isinstance(column, clmn.ColumnWithReference)
+                original_column = column.expression._column
+                paths[column] = (0,) + input_storage.get_path(original_column)
+        return Storage(self.context.universe, paths)
+
+
+class PromiseSameUniversePathEvaluator(
+    PathEvaluator,
+    context_types=[
+        clmn.PromiseSameUniverseContext,
+        clmn.RestrictContext,
+        clmn.IxContext,
+    ],
+):
+    context: clmn.PromiseSameUniverseContext | clmn.RestrictContext | clmn.IxContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        paths: dict[clmn.Column, ColumnPath] = {}
+        orig_storage = input_storages[self.context.orig_universe]
+        new_storage = input_storages[self.context.universe]
+        for column in output_columns:
+            if (
+                isinstance(column, clmn.ColumnWithReference)
+                and column.context == self.context
+            ):
+                paths[column] = (1,) + orig_storage.get_path(column.expression._column)
+            else:
+                paths[column] = (0,) + new_storage.get_path(column)
+        return Storage(self.context.universe, paths)

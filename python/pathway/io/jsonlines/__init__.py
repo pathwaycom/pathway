@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any
 
 import pathway as pw
 from pathway.internals.api import PathwayType
@@ -16,18 +16,18 @@ from pathway.internals.trace import trace_user_frame
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: Union[str, PathLike],
+    path: str | PathLike,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     mode: str = "streaming",
-    json_field_paths: Optional[Dict[str, str]] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
-    persistent_id: Optional[str] = None,
+    json_field_paths: dict[str, str] | None = None,
+    autocommit_duration_ms: int | None = 1500,
+    persistent_id: str | None = None,
     debug_data=None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
 ) -> Table:
     """Reads a table from one or several files in jsonlines format.
 
@@ -167,7 +167,7 @@ def read(
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, filename: Union[str, PathLike]) -> None:
+def write(table: Table, filename: str | PathLike) -> None:
     """Writes ``table``'s stream of updates to a file in jsonlines format.
 
     Args:

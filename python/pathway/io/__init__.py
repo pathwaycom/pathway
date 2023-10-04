@@ -1,5 +1,6 @@
 # Copyright © 2023 Pathway
 
+from pathway.internals._io_helpers import AwsS3Settings
 from pathway.internals.persistence import PersistenceConfig, PersistentStorageBackend
 from pathway.io import (
     csv,
@@ -23,6 +24,7 @@ from pathway.io._subscribe import OnChangeCallback, subscribe
 from pathway.io._utils import CsvParserSettings
 
 __all__ = [
+    "AwsS3Settings",
     "csv",
     "CsvParserSettings",
     "debezium",

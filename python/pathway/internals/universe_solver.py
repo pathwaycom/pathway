@@ -2,7 +2,7 @@
 
 import itertools
 from collections import defaultdict
-from typing import Dict, Iterator
+from collections.abc import Iterator
 
 from pysat.solvers import Solver
 
@@ -10,7 +10,7 @@ from pathway.internals.universe import Universe
 
 
 class UniverseSolver:
-    universe_vars: Dict[Universe, int]
+    universe_vars: dict[Universe, int]
     var_counter: Iterator[int]
     solver: Solver
 
@@ -57,6 +57,9 @@ class UniverseSolver:
         self.solver.add_clause([result_var, *[-arg_var for arg_var in args_var]])
 
     def get_intersection(self, *args: Universe) -> Universe:
+        for arg in args:
+            if all(arg.is_subset_of(other) for other in args):
+                return arg
         result = Universe()
         self.register_as_intersection(result, *args)
         return result
@@ -71,6 +74,9 @@ class UniverseSolver:
         self.solver.add_clause([-result_var, *args_var])
 
     def get_union(self, *args: Universe) -> Universe:
+        for arg in args:
+            if all(other.is_subset_of(arg) for other in args):
+                return arg
         result = Universe()
         self.register_as_union(result, *args)
         return result

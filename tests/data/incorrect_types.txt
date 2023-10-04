@@ -1,0 +1,2 @@
+bool,int,float,string
+false,zzz,4.44,def

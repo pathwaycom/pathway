@@ -90,7 +90,8 @@ def k_approximate_nearest_neighbors_flat(
     # TODO this assert could be deduced
     nonempty_queries = distances.groupby(id=distances.query_id).reduce()
     pw.universes.promise_is_subset_of(nonempty_queries, queries)
-    ks = nonempty_queries.select(queries.k, instance=queries.id)
+    queries_restricted = queries.restrict(nonempty_queries)
+    ks = nonempty_queries.select(queries_restricted.k, instance=queries_restricted.id)
     topk = pw.indexing.filter_smallest_k(distances.dist, distances.query_id, ks)
     return topk.select(topk.query_id, topk.data_id)
 

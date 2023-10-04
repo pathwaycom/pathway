@@ -5,12 +5,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use pyo3::PyCell;
-
-use crate::engine::{AnyExpression, BatchWrapper, Expression, Expressions, Graph, Value};
-
-use super::EvalProperties;
-use super::{Column, Scope, Table};
+use crate::engine::{AnyExpression, Expression, Expressions, Value};
 
 macro_rules! input_type {
     (i64, $val:expr) => {
@@ -31,7 +26,7 @@ macro_rules! output_type {
 }
 
 macro_rules! unary_function {
-    ($addr:expr, $type0:tt, $ret:tt) => {{
+    ($addr:expr, $args:expr, $type0:tt, $ret:tt) => {{
         let function_ptr: unsafe extern "C" fn($type0) -> $ret = unsafe { transmute($addr) };
         Expression::Any(AnyExpression::Apply(
             Box::new(move |values| {
@@ -39,13 +34,13 @@ macro_rules! unary_function {
                 let result = unsafe { function_ptr(val) };
                 Ok(output_type!($ret, result))
             }),
-            Expressions::AllArguments,
+            $args,
         ))
     }};
 }
 
 macro_rules! binary_function {
-    ($addr:expr, $type0:tt, $type1: tt, $ret:tt) => {{
+    ($addr:expr, $args:expr, $type0:tt, $type1: tt, $ret:tt) => {{
         let function_ptr: unsafe extern "C" fn($type0, $type1) -> $ret =
             unsafe { transmute($addr) };
         Expression::Any(AnyExpression::Apply(
@@ -55,70 +50,38 @@ macro_rules! binary_function {
                 let result = unsafe { function_ptr(left, right) };
                 Ok(output_type!($ret, result))
             }),
-            Expressions::AllArguments,
+            $args,
         ))
     }};
 }
 
-pub unsafe fn unsafe_map_column(
-    self_: &PyCell<Scope>,
-    table: &Table,
+pub unsafe fn get_numba_expression(
     function: &PyAny,
-    properties: EvalProperties,
-) -> PyResult<Py<Column>> {
-    let py = self_.py();
-
+    args: Expressions,
+    num_args: usize,
+) -> PyResult<Arc<Expression>> {
     let address = function.getattr("address")?.extract::<usize>()? as *const ();
 
-    match table.columns.as_slice() {
-        [left_column, right_column] => {
-            let expression = match function.getattr("_sig")?.str()?.to_str()? {
-                "(int64, int64) -> int64" => binary_function!(address, i64, i64, i64),
-                "(int64, int64) -> float64" => binary_function!(address, i64, i64, f64),
-                "(int64, float64) -> int64" => binary_function!(address, i64, f64, i64),
-                "(int64, float64) -> float64" => binary_function!(address, i64, f64, f64),
-                "(float64, int64) -> int64" => binary_function!(address, f64, i64, i64),
-                "(float64, int64) -> float64" => binary_function!(address, f64, i64, f64),
-                "(float64, float64) -> int64" => binary_function!(address, f64, f64, i64),
-                "(float64, float64) -> float64" => binary_function!(address, f64, f64, f64),
-                other => unimplemented!("unimplemented signature {:?}", other),
-            };
-
-            let left_column = left_column.borrow(py);
-            let right_column = right_column.borrow(py);
-
-            let universe = left_column.universe.as_ref(py);
-
-            let handle = self_.borrow().graph.expression_column(
-                BatchWrapper::None,
-                Arc::new(expression),
-                universe.borrow().handle,
-                vec![left_column.handle, right_column.handle],
-                properties.trace(py)?,
-            )?;
-            Column::new(universe, handle)
-        }
-        [column] => {
-            let expression = match function.getattr("_sig")?.str()?.to_str()? {
-                "(int64,) -> int64" => unary_function!(address, i64, i64),
-                "(int64,) -> float64" => unary_function!(address, i64, f64),
-                "(float64,) -> int64" => unary_function!(address, f64, i64),
-                "(float64,) -> float64" => unary_function!(address, f64, f64),
-                other => unimplemented!("unimplemented signature {:?}", other),
-            };
-            let column = column.borrow(py);
-
-            let universe = column.universe.as_ref(py);
-
-            let handle = self_.borrow().graph.expression_column(
-                BatchWrapper::None,
-                Arc::new(expression),
-                universe.borrow().handle,
-                vec![column.handle],
-                properties.trace(py)?,
-            )?;
-            Column::new(universe, handle)
-        }
+    let expression = match num_args {
+        2 => match function.getattr("_sig")?.str()?.to_str()? {
+            "(int64, int64) -> int64" => binary_function!(address, args, i64, i64, i64),
+            "(int64, int64) -> float64" => binary_function!(address, args, i64, i64, f64),
+            "(int64, float64) -> int64" => binary_function!(address, args, i64, f64, i64),
+            "(int64, float64) -> float64" => binary_function!(address, args, i64, f64, f64),
+            "(float64, int64) -> int64" => binary_function!(address, args, f64, i64, i64),
+            "(float64, int64) -> float64" => binary_function!(address, args, f64, i64, f64),
+            "(float64, float64) -> int64" => binary_function!(address, args, f64, f64, i64),
+            "(float64, float64) -> float64" => binary_function!(address, args, f64, f64, f64),
+            other => unimplemented!("unimplemented signature {:?}", other),
+        },
+        1 => match function.getattr("_sig")?.str()?.to_str()? {
+            "(int64,) -> int64" => unary_function!(address, args, i64, i64),
+            "(int64,) -> float64" => unary_function!(address, args, i64, f64),
+            "(float64,) -> int64" => unary_function!(address, args, f64, i64),
+            "(float64,) -> float64" => unary_function!(address, args, f64, f64),
+            other => unimplemented!("unimplemented signature {:?}", other),
+        },
         _ => unimplemented!(),
-    }
+    };
+    Ok(Arc::new(expression))
 }

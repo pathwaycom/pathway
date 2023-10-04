@@ -62,6 +62,15 @@ jobs:
           rm -f LICENSE_*-LICENSE-*
           for filename in library_licenses/*; do cp "$filename" "LICENSE_$(basename "${filename}")"; done;
 
+      - name: Set package version
+        id: set-version
+        run: |
+          PACKAGE_VERSION=$(perl -nle 'print $& while m{^version[[:space:]]*=[[:space:]]"\K[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+(?=")}g' Cargo.toml)
+          [[ -z "$PACKAGE_VERSION" ]] && { echo "Malformed package version in Cargo.toml" ; exit 1; }
+
+          echo $PACKAGE_VERSION
+          echo "__version__ = \"${PACKAGE_VERSION}\"" > python/pathway/internals/version.py
+
       - name: Build package Ubuntu x86-x64
         if: ${{ matrix.os == 'ubuntu-22.04'}}
         uses: PyO3/maturin-action@v1
@@ -147,7 +156,7 @@ jobs:
 
       - name: Create dir for wheels
         run: |
-          mkdir wheels
+          mkdir -p wheels
             
       - uses: actions/download-artifact@master
         with:
@@ -183,7 +192,7 @@ jobs:
     steps:
       - name: Create dir for wheels
         run: |
-          mkdir wheels
+          mkdir -p wheels
 
       - uses: actions/download-artifact@master
         if: ${{ matrix.os == 'ec2-macOS' }}
@@ -200,13 +209,12 @@ jobs:
       - name: Install and verify ${{ matrix.os }} package
         run: |
           set -ex
-          # Pathway http monitoring set port
-          source .github/workflows/bash_scripts/PATHWAY_MONITORING_HTTP_PORT.sh
           ENV_NAME="testenv_${{ matrix.python-version }}"
           rm -rf "${ENV_NAME}"
           python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
           WHEEL=(./wheels/pathway-*.whl)
+          PATHWAY_MONITORING_HTTP_PORT=20099
           pip install --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           python -m pytest --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
@@ -241,7 +249,7 @@ jobs:
 
       - name: Create dir for wheels
         run: |
-          mkdir wheels
+          mkdir -p wheels
 
       - uses: actions/download-artifact@master
         with:

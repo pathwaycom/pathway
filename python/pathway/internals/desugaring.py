@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Iterable, Mapping
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pathway.internals import expression as expr
 from pathway.internals.expression_visitor import IdentityTransform
@@ -21,9 +22,9 @@ class DesugaringTransform(IdentityTransform):
 
 
 class ThisDesugaring(DesugaringTransform):
-    substitution: Dict[thisclass.ThisMetaclass, table.Joinable]
+    substitution: dict[thisclass.ThisMetaclass, table.Joinable]
 
-    def __init__(self, substitution: Dict[thisclass.ThisMetaclass, table.Joinable]):
+    def __init__(self, substitution: dict[thisclass.ThisMetaclass, table.Joinable]):
         self.substitution = substitution
 
     def eval_column_val(
@@ -73,9 +74,9 @@ class ThisDesugaring(DesugaringTransform):
 
 
 class SubstitutionDesugaring(DesugaringTransform):
-    substitution: Dict[expr.InternalColRef, expr.ColumnExpression]
+    substitution: dict[expr.InternalColRef, expr.ColumnExpression]
 
-    def __init__(self, substitution: Dict[expr.InternalColRef, expr.ColumnExpression]):
+    def __init__(self, substitution: dict[expr.InternalColRef, expr.ColumnExpression]):
         self.substitution = substitution
 
     def eval_column_val(  # type: ignore[override]
@@ -89,7 +90,7 @@ class TableSubstitutionDesugaring(DesugaringTransform):
 
     def __init__(
         self,
-        table_substitution: Dict[table.TableLike, table.Table],
+        table_substitution: dict[table.TableLike, table.Table],
     ):
         self._table_substitution = table_substitution
 
@@ -145,7 +146,7 @@ class TableCallbackDesugaring(DesugaringTransform):
     def eval_call(  # type:ignore[override]
         self, expression: expr.ColumnCallExpression, **kwargs
     ) -> expr.ColumnReference:
-        args: Dict[str, expr.ColumnExpression] = {
+        args: dict[str, expr.ColumnExpression] = {
             f"arg_{index}": self.eval_expression(arg, **kwargs)
             for index, arg in enumerate(expression._args)
         }
@@ -196,21 +197,48 @@ class TableReduceDesugaring(TableCallbackDesugaring):
         return expr.ReducerExpression(expression._reducer, *args)
 
 
+class RestrictUniverseDesugaring(DesugaringTransform):
+    table_like: table.TableLike
+    cache: dict[table.Table, table.Table]
+
+    def __init__(self, table_like: table.TableLike) -> None:
+        self.table_like = table_like
+        self.cache = {}
+
+    def eval_column_val(
+        self, expression: expr.ColumnReference, **kwargs
+    ) -> expr.ColumnReference:
+        if self.table_like._universe.is_subset_of(
+            expression.table._universe
+        ) and not self.table_like._universe.is_equal_to(expression.table._universe):
+            if expression.table not in self.cache:
+                self.cache[expression.table] = expression.table.restrict(
+                    self.table_like
+                )
+            return expr.ColumnReference(
+                column=expression._column,
+                table=self.cache[expression.table],
+                name=expression.name,
+            )
+        else:
+            return super().eval_column_val(expression, **kwargs)
+
+
 ColExprT = TypeVar("ColExprT", bound=expr.ColumnExpression)
 
 
 def _desugar_this_arg(
-    substitution: Dict[thisclass.ThisMetaclass, table.Joinable],
+    substitution: dict[thisclass.ThisMetaclass, table.Joinable],
     expression: ColExprT,
 ) -> ColExprT:
     return ThisDesugaring(substitution).eval_expression(expression)
 
 
 def _desugar_this_args(
-    substitution: Dict[thisclass.ThisMetaclass, table.Joinable],
+    substitution: dict[thisclass.ThisMetaclass, table.Joinable],
     args: Iterable[ColExprT],
-) -> Tuple[ColExprT, ...]:
-    ret: List[ColExprT] = []
+) -> tuple[ColExprT, ...]:
+    ret: list[ColExprT] = []
     from pathway.internals import thisclass
 
     for arg in args:
@@ -225,9 +253,9 @@ def _desugar_this_args(
 
 
 def _desugar_this_kwargs(
-    substitution: Dict[thisclass.ThisMetaclass, table.Joinable],
+    substitution: dict[thisclass.ThisMetaclass, table.Joinable],
     kwargs: Mapping[str, ColExprT],
-) -> Dict[str, ColExprT]:
+) -> dict[str, ColExprT]:
     from pathway.internals import thisclass
 
     new_kwargs = {
@@ -248,7 +276,7 @@ def _desugar_this_kwargs(
 def combine_args_kwargs(
     args: Iterable[expr.ColumnReference],
     kwargs: Mapping[str, Any],
-) -> Dict[str, expr.ColumnExpression]:
+) -> dict[str, expr.ColumnExpression]:
     all_args = {}
 
     def add(name, expression):
@@ -269,7 +297,7 @@ def combine_args_kwargs(
 
 
 class DesugaringContext:
-    _substitution: Dict[thisclass.ThisMetaclass, table.Joinable] = {}
+    _substitution: dict[thisclass.ThisMetaclass, table.Joinable] = {}
 
     @property
     @abstractmethod

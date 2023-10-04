@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+from collections.abc import Callable
+from typing import Any
 
 from pathway.internals.api import BasePointer, PathwayType
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -22,25 +23,25 @@ from ._streaming import HttpStreamingSubject
 def read(
     url: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     method: str = "GET",
-    payload: Optional[Any] = None,
-    headers: Optional[Dict[str, str]] = None,
-    response_mapper: Optional[Callable[[Union[str, bytes]], bytes]] = None,
+    payload: Any | None = None,
+    headers: dict[str, str] | None = None,
+    response_mapper: Callable[[str | bytes], bytes] | None = None,
     format: str = "json",
-    delimiter: Optional[Union[str, bytes]] = None,
+    delimiter: str | bytes | None = None,
     n_retries: int = 0,
     retry_policy: RetryPolicy = RetryPolicy.default(),
-    connect_timeout_ms: Optional[int] = None,
-    request_timeout_ms: Optional[int] = None,
+    connect_timeout_ms: int | None = None,
+    request_timeout_ms: int | None = None,
     allow_redirects: bool = True,
-    retry_codes: Optional[Tuple] = (429, 500, 502, 503, 504),
+    retry_codes: tuple | None = (429, 500, 502, 503, 504),
     autocommit_duration_ms: int = 10000,
     debug_data=None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
 ):
     """Reads a table from an HTTP stream.
 
@@ -154,15 +155,15 @@ def write(
     *,
     method: str = "POST",
     format: str = "json",
-    request_payload_template: Optional[str] = None,
+    request_payload_template: str | None = None,
     n_retries: int = 0,
     retry_policy: RetryPolicy = RetryPolicy.default(),
-    connect_timeout_ms: Optional[int] = None,
-    request_timeout_ms: Optional[int] = None,
-    content_type: Optional[str] = None,
-    headers: Optional[Dict[str, str]] = None,
+    connect_timeout_ms: int | None = None,
+    request_timeout_ms: int | None = None,
+    content_type: str | None = None,
+    headers: dict[str, str] | None = None,
     allow_redirects: bool = True,
-    retry_codes: Optional[Tuple] = (429, 500, 502, 503, 504),
+    retry_codes: tuple | None = (429, 500, 502, 503, 504),
 ) -> None:
     """Sends the stream of updates from the table to the specified HTTP API.
 
@@ -258,7 +259,7 @@ def write(
         retry_codes=retry_codes,
     )
 
-    def callback(key: BasePointer, row: Dict[str, Any], time: int, is_addition: bool):
+    def callback(key: BasePointer, row: dict[str, Any], time: int, is_addition: bool):
         payload = prepare_request_payload(
             row, time, is_addition, format, request_payload_template
         )

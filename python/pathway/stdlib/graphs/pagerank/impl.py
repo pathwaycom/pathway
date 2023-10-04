@@ -38,5 +38,5 @@ def pagerank(edges: pw.Table[Edge], steps: int = 5) -> pw.Table[Result]:
 
         ranks = inflows.select(
             rank=inflows.flow + 1_000,
-        )
+        ).with_universe_of(degrees)
     return ranks

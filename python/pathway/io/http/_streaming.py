@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from pathway.io.python import ConnectorSubject
 
@@ -11,20 +12,20 @@ from ._common import Sender
 
 class HttpStreamingSubject(ConnectorSubject):
     _url: str
-    _headers: Optional[Dict[str, str]]
+    _headers: dict[str, str] | None
     _sender: Sender
-    _delimiter: Optional[str | bytes]
-    _response_mapper: Optional[Callable[[str | bytes], bytes]]
+    _delimiter: str | bytes | None
+    _response_mapper: Callable[[str | bytes], bytes] | None
 
     def __init__(
         self,
         url: str,
         *,
         sender: Sender,
-        payload: Optional[Any] = None,
-        headers: Optional[Dict[str, str]] = None,
-        delimiter: Optional[str | bytes] = None,
-        response_mapper: Optional[Callable[[str | bytes], bytes]] = None,
+        payload: Any | None = None,
+        headers: dict[str, str] | None = None,
+        delimiter: str | bytes | None = None,
+        response_mapper: Callable[[str | bytes], bytes] | None = None,
     ) -> None:
         super().__init__()
         self._url = url

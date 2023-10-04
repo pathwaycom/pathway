@@ -38,14 +38,22 @@ pub enum ParseError {
         requested: Vec<String>,
     },
 
-    #[error("failed to parse value {0:?} according to the type {1:?} in schema: {2}")]
-    SchemaNotSatisfied(String, &'static str, DynError),
+    #[error("failed to parse value {value:?} at field {field_name:?} according to the type {type_:?} in schema: {error}")]
+    SchemaNotSatisfied {
+        value: String,
+        field_name: String,
+        type_: Type,
+        error: DynError,
+    },
 
     #[error("too small number of csv tokens in the line: {0}")]
     UnexpectedNumberOfCsvTokens(usize),
 
-    #[error("failed to parse field {0:?} from the following json payload: {1}")]
-    FailedToParseFromJson(String, JsonValue),
+    #[error("failed to parse field {field_name:?} from the following json payload: {payload}")]
+    FailedToParseFromJson {
+        field_name: String,
+        payload: JsonValue,
+    },
 
     #[error("key-value pair has unexpected number of tokens: {0} instead of 2")]
     KeyValueTokensIncorrect(usize),
@@ -209,6 +217,7 @@ impl DsvSettings {
 pub struct DsvParser {
     settings: DsvSettings,
     schema: HashMap<String, InnerSchemaField>,
+    header: Vec<String>,
 
     key_column_indices: Option<Vec<usize>>,
     value_column_indices: Vec<usize>,
@@ -216,7 +225,35 @@ pub struct DsvParser {
     dsv_header_read: bool,
 }
 
-fn parse_with_type(raw_value: &str, schema: &InnerSchemaField) -> Result<Value, ParseError> {
+// We don't use `ParseBoolError` because its message only mentions "true" and "false"
+// as possible representations. It can be misleading for the user since now we support
+// more ways to represent a boolean value in the string.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+enum AdvancedBoolParseError {
+    #[error("provided string was not parsable as a boolean value")]
+    StringNotParsable,
+}
+
+/// Use modern Postgres true/false value names list
+/// to parse boolean value from string
+/// Related doc: `https://www.postgresql.org/docs/16/datatype-boolean.html`
+///
+/// We also support "t", "f", "y", "n" as single-letter prefixes
+fn parse_bool_advanced(raw_value: &str) -> Result<bool, AdvancedBoolParseError> {
+    let raw_value_lowercase = raw_value.trim().to_ascii_lowercase();
+    match raw_value_lowercase.as_str() {
+        "true" | "yes" | "on" | "1" | "t" | "y" => Ok(true),
+        "false" | "no" | "off" | "0" | "f" | "n" => Ok(false),
+        _ => Err(AdvancedBoolParseError::StringNotParsable),
+    }
+}
+
+fn parse_with_type(
+    raw_value: &str,
+    schema: &InnerSchemaField,
+    field_name: &str,
+) -> Result<Value, ParseError> {
     if let Some(default) = &schema.default {
         if raw_value.is_empty() && !matches!(schema.type_, Type::Any | Type::String) {
             return Ok(default.clone());
@@ -225,15 +262,40 @@ fn parse_with_type(raw_value: &str, schema: &InnerSchemaField) -> Result<Value, 
 
     match schema.type_ {
         Type::Any | Type::String => Ok(Value::from(raw_value)),
-        Type::Bool => Ok(Value::Bool(raw_value.parse().map_err(|e| {
-            ParseError::SchemaNotSatisfied(raw_value.to_string(), "bool", Box::new(e))
-        })?)),
+        Type::Bool => Ok(Value::Bool(parse_bool_advanced(raw_value).map_err(
+            |e| ParseError::SchemaNotSatisfied {
+                field_name: field_name.to_string(),
+                value: raw_value.to_string(),
+                type_: schema.type_,
+                error: Box::new(e),
+            },
+        )?)),
         Type::Int => Ok(Value::Int(raw_value.parse().map_err(|e| {
-            ParseError::SchemaNotSatisfied(raw_value.to_string(), "int", Box::new(e))
+            ParseError::SchemaNotSatisfied {
+                field_name: field_name.to_string(),
+                value: raw_value.to_string(),
+                type_: schema.type_,
+                error: Box::new(e),
+            }
         })?)),
         Type::Float => Ok(Value::Float(raw_value.parse().map_err(|e| {
-            ParseError::SchemaNotSatisfied(raw_value.to_string(), "float", Box::new(e))
+            ParseError::SchemaNotSatisfied {
+                field_name: field_name.to_string(),
+                value: raw_value.to_string(),
+                type_: schema.type_,
+                error: Box::new(e),
+            }
         })?)),
+        Type::Json => {
+            let json: JsonValue =
+                serde_json::from_str(raw_value).map_err(|e| ParseError::SchemaNotSatisfied {
+                    field_name: field_name.to_string(),
+                    value: raw_value.to_string(),
+                    type_: schema.type_,
+                    error: Box::new(e),
+                })?;
+            Ok(Value::from(json))
+        }
         _ => Err(ParseError::UnparsableType(schema.type_)),
     }
 }
@@ -244,6 +306,7 @@ impl DsvParser {
             settings,
             schema,
 
+            header: Vec::new(),
             key_column_indices: None,
             value_column_indices: Vec::new(),
             indexed_schema: HashMap::new(),
@@ -305,6 +368,7 @@ impl DsvParser {
             indexed_schema
         };
 
+        self.header = tokenized_entries.to_vec();
         self.dsv_header_read = true;
         Ok(())
     }
@@ -331,11 +395,12 @@ impl DsvParser {
         tokens: &[String],
         indices: &[usize],
         indexed_schema: &HashMap<usize, InnerSchemaField>,
+        header: &[String],
     ) -> Result<Vec<Value>, ParseError> {
         let mut parsed_tokens = Vec::with_capacity(indices.len());
         for index in indices {
             let schema_item = indexed_schema.get(index).unwrap_or_default();
-            let token = parse_with_type(&tokens[*index], schema_item)?;
+            let token = parse_with_type(&tokens[*index], schema_item, &header[*index])?;
             parsed_tokens.push(token);
         }
         Ok(parsed_tokens)
@@ -369,11 +434,16 @@ impl DsvParser {
                     tokens,
                     indices,
                     &self.indexed_schema,
+                    &self.header,
                 )?),
                 None => None,
             };
-            let parsed_tokens =
-                Self::values_by_indices(tokens, &self.value_column_indices, &self.indexed_schema)?;
+            let parsed_tokens = Self::values_by_indices(
+                tokens,
+                &self.value_column_indices,
+                &self.indexed_schema,
+                &self.header,
+            )?;
             let parsed_entry = match event {
                 DataEventType::Insert => ParsedEvent::Insert((key, parsed_tokens)),
                 DataEventType::Delete => ParsedEvent::Delete((key, parsed_tokens)),
@@ -579,7 +649,7 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
         Value::Float(f) => Ok(json!(f)),
         Value::Bool(b) => Ok(json!(b)),
         Value::String(s) => Ok(json!(s)),
-        Value::Pointer(p) => Ok(json!(format!("{p:?}"))),
+        Value::Pointer(p) => Ok(json!(p.to_string())),
         Value::Tuple(t) => {
             let mut items = Vec::with_capacity(t.len());
             for item in t.iter() {
@@ -641,7 +711,10 @@ fn values_by_names_from_json(
                 match dtype {
                     Type::Json => Value::from(value.clone()),
                     _ => parse_value_from_json(value).ok_or_else(|| {
-                        ParseError::FailedToParseFromJson(value_field.to_string(), value.clone())
+                        ParseError::FailedToParseFromJson {
+                            field_name: value_field.to_string(),
+                            payload: value.clone(),
+                        }
                     })?,
                 }
             } else if let Some(default) = default_value {
@@ -662,10 +735,10 @@ fn values_by_names_from_json(
                 match dtype {
                     Type::Json => Value::from(payload[&value_field].clone()),
                     _ => parse_value_from_json(&payload[&value_field]).ok_or_else(|| {
-                        ParseError::FailedToParseFromJson(
-                            value_field.to_string(),
-                            payload[&value_field].clone(),
-                        )
+                        ParseError::FailedToParseFromJson {
+                            field_name: value_field.to_string(),
+                            payload: payload[&value_field].clone(),
+                        }
                     })?,
                 }
             } else if let Some(default) = default_value {

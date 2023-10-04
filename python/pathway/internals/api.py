@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, Generic, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import Any, Generic, TypeVar, Union
 
 import numpy as np
 import pandas as pd
 
 from pathway.engine import *
-from pathway.internals import dtype as dt
 from pathway.internals.schema import Schema
 
 Value = Union[
@@ -23,9 +22,9 @@ Value = Union[
     datetime.datetime,
     datetime.timedelta,
     np.ndarray,
-    Tuple["Value", ...],
+    tuple["Value", ...],
 ]
-CapturedTable = Dict[BasePointer, Tuple[Value, ...]]
+CapturedTable = dict[BasePointer, tuple[Value, ...]]
 TSchema = TypeVar("TSchema", bound=Schema)
 
 
@@ -44,8 +43,8 @@ class Pointer(BasePointer, Generic[TSchema]):
     ... 7   | Bob   | dog
     ... ''')
     >>> t2 = t1.select(col=t1.id)
-    >>> t2.schema['col']
-    Pointer
+    >>> t2.typehints()['col']
+    <class 'pathway.internals.api.Pointer'>
     """
 
     pass
@@ -54,9 +53,9 @@ class Pointer(BasePointer, Generic[TSchema]):
 def static_table_from_pandas(
     scope,
     df: pd.DataFrame,
-    dtypes: Optional[Dict[str, Any]] = None,
-    id_from: Optional[List[str]] = None,
-    connector_properties: Optional[ConnectorProperties] = None,
+    dtypes: dict[str, Any] | None = None,
+    id_from: list[str] | None = None,
+    connector_properties: ConnectorProperties | None = None,
 ) -> Table:
     connector_properties = connector_properties or ConnectorProperties()
 
@@ -84,8 +83,10 @@ def static_table_from_pandas(
     else:
         ids = {k: ref_scalar(*args) for (k, *args) in df[id_from].itertuples()}
 
-    universe = scope.static_universe(ids.values())
-    columns = []
+    dtypes_list = []
+    all_data: list[tuple[BasePointer, list[Value]]] = [
+        (key, []) for key in ids.values()
+    ]
     for c in df.columns:
         data = {ids[k]: denumpify(v) for k, v in df[c].items()}
         if c in dtypes:
@@ -96,20 +97,10 @@ def static_table_from_pandas(
                 if v is not None:
                     dtype = type(v)
                     break
-        columns.append(scope.static_column(universe, list(data.items()), dtype))
-    return Table(universe, columns)
-
-
-_TYPES_TO_ENGINE_MAPPING: Mapping[Any, PathwayType] = {
-    dt.BOOL: PathwayType.BOOL,
-    dt.INT: PathwayType.INT,
-    dt.FLOAT: PathwayType.FLOAT,
-    dt.POINTER: PathwayType.POINTER,
-    dt.STR: PathwayType.STRING,
-    dt.DATE_TIME_NAIVE: PathwayType.DATE_TIME_NAIVE,
-    dt.DATE_TIME_UTC: PathwayType.DATE_TIME_UTC,
-    dt.DURATION: PathwayType.DURATION,
-    dt.Array(): PathwayType.ARRAY,
-    dt.ANY: PathwayType.ANY,
-    dt.JSON: PathwayType.JSON,
-}
+        dtypes_list.append(dtype)
+        for (key, values), (column_key, value) in zip(
+            all_data, data.items(), strict=True
+        ):
+            assert key == column_key
+            values.append(value)
+    return scope.static_table(all_data, dtypes_list)

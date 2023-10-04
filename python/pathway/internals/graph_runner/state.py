@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List
+from collections.abc import Callable, Iterable
 
 import pathway.internals.graph_runner.expression_evaluator as evaluator
 from pathway.internals import api, column, table, universe
+from pathway.internals.column_path import ColumnPath
+from pathway.internals.graph_runner.path_storage import Storage
 
 
 class OutOfScopeError(RuntimeError):
@@ -13,18 +15,57 @@ class OutOfScopeError(RuntimeError):
 
 
 class ScopeState:
-    columns: Dict[column.Column, api.Column]
-    tables: Dict[table.Table, api.Table]
-    universes: Dict[universe.Universe, api.Universe]
-    computers: List[Callable]
-    evaluators: Dict[column.Context, evaluator.ExpressionEvaluator]
+    columns: dict[column.Column, api.Column]
+    legacy_tables: dict[table.Table, api.LegacyTable]
+    universes: dict[universe.Universe, api.Universe]
+    computers: list[Callable]
+    evaluators: dict[column.Context, evaluator.ExpressionEvaluator]
+    tables: dict[universe.Universe, api.Table]
+    storages: dict[universe.Universe, Storage]
 
-    def __init__(self) -> None:
+    def __init__(self, scope: api.Scope) -> None:
+        self.scope = scope
         self.columns = {}
         self.universes = {}
         self.computers = []
         self.evaluators = {}
+        self.legacy_tables = {}
         self.tables = {}
+        self.storages = {}
+
+    def extract_universe(self, univ: universe.Universe) -> api.Universe:
+        storage = self.get_storage(univ)
+        engine_table = self.get_table(storage)
+        engine_universe = self.scope.table_universe(engine_table)
+        self.set_universe(univ, engine_universe)
+        return engine_universe
+
+    def extract_column(self, column: column.Column) -> api.Column:
+        univ = column.universe
+        storage = self.get_storage(univ)
+        if not storage.has_column(column):
+            raise OutOfScopeError("column out of scope")
+        engine_table = self.get_table(storage)
+        if not self.has_universe(univ):
+            engine_universe = self.extract_universe(univ)
+        else:
+            engine_universe = self.get_universe(univ)
+        column_path = storage.get_path(column)
+        engine_column = self.scope.table_column(
+            engine_universe, engine_table, column_path
+        )
+        self.set_column(column, engine_column)
+        return engine_column
+
+    def create_table(self, universe: universe.Universe, storage: Storage) -> None:
+        columns_with_paths: list[tuple[api.Column, ColumnPath]] = []
+        for col in storage.get_columns():
+            if not isinstance(col, column.ExternalMaterializedColumn):
+                columns_with_paths.append((self.get_column(col), storage.get_path(col)))
+        engine_table = self.scope.columns_to_table(
+            self.get_universe(universe), columns_with_paths
+        )
+        self.set_table(storage, engine_table)
 
     def set_column(self, key: column.Column, value: api.Column):
         self.columns[key] = value
@@ -32,49 +73,53 @@ class ScopeState:
 
     def get_column(self, key: column.Column) -> api.Column:
         if key not in self.columns:
-            raise OutOfScopeError("column out of scope")
+            return self.extract_column(key)
         column = self.columns[key]
         return column
 
     def has_column(self, key: column.Column) -> bool:
-        return key in self.columns
-
-    def get_columns(self, columns: Iterable[column.Column]) -> List[api.Column]:
-        return [self.get_column(column) for column in columns]
-
-    def set_tables(
-        self,
-        keys: Iterable[table.Table],
-        values: Iterable[api.Table],
-    ):
-        for output, result in zip(keys, values):
-            self.set_table(output, result)
-
-    def set_table(self, key: table.Table, value: api.Table):
-        self.tables[key] = value
-        self.set_column(key._id_column, value.universe.id_column)
-        for (_, col), evaluated_column in zip(key._columns.items(), value.columns):
-            self.set_column(col, evaluated_column)
-
-    def get_table(self, key: table.Table) -> api.Table:
-        if key in self.tables:
-            return self.tables[key]
-        else:
-            universe = self.get_universe(key._universe)
-            columns = self.get_columns(key._columns.values())
-            table = api.Table(universe, columns)
-            self.tables[key] = table
-            return table
-
-    def has_table(self, key: table.Table) -> bool:
         try:
-            self.get_table(key)
+            self.get_column(key)
             return True
         except OutOfScopeError:
             return False
 
-    def get_tables(self, tables: Iterable[table.Table]) -> List[api.Table]:
-        return [self.get_table(table) for table in tables]
+    def get_columns(self, columns: Iterable[column.Column]) -> list[api.Column]:
+        return [self.get_column(column) for column in columns]
+
+    def set_legacy_tables(
+        self,
+        keys: Iterable[table.Table],
+        values: Iterable[api.LegacyTable],
+    ):
+        for output, result in zip(keys, values):
+            self.set_legacy_table(output, result)
+
+    def set_legacy_table(self, key: table.Table, value: api.LegacyTable):
+        self.legacy_tables[key] = value
+        self.set_column(key._id_column, value.universe.id_column)
+        for (_, col), evaluated_column in zip(key._columns.items(), value.columns):
+            self.set_column(col, evaluated_column)
+
+    def get_legacy_table(self, key: table.Table) -> api.LegacyTable:
+        if key in self.legacy_tables:
+            return self.legacy_tables[key]
+        else:
+            universe = self.get_universe(key._universe)
+            columns = self.get_columns(key._columns.values())
+            table = api.LegacyTable(universe, columns)
+            self.legacy_tables[key] = table
+            return table
+
+    def has_legacy_table(self, key: table.Table) -> bool:
+        try:
+            self.get_legacy_table(key)
+            return True
+        except OutOfScopeError:
+            return False
+
+    def get_legacy_tables(self, tables: Iterable[table.Table]) -> list[api.LegacyTable]:
+        return [self.get_legacy_table(table) for table in tables]
 
     def set_universe(self, key: universe.Universe, value: api.Universe):
         if key in self.universes:
@@ -84,11 +129,14 @@ class ScopeState:
 
     def get_universe(self, key: universe.Universe):
         if key not in self.universes:
-            raise OutOfScopeError("universe out of scope")
+            return self.extract_universe(key)
         return self.universes[key]
 
-    def get_context_table(self, key: column.ContextTable) -> api.Table:
-        return api.Table(
+    def has_universe(self, key: universe.Universe) -> bool:
+        return key in self.universes
+
+    def get_context_table(self, key: column.ContextTable) -> api.LegacyTable:
+        return api.LegacyTable(
             universe=self.get_universe(key.universe),
             columns=[self.get_column(column) for column in key.columns],
         )
@@ -110,3 +158,15 @@ class ScopeState:
             evaluator = evaluator_factory(context)
             self.evaluators[context] = evaluator
         return self.evaluators[context]
+
+    def get_table(self, key: Storage) -> api.Table:
+        return self.tables[key._universe]
+
+    def set_table(self, storage: Storage, table: api.Table) -> None:
+        self.tables[storage._universe] = table
+        self.storages[storage._universe] = storage
+
+    def get_storage(self, key: universe.Universe) -> Storage:
+        if key not in self.storages:
+            raise OutOfScopeError("path storage out of scope")
+        return self.storages[key]

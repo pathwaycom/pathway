@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Optional, Union
 
 import pathway as pw
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -14,11 +13,11 @@ from pathway.internals.trace import trace_user_frame
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: Union[str, PathLike],
+    path: str | PathLike,
     *,
     mode: str = "streaming",
-    persistent_id: Optional[str] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
+    persistent_id: str | None = None,
+    autocommit_duration_ms: int | None = 1500,
     debug_data=None,
 ) -> Table:
     """Reads a table from a text file or a directory of text files. The resulting table

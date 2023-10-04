@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import Any, Dict, List
+from typing import Any
 
 import pathway.internals as pw
 import pathway.internals.expression as expr
@@ -111,7 +111,7 @@ class _SelectColumn:
 class _SideData:
     side: bool
     table: pw.Table
-    conds: List[pw.ColumnExpression]
+    conds: list[pw.ColumnExpression]
     t: pw.ColumnExpression
 
     def make_sort_key(self):
@@ -188,12 +188,12 @@ class AsofJoinResult(DesugaringContext):
     1         | 7  | 9        | 7         | 16
     """
 
-    _side_data: Dict[bool, _SideData]
+    _side_data: dict[bool, _SideData]
     _mode: pw.JoinMode
     _direction: Direction
     _sub_desugaring: SubstitutionDesugaring
-    _defaults: Dict[expr.InternalColRef, Any]
-    _all_cols: List[_SelectColumn]
+    _defaults: dict[expr.InternalColRef, Any]
+    _all_cols: list[_SelectColumn]
 
     def __init__(self, side_data, mode, defaults, direction):
         super().__init__()
@@ -344,18 +344,18 @@ class AsofJoinResult(DesugaringContext):
 
         if self._mode in [pw.JoinMode.LEFT, pw.JoinMode.OUTER]:
             m0 = m.filter(~m.side)
-            m0 = m0.update_types(**orig_data[False].schema)
+            m0 = m0.update_types(**orig_data[False].typehints())
 
         if self._mode in [pw.JoinMode.RIGHT, pw.JoinMode.OUTER]:
             m1 = m.filter(m.side)
-            m1 = m1.update_types(**orig_data[True].schema)
+            m1 = m1.update_types(**orig_data[True].typehints())
 
         if self._mode == pw.JoinMode.LEFT:
             res = m0.select(
-                m.shard_key,
-                m.t,
-                m.key,
-                m.side,
+                pw.this.shard_key,
+                pw.this.t,
+                pw.this.key,
+                pw.this.side,
                 **{sel_col.output_name: sel_col.default for sel_col in self._all_cols},
             )
             res = res.with_columns(**fill_self(m0, False))
@@ -363,10 +363,10 @@ class AsofJoinResult(DesugaringContext):
 
         if self._mode == pw.JoinMode.RIGHT:
             res = m1.select(
-                m.shard_key,
-                m.t,
-                m.key,
-                m.side,
+                pw.this.shard_key,
+                pw.this.t,
+                pw.this.key,
+                pw.this.side,
                 **{sel_col.output_name: sel_col.default for sel_col in self._all_cols},
             )
             res = res.with_columns(**fill_self(m1, True))
@@ -402,7 +402,7 @@ def _asof_join(
     t_right: pw.ColumnExpression,
     *on: pw.ColumnExpression,
     how: pw.JoinMode,
-    defaults: Dict[pw.ColumnReference, Any],
+    defaults: dict[pw.ColumnReference, Any],
     direction: Direction,
 ):
     check_joint_types(
@@ -437,7 +437,7 @@ def asof_join(
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
     how: pw.JoinMode,
-    defaults: Dict[pw.ColumnReference, Any] = {},
+    defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
 ):
     """Perform an ASOF join of two tables.
@@ -532,7 +532,7 @@ def asof_join_left(
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
-    defaults: Dict[pw.ColumnReference, Any] = {},
+    defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
 ):
     """Perform a left ASOF join of two tables.
@@ -627,7 +627,7 @@ def asof_join_right(
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
-    defaults: Dict[pw.ColumnReference, Any] = {},
+    defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
 ):
     """Perform a right ASOF join of two tables.
@@ -722,7 +722,7 @@ def asof_join_outer(
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
-    defaults: Dict[pw.ColumnReference, Any] = {},
+    defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
 ):
     """Perform an outer ASOF join of two tables.

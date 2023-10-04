@@ -23,16 +23,31 @@ def arg_handler(*, handler):
     return wrapper
 
 
-def groupby_handler(self, *args, id=None, **kwargs):
+def groupby_handler(
+    self,
+    *args,
+    id=None,
+    sort_by=None,
+    time_column_threshold=None,
+    time_column_time=None,
+    **kwargs,
+):
     if kwargs:
         raise ValueError(
             "Table.groupby() received extra kwargs.\n"
             + "You probably want to use Table.groupby(...).reduce(**kwargs) to compute output columns."
         )
-    return (self, *args), {"id": id}
+    return (self, *args), {
+        "id": id,
+        "sort_by": sort_by,
+        "time_column_threshold": time_column_threshold,
+        "time_column_time": time_column_time,
+    }
 
 
-def windowby_handler(self, time_expr, *args, window, shard=None, **kwargs):
+def windowby_handler(
+    self, time_expr, *args, window, behavior=None, shard=None, **kwargs
+):
     if args:
         raise ValueError(
             "Table.windowby() received extra args.\n"
@@ -43,7 +58,7 @@ def windowby_handler(self, time_expr, *args, window, shard=None, **kwargs):
             "Table.windowby() received extra kwargs.\n"
             + "You probably want to use Table.windowby(...).reduce(**kwargs) to compute output columns."
         )
-    return (self, time_expr), {"window": window, "shard": shard}
+    return (self, time_expr), {"window": window, "behavior": behavior, "shard": shard}
 
 
 def join_kwargs_handler(*, allow_how: bool, allow_id: bool):

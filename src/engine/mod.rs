@@ -14,9 +14,10 @@ pub use reduce::Reducer;
 
 pub mod graph;
 pub use graph::{
-    BatchWrapper, ColumnHandle, ComplexColumn, Computer, ConcatHandle, Context, FlattenHandle,
-    Graph, GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType, JoinerHandle,
-    OperatorStats, ProberStats, ScopedGraph, Table, UniverseHandle, VennUniverseHandle,
+    BatchWrapper, ColumnHandle, ColumnPath, ComplexColumn, Computer, ConcatHandle, Context,
+    ExpressionData, Graph, GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType,
+    LegacyTable, OperatorStats, ProberStats, ScopedGraph, TableHandle, UniverseHandle,
+    VennUniverseHandle,
 };
 
 pub mod http_server;

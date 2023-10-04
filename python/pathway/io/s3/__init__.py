@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Type
+from typing import Any
 
 from pathway.internals import api, datasource
+from pathway.internals._io_helpers import AwsS3Settings
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
@@ -17,36 +18,6 @@ from pathway.io._utils import (
     construct_schema_and_data_format,
     internal_connector_mode,
 )
-
-
-class AwsS3Settings:
-    @trace_user_frame
-    def __init__(
-        self,
-        bucket_name,
-        *,
-        access_key=None,
-        secret_access_key=None,
-        with_path_style=False,
-        region=None,
-        endpoint=None,
-    ):
-        """Constructs Amazon S3 connection settings.
-
-        Args:
-            bucket_name: Name of S3 bucket.
-            access_key: Access key for the bucket.
-            secret_access_key: Secret access key for the bucket.
-            region: Region of the bucket.
-        """
-        self.settings = api.AwsS3Settings(
-            bucket_name,
-            access_key,
-            secret_access_key,
-            with_path_style,
-            region,
-            endpoint,
-        )
 
 
 class DigitalOceanS3Settings:
@@ -100,7 +71,7 @@ class WasabiS3Settings:
             access_key,
             secret_access_key,
             False,
-            "wa-{}".format(region),
+            f"wa-{region}",
             None,
         )
 
@@ -112,12 +83,12 @@ def read(
     aws_s3_settings: AwsS3Settings,
     format: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     mode: str = "streaming",
-    csv_settings: Optional[CsvParserSettings] = None,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[str] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
+    csv_settings: CsvParserSettings | None = None,
+    json_field_paths: dict[str, str] | None = None,
+    persistent_id: str | None = None,
+    autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
 ) -> Table:
     """Reads a table from one or several objects in Amazon S3 bucket in the given
@@ -238,12 +209,12 @@ def read_from_digital_ocean(
     do_s3_settings: DigitalOceanS3Settings,
     format: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     mode: str = "streaming",
-    csv_settings: Optional[CsvParserSettings] = None,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[str] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
+    csv_settings: CsvParserSettings | None = None,
+    json_field_paths: dict[str, str] | None = None,
+    persistent_id: str | None = None,
+    autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
 ) -> Table:
     """Reads a table from one or several objects in Digital Ocean S3 bucket.
@@ -347,12 +318,12 @@ def read_from_wasabi(
     wasabi_s3_settings: WasabiS3Settings,
     format: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     mode: str = "streaming",
-    csv_settings: Optional[CsvParserSettings] = None,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[str] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
+    csv_settings: CsvParserSettings | None = None,
+    json_field_paths: dict[str, str] | None = None,
+    persistent_id: str | None = None,
+    autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
 ) -> Table:
     """Reads a table from one or several objects in Wasabi S3 bucket.

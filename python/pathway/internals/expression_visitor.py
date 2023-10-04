@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pathway.internals import expression as expr
 
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 class ExpressionVisitor(ABC):
     def eval_expression(self, expression, **kwargs):
-        impl: Dict[Type, Callable] = {
+        impl: dict[type, Callable] = {
             expr.ColumnReference: self.eval_column_val,
             expr.ColumnUnaryOpExpression: self.eval_unary_op,
             expr.ColumnBinaryOpExpression: self.eval_binary_op,
@@ -144,7 +145,10 @@ ColExprT = TypeVar("ColExprT", bound=expr.ColumnExpression)
 
 class IdentityTransform(ExpressionVisitor):
     def eval_expression(self, expression: ColExprT, **kwargs) -> ColExprT:
-        return super().eval_expression(expression, **kwargs)
+        ret = super().eval_expression(expression, **kwargs)
+        if hasattr(expression, "_dtype"):
+            ret._dtype = expression._dtype
+        return ret
 
     def eval_column_val(
         self, expression: expr.ColumnReference, **kwargs
@@ -177,7 +181,7 @@ class IdentityTransform(ExpressionVisitor):
         self, expression: expr.ReducerExpression, **kwargs
     ) -> expr.ReducerExpression:
         args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
-        return expr.ReducerExpression(expression._reducer, *args)
+        return expr.ReducerExpression(expression._reducer, *args, **expression._kwargs)
 
     def eval_count(
         self, expression: expr.CountExpression, **kwargs
@@ -321,7 +325,7 @@ class IdentityTransform(ExpressionVisitor):
 
 
 class TableCollector(IdentityTransform):
-    table_list: List[Table]
+    table_list: list[Table]
 
     def __init__(self):
         self.table_list = []
@@ -331,7 +335,7 @@ class TableCollector(IdentityTransform):
         return super().eval_column_val(expression, **kwargs)
 
 
-def collect_tables(expression: expr.ColumnExpression) -> List[Table]:
+def collect_tables(expression: expr.ColumnExpression) -> list[Table]:
     collector = TableCollector()
     collector.eval_expression(expression)
     return collector.table_list

@@ -1,7 +1,7 @@
 # Copyright © 2023 Pathway
 
 import datetime
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Union
 
 from pathway.internals import dtype as dt
 from pathway.internals.type_interpreter import eval_type
@@ -19,7 +19,7 @@ def get_default_shift(interval: IntervalType) -> TimeEventType:
         return 0.0
 
 
-def _get_possible_types(type: Any) -> Tuple[dt.DType, ...]:
+def _get_possible_types(type: Any) -> tuple[dt.DType, ...]:
     if type is TimeEventType:
         return (dt.INT, dt.FLOAT, dt.DATE_TIME_NAIVE, dt.DATE_TIME_UTC)
     if type is IntervalType:
@@ -27,7 +27,7 @@ def _get_possible_types(type: Any) -> Tuple[dt.DType, ...]:
     raise ValueError("Type has to be either TimeEventType or IntervalType.")
 
 
-def check_joint_types(parameters: Dict[str, Tuple[Any, Any]]) -> None:
+def check_joint_types(parameters: dict[str, tuple[Any, Any]]) -> None:
     """Checks if all parameters have types that allow to execute a function.
     If parameters are {'a': (a, TimeEventType), 'b': (b, IntervalType)} then
     the following pairs of types are allowed for (a, b): (int, int), (float, float),

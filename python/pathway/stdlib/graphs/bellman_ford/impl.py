@@ -41,7 +41,7 @@ def _bellman_ford_step(
 @trace_user_frame
 def bellman_ford(vertices: pw.Table[Vertex], edges: pw.Table[Edge | Dist]):
     vertices_dist: pw.Table[DistFromSource] = vertices.select(
-        dist_from_source=pw.if_else(vertices.is_source, 0.0, math.inf)  # type: ignore
+        dist_from_source=pw.if_else(vertices.is_source, 0.0, math.inf)
     )
 
     return pw.iterate(

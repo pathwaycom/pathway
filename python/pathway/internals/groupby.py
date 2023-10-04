@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import itertools
 from abc import abstractmethod
+from collections.abc import Iterable, Iterator
 from functools import lru_cache
-from typing import TYPE_CHECKING, Dict, Iterable, Iterator, Optional, Tuple, cast
+from typing import TYPE_CHECKING
 
 from pathway.internals.trace import trace_user_frame
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import table, table_like, thisclass
+from pathway.internals import reducers, table, table_like, thisclass
 from pathway.internals.arg_handlers import arg_handler, reduce_args_handler
 from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
@@ -31,7 +31,7 @@ from pathway.internals.universe import Universe
 
 
 class GroupedJoinable(DesugaringContext, table_like.TableLike, OperatorInput):
-    _substitution: Dict[thisclass.ThisMetaclass, table.Joinable]
+    _substitution: dict[thisclass.ThisMetaclass, table.Joinable]
     _joinable_to_group: table.Joinable
 
     def __init__(self, _universe: Universe, _substitution, _joinable: table.Joinable):
@@ -85,15 +85,20 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     """
 
     _context: clmn.GroupedContext
-    _columns: Dict[str, clmn.Column]
+    _columns: dict[str, clmn.Column]
     _grouping_columns: StableSet[expr.InternalColRef]
     _joinable_to_group: table.Table
+    _threshold_column: expr.ColumnExpression | None
+    _time_column: expr.ColumnExpression | None
 
     def __init__(
         self,
         table: table.Table,
-        grouping_columns: Tuple[expr.InternalColRef, ...],
+        grouping_columns: tuple[expr.InternalColRef, ...],
         set_id: bool = False,
+        sort_by: expr.InternalColRef | None = None,
+        time_column_threshold: expr.ColumnExpression | None = None,
+        time_column_time: expr.ColumnExpression | None = None,
     ):
         super().__init__(Universe(), {thisclass.this: self}, table)
         self._grouping_columns = StableSet(grouping_columns)
@@ -106,26 +111,37 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             },
             set_id=set_id,
             inner_context=table._context,
+            sort_by=sort_by,
         )
         self._columns = {
             column._name: table._eval(column.to_colref(), self._context)
             for column in grouping_columns
         }
 
+        self._threshold_column = time_column_threshold
+        self._time_column = time_column_time
+
     @classmethod
     def create(
         cls,
         table: table.Table,
-        grouping_columns: Tuple[expr.ColumnReference, ...],
+        grouping_columns: tuple[expr.ColumnReference, ...],
         set_id: bool = False,
+        sort_by: expr.ColumnReference | None = None,
+        time_column_threshold: expr.ColumnExpression | None = None,
+        time_column_time: expr.ColumnExpression | None = None,
     ) -> GroupedTable:
         cols = tuple(arg._to_original_internal() for arg in grouping_columns)
-        key = (cls.__name__, table._universe, cols, set_id)
+        col_sort_by = sort_by._to_original_internal() if sort_by is not None else None
+        key = (cls.__name__, table._universe, cols, set_id, col_sort_by)
         if key not in G.cache:
             result = GroupedTable(
                 table=table,
                 grouping_columns=cols,
                 set_id=set_id,
+                sort_by=col_sort_by,
+                time_column_threshold=time_column_threshold,
+                time_column_time=time_column_time,
             )
             G.cache[key] = result
         return G.cache[key]
@@ -137,9 +153,6 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         return self._joinable_to_group._eval(desugared_expression, context)
 
     @trace_user_frame
-    @desugar
-    @arg_handler(handler=reduce_args_handler)
-    @contextualized_operator
     def reduce(
         self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression
     ) -> table.Table:
@@ -169,7 +182,28 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         Alice | dog | 10
         Bob   | dog | 16
         """
-        reduced_columns: Dict[str, clmn.ColumnWithExpression] = {}
+
+        reduced = self._reduce(*args, **kwargs)
+        if self._time_column is not None and self._threshold_column is not None:
+            # the freeze should take columns from parameters;
+            # while _pw_time_column is defined here, used column from parameter,
+            # _pw_cutoff_threshold is defined elsewhere
+            reduced = reduced._freeze(
+                reduced._pw_cutoff_threshold,
+                reduced._pw_time_column,
+            ).without(reduced._pw_cutoff_threshold, reduced._pw_time_column)
+        return reduced
+
+    @trace_user_frame
+    @desugar
+    @arg_handler(handler=reduce_args_handler)
+    @contextualized_operator
+    def _reduce(self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression):
+        reduced_columns: dict[str, clmn.ColumnWithExpression] = {}
+
+        if self._time_column is not None and self._threshold_column is not None:
+            kwargs["_pw_cutoff_threshold"] = reducers.unique(self._threshold_column)
+            kwargs["_pw_time_column"] = reducers.max(self._time_column)
 
         kwargs = combine_args_kwargs(args, kwargs)
 
@@ -223,7 +257,7 @@ class GroupedJoinResult(GroupedJoinable):
         *,
         join_result: JoinResult,
         args: Iterable[expr.ColumnExpression],
-        id: Optional[expr.ColumnReference],
+        id: expr.ColumnReference | None,
     ):
         super().__init__(
             join_result._universe,
@@ -233,13 +267,12 @@ class GroupedJoinResult(GroupedJoinable):
             },
             join_result,
         )
-        tab, subs = join_result._substitutions(itertools.count(0))
+        tab, subs = join_result._substitutions()
         self._substitution_desugaring = SubstitutionDesugaring(subs)
         args = [self._substitution_desugaring.eval_expression(arg) for arg in args]
         if id is not None:
-            id = cast(
-                expr.ColumnReference, self._substitution_desugaring.eval_expression(id)
-            )
+            id = self._substitution_desugaring.eval_expression(id)
+
         self._groupby = tab.groupby(*args, id=id)
 
     @desugar

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from os import PathLike, fspath
-from typing import Any, Dict, List, Optional, Set, Type, Union
+from typing import Any
 
 from pathway.internals import Schema, api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -20,31 +20,29 @@ from pathway.io._utils import (
     internal_read_method,
 )
 
-SUPPORTED_OUTPUT_FORMATS: Set[str] = set(
-    [
-        "csv",
-        "json",
-    ]
-)
+SUPPORTED_OUTPUT_FORMATS: set[str] = {
+    "csv",
+    "json",
+}
 
 
 @runtime_type_check
 @trace_user_frame
 def read(
-    path: Union[str, PathLike],
+    path: str | PathLike,
     format: str,
     *,
-    schema: Optional[Type[Schema]] = None,
+    schema: type[Schema] | None = None,
     mode: str = "streaming",
-    csv_settings: Optional[CsvParserSettings] = None,
-    json_field_paths: Optional[Dict[str, str]] = None,
-    persistent_id: Optional[str] = None,
-    autocommit_duration_ms: Optional[int] = 1500,
+    csv_settings: CsvParserSettings | None = None,
+    json_field_paths: dict[str, str] | None = None,
+    persistent_id: str | None = None,
+    autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
-    value_columns: Optional[List[str]] = None,
-    primary_key: Optional[List[str]] = None,
-    types: Optional[Dict[str, PathwayType]] = None,
-    default_values: Optional[Dict[str, Any]] = None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
 ) -> Table:
     """Reads a table from one or several files with the specified format.
 
@@ -245,7 +243,7 @@ def read(
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, filename: Union[str, PathLike], format: str) -> None:
+def write(table: Table, filename: str | PathLike, format: str) -> None:
     """Writes ``table``'s stream of updates to a file in the given format.
 
     Args:

@@ -122,7 +122,7 @@ class TableLike(DeprecationSuperclass):
     def promise_universe_is_equal_to(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
-        """Asserts to Pathway that an universe of self is a subset of universe of each of the others.
+        r"""Asserts to Pathway that an universe of self is a subset of universe of each of the others.
 
         Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
 
@@ -135,22 +135,38 @@ class TableLike(DeprecationSuperclass):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
-        ...   | pet
-        ... 1 | Dog
-        ... 7 | Cat
-        ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
-        ...   | age
-        ... 1 | 10
-        ... 7 | 3
-        ... ''')
+        >>> import pytest
+        >>> t1 = pw.debug.parse_to_table(
+        ...     '''
+        ...   | age | owner | pet
+        ... 1 | 8   | Alice | cat
+        ... 2 | 9   | Bob   | dog
+        ... 3 | 15  | Alice | tortoise
+        ... '''
+        ... )
+        >>> t2 = pw.debug.parse_to_table(
+        ...     '''
+        ...   | age | owner
+        ... 1 | 11  | Alice
+        ... 2 | 12  | Tom
+        ... 3 | 7   | Eve
+        ... '''
+        ... )
+        >>> t3 = t2.filter(pw.this.age > 10)
+        >>> with pytest.raises(
+        ...     ValueError,
+        ...     match='Universe of the argument of Table.update_cells\(\) needs ' # noqa
+        ...     + 'to be a subset of the universe of the updated table.',
+        ... ):
+        ...     t1.update_cells(t3)
+        ...
         >>> t1 = t1.promise_universe_is_equal_to(t2)
-        >>> t3 = t1 + t2
-        >>> pw.debug.compute_and_print(t3, include_id=False)
-        pet | age
-        Cat | 3
-        Dog | 10
+        >>> result = t1.update_cells(t3)
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        age | owner | pet
+        11  | Alice | cat
+        12  | Tom   | dog
+        15  | Alice | tortoise
         """
         universes.promise_are_equal(self, other)
         return self

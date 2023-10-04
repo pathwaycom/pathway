@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, overload
+from typing import TYPE_CHECKING, Any, overload
 
 from pathway.internals import expression as expr
 from pathway.internals.trace import trace_user_frame
@@ -72,12 +72,12 @@ class ThisMetaclass(type):
         ...
 
     @overload
-    def __getitem__(self, args: List[str | expr.ColumnReference]) -> ThisMetaclass:
+    def __getitem__(self, args: list[str | expr.ColumnReference]) -> ThisMetaclass:
         ...
 
     @trace_user_frame
     def __getitem__(
-        self, arg: str | expr.ColumnReference | List[str | expr.ColumnReference]
+        self, arg: str | expr.ColumnReference | list[str | expr.ColumnReference]
     ) -> expr.ColumnReference | ThisMetaclass:
         if isinstance(arg, expr.ColumnReference):
             if isinstance(arg.table, ThisMetaclass):
@@ -120,7 +120,7 @@ class ThisMetaclass(type):
         raise NotImplementedError
 
     def _eval_substitution(
-        self, substitution: Dict[ThisMetaclass, Joinable]
+        self, substitution: dict[ThisMetaclass, Joinable]
     ) -> Joinable:
         base_this: ThisMetaclass = self._base_this()
         if base_this not in substitution:

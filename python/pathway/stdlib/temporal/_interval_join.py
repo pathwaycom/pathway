@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from typing import Any, Dict, Union
+from typing import Any
 
 import pathway.internals as pw
 from pathway.internals.arg_handlers import (
@@ -29,13 +29,13 @@ from .utils import IntervalType, TimeEventType, check_joint_types, get_default_s
 
 @dataclass
 class Interval:
-    lower_bound: Union[int, float, datetime.timedelta]
-    upper_bound: Union[int, float, datetime.timedelta]
+    lower_bound: int | float | datetime.timedelta
+    upper_bound: int | float | datetime.timedelta
 
 
 def interval(
-    lower_bound: Union[int, float, datetime.timedelta],
-    upper_bound: Union[int, float, datetime.timedelta],
+    lower_bound: int | float | datetime.timedelta,
+    upper_bound: int | float | datetime.timedelta,
 ):
     """Allows testing whether two times are within a certain distance.
 
@@ -123,20 +123,20 @@ class IntervalJoinResult(DesugaringContext):
 
     _left_bucketed: pw.Table
     _right_bucketed: pw.Table
-    _earlier_part_filtered: pw.FilteredJoinResult
-    _later_part_filtered: pw.FilteredJoinResult
+    _earlier_part_filtered: pw.JoinResult
+    _later_part_filtered: pw.JoinResult
     _table_replacer: TableSubstitutionDesugaring
-    _table_substitution: Dict[pw.TableLike, pw.Table]
+    _table_substitution: dict[pw.TableLike, pw.Table]
     _mode: pw.JoinMode
-    _substitution: Dict[ThisMetaclass, pw.Joinable]
+    _substitution: dict[ThisMetaclass, pw.Joinable]
 
     def __init__(
         self,
         left_bucketed: pw.Table,
         right_bucketed: pw.Table,
-        earlier_part_filtered: pw.FilteredJoinResult,
-        later_part_filtered: pw.FilteredJoinResult,
-        table_substitution: Dict[pw.TableLike, pw.Table],
+        earlier_part_filtered: pw.JoinResult,
+        later_part_filtered: pw.JoinResult,
+        table_substitution: dict[pw.TableLike, pw.Table],
         mode: pw.JoinMode,
     ):
         self._left_bucketed = left_bucketed
@@ -237,7 +237,7 @@ class IntervalJoinResult(DesugaringContext):
             left_time_expression + interval.lower_bound <= right_time_expression
         )
 
-        table_substitution: Dict[pw.TableLike, pw.Table] = {
+        table_substitution: dict[pw.TableLike, pw.Table] = {
             left: left_bucketed,
             right: right_bucketed,
         }
@@ -363,17 +363,20 @@ class IntervalJoinResult(DesugaringContext):
         joined: pw.Table,
         side: pw.Table,
         other: pw.Table,
-        cols: Dict[str, pw.ColumnExpression],
+        cols: dict[str, pw.ColumnExpression],
         is_side_left: bool,
     ) -> pw.Table:
         id_column = joined["_pathway_left_id" if is_side_left else "_pathway_right_id"]
         matched = joined.groupby(id_column).reduce(old_id=id_column)
         unmatched = side.difference(matched.with_id(matched.old_id))
         cols_new = {}
-        expression_replacer = TableReplacementWithNoneDesugaring(other)
+        expression_replacer_1 = TableSubstitutionDesugaring({side: unmatched})
+        expression_replacer_2 = TableReplacementWithNoneDesugaring(other)
         for column_name, expression in cols.items():
             if column_name not in ("_pathway_left_id", "_pathway_right_id"):
-                cols_new[column_name] = expression_replacer.eval_expression(expression)
+                expression = expression_replacer_1.eval_expression(expression)
+                expression = expression_replacer_2.eval_expression(expression)
+                cols_new[column_name] = expression
         return unmatched.select(**cols_new)
 
 

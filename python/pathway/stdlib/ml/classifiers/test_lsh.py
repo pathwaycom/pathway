@@ -201,7 +201,7 @@ def test_clustering_via_lsh():
 
     groups = table_to_pandas(result).groupby("label").groups
     assert set(groups.keys()) == {0, 1, 2}
-    assert set(tuple(sorted(int(x) for x in group)) for group in groups.values()) == {
+    assert {tuple(sorted(int(x) for x in group)) for group in groups.values()} == {
         (0, 1, 2),
         (3, 4, 5),
         (6, 7),

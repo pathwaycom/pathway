@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Callable, Optional, TypedDict
+from collections.abc import Callable
+from typing import Optional, TypedDict
 
 import pathway.internals as pw
 from pathway.internals.arg_tuple import wrap_arg_tuple
@@ -37,12 +38,12 @@ class Aggregate(pw.Schema):
 
 
 class LeftRight(pw.Schema):
-    left: Optional[pw.Pointer[Node]]
-    right: Optional[pw.Pointer[Node]]
+    left: pw.Pointer[Node] | None
+    right: pw.Pointer[Node] | None
 
 
 class Parent(pw.Schema):
-    parent: Optional[pw.Pointer[Node]]
+    parent: pw.Pointer[Node] | None
 
 
 class Candidate(pw.Schema):
@@ -54,14 +55,12 @@ class Instance(pw.Schema):
 
 
 class PrevNext(pw.Schema):
-    prev: Optional[pw.Pointer[Node]]
-    next: Optional[pw.Pointer[Node]]
+    prev: pw.Pointer[Node] | None
+    next: pw.Pointer[Node] | None
 
 
-_TreeInPreparation = TypedDict(
-    "_TreeInPreparation",
-    {"result": pw.Table[Key | LeftRight | Candidate | Hash | Instance]},
-)
+class _TreeInPreparation(TypedDict):
+    result: pw.Table[Key | LeftRight | Candidate | Hash | Instance]
 
 
 @wrap_arg_tuple
@@ -97,13 +96,10 @@ def _build_tree_step(
     return dict(result=result)
 
 
-SortedIndex = TypedDict(
-    "SortedIndex",
-    {
-        "index": pw.Table[Key | LeftRight | Parent | Instance],
-        "oracle": pw.Table[Node | Instance],
-    },
-)  # oracle (root) pw.Table indexed by Instance
+class SortedIndex(TypedDict):
+    index: pw.Table[Key | LeftRight | Parent | Instance]
+    oracle: pw.Table[Node | Instance]
+    # oracle (root) pw.Table indexed by Instance
 
 
 @wrap_arg_tuple
@@ -158,8 +154,8 @@ def sort_from_index(
 @trace_user_frame
 def sort(
     table: pw.Table,
-    key: Optional[pw.ColumnReference] = None,
-    instance: Optional[pw.ColumnReference] = None,
+    key: pw.ColumnReference | None = None,
+    instance: pw.ColumnReference | None = None,
 ) -> pw.Table[PrevNext]:
     """
     Sorts a table by the specified keys.
@@ -270,13 +266,13 @@ class _treesort:
                 return self.transformer.index[self.parent].inverse_leftmost
 
         @pw.output_attribute
-        def next(self) -> Optional[pw.Pointer[Node]]:
+        def next(self) -> pw.Pointer[Node] | None:
             if self.right is not None:
                 return self.transformer.index[self.right].leftmost
             return self.transformer.index[self.inverse_rightmost].parent
 
         @pw.output_attribute
-        def prev(self) -> Optional[pw.Pointer[Node]]:
+        def prev(self) -> pw.Pointer[Node] | None:
             if self.left is not None:
                 return self.transformer.index[self.left].rightmost
             return self.transformer.index[self.inverse_leftmost].parent
@@ -350,7 +346,7 @@ class _prefix_sum_oracle:
         root = pw.input_attribute()
 
         @pw.method
-        def prefix_sum_upperbound(self, value) -> Optional[pw.Pointer]:
+        def prefix_sum_upperbound(self, value) -> pw.Pointer | None:
             """Returns id of minimum key k such that:
             sum{i.val : i.key <= k} > value
             (i.e. returns id of a first row that does not fit in the knapsack)
@@ -389,7 +385,7 @@ class _prefix_sum_oracle:
             return ret
 
         @pw.method
-        def prefix_sum_upperbound(self, value) -> Optional[pw.Pointer]:
+        def prefix_sum_upperbound(self, value) -> pw.Pointer | None:
             if self.left is not None:
                 lagg = self.transformer.index[self.left].agg
                 if value < lagg:
@@ -414,8 +410,8 @@ class _prefix_sum_oracle:
 
 
 class BinsearchOracle(pw.Schema):
-    lowerbound: Callable[..., Optional[pw.Pointer]]
-    upperbound: Callable[..., Optional[pw.Pointer]]
+    lowerbound: Callable[..., pw.Pointer | None]
+    upperbound: Callable[..., pw.Pointer | None]
 
 
 @runtime_type_check
@@ -430,12 +426,12 @@ class _binsearch_oracle:
         root = pw.input_attribute()
 
         @pw.method
-        def lowerbound(self, value) -> Optional[pw.Pointer]:
+        def lowerbound(self, value) -> pw.Pointer | None:
             """Returns id of item such that item.key <= value and item.key is maximal."""
             return self.transformer.index[self.root].lowerbound(value)
 
         @pw.method
-        def upperbound(self, value) -> Optional[pw.Pointer]:
+        def upperbound(self, value) -> pw.Pointer | None:
             """Returns id of item such that item.key >= value and item.key is minimal."""
             return self.transformer.index[self.root].upperbound(value)
 
@@ -445,7 +441,7 @@ class _binsearch_oracle:
         right = pw.input_attribute()
 
         @pw.method
-        def lowerbound(self, value) -> Optional[pw.Pointer]:
+        def lowerbound(self, value) -> pw.Pointer | None:
             if self.key <= value:
                 if self.right is not None:
                     right_lowerbound = self.transformer.index[self.right].lowerbound(
@@ -460,7 +456,7 @@ class _binsearch_oracle:
                 return None
 
         @pw.method
-        def upperbound(self, value) -> Optional[pw.Pointer]:
+        def upperbound(self, value) -> pw.Pointer | None:
             if self.key >= value:
                 if self.left is not None:
                     left_upperbound = self.transformer.index[self.left].upperbound(
@@ -488,8 +484,9 @@ def filter_smallest_k(
     sorted_index.index += table.select(val=1)
     oracle = prefix_sum_oracle(**sorted_index)
     pw.universes.promise_is_subset_of(ks, oracle)
+    oracle_restricted = oracle.restrict(ks)
     # root is pked with instance, ks also
-    res = ks.select(res=oracle.prefix_sum_upperbound(ks.k))
+    res = ks.select(res=oracle_restricted.prefix_sum_upperbound(ks.k))
     validres = res.filter(res.res.is_not_none()).update_types(res=pw.Pointer)
     validres = validres.select(res=getattr(table.ix(validres.res), colname))
     res <<= res.filter(res.res.is_none()).select(res=math.inf)
@@ -531,7 +528,7 @@ class _retrieving_prev_next_value:
 @runtime_type_check
 @trace_user_frame
 def retrieve_prev_next_values(
-    ordered_table: pw.Table, value: Optional[pw.ColumnReference] = None
+    ordered_table: pw.Table, value: pw.ColumnReference | None = None
 ) -> pw.Table:
     """
     Retrieve, for each row, a pointer to the first row in the ordered_table that \

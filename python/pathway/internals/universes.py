@@ -81,7 +81,7 @@ def promise_is_subset_of(self: TableLike, *others: TableLike) -> None:
 
 
 def promise_are_equal(self: TableLike, *others: TableLike) -> None:
-    """Asserts to Pathway that an universe of self is equal to each of the others universes.
+    r"""Asserts to Pathway that an universe of self is equal to each of the others universes.
 
     Semantics: Used in situations where Pathway cannot deduce one universe being equal to another universe.
 
@@ -92,22 +92,38 @@ def promise_are_equal(self: TableLike, *others: TableLike) -> None:
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
-    ...   | pet
-    ... 1 | Dog
-    ... 7 | Cat
-    ... ''')
-    >>> t2 = pw.debug.parse_to_table('''
-    ...   | age
-    ... 1 | 10
-    ... 7 | 3
-    ... ''')
+    >>> import pytest
+    >>> t1 = pw.debug.parse_to_table(
+    ...     '''
+    ...   | age | owner | pet
+    ... 1 | 8   | Alice | cat
+    ... 2 | 9   | Bob   | dog
+    ... 3 | 15  | Alice | tortoise
+    ... '''
+    ... )
+    >>> t2 = pw.debug.parse_to_table(
+    ...     '''
+    ...   | age | owner
+    ... 1 | 11  | Alice
+    ... 2 | 12  | Tom
+    ... 3 | 7   | Eve
+    ... '''
+    ... )
+    >>> t3 = t2.filter(pw.this.age > 10)
+    >>> with pytest.raises(
+    ...     ValueError,
+    ...     match='Universe of the argument of Table.update_cells\(\) needs ' # noqa
+    ...     + 'to be a subset of the universe of the updated table.',
+    ... ):
+    ...     t1.update_cells(t3)
+    ...
     >>> pw.universes.promise_are_equal(t1, t2)
-    >>> t3 = t1 + t2
-    >>> pw.debug.compute_and_print(t3, include_id=False)
-    pet | age
-    Cat | 3
-    Dog | 10
+    >>> result = t1.update_cells(t3)
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    age | owner | pet
+    11  | Alice | cat
+    12  | Tom   | dog
+    15  | Alice | tortoise
     """
     for other in others:
         promise_is_subset_of(self, other)

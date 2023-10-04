@@ -27,6 +27,7 @@ from ._window_join import (
     window_join_outer,
     window_join_right,
 )
+from .temporal_behavior import WindowBehavior, window_behavior
 
 __all__ = [
     "AsofJoinResult",
@@ -54,4 +55,6 @@ __all__ = [
     "tumbling",
     "sliding",
     "session",
+    "window_behavior",
+    "WindowBehavior",
 ]

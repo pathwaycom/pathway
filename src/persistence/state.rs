@@ -1,4 +1,4 @@
-use log::{error, warn};
+use log::{error, info, warn};
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -140,6 +140,7 @@ impl MetadataAccessor {
                                 *timestamp = max(*timestamp, block.last_advanced_timestamp);
                             })
                             .or_insert(block.last_advanced_timestamp);
+                        info!("Merge the current state with block: {block:?}");
                         internal_state.merge(block);
                     }
                     Err(e) => {

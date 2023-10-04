@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import itertools
 from collections import defaultdict
-from typing import TYPE_CHECKING, Dict, Iterable
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from pathway.internals import dtype as dt
 from pathway.internals import expression as expr
@@ -17,7 +18,7 @@ from pathway.internals.expression_visitor import ExpressionVisitor
 
 
 class ExpressionFormatter(ExpressionVisitor):
-    table_numbers: Dict[Table, int]
+    table_numbers: dict[Table, int]
 
     def __init__(self):
         self.table_counter = itertools.count(start=1)
@@ -57,7 +58,7 @@ class ExpressionFormatter(ExpressionVisitor):
         return repr(expression._val)
 
     def eval_reducer(self, expression: expr.ReducerExpression):
-        args = self._eval_args_kwargs(expression._args)
+        args = self._eval_args_kwargs(expression._args, expression._kwargs)
         name = expression._reducer.name
         return f"pathway.reducers.{name}({args})"
 
@@ -77,7 +78,7 @@ class ExpressionFormatter(ExpressionVisitor):
         return f"pathway.numba_apply({expression._fun.__name__}, {args})"
 
     def eval_pointer(self, expression: expr.PointerExpression):
-        kwargs: Dict[str, expr.ColumnExpression] = {}
+        kwargs: dict[str, expr.ColumnExpression] = {}
         if expression._optional:
             import pathway.internals.expression as expr
 
@@ -132,7 +133,7 @@ class ExpressionFormatter(ExpressionVisitor):
     def _eval_args_kwargs(
         self,
         args: Iterable[expr.ColumnExpression] = (),
-        kwargs: Dict[str, expr.ColumnExpression] = {},
+        kwargs: dict[str, expr.ColumnExpression] = {},
     ):
         return ", ".join(
             itertools.chain(

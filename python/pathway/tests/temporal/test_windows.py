@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway import dt
+from pathway.internals import dtype as dt
 from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
 from pathway.tests.utils import T, assert_table_equality_wo_index
 
@@ -200,6 +200,102 @@ def test_sliding():
             1     |     9            |     19         | 10    | 11    | 2
             """
     )
+    assert_table_equality_wo_index(result, res)
+
+
+# in the batch mode, we can test close to nothing;
+# basically chcecks whether syntax is not broken
+# for more tests see test_windows_stream.py
+def test_sliding_compacting():
+    t = T(
+        """
+            | shard | t
+        1   | 0     |  12
+        2   | 0     |  13
+        3   | 0     |  14
+        4   | 0     |  15
+        5   | 0     |  16
+        6   | 0     |  17
+        7   | 1     |  10
+        8   | 1     |  11
+    """
+    )
+
+    gb = t.windowby(
+        t.t,
+        window=pw.temporal.sliding(duration=10, hop=3),
+        behavior=pw.temporal.window_behavior(delay=0, cutoff=1, keep_results=False),
+        shard=t.shard,
+    )
+
+    result = gb.reduce(
+        pw.this._pw_shard,
+        pw.this._pw_window_start,
+        pw.this._pw_window_end,
+        min_t=pw.reducers.min(pw.this.t),
+        max_t=pw.reducers.max(pw.this.t),
+        count=pw.reducers.count(),
+    )
+    # note that two windows have cutoff that is equal to the time, and they
+    # are not present here but are present in the next test
+    res = T(
+        """
+        _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
+            0     |     9            |     19         | 12    | 17    | 6
+            0     |     12           |     22         | 12    | 17    | 6
+            0     |     15           |     25         | 15    | 17    | 3
+            1     |     9            |     19         | 10    | 11    | 2
+            """
+    )
+    assert_table_equality_wo_index(result, res)
+
+
+# in the batch mode, we can test close to nothing;
+# basically chcecks whether syntax is not broken
+# for more tests see test_windows_stream.py
+def test_sliding_compacting_2():
+    t = T(
+        """
+            | shard | t
+        1   | 0     |  12
+        2   | 0     |  13
+        3   | 0     |  14
+        4   | 0     |  15
+        5   | 0     |  16
+        6   | 0     |  17
+        7   | 1     |  10
+        8   | 1     |  11
+    """
+    )
+
+    gb = t.windowby(
+        t.t,
+        window=pw.temporal.sliding(duration=10, hop=3),
+        behavior=pw.temporal.window_behavior(delay=0, cutoff=2, keep_results=False),
+        shard=t.shard,
+    )
+
+    result = gb.reduce(
+        pw.this._pw_shard,
+        pw.this._pw_window_start,
+        pw.this._pw_window_end,
+        min_t=pw.reducers.min(pw.this.t),
+        max_t=pw.reducers.max(pw.this.t),
+        count=pw.reducers.count(),
+    )
+
+    res = T(
+        """
+        _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
+            0     |     6            |     16         | 12    | 15    | 4
+            0     |     9            |     19         | 12    | 17    | 6
+            0     |     12           |     22         | 12    | 17    | 6
+            0     |     15           |     25         | 15    | 17    | 3
+            1     |     6            |     16         | 10    | 11    | 2
+            1     |     9            |     19         | 10    | 11    | 2
+            """
+    )
+
     assert_table_equality_wo_index(result, res)
 
 
@@ -632,7 +728,7 @@ def test_intervals_over():
         | t |  v
     1   | 1 |  10
     2   | 2 |  1
-    3   | 4 |  3
+    3   | 3 |  3
     4   | 8 |  2
     5   | 9 |  4
     6   | 10|  8
@@ -653,18 +749,20 @@ def test_intervals_over():
     result = pw.temporal.windowby(
         t,
         t.t,
-        window=pw.temporal.intervals_over(at=probes.t, lower_bound=-2, upper_bound=1),
+        window=pw.temporal.intervals_over(
+            at=probes.t, lower_bound=-2, upper_bound=1, is_outer=False
+        ),
     ).reduce(pw.this._pw_window_location, v=pw.reducers.tuple(pw.this.v))
 
     df = pd.DataFrame(
         {
-            "_pw_window_location": [2, 4, 6, 8, 10],
-            "v": [(16, 1, 10, 9), (3, 16, 1), (3,), (4, 2), (4, 8, 2)],
+            "_pw_window_location": [2, 4, 8, 10],
+            "v": [(10, 9, 16, 1, 3), (16, 1, 3), (2, 4), (2, 4, 8)],
         }
     )
     expected = pw.debug.table_from_pandas(
         df,
-        schema=pw.schema_from_types(_pw_window_location=int, v=typing.List[int]),
+        schema=pw.schema_from_types(_pw_window_location=int, v=list[int]),
     )
     assert_table_equality_wo_index(result, expected)
 
@@ -694,7 +792,9 @@ def test_intervals_over_with_shard():
     result = pw.temporal.windowby(
         t,
         t.t,
-        window=pw.temporal.intervals_over(at=probes.t, lower_bound=-4, upper_bound=2),
+        window=pw.temporal.intervals_over(
+            at=probes.t, lower_bound=-4, upper_bound=2, is_outer=False
+        ),
         shard=pw.this.shard,
     ).reduce(
         pw.this._pw_window_location, pw.this._pw_shard, v=pw.reducers.tuple(pw.this.v)
@@ -704,13 +804,13 @@ def test_intervals_over_with_shard():
         {
             "_pw_window_location": [2, 2, 6, 6, 10, 10],
             "_pw_shard": [1, 2, 1, 2, 1, 2],
-            "v": [(3, 1, 10), (16, 9), (3, 2, 1), (16,), (2,), (8, 4)],
+            "v": [(10, 1, 3), (9, 16), (1, 3, 2), (16,), (2,), (4, 8)],
         }
     )
     expected = pw.debug.table_from_pandas(
         df,
         schema=pw.schema_from_types(
-            _pw_window_location=int, _pw_shard=int, v=typing.List[int]
+            _pw_window_location=int, _pw_shard=int, v=list[int]
         ),
     )
     assert_table_equality_wo_index(result, expected)
@@ -730,7 +830,9 @@ def test_intervals_over_works_on_same_table():
     result = pw.temporal.windowby(
         t,
         t.t,
-        window=pw.temporal.intervals_over(at=t.t, lower_bound=-2, upper_bound=0),
+        window=pw.temporal.intervals_over(
+            at=t.t, lower_bound=-2, upper_bound=0, is_outer=False
+        ),
     ).reduce(pw.this._pw_window_location, v=pw.reducers.sorted_tuple(pw.this.t))
 
     df = pd.DataFrame(
@@ -741,6 +843,116 @@ def test_intervals_over_works_on_same_table():
     )
     expected = pw.debug.table_from_pandas(
         df,
-        schema=pw.schema_from_types(_pw_window_location=int, v=typing.List[int]),
+        schema=pw.schema_from_types(_pw_window_location=int, v=list[int]),
+    )
+    assert_table_equality_wo_index(result, expected)
+
+
+def test_intervals_over_outer():
+    t = T(
+        """
+        | t |  v
+    1   | 1 |  10
+    2   | 2 |  1
+    3   | 3 |  3
+    4   | 8 |  2
+    5   | 9 |  4
+    6   | 10|  8
+    7   | 1 |  9
+    8   | 2 |  16
+    """
+    )
+    probes = T(
+        """
+    t
+    2
+    4
+    6
+    8
+    10
+    """
+    )
+    result = pw.temporal.windowby(
+        t,
+        t.t,
+        window=pw.temporal.intervals_over(
+            at=probes.t, lower_bound=-2, upper_bound=1, is_outer=True
+        ),
+    ).reduce(pw.this._pw_window_location, v=pw.reducers.tuple(pw.this.v))
+
+    df = pd.DataFrame(
+        {
+            "_pw_window_location": [2, 4, 6, 8, 10],
+            "v": [(9, 10, 16, 1, 3), (16, 1, 3), (None,), (2, 4), (2, 4, 8)],
+        }
+    )
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(
+            _pw_window_location=int, v=list[typing.Optional[int]]
+        ),
+    )
+    assert_table_equality_wo_index(result, expected)
+
+
+def test_intervals_over_with_reducer_over_ix():
+    values = T(
+        """
+        | v
+    1   | 1
+    2   | 2
+    3   | 6
+    4   | 3
+    5   | 9
+    6   | 3
+    7   | 2
+    8   | -5
+    9   | 1
+    10  | 7
+    """
+    )
+    t = T(
+        """
+        | t |  ptr
+    1   | 1 |  10
+    2   | 2 |  1
+    3   | 4 |  3
+    4   | 8 |  2
+    5   | 9 |  4
+    6   | 10|  8
+    7   | 5 |  9
+    8   | 3 |  7
+    """
+    ).select(pw.this.t, ptr=values.pointer_from(pw.this.ptr))
+    probes = pw.debug.table_from_markdown(
+        """
+    t
+    2
+    4
+    6
+    8
+    10
+    """
+    )
+    grouped_table = pw.temporal.windowby(
+        t,
+        t.t,
+        window=pw.temporal.intervals_over(
+            at=probes.t, lower_bound=-1, upper_bound=1, is_outer=False
+        ),
+    )
+    result = grouped_table.reduce(
+        pw.this._pw_window_location, v=pw.reducers.tuple(values.ix(grouped_table.ptr).v)
+    )
+
+    df = pd.DataFrame(
+        {
+            "_pw_window_location": [2, 4, 6, 8, 10],
+            "v": [(7, 1, 2), (2, 6, 1), (1,), (2, 3), (3, -5)],
+        }
+    )
+    expected = pw.debug.table_from_pandas(
+        df,
+        schema=pw.schema_from_types(_pw_window_location=int, v=list[int]),
     )
     assert_table_equality_wo_index(result, expected)
