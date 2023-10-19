@@ -238,3 +238,48 @@ def test_schema_canonical_json():
         b: pw.Json
 
     assert A.typehints() == {"a": pw.Json, "b": pw.Json}
+
+
+def test_schema_ambiguous_property():
+    with pytest.raises(
+        ValueError,
+        match="ambiguous property; schema property `append_only`"
+        + " has value True but column `a` got False",
+    ):
+
+        class A(pw.Schema, append_only=True):
+            a: int = pw.column_definition(append_only=False)
+
+    with pytest.raises(
+        ValueError,
+        match="ambiguous property; schema property `append_only`"
+        + " has value False but column `a` got True",
+    ):
+
+        class B(pw.Schema, append_only=False):
+            a: int = pw.column_definition(append_only=True)
+
+
+def test_schema_properties():
+    class A(pw.Schema, append_only=True):
+        a: int = pw.column_definition(append_only=True)
+        b: int = pw.column_definition()
+
+    assert A["a"].append_only is True
+    assert A["b"].append_only is True
+
+    class B(pw.Schema, append_only=False):
+        a: int = pw.column_definition(append_only=False)
+        b: int = pw.column_definition()
+
+    assert B["a"].append_only is False
+    assert B["b"].append_only is False
+
+    class C(pw.Schema):
+        a: int = pw.column_definition(append_only=True)
+        b: int = pw.column_definition(append_only=False)
+        c: int = pw.column_definition()
+
+    assert C["a"].append_only is True
+    assert C["b"].append_only is False
+    assert C["c"].append_only is False

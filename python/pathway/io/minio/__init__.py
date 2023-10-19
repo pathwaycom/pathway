@@ -9,8 +9,7 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import CsvParserSettings
-from pathway.io.s3 import AwsS3Settings
-from pathway.io.s3 import read as s3_csv_read
+from pathway.io.s3 import AwsS3Settings, read as s3_csv_read
 
 
 class MinIOSettings:

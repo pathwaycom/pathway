@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from pathway.internals.api import BasePointer, PathwayType
+from pathway.internals.api import PathwayType, Pointer
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -259,7 +259,7 @@ def write(
         retry_codes=retry_codes,
     )
 
-    def callback(key: BasePointer, row: dict[str, Any], time: int, is_addition: bool):
+    def callback(key: Pointer, row: dict[str, Any], time: int, is_addition: bool):
         payload = prepare_request_payload(
             row, time, is_addition, format, request_payload_template
         )

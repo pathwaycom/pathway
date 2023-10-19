@@ -6,18 +6,22 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any, Callable, Iterable, List, Optional, Tuple, Union
+from typing import Any, Generic, TypeVar, Union, final
 
 from pathway.internals.api import CapturedTable, Value
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.dtype import DType
 from pathway.internals.monitoring import StatsMonitor
 
-class BasePointer:
+_T = TypeVar("_T")
+
+@final
+class Pointer(Generic[_T]):
     pass
 
-def ref_scalar(*args, optional=False) -> BasePointer: ...
+def ref_scalar(*args, optional=False) -> Pointer: ...
 
 class PathwayType(Enum):
     ANY: PathwayType
@@ -53,16 +57,19 @@ class Trace:
     function: str
 
 @dataclasses.dataclass(frozen=True)
-class EvalProperties:
-    dtype: Optional[DType] = None
-    trace: Optional[Trace] = None
+class ColumnProperties:
+    dtype: PathwayType | None = None
+    trace: Trace | None = None
     append_only: bool = False
+
+class TableProperties:
+    pass
 
 @dataclasses.dataclass(frozen=True)
 class ConnectorProperties:
-    commit_duration_ms: Optional[int] = None
-    unsafe_trusted_ids: Optional[bool] = False
-    append_only: bool = False
+    commit_duration_ms: int | None = None
+    unsafe_trusted_ids: bool | None = False
+    column_properties: list[ColumnProperties] = []
 
 class Column:
     """A Column holds data and conceptually is a Dict[Universe elems, dt]
@@ -80,11 +87,11 @@ class LegacyTable:
     universe and columns are public fields - tables can be constructed
     """
 
-    def __init__(self, universe: Universe, columns: List[Column]): ...
+    def __init__(self, universe: Universe, columns: list[Column]): ...
     @property
     def universe(self) -> Universe: ...
     @property
-    def columns(self) -> List[Column]: ...
+    def columns(self) -> list[Column]: ...
 
 class Table:
     """Table with tuples containing values from multiple columns."""
@@ -97,7 +104,7 @@ class EngineError(Exception):
 
 class EngineErrorWithTrace(Exception):
     "Marker class to indicate engine error with trace"
-    args: tuple[Exception, Optional[Trace]]
+    args: tuple[Exception, Trace | None]
 
 class Reducer:
     ARG_MIN: Reducer
@@ -113,6 +120,7 @@ class Reducer:
     def tuple(skip_nones: bool) -> Reducer: ...
     UNIQUE: Reducer
     ANY: Reducer
+    COUNT: Reducer
 
 class UnaryOperator:
     INV: UnaryOperator
@@ -153,7 +161,7 @@ class Expression:
     @staticmethod
     def unary_expression(
         expr: Expression, operator: UnaryOperator, expr_dtype: PathwayType
-    ) -> Optional[Expression]: ...
+    ) -> Expression | None: ...
     @staticmethod
     def binary_expression(
         lhs: Expression,
@@ -161,7 +169,7 @@ class Expression:
         operator: BinaryOperator,
         left_dtype: PathwayType,
         right_dtype: PathwayType,
-    ) -> Optional[Expression]: ...
+    ) -> Expression | None: ...
     @staticmethod
     def eq(lhs: Expression, rhs: Expression) -> Expression: ...
     @staticmethod
@@ -169,14 +177,14 @@ class Expression:
     @staticmethod
     def cast(
         expr: Expression, source_type: PathwayType, target_type: PathwayType
-    ) -> Optional[Expression]: ...
+    ) -> Expression | None: ...
     @staticmethod
     def cast_optional(
         expr: Expression, source_type: PathwayType, target_type: PathwayType
-    ) -> Optional[Expression]: ...
+    ) -> Expression | None: ...
     def convert_optional(
         expr: Expression, source_type: PathwayType, target_type: PathwayType
-    ) -> Optional[Expression]: ...
+    ) -> Expression | None: ...
     @staticmethod
     def if_else(if_: Expression, then: Expression, else_: Expression) -> Expression: ...
     @staticmethod
@@ -301,10 +309,10 @@ class MonitoringLevel(Enum):
 
 class Context:
     # "Location" of the current attribute in the transformer computation
-    this_row: BasePointer
-    data: Tuple[Value, BasePointer]
+    this_row: Pointer
+    data: tuple[Value, Pointer]
 
-    def raising_get(self, column: int, row: BasePointer, *args: Value) -> Value: ...
+    def raising_get(self, column: int, row: Pointer, *args: Value) -> Value: ...
 
 class Computer:
     @classmethod
@@ -317,32 +325,27 @@ class Computer:
         is_method: bool,
         universe: Universe,
         data: Value = None,
-        data_column: Optional[Column] = None,
+        data_column: Column | None = None,
     ) -> Computer: ...
 
 ComplexColumn = Union[Column, Computer]
 
-class VennUniverses:
-    def only_left(self) -> Universe: ...
-    def only_right(self) -> Universe: ...
-    def both(self) -> Universe: ...
-
 class Scope:
     @property
-    def parent(self) -> Optional[Scope]: ...
-    def empty_table(self, dtypes: Iterable[DType]) -> Table: ...
+    def parent(self) -> Scope | None: ...
+    def empty_table(self, properties: ConnectorProperties) -> Table: ...
     def iterate(
         self,
-        iterated: List[LegacyTable],
-        iterated_with_universe: List[LegacyTable],
-        extra: List[LegacyTable],
+        iterated: list[LegacyTable],
+        iterated_with_universe: list[LegacyTable],
+        extra: list[LegacyTable],
         logic: Callable[
-            [Scope, List[LegacyTable], List[LegacyTable], List[LegacyTable]],
-            Tuple[List[LegacyTable], List[LegacyTable]],
+            [Scope, list[LegacyTable], list[LegacyTable], list[LegacyTable]],
+            tuple[list[LegacyTable], list[LegacyTable]],
         ],
         *,
-        limit: Optional[int] = None,
-    ) -> Tuple[List[LegacyTable], List[LegacyTable]]:
+        limit: int | None = None,
+    ) -> tuple[list[LegacyTable], list[LegacyTable]]:
         """Fixed-point iteration
 
         logic is called with a new scope, clones of tables from iterated,
@@ -354,104 +357,101 @@ class Scope:
         ...
     # Evaluators for expressions
 
-    def static_universe(self, keys: Iterable[BasePointer]) -> Universe: ...
+    def static_universe(self, keys: Iterable[Pointer]) -> Universe: ...
     def static_column(
-        self, universe: Universe, rows: Iterable[Tuple[BasePointer, Any]], dt: DType
+        self, universe: Universe, rows: Iterable[tuple[Pointer, Any]], dt: DType
     ) -> Column: ...
     def static_table(
         self,
         universe: Universe,
-        rows: Iterable[Tuple[BasePointer, List[Value]]],
+        rows: Iterable[tuple[Pointer, list[Value]]],
         dt: DType,
     ) -> Table: ...
     def map_column(
         self,
         table: LegacyTable,
-        function: Callable[[Tuple[Value, ...]], Value],
-        properties: EvalProperties,
-    ) -> Column: ...
-    def expression_column(
-        self, table: LegacyTable, expression: Expression, properties: EvalProperties
+        function: Callable[[tuple[Value, ...]], Value],
+        properties: ColumnProperties,
     ) -> Column: ...
     def expression_table(
         self,
         table: Table,
-        column_paths: List[ColumnPath],
-        expressions: List[Tuple[Expression, EvalProperties]],
+        column_paths: list[ColumnPath],
+        expressions: list[tuple[Expression, ColumnProperties]],
     ) -> Table: ...
+    def table_properties(
+        self,
+        column_properties: Iterable[tuple[ColumnPath, ColumnProperties]],
+    ) -> TableProperties: ...
     def columns_to_table(
-        self, universe: Universe, columns: List[Tuple[Column, ColumnPath]]
+        self, universe: Universe, columns: list[tuple[Column, ColumnPath]]
     ) -> Table: ...
     def table_column(
         self, universe: Universe, table: Table, column_path: ColumnPath
     ) -> Column: ...
     def table_universe(self, table: Table) -> Universe: ...
     def flatten_table_storage(
-        self, table: Table, column_paths: List[ColumnPath]
+        self, table: Table, column_paths: list[ColumnPath]
     ) -> Table: ...
     def async_apply_table(
         self,
         table: Table,
-        column_paths: List[ColumnPath],
+        column_paths: list[ColumnPath],
         function: Callable[..., Value],
-        properties: EvalProperties,
+        properties: TableProperties,
     ) -> Table: ...
-    def filter_universe(self, universe: Universe, column: Column) -> Universe: ...
-    def filter_table(self, table: Table, path: ColumnPath) -> Table: ...
+    def filter_table(
+        self, table: Table, path: ColumnPath, table_properties: TableProperties
+    ) -> Table: ...
     def forget(
         self,
         table: Table,
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
+        mark_forgetting_records: bool,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def filter_out_results_of_forgetting(
+        self,
+        table: Table,
+        table_properties: TableProperties,
     ) -> Table: ...
     def freeze(
         self,
         table: Table,
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
+        table_properties: TableProperties,
     ) -> Table: ...
     def buffer(
         self,
         table: Table,
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
+        table_properties: TableProperties,
     ) -> Table: ...
-    def intersect_universe(
-        self, universe: Universe, *universes: Universe
-    ) -> Universe: ...
-    def intersect_tables(self, table: Table, tables: Iterable[Table]) -> Table: ...
-    def union_universe(self, universe: Universe, *universes: Universe) -> Universe: ...
-    def venn_universes(
-        self, left_universe: Universe, right_universe: Universe
-    ) -> VennUniverses: ...
-    def subtract_table(self, left_table: Table, right_table: Table) -> Table: ...
-    def reindex_universe(self, column: Column) -> Universe: ...
+    def intersect_tables(
+        self, table: Table, tables: Iterable[Table], table_properties: TableProperties
+    ) -> Table: ...
+    def subtract_table(
+        self, left_table: Table, right_table: Table, table_properties: TableProperties
+    ) -> Table: ...
     def restrict_column(
         self,
         universe: Universe,
         column: Column,
     ) -> Column: ...
     def restrict_table(
-        self,
-        orig_table: Table,
-        new_table: Table,
+        self, orig_table: Table, new_table: Table, table_properties: TableProperties
     ) -> Table: ...
-    def override_column_universe(
-        self, universe: Universe, column: Column
-    ) -> Column: ...
     def override_table_universe(
-        self,
-        orig_table: Table,
-        new_table: Table,
+        self, orig_table: Table, new_table: Table, table_properties: TableProperties
     ) -> Table: ...
-    def reindex_column(
-        self,
-        column_to_reindex: Column,
-        reindexing_column: Column,
-        reindexing_universe: Universe,
-    ) -> Column: ...
     def reindex_table(
-        self, table: Table, reindexing_column_path: ColumnPath
+        self,
+        table: Table,
+        reindexing_column_path: ColumnPath,
+        table_properties: TableProperties,
     ) -> Table: ...
     def connector_table(
         self,
@@ -460,31 +460,34 @@ class Scope:
         properties: ConnectorProperties,
     ) -> Table: ...
     @staticmethod
-    def table(universe: Universe, columns: List[Column]) -> LegacyTable: ...
+    def table(universe: Universe, columns: list[Column]) -> LegacyTable: ...
 
     # Grouping and joins
 
-    def group_by(
-        self, table: LegacyTable, requested_columns: List[Column], set_id: bool = False
-    ) -> Grouper:
-        """
-        Args:
-            table: a list of columns to group by.
-        """
-        ...
-    def ix(
+    def group_by_table(
         self,
-        keys_column: Column,
-        input_universe: Universe,
-        strict: bool,
+        table: Table,
+        grouping_columns: list[ColumnPath],
+        reducers: list[tuple[Reducer, list[ColumnPath]]],
+        by_id: bool,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def ix_table(
+        self,
+        to_ix_table: Table,
+        key_table: Table,
+        key_column_path: ColumnPath,
         optional: bool,
-    ) -> Ixer: ...
+        strict: bool,
+        table_properties: TableProperties,
+    ) -> Table: ...
     def join_tables(
         self,
         left_storage: Table,
         right_storage: Table,
-        left_paths: List[ColumnPath],
-        right_paths: List[ColumnPath],
+        left_paths: list[ColumnPath],
+        right_paths: list[ColumnPath],
+        table_properties: TableProperties,
         assign_id: bool = False,
         left_ear: bool = False,
         right_ear: bool = False,
@@ -492,35 +495,37 @@ class Scope:
 
     # Transformers
 
-    def complex_columns(self, inputs: List[ComplexColumn]) -> List[Column]: ...
+    def complex_columns(self, inputs: list[ComplexColumn]) -> list[Column]: ...
 
     # Updates
 
-    def update_rows_table(self, table: Table, update: Table) -> Table: ...
+    def update_rows_table(
+        self, table: Table, update: Table, table_properties: TableProperties
+    ) -> Table: ...
     def update_cells_table(
         self,
         table: Table,
         update: Table,
-        table_columns: List[ColumnPath],
-        update_columns: List[ColumnPath],
+        table_columns: list[ColumnPath],
+        update_columns: list[ColumnPath],
+        table_properties: TableProperties,
     ) -> Table: ...
     def debug_universe(self, name: str, table: Table): ...
     def debug_column(self, name: str, table: Table, column_path: ColumnPath): ...
-    def concat(self, universes: Iterable[Universe]) -> Concat: ...
-    def concat_tables(self, tables: Iterable[Table]) -> Table: ...
-    def flatten(self, flatten_column: Column) -> Flatten: ...
-    def flatten_table(self, table: Table, path: ColumnPath) -> Table: ...
-    def sort(
-        self, key_column: Column, instance_column: Column
-    ) -> Tuple[Column, Column]: ...
+    def concat_tables(
+        self, tables: Iterable[Table], table_properties: TableProperties
+    ) -> Table: ...
+    def flatten_table(
+        self, table: Table, path: ColumnPath, table_properties: TableProperties
+    ) -> Table: ...
     def sort_table(
         self,
         table: Table,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: TableProperties,
     ) -> Table: ...
-    def probe_universe(self, universe: Universe, operator_id: int): ...
-    def probe_column(self, column: Column, operator_id: int): ...
+    def probe_table(self, table: Table, operator_id: int): ...
     def subscribe_table(
         self,
         table: Table,
@@ -536,40 +541,17 @@ class Scope:
         data_format: DataFormat,
     ): ...
 
-class Ixer:
-    @property
-    def universe(self) -> Universe: ...
-    def ix_column(self, column: Column) -> Column: ...
-
-class Grouper:
-    @property
-    def universe(self) -> Universe: ...
-    def input_column(self, column: Column) -> Column: ...
-    def count_column(self) -> Column: ...
-    def reducer_column(self, reducer: Reducer, columns: List[Column]) -> Column: ...
-
-class Concat:
-    @property
-    def universe(self) -> Universe: ...
-    def concat_column(self, columns: List[Column]) -> Column: ...
-
-class Flatten:
-    @property
-    def universe(self) -> Universe: ...
-    def get_flattened_column(self) -> Column: ...
-    def explode_column(self, column: Column) -> Column: ...
-
 def run_with_new_graph(
     logic: Callable[[Scope], Iterable[tuple[Table, list[ColumnPath]]]],
     event_loop: asyncio.AbstractEventLoop,
-    stats_monitor: Optional[StatsMonitor] = None,
+    stats_monitor: StatsMonitor | None = None,
     *,
     ignore_asserts: bool = False,
     monitoring_level: MonitoringLevel = MonitoringLevel.NONE,
     with_http_server: bool = False,
-    persistence_config: Optional[PersistenceConfig] = None,
-) -> List[CapturedTable]: ...
-def unsafe_make_pointer(arg) -> BasePointer: ...
+    persistence_config: PersistenceConfig | None = None,
+) -> list[CapturedTable]: ...
+def unsafe_make_pointer(arg) -> Pointer: ...
 
 class DataFormat:
     value_fields: Any

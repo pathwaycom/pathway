@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from pathway.internals import api, column, environ
-from pathway.internals import parse_graph as graph
-from pathway.internals import table, trace
+from pathway.internals import api, column, environ, parse_graph as graph, table, trace
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.internals.graph_runner.row_transformer_operator_handler import (  # noqa: registers handler for RowTransformerOperator

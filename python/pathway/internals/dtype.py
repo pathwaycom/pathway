@@ -12,8 +12,7 @@ from warnings import warn
 
 import numpy as np
 
-from pathway.internals import api, datetime_types
-from pathway.internals import json as js
+from pathway.internals import api, datetime_types, json as js
 
 if typing.TYPE_CHECKING:
     from pathway.internals.schema import Schema
@@ -24,6 +23,9 @@ class DType(ABC):
 
     def to_engine(self) -> api.PathwayType | None:
         return None
+
+    def map_to_engine(self) -> api.PathwayType:
+        return self.to_engine() or api.PathwayType.ANY
 
     @abstractmethod
     def is_value_compatible(self, arg) -> bool:
@@ -229,7 +231,7 @@ class Pointer(DType, typing.Generic[T]):
         return cls._cached_new(wrapped)
 
     def is_value_compatible(self, arg):
-        return isinstance(arg, api.BasePointer)
+        return isinstance(arg, api.Pointer)
 
     @cached_property
     def typehint(self) -> type[api.Pointer]:
@@ -446,7 +448,7 @@ def wrap(input_type) -> DType:
     elif input_type == typing.Any:
         return ANY
     elif (
-        input_type is api.BasePointer
+        input_type is api.Pointer
         or input_type is api.Pointer
         or typing.get_origin(input_type) is api.Pointer
     ):

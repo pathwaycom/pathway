@@ -13,26 +13,47 @@ from pathway.internals.schema import Schema, schema_from_pandas
 
 
 @dataclass(frozen=True)
+class DataSourceOptions:
+    commit_duration_ms: int | None = None
+    unsafe_trusted_ids: bool | None = False
+
+
+@dataclass(frozen=True, kw_only=True)
 class DataSource(ABC):
     schema: type[Schema]
+    data_source_options: DataSourceOptions = DataSourceOptions()
+
+    @property
+    def connector_properties(self) -> api.ConnectorProperties:
+        columns: list[api.ColumnProperties] = []
+        for column in self.schema.columns().values():
+            columns.append(
+                api.ColumnProperties(
+                    dtype=column.dtype.map_to_engine(),
+                    append_only=column.append_only,
+                )
+            )
+
+        return api.ConnectorProperties(
+            commit_duration_ms=self.data_source_options.commit_duration_ms,
+            unsafe_trusted_ids=self.data_source_options.unsafe_trusted_ids,
+            column_properties=columns,
+        )
 
 
 class StaticDataSource(DataSource, ABC):
     data: Any
-    connector_properties: api.ConnectorProperties = api.ConnectorProperties()
 
 
 @dataclass(frozen=True)
 class PandasDataSource(StaticDataSource):
     data: pd.DataFrame
-    connector_properties: api.ConnectorProperties = api.ConnectorProperties()
 
 
 @dataclass(frozen=True)
 class GenericDataSource(DataSource):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
-    connector_properties: api.ConnectorProperties = api.ConnectorProperties()
 
 
 @dataclass(frozen=True)

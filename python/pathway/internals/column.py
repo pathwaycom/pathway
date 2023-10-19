@@ -4,17 +4,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
 from types import EllipsisType
 from typing import TYPE_CHECKING, ClassVar
 
 import pathway.internals as pw
-from pathway.internals import column_properties as cp
-from pathway.internals import dtype as dt
-from pathway.internals import trace
-from pathway.internals.dtype import DType
+from pathway.internals import column_properties as cp, dtype as dt, trace
 from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
 
@@ -81,7 +78,7 @@ class Column(ABC):
         ...
 
     @property
-    def dtype(self) -> DType:
+    def dtype(self) -> dt.DType:
         return self.properties.dtype
 
 
@@ -133,7 +130,7 @@ class ColumnWithContext(Column, ABC):
 
     @cached_property
     @abstractmethod
-    def context_dtype(self) -> DType:
+    def context_dtype(self) -> dt.DType:
         ...
 
 
@@ -142,7 +139,7 @@ class IdColumn(ColumnWithContext):
         super().__init__(context, context.universe)
 
     @cached_property
-    def context_dtype(self) -> DType:
+    def context_dtype(self) -> dt.DType:
         return dt.POINTER
 
 
@@ -171,7 +168,7 @@ class ColumnWithExpression(ColumnWithContext):
         return super().column_dependencies() | self.expression._column_dependencies()
 
     @cached_property
-    def context_dtype(self) -> DType:
+    def context_dtype(self) -> dt.DType:
         return self.context.expression_type(self.expression)
 
 
@@ -325,24 +322,21 @@ class GroupedContext(Context):
     """Context of `table.groupby().reduce() operation."""
 
     table: pw.Table
-    grouping_columns: dict[InternalColRef, Column]
+    grouping_columns: tuple[InternalColRef, ...]
     set_id: bool
     """Whether id should be set based on grouping column."""
     inner_context: RowwiseContext
     """Original context of grouped table."""
-    requested_grouping_columns: StableSet[InternalColRef] = field(
-        default_factory=StableSet, compare=False, hash=False
-    )
     sort_by: InternalColRef | None = None
-
-    def column_dependencies_internal(self) -> Iterable[Column]:
-        return list(self.grouping_columns.values())
 
     def column_dependencies_external(self) -> Iterable[Column]:
         if self.sort_by is not None:
-            return [self.sort_by.to_colref()._column]
+            sort_by = [self.sort_by.to_colref()._column]
         else:
-            return []
+            sort_by = []
+        return sort_by + [
+            int_colref.to_colref()._column for int_colref in self.grouping_columns
+        ]
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.inner_context.universe]
@@ -368,7 +362,7 @@ class FilterContext(
 class TimeColumnContext(Context):
     """Context of operations that use time columns."""
 
-    old_universe: Universe
+    orig_universe: Universe
     threshold_column: ColumnWithExpression
     time_column: ColumnWithExpression
 
@@ -376,22 +370,34 @@ class TimeColumnContext(Context):
         return [self.threshold_column, self.time_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.old_universe]
+        return [self.orig_universe]
 
 
 @dataclass(eq=False, frozen=True)
 class ForgetContext(TimeColumnContext):
-    """Context of `table.forget() operation."""
+    """Context of `table._forget() operation."""
+
+    mark_forgetting_records: bool
+
+
+@dataclass(eq=False, frozen=True)
+class FilterOutForgettingContext(Context):
+    """Context of `table._filter_out_results_of_forgetting() operation."""
+
+    orig_universe: Universe
+
+    def universe_dependencies(self) -> Iterable[Universe]:
+        return [self.orig_universe]
 
 
 @dataclass(eq=False, frozen=True)
 class FreezeContext(TimeColumnContext):
-    """Context of `table.freeze() operation."""
+    """Context of `table._freeze() operation."""
 
 
 @dataclass(eq=False, frozen=True)
 class BufferContext(TimeColumnContext):
-    """Context of `table.buffer() operation."""
+    """Context of `table._buffer() operation."""
 
 
 @dataclass(eq=False, frozen=True)
@@ -465,7 +471,7 @@ class HavingContext(Context):
         return [self.key_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe]
+        return [self.orig_universe, self.key_column.universe]
 
 
 @dataclass(eq=False, frozen=True)

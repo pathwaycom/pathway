@@ -7,17 +7,12 @@ from queue import Queue
 from typing import Any
 
 from pathway.internals import api, datasource
-from pathway.internals.api import BasePointer, PathwayType
+from pathway.internals.api import PathwayType, Pointer
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import (
-    RawDataSchema,
-    construct_connector_properties,
-    get_data_format_type,
-    read_schema,
-)
+from pathway.io._utils import RawDataSchema, get_data_format_type, read_schema
 
 SUPPORTED_INPUT_FORMATS: set[str] = {
     "json",
@@ -99,10 +94,10 @@ class ConnectorSubject(ABC):
 
         threading.Thread(target=target).start()
 
-    def _add(self, key: BasePointer | None, message: Any) -> None:
+    def _add(self, key: Pointer | None, message: Any) -> None:
         self._buffer.put((True, key, message))
 
-    def _remove(self, key: BasePointer, message: Any) -> None:
+    def _remove(self, key: Pointer, message: Any) -> None:
         self._buffer.put((False, key, message))
 
     def _read(self) -> Any:
@@ -198,15 +193,14 @@ computations from the moment they were terminated last time.
         ),
         persistent_id=persistent_id,
     )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
     )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            connector_properties=properties,
+            data_source_options=data_source_options,
             schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),

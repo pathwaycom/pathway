@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 from abc import abstractmethod
 from collections.abc import Iterable, Iterator
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from pathway.internals import universes
+from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.trace import trace_user_frame
 
 if TYPE_CHECKING:
@@ -14,13 +17,14 @@ if TYPE_CHECKING:
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import reducers, table, table_like, thisclass
+from pathway.internals import table, table_like, thisclass
 from pathway.internals.arg_handlers import arg_handler, reduce_args_handler
 from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
     DesugaringContext,
     SubstitutionDesugaring,
     TableReduceDesugaring,
+    ThisDesugaring,
     combine_args_kwargs,
     desugar,
 )
@@ -84,12 +88,11 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     True
     """
 
-    _context: clmn.GroupedContext
-    _columns: dict[str, clmn.Column]
     _grouping_columns: StableSet[expr.InternalColRef]
     _joinable_to_group: table.Table
-    _threshold_column: expr.ColumnExpression | None
-    _time_column: expr.ColumnExpression | None
+    _set_id: bool
+    _sort_by: expr.InternalColRef | None
+    _filter_out_results_of_forgetting: bool
 
     def __init__(
         self,
@@ -97,29 +100,13 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         grouping_columns: tuple[expr.InternalColRef, ...],
         set_id: bool = False,
         sort_by: expr.InternalColRef | None = None,
-        time_column_threshold: expr.ColumnExpression | None = None,
-        time_column_time: expr.ColumnExpression | None = None,
+        _filter_out_results_of_forgetting: bool = False,
     ):
         super().__init__(Universe(), {thisclass.this: self}, table)
         self._grouping_columns = StableSet(grouping_columns)
-        self._context = clmn.GroupedContext(
-            table=table,
-            universe=self._universe,
-            grouping_columns={
-                column: table._eval(column.to_colref(), table._context)
-                for column in grouping_columns
-            },
-            set_id=set_id,
-            inner_context=table._context,
-            sort_by=sort_by,
-        )
-        self._columns = {
-            column._name: table._eval(column.to_colref(), self._context)
-            for column in grouping_columns
-        }
-
-        self._threshold_column = time_column_threshold
-        self._time_column = time_column_time
+        self._set_id = set_id
+        self._sort_by = sort_by
+        self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
 
     @classmethod
     def create(
@@ -128,8 +115,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         grouping_columns: tuple[expr.ColumnReference, ...],
         set_id: bool = False,
         sort_by: expr.ColumnReference | None = None,
-        time_column_threshold: expr.ColumnExpression | None = None,
-        time_column_time: expr.ColumnExpression | None = None,
+        _filter_out_results_of_forgetting: bool = False,
     ) -> GroupedTable:
         cols = tuple(arg._to_original_internal() for arg in grouping_columns)
         col_sort_by = sort_by._to_original_internal() if sort_by is not None else None
@@ -140,8 +126,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
                 grouping_columns=cols,
                 set_id=set_id,
                 sort_by=col_sort_by,
-                time_column_threshold=time_column_threshold,
-                time_column_time=time_column_time,
+                _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
             )
             G.cache[key] = result
         return G.cache[key]
@@ -152,6 +137,8 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         desugared_expression = self._desugaring.eval_expression(expression)
         return self._joinable_to_group._eval(desugared_expression, context)
 
+    @desugar
+    @arg_handler(handler=reduce_args_handler)
     @trace_user_frame
     def reduce(
         self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression
@@ -183,64 +170,80 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         Bob   | dog | 16
         """
 
-        reduced = self._reduce(*args, **kwargs)
-        if self._time_column is not None and self._threshold_column is not None:
-            # the freeze should take columns from parameters;
-            # while _pw_time_column is defined here, used column from parameter,
-            # _pw_cutoff_threshold is defined elsewhere
-            reduced = reduced._freeze(
-                reduced._pw_cutoff_threshold,
-                reduced._pw_time_column,
-            ).without(reduced._pw_cutoff_threshold, reduced._pw_time_column)
-        return reduced
-
-    @trace_user_frame
-    @desugar
-    @arg_handler(handler=reduce_args_handler)
-    @contextualized_operator
-    def _reduce(self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression):
-        reduced_columns: dict[str, clmn.ColumnWithExpression] = {}
-
-        if self._time_column is not None and self._threshold_column is not None:
-            kwargs["_pw_cutoff_threshold"] = reducers.unique(self._threshold_column)
-            kwargs["_pw_time_column"] = reducers.max(self._time_column)
-
         kwargs = combine_args_kwargs(args, kwargs)
 
-        for column_name, value in kwargs.items():
-            self._validate_expression(value)
-            column = self._eval(value, self._context)
-            reduced_columns[column_name] = column
-
-        for column in reduced_columns.values():
-            deps = (dep.to_original() for dep in column.expression._dependencies())
-            self._context.requested_grouping_columns.update(
-                dep for dep in deps if dep in self._context.grouping_columns
+        output_expressions = {}
+        state = ReducerExpressionState()
+        splitter = ReducerExpressionSplitter()
+        for name, expression in kwargs.items():
+            self._validate_expression(expression)
+            output_expressions[name] = splitter.eval_expression(
+                expression, eval_state=state
             )
 
-        return table.Table(
-            columns=reduced_columns,
-            universe=self._universe,
-            pk_columns=self._columns,
-            id_column=clmn.IdColumn(self._context),
+        prepared = self._joinable_to_group.select(**state.below_reducer_expressions)
+        desugaring = ThisDesugaring({thisclass.this: prepared})
+        desugared_reducers = {
+            name: desugaring.eval_expression(reducer)
+            for name, reducer in state.reducers.items()
+        }
+        reduced = self._reduce(**desugared_reducers)
+        if self._filter_out_results_of_forgetting:
+            reduced = reduced._filter_out_results_of_forgetting()
+        return reduced.select(**output_expressions)
+
+    @contextualized_operator
+    def _reduce(self, **kwargs: expr.ColumnExpression) -> table.Table:
+        reduced_columns: dict[str, clmn.ColumnWithExpression] = {}
+
+        universe = Universe()
+        context = clmn.GroupedContext(
+            table=self._joinable_to_group,
+            universe=universe,
+            grouping_columns=tuple(self._grouping_columns),
+            set_id=self._set_id,
+            inner_context=self._joinable_to_group._context,
+            sort_by=self._sort_by,
         )
+        pk_columns = {
+            column._name: self._joinable_to_group._eval(column.to_colref(), context)
+            for column in self._grouping_columns
+        }
+
+        for column_name, value in kwargs.items():
+            column = self._eval(value, context)
+            reduced_columns[column_name] = column
+
+        result: table.Table = table.Table(
+            columns=reduced_columns,
+            universe=universe,
+            pk_columns=pk_columns,
+            id_column=clmn.IdColumn(context),
+        )
+        universes.promise_are_equal(result, self)
+        return result
 
     def _validate_expression(self, expression: expr.ColumnExpression):
         for dep in expression._dependencies_above_reducer():
-            if dep.to_original() in self._grouping_columns:
-                pass
-            else:
-                if not self._universe.is_subset_of(dep.to_colref()._column.universe):
-                    raise ValueError(
-                        f"You cannot use {dep.to_colref()} in this reduce statement.\n"
-                        + f"Make sure that {dep.to_colref()} is used in a groupby or wrap it with a reducer, "
-                        + f"e.g. pw.reducers.count({dep.to_colref()})"
-                    )
+            if (
+                not isinstance(dep._table, thisclass.ThisMetaclass)  # allow for ix
+                and dep.to_original() not in self._grouping_columns
+            ):
+                raise ValueError(
+                    f"You cannot use {dep.to_colref()} in this reduce statement.\n"
+                    + f"Make sure that {dep.to_colref()} is used in a groupby or wrap it with a reducer, "
+                    + f"e.g. pw.reducers.count({dep.to_colref()})"
+                )
 
         for dep in expression._dependencies_below_reducer():
-            assert self._joinable_to_group._universe.is_subset_of(
-                dep.to_colref()._column.universe
-            )
+            if self._joinable_to_group._universe != dep.to_colref()._column.universe:
+                raise ValueError(
+                    f"You cannot use {dep.to_colref()} in this context."
+                    + " Its universe is different than the universe of the table the method"
+                    + " was called on. You can use <table1>.with_universe_of(<table2>)"
+                    + " to assign universe of <table2> to <table1> if you're sure their"
+                    + " sets of keys are equal."
+                )
 
     @lru_cache
     def _operator_dependencies(self) -> StableSet[table.Table]:
@@ -323,3 +326,69 @@ class GroupedJoinResult(GroupedJoinable):
     def _operator_dependencies(self) -> StableSet[table.Table]:
         # TODO + grouping columns expression dependencies
         return self._groupby._operator_dependencies()
+
+
+class ReducerExpressionState:
+    below_reducer_expressions: dict[str, expr.ColumnExpression]
+    reducers: dict[str, expr.ColumnExpression]
+
+    def __init__(self) -> None:
+        self.below_reducer_expressions = {}
+        self.reducers = {}
+        self.expressions_count = itertools.count()
+        self.reducers_count = itertools.count()
+
+    def add_dependency(self, expression: expr.ColumnExpression) -> expr.ColumnReference:
+        name = f"_pw_{next(self.expressions_count)}"
+        self.below_reducer_expressions[name] = expression
+        return thisclass.this[name]
+
+    def add_reducer(self, expression: expr.ColumnExpression) -> expr.ColumnReference:
+        name = f"_pw_{next(self.reducers_count)}"
+        self.reducers[name] = expression
+        return thisclass.this[name]
+
+
+class ReducerExpressionSplitter(IdentityTransform):
+    def eval_column_val(
+        self,
+        expression: expr.ColumnReference,
+        eval_state: ReducerExpressionState | None = None,
+        **kwargs,
+    ) -> expr.ColumnReference:
+        if (
+            isinstance(expression.table, thisclass.ThisMetaclass)
+            and expression.table._delay_depth() > 0
+        ):
+            # descend into ix args
+            key_expression = expression.table._expression()
+            evaluated_key_expression = self.eval_expression(
+                key_expression, eval_state=eval_state
+            )
+            evaluated_table = expression.table._with_new_expression(
+                evaluated_key_expression
+            )
+            return evaluated_table[expression.name]
+        assert eval_state is not None
+        expression = eval_state.add_dependency(expression)
+        return eval_state.add_reducer(expression)
+
+    def eval_count(  # type: ignore
+        self,
+        expression: expr.CountExpression,
+        eval_state: ReducerExpressionState | None = None,
+        **kwargs,
+    ) -> expr.ColumnReference:
+        assert eval_state is not None
+        return eval_state.add_reducer(expression)
+
+    def eval_reducer(  # type: ignore
+        self,
+        expression: expr.ReducerExpression,
+        eval_state: ReducerExpressionState | None = None,
+        **kwargs,
+    ) -> expr.ColumnReference:
+        assert eval_state is not None
+        col_refs = [eval_state.add_dependency(arg) for arg in expression._args]
+        expression = expr.ReducerExpression(expression._reducer, *col_refs)
+        return eval_state.add_reducer(expression)

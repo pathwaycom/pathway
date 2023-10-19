@@ -11,20 +11,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from pathway.internals import api
-from pathway.internals import column as clmn
-from pathway.internals import trace
+from pathway.internals import api, trace
 from pathway.internals.datasink import CallbackDataSink, GenericDataSink
 from pathway.internals.datasource import (
     EmptyDataSource,
     GenericDataSource,
     PandasDataSource,
 )
-from pathway.internals.graph_runner.expression_evaluator import (
-    AutotuplingJoinRowwiseEvaluator,
-    AutotuplingRowwiseEvaluator,
-    ExpressionEvaluator,
-)
+from pathway.internals.graph_runner.expression_evaluator import ExpressionEvaluator
 from pathway.internals.graph_runner.path_storage import Storage
 from pathway.internals.graph_runner.scope_context import ScopeContext
 from pathway.internals.graph_runner.state import ScopeState
@@ -116,42 +110,40 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
             for table in operator.output_tables:
                 assert table.schema is not None
                 materialized_table = api.static_table_from_pandas(
-                    self.scope,
-                    operator.debug_datasource.data,
-                    dict(table.schema._dtypes()),
-                    operator.debug_datasource.schema.primary_key_columns(),
-                    operator.debug_datasource.connector_properties,
+                    scope=self.scope,
+                    df=operator.debug_datasource.data,
+                    connector_properties=operator.debug_datasource.connector_properties,
+                    id_from=operator.debug_datasource.schema.primary_key_columns(),
                 )
                 self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, PandasDataSource):
             for table in operator.output_tables:
                 assert table.schema is not None
                 materialized_table = api.static_table_from_pandas(
-                    self.scope,
-                    datasource.data,
-                    dict(table.schema._dtypes()),
-                    datasource.schema.primary_key_columns(),
-                    datasource.connector_properties,
+                    scope=self.scope,
+                    df=datasource.data,
+                    connector_properties=datasource.connector_properties,
+                    id_from=datasource.schema.primary_key_columns(),
                 )
                 self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, GenericDataSource):
             for table in operator.output_tables:
                 assert table.schema is not None
                 materialized_table = self.scope.connector_table(
-                    datasource.datastorage,
-                    datasource.dataformat,
-                    datasource.connector_properties,
+                    data_source=datasource.datastorage,
+                    data_format=datasource.dataformat,
+                    properties=datasource.connector_properties,
                 )
                 self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, EmptyDataSource):
             for table in operator.output_tables:
                 assert table.schema is not None
                 materialized_table = self.scope.empty_table(
-                    table.schema._dtypes().values()
+                    datasource.connector_properties
                 )
                 self.state.set_table(output_storages[table], materialized_table)
         else:
-            RuntimeError("datasource not supported")
+            raise RuntimeError("datasource not supported")
 
 
 class OutputOperatorHandler(
@@ -185,38 +177,13 @@ class OutputOperatorHandler(
                 on_end=datasink.on_end,
             )
         else:
-            RuntimeError("datasink not supported")
+            raise RuntimeError("datasink not supported")
 
 
 class ContextualizedIntermediateOperatorHandler(
     OperatorHandler[ContextualizedIntermediateOperator],
     operator_type=ContextualizedIntermediateOperator,
 ):
-    def _run_legacy(self, table: Table):
-        all_columns_skipped = True
-        for _, column in table._columns.items():
-            if not (
-                self.scope_context.skip_column(column)
-                or isinstance(column, clmn.MaterializedColumn)
-            ):
-                self.evaluate_column(column)
-                all_columns_skipped = False
-
-        if all_columns_skipped:
-            # evaluate output universe if all columns of table was skipped
-            evaluator = self._get_evaluator(table._id_column.context)
-            if self.operator_id is not None:
-                self.scope.probe_universe(evaluator.output_universe, self.operator_id)
-            self.state.set_universe(table._universe, evaluator.output_universe)
-
-        universe = self.state.get_universe(table._universe)
-        self.state.set_column(table._id_column, universe.id_column)
-
-        for _, column in table._columns.items():
-            assert self._does_not_need_evaluation(
-                column
-            ), "some columns were not evaluated"
-
     def _run(
         self,
         operator: ContextualizedIntermediateOperator,
@@ -226,57 +193,19 @@ class ContextualizedIntermediateOperatorHandler(
             context = table._id_column.context
             evaluator_cls = ExpressionEvaluator.for_context(context)
             output_storage = output_storages[table]
+            evaluator = evaluator_cls(
+                context, self.scope, self.state, self.scope_context
+            )
+            storages = []
+            for univ in context.universe_dependencies():
+                storage = self.state.get_storage(univ)
+                storages.append(storage)
 
-            if isinstance(context, clmn.RowwiseContext):
-                evaluator_cls = AutotuplingRowwiseEvaluator
-            if isinstance(context, clmn.JoinRowwiseContext):
-                evaluator_cls = AutotuplingJoinRowwiseEvaluator
-
-            if evaluator_cls.run == ExpressionEvaluator.run:
-                self._run_legacy(table)
-                if output_storage.flattened_output is not None:
-                    output_storage = output_storage.flattened_output
-                self.state.create_table(table._universe, output_storage)
-            else:
-                # TODO implement run for all evaluators and remove the else branch
-                evaluator = evaluator_cls(
-                    context, self.scope, self.state, self.scope_context
-                )
-                storages = []
-                for univ in context.universe_dependencies():
-                    storage = self.state.get_storage(univ)
-                    storages.append(storage)
-
-                output_api_storage = evaluator.run(output_storage, *storages)
-                self.state.set_table(output_storage, output_api_storage)
-                evaluator.flatten_table_storage_if_needed(output_storage)
-
-    def evaluate_column(self, column: clmn.Column) -> None:
-        if self._does_not_need_evaluation(column):
-            return
-
-        assert isinstance(
-            column, clmn.ColumnWithExpression
-        ), "materialized column not evaluated"
-
-        context = column.context
-        col_evaluator = self._get_evaluator(context)
-        evaluated_column = col_evaluator.eval(column)
-        if self.operator_id is not None:
-            self.scope.probe_column(evaluated_column, self.operator_id)
-        self.state.set_column(column, evaluated_column)
-
-    def _get_evaluator(self, context: clmn.Context) -> ExpressionEvaluator:
-        def create_evaluator(context: clmn.Context):
-            for col in context.column_dependencies_internal():
-                self.evaluate_column(col)
-            eval_cls = ExpressionEvaluator.for_context(context)
-            return eval_cls(context, self.scope, self.state, self.scope_context)
-
-        return self.state.get_or_create_evaluator(context, create_evaluator)
-
-    def _does_not_need_evaluation(self, column) -> bool:
-        return self.state.has_column(column) or self.scope_context.skip_column(column)
+            engine_table = evaluator.run(output_storage, *storages)
+            self.state.set_table(output_storage, engine_table)
+            if self.operator_id is not None:
+                self.scope.probe_table(engine_table, self.operator_id)
+            evaluator.flatten_table_storage_if_needed(output_storage)
 
 
 class DebugOperatorHandler(

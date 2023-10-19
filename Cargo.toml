@@ -1,9 +1,9 @@
 [package]
 name = "pathway"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 publish = false
-rust-version = "1.71.0"
+rust-version = "1.72.0"
 license = "BUSL-1.1"
 
 [lib]
@@ -12,7 +12,6 @@ crate-type = ["cdylib", "lib"]
 
 [dev-dependencies]
 assert_matches = "1.5.0"
-color-eyre = { version = "0.6.2", default-features = false }
 eyre = "0.6.8"
 tempfile = "3.8.0"
 
@@ -21,12 +20,13 @@ arc-swap = "1.6.0"
 arcstr = { version = "1.1.5", default-features = false, features = ["serde", "std"] }
 base32 = "0.4.0"
 bincode = "1.3.3"
+bitflags = { version = "2.4.1", features = ["std"] } # Hack to keep features unified between normal and dev deps
 bytes = "1.5.0"
 cfg-if = "1.0.0"
 chrono = { version = "0.4.31", features = ["std", "clock"], default-features = false }
 chrono-tz = "0.8.3"
 crossbeam-channel = "0.5.8"
-csv = "1.2.2"
+csv = "1.3.0"
 derivative = "2.2.0"
 differential-dataflow = { path = "./external/differential-dataflow" }
 elasticsearch = "8.5.0-alpha.1"
@@ -41,25 +41,26 @@ nix = { version = "0.27.1", features = ["fs"] }
 num-integer = "0.1.45"
 numpy = "0.19.0"
 once_cell = "1.18.0"
-ordered-float = { version = "4.1.0", features = ["serde"] }
+ordered-float = { version = "4.1.1", features = ["serde"] }
 pipe = "0.4.0"
 postgres = { version = "0.19.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
 prometheus-client = "0.21.2"
 pyo3 = { version = "0.19.2", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-asyncio = "0.19.0"
-pyo3-log = "0.8.3"
+pyo3-log = "0.8.4"
 rand = "0.8.5"
 rdkafka = { version = "0.34.0", features = ["ssl-vendored", "cmake-build", "zstd"] }
 rust-s3 = { version = "0.33.0", features = ["sync-native-tls-vendored", "sync-native-tls", "fail-on-err"], default-features = false }
 scopeguard = "1.2.0"
 send_wrapper = "0.6.0"
-serde = { version = "1.0.188", features = ["derive", "rc"] }
+serde = { version = "1.0.189", features = ["derive", "rc"] }
 serde_json = "1.0"
 serde_with = "3.3.0"
 smallvec = { version = "1.11.1", features = ["union", "const_generics"] }
+syn = { version = "2.0.38", features = ["default", "full", "visit", "visit-mut"] } # Hack to keep features unified between normal and build deps
 thiserror = "1.0.49"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
-tokio = "1.32.0"
+tokio = "1.33.0"
 xxhash-rust = { version = "0.8.7", features = ["xxh3"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

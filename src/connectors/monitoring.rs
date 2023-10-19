@@ -63,7 +63,7 @@ impl ConnectorLogger {
             } else {
                 warn!(
                     "{}: Time went backwards, unable to log reader stats",
-                    self.name
+                    self.name,
                 );
             }
         } else {
@@ -140,5 +140,96 @@ impl ConnectorMonitor {
 
     pub fn get_stats(&self) -> ConnectorStats {
         self.stats
+    }
+}
+
+// TODO: incorporate in monitor (?)
+pub struct OutputConnectorStats {
+    name: String,
+    batch_start_time: Instant,
+    last_reported_timestamp: Option<Instant>,
+    total_writes_duration: Duration,
+    current_writes_duration: Duration,
+    messages_written_in_batch: usize,
+    messages_written_in_total: usize,
+}
+
+impl OutputConnectorStats {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            batch_start_time: Instant::now(),
+            last_reported_timestamp: None,
+
+            total_writes_duration: Duration::ZERO,
+            current_writes_duration: Duration::ZERO,
+
+            messages_written_in_batch: 0,
+            messages_written_in_total: 0,
+        }
+    }
+
+    pub fn on_time_committed(&mut self, t: Option<u64>) {
+        let current_timestamp = Instant::now();
+
+        if t.is_none() {
+            // The last event, so we should report what we have
+            self.report_stats(current_timestamp, t);
+            return;
+        }
+
+        if let Some(last_reported_timestamp) = self.last_reported_timestamp {
+            let time_elapsed = current_timestamp.checked_duration_since(last_reported_timestamp);
+            if let Some(time_elapsed) = time_elapsed {
+                if time_elapsed >= MIN_TIME_ADVANCED_REPORTS_FREQUENCY
+                    && (self.messages_written_in_total > 0 || self.messages_written_in_batch > 0)
+                {
+                    self.report_stats(current_timestamp, t);
+                }
+            } else {
+                warn!("Time went backwards, unable to log writer stats");
+            }
+        } else {
+            self.report_stats(current_timestamp, t);
+        }
+    }
+
+    pub fn on_batch_started(&mut self) {
+        self.batch_start_time = Instant::now();
+    }
+
+    pub fn on_batch_entry_written(&mut self) {
+        self.messages_written_in_batch += 1;
+        self.messages_written_in_total += 1;
+    }
+
+    pub fn on_batch_finished(&mut self) {
+        let elapsed = self.batch_start_time.elapsed();
+        self.total_writes_duration += elapsed;
+        self.current_writes_duration += elapsed;
+    }
+
+    fn report_stats(&mut self, current_timestamp: Instant, t: Option<u64>) {
+        if let Some(t) = t {
+            info!(
+                "{}: Done writing {} entries, time {t}. Current batch writes took: {} ms. All writes so far took: {} ms.",
+                self.name,
+                self.messages_written_in_batch,
+                self.current_writes_duration.as_millis(),
+                self.total_writes_duration.as_millis(),
+            );
+        } else {
+            info!(
+                "{}: Done writing {} entries, closing data sink. Current batch writes took: {} ms. All writes so far took: {} ms.",
+                self.name,
+                self.messages_written_in_batch,
+                self.current_writes_duration.as_millis(),
+                self.total_writes_duration.as_millis(),
+            );
+        }
+
+        self.messages_written_in_batch = 0;
+        self.last_reported_timestamp = Some(current_timestamp);
+        self.current_writes_duration = Duration::ZERO;
     }
 }

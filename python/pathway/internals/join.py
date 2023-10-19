@@ -25,6 +25,7 @@ from pathway.internals.arg_handlers import (
     reduce_args_handler,
     select_args_handler,
 )
+from pathway.internals.column_namespace import ColumnNamespace
 from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
     DesugaringContext,
@@ -107,6 +108,29 @@ class Joinable(TableLike, DesugaringContext):
         except AttributeError:
             pass
         return self._get_colref_by_name(name, AttributeError)
+
+    @property
+    def C(self) -> ColumnNamespace:
+        """Returns the namespace of all the columns of a joinable.
+        Allows accessing column names that might otherwise be a reserved methods.
+
+        >>> import pathway as pw
+        >>> tab = pw.debug.parse_to_table('''
+        ... age | owner | pet | filter
+        ... 10  | Alice | dog | True
+        ... 9   | Bob   | dog | True
+        ... 8   | Alice | cat | False
+        ... 7   | Bob   | dog | True
+        ... ''')
+        >>> isinstance(tab.C.age, pw.ColumnReference)
+        True
+        >>> pw.debug.compute_and_print(tab.filter(tab.C.filter), include_id=False)
+        age | owner | pet | filter
+        7   | Bob   | dog | True
+        9   | Bob   | dog | True
+        10  | Alice | dog | True
+        """
+        return ColumnNamespace(self)
 
     @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
@@ -241,7 +265,7 @@ class Joinable(TableLike, DesugaringContext):
         >>> import pathway as pw
         >>> t1 = pw.debug.table_from_markdown(
         ...     '''
-        ...         | A  | B
+        ...         | a  | b
         ...       1 | 11 | 111
         ...       2 | 12 | 112
         ...       3 | 13 | 113
@@ -250,17 +274,17 @@ class Joinable(TableLike, DesugaringContext):
         ... )
         >>> t2 = pw.debug.table_from_markdown(
         ...     '''
-        ...         | C  | D
+        ...         | c  | d
         ...       1 | 11 | 211
         ...       2 | 12 | 212
         ...       3 | 14 | 213
         ...       4 | 14 | 214
         ...     '''
         ... )
-        >>> pw.debug.compute_and_print(t1.join_left(t2, t1.A == t2.C
-        ... ).select(t1.A, t2_C=t2.C, S=pw.require(t1.B + t2.D,t2.id)),
+        >>> pw.debug.compute_and_print(t1.join_left(t2, t1.a == t2.c
+        ... ).select(t1.a, t2_c=t2.c, s=pw.require(t1.b + t2.d, t2.id)),
         ... include_id=False)
-        A  | t2_C | S
+        a  | t2_c | s
         11 | 11   | 322
         12 | 12   | 324
         13 |      |
@@ -307,7 +331,7 @@ class Joinable(TableLike, DesugaringContext):
         >>> import pathway as pw
         >>> t1 = pw.debug.table_from_markdown(
         ...     '''
-        ...         | A  | B
+        ...         | a  | b
         ...       1 | 11 | 111
         ...       2 | 12 | 112
         ...       3 | 13 | 113
@@ -316,17 +340,17 @@ class Joinable(TableLike, DesugaringContext):
         ... )
         >>> t2 = pw.debug.table_from_markdown(
         ...     '''
-        ...         | C  | D
+        ...         | c  | d
         ...       1 | 11 | 211
         ...       2 | 12 | 212
         ...       3 | 14 | 213
         ...       4 | 14 | 214
         ...     '''
         ... )
-        >>> pw.debug.compute_and_print(t1.join_right(t2, t1.A == t2.C
-        ... ).select(t1.A, t2_C=t2.C, S=pw.require(pw.coalesce(t1.B,0) + t2.D,t1.id)),
+        >>> pw.debug.compute_and_print(t1.join_right(t2, t1.a == t2.c
+        ... ).select(t1.a, t2_c=t2.c, s=pw.require(pw.coalesce(t1.b,0) + t2.d,t1.id)),
         ... include_id=False)
-        A  | t2_C | S
+        a  | t2_c | s
            | 14   |
            | 14   |
         11 | 11   | 322
@@ -377,7 +401,7 @@ class Joinable(TableLike, DesugaringContext):
         >>> import pathway as pw
         >>> t1 = pw.debug.table_from_markdown(
         ...     '''
-        ...         | A  | B
+        ...         | a  | b
         ...       1 | 11 | 111
         ...       2 | 12 | 112
         ...       3 | 13 | 113
@@ -386,17 +410,17 @@ class Joinable(TableLike, DesugaringContext):
         ... )
         >>> t2 = pw.debug.table_from_markdown(
         ...     '''
-        ...         | C  | D
+        ...         | c  | d
         ...       1 | 11 | 211
         ...       2 | 12 | 212
         ...       3 | 14 | 213
         ...       4 | 14 | 214
         ...     '''
         ... )
-        >>> pw.debug.compute_and_print(t1.join_outer(t2, t1.A == t2.C
-        ... ).select(t1.A, t2_C=t2.C, S=pw.require(t1.B + t2.D,t1.id,t2.id)),
+        >>> pw.debug.compute_and_print(t1.join_outer(t2, t1.a == t2.c
+        ... ).select(t1.a, t2_c=t2.c, s=pw.require(t1.b + t2.d, t1.id, t2.id)),
         ... include_id=False)
-        A  | t2_C | S
+        a  | t2_c | s
            | 14   |
            | 14   |
         11 | 11   | 322

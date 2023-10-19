@@ -5,11 +5,10 @@ import warnings
 from typing import Any
 
 import pathway.internals as pw
-from pathway.internals import api
-from pathway.internals import dtype as dt
+from pathway.internals import api, dtype as dt
 from pathway.internals._io_helpers import _form_value_fields
 from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
-from pathway.internals.schema import ColumnDefinition, Schema, SchemaProperties
+from pathway.internals.schema import ColumnDefinition, Schema
 
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
@@ -27,6 +26,7 @@ _DATA_FORMAT_MAPPING = {
     "json": "jsonlines",
     "raw": "identity",
     "binary": "identity",
+    "plaintext_by_file": "identity",
 }
 
 _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
@@ -49,6 +49,7 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "plaintext",
     "raw",
     "binary",
+    "plaintext_by_file",
 }
 
 
@@ -91,7 +92,7 @@ def internal_connector_mode(mode: str | api.ConnectorMode) -> api.ConnectorMode:
 
 
 def internal_read_method(format: str) -> ReadMethod:
-    if format == "binary":
+    if format == "binary" or format == "plaintext_by_file":
         return ReadMethod.FULL
     return ReadMethod.BY_LINE
 
@@ -307,15 +308,3 @@ def construct_s3_data_storage(
             read_method=internal_read_method(format),
             persistent_id=persistent_id,
         )
-
-
-def construct_connector_properties(
-    schema_properties: SchemaProperties = SchemaProperties(),
-    commit_duration_ms: int | None = None,
-    unsafe_trusted_ids: bool = False,
-):
-    return api.ConnectorProperties(
-        commit_duration_ms=commit_duration_ms,
-        unsafe_trusted_ids=unsafe_trusted_ids,
-        append_only=schema_properties.append_only,
-    )

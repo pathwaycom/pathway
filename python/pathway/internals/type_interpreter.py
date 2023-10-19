@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from pathway.internals import dtype as dt
-from pathway.internals import expression as expr
+from pathway.internals import dtype as dt, expression as expr
 from pathway.internals.expression_printer import get_expression_info
 from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.json import Json

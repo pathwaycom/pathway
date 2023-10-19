@@ -7,9 +7,7 @@ from warnings import warn
 
 import numpy as np
 
-from pathway.internals import api
-from pathway.internals import dtype as dt
-from pathway.internals import expression as expr
+from pathway.internals import api, dtype as dt, expression as expr
 from pathway.internals.column import ColumnExpression, GroupedContext
 from pathway.internals.common import apply_with_type
 

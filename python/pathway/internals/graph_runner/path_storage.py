@@ -29,9 +29,12 @@ class Storage:
         )
 
     def get_path(self, column: Column) -> ColumnPath:
-        if isinstance(column, IdColumn) and column.universe == self._universe:
+        if column in self._column_paths:
+            return self._column_paths[column]
+        elif isinstance(column, IdColumn) and column.universe == self._universe:
             return ColumnPath.KEY
-        return self._column_paths[column]
+        else:
+            raise KeyError(f"Column {column} not found in Storage {self}.")
 
     @cached_property
     def max_depth(self) -> int:

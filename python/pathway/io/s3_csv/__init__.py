@@ -10,8 +10,7 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import CsvParserSettings, construct_schema_and_data_format
-from pathway.io.s3 import AwsS3Settings
-from pathway.io.s3 import read as s3_read
+from pathway.io.s3 import AwsS3Settings, read as s3_read
 
 
 @runtime_type_check

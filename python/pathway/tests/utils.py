@@ -11,8 +11,9 @@ import re
 import sys
 import time
 from abc import abstractmethod
-from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -41,7 +42,7 @@ xfail_no_numba = pytest.mark.xfail(_numba_missing, reason="unable to import numb
 
 @dataclass(order=True)
 class DiffEntry:
-    key: api.BasePointer
+    key: api.Pointer
     order: int
     insertion: bool
     row: dict[str, api.Value]
@@ -64,7 +65,7 @@ class DiffEntry:
     def create_id_from(
         pk_table: pw.Table,
         pk_columns: dict[str, api.Value],
-    ) -> api.BasePointer:
+    ) -> api.Pointer:
         return api.ref_scalar(*pk_columns.values())
 
 
@@ -77,7 +78,7 @@ class DiffEntry:
 # the requirement is that for a fixed key, the ordering (by order, insertion) of entries
 # should be the same as the same as what we expect to see in the output
 class CheckKeyEntriesInStreamCallback(pw.io._subscribe.OnChangeCallback):
-    state: collections.defaultdict[api.BasePointer, collections.deque[DiffEntry]]
+    state: collections.defaultdict[api.Pointer, collections.deque[DiffEntry]]
 
     def __init__(self, state_list: Iterable[DiffEntry]):
         super().__init__()
@@ -89,7 +90,7 @@ class CheckKeyEntriesInStreamCallback(pw.io._subscribe.OnChangeCallback):
     @abstractmethod
     def __call__(
         self,
-        key: api.BasePointer,
+        key: api.Pointer,
         row: dict[str, api.Value],
         time: int,
         is_addition: bool,
@@ -100,7 +101,7 @@ class CheckKeyEntriesInStreamCallback(pw.io._subscribe.OnChangeCallback):
 class CheckKeyConsistentInStreamCallback(CheckKeyEntriesInStreamCallback):
     def __call__(
         self,
-        key: api.BasePointer,
+        key: api.Pointer,
         row: dict[str, api.Value],
         time: int,
         is_addition: bool,
@@ -132,6 +133,79 @@ class CheckKeyConsistentInStreamCallback(CheckKeyEntriesInStreamCallback):
 def assert_key_entries_in_stream_consistent(expected: list[DiffEntry], table: pw.Table):
     callback = CheckKeyConsistentInStreamCallback(expected)
     pw.io.subscribe(table, callback, callback.on_end)
+
+
+@dataclass
+class Entry:
+    last_modified: int = 0
+    values: collections.Counter[tuple[api.Value, ...]] = field(
+        default_factory=collections.Counter
+    )
+
+    def validate(self, key: api.Pointer) -> None:
+        if len(self.values) > 1:
+            raise AssertionError(f"Multiple entries {self.values} found for key {key}.")
+        elif len(self.values) == 1:
+            (value, count) = next(iter(self.values.items()))
+            assert (
+                count == 1
+            ), f"Entry {value} with cardinality {count}!=1 found for key {key}."
+
+    def empty(self) -> bool:
+        return len(self.values) == 0
+
+    def get_element(self, key: api.Pointer) -> tuple[api.Value, ...]:
+        self.validate(key)
+        return next(iter(self.values))
+
+
+class CheckValuesConsistentInStreamCallback(pw.io._subscribe.OnChangeCallback):
+    data: dict[api.Pointer, Entry]
+    expected: list[tuple[api.Value, ...]]
+
+    def __init__(self, expected: list[tuple[api.Value, ...]]):
+        super().__init__()
+        self.expected = expected
+        self.data = collections.defaultdict(Entry)
+
+    def __call__(
+        self,
+        key: api.Pointer,
+        row: dict[str, api.Value],
+        time: int,
+        is_addition: bool,
+    ) -> Any:
+        hashable_row = make_row_hashable(tuple(row.values()))
+        entry = self.data[key]
+        if entry.last_modified < time:
+            entry.validate(key)
+            entry.last_modified = time
+        if is_addition:
+            entry.values[hashable_row] += 1
+        else:
+            entry.values[hashable_row] -= 1
+            if entry.values[hashable_row] == 0:
+                del entry.values[hashable_row]
+
+    def on_end(self):
+        result = collections.Counter(
+            (
+                entry.get_element(key)
+                for key, entry in self.data.items()
+                if not entry.empty()
+            )
+        )
+        expected = collections.Counter(make_row_hashable(row) for row in self.expected)
+        if result != expected:
+            raise AssertionError(
+                f"Tables are different, result: {result} vs expected: {expected}."
+            )
+
+
+def assert_values_in_stream_consistent(table: pw.Table, expected: list):
+    callback = CheckValuesConsistentInStreamCallback(expected)
+    pw.io.subscribe(table, callback, callback.on_end)
+    run()
 
 
 def assert_equal_tables(t0: api.CapturedTable, t1: api.CapturedTable):

@@ -44,7 +44,7 @@ use crate::python_api::PythonSubject;
 use bincode::ErrorKind as BincodeError;
 use elasticsearch::{BulkParts, Elasticsearch};
 use pipe::PipeReader;
-use postgres::Client;
+use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
@@ -340,6 +340,9 @@ pub enum WriteError {
     #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
     S3(S3CommandName, S3Error),
 
+    #[error("failed to perform write in postgres")]
+    Postgres(#[from] postgres::Error),
+
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
 
@@ -372,6 +375,16 @@ pub trait Writer: Send {
 
     fn short_description(&self) -> Cow<'static, str> {
         type_name::<Self>().into()
+    }
+
+    fn name(&self, id: usize) -> String {
+        let name = self
+            .short_description()
+            .split("::")
+            .last()
+            .unwrap()
+            .to_string();
+        format!("{name}-{id}")
     }
 }
 
@@ -1187,6 +1200,7 @@ pub struct PythonReader {
     subject: Py<PythonSubject>,
     persistent_id: Option<PersistentId>,
     total_entries_read: u64,
+    is_initialized: bool,
 
     #[allow(unused)]
     python_thread_state: PythonThreadState,
@@ -1209,13 +1223,12 @@ impl ReaderBuilder for PythonReaderBuilder {
             persistent_id,
         } = *self;
 
-        with_gil_and_pool(|py| subject.borrow(py).start.call0(py))?;
-
         Ok(Box::new(PythonReader {
             subject,
             persistent_id,
             python_thread_state,
             total_entries_read: 0,
+            is_initialized: false,
         }))
     }
 
@@ -1248,6 +1261,11 @@ impl Reader for PythonReader {
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
+        if !self.is_initialized {
+            with_gil_and_pool(|py| self.subject.borrow(py).start.call0(py))?;
+            self.is_initialized = true;
+        }
+
         with_gil_and_pool(|py| {
             let (addition, key, values): (bool, Option<Value>, Vec<u8>) = self
                 .subject
@@ -1295,12 +1313,18 @@ impl Reader for PythonReader {
 }
 
 pub struct PsqlWriter {
-    client: Client,
+    client: PsqlClient,
+    max_batch_size: Option<usize>,
+    buffer: Vec<FormatterContext>,
 }
 
 impl PsqlWriter {
-    pub fn new(client: Client) -> PsqlWriter {
-        PsqlWriter { client }
+    pub fn new(client: PsqlClient, max_batch_size: Option<usize>) -> PsqlWriter {
+        PsqlWriter {
+            client,
+            max_batch_size,
+            buffer: Vec::new(),
+        }
     }
 }
 
@@ -1393,22 +1417,41 @@ mod to_sql {
 
 impl Writer for PsqlWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let params: Vec<_> = data
-            .values
-            .iter()
-            .map(|v| v as &(dyn ToSql + Sync))
-            .collect();
-
-        for payload in &data.payloads {
-            let query = from_utf8(payload)?;
-
-            self.client
-                .execute(query, params.as_slice())
-                .map_err(|error| WriteError::PsqlQueryFailed {
-                    query: query.to_string(),
-                    error,
-                })?;
+        self.buffer.push(data);
+        if let Some(max_batch_size) = self.max_batch_size {
+            if self.buffer.len() == max_batch_size {
+                self.flush()?;
+            }
         }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), WriteError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.client.transaction()?;
+
+        for data in self.buffer.drain(..) {
+            let params: Vec<_> = data
+                .values
+                .iter()
+                .map(|v| v as &(dyn ToSql + Sync))
+                .collect();
+
+            for payload in &data.payloads {
+                let query = from_utf8(payload)?;
+
+                transaction
+                    .execute(query, params.as_slice())
+                    .map_err(|error| WriteError::PsqlQueryFailed {
+                        query: query.to_string(),
+                        error,
+                    })?;
+            }
+        }
+
+        transaction.commit()?;
 
         Ok(())
     }

@@ -7,8 +7,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from pathway.internals import dtype as dt
-from pathway.internals import expression as expr
+from pathway.internals import dtype as dt, expression as expr
 
 if TYPE_CHECKING:
     from pathway.internals.table import Table

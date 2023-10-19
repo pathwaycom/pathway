@@ -5,8 +5,8 @@ from __future__ import annotations
 import typing
 
 import pathway as pw
-from pathway.internals import api, run
-from pathway.tests.utils import DiffEntry, assert_key_entries_in_stream_consistent
+from pathway.internals import api
+from pathway.tests.utils import DiffEntry, assert_key_entries_in_stream_consistent, run
 
 
 class TimeColumnInputSchema(pw.Schema):
@@ -88,7 +88,7 @@ def test_keep_results_manual():
     )
 
     expected_entries = []
-    simulated_state: dict[api.BasePointer, DiffEntry] = {}
+    simulated_state: dict[api.Pointer, DiffEntry] = {}
     row: dict[str, api.Value]
     max_global_time = 0
     for i in range(68):
@@ -249,7 +249,6 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
         max_time=pw.reducers.max(pw.this.time),
         max_value=pw.reducers.max(pw.this.value),
     ).select(pw.this._pw_window_end, pw.this.max_time, pw.this.max_value)
-
     assert_key_entries_in_stream_consistent(expected_entries, result)
 
     run(debug=True)
@@ -281,6 +280,10 @@ def test_non_zero_buffer_remove_results():
 
 def test_non_zero_delay_non_zero_buffer_keep_results():
     parametrized_test(5, 3, 1, 1, True)
+
+
+def test_high_delay_high_buffer_keep_results():
+    parametrized_test(5, 3, 5, 6, True)
 
 
 def test_non_zero_delay_non_zero_buffer_remove_results():

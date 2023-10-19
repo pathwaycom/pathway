@@ -19,7 +19,7 @@ dependencies = [
     "pandas >= 1.3",
     "scikit-learn >= 1.0",
     "sqlglot == 10.6.1",
-    "numba >= 0.56",
+    "numba >= 0.56; python_version < '3.12'",
     "pyarrow >= 10.0.0",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",
@@ -32,8 +32,8 @@ dependencies = [
 
 [project.optional-dependencies]
 tests = [
-    "pytest == 7.4.0",
-    "pytest-xdist == 3.3.1",
+    "pytest >= 7.4.2, < 8.0.0",
+    "pytest-xdist >= 3.3.1, < 4.0.0",
 ]
 
 [project.urls]

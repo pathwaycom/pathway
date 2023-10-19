@@ -14,11 +14,7 @@ from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import (
-    check_deprecated_kwargs,
-    construct_connector_properties,
-    construct_schema_and_data_format,
-)
+from pathway.io._utils import check_deprecated_kwargs, construct_schema_and_data_format
 
 SUPPORTED_INPUT_FORMATS: set[str] = {
     "csv",
@@ -255,15 +251,14 @@ def read(
         types=types,
         default_values=default_values,
     )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
     )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            connector_properties=properties,
+            data_source_options=data_source_options,
             schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),

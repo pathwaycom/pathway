@@ -10,7 +10,7 @@ from os import PathLike
 import pandas as pd
 
 from pathway.internals import Json, api, parse_graph
-from pathway.internals.datasource import PandasDataSource
+from pathway.internals.datasource import DataSourceOptions, PandasDataSource
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
@@ -72,7 +72,7 @@ def compute_and_print(table: Table, *, include_id=True, short_pointers=True):
     def _format(x):
         if x is None:
             return none
-        if isinstance(x, api.BasePointer) and short_pointers:
+        if isinstance(x, api.Pointer) and short_pointers:
             s = str(x)
             if len(s) > 8:
                 s = s[:8] + "..."
@@ -134,9 +134,8 @@ def table_from_pandas(
         PandasDataSource(
             schema=schema,
             data=df.copy(),
-            connector_properties=api.ConnectorProperties(
+            data_source_options=DataSourceOptions(
                 unsafe_trusted_ids=unsafe_trusted_ids,
-                append_only=schema.properties().append_only,
             ),
         )
     )

@@ -33,6 +33,12 @@ impl Incrementable for i32 {
     }
 }
 
+impl Incrementable for u64 {
+    fn incremented(&self) -> u64 {
+        *self + 1
+    }
+}
+
 impl Incrementable for SelfCompactionTime<i32> {
     fn incremented(&self) -> SelfCompactionTime<i32> {
         SelfCompactionTime::original(

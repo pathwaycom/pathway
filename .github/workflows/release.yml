@@ -27,7 +27,7 @@ jobs:
         with:
           mode: start
           github-token: ${{ secrets.EC2_GH_PERSONAL_TOKEN }}
-          ec2-image-id: ${{ secrets.EC2_AMI }}
+          ec2-image-id: ${{ vars.EC2_INSTANCE_AMI_AARCH }}
           ec2-instance-type: ${{ secrets.EC2_INSTANCE }}
           subnet-id: ${{ secrets.EC2_SUBNET_ID }}
           security-group-id: ${{ secrets.EC2_SECURITY_GROUP_ID }}

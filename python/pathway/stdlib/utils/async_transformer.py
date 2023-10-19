@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 import pathway.internals as pw
 import pathway.io as io
 from pathway.internals import asynchronous, operator, parse_graph
-from pathway.internals.api import BasePointer
+from pathway.internals.api import Pointer
 from pathway.internals.helpers import StableSet
 from pathway.internals.operator import Operator
 
@@ -32,8 +32,8 @@ class _AsyncConnector(io.python.ConnectorSubject):
     _apply: Callable
     _loop: asyncio.AbstractEventLoop
     _transformer: AsyncTransformer
-    _state: dict[BasePointer, Any]
-    _tasks: dict[BasePointer, asyncio.Task]
+    _state: dict[Pointer, Any]
+    _tasks: dict[Pointer, asyncio.Task]
     _invoke: Callable[..., Awaitable[dict[str, Any]]]
 
     def __init__(self, transformer: AsyncTransformer) -> None:
@@ -74,7 +74,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
                     self._set_status(key, _AsyncStatus.PENDING)
 
                 async def task(
-                    key: BasePointer,
+                    key: Pointer,
                     values: dict[str, Any],
                     addition: bool,
                     previous_task: asyncio.Task | None,
@@ -105,7 +105,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
 
         self._event_loop.run_until_complete(loop_forever(self._event_loop))
 
-    def _set_status(self, key: BasePointer, status: _AsyncStatus) -> None:
+    def _set_status(self, key: Pointer, status: _AsyncStatus) -> None:
         data = self._state.get(
             key,
             {
@@ -115,9 +115,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
         )
         self._upsert(key, data, status)
 
-    def _upsert(
-        self, key: BasePointer, data: dict, status=_AsyncStatus.SUCCESS
-    ) -> None:
+    def _upsert(self, key: Pointer, data: dict, status=_AsyncStatus.SUCCESS) -> None:
         data = {**data, _ASYNC_STATUS_COLUMN: status.value}
         payload = json.dumps(data).encode()
         self._remove_by_key(key)
@@ -137,7 +135,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
         self._transformer.close()
 
     def on_subscribe_change(
-        self, key: BasePointer, row: dict[str, Any], time: int, is_addition: bool
+        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
     ) -> Any:
         self._put_request((key, row, is_addition))
 

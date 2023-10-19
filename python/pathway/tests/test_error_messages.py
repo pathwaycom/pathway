@@ -490,7 +490,13 @@ def test_groupby_reduce_bad_column():
 def test_filter_bad_expression():
     with _assert_error_trace(
         ValueError,
-        match=re.escape("You cannot use <table1>.last_timestamp in this context."),
+        match=re.escape(
+            "You cannot use <table1>.last_timestamp in this context."
+            + " Its universe is different than the universe of the table the method"
+            + " was called on. You can use <table1>.with_universe_of(<table2>)"
+            + " to assign universe of <table2> to <table1> if you're sure their sets of"
+            + " keys are equal."
+        ),
     ):
         t_input = T(
             """

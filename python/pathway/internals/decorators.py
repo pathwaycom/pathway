@@ -11,9 +11,7 @@ if TYPE_CHECKING:
     from pathway.internals.datasink import DataSink
     from pathway.internals.schema import Schema
 
-from pathway.internals import dtype as dt
-from pathway.internals import operator as op
-from pathway.internals import row_transformer as rt
+from pathway.internals import dtype as dt, operator as op, row_transformer as rt
 from pathway.internals.datasource import EmptyDataSource, StaticDataSource
 from pathway.internals.helpers import function_spec, with_optional_kwargs
 from pathway.internals.parse_graph import G
@@ -277,4 +275,4 @@ def transformer(cls):
 
 
 def empty_from_schema(schema: type[Schema]) -> Table:
-    return table_from_datasource(EmptyDataSource(schema))
+    return table_from_datasource(EmptyDataSource(schema=schema))

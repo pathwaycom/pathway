@@ -92,13 +92,13 @@ def test_unpack_col_schema():
 
     data = T(
         """
-            | A   | B   | C
+            | a   | b   | c
         1   | 11  | 1.1 | abc
         2   | 12  | 1.2 | def
         3   | 13  | 1.3 | ghi
         """
     )
-    data = data.select(combined=pw.make_tuple(pw.this.A, pw.this.B, pw.this.C))
+    data = data.select(combined=pw.make_tuple(pw.this.a, pw.this.b, pw.this.c))
     result = unpack_col(data.combined, schema=TestSchema)
     assert_table_equality(
         result,

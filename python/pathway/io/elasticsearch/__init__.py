@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathway.engine import ElasticSearchAuth as PwElasticSearchAuth
-from pathway.engine import ElasticSearchParams
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -12,13 +10,13 @@ from pathway.internals.trace import trace_user_frame
 
 
 class ElasticSearchAuth:
-    def __init__(self, engine_es_auth: PwElasticSearchAuth) -> None:
+    def __init__(self, engine_es_auth: api.ElasticSearchAuth) -> None:
         self._engine_es_auth = engine_es_auth
 
     @classmethod
     def apikey(cls, apikey_id, apikey):
         return cls(
-            PwElasticSearchAuth(
+            api.ElasticSearchAuth(
                 "apikey",
                 apikey_id=apikey_id,
                 apikey=apikey,
@@ -28,7 +26,7 @@ class ElasticSearchAuth:
     @classmethod
     def basic(cls, username, password):
         return cls(
-            PwElasticSearchAuth(
+            api.ElasticSearchAuth(
                 "basic",
                 username=username,
                 password=password,
@@ -38,14 +36,14 @@ class ElasticSearchAuth:
     @classmethod
     def bearer(cls, bearer):
         return cls(
-            PwElasticSearchAuth(
+            api.ElasticSearchAuth(
                 "bearer",
                 bearer=bearer,
             )
         )
 
     @property
-    def engine_es_auth(self) -> PwElasticSearchAuth:
+    def engine_es_auth(self) -> api.ElasticSearchAuth:
         return self._engine_es_auth
 
 
@@ -97,7 +95,7 @@ def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> 
 
     data_storage = api.DataStorage(
         storage_type="elasticsearch",
-        elasticsearch_params=ElasticSearchParams(
+        elasticsearch_params=api.ElasticSearchParams(
             host=host,
             index_name=index_name,
             auth=auth.engine_es_auth,

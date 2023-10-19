@@ -16,8 +16,7 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 
-from pathway.internals import dtype as dt
-from pathway.internals import trace
+from pathway.internals import dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.runtime_type_check import runtime_type_check
 
@@ -143,7 +142,9 @@ def schema_add(*schemas: type[Schema]) -> type[Schema]:
     )
 
 
-def _create_column_definitions(schema: SchemaMetaclass) -> dict[str, ColumnSchema]:
+def _create_column_definitions(
+    schema: SchemaMetaclass, schema_properties: SchemaProperties
+) -> dict[str, ColumnSchema]:
     localns = locals()
     #  Update locals to handle recursive Schema definitions
     localns[schema.__name__] = schema
@@ -152,13 +153,13 @@ def _create_column_definitions(schema: SchemaMetaclass) -> dict[str, ColumnSchem
 
     columns = {}
 
-    for name, annotation in annotations.items():
+    for column_name, annotation in annotations.items():
         col_dtype = dt.wrap(annotation)
-        column = fields.pop(name, column_definition(dtype=col_dtype))
+        column = fields.pop(column_name, column_definition(dtype=col_dtype))
 
         if not isinstance(column, ColumnDefinition):
             raise ValueError(
-                f"`{name}` should be a column definition, found {type(column)}"
+                f"`{column_name}` should be a column definition, found {type(column)}"
             )
 
         dtype = column.dtype
@@ -167,17 +168,37 @@ def _create_column_definitions(schema: SchemaMetaclass) -> dict[str, ColumnSchem
 
         if col_dtype != dtype:
             raise TypeError(
-                f"type annotation of column `{name}` does not match column definition"
+                f"type annotation of column `{column_name}` does not match column definition"
             )
 
-        name = column.name or name
+        column_name = column.name or column_name
 
-        columns[name] = ColumnSchema(
+        def _get_column_property(property_name: str, default: Any) -> Any:
+            match (
+                getattr(column, property_name),
+                getattr(schema_properties, property_name),
+            ):
+                case (None, None):
+                    return default
+                case (None, schema_property):
+                    return schema_property
+                case (column_property, None):
+                    return column_property
+                case (column_property, schema_property):
+                    if column_property != schema_property:
+                        raise ValueError(
+                            f"ambiguous property; schema property `{property_name}` has"
+                            + f" value {schema_property!r} but column"
+                            + f" `{column_name}` got {column_property!r}"
+                        )
+                    return column_property
+
+        columns[column_name] = ColumnSchema(
             primary_key=column.primary_key,
             default_value=column.default_value,
             dtype=dt.wrap(dtype),
-            name=name,
-            append_only=schema.__properties__.append_only,
+            name=column_name,
+            append_only=_get_column_property("append_only", False),
         )
 
     if fields:
@@ -189,21 +210,21 @@ def _create_column_definitions(schema: SchemaMetaclass) -> dict[str, ColumnSchem
 
 @dataclass(frozen=True)
 class SchemaProperties:
-    append_only: bool = False
+    append_only: bool | None = None
 
 
 class SchemaMetaclass(type):
     __columns__: dict[str, ColumnSchema]
-    __properties__: SchemaProperties
     __dtypes__: dict[str, dt.DType]
     __types__: dict[str, Any]
 
     @trace.trace_user_frame
-    def __init__(self, *args, append_only=False, **kwargs) -> None:
+    def __init__(self, *args, append_only: bool | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.__properties__ = SchemaProperties(append_only=append_only)
-        self.__columns__ = _create_column_definitions(self)
+        self.__columns__ = _create_column_definitions(
+            self, SchemaProperties(append_only=append_only)
+        )
         self.__dtypes__ = {
             name: column.dtype for name, column in self.__columns__.items()
         }
@@ -211,9 +232,6 @@ class SchemaMetaclass(type):
 
     def __or__(self, other: type[Schema]) -> type[Schema]:  # type: ignore
         return schema_add(self, other)  # type: ignore
-
-    def properties(self) -> SchemaProperties:
-        return self.__properties__
 
     def columns(self) -> Mapping[str, ColumnSchema]:
         return MappingProxyType(self.__columns__)
@@ -258,7 +276,7 @@ class SchemaMetaclass(type):
                 )
             columns[name] = dataclasses.replace(columns[name], dtype=dt.wrap(dtype))
 
-        return schema_builder(columns=columns, properties=self.__properties__)
+        return schema_builder(columns=columns)
 
     def __getitem__(self, name) -> ColumnSchema:
         return self.__columns__[name]
@@ -294,7 +312,7 @@ class SchemaMetaclass(type):
         return res
 
     def _as_tuple(self):
-        return (self.__properties__, tuple(self.__columns__.items()))
+        return tuple(self.__columns__.items())
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, SchemaMetaclass):
@@ -367,7 +385,7 @@ class SchemaMetaclass(type):
         self,
         other: type[Schema],
         *,
-        allow_superset: bool = False,
+        allow_superset: bool = True,
         ignore_primary_keys: bool = True,
     ) -> None:
         self_dict = self.typehints()
@@ -424,7 +442,7 @@ class Schema(metaclass=SchemaMetaclass):
     <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, 'foo': <class 'int'>}>
     """
 
-    def __init_subclass__(cls, /, append_only: bool = False, **kwargs) -> None:
+    def __init_subclass__(cls, /, append_only: bool | None = None, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
 
 
@@ -471,6 +489,7 @@ class ColumnSchema:
             default_value=self.default_value,
             dtype=self.dtype,
             name=self.name,
+            append_only=self.append_only,
         )
 
     @property
@@ -484,6 +503,7 @@ class ColumnDefinition:
     default_value: Any | None = _no_default_value_marker
     dtype: dt.DType | None = dt.ANY
     name: str | None = None
+    append_only: bool | None = None
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)
@@ -495,18 +515,21 @@ def column_definition(
     default_value: Any | None = _no_default_value_marker,
     dtype: Any | None = None,
     name: str | None = None,
+    append_only: bool | None = None,
 ) -> Any:  # Return any so that mypy does not complain
     """Creates column definition
 
     Args:
         primary_key: should column be a part of a primary key.
-        default_value: default valuee replacing blank entries. The default value of the
+        default_value: default value replacing blank entries. The default value of the
             column must be specified explicitly,
             otherwise there will be no default value.
         dtype: data type. When used in schema class,
             will be deduced from the type annotation.
         name: name of a column. When used in schema class,
             will be deduced from the attribute name.
+        append_only: whether column is append-only. if unspecified, defaults to False
+            or to value specified at the schema definition level
 
     Returns:
         Column definition.
@@ -528,6 +551,7 @@ def column_definition(
         primary_key=primary_key,
         default_value=default_value,
         name=name,
+        append_only=append_only,
     )
 
 
@@ -592,7 +616,7 @@ def schema_from_dict(
             is both int and "int" are accepted.
         name: schema name.
         properties: schema properties, given either as instance of SchemaProperties class
-            or a dict specyfing arguments of SchemaProperties class.
+            or a dict specifying arguments of SchemaProperties class.
 
     Returns:
         Schema

@@ -198,8 +198,10 @@ class NoNewColumnsPathEvaluator(
         clmn.DifferenceContext,
         clmn.HavingContext,
         clmn.ForgetContext,
+        clmn.FilterOutForgettingContext,
         clmn.FreezeContext,
         clmn.BufferContext,
+        clmn.HavingContext,
     ],
 ):
     def compute(

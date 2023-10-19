@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.5.2] - 2023-10-19
+
+### Added
+- `interval_join` now supports forgetting old entries. The configuration can be passed using `behavior` parameter of `interval_join` method.
+- Decorator `@table_transformer` for marking that functions take Tables as arguments.
+- Namespace for all columns `Table.C.*`.
+- Output connectors now provide logs about the number of entries written and time taken.
+- Filesystem connectors now support reading whole files as rows.
+
 ## [0.5.1] - 2023-10-04
 
 ### Fixed

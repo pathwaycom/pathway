@@ -16,6 +16,7 @@ use super::{Key, Value};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Reducer {
+    Count,
     FloatSum,
     IntSum,
     ArraySum,
@@ -130,6 +131,10 @@ impl SemigroupReducerImpl for IntSumReducer {
         Value::Int(state.sum)
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct CountReducer;
+
 #[derive(Debug, Clone, Copy)]
 pub struct FloatSumReducer;
 

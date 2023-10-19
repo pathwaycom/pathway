@@ -3,8 +3,7 @@
 from collections.abc import Iterable
 
 import pathway.internals.expression as expr
-from pathway.internals import api
-from pathway.internals import dtype as dt
+from pathway.internals import api, dtype as dt
 
 
 class StringNamespace:
@@ -402,7 +401,7 @@ class StringNamespace:
         ...    1 | title
         ... '''
         ... )
-        >>> table = table.select(col_title=table.col.str.title())
+        >>> table = table.select(col_title=table["col"].str.title())
         >>> pw.debug.compute_and_print(table, include_id=False)
         col_title
         Title

@@ -15,7 +15,12 @@ def _connection_string_from_settings(settings: dict):
 
 @runtime_type_check
 @trace_user_frame
-def write(table: Table, postgres_settings: dict, table_name: str) -> None:
+def write(
+    table: Table,
+    postgres_settings: dict,
+    table_name: str,
+    max_batch_size: int | None = None,
+) -> None:
     """Writes ``table``'s stream of updates to a postgres table.
 
     In order for write to be successful, it is required that the table contains ``time``
@@ -26,6 +31,8 @@ def write(table: Table, postgres_settings: dict, table_name: str) -> None:
     Args:
         postgres_settings: Components for the connection string for Postgres.
         table_name: Name of the target table.
+        max_batch_size: Maximum number of entries allowed to be committed within a \
+single transaction.
 
     Returns:
         None
@@ -88,6 +95,7 @@ def write(table: Table, postgres_settings: dict, table_name: str) -> None:
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
+        max_batch_size=max_batch_size,
     )
     data_format = api.DataFormat(
         format_type="sql",
@@ -105,7 +113,11 @@ def write(table: Table, postgres_settings: dict, table_name: str) -> None:
 
 
 def write_snapshot(
-    table: Table, postgres_settings: dict, table_name: str, primary_key: list[str]
+    table: Table,
+    postgres_settings: dict,
+    table_name: str,
+    primary_key: list[str],
+    max_batch_size: int | None = None,
 ) -> None:
     """Maintains a snapshot of a table within a Postgres table.
 
@@ -118,6 +130,8 @@ def write_snapshot(
         postgres_settings: Components of the connection string for Postgres.
         table_name: Name of the target table.
         primary_key: Names of the fields which serve as a primary key in the Postgres table.
+        max_batch_size: Maximum number of entries allowed to be committed within a \
+single transaction.
 
     Returns:
         None
@@ -165,6 +179,7 @@ def write_snapshot(
     data_storage = api.DataStorage(
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
+        max_batch_size=max_batch_size,
     )
     data_format = api.DataFormat(
         format_type="sql_snapshot",

@@ -135,7 +135,7 @@ class KNNIndex:
 
         # Keep queries that didn't match with anything.
         result = queries.select(**{key: () for key in self.data.keys()})
-        result = result.update_rows(selected_data)
+        result = result.update_rows(selected_data).with_universe_of(queries)
         return result
 
     def _extract_data_flat(self, knns_ids, queries):

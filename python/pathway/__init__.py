@@ -70,6 +70,7 @@ from pathway.internals import (
     schema_from_dict,
     schema_from_types,
     sql,
+    table_transformer,
     this,
     transformer,
     udf,
@@ -159,6 +160,7 @@ __all__ = [
     "DateTimeUtc",
     "Duration",
     "Json",
+    "table_transformer",
 ]
 
 

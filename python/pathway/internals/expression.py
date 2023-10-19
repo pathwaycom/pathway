@@ -8,9 +8,7 @@ from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Union
 
-from pathway.internals import api
-from pathway.internals import dtype as dt
-from pathway.internals import helpers
+from pathway.internals import api, dtype as dt, helpers
 from pathway.internals.api import Value
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.shadows import inspect, operator
@@ -183,9 +181,45 @@ class ColumnExpression(OperatorInput, ABC):
         return object.__hash__(self)
 
     def is_none(self) -> IsNoneExpression:
+        """Returns true if the value is None.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown('''
+        ...   | owner | pet
+        ... 1 | Alice | dog
+        ... 2 | Bob   |
+        ... 3 | Carol | cat
+        ... ''')
+        >>> t2 = t1.with_columns(has_no_pet=pw.this.pet.is_none())
+        >>> pw.debug.compute_and_print(t2, include_id=False)
+        owner | pet | has_no_pet
+        Alice | dog | False
+        Bob   |     | True
+        Carol | cat | False
+        """
         return IsNoneExpression(self)
 
     def is_not_none(self) -> IsNotNoneExpression:
+        """Returns true if the value is not None.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown('''
+        ...   | owner | pet
+        ... 1 | Alice | dog
+        ... 2 | Bob   |
+        ... 3 | Carol | cat
+        ... ''')
+        >>> t2 = t1.with_columns(has_pet=pw.this.pet.is_not_none())
+        >>> pw.debug.compute_and_print(t2, include_id=False)
+        owner | pet | has_pet
+        Alice | dog | True
+        Bob   |     | False
+        Carol | cat | True
+        """
         return IsNotNoneExpression(self)
 
     # Missing `__iter__` would make Python fall back to `__getitem__, which

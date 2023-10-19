@@ -28,8 +28,7 @@ def groupby_handler(
     *args,
     id=None,
     sort_by=None,
-    time_column_threshold=None,
-    time_column_time=None,
+    _filter_out_results_of_forgetting=False,
     **kwargs,
 ):
     if kwargs:
@@ -40,8 +39,7 @@ def groupby_handler(
     return (self, *args), {
         "id": id,
         "sort_by": sort_by,
-        "time_column_threshold": time_column_threshold,
-        "time_column_time": time_column_time,
+        "_filter_out_results_of_forgetting": _filter_out_results_of_forgetting,
     }
 
 
@@ -124,6 +122,15 @@ def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
             if not isinstance(direction, Direction):
                 raise ValueError(
                     "direction argument of join should be of type asof_join.Direction."
+                )
+
+        if "behavior" in kwargs:
+            behavior = processed_kwargs["behavior"] = kwargs.pop("behavior")
+            from pathway.stdlib.temporal import WindowBehavior
+
+            if not isinstance(behavior, WindowBehavior):
+                raise ValueError(
+                    "The behavior argument of join should be of type pathway.temporal.WindowBehavior."
                 )
 
         if kwargs:

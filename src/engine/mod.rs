@@ -14,17 +14,17 @@ pub use reduce::Reducer;
 
 pub mod graph;
 pub use graph::{
-    BatchWrapper, ColumnHandle, ColumnPath, ComplexColumn, Computer, ConcatHandle, Context,
-    ExpressionData, Graph, GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType,
-    LegacyTable, OperatorStats, ProberStats, ScopedGraph, TableHandle, UniverseHandle,
-    VennUniverseHandle,
+    BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Computer,
+    ConcatHandle, Context, ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle,
+    JoinType, LegacyTable, OperatorStats, ProberStats, ReducerData, ScopedGraph, TableHandle,
+    TableProperties, UniverseHandle,
 };
 
 pub mod http_server;
 pub use http_server::maybe_run_http_server_thread;
 
 pub mod dataflow;
-pub use dataflow::{run_with_new_dataflow_graph, VennUniverse, WakeupReceiver};
+pub use dataflow::{run_with_new_dataflow_graph, WakeupReceiver};
 
 pub mod expression;
 pub use expression::{

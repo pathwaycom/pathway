@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import boto3
 
-from pathway.internals import api
-from pathway.internals import dtype as dt
-from pathway.internals import schema
+from pathway.internals import api, dtype as dt, schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 

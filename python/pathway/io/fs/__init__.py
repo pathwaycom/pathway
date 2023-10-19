@@ -14,7 +14,6 @@ from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
-    construct_connector_properties,
     construct_schema_and_data_format,
     internal_connector_mode,
     internal_read_method,
@@ -55,8 +54,12 @@ def read(
 
     Args:
         path: Path to the file or to the folder with files.
-        format: Format of data to be read. Currently "csv", "json" and "plaintext"
-            formats are supported.
+        format: Format of data to be read. Currently "csv", "json", "plaintext", \
+"plaintext_by_file" and "binary" formats are supported. The difference between \
+"plaintext" and "plaintext_by_file" is how the input is tokenized: if the "plaintext" \
+option is chosen, it's split by the newlines. Otherwise, the files are split in full \
+and one row will correspond to one file. In case the "binary" format is specified, \
+the data is read as raw bytes without UTF-8 parsing.
         schema: Schema of the resulting table.
         mode: If set to "streaming", the engine will wait for the new input
             files in the directory. Set it to "static", it will only consider the available
@@ -226,15 +229,14 @@ def read(
         types=types,
         default_values=default_values,
     )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
     )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            connector_properties=properties,
+            data_source_options=data_source_options,
             schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),

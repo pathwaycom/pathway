@@ -24,6 +24,7 @@ from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
 
+from .temporal_behavior import WindowBehavior
 from .utils import IntervalType, TimeEventType, check_joint_types, get_default_shift
 
 
@@ -129,6 +130,7 @@ class IntervalJoinResult(DesugaringContext):
     _table_substitution: dict[pw.TableLike, pw.Table]
     _mode: pw.JoinMode
     _substitution: dict[ThisMetaclass, pw.Joinable]
+    _filter_out_results_of_forgetting: bool
 
     def __init__(
         self,
@@ -138,6 +140,7 @@ class IntervalJoinResult(DesugaringContext):
         later_part_filtered: pw.JoinResult,
         table_substitution: dict[pw.TableLike, pw.Table],
         mode: pw.JoinMode,
+        _filter_out_results_of_forgetting: bool,
     ):
         self._left_bucketed = left_bucketed
         self._right_bucketed = right_bucketed
@@ -150,6 +153,24 @@ class IntervalJoinResult(DesugaringContext):
             pw.right: self._right_bucketed,
             pw.this: pw.this,  # type: ignore[dict-item]
         }
+        self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
+
+    @staticmethod
+    def _apply_temporal_behavior(
+        table: pw.Table, behavior: WindowBehavior | None
+    ) -> pw.Table:
+        if behavior is not None:
+            if behavior.delay is not None:
+                table = table._buffer(
+                    pw.this._pw_time + behavior.delay, pw.this._pw_time
+                )
+            if behavior.cutoff is not None:
+                cutoff_threshold = pw.this._pw_time + behavior.cutoff
+                table = table._freeze(cutoff_threshold, pw.this._pw_time)
+                table = table._forget(
+                    cutoff_threshold, pw.this._pw_time, behavior.keep_results
+                )
+        return table
 
     @staticmethod
     def _interval_join(
@@ -159,6 +180,7 @@ class IntervalJoinResult(DesugaringContext):
         right_time_expression: pw.ColumnExpression,
         interval: Interval,
         *on: pw.ColumnExpression,
+        behavior: WindowBehavior | None = None,
         mode: pw.JoinMode,
     ):
         """Creates an IntervalJoinResult. To perform an interval join uses it uses two
@@ -188,28 +210,29 @@ class IntervalJoinResult(DesugaringContext):
             )
 
         shift = get_default_shift(interval.lower_bound)
-        left_time_expression = left_time_expression - shift
-        right_time_expression = right_time_expression - shift
+        left_with_time = left.with_columns(_pw_time=left_time_expression)
+        right_with_time = right.with_columns(_pw_time=right_time_expression)
+        left_with_time = IntervalJoinResult._apply_temporal_behavior(
+            left_with_time, behavior
+        )
+        right_with_time = IntervalJoinResult._apply_temporal_behavior(
+            right_with_time, behavior
+        )
         bounds_difference = interval.upper_bound - interval.lower_bound  # type: ignore[operator]
 
-        left_bucketed = left.with_columns(
-            _pathway_bucket=pw.cast(int, left_time_expression // bounds_difference)
+        left_bucketed = left_with_time.with_columns(
+            _pw_bucket=pw.cast(int, (pw.this._pw_time - shift) // bounds_difference)
         )
-        right_bucketed = right.with_columns(
-            _pathway_bucket=pw.cast(
+        right_bucketed = right_with_time.with_columns(
+            _pw_bucket=pw.cast(
                 int,
-                (right_time_expression - interval.upper_bound) // bounds_difference,
-            )
+                (pw.this._pw_time - shift - interval.upper_bound) // bounds_difference,
+            ),
         )
 
         right_bucketed = right_bucketed.with_columns(
-            _pathway_bucket_plus_one=right_bucketed._pathway_bucket + 1
+            _pw_bucket_plus_one=right_bucketed._pw_bucket + 1
         )
-        table_replacer = TableSubstitutionDesugaring(
-            {left: left_bucketed, right: right_bucketed}
-        )
-        left_time_expression = table_replacer.eval_expression(left_time_expression)
-        right_time_expression = table_replacer.eval_expression(right_time_expression)
 
         from pathway.internals.join import validate_join_condition
 
@@ -220,27 +243,33 @@ class IntervalJoinResult(DesugaringContext):
 
         earlier_part = left_bucketed.join(
             right_bucketed,
-            left_bucketed._pathway_bucket == right_bucketed._pathway_bucket,
+            left_bucketed._pw_bucket == right_bucketed._pw_bucket,
             *on,
         )
         later_part = left_bucketed.join(
             right_bucketed,
-            left_bucketed._pathway_bucket == right_bucketed._pathway_bucket_plus_one,
+            left_bucketed._pw_bucket == right_bucketed._pw_bucket_plus_one,
             *on,
         )
         pw.universes.promise_are_pairwise_disjoint(earlier_part, later_part)
 
         earlier_part_filtered = earlier_part.filter(
-            right_time_expression <= left_time_expression + interval.upper_bound
+            pw.right._pw_time <= pw.left._pw_time + interval.upper_bound
         )
         later_part_filtered = later_part.filter(
-            left_time_expression + interval.lower_bound <= right_time_expression
+            pw.left._pw_time + interval.lower_bound <= pw.right._pw_time
         )
 
         table_substitution: dict[pw.TableLike, pw.Table] = {
             left: left_bucketed,
             right: right_bucketed,
         }
+
+        filter_out_results_of_forgetting = (
+            behavior is not None
+            and behavior.cutoff is not None
+            and behavior.keep_results
+        )
 
         return IntervalJoinResult(
             left_bucketed,
@@ -249,6 +278,7 @@ class IntervalJoinResult(DesugaringContext):
             later_part_filtered,
             table_substitution,
             mode,
+            _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
         )
 
     @property
@@ -321,20 +351,21 @@ class IntervalJoinResult(DesugaringContext):
                     )
         all_args = combine_args_kwargs(args, kwargs)
 
-        if self._mode != pw.JoinMode.INNER:
-            all_args["_pathway_left_id"] = self._left_bucketed.id
-            all_args["_pathway_right_id"] = self._right_bucketed.id
+        earlier_part_selected = self._earlier_part_filtered.select(
+            _pw_left_id=pw.left.id,
+            _pw_right_id=pw.right.id,
+            **all_args,
+        )
 
-        earlier_part_selected = self._earlier_part_filtered.select(**all_args)
-
-        later_part_selected = self._later_part_filtered.select(**all_args)
+        later_part_selected = self._later_part_filtered.select(
+            _pw_left_id=pw.left.id,
+            _pw_right_id=pw.right.id,
+            **all_args,
+        )
 
         joined = earlier_part_selected.concat(later_part_selected)
-        if self._mode == pw.JoinMode.INNER:
-            return joined
 
-        result = joined.without(joined._pathway_left_id, joined._pathway_right_id)
-        to_concat = [result]
+        to_concat = [joined.without(joined._pw_left_id, joined._pw_right_id)]
         if self._mode in [pw.JoinMode.LEFT, pw.JoinMode.OUTER]:
             unmatched_left = self._get_unmatched_rows(
                 joined,
@@ -354,9 +385,16 @@ class IntervalJoinResult(DesugaringContext):
             )
             to_concat.append(unmatched_right)
 
-        from pathway.internals.table import Table
+        if len(to_concat) == 1:
+            result = to_concat[0]
+        else:
+            from pathway.internals.table import Table
 
-        return Table.concat_reindex(*to_concat)
+            result = Table.concat_reindex(*to_concat)
+
+        if self._filter_out_results_of_forgetting:
+            result = result._filter_out_results_of_forgetting()
+        return result
 
     @staticmethod
     def _get_unmatched_rows(
@@ -366,14 +404,14 @@ class IntervalJoinResult(DesugaringContext):
         cols: dict[str, pw.ColumnExpression],
         is_side_left: bool,
     ) -> pw.Table:
-        id_column = joined["_pathway_left_id" if is_side_left else "_pathway_right_id"]
+        id_column = joined["_pw_left_id" if is_side_left else "_pw_right_id"]
         matched = joined.groupby(id_column).reduce(old_id=id_column)
         unmatched = side.difference(matched.with_id(matched.old_id))
         cols_new = {}
         expression_replacer_1 = TableSubstitutionDesugaring({side: unmatched})
         expression_replacer_2 = TableReplacementWithNoneDesugaring(other)
         for column_name, expression in cols.items():
-            if column_name not in ("_pathway_left_id", "_pathway_right_id"):
+            if column_name not in ("_pw_left_id", "_pw_right_id"):
                 expression = expression_replacer_1.eval_expression(expression)
                 expression = expression_replacer_2.eval_expression(expression)
                 cols_new[column_name] = expression
@@ -391,6 +429,7 @@ def interval_join(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
+    behavior: WindowBehavior | None = None,
     how: pw.JoinMode = pw.JoinMode.INNER,
 ) -> IntervalJoinResult:
     """Performs an interval join of self with other using a time difference
@@ -408,6 +447,8 @@ def interval_join(
             and self_time.
         on:  a list of column expressions. Each must have == as the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
         how: decides whether to run `interval_join_inner`, `interval_join_left`, `interval_join_right`
             or `interval_join_outer`. Default is INNER.
 
@@ -489,6 +530,7 @@ def interval_join(
         other_time,
         interval,
         *on,
+        behavior=behavior,
         mode=how,
     )
 
@@ -504,6 +546,7 @@ def interval_join_inner(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
+    behavior: WindowBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -520,6 +563,8 @@ def interval_join_inner(
             and self_time.
         on:  a list of column expressions. Each must have == as the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -599,6 +644,7 @@ def interval_join_inner(
         other_time,
         interval,
         *on,
+        behavior=behavior,
         mode=pw.JoinMode.INNER,
     )
 
@@ -614,6 +660,7 @@ def interval_join_left(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
+    behavior: WindowBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval left join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -632,6 +679,8 @@ def interval_join_left(
             and self_time.
         on:  a list of column expressions. Each must have == as the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -714,6 +763,7 @@ def interval_join_left(
         other_time,
         interval,
         *on,
+        behavior=behavior,
         mode=pw.JoinMode.LEFT,
     )
 
@@ -729,6 +779,7 @@ def interval_join_right(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
+    behavior: WindowBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval right join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -747,6 +798,8 @@ def interval_join_right(
             and self_time.
         on:  a list of column expressions. Each must have == as the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -831,6 +884,7 @@ def interval_join_right(
         other_time,
         interval,
         *on,
+        behavior=behavior,
         mode=pw.JoinMode.RIGHT,
     )
 
@@ -846,6 +900,7 @@ def interval_join_outer(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
+    behavior: WindowBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval outer join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -864,6 +919,8 @@ def interval_join_outer(
             and self_time.
         on:  a list of column expressions. Each must have == as the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -951,5 +1008,6 @@ def interval_join_outer(
         other_time,
         interval,
         *on,
+        behavior=behavior,
         mode=pw.JoinMode.OUTER,
     )

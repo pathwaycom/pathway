@@ -4,8 +4,7 @@
 import pandas as pd
 
 import pathway.internals.expression as expr
-from pathway.internals import api
-from pathway.internals import dtype as dt
+from pathway.internals import api, dtype as dt
 
 
 class DateTimeNamespace:

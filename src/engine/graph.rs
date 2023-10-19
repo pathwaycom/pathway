@@ -14,7 +14,7 @@ use crate::connectors::monitoring::ConnectorStats;
 use crate::persistence::ExternalPersistentId;
 
 use super::error::{DynResult, Trace};
-use super::{Error, Expression, Key, Reducer, Result, Value};
+use super::{Error, Expression, Key, Reducer, Result, Type, Value};
 
 macro_rules! define_handle {
     ($handle:ident) => {
@@ -49,13 +49,9 @@ define_handle!(ColumnHandle);
 
 define_handle!(TableHandle);
 
-define_handle!(GrouperHandle);
-
 define_handle!(IxerHandle);
 
 define_handle!(ConcatHandle);
-
-define_handle!(VennUniverseHandle);
 
 pub type LegacyTable = (UniverseHandle, Vec<ColumnHandle>);
 
@@ -143,15 +139,31 @@ impl ColumnPath {
         }
     }
 }
-
 pub struct ExpressionData {
     pub expression: Arc<Expression>,
-    pub trace: Trace,
+    pub column_properties: Arc<ColumnProperties>,
 }
 
 impl ExpressionData {
-    pub fn new(expression: Arc<Expression>, trace: Trace) -> Self {
-        ExpressionData { expression, trace }
+    pub fn new(expression: Arc<Expression>, column_properties: Arc<ColumnProperties>) -> Self {
+        ExpressionData {
+            expression,
+            column_properties,
+        }
+    }
+}
+
+pub struct ReducerData {
+    pub reducer: Reducer,
+    pub column_paths: Vec<ColumnPath>,
+}
+
+impl ReducerData {
+    pub fn new(reducer: Reducer, column_paths: Vec<ColumnPath>) -> Self {
+        ReducerData {
+            reducer,
+            column_paths,
+        }
     }
 }
 
@@ -195,6 +207,113 @@ impl ComplexColumn {
             Self::InternalComputer(Computer::Method { .. })
                 | Self::ExternalComputer(Computer::Method { .. })
         )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ColumnProperties {
+    pub dtype: Type,
+    pub append_only: bool,
+    pub trace: Trace,
+}
+
+impl ColumnProperties {
+    pub fn new() -> Self {
+        Self {
+            dtype: Type::Any,
+            append_only: false,
+            trace: Trace::Empty,
+        }
+    }
+}
+
+impl Default for ColumnProperties {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum TableProperties {
+    Table(Arc<[TableProperties]>),
+    Column(Arc<ColumnProperties>),
+    Empty,
+}
+
+impl TableProperties {
+    pub fn flat(column_properties: Vec<Arc<ColumnProperties>>) -> Self {
+        let column_properties: Vec<_> = column_properties
+            .into_iter()
+            .map(TableProperties::Column)
+            .collect();
+
+        TableProperties::Table(column_properties.into())
+    }
+
+    pub fn from_paths(
+        column_properties: Vec<(ColumnPath, Arc<ColumnProperties>)>,
+    ) -> Result<TableProperties> {
+        fn produce_nested_tuple(
+            props: &[(Vec<usize>, Arc<ColumnProperties>)],
+            depth: usize,
+        ) -> TableProperties {
+            if props.len() == 1 && props.first().unwrap().0.len() == depth {
+                return TableProperties::Column(props.first().unwrap().1.clone());
+            }
+
+            let mut prefix = 0;
+            let mut begin = 0;
+            let mut end = 0;
+            let mut result = Vec::new();
+
+            while end < props.len() {
+                while end < props.len() && prefix == props[end].0[depth] {
+                    end += 1;
+                }
+                prefix += 1;
+                if begin == end {
+                    // XXX: remove after iterate is properly implemented
+                    // emulate unused cols
+                    result.push(TableProperties::Empty);
+                    continue;
+                }
+                assert!(begin < end);
+                result.push(produce_nested_tuple(&props[begin..end], depth + 1));
+                begin = end;
+            }
+
+            TableProperties::Table(result.as_slice().into())
+        }
+
+        let mut column_properties: Vec<(Vec<usize>, Arc<ColumnProperties>)> = column_properties
+            .into_iter()
+            .map(|(path, props)| match path {
+                ColumnPath::ValuePath(path) => Ok((path, props)),
+                ColumnPath::Key => Err(Error::ValueError(
+                    "It is not allowed to use ids when creating table properties".into(),
+                )),
+            })
+            .collect::<Result<_>>()?;
+
+        column_properties
+            .sort_unstable_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
+
+        Ok(produce_nested_tuple(column_properties.as_slice(), 0))
+    }
+
+    pub fn expression_table_properties(
+        input_table_properties: &Arc<TableProperties>,
+        column_properties: Vec<Arc<ColumnProperties>>,
+    ) -> Self {
+        if column_properties.is_empty() {
+            return TableProperties::Empty;
+        }
+        let mut properties: Vec<_> = column_properties
+            .into_iter()
+            .map(TableProperties::Column)
+            .collect();
+        properties[0] = (*(*input_table_properties)).clone();
+        TableProperties::Table(properties.into())
     }
 }
 
@@ -316,9 +435,13 @@ pub trait Graph {
 
     fn empty_universe(&self) -> Result<UniverseHandle>;
 
-    fn empty_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle>;
+    fn empty_column(
+        &self,
+        universe_handle: UniverseHandle,
+        column_properties: Arc<ColumnProperties>,
+    ) -> Result<ColumnHandle>;
 
-    fn empty_table(&self) -> Result<TableHandle>;
+    fn empty_table(&self, table_properties: Arc<TableProperties>) -> Result<TableHandle>;
 
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle>;
 
@@ -326,9 +449,14 @@ pub trait Graph {
         &self,
         universe_handle: UniverseHandle,
         values: Vec<(Key, Value)>,
+        column_properties: Arc<ColumnProperties>,
     ) -> Result<ColumnHandle>;
 
-    fn static_table(&self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle>;
+    fn static_table(
+        &self,
+        values: Vec<(Key, Vec<Value>)>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 
     fn expression_column(
         &self,
@@ -336,6 +464,7 @@ pub trait Graph {
         expression: Arc<Expression>,
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
+        column_properties: Arc<ColumnProperties>,
         trace: Trace,
     ) -> Result<ColumnHandle>;
 
@@ -373,6 +502,7 @@ pub trait Graph {
         function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
         trace: Trace,
     ) -> Result<TableHandle>;
 
@@ -385,23 +515,26 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
     ) -> Result<()>;
 
-    fn filter_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<UniverseHandle>;
-
     fn filter_table(
         &self,
         table_handle: TableHandle,
         filtering_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn forget(
         &self,
-        storage_handle: TableHandle,
+        table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        mark_forgetting_records: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn filter_out_results_of_forgetting(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn freeze(
@@ -409,6 +542,7 @@ pub trait Graph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn buffer(
@@ -416,6 +550,7 @@ pub trait Graph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn restrict_column(
@@ -429,103 +564,58 @@ pub trait Graph {
         original_table_handle: TableHandle,
         new_table_handle: TableHandle,
         same_universes: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
-    fn override_column_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle>;
-
     fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle>;
-
-    fn intersect_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle>;
 
     fn intersect_tables(
         &self,
         table_handle: TableHandle,
         other_table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn subtract_table(
         &self,
         left_table_handle: TableHandle,
         right_table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
-    fn union_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle>;
-
-    fn venn_universes(
+    fn concat_tables(
         &self,
-        left_universe_handle: UniverseHandle,
-        right_universe_handle: UniverseHandle,
-    ) -> Result<VennUniverseHandle>;
-
-    fn venn_universes_only_left(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle>;
-
-    fn venn_universes_only_right(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle>;
-
-    fn venn_universes_both(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle>;
-
-    fn concat(&self, universe_handles: Vec<UniverseHandle>) -> Result<ConcatHandle>;
-
-    fn concat_universe(&self, concat_handle: ConcatHandle) -> Result<UniverseHandle>;
-
-    fn concat_column(
-        &self,
-        concat_handle: ConcatHandle,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle>;
-
-    fn concat_tables(&self, table_handles: Vec<TableHandle>) -> Result<TableHandle>;
+        table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 
     fn flatten_table(
         &self,
         table_handle: TableHandle,
         flatten_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
-
-    fn sort(
-        &self,
-        key_column_handle: ColumnHandle,
-        instance_column_handle: ColumnHandle,
-    ) -> Result<(ColumnHandle, ColumnHandle)>;
 
     fn sort_table(
         &self,
         table_handle: TableHandle,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
-
-    fn reindex_universe(&self, column_handle: ColumnHandle) -> Result<UniverseHandle>;
-
-    fn reindex_column(
-        &self,
-        column_to_reindex: ColumnHandle,
-        reindexing_column: ColumnHandle,
-        reindexing_universe: UniverseHandle,
-    ) -> Result<ColumnHandle>;
 
     fn reindex_table(
         &self,
         table_handle: TableHandle,
         reindexing_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn update_rows_table(
         &self,
         table_handle: TableHandle,
         update_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn update_cells_table(
@@ -534,49 +624,26 @@ pub trait Graph {
         update_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         update_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
-    fn group_by(
+    fn group_by_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle>;
-    fn group_by_id(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle>;
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reducers: Vec<ReducerData>,
+        set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 
-    fn grouper_universe(&self, grouper_handle: GrouperHandle) -> Result<UniverseHandle>;
-    fn grouper_input_column(
+    fn ix_table(
         &self,
-        grouper_handle: GrouperHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle>;
-    fn grouper_count_column(&self, grouper_handle: GrouperHandle) -> Result<ColumnHandle>;
-    fn grouper_reducer_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle>;
-
-    fn ix(
-        &self,
-        key_column_handle: ColumnHandle,
-        input_universe_handle: UniverseHandle,
+        to_ix_handle: TableHandle,
+        key_handle: TableHandle,
+        key_column_path: ColumnPath,
         ix_key_policy: IxKeyPolicy,
-    ) -> Result<IxerHandle>;
-
-    fn ix_column(
-        &self,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle>;
-
-    fn ixer_universe(&self, ixer_handle: IxerHandle) -> Result<UniverseHandle>;
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 
     fn join_tables(
         &self,
@@ -585,6 +652,7 @@ pub trait Graph {
         left_column_paths: Vec<ColumnPath>,
         right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
     fn iterate<'a>(
@@ -613,6 +681,7 @@ pub trait Graph {
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        table_properties: Arc<TableProperties>,
         external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<TableHandle>;
 
@@ -650,9 +719,7 @@ pub trait Graph {
         run_callback_every_time: bool,
     ) -> Result<()>;
 
-    fn probe_universe(&self, universe_handle: UniverseHandle, operator_id: usize) -> Result<()>;
-
-    fn probe_column(&self, column_handle: ColumnHandle, operator_id: usize) -> Result<()>;
+    fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -709,13 +776,17 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.empty_universe())
     }
 
-    fn empty_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.try_with(|g| g.empty_column(universe_handle))
+    fn empty_column(
+        &self,
+        universe_handle: UniverseHandle,
+        column_properties: Arc<ColumnProperties>,
+    ) -> Result<ColumnHandle> {
+        self.try_with(|g| g.empty_column(universe_handle, column_properties))
     }
 
-    fn empty_table(&self) -> Result<TableHandle> {
+    fn empty_table(&self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
         #[allow(clippy::redundant_closure_for_method_calls)]
-        self.try_with(|g| g.empty_table())
+        self.try_with(|g| g.empty_table(table_properties))
     }
 
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle> {
@@ -726,12 +797,17 @@ impl Graph for ScopedGraph {
         &self,
         universe_handle: UniverseHandle,
         values: Vec<(Key, Value)>,
+        column_properties: Arc<ColumnProperties>,
     ) -> Result<ColumnHandle> {
-        self.try_with(|g| g.static_column(universe_handle, values))
+        self.try_with(|g| g.static_column(universe_handle, values, column_properties))
     }
 
-    fn static_table(&self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
-        self.try_with(|g| g.static_table(values))
+    fn static_table(
+        &self,
+        values: Vec<(Key, Vec<Value>)>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.static_table(values, table_properties))
     }
 
     fn expression_column(
@@ -740,10 +816,18 @@ impl Graph for ScopedGraph {
         expression: Arc<Expression>,
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
+        column_properties: Arc<ColumnProperties>,
         trace: Trace,
     ) -> Result<ColumnHandle> {
         self.try_with(|g| {
-            g.expression_column(wrapper, expression, universe_handle, column_handles, trace)
+            g.expression_column(
+                wrapper,
+                expression,
+                universe_handle,
+                column_handles,
+                column_properties,
+                trace,
+            )
         })
     }
 
@@ -791,9 +875,18 @@ impl Graph for ScopedGraph {
         function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
         trace: Trace,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.async_apply_table(function, table_handle, column_paths, trace))
+        self.try_with(|g| {
+            g.async_apply_table(
+                function,
+                table_handle,
+                column_paths,
+                table_properties,
+                trace,
+            )
+        })
     }
 
     fn subscribe_table(
@@ -807,20 +900,13 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.subscribe_table(wrapper, callback, on_end, table_handle, column_paths))
     }
 
-    fn filter_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<UniverseHandle> {
-        self.try_with(|g| g.filter_universe(universe_handle, column_handle))
-    }
-
     fn filter_table(
         &self,
         table_handle: TableHandle,
         filtering_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.filter_table(table_handle, filtering_column_path))
+        self.try_with(|g| g.filter_table(table_handle, filtering_column_path, table_properties))
     }
 
     fn forget(
@@ -828,14 +914,26 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        mark_forgetting_records: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.forget(
                 table_handle,
                 threshold_time_column_path,
                 current_time_column_path,
+                mark_forgetting_records,
+                table_properties,
             )
         })
+    }
+
+    fn filter_out_results_of_forgetting(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.filter_out_results_of_forgetting(table_handle, table_properties))
     }
 
     fn freeze(
@@ -843,12 +941,14 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.freeze(
                 table_handle,
                 threshold_time_column_path,
                 current_time_column_path,
+                table_properties,
             )
         })
     }
@@ -858,12 +958,14 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.buffer(
                 table_handle,
                 threshold_time_column_path,
                 current_time_column_path,
+                table_properties,
             )
         })
     }
@@ -881,115 +983,55 @@ impl Graph for ScopedGraph {
         original_table_handle: TableHandle,
         new_table_handle: TableHandle,
         same_universes: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.restrict_or_override_table_universe(
                 original_table_handle,
                 new_table_handle,
                 same_universes,
+                table_properties,
             )
         })
-    }
-
-    fn override_column_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.try_with(|g| g.override_column_universe(universe_handle, column_handle))
     }
 
     fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
         self.try_with(|g| g.id_column(universe_handle))
     }
 
-    fn intersect_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
-        self.try_with(|g| g.intersect_universe(universe_handles))
-    }
-
     fn intersect_tables(
         &self,
         table_handle: TableHandle,
         other_table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.intersect_tables(table_handle, other_table_handles))
+        self.try_with(|g| g.intersect_tables(table_handle, other_table_handles, table_properties))
     }
 
     fn subtract_table(
         &self,
         left_table_handle: TableHandle,
         right_table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.subtract_table(left_table_handle, right_table_handle))
+        self.try_with(|g| g.subtract_table(left_table_handle, right_table_handle, table_properties))
     }
 
-    fn union_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
-        self.try_with(|g| g.union_universe(universe_handles))
-    }
-
-    fn venn_universes(
+    fn concat_tables(
         &self,
-        left_universe_handle: UniverseHandle,
-        right_universe_handle: UniverseHandle,
-    ) -> Result<VennUniverseHandle> {
-        self.try_with(|g| g.venn_universes(left_universe_handle, right_universe_handle))
-    }
-
-    fn venn_universes_only_left(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.try_with(|g| g.venn_universes_only_left(venn_universes_handle))
-    }
-
-    fn venn_universes_only_right(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.try_with(|g| g.venn_universes_only_right(venn_universes_handle))
-    }
-
-    fn venn_universes_both(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.try_with(|g| g.venn_universes_both(venn_universes_handle))
-    }
-
-    fn concat(&self, universe_handles: Vec<UniverseHandle>) -> Result<ConcatHandle> {
-        self.try_with(|g| g.concat(universe_handles))
-    }
-
-    fn concat_universe(&self, concat_handle: ConcatHandle) -> Result<UniverseHandle> {
-        self.try_with(|g| g.concat_universe(concat_handle))
-    }
-
-    fn concat_column(
-        &self,
-        concat_handle: ConcatHandle,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        self.try_with(|g| g.concat_column(concat_handle, column_handles))
-    }
-
-    fn concat_tables(&self, table_handles: Vec<TableHandle>) -> Result<TableHandle> {
-        self.try_with(|g| g.concat_tables(table_handles))
+        table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.concat_tables(table_handles, table_properties))
     }
 
     fn flatten_table(
         &self,
         table_handle: TableHandle,
         flatten_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.flatten_table(table_handle, flatten_column_path))
-    }
-
-    fn sort(
-        &self,
-        key_column_handle: ColumnHandle,
-        instance_column_handle: ColumnHandle,
-    ) -> Result<(ColumnHandle, ColumnHandle)> {
-        self.try_with(|g| g.sort(key_column_handle, instance_column_handle))
+        self.try_with(|g| g.flatten_table(table_handle, flatten_column_path, table_properties))
     }
 
     fn sort_table(
@@ -997,22 +1039,15 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.sort_table(table_handle, key_column_path, instance_column_path))
-    }
-
-    fn reindex_universe(&self, column_handle: ColumnHandle) -> Result<UniverseHandle> {
-        self.try_with(|g| g.reindex_universe(column_handle))
-    }
-
-    fn reindex_column(
-        &self,
-        column_to_reindex: ColumnHandle,
-        reindexing_column: ColumnHandle,
-        reindexing_universe: UniverseHandle,
-    ) -> Result<ColumnHandle> {
         self.try_with(|g| {
-            g.reindex_column(column_to_reindex, reindexing_column, reindexing_universe)
+            g.sort_table(
+                table_handle,
+                key_column_path,
+                instance_column_path,
+                table_properties,
+            )
         })
     }
 
@@ -1020,16 +1055,18 @@ impl Graph for ScopedGraph {
         &self,
         table_handle: TableHandle,
         reindexing_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.reindex_table(table_handle, reindexing_column_path))
+        self.try_with(|g| g.reindex_table(table_handle, reindexing_column_path, table_properties))
     }
 
     fn update_rows_table(
         &self,
         table_handle: TableHandle,
         update_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.update_rows_table(table_handle, update_handle))
+        self.try_with(|g| g.update_rows_table(table_handle, update_handle, table_properties))
     }
 
     fn update_cells_table(
@@ -1038,74 +1075,55 @@ impl Graph for ScopedGraph {
         update_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         update_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
-            g.update_cells_table(table_handle, update_handle, column_paths, update_paths)
+            g.update_cells_table(
+                table_handle,
+                update_handle,
+                column_paths,
+                update_paths,
+                table_properties,
+            )
         })
     }
 
-    fn group_by(
+    fn group_by_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        self.try_with(|g| g.group_by(universe_handle, column_handles, requested_column_handles))
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reducers: Vec<ReducerData>,
+        set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.group_by_table(
+                table_handle,
+                grouping_columns_paths,
+                reducers,
+                set_id,
+                table_properties,
+            )
+        })
     }
 
-    fn group_by_id(
+    fn ix_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        self.try_with(|g| g.group_by_id(universe_handle, column_handle, requested_column_handles))
-    }
-
-    fn grouper_universe(&self, grouper_handle: GrouperHandle) -> Result<UniverseHandle> {
-        self.try_with(|g| g.grouper_universe(grouper_handle))
-    }
-
-    fn grouper_input_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.try_with(|g| g.grouper_input_column(grouper_handle, column_handle))
-    }
-
-    fn grouper_count_column(&self, grouper_handle: GrouperHandle) -> Result<ColumnHandle> {
-        self.try_with(|g| g.grouper_count_column(grouper_handle))
-    }
-
-    fn grouper_reducer_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        self.try_with(|g| g.grouper_reducer_column(grouper_handle, reducer, column_handles))
-    }
-
-    fn ix(
-        &self,
-        key_column_handle: ColumnHandle,
-        input_universe_handle: UniverseHandle,
+        to_ix_handle: TableHandle,
+        key_handle: TableHandle,
+        key_column_path: ColumnPath,
         ix_key_policy: IxKeyPolicy,
-    ) -> Result<IxerHandle> {
-        self.try_with(|g| g.ix(key_column_handle, input_universe_handle, ix_key_policy))
-    }
-
-    fn ix_column(
-        &self,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.try_with(|g| g.ix_column(ixer_handle, column_handle))
-    }
-
-    fn ixer_universe(&self, ixer_handle: IxerHandle) -> Result<UniverseHandle> {
-        self.try_with(|g| g.ixer_universe(ixer_handle))
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.ix_table(
+                to_ix_handle,
+                key_handle,
+                key_column_path,
+                ix_key_policy,
+                table_properties,
+            )
+        })
     }
 
     fn join_tables(
@@ -1115,6 +1133,7 @@ impl Graph for ScopedGraph {
         left_column_paths: Vec<ColumnPath>,
         right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.join_tables(
@@ -1123,6 +1142,7 @@ impl Graph for ScopedGraph {
                 left_column_paths,
                 right_column_paths,
                 join_type,
+                table_properties,
             )
         })
     }
@@ -1161,6 +1181,7 @@ impl Graph for ScopedGraph {
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        table_properties: Arc<TableProperties>,
         external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1169,6 +1190,7 @@ impl Graph for ScopedGraph {
                 parser,
                 commit_duration,
                 parallel_readers,
+                table_properties,
                 external_persistent_id,
             )
         })
@@ -1220,11 +1242,7 @@ impl Graph for ScopedGraph {
         })
     }
 
-    fn probe_universe(&self, universe_handle: UniverseHandle, operator_id: usize) -> Result<()> {
-        self.try_with(|g| g.probe_universe(universe_handle, operator_id))
-    }
-
-    fn probe_column(&self, column_handle: ColumnHandle, operator_id: usize) -> Result<()> {
-        self.try_with(|g| g.probe_column(column_handle, operator_id))
+    fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
+        self.try_with(|g| g.probe_table(table_handle, operator_id))
     }
 }

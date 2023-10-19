@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -342,31 +341,29 @@ class _SlidingWindow(Window):
         )
 
         if behavior is not None:
-            if behavior.cutoff is not None:
-                target = target.with_columns(
-                    _pw_cutoff_threshold=target._pw_window_end + behavior.cutoff
-                )
-                target = target._forget(target._pw_cutoff_threshold, target._pw_key)
-
             if behavior.delay is not None:
                 target = target._buffer(
                     target._pw_window_start + behavior.delay, target._pw_key
                 )
+            if behavior.cutoff is not None:
+                cutoff_threshold = pw.this._pw_window_end + behavior.cutoff
+                target = target._freeze(cutoff_threshold, pw.this._pw_key)
+                target = target._forget(
+                    cutoff_threshold, pw.this._pw_key, behavior.keep_results
+                )
 
-        time_column_threshold = None
-        time_column_time = None
-
-        if behavior is not None and behavior.keep_results:
-            time_column_threshold = pw.this._pw_cutoff_threshold
-            time_column_time = pw.this._pw_key
+        filter_out_results_of_forgetting = (
+            behavior is not None
+            and behavior.cutoff is not None
+            and behavior.keep_results
+        )
 
         target = target.groupby(
             target._pw_window,
             target._pw_shard,
             target._pw_window_start,
             target._pw_window_end,
-            time_column_threshold=time_column_threshold,
-            time_column_time=time_column_time,
+            _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
         )
 
         return target
@@ -840,5 +837,4 @@ def windowby(
     0     | 8     | 8     | 3
     1     | 1     | 16    | 2
     """
-    print(f"behavior in windowby {behavior}", file=sys.stderr)
     return window._apply(self, time_expr, behavior, shard)

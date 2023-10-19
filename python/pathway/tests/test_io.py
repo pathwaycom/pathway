@@ -1416,3 +1416,56 @@ def test_bool_values_parsing_in_csv(tmp_path: pathlib.Path):
         output_path, usecols=["key", "value"], index_col=["key"]
     ).sort_index()
     assert list(result["value"]) == [True] * 5 + [False] * 5
+
+
+def test_text_file_read_in_full(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    input_full_contents = "abc\n\ndef\nghi"
+    output_path = tmp_path / "output.json"
+    write_lines(input_path, input_full_contents)
+
+    table = pw.io.fs.read(
+        input_path,
+        format="plaintext_by_file",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    with open(output_path) as f:
+        result = json.load(f)
+        assert result["data"] == input_full_contents
+
+
+def test_text_files_directory_read_in_full(tmp_path: pathlib.Path):
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+
+    input_contents_1 = "abc\n\ndef\nghi"
+    input_contents_2 = "ttt\nppp\nqqq"
+    input_contents_3 = "zzz\nyyy\n\nxxx"
+    write_lines(inputs_path / "input1.txt", input_contents_1)
+    write_lines(inputs_path / "input2.txt", input_contents_2)
+    write_lines(inputs_path / "input3.txt", input_contents_3)
+
+    output_path = tmp_path / "output.json"
+    table = pw.io.fs.read(
+        inputs_path,
+        format="plaintext_by_file",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    output_lines = []
+    with open(output_path, "r") as f:
+        for line in f.readlines():
+            output_lines.append(json.loads(line)["data"])
+
+    assert len(output_lines) == 3
+    output_lines.sort()
+    assert output_lines[0] == input_contents_1
+    assert output_lines[1] == input_contents_2
+    assert output_lines[2] == input_contents_3

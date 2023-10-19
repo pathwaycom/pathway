@@ -20,7 +20,7 @@ from pathway.tests.utils import (
 def test_left_join_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -30,7 +30,7 @@ def test_left_join_01():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -40,21 +40,21 @@ def test_left_join_01():
 
     expected = T(
         """
-        A   | t2_A  | S
+        a   | t2_a  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
         14  | 14    | 328
         """
     ).update_types(
-        S=Optional[int],
-        t2_A=Optional[int],
+        s=Optional[int],
+        t2_a=Optional[int],
     )
 
-    res = t1.join_left(t2, t1.A == t2.A).select(
-        t1.A,
-        t2_A=t2.A,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+    res = t1.join_left(t2, t1.a == t2.a).select(
+        t1.a,
+        t2_a=t2.a,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -62,7 +62,7 @@ def test_left_join_01():
 def test_left_join_universe_asserts():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -72,7 +72,7 @@ def test_left_join_universe_asserts():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -80,19 +80,19 @@ def test_left_join_universe_asserts():
         """
     )
 
-    xxx = t1.join_left(t2, t1.A == t2.A)
-    yyy = t1.join_left(t2, t1.A == t2.A)
+    xxx = t1.join_left(t2, t1.a == t2.a)
+    yyy = t1.join_left(t2, t1.a == t2.a)
     pw.universes.promise_are_equal(xxx, yyy)
 
     res_x = xxx.select(
-        t1.A,
-        t2_A=t2.A,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+        t1.a,
+        t2_a=t2.a,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     res_y = yyy.select(
-        t1.A,
-        t2_A=t2.A,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+        t1.a,
+        t2_a=t2.a,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res_x, res_y)
 
@@ -100,7 +100,7 @@ def test_left_join_universe_asserts():
 def test_left_join_015():
     t1 = T(
         """
-            | A
+            | a
           1 | 11
           2 | 12
           3 | 13
@@ -110,7 +110,7 @@ def test_left_join_015():
 
     t2 = T(
         """
-            | C
+            | c
           1 | 11
           2 | 12
           3 | 13
@@ -120,7 +120,7 @@ def test_left_join_015():
 
     expected = T(
         """
-          | A
+          | a
         1 | 11
         2 | 12
         3 | 13
@@ -129,8 +129,8 @@ def test_left_join_015():
         """
     )
 
-    res = t1.join_left(t2, t1.A == t2.C).select(
-        A=t2.C  # pw.require(t1.A + t2.C, t2.id),
+    res = t1.join_left(t2, t1.a == t2.c).select(
+        a=t2.c  # pw.require(t1.a + t2.c, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -139,7 +139,7 @@ def test_left_join_015():
 def test_left_join_02():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -149,7 +149,7 @@ def test_left_join_02():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -159,7 +159,7 @@ def test_left_join_02():
 
     expected = T(
         """
-        A   | t2_C  | S
+        a   | t2_c  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
@@ -168,10 +168,10 @@ def test_left_join_02():
         """
     )
 
-    res = t1.join_left(t2, t1.A == t2.C).select(
-        t1.A,
-        t2_C=t2.C,
-        S=pw.require(t1.B + t2.D, t2.id),
+    res = t1.join_left(t2, t1.a == t2.c).select(
+        t1.a,
+        t2_c=t2.c,
+        s=pw.require(t1.b + t2.d, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -182,7 +182,7 @@ def test_left_join_02():
 def test_left_join_03():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -192,7 +192,7 @@ def test_left_join_03():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -202,7 +202,7 @@ def test_left_join_03():
 
     expected = T(
         """
-        A   | t1_A2 | S
+        a   | t1_a2  | s
         11  | 121    | 322
         12  | 144    | 324
         13  | 169    | 326
@@ -211,10 +211,10 @@ def test_left_join_03():
         """
     )
 
-    res = t1.join_left(t2, t1.A == t2.C).select(
-        t1.A,
-        t1_A2=t1.A * t1.A,
-        S=pw.require(t1.B + t2.D, t2.id),
+    res = t1.join_left(t2, t1.a == t2.c).select(
+        t1.a,
+        t1_a2=t1.a * t1.a,
+        s=pw.require(t1.b + t2.d, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -222,7 +222,7 @@ def test_left_join_03():
 def test_right_join_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -232,7 +232,7 @@ def test_right_join_01():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -242,21 +242,21 @@ def test_right_join_01():
 
     expected = T(
         """
-        A   | t2_A  | S
+        a   | t2_a  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
         14  | 14    | 328
         """
     ).update_types(
-        A=Optional[int],
-        S=Optional[int],
+        a=Optional[int],
+        s=Optional[int],
     )
 
-    res = t1.join_right(t2, t1.A == t2.A).select(
-        t1.A,
-        t2_A=t2.A,
-        S=pw.require(t1.B + t2.D, t1.id),
+    res = t1.join_right(t2, t1.a == t2.a).select(
+        t1.a,
+        t2_a=t2.a,
+        s=pw.require(t1.b + t2.d, t1.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -265,7 +265,7 @@ def test_right_join_01():
 def test_right_join_02():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -275,7 +275,7 @@ def test_right_join_02():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -285,7 +285,7 @@ def test_right_join_02():
 
     expected = T(
         """
-        A   | t2_C  | S
+        a   | t2_c  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
@@ -294,10 +294,10 @@ def test_right_join_02():
         """
     )
 
-    res = t1.join_right(t2, t1.A == t2.C).select(
-        t1.A,
-        t2_C=t2.C,
-        S=pw.require(t1.B + t2.D, t1.id),
+    res = t1.join_right(t2, t1.a == t2.c).select(
+        t1.a,
+        t2_c=t2.c,
+        s=pw.require(t1.b + t2.d, t1.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -308,7 +308,7 @@ def test_right_join_02():
 def test_right_join_03():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -318,7 +318,7 @@ def test_right_join_03():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -328,7 +328,7 @@ def test_right_join_03():
 
     expected = T(
         """
-        A   | t2_C2 | S
+        a   | t2_c2  | s
         11  | 121    | 322
         12  | 144    | 324
         13  | 169    | 326
@@ -337,10 +337,10 @@ def test_right_join_03():
         """
     )
 
-    res = t1.join_right(t2, t1.A == t2.C).select(
-        t1.A,
-        t2_C2=t2.C * t2.C,
-        S=pw.require(t1.B + t2.D, t1.id),
+    res = t1.join_right(t2, t1.a == t2.c).select(
+        t1.a,
+        t2_c2=t2.c * t2.c,
+        s=pw.require(t1.b + t2.d, t1.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -350,7 +350,7 @@ def test_right_join_03():
 def test_left_join_empty_duplicates_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -360,7 +360,7 @@ def test_left_join_empty_duplicates_01():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 13 | 212
           3 | 13 | 213
@@ -370,7 +370,7 @@ def test_left_join_empty_duplicates_01():
 
     expected = T(
         """
-        t2_C2 | S
+        t2_c2  | s
         121    | 322
         169    | 325
         169    | 326
@@ -380,9 +380,9 @@ def test_left_join_empty_duplicates_01():
         """
     )
 
-    res = t1.join_left(t2, t1.A == t2.C).select(
-        t2_C2=pw.require(t2.C * t2.C, t2.id),
-        S=pw.require(t1.B + t2.D, t2.id),
+    res = t1.join_left(t2, t1.a == t2.c).select(
+        t2_c2=pw.require(t2.c * t2.c, t2.id),
+        s=pw.require(t1.b + t2.d, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -394,7 +394,7 @@ def test_left_join_empty_duplicates_01():
 def test_left_join_duplicates_02():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -404,7 +404,7 @@ def test_left_join_duplicates_02():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 13 | 212
           3 | 13 | 213
@@ -414,7 +414,7 @@ def test_left_join_duplicates_02():
 
     expected = T(
         """
-        t1_A2  | S
+        t1_a2  | s
         121    | 122
         169    | 126
         169    | 126
@@ -424,9 +424,9 @@ def test_left_join_duplicates_02():
         """
     )
 
-    res = t1.join_left(t2, t1.A == t2.C).select(
-        t1_A2=t1.A * t1.A,
-        S=t1.A + t1.B,
+    res = t1.join_left(t2, t1.a == t2.c).select(
+        t1_a2=t1.a * t1.a,
+        s=t1.a + t1.b,
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -436,7 +436,7 @@ def test_left_join_duplicates_02():
 def test_right_join_empty_duplicates_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 13 | 112
           3 | 13 | 113
@@ -446,7 +446,7 @@ def test_right_join_empty_duplicates_01():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -456,7 +456,7 @@ def test_right_join_empty_duplicates_01():
 
     expected = T(
         """
-        t1_A2 | S
+        t1_a2  | s
         121    | 322
         169    | 325
         169    | 326
@@ -466,9 +466,9 @@ def test_right_join_empty_duplicates_01():
         """
     )
 
-    res = t1.join_right(t2, t1.A == t2.C).select(
-        t1_A2=pw.require(t1.A * t1.A, t1.id),
-        S=pw.require(t1.B + t2.D, t1.id),
+    res = t1.join_right(t2, t1.a == t2.c).select(
+        t1_a2=pw.require(t1.a * t1.a, t1.id),
+        s=pw.require(t1.b + t2.d, t1.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -482,7 +482,7 @@ def test_right_join_empty_duplicates_01():
 def test_right_join_duplicates_02():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 13 | 112
           3 | 13 | 113
@@ -492,7 +492,7 @@ def test_right_join_duplicates_02():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -502,7 +502,7 @@ def test_right_join_duplicates_02():
 
     expected = T(
         """
-        t2_C2  | S
+        t2_c2  | s
         121    | 222
         169    | 226
         169    | 226
@@ -512,14 +512,14 @@ def test_right_join_duplicates_02():
         """
     )
 
-    res = t1.join_right(t2, t1.A == t2.C).select(t2_C2=t2.C * t2.C, S=t2.C + t2.D)
+    res = t1.join_right(t2, t1.a == t2.c).select(t2_c2=t2.c * t2.c, s=t2.c + t2.d)
     assert_table_equality_wo_index(res, expected)
 
 
 def test_left_join_this():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -529,7 +529,7 @@ def test_left_join_this():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -539,21 +539,21 @@ def test_left_join_this():
 
     expected = T(
         """
-        A   | t2_A  | S
+        a   | t2_a  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
         14  | 14    | 328
         """
     ).update_types(
-        t2_A=Optional[int],
-        S=Optional[int],
+        t2_a=Optional[int],
+        s=Optional[int],
     )
 
-    res = t1.join_left(t2, t1.A == t2.A).select(
-        pw.left.A,
-        t2_A=t2.A,
-        S=pw.require(pw.left.B + t2.D, t2.id),
+    res = t1.join_left(t2, t1.a == t2.a).select(
+        pw.left.a,
+        t2_a=t2.a,
+        s=pw.require(pw.left.b + t2.d, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -562,7 +562,7 @@ def test_left_join_this():
 def test_outer_join_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -572,7 +572,7 @@ def test_outer_join_01():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -582,22 +582,22 @@ def test_outer_join_01():
 
     expected = T(
         """
-        A   | t2_A  | S
+        a   | t2_a  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
         14  | 14    | 328
         """
     ).update_types(
-        A=Optional[int],
-        t2_A=Optional[int],
-        S=Optional[int],
+        a=Optional[int],
+        t2_a=Optional[int],
+        s=Optional[int],
     )
 
-    res = t1.join_outer(t2, t1.A == t2.A).select(
-        t1.A,
-        t2_A=t2.A,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+    res = t1.join_outer(t2, t1.a == t2.a).select(
+        t1.a,
+        t2_a=t2.a,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -606,7 +606,7 @@ def test_outer_join_01():
 def test_outer_join_02():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -616,7 +616,7 @@ def test_outer_join_02():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -626,19 +626,19 @@ def test_outer_join_02():
 
     expected = T(
         """
-        A   | t2_C  | S
+        a   | t2_c  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
         13  | 13    | 327
         14  |       |
         """
-    ).update_types(A=Optional[int])
+    ).update_types(a=Optional[int])
 
-    res = t1.join_outer(t2, t1.A == t2.C).select(
-        t1.A,
-        t2_C=t2.C,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+    res = t1.join_outer(t2, t1.a == t2.c).select(
+        t1.a,
+        t2_c=t2.c,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -647,7 +647,7 @@ def test_outer_join_02():
 def test_outer_join_03():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -657,7 +657,7 @@ def test_outer_join_03():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -667,19 +667,19 @@ def test_outer_join_03():
 
     expected = T(
         """
-        A   | t2_C  | S
+        a   | t2_c  | s
         11  | 11    | 322
         12  | 12    | 324
         13  | 13    | 326
         13  | 13    | 327
             | 14    |
         """
-    ).update_types(t2_C=Optional[int])
+    ).update_types(t2_c=Optional[int])
 
-    res = t1.join_outer(t2, t1.A == t2.C).select(
-        t1.A,
-        t2_C=t2.C,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+    res = t1.join_outer(t2, t1.a == t2.c).select(
+        t1.a,
+        t2_c=t2.c,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -687,7 +687,7 @@ def test_outer_join_03():
 def test_outer_join_04():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -697,7 +697,7 @@ def test_outer_join_04():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 14 | 213
@@ -707,7 +707,7 @@ def test_outer_join_04():
 
     expected = T(
         """
-        A   | t2_C  | S
+        a   | t2_c  | s
         11  | 11    | 322
         12  | 12    | 324
         13  |       |
@@ -717,10 +717,10 @@ def test_outer_join_04():
         """
     )
 
-    res = t1.join_outer(t2, t1.A == t2.C).select(
-        t1.A,
-        t2_C=t2.C,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+    res = t1.join_outer(t2, t1.a == t2.c).select(
+        t1.a,
+        t2_c=t2.c,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -728,7 +728,7 @@ def test_outer_join_04():
 def test_outer_join_smart_cols():
     t1 = T(
         """
-            | A
+            | a
           1 | 11
           2 | 12
           3 | 13
@@ -738,7 +738,7 @@ def test_outer_join_smart_cols():
 
     t2 = T(
         """
-            | A
+            | a
           2 | 12
           3 | 13
           4 | 14
@@ -748,19 +748,19 @@ def test_outer_join_smart_cols():
 
     expected = T(
         """
-         A | lA  | rA
+         a | la  | ra
         11 | 11  |
         12 | 12  | 12
         13 | 13  | 13
         14 | 14  | 14
         15 |     | 15
         """
-    ).update_types(A=Optional[int])
+    ).update_types(a=Optional[int])
 
-    res = t1.join_outer(t2, t1.A == t2.A).select(
-        pw.this.A,
-        lA=pw.left.A,
-        rA=pw.right.A,
+    res = t1.join_outer(t2, t1.a == t2.a).select(
+        pw.this.a,
+        la=pw.left.a,
+        ra=pw.right.a,
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -768,7 +768,7 @@ def test_outer_join_smart_cols():
 def test_chained_outer_join_smart_cols():
     t1 = T(
         """
-            | A
+            | a
           1 | 11
           2 | 12
           3 | 13
@@ -778,7 +778,7 @@ def test_chained_outer_join_smart_cols():
 
     t2 = T(
         """
-            | A
+            | a
           2 | 12
           3 | 13
           4 | 14
@@ -788,7 +788,7 @@ def test_chained_outer_join_smart_cols():
 
     t3 = T(
         """
-            | A
+            | a
           3 | 13
           4 | 14
           5 | 15
@@ -798,7 +798,7 @@ def test_chained_outer_join_smart_cols():
 
     expected = T(
         """
-         A | lA  | rA | llA | lrA
+         a | la  | ra | lla | lra
         11 | 11  |    |  11 |
         12 | 12  |    |  12 | 12
         13 | 13  | 13 |  13 | 13
@@ -806,17 +806,17 @@ def test_chained_outer_join_smart_cols():
         15 | 15  | 15 |     | 15
         16 |     | 16 |     |
         """
-    ).update_types(A=Optional[int])
+    ).update_types(a=Optional[int])
 
     res = (
-        t1.join_outer(t2, t1.A == t2.A)
-        .join_outer(t3, pw.left.A == t3.A)
+        t1.join_outer(t2, t1.a == t2.a)
+        .join_outer(t3, pw.left.a == t3.a)
         .select(
-            pw.this.A,
-            lA=pw.left.A,
-            rA=pw.right.A,
-            llA=t1.A,
-            lrA=t2.A,
+            pw.this.a,
+            la=pw.left.a,
+            ra=pw.right.a,
+            lla=t1.a,
+            lra=t2.a,
         )
     )
     assert_table_equality_wo_index(res, expected)
@@ -828,7 +828,7 @@ def test_left_join_set_id_01():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -838,7 +838,7 @@ def test_left_join_set_id_01():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -846,12 +846,12 @@ def test_left_join_set_id_01():
         """
     )
 
-    res1 = t1.join_left(t2, t1.A == t2.A, id=t1.id)
+    res1 = t1.join_left(t2, t1.a == t2.a, id=t1.id)
     assert G.universe_solver.query_are_equal(res1._universe, t1._universe)
     assert_table_equality(res1.select(), t1.select())
 
     with pytest.raises(KeyError):
-        t1.join_left(t2, t1.A == t2.A, id=t2.id)
+        t1.join_left(t2, t1.a == t2.a, id=t2.id)
 
 
 def test_left_join_set_id_02():
@@ -860,7 +860,7 @@ def test_left_join_set_id_02():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -870,7 +870,7 @@ def test_left_join_set_id_02():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -879,7 +879,7 @@ def test_left_join_set_id_02():
     )
     # selecting A is relevant for this test;
     # once it behaved differently on select() and select select(t1.A)
-    res = t1.join_left(t2, t1.A == t2.A, id=t1.id).select(t1.A)
+    res = t1.join_left(t2, t1.a == t2.a, id=t1.id).select(t1.a)
     assert G.universe_solver.query_are_equal(res._universe, t1._universe)
     assert_table_equality(res.select(), t1.select())
 
@@ -890,7 +890,7 @@ def test_right_join_set_id_01():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -900,7 +900,7 @@ def test_right_join_set_id_01():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -908,12 +908,12 @@ def test_right_join_set_id_01():
         """
     )
 
-    res2 = t1.join_right(t2, t1.A == t2.A, id=t2.id)
+    res2 = t1.join_right(t2, t1.a == t2.a, id=t2.id)
     assert G.universe_solver.query_are_equal(res2._universe, t2._universe)
     assert_table_equality(res2.select(), t2.select())
 
     with pytest.raises(KeyError):
-        t1.join_right(t2, t1.A == t2.A, id=t1.id)
+        t1.join_right(t2, t1.a == t2.a, id=t1.id)
 
 
 def test_right_join_set_id_02():
@@ -922,7 +922,7 @@ def test_right_join_set_id_02():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -932,7 +932,7 @@ def test_right_join_set_id_02():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -940,7 +940,7 @@ def test_right_join_set_id_02():
         """
     )
 
-    res = t1.join_right(t2, t1.A == t2.A, id=t2.id)
+    res = t1.join_right(t2, t1.a == t2.a, id=t2.id)
     assert G.universe_solver.query_are_equal(res._universe, t2._universe)
     assert_table_equality(res.select(), t2.select())
 
@@ -951,7 +951,7 @@ def test_outer_join_set_id_01():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -961,7 +961,7 @@ def test_outer_join_set_id_01():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -970,10 +970,10 @@ def test_outer_join_set_id_01():
     )
 
     with pytest.raises(KeyError):
-        t1.join_outer(t2, t1.A == t2.A, id=t2.id)
+        t1.join_outer(t2, t1.a == t2.a, id=t2.id)
 
     with pytest.raises(KeyError):
-        t1.join_outer(t2, t1.A == t2.A, id=t1.id)
+        t1.join_outer(t2, t1.a == t2.a, id=t1.id)
 
 
 def test_outer_join_set_id_02():
@@ -982,7 +982,7 @@ def test_outer_join_set_id_02():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -992,7 +992,7 @@ def test_outer_join_set_id_02():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -1000,13 +1000,13 @@ def test_outer_join_set_id_02():
         """
     )
     with pytest.raises(AssertionError):
-        t1.join_outer(t2, t1.A == t2.A, id=t1.A)
+        t1.join_outer(t2, t1.a == t2.a, id=t1.a)
 
 
 def test_outer_join_desugaring_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -1016,7 +1016,7 @@ def test_outer_join_desugaring_01():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 14 | 213
@@ -1026,7 +1026,7 @@ def test_outer_join_desugaring_01():
 
     expected = T(
         """
-                  | A   | t2_C  | S
+                  | a   | t2_c  | s
         1139487   | 11  | 11    | 322
         1243425   | 12  | 12    | 324
         2145425   | 13  |       |
@@ -1036,10 +1036,10 @@ def test_outer_join_desugaring_01():
         """
     )
 
-    res = t1.join_outer(t2, t1.A == t2.C).select(
-        pw.left.A,
-        t2_C=pw.right.C,
-        S=pw.require(t1.B + t2.D, t1.id, t2.id),
+    res = t1.join_outer(t2, t1.a == t2.c).select(
+        pw.left.a,
+        t2_c=pw.right.c,
+        s=pw.require(t1.b + t2.d, t1.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -1047,7 +1047,7 @@ def test_outer_join_desugaring_01():
 def test_outer_join_desugaring_02():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -1057,7 +1057,7 @@ def test_outer_join_desugaring_02():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -1067,23 +1067,23 @@ def test_outer_join_desugaring_02():
 
     expected = T(
         """
-                  | A   | t2_A  | S
+                  | a   | t2_a  | s
         1139487   | 11  | 11    | 322
         1243425   | 12  | 12    | 324
         2145425   | 13  | 13    | 326
         1234412   | 14  | 14    | 328
         """
     ).update_types(
-        A=Optional[int],
-        t2_A=Optional[int],
-        S=Optional[int],
+        a=Optional[int],
+        t2_a=Optional[int],
+        s=Optional[int],
     )
 
-    res = t1.join_outer(t2, pw.left.A == pw.right.A).select(
-        t1.A,
-        t2_A=t2.A,
-        S=pw.require(
-            pw.left.B + pw.right.D,
+    res = t1.join_outer(t2, pw.left.a == pw.right.a).select(
+        t1.a,
+        t2_a=t2.a,
+        s=pw.require(
+            pw.left.b + pw.right.d,
             pw.left.id,
             pw.right.id,
         ),
@@ -1097,7 +1097,7 @@ def test_outer_join_desugaring_03():
     # - overlapping is more difficult to handle than completely disjoint
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -1107,7 +1107,7 @@ def test_outer_join_desugaring_03():
 
     t2 = T(
         """
-            | A  | D
+            | a  | d
           3 | 11 | 211
           4 | 12 | 212
           5 | 13 | 213
@@ -1116,15 +1116,15 @@ def test_outer_join_desugaring_03():
     )
 
     with pytest.raises(KeyError):
-        t1.join_outer(t2, t1.A == t2.A, id=pw.left.id)
+        t1.join_outer(t2, t1.a == t2.a, id=pw.left.id)
     with pytest.raises(KeyError):
-        t1.join_outer(t2, t1.A == t2.A, id=pw.right.id)
+        t1.join_outer(t2, t1.a == t2.a, id=pw.right.id)
 
 
 def test_right_join_desugaring_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -1134,7 +1134,7 @@ def test_right_join_desugaring_01():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -1144,7 +1144,7 @@ def test_right_join_desugaring_01():
 
     expected = T(
         """
-                  | A   | t2_C  | S
+                  | a   | t2_c  | s
         1139487   | 11  | 11    | 322
         1243425   | 12  | 12    | 324
         2145425   | 13  | 13    | 326
@@ -1153,11 +1153,11 @@ def test_right_join_desugaring_01():
         """
     )
 
-    res = t1.join_right(t2, t1.A == pw.right.C).select(
-        pw.left.A,
-        t2_C=t2.C,
-        S=pw.require(
-            pw.left.B + pw.right.D,
+    res = t1.join_right(t2, t1.a == pw.right.c).select(
+        pw.left.a,
+        t2_c=t2.c,
+        s=pw.require(
+            pw.left.b + pw.right.d,
             pw.left.id,
             pw.right.id,
         ),
@@ -1168,7 +1168,7 @@ def test_right_join_desugaring_01():
 def test_left_join_desugaring_01():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -1178,7 +1178,7 @@ def test_left_join_desugaring_01():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -1188,7 +1188,7 @@ def test_left_join_desugaring_01():
 
     expected = T(
         """
-                  | A   | t2_C  | S
+                  | a   | t2_c  | s
         1139487   | 11  | 11    | 322
         1243425   | 12  | 12    | 324
         2145425   | 13  | 13    | 326
@@ -1197,10 +1197,10 @@ def test_left_join_desugaring_01():
         """
     )
 
-    res = t1.join_left(t2, pw.left.A == t2.C).select(
-        t1.A,
-        t2_C=pw.right.C,
-        S=pw.require(pw.left.B + t2.D, pw.left.id, t2.id),
+    res = t1.join_left(t2, pw.left.a == t2.c).select(
+        t1.a,
+        t2_c=pw.right.c,
+        s=pw.require(pw.left.b + t2.d, pw.left.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -1208,7 +1208,7 @@ def test_left_join_desugaring_01():
 def test_right_join_wid_substitute_and_desugaring():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | 11 | 111
           2 | 12 | 112
           3 | 13 | 113
@@ -1218,7 +1218,7 @@ def test_right_join_wid_substitute_and_desugaring():
 
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | 11 | 211
           2 | 12 | 212
           3 | 13 | 213
@@ -1228,7 +1228,7 @@ def test_right_join_wid_substitute_and_desugaring():
 
     expected = T(
         """
-                  | A   | t2_C  | S
+                  | a   | t2_c  | s
         1139487   | 11  | 11    | 322
         1243425   | 12  | 12    | 324
         2145425   | 13  | 13    | 326
@@ -1236,10 +1236,10 @@ def test_right_join_wid_substitute_and_desugaring():
         """
     )
 
-    res = t1.join_right(t2, t1.A == t2.C, id=t2.id).select(
-        t1.A,
-        t2_C=pw.right.C,
-        S=pw.require(pw.left.B + t2.D, pw.left.id, t2.id),
+    res = t1.join_right(t2, t1.a == t2.c, id=t2.id).select(
+        t1.a,
+        t2_c=pw.right.c,
+        s=pw.require(pw.left.b + t2.d, pw.left.id, t2.id),
     )
     assert_table_equality_wo_index(res, expected)
 
@@ -1247,14 +1247,14 @@ def test_right_join_wid_substitute_and_desugaring():
 def test_outer_join_id():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | a1 | b1
           2 | a2 | b2
         """
     )
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | c1 | d1
           3 | c3 | d3
         """
@@ -1268,14 +1268,14 @@ def test_outer_join_id():
 def test_outer_join_chaining_no_cond_leftsided():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | a1 | b1
           2 | a2 | b2
         """
     )
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | c1 | d1
           2 | c2 | d2
         """
@@ -1283,14 +1283,14 @@ def test_outer_join_chaining_no_cond_leftsided():
 
     t3 = T(
         """
-            | E  | F
+            | e  | f
           1 | e1 | f1
           2 | e2 | f2
         """
     )
     expected = T(
         """
-            A  | B  | C  | D  | E  | F
+            a  | b  | c  | d  | e  | f
             a1 | b1 | c1 | d1 | e1 | f1
             a1 | b1 | c1 | d1 | e2 | f2
             a1 | b1 | c2 | d2 | e1 | f1
@@ -1319,14 +1319,14 @@ def test_outer_join_chaining_no_cond_leftsided():
 def test_outer_join_chaining_some_cond():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | a1 | b1
           2 | a2 | b2
         """
     )
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | c1 | d1
           3 | c3 | d3
         """
@@ -1334,7 +1334,7 @@ def test_outer_join_chaining_some_cond():
 
     t3 = T(
         """
-            | E  | F
+            | e  | f
           2 | e2 | f2
           3 | e3 | f3
         """
@@ -1346,7 +1346,7 @@ def test_outer_join_chaining_some_cond():
         ),
         T(
             """
-         A  | B  | C  | D  | E  | F
+         a  | b  | c  | d  | e  | f
             |    |    |    | e2 | f2
             |    | c3 | d3 | e3 | f3
          a1 | b1 | c1 | d1 |    |
@@ -1359,14 +1359,14 @@ def test_outer_join_chaining_some_cond():
 def test_outer_join_chaining_no_cond_rightsided():
     t1 = T(
         """
-            | A  | B
+            | a  | b
           1 | a1 | b1
           2 | a2 | b2
         """
     )
     t2 = T(
         """
-            | C  | D
+            | c  | d
           1 | c1 | d1
           2 | c2 | d2
         """
@@ -1374,7 +1374,7 @@ def test_outer_join_chaining_no_cond_rightsided():
 
     t3 = T(
         """
-            | E  | F
+            | e  | f
           1 | e1 | f1
           2 | e2 | f2
         """
@@ -1382,7 +1382,7 @@ def test_outer_join_chaining_no_cond_rightsided():
 
     expected = T(
         """
-        A  | B  | C  | D  | E  | F
+        a  | b  | c  | d  | e  | f
         a1 | b1 | c1 | d1 | e1 | f1
         a1 | b1 | c1 | d1 | e2 | f2
         a1 | b1 | c2 | d2 | e1 | f1
@@ -1412,7 +1412,7 @@ def test_outer_join_chaining_no_cond_rightsided():
 def test_outer_join_chaining_cond():
     t1 = T(
         """
-            | A  | col
+            | a  | col
           1 | a1 | 1
           2 | a2 | 2
           3 | a3 | 3
@@ -1422,7 +1422,7 @@ def test_outer_join_chaining_cond():
 
     t2 = T(
         """
-            | B  | col
+            | b  | col
           1 | b1 | 1
           3 | b3 | 3
           5 | b5 | 5
@@ -1432,7 +1432,7 @@ def test_outer_join_chaining_cond():
 
     t3 = T(
         """
-            | C  | col
+            | c  | col
           1 | c1 | 1
           2 | c2 | 2
           5 | c5 | 5
@@ -1442,10 +1442,10 @@ def test_outer_join_chaining_cond():
     assert_table_equality_wo_index(
         t1.join_outer(t2, t1.col == t2.col)
         .join_outer(t3, t1.col == t3.col)
-        .select(t1.A, t2.B, t3.C, col1=t1.col, col2=t2.col, col3=t3.col),
+        .select(t1.a, t2.b, t3.c, col1=t1.col, col2=t2.col, col3=t3.col),
         T(
             """
-         A  | B  | C  | col1 | col2 | col3
+         a  | b  | c  | col1 | col2 | col3
             |    | c5 |      |      | 5
             |    | c6 |      |      | 6
             | b5 |    |      | 5    |

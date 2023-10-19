@@ -6,14 +6,6 @@ import os
 import pathway as pw
 from pathway.internals.monitoring import MonitoringLevel
 
-AWS_S3_SETTINGS = pw.io.s3.AwsS3Settings(
-    bucket_name="aws-integrationtest",
-    access_key=os.environ["AWS_S3_ACCESS_KEY"],
-    secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-    region="eu-central-1",
-)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pathway wordcount program")
     parser.add_argument("--input", type=str)
@@ -32,10 +24,16 @@ if __name__ == "__main__":
             refresh_duration_ms=5000,
         )
     elif args.pstorage_type == "s3":
+        aws_s3_settings = pw.io.s3.AwsS3Settings(
+            bucket_name="aws-integrationtest",
+            access_key=os.environ["AWS_S3_ACCESS_KEY"],
+            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
+            region="eu-central-1",
+        )
         pstorage_config = pw.io.PersistenceConfig.single_backend(
             pw.io.PersistentStorageBackend.s3(
                 root_path=args.pstorage,
-                bucket_settings=AWS_S3_SETTINGS,
+                bucket_settings=aws_s3_settings,
             ),
             refresh_duration_ms=5000,
         )

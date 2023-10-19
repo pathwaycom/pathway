@@ -16,8 +16,7 @@ import pytest
 import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
-from pathway.internals import api
-from pathway.internals import dtype as dt
+from pathway.internals import api, dtype as dt
 from pathway.internals.decorators import empty_from_schema
 from pathway.internals.expression import NumbaApplyExpression
 from pathway.tests.utils import (
@@ -2839,6 +2838,7 @@ def test_groupby_filter_singlecol():
     )
 
 
+@pytest.mark.xfail(reason="References from universe superset are not allowed.")
 def test_groupby_universes():
     left = T(
         """
@@ -3832,6 +3832,9 @@ def test_groupby_ix():
     assert_table_equality(res, expected)
 
 
+@pytest.mark.xfail(
+    reason="Foreign columns are not supported in reduce because their universe is different."
+)
 def test_groupby_foreign_column():
     tab = T(
         """
@@ -4740,7 +4743,7 @@ def test_join_filter_1():
 def test_join_filter_2():
     tA = T(
         """
-             A
+             a
             10
             11
             12
@@ -4748,7 +4751,7 @@ def test_join_filter_2():
     )
     tB = T(
         """
-             B
+             b
             10
             11
             12
@@ -4756,7 +4759,7 @@ def test_join_filter_2():
     )
     tC = T(
         """
-             C
+             c
             10
             11
             12
@@ -4764,7 +4767,7 @@ def test_join_filter_2():
     )
     tD = T(
         """
-             D
+             d
             10
             11
             12
@@ -4773,16 +4776,16 @@ def test_join_filter_2():
 
     result = (
         tA.join(tB)
-        .filter(pw.this.A <= pw.this.B)
+        .filter(pw.this.a <= pw.this.b)
         .join(tC)
         .join(tD)
-        .filter(pw.this.C <= pw.this.D)
-        .filter(pw.this.A + pw.this.B == pw.this.C + pw.this.D)
+        .filter(pw.this.c <= pw.this.d)
+        .filter(pw.this.a + pw.this.b == pw.this.c + pw.this.d)
         .select(*pw.this)
     )
     expected = T(
         """
- A  | B  | C  | D
+ a  | b  | c  | d
  10 | 10 | 10 | 10
  10 | 11 | 10 | 11
  10 | 12 | 10 | 12
@@ -5025,13 +5028,13 @@ def test_join_filter_reduce():
 def test_make_tuple():
     t = T(
         """
-        A | B  | C
+        a | b  | c
         1 | 10 | a
         2 | 20 |
         3 | 30 | c
         """
     )
-    result = t.select(zip_column=pw.make_tuple(t.A * 2, pw.this.B, pw.this.C))
+    result = t.select(zip_column=pw.make_tuple(t.a * 2, pw.this.b, pw.this.c))
 
     def three_args_tuple(x, y, z) -> tuple:
         return (x, y, z)
@@ -5040,9 +5043,9 @@ def test_make_tuple():
         zip_column=pw.apply_with_type(
             three_args_tuple,
             tuple[int, int, Optional[str]],  # type: ignore[arg-type]
-            pw.this.A * 2,
-            pw.this.B,
-            pw.this.C,
+            pw.this.a * 2,
+            pw.this.b,
+            pw.this.c,
         )
     )
     assert_table_equality_wo_index(result, expected)
@@ -5899,12 +5902,133 @@ def test_assert_table_has_schema_default_arguments():
     )
 
     # checking allow_superset argument
-    schema = pw.schema_from_types(col_a=int, col_b=float, col_c=str)
+    schema = pw.schema_from_types(col_a=int)
+    pw.assert_table_has_schema(
+        table,
+        schema,
+    )
+
+
+def test_table_transformer_decorator():
+    class MySchema1(pw.Schema):
+        foo: int
+
+    class MySchema2(pw.Schema):
+        foo: int
+        bar: float
+
+    class MySchema3(pw.Schema):
+        foo: int
+        bar: float
+        baz: StopAsyncIteration
+
+    t1 = empty_from_schema(MySchema1)
+    t2 = empty_from_schema(MySchema2)
+    t3 = empty_from_schema(MySchema3)
+
+    @pw.table_transformer(allow_superset=True, locals=locals())
+    def fun(
+        a,
+        b: int,
+        c: pw.Table[MySchema2],
+        *,
+        d: pw.Table[MySchema2],
+    ) -> pw.Table[MySchema2]:
+        return a
+
+    fun(t2, 5, t3, d=t2)
+    # incorrect kwarg
     with pytest.raises(AssertionError):
-        pw.assert_table_has_schema(
-            table,
-            schema,
-        )
+        fun(t2, 5, t3, d=t1)
+    # incorrect arg
+    with pytest.raises(AssertionError):
+        fun(t2, 5, t1, d=t2)
+    # incorrect return value
+    with pytest.raises(AssertionError):
+        fun(t1, 5, t3, d=t2)
+
+
+def test_table_transformer_decorator_args_as_mapping():
+    class MySchema1(pw.Schema):
+        foo: int = pw.column_definition(primary_key=False)
+        bar: float
+
+    class MySchema2(pw.Schema):
+        foo: int = pw.column_definition(primary_key=True)
+        bar: float
+
+    class MySchema3(pw.Schema):
+        foo: int = pw.column_definition(primary_key=False)
+        bar: float
+        baz: StopAsyncIteration
+
+    t1 = empty_from_schema(MySchema1)
+    t2 = empty_from_schema(MySchema2)
+    t3 = empty_from_schema(MySchema3)
+
+    @pw.table_transformer(
+        allow_superset={"c": True, "return": False},
+        ignore_primary_keys={"c": True, "return": False},
+        locals=locals(),
+    )
+    def fun(
+        a,
+        b: int,
+        c: pw.Table[MySchema2],
+        *,
+        d: pw.Table[MySchema2],
+    ) -> pw.Table[MySchema1]:
+        return a
+
+    # c can be a superset and ignores primary keys
+    fun(t1, 5, t3, d=t3)
+    # return value cannot be a superset
+    with pytest.raises(AssertionError):
+        fun(t3, 5, t3, d=t3)
+    # return value cannot have different primary keys
+    with pytest.raises(AssertionError):
+        fun(t2, 5, t3, d=t3)
+
+
+# MySchema2 needs to be defined globally for test_table_transformer_decorator_no_args
+class MySchema2(pw.Schema):
+    foo: int
+    bar: float
+
+
+def test_table_transformer_decorator_no_args():
+    class MySchema1(pw.Schema):
+        foo: int
+
+    class MySchema3(pw.Schema):
+        foo: int
+        bar: float
+        baz: StopAsyncIteration
+
+    t1 = empty_from_schema(MySchema1)
+    t2 = empty_from_schema(MySchema2)
+    t3 = empty_from_schema(MySchema3)
+
+    @pw.table_transformer
+    def fun(
+        a,
+        b: int,
+        c: pw.Table[MySchema2],
+        *,
+        d: pw.Table[MySchema2],
+    ) -> pw.Table[MySchema2]:
+        return a
+
+    fun(t2, 5, t3, d=t2)
+    # incorrect kwarg
+    with pytest.raises(AssertionError):
+        fun(t2, 5, t3, d=t1)
+    # incorrect arg
+    with pytest.raises(AssertionError):
+        fun(t2, 5, t1, d=t2)
+    # incorrect return value
+    with pytest.raises(AssertionError):
+        fun(t1, 5, t3, d=t2)
 
 
 @pytest.mark.parametrize(

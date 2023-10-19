@@ -117,7 +117,7 @@ def test_debug_datasource():
         """
     )
     input1 = table_from_datasource(
-        datasource=TestDataSource(schema_from_types(foo=int)),
+        datasource=TestDataSource(schema=schema_from_types(foo=int)),
         debug_datasource=datasource.PandasDataSource(
             data=df,
             schema=schema_from_pandas(df),
@@ -145,7 +145,7 @@ def test_debug_datasource_schema_mismatch():
         """
     )
     input = table_from_datasource(
-        datasource=TestDataSource(schema_from_types(foo=str)),
+        datasource=TestDataSource(schema=schema_from_types(foo=str)),
         debug_datasource=datasource.PandasDataSource(
             data=df,
             schema=schema_from_pandas(df),
@@ -251,6 +251,7 @@ def test_process_row_transformer_columns_if_needed():
     builder.run_tables(result2, after_build=validate)
 
 
+@pytest.mark.xfail(reason="Evaluators no longer cached.")
 def test_groupby_cache():
     table = T(
         """
@@ -283,6 +284,7 @@ def test_groupby_cache():
     )
 
 
+@pytest.mark.xfail(reason="Evaluators no longer cached.")
 def test_groupby_cache_multiple_cols():
     table = T(
         """
@@ -315,6 +317,7 @@ def test_groupby_cache_multiple_cols():
     )
 
 
+@pytest.mark.xfail(reason="Evaluators no longer cached.")
 def test_groupby_cache_similar_tables():
     table = T(
         """

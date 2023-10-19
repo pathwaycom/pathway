@@ -6,8 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from pathway.internals import column as clmn
-from pathway.internals import operator
+from pathway.internals import column as clmn, operator
 from pathway.internals.helpers import StableSet
 
 if TYPE_CHECKING:

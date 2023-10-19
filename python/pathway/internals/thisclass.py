@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 
 import itertools
 
+from pathway.internals.column_namespace import ColumnNamespace
+
 KEY_GUARD = "__pathway_kwargs_hack"
 _key_guard_counter = itertools.count()
 
@@ -36,9 +38,9 @@ class ThisMetaclass(type):
                 f"{name} is a method name. It is discouraged to use it as a column"
                 + f" name. If you really want to use it, use pw.this['{name}']."
             )
-        return self._get_colref_by_name(name)
+        return self._get_colref_by_name(name, AttributeError)
 
-    def _get_colref_by_name(self, name: str) -> expr.ColumnReference:
+    def _get_colref_by_name(self, name: str, exception_type) -> expr.ColumnReference:
         return expr.ColumnReference(table=self, column=None, name=name)  # type: ignore
 
     # TODO:
@@ -67,6 +69,10 @@ class ThisMetaclass(type):
     def slice(self):
         return self
 
+    @property
+    def C(self) -> ColumnNamespace:
+        return ColumnNamespace(self)  # type: ignore
+
     @overload
     def __getitem__(self, args: str | expr.ColumnReference) -> expr.ColumnReference:
         ...
@@ -82,12 +88,12 @@ class ThisMetaclass(type):
         if isinstance(arg, expr.ColumnReference):
             if isinstance(arg.table, ThisMetaclass):
                 assert arg.table is self
-            return arg.table._get_colref_by_name(arg.name)
+            return arg.table._get_colref_by_name(arg.name, KeyError)
         elif isinstance(arg, str):
             if arg.startswith(KEY_GUARD):
                 return self
             else:
-                return self._get_colref_by_name(arg)
+                return self._get_colref_by_name(arg, KeyError)
         else:
             return self._create_mock("__getitem__", [arg], {})
 
@@ -130,12 +136,16 @@ class ThisMetaclass(type):
     def _create_mock(self, name, args, kwargs) -> ThisMetaclass:
         raise NotImplementedError
 
-    @classmethod
-    def _delayed_op(self, op, *, name=None, qualname=None):
+    def _delayed_op(self, op, *, expression=None, name=None, qualname=None):
         raise NotImplementedError
 
-    @classmethod
     def _delay_depth(self):
+        raise NotImplementedError
+
+    def _expression(self):
+        raise NotImplementedError
+
+    def _with_new_expression(self, expression):
         raise NotImplementedError
 
 
@@ -151,7 +161,7 @@ class _those(metaclass=ThisMetaclass):
     @classmethod
     def _create_mock(self, name, args, kwargs):
         ret = self._delayed_op(
-            lambda table: getattr(table.slice, name)(*args, **kwargs),
+            lambda table, _: getattr(table.slice, name)(*args, **kwargs),
             qualname=f"{self.__qualname__}.{name}(...)",
             name=name,
         )
@@ -159,15 +169,25 @@ class _those(metaclass=ThisMetaclass):
         return ret
 
     @classmethod
-    def _delayed_op(self, op, *, name=None, qualname=None):
+    def _delayed_op(self, op, *, expression=None, name=None, qualname=None):
         class subclass(self):  # type: ignore[valid-type,misc]
             @classmethod
-            def _eval_table(cls, table):
-                return op(super()._eval_table(table))
+            def _expression(cls):
+                return expression
 
             @classmethod
-            def _delay_depth(self):
+            def _eval_table(cls, table):
+                return op(super()._eval_table(table), cls._expression())
+
+            @classmethod
+            def _delay_depth(cls):
                 return super()._delay_depth() + 1
+
+            @classmethod
+            def _with_new_expression(cls, expression):
+                return self._delayed_op(
+                    op, expression=expression, name=name, qualname=qualname
+                )
 
         if name is not None:
             subclass.__name__ = name

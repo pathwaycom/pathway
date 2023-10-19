@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import dtype as dt
-from pathway.internals import groupby, thisclass, universes
+from pathway.internals import dtype as dt, groupby, thisclass, universes
 from pathway.internals.arg_handlers import (
     arg_handler,
     groupby_handler,
@@ -137,6 +136,8 @@ class Table(
         ... 7   | Bob   | dog
         ... ''')
         >>> t2 = t1.select(ids = t1.id)
+        >>> t2.typehints()['ids']
+        <class 'pathway.engine.Pointer'>
         >>> pw.debug.compute_and_print(t2.select(test=t2.id == t2.ids), include_id=False)
         test
         True
@@ -471,7 +472,7 @@ class Table(
     @trace_user_frame
     @desugar
     @runtime_type_check
-    def filter(self, filter_expression: expr.ColumnExpression) -> Table:
+    def filter(self, filter_expression: expr.ColumnExpression) -> Table[TSchema]:
         """Filter a table according to `filter` condition.
 
 
@@ -510,7 +511,7 @@ class Table(
         return ret
 
     @contextualized_operator
-    def _filter(self, filter_expression: expr.ColumnExpression) -> Table:
+    def _filter(self, filter_expression: expr.ColumnExpression) -> Table[TSchema]:
         self._validate_expression(filter_expression)
         filtering_column = self._eval(filter_expression)
         assert self._universe == filtering_column.universe
@@ -528,6 +529,7 @@ class Table(
         self,
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
+        mark_forgetting_records: bool,
     ) -> Table:
         universe = self._universe.subset()
         context = clmn.ForgetContext(
@@ -535,6 +537,21 @@ class Table(
             self._universe,
             self._eval(threshold_column),
             self._eval(time_column),
+            mark_forgetting_records,
+        )
+        return self._table_with_context(context)
+
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
+    @contextualized_operator
+    def _filter_out_results_of_forgetting(
+        self,
+    ) -> Table:
+        universe = self._universe.subset()
+        context = clmn.FilterOutForgettingContext(
+            universe,
+            self._universe,
         )
         return self._table_with_context(context)
 
@@ -576,7 +593,7 @@ class Table(
 
     @contextualized_operator
     @runtime_type_check
-    def difference(self, other: Table) -> Table:
+    def difference(self, other: Table) -> Table[TSchema]:
         r"""Restrict self universe to keys not appearing in the other table.
 
         Args:
@@ -616,7 +633,7 @@ class Table(
 
     @contextualized_operator
     @runtime_type_check
-    def intersect(self, *tables: Table) -> Table:
+    def intersect(self, *tables: Table) -> Table[TSchema]:
         """Restrict self universe to keys appearing in all of the tables.
 
         Args:
@@ -667,11 +684,11 @@ class Table(
 
     @contextualized_operator
     @runtime_type_check
-    def restrict(self, other: TableLike) -> Table:
-        """Restrict self universe to keys appearing other.
+    def restrict(self, other: TableLike) -> Table[TSchema]:
+        """Restrict self universe to keys appearing in other.
 
         Args:
-            other: table which univserse is used to restrict universe of self.
+            other: table which universe is used to restrict universe of self.
 
         Returns:
             Table: table with restricted universe, with the same set of columns
@@ -727,7 +744,7 @@ class Table(
 
     @contextualized_operator
     @runtime_type_check
-    def copy(self) -> Table:
+    def copy(self) -> Table[TSchema]:
         """Returns a copy of a table.
 
         Example:
@@ -771,8 +788,7 @@ class Table(
         *args: expr.ColumnReference,
         id: expr.ColumnReference | None = None,
         sort_by: expr.ColumnReference | None = None,
-        time_column_threshold: expr.ColumnExpression | None = None,
-        time_column_time: expr.ColumnExpression | None = None,
+        _filter_out_results_of_forgetting: bool = False,
     ) -> groupby.GroupedTable:
         """Groups table by columns from args.
 
@@ -834,8 +850,7 @@ class Table(
             grouping_columns=args,
             set_id=id is not None,
             sort_by=sort_by,
-            time_column_threshold=time_column_threshold,
-            time_column_time=time_column_time,
+            _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
         )
 
     @trace_user_frame
@@ -929,20 +944,20 @@ class Table(
             context = all_tables[0]
             for tab in all_tables:
                 assert context._universe.is_equal_to(tab._universe)
+        if isinstance(context, groupby.GroupedJoinable):
+            context = thisclass.this
         if isinstance(context, thisclass.ThisMetaclass):
             return context._delayed_op(
-                lambda table: self.ix(
+                lambda table, expression: self.ix(
                     expression=expression, optional=optional, context=table
                 ),
+                expression=expression,
                 qualname=f"{self}.ix(...)",
                 name="ix",
             )
         restrict_universe = RestrictUniverseDesugaring(context)
         expression = restrict_universe.eval_expression(expression)
-        if isinstance(context, groupby.GroupedJoinable):
-            key_col = context.reduce(tmp=expression).tmp
-        else:
-            key_col = context.select(tmp=expression).tmp
+        key_col = context.select(tmp=expression).tmp
         key_dtype = self.eval_type(key_col)
         if (
             optional and not dt.dtype_issubclass(key_dtype, dt.Optional(dt.POINTER))
@@ -1017,7 +1032,7 @@ class Table(
 
     @trace_user_frame
     @runtime_type_check
-    def concat(self, *others: Table) -> Table:
+    def concat(self, *others: Table[TSchema]) -> Table[TSchema]:
         """Concats `self` with every `other` ∊ `others`.
 
         Semantics:
@@ -1082,7 +1097,7 @@ class Table(
 
     @trace_user_frame
     @contextualized_operator
-    def _concat(self, *others: Table) -> Table:
+    def _concat(self, *others: Table[TSchema]) -> Table[TSchema]:
         union_universes = (self._universe, *(other._universe for other in others))
         if not G.universe_solver.query_are_disjoint(*union_universes):
             raise ValueError(
@@ -1205,7 +1220,7 @@ class Table(
 
     @trace_user_frame
     @runtime_type_check
-    def update_rows(self, other: Table) -> Table:
+    def update_rows(self, other: Table[TSchema]) -> Table[TSchema]:
         """Updates rows of `self`, breaking ties in favor for the rows in `other`.
 
         Semantics:
@@ -1264,7 +1279,7 @@ class Table(
     @trace_user_frame
     @contextualized_operator
     @runtime_type_check
-    def _update_rows(self, other: Table) -> Table:
+    def _update_rows(self, other: Table[TSchema]) -> Table[TSchema]:
         union_universes = (self._universe, other._universe)
         universe = G.universe_solver.get_union(*union_universes)
         context_cls = (
@@ -1645,7 +1660,7 @@ class Table(
     @trace_user_frame
     @desugar
     @runtime_type_check
-    def having(self, *indexers: expr.ColumnReference) -> Table:
+    def having(self, *indexers: expr.ColumnReference) -> Table[TSchema]:
         """Removes rows so that indexed.ix(indexer) is possible when some rows are missing,
         for each indexer in indexers"""
         rets: list[Table] = []
@@ -1692,7 +1707,7 @@ class Table(
 
     @contextualized_operator
     @runtime_type_check
-    def _having(self, indexer: expr.ColumnReference) -> Table:
+    def _having(self, indexer: expr.ColumnReference) -> Table[TSchema]:
         universe = indexer.table._universe.subset()
         context = clmn.HavingContext(
             universe=universe, orig_universe=self._universe, key_column=indexer._column
@@ -1881,7 +1896,13 @@ class Table(
     def _validate_expression(self, expression: expr.ColumnExpression):
         for dep in expression._dependencies_above_reducer():
             if self._universe != dep.to_colref()._column.universe:
-                raise ValueError(f"You cannot use {dep.to_colref()} in this context.")
+                raise ValueError(
+                    f"You cannot use {dep.to_colref()} in this context."
+                    + " Its universe is different than the universe of the table the method"
+                    + " was called on. You can use <table1>.with_universe_of(<table2>)"
+                    + " to assign universe of <table2> to <table1> if you're sure their"
+                    + " sets of keys are equal."
+                )
 
     def _wrap_column_in_context(
         self,
@@ -1950,7 +1971,7 @@ class Table(
         schema: type[Schema] | None = None,
     ) -> Table:
         return Table(
-            columns={name: c for (name, c) in columns},
+            columns=dict(columns),
             pk_columns=self._pk_columns,
             universe=self._universe,
             schema=schema,
@@ -2008,7 +2029,6 @@ class Table(
         # XXX verify types for the table primary_keys
         return expr.PointerExpression(self, *args, optional=optional)
 
-    @runtime_type_check
     @trace_user_frame
     def ix_ref(
         self, *args: expr.ColumnExpressionOrValue, optional: bool = False, context=None

@@ -3,13 +3,28 @@
 from __future__ import annotations
 
 import functools
+import inspect
+from collections import defaultdict
 from collections.abc import Callable
-from typing import Any, overload
+from functools import wraps
+from typing import (
+    Any,
+    Mapping,
+    ParamSpec,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+    overload,
+)
 
-from pathway.internals import dtype as dt
-from pathway.internals import expression as expr
-from pathway.internals import operator as op
-from pathway.internals import schema, table
+from pathway.internals import (
+    dtype as dt,
+    expression as expr,
+    operator as op,
+    schema,
+    table,
+)
 from pathway.internals.asynchronous import (
     AsyncRetryStrategy,
     CacheStrategy,
@@ -19,6 +34,9 @@ from pathway.internals.helpers import function_spec
 from pathway.internals.parse_graph import G
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.trace import trace_user_frame
+
+T = TypeVar("T")
+P = ParamSpec("P")
 
 
 @runtime_type_check
@@ -505,13 +523,13 @@ def make_tuple(*args: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     >>> import pathway as pw
     >>> table = pw.debug.table_from_markdown(
     ...     '''
-    ... A | B  | C
+    ... a | b  | c
     ... 1 | 10 | a
     ... 2 | 20 |
     ... 3 | 30 | c
     ... '''
     ... )
-    >>> table_with_tuple = table.select(res=pw.make_tuple(pw.this.A, pw.this.B, pw.this.C))
+    >>> table_with_tuple = table.select(res=pw.make_tuple(pw.this.a, pw.this.b, pw.this.c))
     >>> pw.debug.compute_and_print(table_with_tuple, include_id=False)
     res
     (1, 10, 'a')
@@ -564,7 +582,7 @@ def assert_table_has_schema(
     table: table.Table,
     schema: type[schema.Schema],
     *,
-    allow_superset: bool = False,
+    allow_superset: bool = True,
     ignore_primary_keys: bool = True,
 ) -> None:
     """
@@ -574,7 +592,7 @@ def assert_table_has_schema(
         table: Table for which we are asserting schema.
         schema: Schema, which we assert that the Table has.
         allow_superset: if True, the columns of the table can be a superset of columns
-            in schema.
+            in schema. The default value is True.
         ignore_primary_keys: if True, the assert won't check whether table and schema
             have the same primary keys. The default value is True.
 
@@ -597,3 +615,118 @@ def assert_table_has_schema(
     table.schema.assert_equal_to(
         schema, allow_superset=allow_superset, ignore_primary_keys=ignore_primary_keys
     )
+
+
+@overload
+def table_transformer(func: Callable[P, T]) -> Callable[P, T]:
+    ...
+
+
+@overload
+def table_transformer(
+    *,
+    allow_superset: bool | Mapping[str, bool] = True,
+    ignore_primary_keys: bool | Mapping[str, bool] = True,
+    locals: dict[str, Any] | None = None,
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
+    ...
+
+
+def table_transformer(
+    func: Callable[P, T] | None = None,
+    *,
+    allow_superset: bool | Mapping[str, bool] = True,
+    ignore_primary_keys: bool | Mapping[str, bool] = True,
+    locals: dict[str, Any] | None = None,
+) -> Callable[P, T] | Callable[[Callable[P, T]], Callable[P, T]]:
+    """
+    Decorator for marking that a function performs operations on Tables. As a consequence,
+    arguments and return value, which are annotated to have type pw.Table[S]
+    will be checked whether they indeed have schema S.
+
+    Args:
+        allow_superset: if True, the columns of the table can be a superset of columns
+            in schema. Can be given either as a bool, and this value is then used for
+            all tables, or for each argument separately, by providing a dict whose keys
+            are names of arguments, and values are bools specifying value of allow_superset
+            for this argument. In the latter case to provide value for return value, provide
+            value for key "return". The default value is True.
+        ignore_primary_keys: if True, the assert won't check whether table and schema
+            have the same primary keys. Can be given either as a bool, and this value is then used for
+            all tables, or for each argument separately, by providing a dict whose keys
+            are names of arguments, and values are bools specifying value of ignore_primary_keys
+            for this argument. The default value is True.
+        locals: when Schema class, which is used as a parameter to `pw.Table` is defined locally,
+            you need to pass locals() as locals argument.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.parse_to_table('''
+    ... A | B
+    ... 1 | 6
+    ... 3 | 8
+    ... 5 | 2
+    ... ''')
+    >>> schema = pw.schema_from_types(A=int, B=int)
+    >>> result_schema = pw.schema_from_types(A=int, B=int, C=int)
+    >>> @pw.table_transformer
+    ... def sum_columns(t: pw.Table[schema]) -> pw.Table[result_schema]:
+    ...     result = t.with_columns(C=pw.this.A + pw.this.B)
+    ...     return result
+    >>> pw.debug.compute_and_print(sum_columns(t1), include_id=False)
+    A | B | C
+    1 | 6 | 7
+    3 | 8 | 11
+    5 | 2 | 7
+    """
+
+    def decorator(f):
+        annotations = get_type_hints(f, localns=locals)
+        signature = inspect.signature(f)
+
+        if isinstance(allow_superset, bool):
+            allow_superset_dict: Mapping[str, bool] = defaultdict(
+                lambda: allow_superset
+            )
+        else:
+            allow_superset_dict = allow_superset
+
+        if isinstance(ignore_primary_keys, bool):
+            ignore_primary_keys_dict: Mapping[str, bool] = defaultdict(
+                lambda: ignore_primary_keys
+            )
+        else:
+            ignore_primary_keys_dict = ignore_primary_keys
+
+        def check_annotation(name, value):
+            annotation = annotations.get(name, None)
+            if get_origin(annotation) == table.Table and get_args(annotation):
+                try:
+                    assert_table_has_schema(
+                        value,
+                        get_args(annotation)[0],
+                        allow_superset=allow_superset_dict.get(name, True),
+                        ignore_primary_keys=ignore_primary_keys_dict.get(name, True),
+                    )
+                except AssertionError as exc:
+                    raise AssertionError(
+                        f"argument {name} has incorrect schema"
+                    ) from exc
+
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            bound_signature = signature.bind(*args, **kwargs)
+            for name, arg in bound_signature.arguments.items():
+                check_annotation(name, arg)
+
+            return_value = f(*args, **kwargs)
+            check_annotation("return", return_value)
+            return return_value
+
+        return wrapper
+
+    if func is not None:
+        return decorator(func)
+    else:
+        return decorator

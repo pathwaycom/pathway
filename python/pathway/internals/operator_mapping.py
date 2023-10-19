@@ -1,8 +1,7 @@
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from pathway.internals import api
-from pathway.internals import dtype as dt
+from pathway.internals import api, dtype as dt
 from pathway.internals.shadows import operator
 
 UnaryOperator = Callable[[Any], Any]

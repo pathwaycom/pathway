@@ -17,6 +17,7 @@ from pathway.internals.common import (
     make_tuple,
     numba_apply,
     require,
+    table_transformer,
     udf,
     udf_async,
     unwrap,
@@ -125,4 +126,5 @@ __all__ = [
     "DateTimeUtc",
     "Duration",
     "Json",
+    "table_transformer",
 ]

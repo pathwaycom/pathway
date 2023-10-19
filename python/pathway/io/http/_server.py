@@ -11,7 +11,7 @@ from aiohttp import web
 
 import pathway.internals as pw
 import pathway.io as io
-from pathway.internals.api import BasePointer, unsafe_make_pointer
+from pathway.internals.api import Pointer, unsafe_make_pointer
 
 
 class RestServerSubject(io.python.ConnectorSubject):
@@ -149,9 +149,7 @@ def rest_connector(
     )
 
     def response_writer(responses: pw.Table):
-        def on_change(
-            key: BasePointer, row: dict[str, Any], time: int, is_addition: bool
-        ):
+        def on_change(key: Pointer, row: dict[str, Any], time: int, is_addition: bool):
             if not is_addition:
                 return
 

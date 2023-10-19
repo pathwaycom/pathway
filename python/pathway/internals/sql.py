@@ -12,8 +12,7 @@ import sqlglot.expressions as sql_expr
 from sqlglot.errors import OptimizeError
 from sqlglot.optimizer import qualify_columns
 
-from pathway.internals import expression as expr
-from pathway.internals import if_else, reducers, table, thisclass
+from pathway.internals import expression as expr, if_else, reducers, table, thisclass
 from pathway.internals.desugaring import TableSubstitutionDesugaring
 from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -455,6 +454,31 @@ def _join(node: sql_expr.Join, _context: ContextType) -> Callable:
     return _wrap
 
 
+class _ReducersGatherer(IdentityTransform):
+    gathered_reducers: dict[str, expr.ColumnExpression]
+
+    def __init__(self) -> None:
+        self.count = itertools.count(0)
+        self.gathered_reducers = {}
+
+    def add_expression(self, expression: expr.ColumnExpression) -> expr.ColumnReference:
+        name = f"_pw_having_{next(self.count)}"
+        self.gathered_reducers[name] = expression
+        return thisclass.this[name]
+
+    def eval_column_val(self, expression: expr.ColumnReference, **kwargs):
+        if isinstance(expression.table, thisclass.ThisMetaclass):
+            return super().eval_column_val(expression, **kwargs)
+        else:
+            return self.add_expression(expression)
+
+    def eval_count(self, expression: expr.CountExpression, **kwargs):
+        return self.add_expression(expression)
+
+    def eval_reducer(self, expression: expr.ReducerExpression, **kwargs):
+        return self.add_expression(expression)
+
+
 class _HavingHelper(IdentityTransform):
     tab: table.Table
 
@@ -572,25 +596,25 @@ def _select(
         result = tab.select(*expr_args, **expr_kwargs)
         return result, orig_context
 
+    if having_field is not None:
+        # mutates `having_field`
+        tab, context_subqueries_having = _process_field_for_subqueries(
+            having_field, tab, context, orig_context, "MIN"
+        )
+        having_expr = _having(having_field, context_subqueries_having)
+        gatherer = _ReducersGatherer()
+        having_expr = gatherer.eval_expression(having_expr)
+        expr_kwargs = {**expr_kwargs, **gatherer.gathered_reducers}
+
     grouped = tab.groupby(*groupby)
     result = grouped.reduce(*expr_args, **expr_kwargs)
     if having_field is None:
         return result, orig_context
 
-    # mutates `having_field`
-    tab_joined_having, context_subqueries_having = _process_field_for_subqueries(
-        having_field, tab, context, orig_context, "MIN"
+    having_col = _HavingHelper(result).eval_expression(having_expr)
+    result = result.filter(having_col).without(
+        *[thisclass.this[name] for name in gatherer.gathered_reducers.keys()]
     )
-    grouped_having = tab_joined_having.groupby(*groupby)
-    reduced = grouped_having.reduce()
-    if result._universe != reduced._universe:
-        result = result.with_universe_of(reduced)
-    having_col = _HavingHelper(result).eval_expression(
-        _having(having_field, context_subqueries_having)
-    )
-    having_tab = grouped_having.reduce(**result, filter_col=having_col)
-    result = result.filter(having_tab.filter_col)
-
     return result, orig_context
 
 

@@ -6,8 +6,7 @@ from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
-from ..http import RetryPolicy
-from ..http import write as http_write
+from ..http import RetryPolicy, write as http_write
 
 
 @runtime_type_check

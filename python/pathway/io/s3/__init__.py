@@ -13,7 +13,6 @@ from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
-    construct_connector_properties,
     construct_s3_data_storage,
     construct_schema_and_data_format,
     internal_connector_mode,
@@ -196,16 +195,15 @@ def read(
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
     )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
     )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
             schema=schema,
-            connector_properties=properties,
+            data_source_options=data_source_options,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -305,15 +303,14 @@ def read_from_digital_ocean(
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
     )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
+    datasource_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
     )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            connector_properties=properties,
+            data_source_options=datasource_options,
             schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
@@ -412,15 +409,14 @@ def read_from_wasabi(
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
     )
-    properties = construct_connector_properties(
-        schema_properties=schema.properties(),
-        commit_duration_ms=autocommit_duration_ms,
+    datasource_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
     )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,
             dataformat=data_format,
-            connector_properties=properties,
+            data_source_options=datasource_options,
             schema=schema,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),

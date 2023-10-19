@@ -104,7 +104,7 @@ where
     pub fn new(commit_duration: Option<Duration>, num_columns: usize) -> Self {
         Connector {
             commit_duration,
-            current_timestamp: Default::default(),
+            current_timestamp: Default::default(), // default is 0 now. If changing, make sure it is even (required for alt-neu).
             num_columns,
         }
     }
@@ -115,12 +115,13 @@ where
     ) -> u64 {
         let new_timestamp = u64::try_from(current_unix_timestamp_ms())
             .expect("number of milliseconds should fit in 64 bits");
+        let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
 
-        let timestamp_updated = self.current_timestamp.less_than(&new_timestamp.into());
+        let timestamp_updated = self.current_timestamp.less_equal(&new_timestamp.into());
         if timestamp_updated {
             self.current_timestamp = new_timestamp.into();
         } else {
-            warn!("The current timestamp is lower than the last one saved. Commits won't work.");
+            warn!("The current timestamp is lower than the last one saved");
         }
 
         input_session.advance_to(self.current_timestamp.clone());

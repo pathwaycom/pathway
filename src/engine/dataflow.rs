@@ -7,7 +7,7 @@ pub mod shard;
 
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
-use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats};
+use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
 use crate::connectors::Connector;
 use crate::connectors::ARTIFICIAL_TIME_ON_REWIND_START;
 use crate::engine::dataflow::operators::time_column::{
@@ -26,7 +26,7 @@ use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::iter::{once, zip};
+use std::iter::once;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
@@ -84,16 +84,15 @@ use super::expression::AnyExpression;
 use super::http_server::maybe_run_http_server_thread;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
-    AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, FloatSumReducer, IntSumReducer,
-    MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer, TupleReducer,
-    UniqueReducer,
+    AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, FloatSumReducer,
+    IntSumReducer, MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer,
+    TupleReducer, UniqueReducer,
 };
 use super::report_error::{ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithReporter};
 use super::{
-    BatchWrapper, ColumnHandle, ColumnPath, ComplexColumn, ConcatHandle, Error, Expression,
-    ExpressionData, Graph, GrouperHandle, IterationLogic, IxKeyPolicy, IxerHandle, JoinType, Key,
-    LegacyTable, OperatorStats, ProberStats, Reducer, Result, TableHandle, UniverseHandle, Value,
-    VennUniverseHandle,
+    BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, Expression,
+    ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable, OperatorStats,
+    ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties, UniverseHandle, Value,
 };
 
 pub type WakeupReceiver = Receiver<Box<dyn FnOnce() -> DynResult<()> + Send + Sync + 'static>>;
@@ -159,7 +158,6 @@ enum Values<S: MaybeTotalScope> {
     },
     Generic {
         generic_collection: Collection<S, (Key, Value)>,
-        unpacked_pointer_collection: OnceCell<Collection<S, (Key, Key)>>,
     },
 }
 
@@ -197,35 +195,6 @@ impl<S: MaybeTotalScope> Values<S> {
             } => generic_collection,
         }
     }
-
-    fn as_unpacked_pointers(
-        &self,
-        graph: &DataflowGraphInner<S>,
-    ) -> Result<&Collection<S, (Key, Key)>> {
-        match self {
-            Values::Int { .. } => Err(Error::ColumnTypeMismatch {
-                expected: "pointers",
-                actual: "ints",
-            }),
-            Values::Pointer {
-                pointer_collection, ..
-            } => Ok(pointer_collection),
-            Values::Generic {
-                generic_collection,
-                unpacked_pointer_collection,
-                ..
-            } => Ok(unpacked_pointer_collection.get_or_init(|| {
-                let error_reporter = graph.error_reporter.clone();
-                generic_collection.map_named(
-                    "Values::as_unpacked_pointers(Generic)",
-                    move |(key, value)| {
-                        let value = value.as_pointer().unwrap_with_reporter(&error_reporter);
-                        (key, value)
-                    },
-                )
-            })),
-        }
-    }
 }
 
 impl<S: MaybeTotalScope> From<Collection<S, (Key, i64)>> for Values<S> {
@@ -248,10 +217,7 @@ impl<S: MaybeTotalScope> From<Collection<S, (Key, Key)>> for Values<S> {
 
 impl<S: MaybeTotalScope> From<Collection<S, (Key, Value)>> for Values<S> {
     fn from(generic_collection: Collection<S, (Key, Value)>) -> Self {
-        Values::Generic {
-            generic_collection,
-            unpacked_pointer_collection: OnceCell::new(),
-        }
+        Values::Generic { generic_collection }
     }
 }
 
@@ -463,16 +429,17 @@ impl<S: MaybeTotalScope> ColumnData<S> {
 struct Column<S: MaybeTotalScope> {
     universe: UniverseHandle,
     data: Rc<ColumnData<S>>,
+    properties: Option<Arc<ColumnProperties>>,
 }
 
 impl<S: MaybeTotalScope> Column<S> {
-    fn new(universe: UniverseHandle, data: Rc<ColumnData<S>>) -> Self {
-        Self { universe, data }
-    }
-
     fn from_collection(universe: UniverseHandle, values: impl Into<Values<S>>) -> Self {
         let data = Rc::new(ColumnData::from_collection(values.into()));
-        Self { universe, data }
+        Self {
+            universe,
+            data,
+            properties: None,
+        }
     }
 
     fn from_universe(universe_handle: UniverseHandle, universe: &Universe<S>) -> Self {
@@ -480,12 +447,22 @@ impl<S: MaybeTotalScope> Column<S> {
         Self {
             universe: universe_handle,
             data,
+            properties: None,
         }
     }
 
     fn from_arranged(universe: UniverseHandle, values: ValuesArranged<S>) -> Self {
         let data = Rc::new(ColumnData::from_arranged(values));
-        Self { universe, data }
+        Self {
+            universe,
+            data,
+            properties: None,
+        }
+    }
+
+    fn with_properties(mut self, properties: Arc<ColumnProperties>) -> Self {
+        self.properties = Some(properties);
+        self
     }
 
     fn values(&self) -> &Values<S> {
@@ -506,21 +483,30 @@ type TableData<S> = ColumnData<S>;
 #[derive(Clone)]
 struct Table<S: MaybeTotalScope> {
     data: Rc<TableData<S>>,
+    properties: Arc<TableProperties>,
 }
 
 impl<S: MaybeTotalScope> Table<S> {
     fn from_collection(values: impl Into<Values<S>>) -> Self {
         let data = Rc::new(ColumnData::from_collection(values.into()));
-        Self { data }
+        Self::from_data(data)
+    }
+
+    fn with_properties(mut self, table_properties: Arc<TableProperties>) -> Self {
+        self.properties = table_properties;
+        self
     }
 
     fn from_data(data: Rc<ColumnData<S>>) -> Self {
-        Self { data }
+        Self {
+            data,
+            properties: Arc::new(TableProperties::Empty),
+        }
     }
 
     fn from_arranged(values: ValuesArranged<S>) -> Self {
         let data = Rc::new(ColumnData::from_arranged(values));
-        Self { data }
+        Self::from_data(data)
     }
 
     fn values(&self) -> &Values<S> {
@@ -541,136 +527,6 @@ impl<S: MaybeTotalScope> Table<S> {
 
     fn keys_arranged(&self) -> KeysArranged<S> {
         self.data.keys_arranged()
-    }
-}
-
-struct Grouper<S: MaybeTotalScope> {
-    source_universe: UniverseHandle,
-    requested_columns: Vec<ColumnHandle>,
-    result_keys_values: OnceCell<KeyWithTupleCollection<S>>,
-    result_keys: OnceCell<Collection<S, Key>>,
-    result_keys_values_arranged: OnceCell<KeyWithTupleArranged<S>>,
-    result_universe: OnceCell<UniverseHandle>,
-    source_key_to_result_key_values: KeyAndKeyWithTupleCollection<S>,
-    source_key_to_result_key: OnceCell<ArrangedByKey<S, Key, Key>>,
-}
-
-impl<S: MaybeTotalScope> Grouper<S> {
-    fn new(
-        source_universe: UniverseHandle,
-        requested_columns: Vec<ColumnHandle>,
-        source_key_to_result_key_values: KeyAndKeyWithTupleCollection<S>,
-    ) -> Self {
-        Self {
-            source_universe,
-            requested_columns,
-            result_keys_values: OnceCell::new(),
-            result_keys: OnceCell::new(),
-            result_keys_values_arranged: OnceCell::new(),
-            result_universe: OnceCell::new(),
-            source_key_to_result_key_values,
-            source_key_to_result_key: OnceCell::new(),
-        }
-    }
-
-    fn source_key_to_result_key(&self) -> &ArrangedByKey<S, Key, Key> {
-        self.source_key_to_result_key.get_or_init(|| {
-            self.source_key_to_result_key_values
-                .as_key_collection()
-                .arrange_named("Grouper::source_key_to_result_key")
-        })
-    }
-
-    fn result_keys_values_arranged(&self) -> &KeyWithTupleArranged<S> {
-        self.result_keys_values_arranged.get_or_init(|| {
-            self.source_key_to_result_key_values
-                .as_key_with_values_collection()
-                .arrange_named("group_by::result_keys_values_arranged")
-        })
-    }
-
-    fn result_keys_values(&self) -> &KeyWithTupleCollection<S> {
-        self.result_keys_values
-            .get_or_init(|| self.result_keys_values_arranged().distinct())
-    }
-
-    fn result_keys(&self) -> &Collection<S, Key> {
-        self.result_keys
-            .get_or_init(|| self.result_keys_values().as_key_collection())
-    }
-}
-
-struct Ixer<S: MaybeTotalScope> {
-    input_universe: UniverseHandle,
-    output_universe: OnceCell<UniverseHandle>,
-    keys_values: Collection<S, (Key, Key)>,
-    none_keys: Option<Collection<S, Key>>,
-    ix_key_policy: IxKeyPolicy,
-    values_to_keys_arranged: OnceCell<ArrangedByKey<S, Key, Key>>,
-}
-
-impl<S: MaybeTotalScope> Ixer<S> {
-    fn new(
-        input_universe: UniverseHandle,
-        output_universe: OnceCell<UniverseHandle>,
-        keys_values: Collection<S, (Key, Key)>,
-        none_keys: Option<Collection<S, Key>>,
-        ix_key_policy: IxKeyPolicy,
-    ) -> Self {
-        Self {
-            input_universe,
-            output_universe,
-            keys_values,
-            none_keys,
-            ix_key_policy,
-            values_to_keys_arranged: OnceCell::new(),
-        }
-    }
-
-    fn values_to_keys_arranged(&self) -> &ArrangedByKey<S, Key, Key> {
-        self.values_to_keys_arranged.get_or_init(|| {
-            self.keys_values
-                .map_named("Ixer::values_to_keys_arranged", |(key, value)| (value, key))
-                .arrange()
-        })
-    }
-}
-
-struct Concat {
-    source_universes: Vec<UniverseHandle>,
-    result_universe: UniverseHandle,
-}
-
-impl Concat {
-    fn new(source_universes: Vec<UniverseHandle>, result_universe: UniverseHandle) -> Self {
-        Self {
-            source_universes,
-            result_universe,
-        }
-    }
-}
-
-pub struct VennUniverse<S: MaybeTotalScope> {
-    left_keys: Collection<S, Key>,
-    right_keys: Collection<S, Key>,
-    both_keys: Collection<S, Key>,
-    only_left_universe: OnceCell<UniverseHandle>,
-    only_right_universe: OnceCell<UniverseHandle>,
-}
-
-impl<S: MaybeTotalScope> VennUniverse<S> {
-    fn new(
-        left_keys: Collection<S, Key>,
-        right_keys: Collection<S, Key>,
-        both_keys: Collection<S, Key>,
-    ) -> Self {
-        Self {
-            left_keys,
-            right_keys,
-            both_keys,
-            only_left_universe: OnceCell::new(),
-            only_right_universe: OnceCell::new(),
-        }
     }
 }
 
@@ -819,10 +675,6 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     universes: Arena<Universe<S>, UniverseHandle>,
     columns: Arena<Column<S>, ColumnHandle>,
     tables: Arena<Table<S>, TableHandle>,
-    groupers: Arena<Grouper<S>, GrouperHandle>,
-    ixers: Arena<Ixer<S>, IxerHandle>,
-    concats: Arena<Concat, ConcatHandle>,
-    venn_universes: Arena<VennUniverse<S>, VennUniverseHandle>,
     pollers: Vec<Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>>,
     connector_threads: Vec<JoinHandle<()>>,
     connector_monitors: Vec<Rc<RefCell<ConnectorMonitor>>>,
@@ -831,10 +683,6 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     output_probe: ProbeHandle<S::Timestamp>,
     probers: Vec<Prober>,
     probes: HashMap<usize, ProbeHandle<S::Timestamp>>,
-    ixers_cache: HashMap<(ColumnHandle, UniverseHandle, IxKeyPolicy), IxerHandle>,
-    groupers_cache: HashMap<(Vec<ColumnHandle>, Vec<ColumnHandle>, UniverseHandle), GrouperHandle>,
-    groupers_id_cache: HashMap<(ColumnHandle, Vec<ColumnHandle>, UniverseHandle), GrouperHandle>,
-    concat_cache: HashMap<Vec<UniverseHandle>, ConcatHandle>,
     ignore_asserts: bool,
     persistence_config: Option<PersistenceManagerConfig>,
     worker_persistent_storage: WorkerPersistentStorage,
@@ -909,27 +757,6 @@ enum TupleCollection<S: MaybeTotalScope> {
 
 impl<S: MaybeTotalScope> TupleCollection<S> {
     #[track_caller]
-    fn map<D: Data>(
-        &self,
-        mut logic: impl FnMut(Key, &[Value]) -> D + 'static,
-    ) -> Collection<S, D> {
-        match self {
-            Self::Zero(c) => c.map_named("TupleCollection::map", move |key| {
-                logic(key, ().as_value_slice())
-            }),
-            Self::One(c) => c.map_named("TupleCollection::map", move |(key, value)| {
-                logic(key, value.as_value_slice())
-            }),
-            Self::Two(c) => c.map_named("TupleCollection::map", move |(key, values)| {
-                logic(key, values.as_value_slice())
-            }),
-            Self::More(c) => c.map_named("TupleCollection::map", move |(key, values)| {
-                logic(key, values.as_value_slice())
-            }),
-        }
-    }
-
-    #[track_caller]
     fn map_wrapped_named<D: Data>(
         &self,
         name: &str,
@@ -969,73 +796,6 @@ impl<S: MaybeTotalScope> TupleCollection<S> {
             }),
         }
     }
-
-    #[track_caller]
-    fn as_key_and_key_with_value_subset_collection(
-        &self,
-        subset: Vec<usize>,
-    ) -> KeyAndKeyWithTupleCollection<S> {
-        #[allow(clippy::match_same_arms)] // more readable this way
-        match (self, subset.as_slice()) {
-            (Self::Zero(c), &[]) => KeyAndKeyWithTupleCollection::Zero(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(Zero -> Zero)",
-                |k| (k, ().key()),
-            )),
-            (Self::Zero(_), _) => unreachable!(),
-            (Self::One(c), &[]) => KeyAndKeyWithTupleCollection::Zero(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(One -> Zero)",
-                |(k, v)| (k, v.key()),
-            )),
-            (Self::One(c), &[0]) => KeyAndKeyWithTupleCollection::One(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(One -> One)",
-                |(k, v)| (k, KeyWith(v.key(), v)),
-            )),
-            (Self::One(_), _) => unreachable!(),
-            (Self::Two(c), &[]) => KeyAndKeyWithTupleCollection::Zero(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(Two -> Zero)",
-                |(k, vs)| (k, vs.key()),
-            )),
-            (Self::Two(c), &[0]) => {
-                KeyAndKeyWithTupleCollection::One(c.map_named(
-                    "TupleCollection::as_key_and_key_with_value_subset_collection(Two -> One)",
-                    |(k, vs)| (k, KeyWith(vs.key(), vs[0].clone())),
-                )) // XXX
-            }
-            (Self::Two(c), &[1]) => {
-                KeyAndKeyWithTupleCollection::One(c.map_named(
-                    "TupleCollection::as_key_and_key_with_value_subset_collection(Two -> One)",
-                    |(k, vs)| (k, KeyWith(vs.key(), vs[1].clone())),
-                )) // XXX
-            }
-            (Self::Two(c), &[0, 1]) => KeyAndKeyWithTupleCollection::Two(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(Two -> Two)",
-                |(k, vs)| (k, KeyWith(vs.key(), vs)),
-            )),
-            (Self::Two(_), _) => unreachable!(),
-            (Self::More(c), &[]) => KeyAndKeyWithTupleCollection::Zero(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(More -> Zero)",
-                |(k, vs)| (k, vs.key()),
-            )),
-            (Self::More(c), &[i]) => KeyAndKeyWithTupleCollection::One(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(More -> One)",
-                move |(k, vs)| (k, KeyWith(vs.key(), vs[i].clone())),
-            )),
-            (Self::More(c), &[i, j]) => KeyAndKeyWithTupleCollection::Two(c.map_named(
-                "TupleCollection::as_key_and_key_with_value_subset_collection(More -> Two)",
-                move |(k, vs)| (k, KeyWith(vs.key(), [vs[i].clone(), vs[j].clone()])),
-            )),
-            (Self::More(c), _) => {
-                // XXX:optimize for identity
-                KeyAndKeyWithTupleCollection::More(c.map_named(
-                    "TupleCollection::as_key_and_key_with_value_subset_collection(More -> More)",
-                    move |(k, vs)| {
-                        let values = subset.iter().map(|i| vs[*i].clone()).collect();
-                        (k, KeyWith(vs.key(), values))
-                    },
-                ))
-            }
-        }
-    }
 }
 
 #[derive(Derivative, Debug, Clone, Serialize, Deserialize)]
@@ -1054,164 +814,6 @@ struct KeyWith<T>(
 impl<T> Shard for KeyWith<T> {
     fn shard(&self) -> u64 {
         self.0.shard()
-    }
-}
-
-enum KeyAndKeyWithTupleCollection<S: MaybeTotalScope> {
-    Zero(Collection<S, (Key, Key)>),
-    One(Collection<S, (Key, KeyWith<Value>)>),
-    Two(Collection<S, (Key, KeyWith<[Value; 2]>)>),
-    More(Collection<S, (Key, KeyWith<Arc<[Value]>>)>),
-}
-
-impl<S: MaybeTotalScope> KeyAndKeyWithTupleCollection<S> {
-    #[track_caller]
-    fn as_key_collection(&self) -> Collection<S, (Key, Key)> {
-        match self {
-            Self::Zero(c) => c.clone(),
-            Self::One(c) => c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_collection(One)",
-                |(k1, KeyWith(k2, _))| (k1, k2),
-            ),
-            Self::Two(c) => c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_collection(Two)",
-                |(k1, KeyWith(k2, _))| (k1, k2),
-            ),
-            Self::More(c) => c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_collection(More)",
-                |(k1, KeyWith(k2, _))| (k1, k2),
-            ),
-        }
-    }
-
-    #[track_caller]
-    fn as_key_with_values_collection(&self) -> KeyWithTupleCollection<S> {
-        match self {
-            Self::Zero(c) => KeyWithTupleCollection::Zero(c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_with_values_collection(Zero)",
-                |(_k1, k2)| k2,
-            )),
-            Self::One(c) => KeyWithTupleCollection::One(c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_with_values_collection(One)",
-                |(_k, kv)| kv,
-            )),
-            Self::Two(c) => KeyWithTupleCollection::Two(c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_with_values_collection(Two)",
-                |(_k, kv)| kv,
-            )),
-            Self::More(c) => KeyWithTupleCollection::More(c.map_named(
-                "KeyAndKeyWithTupleCollection::as_key_with_values_collection(More)",
-                |(_k, kv)| kv,
-            )),
-        }
-    }
-}
-
-enum KeyWithTupleCollection<S: MaybeTotalScope> {
-    Zero(Collection<S, Key>),
-    One(Collection<S, KeyWith<Value>>),
-    Two(Collection<S, KeyWith<[Value; 2]>>),
-    More(Collection<S, KeyWith<Arc<[Value]>>>),
-}
-
-impl<S: MaybeTotalScope> KeyWithTupleCollection<S> {
-    fn arrange_named(&self, name: &str) -> KeyWithTupleArranged<S> {
-        match self {
-            Self::Zero(c) => KeyWithTupleArranged::Zero(c.arrange_named(name)),
-            Self::One(c) => KeyWithTupleArranged::One(c.arrange_named(name)),
-            Self::Two(c) => KeyWithTupleArranged::Two(c.arrange_named(name)),
-            Self::More(c) => KeyWithTupleArranged::More(c.arrange_named(name)),
-        }
-    }
-
-    fn as_key_collection(&self) -> Collection<S, Key> {
-        match self {
-            Self::Zero(c) => c.clone(),
-            Self::One(c) => c.map_named(
-                "KeyWithTupleCollection::as_key_collection(One)",
-                |KeyWith(k, _v)| k,
-            ),
-            Self::Two(c) => c.map_named(
-                "KeyWithTupleCollection::as_key_collection(Two)",
-                |KeyWith(k, _v)| k,
-            ),
-            Self::More(c) => c.map_named(
-                "KeyWithTupleCollection::as_key_collection(More)",
-                |KeyWith(k, _v)| k,
-            ),
-        }
-    }
-
-    fn as_key_with_value_collection(&self, index: usize) -> Values<S> {
-        match self {
-            Self::Zero(c) => {
-                // XXX
-                assert_eq!(index, 0);
-                c.map_named(
-                    "KeyWithTupleCollection::as_key_with_value_collection(Zero)",
-                    |k| (k, Value::from(k)),
-                )
-            }
-            Self::One(c) => {
-                assert_eq!(index, 0);
-                c.map_named(
-                    "KeyWithTupleCollection::as_key_with_value_collection(One)",
-                    |KeyWith(k, v)| (k, v),
-                )
-            }
-            Self::Two(c) => match index {
-                0 => c.map_named(
-                    "KeyWithTupleCollection::as_key_with_value_collection(Two)",
-                    move |KeyWith(k, [v0, _v1])| (k, v0),
-                ),
-                1 => c.map_named(
-                    "KeyWithTupleCollection::as_key_with_value_collection(Two)",
-                    move |KeyWith(k, [_v0, v1])| (k, v1),
-                ),
-                _ => panic!("index out of range: {index}"),
-            },
-            Self::More(c) => c.map_named(
-                "KeyWithTupleCollection::as_key_with_value_collection(More)",
-                move |KeyWith(k, v)| (k, v[index].clone()),
-            ),
-        }
-        .into()
-    }
-}
-
-enum KeyWithTupleArranged<S: MaybeTotalScope> {
-    Zero(ArrangedBySelf<S, Key>),
-    One(ArrangedBySelf<S, KeyWith<Value>>),
-    Two(ArrangedBySelf<S, KeyWith<[Value; 2]>>),
-    More(ArrangedBySelf<S, KeyWith<Arc<[Value]>>>),
-}
-
-impl<S: MaybeTotalScope> KeyWithTupleArranged<S> {
-    fn distinct(&self) -> KeyWithTupleCollection<S> {
-        match self {
-            Self::Zero(a) => KeyWithTupleCollection::Zero(a.distinct()),
-            Self::One(a) => KeyWithTupleCollection::One(a.distinct()),
-            Self::Two(a) => KeyWithTupleCollection::Two(a.distinct()),
-            Self::More(a) => KeyWithTupleCollection::More(a.distinct()),
-        }
-    }
-
-    fn count_keys(&self) -> Collection<S, (Key, isize)> {
-        match self {
-            Self::Zero(a) => a.count(),
-            Self::One(a) => a.count().map_named(
-                "KeyWithTupleArranged::count_keys(One)",
-                |(KeyWith(k, _), c)| (k, c),
-            ),
-            Self::Two(a) => a.count().map_named(
-                "KeyWithTupleArranged::count_keys(Two)",
-                |(KeyWith(k, _), c)| (k, c),
-            ),
-            Self::More(a) => a.count().map_named(
-                "KeyWithTupleArranged::count_keys(More)",
-                |(KeyWith(k, _), c)| (k, c),
-            ),
-        }
     }
 }
 
@@ -1247,10 +849,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             universes: Arena::new(),
             columns: Arena::new(),
             tables: Arena::new(),
-            groupers: Arena::new(),
-            ixers: Arena::new(),
-            concats: Arena::new(),
-            venn_universes: Arena::new(),
             pollers: Vec::new(),
             connector_threads: Vec::new(),
             connector_monitors: Vec::new(),
@@ -1259,10 +857,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             output_probe: ProbeHandle::new(),
             probers: Vec::new(),
             probes: HashMap::new(),
-            ixers_cache: HashMap::new(),
-            groupers_cache: HashMap::new(),
-            groupers_id_cache: HashMap::new(),
-            concat_cache: HashMap::new(),
             ignore_asserts,
             persistence_config,
             worker_persistent_storage,
@@ -1282,12 +876,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         self.static_universe(Vec::new())
     }
 
-    fn empty_column(&mut self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.static_column(universe_handle, Vec::new())
+    fn empty_column(
+        &mut self,
+        universe_handle: UniverseHandle,
+        column_properties: Arc<ColumnProperties>,
+    ) -> Result<ColumnHandle> {
+        self.static_column(universe_handle, Vec::new(), column_properties)
     }
 
-    fn empty_table(&mut self) -> Result<TableHandle> {
-        self.static_table(Vec::new())
+    fn empty_table(&mut self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
+        self.static_table(Vec::new(), table_properties)
     }
 
     #[track_caller]
@@ -1370,6 +968,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &mut self,
         universe_handle: UniverseHandle,
         values: Vec<(Key, Value)>,
+        column_properties: Arc<ColumnProperties>,
     ) -> Result<ColumnHandle> {
         let worker_count = self.scope.peers();
         let worker_index = self.scope.index();
@@ -1390,13 +989,17 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             self.assert_keys_match_values(universe.keys(), &values);
         };
 
-        let column_handle = self
-            .columns
-            .alloc(Column::from_collection(universe_handle, values));
+        let column_handle = self.columns.alloc(
+            Column::from_collection(universe_handle, values).with_properties(column_properties),
+        );
         Ok(column_handle)
     }
 
-    fn static_table(&mut self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
+    fn static_table(
+        &mut self,
+        values: Vec<(Key, Vec<Value>)>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
         let worker_count = self.scope.peers();
         let worker_index = self.scope.index();
         let values = values
@@ -1412,7 +1015,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .to_stream(&mut self.scope)
             .as_collection()
             .probe_with(&mut self.input_probe);
-        Ok(self.tables.alloc(Table::from_collection(values)))
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(values).with_properties(table_properties)))
     }
 
     fn tuples(
@@ -1499,6 +1105,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         expression: Arc<Expression>,
         universe_handle: UniverseHandle,
         column_handles: &[ColumnHandle],
+        column_properties: Arc<ColumnProperties>,
         trace: Trace,
     ) -> Result<ColumnHandle> where {
         if column_handles.is_empty() {
@@ -1512,9 +1119,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .map_named("expression_column::keys_values", move |k| {
                     (k, value.clone())
                 });
-            let column_handle = self
-                .columns
-                .alloc(Column::from_collection(universe_handle, values));
+            let column_handle = self.columns.alloc(
+                Column::from_collection(universe_handle, values).with_properties(column_properties),
+            );
             return Ok(column_handle);
         }
         if let Expression::Any(AnyExpression::Argument(index)) = &*expression {
@@ -1539,9 +1146,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 (key, result)
             });
 
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(universe_handle, new_values));
+        let new_column_handle = self.columns.alloc(
+            Column::from_collection(universe_handle, new_values).with_properties(column_properties),
+        );
         Ok(new_column_handle)
     }
 
@@ -1556,6 +1163,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
+
+        let properties = TableProperties::expression_table_properties(
+            &table.properties,
+            expressions
+                .iter()
+                .map(|expression_data| expression_data.column_properties.clone())
+                .collect(),
+        );
 
         let error_reporter = self.error_reporter.clone();
 
@@ -1577,14 +1192,17 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                             .eval(&args)
                             .unwrap_with_reporter_and_trace(
                                 &error_reporter,
-                                &expression_data.trace,
+                                &expression_data.column_properties.trace,
                             );
                         result
                     });
                     (key, Value::Tuple(new_values.collect()))
                 },
             );
-        Ok(self.tables.alloc(Table::from_collection(new_values)))
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(Arc::new(properties))))
     }
 
     fn columns_to_table(
@@ -1611,6 +1229,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 }
                 path_prefix += 1;
                 if i == j {
+                    // XXX: remove after iterate is properly implemented
                     // emulate unused cols
                     result.push(Value::Tuple(Arc::from([])));
                     continue;
@@ -1725,6 +1344,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
         trace: Trace,
     ) -> Result<TableHandle> {
         let table = self
@@ -1756,7 +1376,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 Box::pin(future)
             },
         );
-        Ok(self.tables.alloc(Table::from_collection(new_values)))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 
     fn id_column(&mut self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
@@ -1771,31 +1393,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(column_handle)
     }
 
-    fn filter_universe(
-        &mut self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<UniverseHandle> {
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        if column.universe != universe_handle {
-            return Err(Error::InvalidUniverseHandle);
-        }
-        let new_keys = column.values().flat_map(|(key, value)| match value {
-            Value::Bool(false) => None,
-            Value::Bool(true) => Some(key),
-            _ => panic!("Expected boolean, got {value}"),
-        });
-        let new_universe_handle = self.universes.alloc(Universe::from_collection(new_keys));
-        Ok(new_universe_handle)
-    }
-
     fn filter_table(
         &mut self,
         table_handle: TableHandle,
         filtering_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -1816,34 +1418,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 None
             }
         });
-        Ok(self.tables.alloc(Table::from_collection(new_table)))
-    }
-
-    fn forget(
-        &mut self,
-        table_handle: TableHandle,
-        threshold_time_column_path: ColumnPath,
-        current_time_column_path: ColumnPath,
-    ) -> Result<TableHandle>
-    where
-        <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + Epsilon,
-    {
-        let table = self
+        Ok(self
             .tables
-            .get(table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-
-        //TODO: report errors
-        let _error_reporter = self.error_reporter.clone();
-
-        let new_table = table.values().consolidate_nondecreasing().forget(
-            move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
-            move |val| current_time_column_path.extract_from_value(val).unwrap(),
-        );
-
-        Ok(self.tables.alloc(Table::from_collection(new_table)))
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
     }
 
     fn freeze(
@@ -1851,6 +1428,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>
     where
         <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
@@ -1883,7 +1461,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             move |val| current_time_column_path.extract_from_value(val).unwrap(),
         );
 
-        Ok(self.tables.alloc(Table::from_collection(on_time)))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(on_time).with_properties(table_properties)))
     }
 
     fn buffer(
@@ -1891,6 +1471,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>
     where
         <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
@@ -1911,7 +1492,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             move |val| current_time_column_path.extract_from_value(val).unwrap(),
         );
 
-        Ok(self.tables.alloc(Table::from_collection(new_table)))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
     }
 
     fn restrict_column(
@@ -1947,6 +1530,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         original_table_handle: TableHandle,
         new_table_handle: TableHandle,
         same_universes: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let original_table = self
             .tables
@@ -1975,47 +1559,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
         };
 
-        Ok(self.tables.alloc(Table::from_collection(new_values)))
-    }
-
-    fn intersect_universe(
-        &mut self,
-        universe_handles: Vec<UniverseHandle>,
-    ) -> Result<UniverseHandle> {
-        let mut universe_handles = universe_handles.into_iter();
-        let new_keys = match universe_handles.next() {
-            None => {
-                return Err(Error::EmptyIntersection);
-            }
-            Some(universe_handle) => {
-                let universe = self
-                    .universes
-                    .get(universe_handle)
-                    .ok_or(Error::InvalidUniverseHandle)?;
-                let mut new_keys = universe.data.clone();
-                for universe_handle in universe_handles {
-                    let universe = self
-                        .universes
-                        .get(universe_handle)
-                        .ok_or(Error::InvalidUniverseHandle)?;
-                    new_keys = Rc::new(UniverseData::from_collection(
-                        new_keys
-                            .arranged()
-                            .join_core(universe.keys_arranged(), |k, (), ()| once(*k)),
-                    ));
-                }
-                new_keys
-            }
-        };
-
-        let new_universe_handle = self.universes.alloc(Universe::new(new_keys));
-        Ok(new_universe_handle)
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 
     fn intersect_tables(
         &mut self,
         table_handle: TableHandle,
         other_table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -2037,63 +1590,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             ));
         }
 
-        Ok(self.tables.alloc(Table::from_data(new_values)))
-    }
-
-    fn union_universe(&mut self, universe_handles: &[UniverseHandle]) -> Result<UniverseHandle> {
-        if universe_handles.is_empty() {
-            return self.empty_universe();
-        }
-
-        let universe_collections: Vec<Keys<S>> = universe_handles
-            .iter()
-            .map(|universe_handle| {
-                let universe = self
-                    .universes
-                    .get(*universe_handle)
-                    .ok_or(Error::InvalidUniverseHandle)?;
-                Ok(universe.keys().clone())
-            })
-            .collect::<Result<_>>()?;
-
-        if universe_collections.len() == 1 {
-            return Ok(universe_handles[0]);
-        }
-
-        let new_universe = Universe::from_collection(
-            concatenate(&mut self.scope, universe_collections).distinct(),
-        );
-        let new_universe_handle = self.universes.alloc(new_universe);
-
-        Ok(new_universe_handle)
-    }
-
-    fn reindex_universe(&mut self, column_handle: ColumnHandle) -> Result<UniverseHandle> {
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-
-        let error_reporter = self.error_reporter.clone();
-        let new_universe_keys = column.values().map_named(
-            "reindex_universe::new_universe_keys",
-            move |(_key, value)| value.as_pointer().unwrap_with_reporter(&error_reporter),
-        );
-
-        if !self.ignore_asserts {
-            self.assert_keys_are_distinct(&new_universe_keys);
-        };
-        let new_universe_handle = self
-            .universes
-            .alloc(Universe::from_collection(new_universe_keys));
-
-        Ok(new_universe_handle)
+        Ok(self
+            .tables
+            .alloc(Table::from_data(new_values).with_properties(table_properties)))
     }
 
     fn reindex_table(
         &mut self,
         table_handle: TableHandle,
         reindexing_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -2105,7 +1611,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let new_values =
             table
                 .values()
-                .map_named("reindex_universe::new_values", move |(key, values)| {
+                .map_named("reindex_table::new_values", move |(key, values)| {
                     let value = reindexing_column_path
                         .extract(&key, &values)
                         .unwrap_with_reporter(&error_reporter);
@@ -2120,13 +1626,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             self.assert_keys_are_distinct(&new_keys);
         };
 
-        Ok(self.tables.alloc(Table::from_collection(new_values)))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 
     fn subtract_table(
         &mut self,
         left_table_handle: TableHandle,
         right_table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let left_table = self
             .tables
@@ -2148,157 +1657,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .as_generic()
             .concat(&intersection.negate());
 
-        Ok(self.tables.alloc(Table::from_collection(new_values)))
-    }
-
-    fn venn_universes(
-        &mut self,
-        left_universe_handle: UniverseHandle,
-        right_universe_handle: UniverseHandle,
-    ) -> Result<VennUniverseHandle> {
-        //TODO add caching of the whole structure
-        let left_universe = self
-            .universes
-            .get(left_universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-
-        let right_universe = self
-            .universes
-            .get(right_universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-
-        let both_keys = left_universe
-            .keys_arranged()
-            .join_core(right_universe.keys_arranged(), |k, (), ()| once(*k));
-
-        let venn_universes = VennUniverse::new(
-            left_universe.keys().clone(),
-            right_universe.keys().clone(),
-            both_keys,
-        );
-        let venn_universes_handle = self.venn_universes.alloc(venn_universes);
-        Ok(venn_universes_handle)
-    }
-
-    fn venn_universes_only_left(
-        &mut self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        let venn_universe = self
-            .venn_universes
-            .get(venn_universes_handle)
-            .ok_or(Error::InvalidVennUniversesHandle)?;
-        Ok(*venn_universe.only_left_universe.get_or_init(|| {
-            self.universes.alloc(Universe::from_collection(
-                venn_universe
-                    .left_keys
-                    .concat(&venn_universe.both_keys.negate()),
-            ))
-        }))
-    }
-
-    fn venn_universes_only_right(
-        &mut self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        let venn_universe = self
-            .venn_universes
-            .get(venn_universes_handle)
-            .ok_or(Error::InvalidVennUniversesHandle)?;
-        Ok(*venn_universe.only_right_universe.get_or_init(|| {
-            self.universes.alloc(Universe::from_collection(
-                venn_universe
-                    .right_keys
-                    .concat(&venn_universe.both_keys.negate()),
-            ))
-        }))
-    }
-
-    fn venn_universes_both(
-        &mut self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        let venn_universe = self
-            .venn_universes
-            .get(venn_universes_handle)
-            .ok_or(Error::InvalidVennUniversesHandle)?;
         Ok(self
-            .universes
-            .alloc(Universe::from_collection(venn_universe.both_keys.clone())))
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 
-    fn concat(&mut self, universe_handles: Vec<UniverseHandle>) -> Result<ConcatHandle> {
-        if let Some(val) = self.concat_cache.get(&universe_handles) {
-            return Ok(*val);
-        }
-        let universe_collections: Vec<Keys<S>> = universe_handles
-            .iter()
-            .map(|universe_handle| {
-                let universe = self
-                    .universes
-                    .get(*universe_handle)
-                    .ok_or(Error::InvalidUniverseHandle)?;
-                Ok(universe.keys().clone())
-            })
-            .collect::<Result<_>>()?;
-
-        let result_keys = concatenate(&mut self.scope, universe_collections);
-        if !self.ignore_asserts {
-            self.assert_keys_are_distinct(&result_keys);
-        };
-        let result_universe = Universe::from_collection(result_keys);
-        let result_universe_handle = self.universes.alloc(result_universe);
-
-        let concat_handle = self.concats.alloc(Concat::new(
-            universe_handles.clone(),
-            result_universe_handle,
-        ));
-        self.concat_cache.insert(universe_handles, concat_handle);
-        Ok(concat_handle)
-    }
-
-    fn concat_universe(&mut self, concat_handle: ConcatHandle) -> Result<UniverseHandle> {
-        let concat = self
-            .concats
-            .get(concat_handle)
-            .ok_or(Error::InvalidConcatHandle)?;
-        Ok(concat.result_universe)
-    }
-
-    fn concat_column(
+    fn concat_tables(
         &mut self,
-        concat_handle: ConcatHandle,
-        column_handles: &[ColumnHandle],
-    ) -> Result<ColumnHandle> {
-        let concat = self
-            .concats
-            .get(concat_handle)
-            .ok_or(Error::InvalidConcatHandle)?;
-        if concat.source_universes.len() != column_handles.len() {
-            return Err(Error::LengthMismatch);
-        }
-        let column_collections: Vec<_> = zip(column_handles, &concat.source_universes)
-            .map(|(column_handle, universe_handle)| {
-                let column = self
-                    .columns
-                    .get(*column_handle)
-                    .ok_or(Error::InvalidColumnHandle)?;
-                if &column.universe != universe_handle {
-                    return Err(Error::UniverseMismatch);
-                }
-                Ok(column.values().as_generic().clone())
-            })
-            .collect::<Result<_>>()?;
-
-        let column = Column::from_collection(
-            concat.result_universe,
-            concatenate(&mut self.scope, column_collections),
-        );
-        let column_handle = self.columns.alloc(column);
-        Ok(column_handle)
-    }
-
-    fn concat_tables(&mut self, table_handles: &[TableHandle]) -> Result<TableHandle> {
+        table_handles: &[TableHandle],
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
         let table_collections: Vec<_> = table_handles
             .iter()
             .map(|handle| {
@@ -2306,7 +1674,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 Ok(table.values().as_generic().clone())
             })
             .collect::<Result<_>>()?;
-        let table = Table::from_collection(concatenate(&mut self.scope, table_collections));
+        let table = Table::from_collection(concatenate(&mut self.scope, table_collections))
+            .with_properties(table_properties);
         if !self.ignore_asserts {
             self.assert_keys_are_distinct(table.keys());
         };
@@ -2318,6 +1687,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &mut self,
         table_handle: TableHandle,
         flatten_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         fn flatten_ndarray<T>(array: &ArrayD<T>) -> Vec<Value>
         where
@@ -2366,55 +1736,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 )
             })
         });
-        Ok(self.tables.alloc(Table::from_collection(new_table)))
-    }
-
-    fn sort(
-        &mut self,
-        key_column_handle: ColumnHandle,
-        instance_column_handle: ColumnHandle,
-    ) -> Result<(ColumnHandle, ColumnHandle)> {
-        let universe_handle = self
-            .columns
-            .get(key_column_handle)
-            .ok_or(Error::InvalidColumnHandle)?
-            .universe;
-        let instance_key_id_arranged = self
-            .tuples(
-                universe_handle,
-                &[instance_column_handle, key_column_handle],
-            )?
-            .map(|id, tuple| SortingCell::new(tuple[0].clone(), tuple[1].clone(), id))
-            .arrange();
-
-        let prev_next =
-            add_prev_next_pointers(instance_key_id_arranged, &|a, b| a.instance == b.instance);
-        let prev_values = prev_next.as_collection(|current, prev_next| {
-            (
-                current.id,
-                prev_next
-                    .0
-                    .clone()
-                    .map_or(Value::None, |prev| Value::Pointer(prev.id)),
-            )
-        });
-        let next_values = prev_next.as_collection(|current, prev_next| {
-            (
-                current.id,
-                prev_next
-                    .1
-                    .clone()
-                    .map_or(Value::None, |next| Value::Pointer(next.id)),
-            )
-        });
-        let prev_column_handle = self
-            .columns
-            .alloc(Column::from_collection(universe_handle, prev_values));
-        let next_column_handle = self
-            .columns
-            .alloc(Column::from_collection(universe_handle, next_values));
-
-        Ok((prev_column_handle, next_column_handle))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
     }
 
     fn sort_table(
@@ -2422,6 +1746,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -2475,53 +1800,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 ))
             });
 
-        Ok(self.tables.alloc(Table::from_collection(new_values)))
-    }
-
-    fn reindex_column(
-        &mut self,
-        column_to_reindex_handle: ColumnHandle,
-        reindexing_column_handle: ColumnHandle,
-        reindexing_universe_handle: UniverseHandle,
-    ) -> Result<ColumnHandle> {
-        let column_to_reindex = self
-            .columns
-            .get(column_to_reindex_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-
-        let reindexing_column = self
-            .columns
-            .get(reindexing_column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-
-        let reindexing_universe = self
-            .universes
-            .get(reindexing_universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-
-        let error_reporter = self.error_reporter.clone();
-        let result_collection = reindexing_column.values_arranged().join_core(
-            column_to_reindex.values_arranged(),
-            move |_key, value_reindexing_column, value_column_to_reindex| {
-                once((
-                    value_reindexing_column
-                        .as_pointer()
-                        .unwrap_with_reporter(&error_reporter),
-                    value_column_to_reindex.clone(),
-                ))
-            },
-        );
-
-        if !self.ignore_asserts {
-            self.assert_keys_match_values(reindexing_universe.keys(), &result_collection);
-        };
-
-        let new_column_handle = self.columns.alloc(Column::from_collection(
-            reindexing_universe_handle,
-            result_collection,
-        ));
-
-        Ok(new_column_handle)
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
 
     fn update_rows_arrange(
@@ -2553,6 +1834,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &mut self,
         table_handle: TableHandle,
         update_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
@@ -2564,7 +1846,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             },
         );
 
-        Ok(self.tables.alloc(Table::from_arranged(updated_values)))
+        Ok(self
+            .tables
+            .alloc(Table::from_arranged(updated_values).with_properties(table_properties)))
     }
 
     fn update_cells_table(
@@ -2573,6 +1857,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         update_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         update_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
@@ -2600,36 +1885,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             },
         );
 
-        Ok(self.tables.alloc(Table::from_arranged(updated_values)))
-    }
-
-    fn override_column_universe(
-        &mut self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        if column.universe == universe_handle {
-            return Ok(column_handle);
-        }
-        if !self.ignore_asserts {
-            self.assert_keys_match_values(universe.keys(), column.values().clone());
-        };
-        let new_column_handle = self
-            .columns
-            .alloc(Column::new(universe_handle, column.data.clone()));
-        Ok(new_column_handle)
+        Ok(self
+            .tables
+            .alloc(Table::from_arranged(updated_values).with_properties(table_properties)))
     }
 
     fn create_dataflow_reducer(reducer: Reducer) -> Rc<dyn DataflowReducer<S>> {
         match reducer {
+            Reducer::Count => Rc::new(CountReducer),
             Reducer::FloatSum => Rc::new(FloatSumReducer),
             Reducer::IntSum => Rc::new(IntSumReducer),
             Reducer::ArraySum => Rc::new(ArraySumReducer),
@@ -2644,299 +1907,182 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         }
     }
 
-    fn group_by(
+    fn group_by_table(
         &mut self,
-        universe_handle: UniverseHandle,
-        column_handles: &[ColumnHandle],
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        let requested_indices: Vec<usize> = requested_column_handles
-            .into_iter()
-            .map(|c| column_handles.iter().position(|c2| c2 == &c))
-            .sorted()
-            .dedup()
-            .map(|res| res.ok_or(Error::InvalidRequestedColumns))
-            .try_collect()?;
-        let requested_column_handles = requested_indices
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reducers: Vec<ReducerData>,
+        set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        if set_id {
+            assert!(grouping_columns_paths.len() == 1);
+        }
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter_1 = self.error_reporter.clone();
+        let reducer_impls: Vec<_> = reducers
             .iter()
-            .map(|i| column_handles[*i])
-            .collect_vec();
-        let cache_key = (
-            column_handles.to_owned(),
-            requested_column_handles.clone(),
-            universe_handle,
-        );
-        if let Some(val) = self.groupers_cache.get(&cache_key) {
-            return Ok(*val);
-        }
-        let source_key_to_result_key_value = self
-            .tuples(universe_handle, column_handles)?
-            .as_key_and_key_with_value_subset_collection(requested_indices);
-        let grouper_handle = self.groupers.alloc(Grouper::new(
-            universe_handle,
-            requested_column_handles,
-            source_key_to_result_key_value,
-        ));
-        self.groupers_cache.insert(cache_key, grouper_handle);
-        Ok(grouper_handle)
-    }
+            .map(|reducer_data| Self::create_dataflow_reducer(reducer_data.reducer))
+            .collect();
 
-    fn group_by_id(
-        &mut self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        let cache_key = (
-            column_handle,
-            requested_column_handles.clone(),
-            universe_handle,
-        );
-        if let Some(val) = self.groupers_id_cache.get(&cache_key) {
-            return Ok(*val);
-        }
-        if requested_column_handles.iter().any(|c| c != &column_handle) {
-            return Err(Error::InvalidRequestedColumns);
-        }
-        let _universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        let source_key_to_result_key_values =
-            KeyAndKeyWithTupleCollection::Zero(column.values().as_unpacked_pointers(self)?.clone());
-        let grouper_handle = self.groupers.alloc(Grouper::new(
-            universe_handle,
-            requested_column_handles,
-            source_key_to_result_key_values,
-        ));
-        self.groupers_id_cache.insert(cache_key, grouper_handle);
-        Ok(grouper_handle)
-    }
-
-    fn grouper_universe(&mut self, grouper_handle: GrouperHandle) -> Result<UniverseHandle> {
-        let grouper = self
-            .groupers
-            .get(grouper_handle)
-            .ok_or(Error::InvalidGrouperHandle)?;
-        Ok(*(grouper.result_universe.get_or_init(|| {
-            self.universes
-                .alloc(Universe::from_collection(grouper.result_keys().clone()))
-        })))
-    }
-
-    fn grouper_input_column(
-        &mut self,
-        grouper_handle: GrouperHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let grouper = self
-            .groupers
-            .get(grouper_handle)
-            .ok_or(Error::InvalidGrouperHandle)?;
-        if !grouper.requested_columns.contains(&column_handle) {
-            return Err(Error::InvalidColumnHandle)?;
-        }
-        let index = grouper
-            .requested_columns
-            .iter()
-            .position(|handle| handle == &column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        let new_values = grouper
-            .result_keys_values()
-            .as_key_with_value_collection(index);
-        grouper.result_keys.get_or_init(|| {
-            new_values.map_named("grouper_input_column::result_keys", |(key, _value)| key)
-        });
-        let result_universe = self.grouper_universe(grouper_handle)?;
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(result_universe, new_values));
-        Ok(new_column_handle)
-    }
-
-    fn grouper_count_column(&mut self, grouper_handle: GrouperHandle) -> Result<ColumnHandle> {
-        let grouper = self
-            .groupers
-            .get(grouper_handle)
-            .ok_or(Error::InvalidGrouperHandle)?;
-        let new_values = grouper
-            .result_keys_values_arranged()
-            .count_keys()
-            .map_named("grouper_count_column::new_values", |(key, count)| {
-                (key, Value::from_isize(count))
-            });
-        grouper.result_keys.get_or_init(|| {
-            new_values.map_named("grouper_count_column::result_keys", |(key, _value)| key)
-        });
-        let result_universe = self.grouper_universe(grouper_handle)?;
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(result_universe, new_values));
-        Ok(new_column_handle)
-    }
-
-    fn grouper_reducer_column(
-        &mut self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        let grouper = self
-            .groupers
-            .get(grouper_handle)
-            .ok_or(Error::InvalidGrouperHandle)?;
-        let dataflow_reducer = Self::create_dataflow_reducer(reducer);
-        let columns = column_handles
-            .into_iter()
-            .map(|column_handle| {
-                self.columns
-                    .get(column_handle)
-                    .ok_or(Error::InvalidColumnHandle)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for column in &columns {
-            if column.universe != grouper.source_universe {
-                return Err(Error::UniverseMismatch);
-            }
-        }
-
-        let columns_values: Vec<_> = columns.into_iter().map(Column::values_arranged).collect();
-
-        let new_values =
-            dataflow_reducer.reduce(self, grouper.source_key_to_result_key(), columns_values);
-        grouper.result_keys.get_or_init(|| {
-            new_values.map_named("grouper_reducer_column::result_keys", |(key, _value)| key)
-        });
-        let result_universe = self.grouper_universe(grouper_handle)?;
-        let new_column_handle = self
-            .columns
-            .alloc(Column::from_collection(result_universe, new_values));
-        Ok(new_column_handle)
-    }
-
-    fn ix(
-        &mut self,
-        key_column_handle: ColumnHandle,
-        input_universe_handle: UniverseHandle,
-        ix_key_policy: IxKeyPolicy,
-    ) -> Result<IxerHandle> {
-        let cache_key = (key_column_handle, input_universe_handle, ix_key_policy);
-        if let Some(val) = self.ixers_cache.get(&cache_key) {
-            return Ok(*val);
-        }
-        let error_reporter = self.error_reporter.clone();
-        let key_column = &self.columns[key_column_handle];
-        let keys_values = match ix_key_policy {
-            IxKeyPolicy::FailMissing => key_column.values().as_unpacked_pointers(self)?.clone(),
-            _ => key_column
+        let with_new_key =
+            table
                 .values()
-                .flat_map(move |(key, value)| match value {
-                    Value::None => None,
-                    _ => Some((
-                        key,
-                        value.as_pointer().unwrap_with_reporter(&error_reporter),
-                    )),
-                }),
-        };
+                .map_named("group_by_table::new_key", move |(key, values)| {
+                    let new_key_parts: Vec<_> = grouping_columns_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter_1);
+                    let new_key = if set_id {
+                        new_key_parts
+                            .first()
+                            .unwrap()
+                            .as_pointer()
+                            .unwrap_with_reporter(&error_reporter_1)
+                    } else {
+                        Key::for_values(&new_key_parts)
+                    };
+                    (key, new_key, values)
+                });
 
-        let none_keys = match ix_key_policy {
+        let reduced_columns: Vec<_> = reducer_impls
+            .iter()
+            .zip(reducers)
+            .map(|(reducer_impl, data)| {
+                let error_reporter_2 = self.error_reporter.clone();
+                let with_extracted_value = with_new_key.map_named(
+                    "group_by_table::reducers",
+                    move |(key, new_key, values)| {
+                        (
+                            key,
+                            new_key,
+                            data.column_paths
+                                .iter()
+                                .map(|path| path.extract(&key, &values))
+                                .try_collect()
+                                .unwrap_with_reporter(&error_reporter_2),
+                        )
+                    },
+                );
+                reducer_impl.clone().reduce(&with_extracted_value)
+            })
+            .collect();
+        let new_values = if let Some(first) = reduced_columns.first() {
+            let mut joined: Collection<S, (Key, Arc<[Value]>)> = first
+                .map_named("group_by_table::join", |(key, value)| {
+                    (key, Arc::from([value].as_slice()))
+                });
+            for column in reduced_columns.iter().skip(1) {
+                let joined_arranged: ArrangedByKey<S, Key, Arc<[Value]>> = joined.arrange();
+                let column_arranged: ArrangedByKey<S, Key, Value> = column.arrange();
+                joined = joined_arranged.join_core(&column_arranged, |key, values, value| {
+                    let new_values: Arc<[Value]> = values.iter().chain([value]).cloned().collect();
+                    once((*key, new_values))
+                });
+            }
+            joined.map_named("group_by_table::wrap", |(key, values)| {
+                (key, Value::Tuple(values))
+            })
+        } else {
+            with_new_key
+                .map_named("group_by_table::empty", |(_key, new_key, _values)| {
+                    (new_key, Value::Tuple(Arc::from([])))
+                })
+                .distinct()
+        };
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
+
+    fn ix_table(
+        &mut self,
+        to_ix_handle: TableHandle,
+        key_handle: TableHandle,
+        key_column_path: ColumnPath,
+        ix_key_policy: IxKeyPolicy,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let to_ix_table = self
+            .tables
+            .get(to_ix_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let key_table = self
+            .tables
+            .get(key_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let key_table_extracted =
+            key_table
+                .values()
+                .map_named("ix_table extracting key values", move |(key, values)| {
+                    let value = key_column_path
+                        .extract(&key, &values)
+                        .unwrap_with_reporter(&error_reporter);
+                    (key, (values, value))
+                });
+
+        let error_reporter = self.error_reporter.clone();
+        let values_to_keys_arranged: ArrangedByKey<S, Key, (Key, Value)> = match ix_key_policy {
+            IxKeyPolicy::FailMissing => key_table_extracted.map_named(
+                "ix_table unwrapping pointers",
+                move |(key, (values, value))| {
+                    let pointer = value.as_pointer().unwrap_with_reporter(&error_reporter);
+                    (pointer, (key, values))
+                },
+            ),
+            _ => key_table_extracted.flat_map(move |(key, (values, value))| {
+                if value == Value::None {
+                    None
+                } else {
+                    let pointer = value.as_pointer().unwrap_with_reporter(&error_reporter);
+                    Some((pointer, (key, values)))
+                }
+            }),
+        }
+        .arrange();
+        let new_table = match ix_key_policy {
+            IxKeyPolicy::SkipMissing => values_to_keys_arranged.join_core(
+                to_ix_table.values_arranged(),
+                |_source_key, (result_key, _result_row), to_ix_row| {
+                    once((*result_key, to_ix_row.clone()))
+                },
+            ),
+            _ => values_to_keys_arranged.join_core(
+                to_ix_table.values_arranged(),
+                |_source_key, (result_key, result_row), to_ix_row| {
+                    once((
+                        *result_key,
+                        Value::from([result_row.clone(), to_ix_row.clone()].as_slice()),
+                    ))
+                },
+            ),
+        };
+        let new_table = match ix_key_policy {
             IxKeyPolicy::ForwardNone => {
-                let none_keys = key_column
-                    .values()
-                    .flat_map(move |(key, value)| match value {
-                        Value::None => Some(key),
+                let none_keys =
+                    key_table_extracted.flat_map(move |(key, (values, value))| match value {
+                        Value::None => Some((key, Value::from([values, Value::None].as_slice()))),
                         _ => None,
                     });
-                Some(none_keys)
+                new_table.concat(&none_keys)
             }
-            _ => None,
+            _ => new_table,
+        };
+        if !self.ignore_asserts && ix_key_policy != IxKeyPolicy::SkipMissing {
+            self.assert_collections_same_size(key_table.values(), &new_table);
         };
 
-        let output_universe: OnceCell<UniverseHandle> = match ix_key_policy {
-            IxKeyPolicy::SkipMissing => OnceCell::new(),
-            _ => OnceCell::with_value(key_column.universe),
-        };
-
-        let ixer_handle = self.ixers.alloc(Ixer::new(
-            input_universe_handle,
-            output_universe,
-            keys_values,
-            none_keys,
-            ix_key_policy,
-        ));
-        self.ixers_cache.insert(cache_key, ixer_handle);
-        Ok(ixer_handle)
-    }
-
-    fn ix_column(
-        &mut self,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        let ixer = self
-            .ixers
-            .get(ixer_handle)
-            .ok_or(Error::InvalidIxerHandle)?;
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        if column.universe != ixer.input_universe {
-            return Err(Error::UniverseMismatch);
-        }
-        let new_values = ixer.values_to_keys_arranged().join_core(
-            column.values_arranged(),
-            |_source_key, result_key, value| once((*result_key, value.clone())),
-        );
-
-        let new_values = if let Some(none_keys) = &ixer.none_keys {
-            new_values.concat(
-                &none_keys.map_named("ix_column empty keys handling", |key| (key, Value::None)),
-            )
-        } else {
-            new_values
-        };
-
-        let output_universe = if ixer.ix_key_policy == IxKeyPolicy::SkipMissing {
-            *ixer.output_universe.get_or_init(|| {
-                let universe_keys =
-                    new_values.map_named("ix_column::universe_keys", |(key, _value)| key);
-                self.universes
-                    .alloc(Universe::from_collection(universe_keys))
-            })
-        } else {
-            let output_universe = self.ixer_universe(ixer_handle)?;
-            if !self.ignore_asserts {
-                self.assert_collections_same_size(
-                    &new_values,
-                    self.universes[output_universe].keys(),
-                );
-            };
-            output_universe
-        };
-
-        let new_column = Column::from_collection(output_universe, new_values);
-        let new_column_handle = self.columns.alloc(new_column);
-        Ok(new_column_handle)
-    }
-
-    fn ixer_universe(&mut self, ixer_handle: IxerHandle) -> Result<UniverseHandle> {
-        let ixer = self
-            .ixers
-            .get(ixer_handle)
-            .ok_or(Error::InvalidIxerHandle)?;
-        Ok(*ixer.output_universe.get_or_init(|| {
-            let universe_keys = ixer.values_to_keys_arranged().join_core(
-                self.universes[ixer.input_universe].keys_arranged(),
-                |_key, val, ()| once(*val),
-            );
-            self.universes
-                .alloc(Universe::from_collection(universe_keys))
-        }))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2947,6 +2093,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         left_column_paths: Vec<ColumnPath>,
         right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let left_table = self
             .tables
@@ -3115,7 +2262,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             result_left_right
         };
 
-        let result_table = Table::from_collection(result_left_right);
+        let result_table =
+            Table::from_collection(result_left_right).with_properties(table_properties);
 
         match join_type {
             JoinType::LeftKeysFull => {
@@ -3237,28 +2385,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(())
     }
 
-    fn probe_universe(
-        &mut self,
-        universe_handle: UniverseHandle,
-        operator_id: usize,
-    ) -> Result<()> {
-        let universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-        universe
-            .keys()
-            .probe_with(self.probes.entry(operator_id).or_insert(ProbeHandle::new()));
-
-        Ok(())
-    }
-
-    fn probe_column(&mut self, column_handle: ColumnHandle, operator_id: usize) -> Result<()> {
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        column
+    fn probe_table(&mut self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        table
             .values()
             .probe_with(self.probes.entry(operator_id).or_insert(ProbeHandle::new()));
         Ok(())
@@ -3266,53 +2398,25 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 }
 
 trait DataflowReducer<S: MaybeTotalScope> {
-    fn reduce(
-        self: Rc<Self>,
-        graph: &DataflowGraphInner<S>,
-        source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        values: Vec<&ValuesArranged<S>>,
-    ) -> Values<S>;
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S>;
 }
 
 impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
-    fn reduce(
-        self: Rc<Self>,
-        graph: &DataflowGraphInner<S>,
-        source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        values: Vec<&ValuesArranged<S>>,
-    ) -> Values<S> {
-        let first: ArrangedByKey<S, _, _> = values[0]
-            .as_collection(|key, value| (*key, value.clone()))
-            .map_ex(|(key, value)| (key, vec![value]))
-            .arrange();
-        let rest = &values[1..];
-
-        let values: ArrangedByKey<S, _, _> = rest.iter().fold(first, |acc, vs| {
-            acc.join_core(vs, |key, v_acc, v| {
-                let mut new_vec = v_acc.clone();
-                new_vec.push(v.clone());
-                once((*key, new_vec))
-            })
-            .arrange()
-        });
-
-        let joined = source_key_to_result_key.join_core(&values, {
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+        let initialized = values.map_named("DataFlowReducer::reduce::init", {
             let self_ = self.clone();
-            move |source_key, result_key, value_vec| {
-                let state = self_.init(source_key, value_vec).unwrap_or_else(|| {
+            move |(source_key, result_key, values)| {
+                let state = self_.init(&source_key, &values).unwrap_or_else(|| {
                     panic!(
-                        "{reducer_type}::init() failed for {value_vec:?} of key {source_key:?}",
+                        "{reducer_type}::init() failed for {values:?} of key {source_key:?}",
                         reducer_type = type_name::<R>()
                     )
                 }); // XXX
-                once((*result_key, state))
+                (result_key, state)
             }
         });
 
-        if !graph.ignore_asserts {
-            graph.assert_collections_same_size(&joined, &values.as_collection(|_k, _v| ()));
-        };
-        joined
+        initialized
             .reduce({
                 let self_ = self.clone();
                 move |_key, input, output| {
@@ -3330,30 +2434,39 @@ impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
 }
 
 impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
-    fn reduce(
-        self: Rc<Self>,
-        _graph: &DataflowGraphInner<S>,
-        source_key_to_result_key: &ArrangedByKey<S, Key, Key>,
-        values: Vec<&ValuesArranged<S>>,
-    ) -> Values<S> {
-        let values = values[0];
-        source_key_to_result_key
-            .join_core(values, {
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+        values
+            .map_named("IntSumReducer::reduce::init", {
                 let self_ = self.clone();
-                move |source_key, result_key, value| {
-                    let state = self_.init(source_key, value).unwrap_or_else(|| {
+                move |(source_key, result_key, values)| {
+                    let state = self_.init(&source_key, &values[0]).unwrap_or_else(|| {
                         panic!(
-                            "{reducer_type}::init() failed for {value:?} of key {source_key:?}",
+                            "{reducer_type}::init() failed for {values:?} of key {source_key:?}",
                             reducer_type = "IntSumReducer"
                         )
                     }); // XXX
-                    once((*result_key, state))
+                    (result_key, state)
                 }
             })
             .explode(|(key, state)| once((key, state)))
             .count()
             .map_named("IntSumReducer::reduce", move |(key, state)| {
                 (key, self.finish(state))
+            })
+            .into()
+    }
+}
+
+impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+        values
+            .map_named(
+                "CountReducer::reduce::init",
+                |(_source_key, result_key, _values)| (result_key),
+            )
+            .count()
+            .map_named("CountReducer::reduce", |(key, count)| {
+                (key, Value::from(count as i64))
             })
             .into()
     }
@@ -3373,6 +2486,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        table_properties: Arc<TableProperties>,
         external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<TableHandle> {
         let has_persistent_storage = self.worker_persistent_storage.is_some();
@@ -3447,7 +2561,108 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             self.connector_monitors.push(state.connector_monitor);
         }
 
-        Ok(self.tables.alloc(Table::from_collection(table_values)))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(table_values).with_properties(table_properties)))
+    }
+
+    fn forget(
+        &mut self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+        mark_forgetting_records: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter_1 = self.error_reporter.clone();
+        let error_reporter_2 = self.error_reporter.clone();
+
+        let new_table = table.values().consolidate_nondecreasing().forget(
+            move |val| {
+                threshold_time_column_path
+                    .extract_from_value(val)
+                    .unwrap_with_reporter(&error_reporter_1)
+            },
+            move |val| {
+                current_time_column_path
+                    .extract_from_value(val)
+                    .unwrap_with_reporter(&error_reporter_2)
+            },
+            mark_forgetting_records,
+        );
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
+    }
+
+    fn filter_out_results_of_forgetting(
+        &mut self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let new_table = table
+            .values()
+            .inner
+            .filter(|(_data, time, _diff)| time % 2 == 0)
+            .as_collection();
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
+    }
+
+    fn output_batch(
+        stats: &mut OutputConnectorStats,
+        batch: Vec<((Key, Tuple), u64, isize)>,
+        data_sink: &mut Box<dyn Writer>,
+        data_formatter: &mut Box<dyn Formatter>,
+        global_persistent_storage: &GlobalPersistentStorage,
+    ) -> Result<(), DynError> {
+        stats.on_batch_started();
+        for ((key, values), time, diff) in batch {
+            if time == ARTIFICIAL_TIME_ON_REWIND_START && global_persistent_storage.is_some() {
+                // Ignore entries, which had been written before
+                continue;
+            }
+            let formatted = data_formatter
+                .format(&key, &values, time, diff)
+                .map_err(DynError::from)?;
+            data_sink.write(formatted).map_err(DynError::from)?;
+            stats.on_batch_entry_written();
+        }
+        stats.on_batch_finished();
+        data_sink.flush().map_err(DynError::from)?;
+
+        Ok(())
+    }
+
+    fn commit_output_time(
+        stats: &mut OutputConnectorStats,
+        t: Option<u64>,
+        worker_index: usize,
+        sink_id: Option<usize>,
+        global_persistent_storage: &GlobalPersistentStorage,
+    ) {
+        if let Some(global_persistent_storage) = &global_persistent_storage {
+            global_persistent_storage
+                .lock()
+                .unwrap()
+                .accept_finalized_timestamp(
+                    worker_index,
+                    sink_id.expect("undefined sink_id while using persistent storage"),
+                    t,
+                );
+        }
+        stats.on_time_committed(t);
     }
 
     fn output_table(
@@ -3487,6 +2702,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 .as_ref()
                 .map(|storage| storage.lock().unwrap().register_sink());
 
+            // connector_threads vector contains both, input and output connector threads
+            // connector_monitors vector contains monitors only for input connectors
+            let output_connector_id = self.connector_threads.len() - self.connector_monitors.len();
+            let mut stats = OutputConnectorStats::new(data_sink.name(output_connector_id));
+
             let output_joiner_handle = Builder::new()
                 .name(thread_name)
                 .spawn_with_reporter(
@@ -3495,35 +2715,22 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                         let receiver = error_reporter_with_receiver.get();
                         match receiver.recv() {
                             Ok(OutputEvent::Batch(batch)) => {
-                                for ((key, values), time, diff) in batch {
-                                    if time == ARTIFICIAL_TIME_ON_REWIND_START
-                                        && global_persistent_storage.is_some()
-                                    {
-                                        // Ignore entries, which had been written before
-                                        continue;
-                                    }
-                                    let formatted = data_formatter
-                                        .format(&key, &values, time, diff)
-                                        .map_err(DynError::from)?;
-                                    data_sink.write(formatted).map_err(DynError::from)?;
-                                }
-                                data_sink.flush().map_err(DynError::from)?;
+                                Self::output_batch(
+                                    &mut stats,
+                                    batch,
+                                    &mut data_sink,
+                                    &mut data_formatter,
+                                    &global_persistent_storage,
+                                )?;
                             }
                             Ok(OutputEvent::Commit(t)) => {
-                                if let Some(global_persistent_storage) = &global_persistent_storage
-                                {
-                                    global_persistent_storage
-                                        .lock()
-                                        .unwrap()
-                                        .accept_finalized_timestamp(
-                                            worker_index,
-                                            sink_id.expect(
-                                                "undefined sink_id while using persistent storage",
-                                            ),
-                                            t,
-                                        );
-                                }
-
+                                Self::commit_output_time(
+                                    &mut stats,
+                                    t,
+                                    worker_index,
+                                    sink_id,
+                                    &global_persistent_storage,
+                                );
                                 if t.is_none() {
                                     break Ok(());
                                 }
@@ -4188,12 +3395,18 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0.borrow_mut().empty_universe()
     }
 
-    fn empty_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.0.borrow_mut().empty_column(universe_handle)
+    fn empty_column(
+        &self,
+        universe_handle: UniverseHandle,
+        column_properties: Arc<ColumnProperties>,
+    ) -> Result<ColumnHandle> {
+        self.0
+            .borrow_mut()
+            .empty_column(universe_handle, column_properties)
     }
 
-    fn empty_table(&self) -> Result<TableHandle> {
-        self.0.borrow_mut().empty_table()
+    fn empty_table(&self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
+        self.0.borrow_mut().empty_table(table_properties)
     }
 
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle> {
@@ -4204,12 +3417,19 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         &self,
         universe_handle: UniverseHandle,
         values: Vec<(Key, Value)>,
+        column_properties: Arc<ColumnProperties>,
     ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().static_column(universe_handle, values)
+        self.0
+            .borrow_mut()
+            .static_column(universe_handle, values, column_properties)
     }
 
-    fn static_table(&self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
-        self.0.borrow_mut().static_table(values)
+    fn static_table(
+        &self,
+        values: Vec<(Key, Vec<Value>)>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().static_table(values, table_properties)
     }
 
     fn expression_column(
@@ -4218,6 +3438,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         expression: Arc<Expression>,
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
+        column_properties: Arc<ColumnProperties>,
         trace: Trace,
     ) -> Result<ColumnHandle> {
         self.0.borrow_mut().expression_column(
@@ -4225,6 +3446,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             expression,
             universe_handle,
             &column_handles,
+            column_properties,
             trace,
         )
     }
@@ -4281,31 +3503,27 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
         trace: Trace,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .async_apply_table(function, table_handle, column_paths, trace)
-    }
-
-    fn filter_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .filter_universe(universe_handle, column_handle)
+        self.0.borrow_mut().async_apply_table(
+            function,
+            table_handle,
+            column_paths,
+            table_properties,
+            trace,
+        )
     }
 
     fn filter_table(
         &self,
         table_handle: TableHandle,
         filtering_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .filter_table(table_handle, filtering_column_path)
+            .filter_table(table_handle, filtering_column_path, table_properties)
     }
 
     fn forget(
@@ -4313,6 +3531,16 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _threshold_time_column_path: ColumnPath,
         _current_time_column_path: ColumnPath,
+        _mark_forgetting_records: bool,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        Err(Error::ForgetNotSupportedInIteration)
+    }
+
+    fn filter_out_results_of_forgetting(
+        &self,
+        _table_handle: TableHandle,
+        _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::ForgetNotSupportedInIteration)
     }
@@ -4322,6 +3550,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _threshold_time_column_path: ColumnPath,
         _current_time_column_path: ColumnPath,
+        _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::FreezeNotSupportedInIteration)
     }
@@ -4331,6 +3560,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _threshold_time_column_path: ColumnPath,
         _current_time_column_path: ColumnPath,
+        _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::BufferNotSupportedInIteration)
     }
@@ -4350,133 +3580,61 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         original_table_handle: TableHandle,
         new_table_handle: TableHandle,
         same_universes: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().restrict_or_override_table_universe(
             original_table_handle,
             new_table_handle,
             same_universes,
+            table_properties,
         )
-    }
-
-    fn override_column_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .override_column_universe(universe_handle, column_handle)
     }
 
     fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
         self.0.borrow_mut().id_column(universe_handle)
     }
 
-    fn intersect_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
-        self.0.borrow_mut().intersect_universe(universe_handles)
-    }
-
     fn intersect_tables(
         &self,
         table_handle: TableHandle,
         other_table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .intersect_tables(table_handle, other_table_handles)
+            .intersect_tables(table_handle, other_table_handles, table_properties)
     }
 
     fn subtract_table(
         &self,
         left_table_handle: TableHandle,
         right_table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .subtract_table(left_table_handle, right_table_handle)
+            .subtract_table(left_table_handle, right_table_handle, table_properties)
     }
 
-    fn union_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
-        self.0.borrow_mut().union_universe(&universe_handles)
-    }
-
-    fn venn_universes(
+    fn concat_tables(
         &self,
-        left_universe_handle: UniverseHandle,
-        right_universe_handle: UniverseHandle,
-    ) -> Result<VennUniverseHandle> {
+        table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .venn_universes(left_universe_handle, right_universe_handle)
-    }
-
-    fn venn_universes_only_left(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .venn_universes_only_left(venn_universes_handle)
-    }
-
-    fn venn_universes_only_right(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .venn_universes_only_right(venn_universes_handle)
-    }
-
-    fn venn_universes_both(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .venn_universes_both(venn_universes_handle)
-    }
-
-    fn concat(&self, universe_handles: Vec<UniverseHandle>) -> Result<ConcatHandle> {
-        self.0.borrow_mut().concat(universe_handles)
-    }
-
-    fn concat_universe(&self, concat_handle: ConcatHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().concat_universe(concat_handle)
-    }
-
-    fn concat_column(
-        &self,
-        concat_handle: ConcatHandle,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .concat_column(concat_handle, &column_handles)
-    }
-
-    fn concat_tables(&self, table_handles: Vec<TableHandle>) -> Result<TableHandle> {
-        self.0.borrow_mut().concat_tables(&table_handles)
+            .concat_tables(&table_handles, table_properties)
     }
 
     fn flatten_table(
         &self,
         table_handle: TableHandle,
         flatten_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .flatten_table(table_handle, flatten_column_path)
-    }
-
-    fn sort(
-        &self,
-        key_column_handle: ColumnHandle,
-        instance_column_handle: ColumnHandle,
-    ) -> Result<(ColumnHandle, ColumnHandle)> {
-        self.0
-            .borrow_mut()
-            .sort(key_column_handle, instance_column_handle)
+            .flatten_table(table_handle, flatten_column_path, table_properties)
     }
 
     fn sort_table(
@@ -4484,26 +3642,13 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         table_handle: TableHandle,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .sort_table(table_handle, key_column_path, instance_column_path)
-    }
-
-    fn reindex_universe(&self, column_handle: ColumnHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().reindex_universe(column_handle)
-    }
-
-    fn reindex_column(
-        &self,
-        column_to_reindex: ColumnHandle,
-        reindexing_column: ColumnHandle,
-        reindexing_universe: UniverseHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().reindex_column(
-            column_to_reindex,
-            reindexing_column,
-            reindexing_universe,
+        self.0.borrow_mut().sort_table(
+            table_handle,
+            key_column_path,
+            instance_column_path,
+            table_properties,
         )
     }
 
@@ -4511,20 +3656,22 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         &self,
         table_handle: TableHandle,
         reindexing_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .reindex_table(table_handle, reindexing_column_path)
+            .reindex_table(table_handle, reindexing_column_path, table_properties)
     }
 
     fn update_rows_table(
         &self,
         table_handle: TableHandle,
         update_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .update_rows_table(table_handle, update_handle)
+            .update_rows_table(table_handle, update_handle, table_properties)
     }
 
     fn update_cells_table(
@@ -4533,87 +3680,49 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         update_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         update_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().update_cells_table(
             table_handle,
             update_handle,
             column_paths,
             update_paths,
+            table_properties,
         )
     }
 
-    fn group_by(
+    fn group_by_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        self.0
-            .borrow_mut()
-            .group_by(universe_handle, &column_handles, requested_column_handles)
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reducers: Vec<ReducerData>,
+        set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().group_by_table(
+            table_handle,
+            grouping_columns_paths,
+            reducers,
+            set_id,
+            table_properties,
+        )
     }
 
-    fn group_by_id(
+    fn ix_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        self.0
-            .borrow_mut()
-            .group_by_id(universe_handle, column_handle, requested_column_handles)
-    }
-
-    fn grouper_universe(&self, grouper_handle: GrouperHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().grouper_universe(grouper_handle)
-    }
-
-    fn grouper_input_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .grouper_input_column(grouper_handle, column_handle)
-    }
-
-    fn grouper_count_column(&self, grouper_handle: GrouperHandle) -> Result<ColumnHandle> {
-        self.0.borrow_mut().grouper_count_column(grouper_handle)
-    }
-
-    fn grouper_reducer_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .grouper_reducer_column(grouper_handle, reducer, column_handles)
-    }
-
-    fn ix(
-        &self,
-        key_column_handle: ColumnHandle,
-        input_universe_handle: UniverseHandle,
+        to_ix_handle: TableHandle,
+        key_handle: TableHandle,
+        key_column_path: ColumnPath,
         ix_key_policy: IxKeyPolicy,
-    ) -> Result<IxerHandle> {
-        self.0
-            .borrow_mut()
-            .ix(key_column_handle, input_universe_handle, ix_key_policy)
-    }
-
-    fn ix_column(
-        &self,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().ix_column(ixer_handle, column_handle)
-    }
-
-    fn ixer_universe(&self, ixer_handle: IxerHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().ixer_universe(ixer_handle)
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().ix_table(
+            to_ix_handle,
+            key_handle,
+            key_column_path,
+            ix_key_policy,
+            table_properties,
+        )
     }
 
     fn join_tables(
@@ -4623,6 +3732,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         left_column_paths: Vec<ColumnPath>,
         right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().join_tables(
             left_table_handle,
@@ -4630,6 +3740,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             left_column_paths,
             right_column_paths,
             join_type,
+            table_properties,
         )
     }
 
@@ -4667,6 +3778,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _parser: Box<dyn Parser>,
         _commit_duration: Option<Duration>,
         _parallel_readers: usize,
+        _table_properties: Arc<TableProperties>,
         _external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
@@ -4731,14 +3843,8 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         Err(Error::IoNotPossible)
     }
 
-    fn probe_universe(&self, universe_handle: UniverseHandle, operator_id: usize) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .probe_universe(universe_handle, operator_id)
-    }
-
-    fn probe_column(&self, column_handle: ColumnHandle, operator_id: usize) -> Result<()> {
-        self.0.borrow_mut().probe_column(column_handle, operator_id)
+    fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
+        self.0.borrow_mut().probe_table(table_handle, operator_id)
     }
 }
 
@@ -4779,12 +3885,18 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0.borrow_mut().empty_universe()
     }
 
-    fn empty_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.0.borrow_mut().empty_column(universe_handle)
+    fn empty_column(
+        &self,
+        universe_handle: UniverseHandle,
+        column_properties: Arc<ColumnProperties>,
+    ) -> Result<ColumnHandle> {
+        self.0
+            .borrow_mut()
+            .empty_column(universe_handle, column_properties)
     }
 
-    fn empty_table(&self) -> Result<TableHandle> {
-        self.0.borrow_mut().empty_table()
+    fn empty_table(&self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
+        self.0.borrow_mut().empty_table(table_properties)
     }
 
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle> {
@@ -4795,12 +3907,19 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         &self,
         universe_handle: UniverseHandle,
         values: Vec<(Key, Value)>,
+        column_properties: Arc<ColumnProperties>,
     ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().static_column(universe_handle, values)
+        self.0
+            .borrow_mut()
+            .static_column(universe_handle, values, column_properties)
     }
 
-    fn static_table(&self, values: Vec<(Key, Vec<Value>)>) -> Result<TableHandle> {
-        self.0.borrow_mut().static_table(values)
+    fn static_table(
+        &self,
+        values: Vec<(Key, Vec<Value>)>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().static_table(values, table_properties)
     }
 
     fn expression_column(
@@ -4809,6 +3928,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         expression: Arc<Expression>,
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
+        column_properties: Arc<ColumnProperties>,
         trace: Trace,
     ) -> Result<ColumnHandle> {
         self.0.borrow_mut().expression_column(
@@ -4816,6 +3936,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             expression,
             universe_handle,
             &column_handles,
+            column_properties,
             trace,
         )
     }
@@ -4872,11 +3993,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         function: Arc<dyn Fn(Key, &[Value]) -> BoxFuture<'static, DynResult<Value>> + Send + Sync>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
         trace: Trace,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .async_apply_table(function, table_handle, column_paths, trace)
+        self.0.borrow_mut().async_apply_table(
+            function,
+            table_handle,
+            column_paths,
+            table_properties,
+            trace,
+        )
     }
 
     fn subscribe_table(
@@ -4892,24 +4018,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             .subscribe_table(wrapper, callback, on_end, table_handle, column_paths)
     }
 
-    fn filter_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .filter_universe(universe_handle, column_handle)
-    }
-
     fn filter_table(
         &self,
         table_handle: TableHandle,
         filtering_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .filter_table(table_handle, filtering_column_path)
+            .filter_table(table_handle, filtering_column_path, table_properties)
     }
 
     fn forget(
@@ -4917,12 +4034,26 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        mark_forgetting_records: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().forget(
             table_handle,
             threshold_time_column_path,
             current_time_column_path,
+            mark_forgetting_records,
+            table_properties,
         )
+    }
+
+    fn filter_out_results_of_forgetting(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .filter_out_results_of_forgetting(table_handle, table_properties)
     }
 
     fn freeze(
@@ -4930,11 +4061,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().freeze(
             table_handle,
             threshold_time_column_path,
             current_time_column_path,
+            table_properties,
         )
     }
 
@@ -4943,11 +4076,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().buffer(
             table_handle,
             threshold_time_column_path,
             current_time_column_path,
+            table_properties,
         )
     }
 
@@ -4966,133 +4101,61 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         original_table_handle: TableHandle,
         new_table_handle: TableHandle,
         same_universes: bool,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().restrict_or_override_table_universe(
             original_table_handle,
             new_table_handle,
             same_universes,
+            table_properties,
         )
-    }
-
-    fn override_column_universe(
-        &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .override_column_universe(universe_handle, column_handle)
     }
 
     fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
         self.0.borrow_mut().id_column(universe_handle)
     }
 
-    fn intersect_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
-        self.0.borrow_mut().intersect_universe(universe_handles)
-    }
-
     fn intersect_tables(
         &self,
         table_handle: TableHandle,
         other_table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .intersect_tables(table_handle, other_table_handles)
+            .intersect_tables(table_handle, other_table_handles, table_properties)
     }
 
     fn subtract_table(
         &self,
         left_table_handle: TableHandle,
         right_table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .subtract_table(left_table_handle, right_table_handle)
+            .subtract_table(left_table_handle, right_table_handle, table_properties)
     }
 
-    fn union_universe(&self, universe_handles: Vec<UniverseHandle>) -> Result<UniverseHandle> {
-        self.0.borrow_mut().union_universe(&universe_handles)
-    }
-
-    fn venn_universes(
+    fn concat_tables(
         &self,
-        left_universe_handle: UniverseHandle,
-        right_universe_handle: UniverseHandle,
-    ) -> Result<VennUniverseHandle> {
+        table_handles: Vec<TableHandle>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .venn_universes(left_universe_handle, right_universe_handle)
-    }
-
-    fn venn_universes_only_left(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .venn_universes_only_left(venn_universes_handle)
-    }
-
-    fn venn_universes_only_right(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .venn_universes_only_right(venn_universes_handle)
-    }
-
-    fn venn_universes_both(
-        &self,
-        venn_universes_handle: VennUniverseHandle,
-    ) -> Result<UniverseHandle> {
-        self.0
-            .borrow_mut()
-            .venn_universes_both(venn_universes_handle)
-    }
-
-    fn concat(&self, universe_handles: Vec<UniverseHandle>) -> Result<ConcatHandle> {
-        self.0.borrow_mut().concat(universe_handles)
-    }
-
-    fn concat_universe(&self, concat_handle: ConcatHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().concat_universe(concat_handle)
-    }
-
-    fn concat_column(
-        &self,
-        concat_handle: ConcatHandle,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .concat_column(concat_handle, &column_handles)
-    }
-
-    fn concat_tables(&self, table_handles: Vec<TableHandle>) -> Result<TableHandle> {
-        self.0.borrow_mut().concat_tables(&table_handles)
+            .concat_tables(&table_handles, table_properties)
     }
 
     fn flatten_table(
         &self,
         table_handle: TableHandle,
         flatten_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .flatten_table(table_handle, flatten_column_path)
-    }
-
-    fn sort(
-        &self,
-        key_column_handle: ColumnHandle,
-        instance_column_handle: ColumnHandle,
-    ) -> Result<(ColumnHandle, ColumnHandle)> {
-        self.0
-            .borrow_mut()
-            .sort(key_column_handle, instance_column_handle)
+            .flatten_table(table_handle, flatten_column_path, table_properties)
     }
 
     fn sort_table(
@@ -5100,26 +4163,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         table_handle: TableHandle,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .sort_table(table_handle, key_column_path, instance_column_path)
-    }
-
-    fn reindex_universe(&self, column_handle: ColumnHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().reindex_universe(column_handle)
-    }
-
-    fn reindex_column(
-        &self,
-        column_to_reindex: ColumnHandle,
-        reindexing_column: ColumnHandle,
-        reindexing_universe: UniverseHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().reindex_column(
-            column_to_reindex,
-            reindexing_column,
-            reindexing_universe,
+        self.0.borrow_mut().sort_table(
+            table_handle,
+            key_column_path,
+            instance_column_path,
+            table_properties,
         )
     }
 
@@ -5127,20 +4177,22 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         &self,
         table_handle: TableHandle,
         reindexing_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .reindex_table(table_handle, reindexing_column_path)
+            .reindex_table(table_handle, reindexing_column_path, table_properties)
     }
 
     fn update_rows_table(
         &self,
         table_handle: TableHandle,
         update_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
-            .update_rows_table(table_handle, update_handle)
+            .update_rows_table(table_handle, update_handle, table_properties)
     }
 
     fn update_cells_table(
@@ -5149,87 +4201,49 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         update_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         update_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().update_cells_table(
             table_handle,
             update_handle,
             column_paths,
             update_paths,
+            table_properties,
         )
     }
 
-    fn group_by(
+    fn group_by_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handles: Vec<ColumnHandle>,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        self.0
-            .borrow_mut()
-            .group_by(universe_handle, &column_handles, requested_column_handles)
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reducers: Vec<ReducerData>,
+        set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().group_by_table(
+            table_handle,
+            grouping_columns_paths,
+            reducers,
+            set_id,
+            table_properties,
+        )
     }
 
-    fn group_by_id(
+    fn ix_table(
         &self,
-        universe_handle: UniverseHandle,
-        column_handle: ColumnHandle,
-        requested_column_handles: Vec<ColumnHandle>,
-    ) -> Result<GrouperHandle> {
-        self.0
-            .borrow_mut()
-            .group_by_id(universe_handle, column_handle, requested_column_handles)
-    }
-
-    fn grouper_universe(&self, grouper_handle: GrouperHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().grouper_universe(grouper_handle)
-    }
-
-    fn grouper_input_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .grouper_input_column(grouper_handle, column_handle)
-    }
-
-    fn grouper_count_column(&self, grouper_handle: GrouperHandle) -> Result<ColumnHandle> {
-        self.0.borrow_mut().grouper_count_column(grouper_handle)
-    }
-
-    fn grouper_reducer_column(
-        &self,
-        grouper_handle: GrouperHandle,
-        reducer: Reducer,
-        column_handles: Vec<ColumnHandle>,
-    ) -> Result<ColumnHandle> {
-        self.0
-            .borrow_mut()
-            .grouper_reducer_column(grouper_handle, reducer, column_handles)
-    }
-
-    fn ix(
-        &self,
-        key_column_handle: ColumnHandle,
-        input_universe_handle: UniverseHandle,
+        to_ix_handle: TableHandle,
+        key_handle: TableHandle,
+        key_column_path: ColumnPath,
         ix_key_policy: IxKeyPolicy,
-    ) -> Result<IxerHandle> {
-        self.0
-            .borrow_mut()
-            .ix(key_column_handle, input_universe_handle, ix_key_policy)
-    }
-
-    fn ix_column(
-        &self,
-        ixer_handle: IxerHandle,
-        column_handle: ColumnHandle,
-    ) -> Result<ColumnHandle> {
-        self.0.borrow_mut().ix_column(ixer_handle, column_handle)
-    }
-
-    fn ixer_universe(&self, ixer_handle: IxerHandle) -> Result<UniverseHandle> {
-        self.0.borrow_mut().ixer_universe(ixer_handle)
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().ix_table(
+            to_ix_handle,
+            key_handle,
+            key_column_path,
+            ix_key_policy,
+            table_properties,
+        )
     }
 
     fn join_tables(
@@ -5239,6 +4253,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         left_column_paths: Vec<ColumnPath>,
         right_column_paths: Vec<ColumnPath>,
         join_type: JoinType,
+        table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().join_tables(
             left_table_handle,
@@ -5246,6 +4261,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             left_column_paths,
             right_column_paths,
             join_type,
+            table_properties,
         )
     }
 
@@ -5285,6 +4301,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         parser: Box<dyn Parser>,
         commit_duration: Option<Duration>,
         parallel_readers: usize,
+        table_properties: Arc<TableProperties>,
         external_persistent_id: &Option<ExternalPersistentId>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().connector_table(
@@ -5292,6 +4309,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             parser,
             commit_duration,
             parallel_readers,
+            table_properties,
             external_persistent_id,
         )
     }
@@ -5350,14 +4368,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         )
     }
 
-    fn probe_universe(&self, universe_handle: UniverseHandle, operator_id: usize) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .probe_universe(universe_handle, operator_id)
-    }
-
-    fn probe_column(&self, column_handle: ColumnHandle, operator_id: usize) -> Result<()> {
-        self.0.borrow_mut().probe_column(column_handle, operator_id)
+    fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
+        self.0.borrow_mut().probe_table(table_handle, operator_id)
     }
 }
 

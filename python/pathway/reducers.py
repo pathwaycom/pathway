@@ -13,9 +13,9 @@ from pathway.internals.reducers import (
     npsum,
     sorted_tuple,
     sum,
+    tuple_reducer as tuple,
+    unique,
 )
-from pathway.internals.reducers import tuple_reducer as tuple
-from pathway.internals.reducers import unique
 
 __all__ = [
     "any",

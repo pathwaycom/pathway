@@ -11,7 +11,7 @@ use differential_dataflow::trace::cursor::{Cursor, CursorList};
 use differential_dataflow::trace::implementations::ord::OrdValBatch;
 use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::trace::{BatchReader, TraceReader};
-use differential_dataflow::{Collection, Data, Diff, ExchangeData, Hashable};
+use differential_dataflow::{AsCollection, Collection, Data, Diff, ExchangeData, Hashable};
 use serde::{Deserialize, Serialize};
 use std::cmp::{max, Ord};
 use std::rc::Rc;
@@ -19,8 +19,8 @@ use timely::communication::Push;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 use timely::dataflow::operators::generic::OutputHandle;
-use timely::dataflow::operators::CapabilityRef;
 use timely::dataflow::operators::Operator;
+use timely::dataflow::operators::{CapabilityRef, Inspect};
 use timely::dataflow::scopes::{Child, Scope, ScopeParent};
 use timely::order::TotalOrder;
 use timely::progress::timestamp::Refines;
@@ -543,6 +543,7 @@ pub trait TimeColumnForget<
         &self,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        mark_forgetting_records: bool,
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
@@ -553,8 +554,7 @@ pub trait TimeColumnForget<
 impl<G, K, V, R, CT, TTE, CTE> TimeColumnForget<G, K, V, R, CT, TTE, CTE>
     for Collection<G, (K, V), R>
 where
-    G: Scope + MaybeTotalScope,
-    G::Timestamp: Lattice,
+    G: MaybeTotalScope<MaybeTotalTimestamp = u64>,
     K: ExchangeData + Shard,
     V: ExchangeData,
     CT: ExchangeData,
@@ -565,17 +565,41 @@ where
         &self,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        mark_forgetting_records: bool,
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
     {
-        self.concat(&self.negate().postpone(
+        let forgetting_stream = self.negate().postpone(
             self.scope(),
             threshold_time_extractor,
             current_time_extractor,
-        ))
+        );
+        let forgetting_stream = if mark_forgetting_records {
+            forgetting_stream
+                .inspect(|(_data, time, _diff)| {
+                    assert!(
+                        time % 2 == 0,
+                        "Neu time encountered at forget() buffer output."
+                    );
+                })
+                .delay(|time| {
+                    // can be called on times other than appearing in records
+                    // that's why assert is in inspect above
+                    // if two times are ordered, they should have the same order once func is applied to them
+                    time + 1 // produce neu times
+                })
+        } else {
+            forgetting_stream
+        };
+        self.inner
+            .inspect(|(_data, time, _diff)| {
+                assert!(time % 2 == 0, "Neu time encountered at forget() input.");
+            })
+            .as_collection()
+            .concat(&forgetting_stream)
     }
 }
 pub trait TimeColumnFreeze<

@@ -8,10 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 import pathway
 import pathway.internals.row_transformer_table as tt
-from pathway.internals import dtype as dt
-from pathway.internals import operator as op
-from pathway.internals import parse_graph, schema
-from pathway.internals.api import BasePointer, Pointer, ref_scalar
+from pathway.internals import dtype as dt, operator as op, parse_graph, schema
+from pathway.internals.api import Pointer, ref_scalar
 from pathway.internals.column import MaterializedColumn, MethodColumn
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.schema import Schema, schema_from_types
@@ -177,7 +175,7 @@ class ClassArg(metaclass=ClassArgMeta):
     transformer: RowTransformer  # stub for mypy
     id: Pointer  # stub for mypy
 
-    def pointer_from(self, *args, optional=False) -> BasePointer:
+    def pointer_from(self, *args, optional=False) -> Pointer:
         """Pseudo-random hash of its argument. Produces pointer types. Applied value-wise."""
         return ref_scalar(*args, optional=optional)
 
