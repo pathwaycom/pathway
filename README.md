@@ -24,6 +24,8 @@
 
 [Pathway](https://pathway.com) is an open framework for high-throughput and low-latency real-time data processing. It is used to create Python code which seamlessly combines batch processing, streaming, and real-time API's for LLM apps. Pathway's distributed runtime (🦀-🐍) provides fresh results of your data pipelines whenever new inputs and requests are received.
 
+![batch-to-stream-newcode-201023-smaller](https://github.com/pathwaycom/pathway/assets/68642378/13ae671d-5a90-4e44-8659-935d25a33838)
+
 Pathway provides a high-level programming interface in Python for defining data transformations, aggregations, and other operations on data streams.
 With Pathway, you can effortlessly design and deploy sophisticated data workflows that efficiently handle high volumes of data in real time.
 
