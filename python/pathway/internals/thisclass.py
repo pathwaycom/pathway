@@ -73,6 +73,10 @@ class ThisMetaclass(type):
     def C(self) -> ColumnNamespace:
         return ColumnNamespace(self)  # type: ignore
 
+    @property
+    def _C(self):
+        return self.C
+
     @overload
     def __getitem__(self, args: str | expr.ColumnReference) -> expr.ColumnReference:
         ...

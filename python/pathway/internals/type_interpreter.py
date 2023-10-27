@@ -33,7 +33,10 @@ class TypeInterpreterState:
         self, new_cols: Iterable[expr.ColumnReference]
     ) -> TypeInterpreterState:
         return TypeInterpreterState(
-            [*self.unoptionalize, *[col._to_internal() for col in new_cols]]
+            [
+                *self.unoptionalize,
+                *[col._to_internal() for col in new_cols],
+            ]
         )
 
     def check_colref_to_unoptionalize_from_colrefs(
@@ -576,7 +579,7 @@ class JoinRowwiseTypeInterpreter(TypeInterpreter):
                 original._table.id._to_internal()
             ]
             if state.check_colref_to_unoptionalize_from_colrefs(tmp_id_colref):
-                return original.to_colref()._column.dtype
+                return original._column.dtype
         return super()._eval_column_val(expression, state=state)
 
 

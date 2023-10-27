@@ -22,6 +22,7 @@ def read(
     schema: type[pw.Schema] | None = None,
     csv_settings: CsvParserSettings | None = None,
     mode: str = "streaming",
+    object_pattern: str = "*",
     autocommit_duration_ms: int | None = 1500,
     persistent_id: str | None = None,
     debug_data=None,
@@ -45,9 +46,16 @@ def read(
             a subset of its columns, the set of columns should be specified in this field.
             Otherwise, the primary key will be generated randomly. [will be deprecated soon]
         csv_settings: Settings for the CSV parser.
-        mode: If set to "streaming", the engine will wait for the new input
-            files in the directory. Set it to "static", it will only consider the available
-            data and ingest all of it in one commit. Default value is "streaming".
+        mode: denotes how the engine polls the new data from the source. Currently \
+"streaming", "static", and "streaming_with_deletions" are supported. If set to \
+"streaming" the engine will wait for the new input files in the directory. On the other \
+hand, "streaming_with_deletions" mode also tracks file deletions and modifications and \
+reflects them in the state. For example, if a file was deleted, "streaming_with_deletions"\
+mode will also remove rows obtained by reading this file from the table. Finally, the \
+"static" mode will only consider the available data and ingest all of it in one commit. \
+The default value is "streaming".
+        object_pattern: Unix shell style pattern for filtering only certain files in the \
+directory. Ignored in case a path to a single file is specified.
         types: Dictionary containing the mapping between the columns and the data
             types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
             provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
@@ -149,6 +157,7 @@ def read(
         schema=schema,
         format="csv",
         mode=mode,
+        object_pattern=object_pattern,
         csv_settings=csv_settings,
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=None,

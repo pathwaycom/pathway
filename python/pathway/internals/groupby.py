@@ -117,8 +117,10 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
     ) -> GroupedTable:
-        cols = tuple(arg._to_original_internal() for arg in grouping_columns)
-        col_sort_by = sort_by._to_original_internal() if sort_by is not None else None
+        cols = tuple(arg._to_original()._to_internal() for arg in grouping_columns)
+        col_sort_by = (
+            sort_by._to_original()._to_internal() if sort_by is not None else None
+        )
         key = (cls.__name__, table._universe, cols, set_id, col_sort_by)
         if key not in G.cache:
             result = GroupedTable(
@@ -205,10 +207,6 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             inner_context=self._joinable_to_group._context,
             sort_by=self._sort_by,
         )
-        pk_columns = {
-            column._name: self._joinable_to_group._eval(column.to_colref(), context)
-            for column in self._grouping_columns
-        }
 
         for column_name, value in kwargs.items():
             column = self._eval(value, context)
@@ -217,7 +215,6 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         result: table.Table = table.Table(
             columns=reduced_columns,
             universe=universe,
-            pk_columns=pk_columns,
             id_column=clmn.IdColumn(context),
         )
         universes.promise_are_equal(result, self)
@@ -227,18 +224,22 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         for dep in expression._dependencies_above_reducer():
             if (
                 not isinstance(dep._table, thisclass.ThisMetaclass)  # allow for ix
-                and dep.to_original() not in self._grouping_columns
+                and dep.to_column_expression()._to_original()._to_internal()
+                not in self._grouping_columns
             ):
                 raise ValueError(
-                    f"You cannot use {dep.to_colref()} in this reduce statement.\n"
-                    + f"Make sure that {dep.to_colref()} is used in a groupby or wrap it with a reducer, "
-                    + f"e.g. pw.reducers.count({dep.to_colref()})"
+                    f"You cannot use {dep.to_column_expression()} in this reduce statement.\n"
+                    + f"Make sure that {dep.to_column_expression()} is used in a groupby or wrap it with a reducer, "
+                    + f"e.g. pw.reducers.count({dep.to_column_expression()})"
                 )
 
         for dep in expression._dependencies_below_reducer():
-            if self._joinable_to_group._universe != dep.to_colref()._column.universe:
+            if (
+                self._joinable_to_group._universe
+                != dep.to_column_expression()._column.universe
+            ):
                 raise ValueError(
-                    f"You cannot use {dep.to_colref()} in this context."
+                    f"You cannot use {dep.to_column_expression()} in this context."
                     + " Its universe is different than the universe of the table the method"
                     + " was called on. You can use <table1>.with_universe_of(<table2>)"
                     + " to assign universe of <table2> to <table1> if you're sure their"

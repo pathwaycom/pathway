@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any, Generic, TypeVar, Union, final
 
-from pathway.internals.api import CapturedTable, Value
+from pathway.internals.api import CapturedTable, CombineMany, S, Value
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.dtype import DType
 from pathway.internals.monitoring import StatsMonitor
@@ -46,8 +46,7 @@ class ReadMethod(Enum):
     FULL: ReadMethod
 
 class Universe:
-    @property
-    def id_column(self) -> Column: ...
+    pass
 
 @dataclasses.dataclass(frozen=True)
 class Trace:
@@ -63,7 +62,12 @@ class ColumnProperties:
     append_only: bool = False
 
 class TableProperties:
-    pass
+    @staticmethod
+    def column(column_prroperties: ColumnProperties) -> TableProperties: ...
+    @staticmethod
+    def from_column_properties(
+        column_properties: Iterable[tuple[ColumnPath, ColumnProperties]]
+    ) -> TableProperties: ...
 
 @dataclasses.dataclass(frozen=True)
 class ConnectorProperties:
@@ -121,6 +125,8 @@ class Reducer:
     UNIQUE: Reducer
     ANY: Reducer
     COUNT: Reducer
+    @staticmethod
+    def stateful_many(combine_many: CombineMany[S]) -> Reducer: ...
 
 class UnaryOperator:
     INV: UnaryOperator
@@ -377,12 +383,9 @@ class Scope:
         self,
         table: Table,
         column_paths: list[ColumnPath],
-        expressions: list[tuple[Expression, ColumnProperties]],
+        expressions: list[tuple[Expression, TableProperties]],
     ) -> Table: ...
-    def table_properties(
-        self,
-        column_properties: Iterable[tuple[ColumnPath, ColumnProperties]],
-    ) -> TableProperties: ...
+    def table_properties(self, table: Table) -> TableProperties: ...
     def columns_to_table(
         self, universe: Universe, columns: list[tuple[Column, ColumnPath]]
     ) -> Table: ...
@@ -400,6 +403,15 @@ class Scope:
         function: Callable[..., Value],
         properties: TableProperties,
     ) -> Table: ...
+    def gradual_broadcast(
+        self,
+        input_table_storage: Table,
+        threshold_table_storage: Table,
+        lower_column: ColumnPath,
+        value_column: ColumnPath,
+        upper_column: ColumnPath,
+        table_properties: TableProperties,
+    ) -> Table: ...
     def filter_table(
         self, table: Table, path: ColumnPath, table_properties: TableProperties
     ) -> Table: ...
@@ -409,6 +421,11 @@ class Scope:
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
         mark_forgetting_records: bool,
+        table_properties: TableProperties,
+    ) -> Table: ...
+    def forget_immediately(
+        self,
+        table: Table,
         table_properties: TableProperties,
     ) -> Table: ...
     def filter_out_results_of_forgetting(
@@ -530,6 +547,7 @@ class Scope:
         self,
         table: Table,
         column_paths: Iterable[ColumnPath],
+        skip_persisted_batch: bool,
         on_change: Callable,
         on_end: Callable,
     ): ...
@@ -582,3 +600,14 @@ class ElasticSearchParams:
 
 class PersistenceConfig:
     def __init__(self, *args, **kwargs): ...
+
+class ReplayMode(Enum):
+    BATCH: ReplayMode
+    SPEEDRUN: ReplayMode
+    REALTIME: ReplayMode
+    PERSISTING: ReplayMode
+
+class SnapshotAccess(Enum):
+    RECORD: SnapshotAccess
+    REPLAY: SnapshotAccess
+    FULL: SnapshotAccess

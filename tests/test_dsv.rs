@@ -4,7 +4,6 @@ use helpers::{assert_error_shown, assert_error_shown_for_reader_context};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, ParseResult, ParsedEvent, Parser,
@@ -21,6 +20,7 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -45,8 +45,8 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
             assert_eq!(
                 row_parse_result.expect("entries should parse correctly"),
                 vec![ParsedEvent::Insert((
-                    Some(vec![Value::from_str("0")?]),
-                    vec![Value::from_str("0")?]
+                    Some(vec![Value::from("0")]),
+                    vec![Value::from("0")]
                 ))]
             );
         }
@@ -63,6 +63,7 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["c".to_string()], ','),
@@ -85,6 +86,7 @@ fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -120,6 +122,7 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -164,6 +167,7 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(None, vec!["a".to_string(), "b".to_string()], ','),
@@ -205,6 +209,7 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -266,6 +271,7 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -299,12 +305,12 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
             assert_eq!(
                 row_parse_result.expect("entries should parse correctly"),
                 vec![ParsedEvent::Insert((
-                    Some(vec![Value::from_str("id")?]),
+                    Some(vec![Value::from("id")]),
                     vec![
                         Value::Bool(true),
                         Value::Int(5),
                         Value::Float(6.4.into()),
-                        Value::from_str("hkadhsfk")?
+                        Value::from("hkadhsfk")
                     ]
                 ))]
             );
@@ -334,6 +340,7 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(

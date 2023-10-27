@@ -126,7 +126,6 @@ class IntervalJoinResult(DesugaringContext):
     _right_bucketed: pw.Table
     _earlier_part_filtered: pw.JoinResult
     _later_part_filtered: pw.JoinResult
-    _table_replacer: TableSubstitutionDesugaring
     _table_substitution: dict[pw.TableLike, pw.Table]
     _mode: pw.JoinMode
     _substitution: dict[ThisMetaclass, pw.Joinable]

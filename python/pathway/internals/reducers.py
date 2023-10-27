@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import ParamSpec, Protocol, TypeVar, overload
 from warnings import warn
 
 import numpy as np
@@ -29,11 +30,10 @@ class Reducer(ABC):
     def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
         ...
 
-    @abstractmethod
     def additional_args_from_context(
         self, context: GroupedContext
     ) -> tuple[ColumnExpression, ...]:
-        ...
+        return ()
 
 
 class UnaryReducer(Reducer):
@@ -60,11 +60,6 @@ class UnaryReducer(Reducer):
     def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
         (arg_type,) = arg_types
         return self.engine_reducer_unary(arg_type)
-
-    def additional_args_from_context(
-        self, context: GroupedContext
-    ) -> tuple[ColumnExpression, ...]:
-        return ()
 
 
 class UnaryReducerWithDefault(UnaryReducer):
@@ -164,9 +159,23 @@ class TupleWrappingReducer(Reducer):
         self, context: GroupedContext
     ) -> tuple[ColumnExpression, ...]:
         if context.sort_by is not None:
-            return (context.sort_by.to_colref(),)
+            return (context.sort_by.to_column_expression(),)
         else:
             return ()
+
+
+class StatefulManyReducer(Reducer):
+    name = "stateful_many"
+    combine_many: api.CombineMany
+
+    def __init__(self, combine_many: api.CombineMany):
+        self.combine_many = combine_many
+
+    def return_type(self, arg_types: list[dt.DType]) -> dt.DType:
+        return dt.ANY
+
+    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
+        return api.Reducer.stateful_many(self.combine_many)
 
 
 _min = TypePreservingUnaryReducer(name="min", engine_reducer=api.Reducer.MIN)
@@ -260,3 +269,67 @@ def ndarray(expression: expr.ColumnExpression, *, skip_nones: bool = False):
     return apply_with_type(
         np.array, np.ndarray, tuple_reducer(expression, skip_nones=skip_nones)
     )
+
+
+S = TypeVar("S", bound=api.Value)
+V1 = TypeVar("V1", bound=api.Value)
+V2 = TypeVar("V2", bound=api.Value)
+
+
+def stateful_many(
+    combine_many: api.CombineMany[S], /, *args: expr.ColumnExpression | api.Value
+) -> expr.ColumnExpression:
+    return expr.ReducerExpression(StatefulManyReducer(combine_many), *args)
+
+
+P = ParamSpec("P")
+
+
+class CombineSingle(Protocol[S, P]):
+    def __call__(self, state: S | None, /, *args: P.args, **kwargs: P.kwargs) -> S:
+        ...
+
+
+@overload
+def stateful_single(combine_single: CombineSingle[S, []], /) -> expr.ColumnExpression:
+    ...
+
+
+@overload
+def stateful_single(
+    combine_single: CombineSingle[S, [V1]], column: expr.ColumnExpression | V1, /
+) -> expr.ColumnExpression:
+    ...
+
+
+@overload
+def stateful_single(
+    combine_single: CombineSingle[S, [V1, V2]],
+    column1: expr.ColumnExpression | V1,
+    column2: expr.ColumnExpression | V2,
+    /,
+) -> expr.ColumnExpression:
+    ...
+
+
+@overload
+def stateful_single(
+    combine_single: CombineSingle[S, ...],
+    /,
+    *columns: expr.ColumnExpression | api.Value,
+) -> expr.ColumnExpression:
+    ...
+
+
+def stateful_single(
+    combine_single: CombineSingle[S, ...], /, *args: expr.ColumnExpression | api.Value
+) -> expr.ColumnExpression:
+    def wrapper(state: S | None, rows: list[tuple[list[api.Value], int]]) -> S:
+        for row, count in rows:
+            assert count > 0
+            for _ in range(count):
+                state = combine_single(state, *row)
+        assert state is not None
+        return state
+
+    return stateful_many(wrapper, *args)

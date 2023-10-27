@@ -45,7 +45,7 @@ class GraphRunner:
         self.monitoring_level = monitoring_level
         self.with_http_server = with_http_server
         self.default_logging = default_logging
-        self.persistence_config = persistence_config
+        self.persistence_config = persistence_config or environ.get_replay_config()
 
     def run_tables(
         self,

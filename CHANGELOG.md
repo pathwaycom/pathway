@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.5.3] - 2023-10-27
+
+### Added
+- A method `get_nearest_items_asof_now` in `KNNIndex` that allows to get nearest neighbors without updating old queries in the future.
+- A method `asof_now_join` in `Table` to join rows from left side of the join with right side of the join at their processing time. Past rows from left side are not used when new data appears on the right side.
+
 ## [0.5.2] - 2023-10-19
 
 ### Added
@@ -14,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Namespace for all columns `Table.C.*`.
 - Output connectors now provide logs about the number of entries written and time taken.
 - Filesystem connectors now support reading whole files as rows.
+- Command line option for `pathway spawn` to record data and `pathway replay` command to replay data.
 
 ## [0.5.1] - 2023-10-04
 

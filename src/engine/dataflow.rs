@@ -8,11 +8,13 @@ pub mod shard;
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
-use crate::connectors::Connector;
 use crate::connectors::ARTIFICIAL_TIME_ON_REWIND_START;
+use crate::connectors::{Connector, ReplayMode, SnapshotAccess};
+use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
     Epsilon, TimeColumnForget, TimeColumnFreeze,
 };
+
 use crate::engine::value::HashInto;
 use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
 use crate::persistence::sync::SharedWorkersPersistenceCoordinator;
@@ -65,15 +67,16 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::ToStream as _;
 use timely::dataflow::operators::{Exchange, Filter, Inspect, Operator, Probe};
 use timely::dataflow::scopes::Child;
-use timely::order::Product;
+use timely::order::{Product, TotalOrder};
 use timely::progress::timestamp::Refines;
 use timely::progress::{PathSummary, Timestamp};
 use timely::{execute, CommunicationConfig, Config, WorkerConfig};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::complex_columns::complex_columns;
-use self::maybe_total::MaybeTotalScope;
+use self::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp, NotTotal, Total};
 use self::operators::prev_next::add_prev_next_pointers;
+use self::operators::stateful_reduce::StatefulReduce;
 use self::operators::time_column::TimeColumnBuffer;
 use self::operators::{ArrangeWithTypes, MapWrapped};
 use self::operators::{ConsolidateNondecreasing, Reshard};
@@ -86,7 +89,7 @@ use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
     AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, FloatSumReducer,
     IntSumReducer, MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer,
-    TupleReducer, UniqueReducer,
+    StatefulReducer, TupleReducer, UniqueReducer,
 };
 use super::report_error::{ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithReporter};
 use super::{
@@ -288,15 +291,11 @@ impl<S: MaybeTotalScope> UniverseData<S> {
 
 struct Universe<S: MaybeTotalScope> {
     data: Rc<UniverseData<S>>,
-    id_column: OnceCell<ColumnHandle>,
 }
 
 impl<S: MaybeTotalScope> Universe<S> {
     fn new(data: Rc<UniverseData<S>>) -> Self {
-        Self {
-            data,
-            id_column: OnceCell::new(),
-        }
+        Self { data }
     }
 
     fn from_collection(keys: Keys<S>) -> Self {
@@ -334,12 +333,6 @@ enum ColumnData<S: MaybeTotalScope> {
         collection: OnceCell<Values<S>>,
         keys: OnceCell<Keys<S>>,
     },
-    Universe {
-        universe_data: Rc<UniverseData<S>>,
-        collection: OnceCell<Values<S>>,
-        arranged: OnceCell<ValuesArranged<S>>,
-        consolidated: OnceCell<Values<S>>,
-    },
 }
 
 impl<S: MaybeTotalScope> ColumnData<S> {
@@ -360,15 +353,6 @@ impl<S: MaybeTotalScope> ColumnData<S> {
         }
     }
 
-    fn from_universe(universe_data: Rc<UniverseData<S>>) -> Self {
-        Self::Universe {
-            collection: OnceCell::new(),
-            arranged: OnceCell::new(),
-            consolidated: OnceCell::new(),
-            universe_data,
-        }
-    }
-
     fn collection(&self) -> &Values<S> {
         match self {
             Self::Collection { collection, .. } => collection,
@@ -377,23 +361,13 @@ impl<S: MaybeTotalScope> ColumnData<S> {
                 collection,
                 ..
             } => collection.get_or_init(|| arranged.as_collection(|k, v| (*k, v.clone())).into()),
-            Self::Universe {
-                collection,
-                universe_data,
-                ..
-            } => collection.get_or_init(|| {
-                universe_data
-                    .collection()
-                    .map_named("UniverseData -> ColumnData", |key| (key, key))
-                    .into()
-            }),
         }
     }
 
     fn arranged(&self) -> &ValuesArranged<S> {
         match self {
             Self::Arranged { arranged, .. } => arranged,
-            Self::Collection { arranged, .. } | Self::Universe { arranged, .. } => {
+            Self::Collection { arranged, .. } => {
                 arranged.get_or_init(|| self.collection().arrange())
             }
         }
@@ -405,7 +379,6 @@ impl<S: MaybeTotalScope> ColumnData<S> {
                 self.collection()
                     .map_named("ColumnData -> Keys", |(key, _value)| key)
             }),
-            Self::Universe { universe_data, .. } => universe_data.collection(),
         }
     }
 
@@ -416,10 +389,8 @@ impl<S: MaybeTotalScope> ColumnData<S> {
 
     fn consolidated(&self) -> &Values<S> {
         match self {
-            Self::Collection { consolidated, .. } | Self::Universe { consolidated, .. } => {
-                consolidated
-                    .get_or_init(|| self.arranged().as_collection(|k, v| (*k, v.clone())).into())
-            }
+            Self::Collection { consolidated, .. } => consolidated
+                .get_or_init(|| self.arranged().as_collection(|k, v| (*k, v.clone())).into()),
             Self::Arranged { .. } => self.collection(),
         }
     }
@@ -429,7 +400,7 @@ impl<S: MaybeTotalScope> ColumnData<S> {
 struct Column<S: MaybeTotalScope> {
     universe: UniverseHandle,
     data: Rc<ColumnData<S>>,
-    properties: Option<Arc<ColumnProperties>>,
+    properties: Arc<TableProperties>,
 }
 
 impl<S: MaybeTotalScope> Column<S> {
@@ -438,16 +409,7 @@ impl<S: MaybeTotalScope> Column<S> {
         Self {
             universe,
             data,
-            properties: None,
-        }
-    }
-
-    fn from_universe(universe_handle: UniverseHandle, universe: &Universe<S>) -> Self {
-        let data = Rc::new(ColumnData::from_universe(universe.data.clone()));
-        Self {
-            universe: universe_handle,
-            data,
-            properties: None,
+            properties: Arc::new(TableProperties::Empty),
         }
     }
 
@@ -456,12 +418,17 @@ impl<S: MaybeTotalScope> Column<S> {
         Self {
             universe,
             data,
-            properties: None,
+            properties: Arc::new(TableProperties::Empty),
         }
     }
 
-    fn with_properties(mut self, properties: Arc<ColumnProperties>) -> Self {
-        self.properties = Some(properties);
+    fn with_properties(mut self, properties: Arc<TableProperties>) -> Self {
+        self.properties = properties;
+        self
+    }
+
+    fn with_column_properties(mut self, properties: Arc<ColumnProperties>) -> Self {
+        self.properties = Arc::new(TableProperties::Column(properties));
         self
     }
 
@@ -990,7 +957,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         };
 
         let column_handle = self.columns.alloc(
-            Column::from_collection(universe_handle, values).with_properties(column_properties),
+            Column::from_collection(universe_handle, values)
+                .with_column_properties(column_properties),
         );
         Ok(column_handle)
     }
@@ -1120,7 +1088,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     (k, value.clone())
                 });
             let column_handle = self.columns.alloc(
-                Column::from_collection(universe_handle, values).with_properties(column_properties),
+                Column::from_collection(universe_handle, values)
+                    .with_column_properties(column_properties),
             );
             return Ok(column_handle);
         }
@@ -1147,7 +1116,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             });
 
         let new_column_handle = self.columns.alloc(
-            Column::from_collection(universe_handle, new_values).with_properties(column_properties),
+            Column::from_collection(universe_handle, new_values)
+                .with_column_properties(column_properties),
         );
         Ok(new_column_handle)
     }
@@ -1164,13 +1134,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
 
-        let properties = TableProperties::expression_table_properties(
-            &table.properties,
-            expressions
-                .iter()
-                .map(|expression_data| expression_data.column_properties.clone())
-                .collect(),
-        );
+        let properties: Vec<_> = expressions
+            .iter()
+            .map(|expression_data| expression_data.properties.as_ref().clone())
+            .collect();
+        let properties = TableProperties::Table(properties.as_slice().into());
 
         let error_reporter = self.error_reporter.clone();
 
@@ -1192,7 +1160,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                             .eval(&args)
                             .unwrap_with_reporter_and_trace(
                                 &error_reporter,
-                                &expression_data.column_properties.trace,
+                                expression_data.properties.trace(),
                             );
                         result
                     });
@@ -1203,6 +1171,26 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(self
             .tables
             .alloc(Table::from_collection(new_values).with_properties(Arc::new(properties))))
+    }
+
+    fn columns_to_table_properties(
+        &mut self,
+        columns: Vec<(ColumnHandle, ColumnPath)>,
+    ) -> Result<TableProperties> {
+        let properties: Result<Vec<_>> = columns
+            .into_iter()
+            .map(|(column_handle, path)| {
+                let properties = self
+                    .columns
+                    .get(column_handle)
+                    .ok_or(Error::InvalidColumnHandle)?
+                    .properties
+                    .clone();
+                Ok((path, properties.as_ref().clone()))
+            })
+            .collect();
+
+        TableProperties::from_paths(properties?)
     }
 
     fn columns_to_table(
@@ -1240,7 +1228,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
             Value::from(result.as_slice())
         }
-
         let column_handles: Vec<ColumnHandle> = columns.iter().map(|(handle, _)| *handle).collect();
         let tuples_collection = self.tuples(universe_handle, &column_handles)?;
         let tuples: Collection<S, (Key, Arc<[Value]>)> = match tuples_collection {
@@ -1255,6 +1242,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }),
             TupleCollection::More(c) => c,
         };
+        let properties = self.columns_to_table_properties(columns.clone())?;
+
         let mut paths: Vec<(usize, Vec<usize>)> = columns
             .into_iter()
             .enumerate()
@@ -1265,13 +1254,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 )),
             })
             .collect::<Result<_>>()?;
+
         paths.sort_by(|(_, path_i), (_, path_j)| path_i.partial_cmp(path_j).unwrap());
 
         let table_values = tuples.map_named("columns_to_table:pack", move |(key, values)| {
             (key, produce_nested_tuple(&paths, 0, &values))
         });
 
-        Ok(self.tables.alloc(Table::from_collection(table_values)))
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(table_values).with_properties(Arc::new(properties))))
     }
 
     fn table_column(
@@ -1285,6 +1277,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
+        let properties = column_path.extract_properties(&table.properties)?;
         let values = table
             .values()
             .map_named("table_column::extract", move |(key, tuple)| {
@@ -1295,9 +1288,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         .unwrap_with_reporter(&error_reporter),
                 )
             });
-        let handle = self
-            .columns
-            .alloc(Column::from_collection(universe_handle, values));
+
+        let column =
+            Column::from_collection(universe_handle, values).with_properties(Arc::new(properties));
+        let handle = self.columns.alloc(column);
         Ok(handle)
     }
 
@@ -1314,6 +1308,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(universe_handle)
     }
 
+    fn table_properties(&mut self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        Ok(table.properties.clone())
+    }
+
     fn flatten_table_storage(
         &mut self,
         table_handle: TableHandle,
@@ -1323,7 +1325,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-
+        let properties: Result<Vec<_>> = column_paths
+            .iter()
+            .map(|path| path.extract_properties(&table.properties))
+            .collect();
         let table_values =
             table
                 .values()
@@ -1335,7 +1340,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     // FIXME: unwrap_or needed now to support ExternalMaterializedColumns in iterate
                     (key, Value::Tuple(new_values))
                 });
-        let table_handle = self.tables.alloc(Table::from_collection(table_values));
+        let properties = Arc::new(TableProperties::Table(properties?.as_slice().into()));
+        let table_handle = self
+            .tables
+            .alloc(Table::from_collection(table_values).with_properties(properties));
         Ok(table_handle)
     }
 
@@ -1379,18 +1387,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(self
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
-    }
-
-    fn id_column(&mut self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        let universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-        let column_handle = *universe.id_column.get_or_init(|| {
-            self.columns
-                .alloc(Column::from_universe(universe_handle, universe))
-        });
-        Ok(column_handle)
     }
 
     fn filter_table(
@@ -1890,111 +1886,62 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .alloc(Table::from_arranged(updated_values).with_properties(table_properties)))
     }
 
-    fn create_dataflow_reducer(reducer: Reducer) -> Rc<dyn DataflowReducer<S>> {
-        match reducer {
-            Reducer::Count => Rc::new(CountReducer),
-            Reducer::FloatSum => Rc::new(FloatSumReducer),
-            Reducer::IntSum => Rc::new(IntSumReducer),
-            Reducer::ArraySum => Rc::new(ArraySumReducer),
-            Reducer::Unique => Rc::new(UniqueReducer),
-            Reducer::Min => Rc::new(MinReducer),
-            Reducer::ArgMin => Rc::new(ArgMinReducer),
-            Reducer::Max => Rc::new(MaxReducer),
-            Reducer::ArgMax => Rc::new(ArgMaxReducer),
-            Reducer::SortedTuple(skip_nones) => Rc::new(SortedTupleReducer::new(skip_nones)),
-            Reducer::Tuple(skip_nones) => Rc::new(TupleReducer::new(skip_nones)),
-            Reducer::Any => Rc::new(AnyReducer),
-        }
-    }
-
-    fn group_by_table(
+    fn gradual_broadcast(
         &mut self,
-        table_handle: TableHandle,
-        grouping_columns_paths: Vec<ColumnPath>,
-        reducers: Vec<ReducerData>,
-        set_id: bool,
+        input_table_handle: TableHandle,
+        threshold_table_handle: TableHandle,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        if set_id {
-            assert!(grouping_columns_paths.len() == 1);
-        }
         let table = self
             .tables
-            .get(table_handle)
+            .get(input_table_handle)
             .ok_or(Error::InvalidTableHandle)?;
+        let threshold_table = self
+            .tables
+            .get(threshold_table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+        let error_reporter = self.error_reporter.clone();
+        let threshold_collection_to_process = threshold_table.values().map_named(
+            "trim to lower, value, upper",
+            move |(id, values)| {
+                let lower = lower_path
+                    .extract(&id, &values)
+                    .unwrap_with_reporter(&error_reporter)
+                    .as_ordered_float()
+                    .unwrap_with_reporter(&error_reporter);
 
-        let error_reporter_1 = self.error_reporter.clone();
-        let reducer_impls: Vec<_> = reducers
-            .iter()
-            .map(|reducer_data| Self::create_dataflow_reducer(reducer_data.reducer))
-            .collect();
+                let value = value_path
+                    .extract(&id, &values)
+                    .unwrap_with_reporter(&error_reporter)
+                    .as_ordered_float()
+                    .unwrap_with_reporter(&error_reporter);
 
-        let with_new_key =
-            table
-                .values()
-                .map_named("group_by_table::new_key", move |(key, values)| {
-                    let new_key_parts: Vec<_> = grouping_columns_paths
-                        .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter_1);
-                    let new_key = if set_id {
-                        new_key_parts
-                            .first()
-                            .unwrap()
-                            .as_pointer()
-                            .unwrap_with_reporter(&error_reporter_1)
-                    } else {
-                        Key::for_values(&new_key_parts)
-                    };
-                    (key, new_key, values)
-                });
+                let upper = upper_path
+                    .extract(&id, &values)
+                    .unwrap_with_reporter(&error_reporter)
+                    .as_ordered_float()
+                    .unwrap_with_reporter(&error_reporter);
 
-        let reduced_columns: Vec<_> = reducer_impls
-            .iter()
-            .zip(reducers)
-            .map(|(reducer_impl, data)| {
-                let error_reporter_2 = self.error_reporter.clone();
-                let with_extracted_value = with_new_key.map_named(
-                    "group_by_table::reducers",
-                    move |(key, new_key, values)| {
-                        (
-                            key,
-                            new_key,
-                            data.column_paths
-                                .iter()
-                                .map(|path| path.extract(&key, &values))
-                                .try_collect()
-                                .unwrap_with_reporter(&error_reporter_2),
-                        )
-                    },
-                );
-                reducer_impl.clone().reduce(&with_extracted_value)
-            })
-            .collect();
-        let new_values = if let Some(first) = reduced_columns.first() {
-            let mut joined: Collection<S, (Key, Arc<[Value]>)> = first
-                .map_named("group_by_table::join", |(key, value)| {
-                    (key, Arc::from([value].as_slice()))
-                });
-            for column in reduced_columns.iter().skip(1) {
-                let joined_arranged: ArrangedByKey<S, Key, Arc<[Value]>> = joined.arrange();
-                let column_arranged: ArrangedByKey<S, Key, Value> = column.arrange();
-                joined = joined_arranged.join_core(&column_arranged, |key, values, value| {
-                    let new_values: Arc<[Value]> = values.iter().chain([value]).cloned().collect();
-                    once((*key, new_values))
-                });
-            }
-            joined.map_named("group_by_table::wrap", |(key, values)| {
-                (key, Value::Tuple(values))
-            })
-        } else {
-            with_new_key
-                .map_named("group_by_table::empty", |(_key, new_key, _values)| {
-                    (new_key, Value::Tuple(Arc::from([])))
-                })
-                .distinct()
-        };
+                (id, (lower, value, upper))
+            },
+        );
+
+        let new_values = table
+            .values()
+            .as_generic()
+            .gradual_broadcast(&threshold_collection_to_process)
+            .map_named(
+                "wrap broadcast result into value",
+                move |(id, (old_values, new_cell))| {
+                    (
+                        id,
+                        Value::Tuple(Arc::from([old_values, Value::from(new_cell)])),
+                    )
+                },
+            );
         Ok(self
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
@@ -2472,6 +2419,170 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
     }
 }
 
+impl<S: MaybeTotalScope> DataflowReducer<S> for StatefulReducer
+where
+    S::MaybeTotalTimestamp: TotalOrder,
+{
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+        values
+            .map_named(
+                "StatefulReducer::reduce::init",
+                |(_source_key, result_key, values)| (result_key, values),
+            )
+            .stateful_reduce_named("StatefulReducer::reduce::reduce", move |state, values| {
+                self.combine(state, values)
+            })
+            .into()
+    }
+}
+
+trait CreateDataflowReducer<S: MaybeTotalScope> {
+    fn create_dataflow_reducer(reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>>;
+}
+
+impl<S> CreateDataflowReducer<S> for NotTotal
+where
+    S: MaybeTotalScope,
+{
+    fn create_dataflow_reducer(reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>> {
+        let res: Rc<dyn DataflowReducer<S>> = match reducer {
+            Reducer::Count => Rc::new(CountReducer),
+            Reducer::FloatSum => Rc::new(FloatSumReducer),
+            Reducer::IntSum => Rc::new(IntSumReducer),
+            Reducer::ArraySum => Rc::new(ArraySumReducer),
+            Reducer::Unique => Rc::new(UniqueReducer),
+            Reducer::Min => Rc::new(MinReducer),
+            Reducer::ArgMin => Rc::new(ArgMinReducer),
+            Reducer::Max => Rc::new(MaxReducer),
+            Reducer::ArgMax => Rc::new(ArgMaxReducer),
+            Reducer::SortedTuple { skip_nones } => Rc::new(SortedTupleReducer::new(*skip_nones)),
+            Reducer::Tuple { skip_nones } => Rc::new(TupleReducer::new(*skip_nones)),
+
+            Reducer::Any => Rc::new(AnyReducer),
+            Reducer::Stateful { .. } => return Err(Error::NotSupportedInIteration),
+        };
+
+        Ok(res)
+    }
+}
+
+impl<S> CreateDataflowReducer<S> for Total
+where
+    S: MaybeTotalScope,
+    S::Timestamp: TotalOrder,
+{
+    fn create_dataflow_reducer(reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>> {
+        let res: Rc<dyn DataflowReducer<S>> = match reducer {
+            Reducer::Stateful { combine_fn } => Rc::new(StatefulReducer::new(combine_fn.clone())),
+            other => NotTotal::create_dataflow_reducer(other)?,
+        };
+
+        Ok(res)
+    }
+}
+
+impl<S: MaybeTotalScope> DataflowGraphInner<S>
+where
+    <S::MaybeTotalTimestamp as MaybeTotalTimestamp>::IsTotal: CreateDataflowReducer<S>,
+{
+    fn group_by_table(
+        &mut self,
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reducers: Vec<ReducerData>,
+        set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        if set_id {
+            assert!(grouping_columns_paths.len() == 1);
+        }
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter_1 = self.error_reporter.clone();
+        let reducer_impls: Vec<_> = reducers
+            .iter()
+            .map(|reducer_data| {
+                <S::MaybeTotalTimestamp as MaybeTotalTimestamp>::IsTotal::create_dataflow_reducer(
+                    &reducer_data.reducer,
+                )
+            })
+            .try_collect()?;
+
+        let with_new_key =
+            table
+                .values()
+                .map_named("group_by_table::new_key", move |(key, values)| {
+                    let new_key_parts: Vec<_> = grouping_columns_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter_1);
+                    let new_key = if set_id {
+                        new_key_parts
+                            .first()
+                            .unwrap()
+                            .as_pointer()
+                            .unwrap_with_reporter(&error_reporter_1)
+                    } else {
+                        Key::for_values(&new_key_parts)
+                    };
+                    (key, new_key, values)
+                });
+
+        let reduced_columns: Vec<_> = reducer_impls
+            .iter()
+            .zip(reducers)
+            .map(|(reducer_impl, data)| {
+                let error_reporter_2 = self.error_reporter.clone();
+                let with_extracted_value = with_new_key.map_named(
+                    "group_by_table::reducers",
+                    move |(key, new_key, values)| {
+                        (
+                            key,
+                            new_key,
+                            data.column_paths
+                                .iter()
+                                .map(|path| path.extract(&key, &values))
+                                .try_collect()
+                                .unwrap_with_reporter(&error_reporter_2),
+                        )
+                    },
+                );
+                reducer_impl.clone().reduce(&with_extracted_value)
+            })
+            .collect();
+        let new_values = if let Some(first) = reduced_columns.first() {
+            let mut joined: Collection<S, (Key, Arc<[Value]>)> = first
+                .map_named("group_by_table::join", |(key, value)| {
+                    (key, Arc::from([value].as_slice()))
+                });
+            for column in reduced_columns.iter().skip(1) {
+                let joined_arranged: ArrangedByKey<S, Key, Arc<[Value]>> = joined.arrange();
+                let column_arranged: ArrangedByKey<S, Key, Value> = column.arrange();
+                joined = joined_arranged.join_core(&column_arranged, |key, values, value| {
+                    let new_values: Arc<[Value]> = values.iter().chain([value]).cloned().collect();
+                    once((*key, new_values))
+                });
+            }
+            joined.map_named("group_by_table::wrap", |(key, values)| {
+                (key, Value::Tuple(values))
+            })
+        } else {
+            with_new_key
+                .map_named("group_by_table::empty", |(_key, new_key, _values)| {
+                    (new_key, Value::Tuple(Arc::from([])))
+                })
+                .distinct()
+        };
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
+}
+
 #[derive(Debug, Clone)]
 enum OutputEvent {
     Commit(Option<u64>),
@@ -2503,13 +2614,25 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let table_values = table_values.reshard();
         table_values.probe_with(&mut self.input_probe);
 
-        let realtime_reader_needed = self.scope.index() < parallel_readers;
+        let realtime_reader_needed = self.scope.index() < parallel_readers
+            && self
+                .persistence_config
+                .as_ref()
+                .map_or(true, |config| config.continue_after_replay);
         let persisted_table =
             reader.persistent_id().is_some() && self.worker_persistent_storage.is_some();
 
         if realtime_reader_needed || persisted_table {
             let persistent_id = reader.persistent_id();
             let reader_storage_type = reader.storage_type();
+            let replay_mode = self
+                .persistence_config
+                .as_ref()
+                .map_or(ReplayMode::Batch, |config| config.replay_mode);
+            let snapshot_access = self
+                .persistence_config
+                .as_ref()
+                .map_or(SnapshotAccess::Full, |config| config.snapshot_access);
 
             let connector = Connector::<S::Timestamp>::new(commit_duration, parser.column_count());
             let state = connector.run(
@@ -2535,10 +2658,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                         Key::for_values(&values)
                     }
                 },
+                self.output_probe.clone(),
                 self.worker_persistent_storage.clone(),
                 self.connector_monitors.len(),
                 realtime_reader_needed,
                 external_persistent_id,
+                replay_mode,
+                snapshot_access,
                 self.error_reporter.clone(),
             )?;
 
@@ -2595,6 +2721,34 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             },
             mark_forgetting_records,
         );
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
+    }
+
+    fn forget_immediately(
+        &mut self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let forgetting_stream = table.values().negate().delay(|time| {
+            // can be called on times other than appearing in records
+            time + 1 // produce neu times
+        });
+        let new_table = table
+            .values()
+            .inner
+            .inspect(|(_data, time, _diff)| {
+                assert!(time % 2 == 0, "Neu time encountered at forget() input.");
+            })
+            .as_collection()
+            .concat(&forgetting_stream);
 
         Ok(self
             .tables
@@ -2782,6 +2936,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         mut on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        skip_persisted_batch: bool,
     ) -> Result<()> {
         let mut vector = Vec::new();
 
@@ -2793,6 +2948,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             .as_ref()
             .map(|m| m.lock().unwrap().register_sink());
         let global_persistent_storage = self.global_persistent_storage.clone();
+        let skip_initial_time = skip_persisted_batch && global_persistent_storage.is_some();
         self.extract_columns(table_handle, column_paths)?
             .as_collection()
             .consolidate_nondecreasing()
@@ -2803,6 +2959,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                     while let Some((_time, data)) = input.next() {
                         data.swap(&mut vector);
                         for ((key, values), time, diff) in vector.drain(..) {
+                            if time == ARTIFICIAL_TIME_ON_REWIND_START && skip_initial_time {
+                                continue;
+                            }
                             callback(key, &values, time, diff)
                                 .unwrap_with_reporter(&error_reporter);
                         }
@@ -3382,7 +3541,10 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
     }
 }
 
-impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
+impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S>
+where
+    <S::MaybeTotalTimestamp as MaybeTotalTimestamp>::IsTotal: CreateDataflowReducer<S>,
+{
     fn worker_index(&self) -> usize {
         self.0.borrow().worker_index()
     }
@@ -3488,6 +3650,10 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0.borrow_mut().table_universe(table_handle)
     }
 
+    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
+        self.0.borrow_mut().table_properties(table_handle)
+    }
+
     fn flatten_table_storage(
         &self,
         table_handle: TableHandle,
@@ -3534,7 +3700,15 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _mark_forgetting_records: bool,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        Err(Error::ForgetNotSupportedInIteration)
+        Err(Error::NotSupportedInIteration)
+    }
+
+    fn forget_immediately(
+        &self,
+        _table_handle: TableHandle,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        Err(Error::NotSupportedInIteration)
     }
 
     fn filter_out_results_of_forgetting(
@@ -3542,7 +3716,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        Err(Error::ForgetNotSupportedInIteration)
+        Err(Error::NotSupportedInIteration)
     }
 
     fn freeze(
@@ -3552,7 +3726,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _current_time_column_path: ColumnPath,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        Err(Error::FreezeNotSupportedInIteration)
+        Err(Error::NotSupportedInIteration)
     }
 
     fn buffer(
@@ -3562,7 +3736,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _current_time_column_path: ColumnPath,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        Err(Error::BufferNotSupportedInIteration)
+        Err(Error::NotSupportedInIteration)
     }
 
     fn restrict_column(
@@ -3588,10 +3762,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             same_universes,
             table_properties,
         )
-    }
-
-    fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.0.borrow_mut().id_column(universe_handle)
     }
 
     fn intersect_tables(
@@ -3708,6 +3878,25 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         )
     }
 
+    fn gradual_broadcast(
+        &self,
+        input_table_handle: TableHandle,
+        threshold_table_handle: TableHandle,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().gradual_broadcast(
+            input_table_handle,
+            threshold_table_handle,
+            lower_path,
+            value_path,
+            upper_path,
+            table_properties,
+        )
+    }
+
     fn ix_table(
         &self,
         to_ix_handle: TableHandle,
@@ -3791,6 +3980,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _on_end: Box<dyn FnMut() -> DynResult<()>>,
         _table_handle: TableHandle,
         _column_paths: Vec<ColumnPath>,
+        _skip_persisted_batch: bool,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
     }
@@ -3978,6 +4168,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0.borrow_mut().table_universe(table_handle)
     }
 
+    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
+        self.0.borrow_mut().table_properties(table_handle)
+    }
+
     fn flatten_table_storage(
         &self,
         table_handle: TableHandle,
@@ -4012,10 +4206,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        skip_persisted_batch: bool,
     ) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .subscribe_table(wrapper, callback, on_end, table_handle, column_paths)
+        self.0.borrow_mut().subscribe_table(
+            wrapper,
+            callback,
+            on_end,
+            table_handle,
+            column_paths,
+            skip_persisted_batch,
+        )
     }
 
     fn filter_table(
@@ -4044,6 +4244,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             mark_forgetting_records,
             table_properties,
         )
+    }
+
+    fn forget_immediately(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .forget_immediately(table_handle, table_properties)
     }
 
     fn filter_out_results_of_forgetting(
@@ -4109,10 +4319,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             same_universes,
             table_properties,
         )
-    }
-
-    fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.0.borrow_mut().id_column(universe_handle)
     }
 
     fn intersect_tables(
@@ -4225,6 +4431,25 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             grouping_columns_paths,
             reducers,
             set_id,
+            table_properties,
+        )
+    }
+
+    fn gradual_broadcast(
+        &self,
+        input_table_handle: TableHandle,
+        threshold_table_handle: TableHandle,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().gradual_broadcast(
+            input_table_handle,
+            threshold_table_handle,
+            lower_path,
+            value_path,
+            upper_path,
             table_properties,
         )
     }
@@ -4397,7 +4622,7 @@ where
     parse_env_var(name)?.ok_or_else(|| format!("{name} is not set"))
 }
 
-pub fn config_from_env() -> Result<Config, String> {
+pub fn config_from_env() -> Result<(Config, usize), String> {
     let mut threads: usize = parse_env_var("PATHWAY_THREADS")?.unwrap_or(1);
     let mut processes: usize = parse_env_var("PATHWAY_PROCESSES")?.unwrap_or(1);
     if threads == 0 {
@@ -4441,7 +4666,7 @@ pub fn config_from_env() -> Result<Config, String> {
     } else {
         Config::thread()
     };
-    Ok(config)
+    Ok((config, workers))
 }
 
 #[allow(clippy::too_many_lines)] // XXX
@@ -4456,6 +4681,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceManagerOuterConfig>,
+    num_workers: usize,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
@@ -4474,9 +4700,11 @@ where
         CommunicationConfig::Cluster { process, .. } => process,
         _ => 0,
     };
-    let global_persistent_storage = persistence_config
-        .as_ref()
-        .map(|cfg| Arc::new(Mutex::new(cfg.create_workers_persistence_coordinator())));
+    let global_persistent_storage = persistence_config.as_ref().map(|cfg| {
+        Arc::new(Mutex::new(
+            cfg.create_workers_persistence_coordinator(num_workers),
+        ))
+    });
 
     let guards = execute(config, move |worker| {
         catch_unwind(AssertUnwindSafe(|| {

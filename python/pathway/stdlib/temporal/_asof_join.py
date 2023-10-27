@@ -195,7 +195,13 @@ class AsofJoinResult(DesugaringContext):
     _defaults: dict[expr.InternalColRef, Any]
     _all_cols: list[_SelectColumn]
 
-    def __init__(self, side_data, mode, defaults, direction):
+    def __init__(
+        self,
+        side_data: dict[bool, _SideData],
+        mode: pw.JoinMode,
+        defaults: dict[expr.InternalColRef, Any],
+        direction: Direction,
+    ):
         super().__init__()
         self._side_data = side_data
         self._mode = mode

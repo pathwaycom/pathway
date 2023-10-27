@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from pathway.internals import api
 
 
-@dataclass
+@dataclass(frozen=True)
 class Frame:
     filename: str
     line_number: int | None
@@ -37,7 +37,7 @@ class Frame:
         return self.function == "_pathway_trace_marker"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Trace:
     frames: list[Frame]
     user_frame: Frame | None

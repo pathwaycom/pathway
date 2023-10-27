@@ -300,6 +300,27 @@ fn test_wrapper_basic() {
 }
 
 #[test]
+fn test_wrapper_split_batch_by_time() {
+    let input = vec![vec![
+        ((1, (100, 11)), 0, 1),
+        ((2, (100, 22)), 0, 1),
+        ((3, (200, 33)), 2, 1),
+        ((4, (200, 44)), 2, 1),
+        ((5, (300, 55)), 4, 1),
+        ((6, (300, 66)), 4, 1),
+    ]];
+    let expected = vec![
+        vec![((1, (100, 11)), 2, 1), ((2, (100, 22)), 2, 1)],
+        vec![((3, (200, 33)), 4, 1), ((4, (200, 44)), 4, 1)],
+    ];
+
+    run_test(input, expected, |coll| {
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1)
+            .arrange_by_key()
+    });
+}
+
+#[test]
 fn test_wrapper_late_forwarding() {
     let input = vec![
         vec![((1, (100, 11)), 0, 1), ((2, (100, 22)), 0, 1)],

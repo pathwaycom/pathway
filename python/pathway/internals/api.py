@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import datetime
-from typing import Union
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar, Union
 
 import numpy as np
 import pandas as pd
 
 from pathway.engine import *
-from pathway.internals import dtype as dt
+from pathway.internals import dtype as dt, json
 
-Value = Union[
+if TYPE_CHECKING:
+    _Value: TypeAlias = "Value"
+else:
+    # Beartype has problems with the recursive definition
+    _Value: TypeAlias = Any
+
+Value: TypeAlias = Union[
     None,
     int,
     float,
@@ -22,9 +28,18 @@ Value = Union[
     datetime.datetime,
     datetime.timedelta,
     np.ndarray,
-    tuple["Value", ...],
+    json.Json,
+    dict[str, _Value],
+    tuple[_Value, ...],
 ]
 CapturedTable = dict[Pointer, tuple[Value, ...]]
+
+S = TypeVar("S", bound=Value)
+
+
+class CombineMany(Protocol, Generic[S]):
+    def __call__(self, state: S | None, rows: list[tuple[list[Value], int]]) -> S:
+        ...
 
 
 def static_table_from_pandas(

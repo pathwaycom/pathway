@@ -25,6 +25,7 @@ from pathway.internals import (
     schema,
     table,
 )
+from pathway.internals.api import Value
 from pathway.internals.asynchronous import (
     AsyncRetryStrategy,
     CacheStrategy,
@@ -96,8 +97,8 @@ def iterate(
 @trace_user_frame
 def apply(
     fun: Callable,
-    *args: expr.ColumnExpressionOrValue,
-    **kwargs: expr.ColumnExpressionOrValue,
+    *args: expr.ColumnExpression | Value,
+    **kwargs: expr.ColumnExpression | Value,
 ) -> expr.ColumnExpression:
     """Applies function to column expressions, column-wise.
     Output column type deduced from type-annotations of a function.
@@ -153,8 +154,8 @@ def udf(fun: Callable):
 
     @functools.wraps(fun)
     def udf_fun(
-        *args: expr.ColumnExpressionOrValue,
-        **kwargs: expr.ColumnExpressionOrValue,
+        *args: expr.ColumnExpression | Value,
+        **kwargs: expr.ColumnExpression | Value,
     ):
         return apply(fun, *args, **kwargs)
 
@@ -236,8 +237,8 @@ def udf_async(
 def numba_apply(
     fun: Callable,
     numba_signature: str,
-    *args: expr.ColumnExpressionOrValue,
-    **kwargs: expr.ColumnExpressionOrValue,
+    *args: expr.ColumnExpression | Value,
+    **kwargs: expr.ColumnExpression | Value,
 ) -> expr.ColumnExpression:
     """Applies function to column expressions, column-wise.
     Function has to be numba compilable.
@@ -288,8 +289,8 @@ def numba_apply(
 def apply_with_type(
     fun: Callable,
     ret_type: type | dt.DType,
-    *args: expr.ColumnExpressionOrValue,
-    **kwargs: expr.ColumnExpressionOrValue,
+    *args: expr.ColumnExpression | Value,
+    **kwargs: expr.ColumnExpression | Value,
 ) -> expr.ColumnExpression:
     """Applies function to column expressions, column-wise.
     Output column type is provided explicitly.
@@ -318,8 +319,8 @@ def apply_with_type(
 @trace_user_frame
 def apply_async(
     fun: Callable,
-    *args: expr.ColumnExpressionOrValue,
-    **kwargs: expr.ColumnExpressionOrValue,
+    *args: expr.ColumnExpression | Value,
+    **kwargs: expr.ColumnExpression | Value,
 ) -> expr.ColumnExpression:
     r"""Applies function asynchronously to column expressions, column-wise.
     Output column type deduced from type-annotations of a function.
@@ -355,7 +356,7 @@ def apply_async(
 
 
 def declare_type(
-    target_type, col: expr.ColumnExpressionOrValue
+    target_type, col: expr.ColumnExpression | Value
 ) -> expr.DeclareTypeExpression:
     """Used to change the type of a column to a particular type.
     Disclaimer: it only changes type in a schema, it does not affect values stored.
@@ -382,7 +383,7 @@ def declare_type(
     return expr.DeclareTypeExpression(target_type, col)
 
 
-def cast(target_type: Any, col: expr.ColumnExpressionOrValue) -> expr.CastExpression:
+def cast(target_type: Any, col: expr.ColumnExpression | Value) -> expr.CastExpression:
     """Changes the type of the column to target_type and converts the data of this column
 
     Example:
@@ -417,7 +418,7 @@ def cast(target_type: Any, col: expr.ColumnExpressionOrValue) -> expr.CastExpres
 
 @runtime_type_check
 @trace_user_frame
-def coalesce(*args: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
+def coalesce(*args: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """For arguments list arg_1, arg_2, ..., arg_n returns first not-None value.
 
     Example:
@@ -442,7 +443,7 @@ def coalesce(*args: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
 
 @runtime_type_check
 @trace_user_frame
-def require(val, *deps: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
+def require(val, *deps: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """Returns val iff every dep in deps is not-None.
     Returns None otherwise.
 
@@ -469,9 +470,9 @@ def require(val, *deps: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
 @runtime_type_check
 @trace_user_frame
 def if_else(
-    if_clause: expr.ColumnExpressionOrValue,
-    then_clause: expr.ColumnExpressionOrValue,
-    else_clause: expr.ColumnExpressionOrValue,
+    if_clause: expr.ColumnExpression | Value,
+    then_clause: expr.ColumnExpression | Value,
+    else_clause: expr.ColumnExpression | Value,
 ) -> expr.ColumnExpression:
     """Equivalent to::
 
@@ -501,7 +502,7 @@ def if_else(
 
 @runtime_type_check
 @trace_user_frame
-def make_tuple(*args: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
+def make_tuple(*args: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """
     Creates a tuple from the provided expressions.
 
@@ -539,7 +540,7 @@ def make_tuple(*args: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
     return expr.MakeTupleExpression(*args)
 
 
-def unwrap(col: expr.ColumnExpressionOrValue) -> expr.ColumnExpression:
+def unwrap(col: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """Changes the type of the column from Optional[T] to T. If there is any None in the
     column this operation will raise an exception.
 

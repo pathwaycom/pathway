@@ -5920,7 +5920,7 @@ def test_table_transformer_decorator():
     class MySchema3(pw.Schema):
         foo: int
         bar: float
-        baz: StopAsyncIteration
+        baz: Any
 
     t1 = empty_from_schema(MySchema1)
     t2 = empty_from_schema(MySchema2)
@@ -5960,7 +5960,7 @@ def test_table_transformer_decorator_args_as_mapping():
     class MySchema3(pw.Schema):
         foo: int = pw.column_definition(primary_key=False)
         bar: float
-        baz: StopAsyncIteration
+        baz: Any
 
     t1 = empty_from_schema(MySchema1)
     t2 = empty_from_schema(MySchema2)
@@ -6003,7 +6003,7 @@ def test_table_transformer_decorator_no_args():
     class MySchema3(pw.Schema):
         foo: int
         bar: float
-        baz: StopAsyncIteration
+        baz: Any
 
     t1 = empty_from_schema(MySchema1)
     t2 = empty_from_schema(MySchema2)

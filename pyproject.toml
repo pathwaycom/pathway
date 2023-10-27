@@ -15,9 +15,12 @@ classifiers = [
 dependencies = [
     "aiohttp >= 3.8.4",
     "click >= 8.1",
+    "geopy >= 2.4.0",
+    "h3 >= 3.7.6",
     "numpy >= 1.21",
     "pandas >= 1.3",
     "scikit-learn >= 1.0",
+    "shapely >= 2.0.1",
     "sqlglot == 10.6.1",
     "numba >= 0.56; python_version < '3.12'",
     "pyarrow >= 10.0.0",
@@ -34,6 +37,8 @@ dependencies = [
 tests = [
     "pytest >= 7.4.2, < 8.0.0",
     "pytest-xdist >= 3.3.1, < 4.0.0",
+    "networkx",
+    "python-louvain",
 ]
 
 [project.urls]

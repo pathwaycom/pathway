@@ -17,7 +17,7 @@ use pathway_engine::connectors::data_storage::{
     DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
 };
 use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
-use pathway_engine::connectors::{Connector, Entry};
+use pathway_engine::connectors::{Connector, Entry, ReplayMode, SnapshotAccess};
 use pathway_engine::engine::Key;
 use pathway_engine::persistence::frontier::OffsetAntichain;
 use pathway_engine::persistence::sync::{
@@ -52,11 +52,21 @@ pub fn full_cycle_read(
 
     let main_thread = thread::current();
     let (sender, receiver) = mpsc::channel();
-    let mut snapshot_writer =
-        Connector::<u64>::snapshot_writer(reader.as_ref(), persistent_storage).unwrap();
+    let mut snapshot_writer = Connector::<u64>::snapshot_writer(
+        reader.as_ref(),
+        persistent_storage,
+        SnapshotAccess::Full,
+    )
+    .unwrap();
 
     let mut reader = reader.build().expect("building the reader failed");
-    Connector::<u64>::read_snapshot(&mut *reader, persistent_storage, &sender);
+    Connector::<u64>::read_snapshot(
+        &mut *reader,
+        persistent_storage,
+        &sender,
+        ReplayMode::Batch,
+        SnapshotAccess::Full,
+    );
     Connector::<u64>::read_realtime_updates(&mut *reader, &sender, &main_thread);
     let result = get_entries_in_receiver(receiver);
 
@@ -184,6 +194,7 @@ pub fn create_persistence_manager(
 
     let global_tracker = Arc::new(Mutex::new(WorkersPersistenceCoordinator::new(
         Duration::ZERO,
+        1,
     )));
 
     let tracker = Arc::new(Mutex::new(
@@ -192,6 +203,9 @@ pub fn create_persistence_manager(
                 Duration::ZERO,
                 MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
                 StreamStorageConfig::Filesystem(fs_path.to_path_buf()),
+                SnapshotAccess::Full,
+                ReplayMode::Batch,
+                true,
             )
             .into_inner(0, 1),
         )

@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import time
+import math
 
 import pathway.internals as pw
 from pathway.internals.fingerprints import fingerprint
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.trace import trace_user_frame
-from pathway.stdlib.graphs.common import Clustering, Edge, Graph, Weight
+from pathway.stdlib.graphs.common import Clustering, Edge, Weight
+from pathway.stdlib.graphs.graph import WeightedGraph
 from pathway.stdlib.utils.filtering import argmax_rows
 
 
 def _propose_clusters(
     edges: pw.Table[Edge | Weight],
     clustering: pw.Table[Clustering],
-    total_weight: pw.Table,
 ) -> pw.Table[Clustering]:
     r"""
     Given a table of weighted edges and a clustering, this function for finds each vertex
@@ -102,37 +102,41 @@ def _propose_clusters(
         pw.this.vc,
         gain=pw.reducers.sum(pw.this.weight)
         + self_loop_contribution.ix(pw.this.u).contr / 2,
+        total_weight=clustering.ix(pw.this.u).total_weight,
     )
 
     def louvain_gain(gain, degree, penalty, total):
-        return 2 * gain - degree * (2 * penalty + degree) / total
+        return 2.0 * gain - degree * (2.0 * penalty + degree) / total
 
-    gain_from_moving = aggregated_gain.join(total_weight, id=aggregated_gain.id).select(
-        aggregated_gain.u,
-        aggregated_gain.vc,
+    gain_from_moving = aggregated_gain.select(
+        pw.this.u,
+        pw.this.vc,
+        pw.this.total_weight,
         gain=pw.apply(
             louvain_gain,
             aggregated_gain.gain,
-            vertex_degrees.ix(aggregated_gain.u, context=pw.this).degree,
-            cluster_penalties.ix(aggregated_gain.vc, context=pw.this).unscaled_penalty,
-            total_weight.m,
+            vertex_degrees.ix(aggregated_gain.u).degree,
+            cluster_penalties.ix(aggregated_gain.vc).unscaled_penalty,
+            aggregated_gain.total_weight,
         ),
     )
 
     gain_for_staying = (
-        clustering.select(u=clustering.id, vc=clustering.c)
+        clustering.select(
+            u=clustering.id, vc=clustering.c, total_weight=clustering.total_weight
+        )
         .with_id_from(pw.this.u, pw.this.vc)
-        .join(total_weight, id=pw.left.id)
         .select(
-            pw.left.u,
-            pw.left.vc,
+            pw.this.u,
+            pw.this.vc,
+            pw.this.total_weight,
             gain=pw.apply(
                 louvain_gain,
                 aggregated_gain.ix(pw.this.id).gain,
                 vertex_degrees.ix(pw.this.u).degree,
                 cluster_penalties.ix(pw.this.vc).unscaled_penalty
                 - vertex_degrees.ix(pw.this.u).degree,
-                total_weight.m,
+                pw.this.total_weight,
             ),
         )
     )
@@ -141,13 +145,13 @@ def _propose_clusters(
     return (
         argmax_rows(ret, ret.u, what=ret.gain)
         .with_id(pw.this.u)
-        .select(c=pw.this.vc)
+        .select(c=pw.this.vc, total_weight=pw.this.total_weight)
         .with_universe_of(clustering)
     )
 
 
 def _one_step(
-    G: Graph, clustering: pw.Table[Clustering], total_weight, iter
+    G: WeightedGraph, clustering: pw.Table[Clustering], iter
 ) -> pw.Table[Clustering]:
     r"""
     This function selects a set of vertices that can be moved in parallel,
@@ -168,18 +172,15 @@ def _one_step(
 
     # Select vertices that actually move, attach cluster of a vertex,
     # to determine the edge adjacency in the cluster graph, also on the u endpoint
-    #
-    # can I somehow tell MyPy that G.E has proper type?
-    proposed_clusters = _propose_clusters(G.E, clustering, total_weight)  # type: ignore
-
+    proposed_clusters = _propose_clusters(G.WE, clustering)
     candidate_moves = proposed_clusters.filter(
         proposed_clusters.c != clustering.ix(proposed_clusters.id).c
     ).with_columns(
         u=pw.this.id,
         uc=clustering.ix(pw.this.id).c,
         vc=pw.this.c,
+        total_weight=pw.this.total_weight,
     )
-
     """
     find independent set of edges in the cluster graph
     by selecting local maxima over random priority
@@ -190,10 +191,13 @@ def _one_step(
 
     # sample priorities
     candidate_moves += candidate_moves.select(r=pw.apply(rand, candidate_moves.id))
-
     # compute maximum priority over all incident edges
-    out_priorities = candidate_moves.select(candidate_moves.r, c=candidate_moves.uc)
-    in_priorities = candidate_moves.select(candidate_moves.r, c=candidate_moves.vc)
+    out_priorities = candidate_moves.select(
+        candidate_moves.r, c=candidate_moves.uc, total_weight=pw.this.total_weight
+    )
+    in_priorities = candidate_moves.select(
+        candidate_moves.r, c=candidate_moves.vc, total_weight=pw.this.total_weight
+    )
     all_priorities = pw.Table.concat_reindex(out_priorities, in_priorities)
     cluster_max_priority = argmax_rows(
         all_priorities, all_priorities.c, what=all_priorities.r
@@ -201,13 +205,14 @@ def _one_step(
 
     # take edges e with same priority as the max priorities of clusters
     # containing the endpoints of e
+
     delta = (
         candidate_moves.filter(
             (candidate_moves.r == cluster_max_priority.ix(candidate_moves.uc).r)
-            | (candidate_moves.r == cluster_max_priority.ix(candidate_moves.vc).r)
+            & (candidate_moves.r == cluster_max_priority.ix(candidate_moves.vc).r)
         )
         .with_id(pw.this.u)
-        .select(c=pw.this.vc)
+        .select(c=pw.this.vc, total_weight=pw.this.total_weight)
     )
 
     return clustering.update_rows(delta).with_universe_of(clustering)
@@ -215,59 +220,152 @@ def _one_step(
 
 @runtime_type_check
 @trace_user_frame
-def louvain_level(G: Graph, total_weight) -> pw.Table[Clustering]:
+def _louvain_level(G: WeightedGraph) -> pw.Table[Clustering]:
     r"""
     This function, given a weighted graph, finds a clustering that
     is a local maximum with respect to the objective function as defined
     by Louvain community detection algorithm
     """
-
-    # time.time() will be replaced with iteration counter (initially from a for loop
-    # that will replace fixed point, long term - form fixed point iteration counter)
-    clustering = G.V.select(c=G.V.id)
+    # arbitrary new ID generation;
+    # without re-generating we sometimes end up in a situation in which
+    # a cluster of id X does not contain a vertex of id X
+    clustering = G.V.select(c=G.V.pointer_from(G.V.id), total_weight=G.V.apx_value)
     return pw.iterate(
-        lambda clustering, V, E, total_weight: dict(
-            clustering=_one_step(Graph(V, E), clustering, total_weight, time.time())
+        lambda clustering, V, WE: dict(
+            clustering=_one_step(
+                WeightedGraph.from_vertices_and_weighted_edges(V, WE),
+                clustering,
+                # number below needs to be replaced by the iteration number
+                42,
+            )
         ),
         V=G.V,
-        E=G.E,
+        WE=G.WE,
         clustering=clustering,
-        total_weight=total_weight,
-    ).clustering
+    ).clustering.without(clustering.total_weight)
 
 
-@runtime_type_check
-@trace_user_frame
-def exact_modularity(G: Graph, C: pw.Table[Clustering], round_digits=16) -> pw.Table:
+def _louvain_level_fixed_iterations(G: WeightedGraph, number_of_iterations):
+    # arbitrary new ID generation;
+    # without re-generating we sometimes end up in a situation in which
+    # a cluster of id X does not contain a vertex of id X
+    clustering = G.V.select(c=G.V.pointer_from(G.V.id), total_weight=G.V.apx_value)
+
+    for iter in range(number_of_iterations):
+        clustering = _one_step(G, clustering, iter)
+    return clustering.without(clustering.total_weight)
+
+
+def _approximate_total_weight(edges: pw.Table[Edge | Weight], epsilon):
+    # compute total weight
+    exact = edges.groupby().reduce(m=pw.reducers.sum(edges.weight))
+    # return approximate total weight
+    return exact.select(
+        lower=pw.apply_with_type(
+            lambda x: (1 + epsilon) ** math.floor(math.log(x, 1 + epsilon)),
+            float,
+            exact.m,
+        ),
+        value=exact.m,
+        upper=pw.apply_with_type(
+            lambda x: (1 + epsilon) ** (math.floor(math.log(x, 1 + epsilon) + 1)),
+            float,
+            exact.m,
+        ),
+    )
+
+
+class louvain_communities_fixed_iterations:
+    hierarchical_clustering: pw.Table
+    clustering_levels: pw.Table
+    levels: int
+    G: WeightedGraph
+
+    def __init__(self, G: WeightedGraph, apx, levels):
+        self.G = G
+        self.levels = levels
+        self._louvain_communities_fixed_iterations(apx, levels)
+
+    def _louvain_communities_fixed_iterations(self, apx, levels):
+        initial_clustering = self.G.V.select(c=self.G.V.id, level=0)
+
+        # keeps hierarchical clustering:
+        # for each cluster it keeps
+        # - its level,
+        # - a pointer to a parent cluster
+        self.hierarchical_clustering = initial_clustering
+
+        # keeps flattened hierarchical clustering:
+        # for each vertex it keeps all ancestors on all levels,
+        # that is, there is one pair (ancestor, level) per row
+        # the id's are generated from pair (vertex id, level)
+
+        self.clustering_levels = initial_clustering.with_columns(
+            v=initial_clustering.id
+        ).with_id_from(pw.this.v, pw.this.level)
+
+        total_weight = _approximate_total_weight(self.G.WE, apx)
+
+        self.G.V = self.G.V._gradual_broadcast(
+            total_weight, total_weight.lower, total_weight.value, total_weight.upper
+        )
+
+        G_ = self.G
+        for lvl in range(levels):
+            clustering = _louvain_level(G_)
+            # update clusterings
+            self.hierarchical_clustering = self.hierarchical_clustering.update_rows(
+                clustering.with_columns(level=lvl + 1)
+            )
+            prev_lvl = self.clustering_levels.filter(
+                self.clustering_levels.level == lvl
+            )
+            self.clustering_levels = self.clustering_levels.update_rows(
+                prev_lvl.select(
+                    prev_lvl.v, clustering.ix(prev_lvl.c).c, level=lvl + 1
+                ).with_id_from(pw.this.v, pw.this.level)
+            )
+            G_ = G_.contracted_to_weighted_simple_graph(
+                clustering, **{"weight": pw.reducers.sum(G_.WE.weight)}
+            )
+            G_.V = G_.V._gradual_broadcast(
+                total_weight, total_weight.lower, total_weight.value, total_weight.upper
+            )
+
+
+def exact_modularity(
+    G: WeightedGraph, C: pw.Table[Clustering], round_digits=16
+) -> pw.Table:
     r"""
-    This function computes modularity of a given weighted graph.
-    This implementation is meant to be used for testing / development.
-    The reason is that it uses exact total weight in the computation,
-    which introduces a lot of edges in recomputation graph. Will perform badly
-    on dynamic datasets, as single weight change will trigger recomputation on all
-    rows.
-    Rounds the modularity to round_digits decimal places (default is 16),
-    for result res it returns round(res, ndigits = round_digits)
+    This function computes modularity of a given weighted graph G with
+    respect to clustering C.
+
+    This implementation is meant to be used for testing / development,
+    as computing exact value requires us to know the exact sum of the edge weights,
+    which creates long dependency chains, and may be slow.
+
+    This implementation rounds the modularity to round_digits decimal places
+    (default is 16), for result res it returns round(res, ndigits = round_digits)
     """
     clusters = C.groupby(id=C.c).reduce()
 
     cluster_degrees = clusters.with_columns(degree=0.0).update_rows(
-        G.E.with_columns(c=C.ix(G.E.u).c)
+        G.WE.with_columns(c=C.ix(G.WE.u).c)
         .groupby(id=pw.this.c)
         .reduce(degree=pw.reducers.sum(pw.this.weight))
     )
     #
     cluster_internal = clusters.with_columns(internal=0.0).update_rows(
-        G.E.with_columns(cu=C.ix(G.E.u).c, cv=C.ix(G.E.v).c)
+        G.WE.with_columns(cu=C.ix(G.WE.u).c, cv=C.ix(G.WE.v).c)
         .filter(pw.this.cu == pw.this.cv)
         .groupby(id=pw.this.cu)
         .reduce(internal=pw.reducers.sum(pw.this.weight))
     )
 
-    total_weight = G.E.reduce(m=pw.reducers.sum(pw.this.weight))
+    total_weight = G.WE.reduce(m=pw.reducers.sum(pw.this.weight))
 
     def cluster_modularity(internal: float, degree: float, total: float) -> float:
-        return internal / total - (degree / total) * (degree / total)
+        return (internal * total - degree * degree) / (total * total)
 
     score = clusters.join(total_weight, id=clusters.id).select(
         modularity=pw.apply(

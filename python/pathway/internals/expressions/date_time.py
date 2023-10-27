@@ -920,7 +920,9 @@ class DateTimeNamespace:
         2023-10-30 03:20:00 | 2023-10-30 01:20:00 | 0 days 02:00:00
         """
 
-        return self.to_utc(timezone) - expr._wrap_arg(date_time).dt.to_utc(timezone)
+        return self.to_utc(timezone) - expr.ColumnExpression._wrap(date_time).dt.to_utc(
+            timezone
+        )
 
     def round(
         self, duration: expr.ColumnExpression | pd.Timedelta

@@ -43,6 +43,8 @@ use crate::python_api::PythonSubject;
 
 use bincode::ErrorKind as BincodeError;
 use elasticsearch::{BulkParts, Elasticsearch};
+use glob::Pattern as GlobPattern;
+use glob::PatternError as GlobPatternError;
 use pipe::PipeReader;
 use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
@@ -178,6 +180,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     Py(#[from] PyErr),
+
+    #[error(transparent)]
+    GlobPattern(#[from] GlobPatternError),
 
     #[error(transparent)]
     Bincode(#[from] BincodeError),
@@ -431,8 +436,10 @@ impl FilesystemReader {
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
         read_method: ReadMethod,
-    ) -> io::Result<FilesystemReader> {
-        let filesystem_scanner = FilesystemScanner::new(path, persistent_id, streaming_mode)?;
+        object_pattern: &str,
+    ) -> Result<FilesystemReader, ReadError> {
+        let filesystem_scanner =
+            FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
 
         Ok(Self {
             persistent_id,
@@ -511,6 +518,7 @@ impl Reader for FilesystemReader {
                 }
             }
 
+            self.reader = None;
             if self.filesystem_scanner.next_action_determined()? {
                 let file = File::open(
                     self.filesystem_scanner
@@ -681,6 +689,7 @@ struct FilesystemScanner {
     current_action: Option<PosixScannerAction>,
     cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
     inotify: Option<inotify_support::Inotify>,
+    object_pattern: GlobPattern,
 }
 
 impl FilesystemScanner {
@@ -688,11 +697,12 @@ impl FilesystemScanner {
         path: impl Into<PathBuf>,
         persistent_id: Option<PersistentId>,
         streaming_mode: ConnectorMode,
-    ) -> io::Result<FilesystemScanner> {
+        object_pattern: &str,
+    ) -> Result<FilesystemScanner, ReadError> {
         let path = std::fs::canonicalize(path.into())?;
 
         if !path.exists() {
-            return Err(io::Error::from(io::ErrorKind::NotFound));
+            return Err(io::Error::from(io::ErrorKind::NotFound).into());
         }
 
         let is_directory = path.is_dir();
@@ -729,6 +739,7 @@ impl FilesystemScanner {
             current_action: None,
             cached_modify_times: HashMap::new(),
             inotify,
+            object_pattern: GlobPattern::new(object_pattern)?,
         })
     }
 
@@ -927,6 +938,19 @@ impl FilesystemScanner {
                     };
 
                     let current_path = entry.path();
+
+                    if let Some(file_name) = entry.file_name().to_str() {
+                        if !self.object_pattern.matches(file_name) {
+                            continue;
+                        }
+                    } else {
+                        warn!(
+                            "Failed to parse file name (non-unicode): {:?}. It will be ignored",
+                            entry.file_name()
+                        );
+                        continue;
+                    }
+
                     {
                         if self.known_files.contains_key(&(*current_path)) {
                             continue;
@@ -973,7 +997,7 @@ impl FilesystemScanner {
     }
 
     fn sleep_duration() -> Duration {
-        Duration::from_millis(10000)
+        Duration::from_millis(500)
     }
 
     fn wait_for_new_files(&mut self) {
@@ -1038,9 +1062,10 @@ impl CsvFilesystemReader {
         parser_builder: csv::ReaderBuilder,
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
-    ) -> io::Result<CsvFilesystemReader> {
+        object_pattern: &str,
+    ) -> Result<CsvFilesystemReader, ReadError> {
         let filesystem_scanner =
-            FilesystemScanner::new(path.into(), persistent_id, streaming_mode)?;
+            FilesystemScanner::new(path.into(), persistent_id, streaming_mode, object_pattern)?;
         Ok(CsvFilesystemReader {
             parser_builder,
             persistent_id,
@@ -1157,6 +1182,8 @@ impl Reader for CsvFilesystemReader {
                         );
                         return Ok(ReadResult::NewSource);
                     }
+                    // The file came to its end, so we should drop the reader
+                    self.reader = None;
                 }
                 None => {
                     if self.filesystem_scanner.next_action_determined()? {

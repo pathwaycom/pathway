@@ -16,6 +16,7 @@ from pathway.internals import asynchronous, operator, parse_graph
 from pathway.internals.api import Pointer
 from pathway.internals.helpers import StableSet
 from pathway.internals.operator import Operator
+from pathway.internals.table_subscription import subscribe
 
 
 class _AsyncStatus(Enum):
@@ -256,10 +257,11 @@ class AsyncTransformer(ABC):
 
     @functools.cached_property
     def _output_table(self) -> pw.Table:
-        io.subscribe(
+        subscribe(
             self._input_table,
-            self._connector.on_subscribe_change,
-            self._connector.on_subscribe_end,
+            skip_persisted_batch=False,
+            on_change=self._connector.on_subscribe_change,
+            on_end=self._connector.on_subscribe_end,
         )
         output_node = list(parse_graph.G.global_scope.nodes)[-1]
 

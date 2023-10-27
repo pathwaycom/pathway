@@ -7,15 +7,12 @@ use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::trace::TraceReader;
 use differential_dataflow::{Collection, ExchangeData, Hashable};
 use itertools::zip_eq;
-use pathway_engine::engine::dataflow::operators::time_column::SelfCompactionTime;
-use std::cmp::max;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use timely::communication::allocator::Generic;
 use timely::dataflow::operators::capture::capture::Capture;
 use timely::dataflow::operators::capture::{EventLinkCore, Extract, Replay};
 use timely::dataflow::scopes::Child;
-use timely::progress::timestamp::Refines;
 use timely::progress::Timestamp;
 use timely::worker::Worker;
 use timely::Config;
@@ -23,39 +20,11 @@ use timely::Config;
 type R = i32;
 type OutputBatch<K, V, T> = Vec<((K, V), T, R)>;
 
-pub trait Incrementable {
-    fn incremented(&self) -> Self;
-}
-
-impl Incrementable for i32 {
-    fn incremented(&self) -> i32 {
-        *self + 1
-    }
-}
-
-impl Incrementable for u64 {
-    fn incremented(&self) -> u64 {
-        *self + 1
-    }
-}
-
-impl Incrementable for SelfCompactionTime<i32> {
-    fn incremented(&self) -> SelfCompactionTime<i32> {
-        SelfCompactionTime::original(
-            <SelfCompactionTime<i32> as Refines<i32>>::to_outer(self.clone()) + 1,
-        )
-    }
-}
-
 pub fn run_test<
     D: ExchangeData + Hashable + Clone,
     K2: ExchangeData + Hashable + Clone,
     V2: ExchangeData + Hashable + Clone,
-    T: Timestamp
-        + Lattice
-        + timely::order::TotalOrder
-        + timely::progress::timestamp::Refines<()>
-        + Incrementable,
+    T: Timestamp + Lattice + timely::order::TotalOrder + timely::progress::timestamp::Refines<()>,
 >(
     input_batches: Vec<Vec<(D, T, R)>>,
     expected_output_batches: Vec<OutputBatch<K2, V2, T>>,
@@ -102,34 +71,32 @@ pub fn run_test<
         worker.dataflow(|scope2| handle2.replay_into(scope2).capture_into(send));
 
         input.advance_to(T::minimum());
-        let mut t = T::minimum();
         for batch in input_batches.iter() {
+            let min_time = batch
+                .iter()
+                .map(|(_data, time, _change)| time)
+                .min()
+                .expect("vectors with data shouldn't be empty")
+                .clone();
+
+            input.advance_to(min_time);
+            input.flush();
+            worker.step_while(|| probe.less_than(input.time()));
+
             for (data, time, change) in batch.iter() {
                 input.advance_to(time.clone());
                 input.update(data.clone(), *change);
-                eprintln!("time {:?} element {:?} change {:?}", *time, *data, *change);
-                t = max(time.clone(), t);
             }
-            input.advance_to(t.incremented());
-            eprintln!("{:?} {:?}", t, t.incremented());
-            input.flush();
-            worker.step_while(|| probe.less_than(input.time()))
         }
-        worker.step();
     })
     .expect("Computation terminated abnormally");
 
     let to_print: Vec<(T, OutputBatch<K2, V2, T>)> = recv.extract();
-    eprintln!("results: {:?}", to_print);
-    eprintln!("expected: {:?}", expected_output_batches);
     assert!(to_print.len() == expected_output_batches.len());
 
-    for (i, (mut returned, mut expected)) in zip_eq(to_print, expected_output_batches).enumerate() {
+    for (mut returned, mut expected) in zip_eq(to_print, expected_output_batches) {
         returned.1.sort();
         expected.sort();
-        eprintln!("results to compare for idx {i:?}");
-        eprintln!("{:?}", returned.1);
-        eprintln!("{:?}", expected);
         assert!(returned.1.eq(&expected));
     }
 }

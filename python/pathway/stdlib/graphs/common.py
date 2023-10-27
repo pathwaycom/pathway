@@ -2,25 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pathway.internals as pw
 
 
 class Vertex(pw.Schema):
     pass
-
-
-class Cluster(Vertex, pw.Schema):
-    pass
-
-
-class Clustering(pw.Schema):
-    r"""
-    Class describing cluster membership relation:
-    vertex u belongs to cluster c.
-    """
-    c: pw.Pointer[Cluster]
 
 
 class Edge(pw.Schema):
@@ -38,10 +24,13 @@ class Weight(pw.Schema):
     weight: float
 
 
-@dataclass
-class Graph:
+class Cluster(Vertex, pw.Schema):
+    pass
+
+
+class Clustering(pw.Schema):
     r"""
-    Basic class representing undirected, unweighted (multi)graph.
+    Class describing cluster membership relation:
+    vertex u (id-column) belongs to cluster c.
     """
-    V: pw.Table[Vertex]
-    E: pw.Table[Edge]
+    c: pw.Pointer[Cluster]

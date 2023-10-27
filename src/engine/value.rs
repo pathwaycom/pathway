@@ -1,14 +1,12 @@
 use std::borrow::Borrow;
-use std::convert::Infallible;
 use std::fmt::{self, Debug, Display};
 use std::mem::{align_of, size_of};
 use std::ops::Deref;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use super::error::{DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
-use super::{Error, Result};
+use super::Error;
 
 use arcstr::ArcStr;
 use cfg_if::cfg_if;
@@ -210,6 +208,14 @@ impl Value {
     pub fn as_float(&self) -> DynResult<f64> {
         if let Self::Float(f) = self {
             Ok(f.into_inner())
+        } else {
+            Err(self.type_mismatch("float"))
+        }
+    }
+
+    pub fn as_ordered_float(&self) -> DynResult<OrderedFloat<f64>> {
+        if let Self::Float(f) = self {
+            Ok(*f)
         } else {
             Err(self.type_mismatch("float"))
         }
@@ -592,23 +598,5 @@ impl HashInto for Value {
 impl HashInto for JsonValue {
     fn hash_into(&self, hasher: &mut Hasher) {
         (*self).to_string().hash_into(hasher);
-    }
-}
-
-impl FromStr for Key {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let v = Value::from(s);
-        Ok(Self::for_value(&v))
-    }
-}
-
-impl FromStr for Value {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let v = Value::from(s);
-        Ok(v)
     }
 }

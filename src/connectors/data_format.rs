@@ -616,10 +616,7 @@ pub struct DebeziumMessageParser {
 fn parse_value_from_json(value: &JsonValue) -> Option<Value> {
     match value {
         JsonValue::Null => Some(Value::None),
-        JsonValue::String(v) => match v.parse::<Value>() {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        },
+        JsonValue::String(s) => Some(Value::from(s.as_str())),
         JsonValue::Number(v) => {
             if let Some(parsed_u64) = v.as_u64() {
                 Some(Value::Int(parsed_u64.try_into().unwrap()))

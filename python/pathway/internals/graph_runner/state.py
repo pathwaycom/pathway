@@ -97,7 +97,6 @@ class ScopeState:
 
     def set_legacy_table(self, key: table.Table, value: api.LegacyTable):
         self.legacy_tables[key] = value
-        self.set_column(key._id_column, value.universe.id_column)
         for (_, col), evaluated_column in zip(key._columns.items(), value.columns):
             self.set_column(col, evaluated_column)
 
@@ -134,12 +133,6 @@ class ScopeState:
 
     def has_universe(self, key: universe.Universe) -> bool:
         return key in self.universes
-
-    def get_context_table(self, key: column.ContextTable) -> api.LegacyTable:
-        return api.LegacyTable(
-            universe=self.get_universe(key.universe),
-            columns=[self.get_column(column) for column in key.columns],
-        )
 
     def add_computer_logic(self, computer_callback: Callable) -> int:
         id = len(self.computers)

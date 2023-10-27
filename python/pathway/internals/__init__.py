@@ -33,7 +33,6 @@ from pathway.internals.decorators import (
 )
 from pathway.internals.expression import (
     ColumnExpression,
-    ColumnExpressionOrValue,
     ColumnReference,
     ReducerExpression,
 )
@@ -89,7 +88,6 @@ __all__ = [
     "TableLike",
     "ColumnReference",
     "ColumnExpression",
-    "ColumnExpressionOrValue",
     "ReducerExpression",
     "Schema",
     "Pointer",

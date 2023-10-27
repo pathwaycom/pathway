@@ -7,14 +7,17 @@ use differential_dataflow::{
 };
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
 use std::iter::repeat;
 use std::num::NonZeroUsize;
 use std::ops::Add;
+use std::{cmp::Reverse, sync::Arc};
 
 use super::{Key, Value};
 
-#[derive(Debug, Clone, Copy)]
+pub type StatefulCombineFn =
+    Arc<dyn Fn(Option<&Value>, &[(Vec<Value>, isize)]) -> Value + Send + Sync>;
+
+#[derive(Clone)]
 pub enum Reducer {
     Count,
     FloatSum,
@@ -25,9 +28,10 @@ pub enum Reducer {
     ArgMin,
     Max,
     ArgMax,
-    SortedTuple(bool),
-    Tuple(bool),
+    SortedTuple { skip_nones: bool },
+    Tuple { skip_nones: bool },
     Any,
+    Stateful { combine_fn: StatefulCombineFn },
 }
 
 pub trait SemigroupReducerImpl: 'static {
@@ -511,5 +515,20 @@ impl ReducerImpl for TupleReducer {
             .collect::<Vec<Value>>()
             .as_slice()
             .into()
+    }
+}
+
+#[derive(Clone)]
+pub struct StatefulReducer {
+    combine_fn: StatefulCombineFn,
+}
+
+impl StatefulReducer {
+    pub fn new(combine_fn: StatefulCombineFn) -> Self {
+        Self { combine_fn }
+    }
+
+    pub fn combine(&self, state: Option<&Value>, data: &[(Vec<Value>, isize)]) -> Value {
+        (self.combine_fn)(state, data)
     }
 }

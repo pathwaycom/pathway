@@ -103,7 +103,7 @@ impl Default for ScopedContext {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum ColumnPath {
     Key,
     ValuePath(Vec<usize>),
@@ -138,17 +138,39 @@ impl ColumnPath {
             }
         }
     }
+
+    pub fn extract_properties(
+        &self,
+        table_properties: &Arc<TableProperties>,
+    ) -> Result<TableProperties> {
+        match self {
+            ColumnPath::Key => Ok(TableProperties::Empty),
+            ColumnPath::ValuePath(path) => {
+                let mut table_properties = table_properties.as_ref();
+                for i in path {
+                    match table_properties {
+                        TableProperties::Table(inner) => {
+                            table_properties = inner.get(*i).ok_or(Error::IndexOutOfBounds)?;
+                        }
+                        _ => break,
+                    }
+                }
+                Ok(table_properties.clone())
+            }
+        }
+    }
 }
+
 pub struct ExpressionData {
     pub expression: Arc<Expression>,
-    pub column_properties: Arc<ColumnProperties>,
+    pub properties: Arc<TableProperties>,
 }
 
 impl ExpressionData {
-    pub fn new(expression: Arc<Expression>, column_properties: Arc<ColumnProperties>) -> Self {
+    pub fn new(expression: Arc<Expression>, properties: Arc<TableProperties>) -> Self {
         ExpressionData {
             expression,
-            column_properties,
+            properties,
         }
     }
 }
@@ -217,22 +239,6 @@ pub struct ColumnProperties {
     pub trace: Trace,
 }
 
-impl ColumnProperties {
-    pub fn new() -> Self {
-        Self {
-            dtype: Type::Any,
-            append_only: false,
-            trace: Trace::Empty,
-        }
-    }
-}
-
-impl Default for ColumnProperties {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum TableProperties {
     Table(Arc<[TableProperties]>),
@@ -250,17 +256,14 @@ impl TableProperties {
         TableProperties::Table(column_properties.into())
     }
 
-    pub fn from_paths(
-        column_properties: Vec<(ColumnPath, Arc<ColumnProperties>)>,
-    ) -> Result<TableProperties> {
+    pub fn from_paths(properties: Vec<(ColumnPath, TableProperties)>) -> Result<TableProperties> {
         fn produce_nested_tuple(
-            props: &[(Vec<usize>, Arc<ColumnProperties>)],
+            props: &[(Vec<usize>, TableProperties)],
             depth: usize,
         ) -> TableProperties {
             if props.len() == 1 && props.first().unwrap().0.len() == depth {
-                return TableProperties::Column(props.first().unwrap().1.clone());
+                return props.first().unwrap().1.clone();
             }
-
             let mut prefix = 0;
             let mut begin = 0;
             let mut end = 0;
@@ -285,7 +288,7 @@ impl TableProperties {
             TableProperties::Table(result.as_slice().into())
         }
 
-        let mut column_properties: Vec<(Vec<usize>, Arc<ColumnProperties>)> = column_properties
+        let mut properties: Vec<(Vec<usize>, TableProperties)> = properties
             .into_iter()
             .map(|(path, props)| match path {
                 ColumnPath::ValuePath(path) => Ok((path, props)),
@@ -295,25 +298,16 @@ impl TableProperties {
             })
             .collect::<Result<_>>()?;
 
-        column_properties
-            .sort_unstable_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
+        properties.sort_unstable_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
 
-        Ok(produce_nested_tuple(column_properties.as_slice(), 0))
+        Ok(produce_nested_tuple(properties.as_slice(), 0))
     }
 
-    pub fn expression_table_properties(
-        input_table_properties: &Arc<TableProperties>,
-        column_properties: Vec<Arc<ColumnProperties>>,
-    ) -> Self {
-        if column_properties.is_empty() {
-            return TableProperties::Empty;
+    pub fn trace(&self) -> &Trace {
+        match self {
+            Self::Column(properties) => &properties.trace,
+            _ => &Trace::Empty,
         }
-        let mut properties: Vec<_> = column_properties
-            .into_iter()
-            .map(TableProperties::Column)
-            .collect();
-        properties[0] = (*(*input_table_properties)).clone();
-        TableProperties::Table(properties.into())
     }
 }
 
@@ -491,6 +485,8 @@ pub trait Graph {
 
     fn table_universe(&self, table_handle: TableHandle) -> Result<UniverseHandle>;
 
+    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>>;
+
     fn flatten_table_storage(
         &self,
         table_handle: TableHandle,
@@ -513,6 +509,7 @@ pub trait Graph {
         on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        skip_persisted_batch: bool,
     ) -> Result<()>;
 
     fn filter_table(
@@ -528,6 +525,12 @@ pub trait Graph {
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
         mark_forgetting_records: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn forget_immediately(
+        &self,
+        table_handle: TableHandle,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -566,8 +569,6 @@ pub trait Graph {
         same_universes: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
-
-    fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle>;
 
     fn intersect_tables(
         &self,
@@ -633,6 +634,16 @@ pub trait Graph {
         grouping_columns_paths: Vec<ColumnPath>,
         reducers: Vec<ReducerData>,
         set_id: bool,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    fn gradual_broadcast(
+        &self,
+        input_table_handle: TableHandle,
+        threshold_table_handle: TableHandle,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -862,6 +873,10 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.table_universe(table_handle))
     }
 
+    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
+        self.try_with(|g| g.table_properties(table_handle))
+    }
+
     fn flatten_table_storage(
         &self,
         table_handle: TableHandle,
@@ -896,8 +911,18 @@ impl Graph for ScopedGraph {
         on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        skip_persisted_batch: bool,
     ) -> Result<()> {
-        self.try_with(|g| g.subscribe_table(wrapper, callback, on_end, table_handle, column_paths))
+        self.try_with(|g| {
+            g.subscribe_table(
+                wrapper,
+                callback,
+                on_end,
+                table_handle,
+                column_paths,
+                skip_persisted_batch,
+            )
+        })
     }
 
     fn filter_table(
@@ -926,6 +951,35 @@ impl Graph for ScopedGraph {
                 table_properties,
             )
         })
+    }
+
+    fn gradual_broadcast(
+        &self,
+        input_table_handle: TableHandle,
+        threshold_table_handle: TableHandle,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.gradual_broadcast(
+                input_table_handle,
+                threshold_table_handle,
+                lower_path,
+                value_path,
+                upper_path,
+                table_properties,
+            )
+        })
+    }
+
+    fn forget_immediately(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.forget_immediately(table_handle, table_properties))
     }
 
     fn filter_out_results_of_forgetting(
@@ -993,10 +1047,6 @@ impl Graph for ScopedGraph {
                 table_properties,
             )
         })
-    }
-
-    fn id_column(&self, universe_handle: UniverseHandle) -> Result<ColumnHandle> {
-        self.try_with(|g| g.id_column(universe_handle))
     }
 
     fn intersect_tables(

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
-from abc import ABC
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, cast
 
 from pathway.internals import api, dtype as dt, helpers
 from pathway.internals.api import Value
@@ -21,15 +21,73 @@ if TYPE_CHECKING:
         NumericalNamespace,
         StringNamespace,
     )
-    from pathway.internals.reducers import UnaryReducer
+    from pathway.internals.reducers import Reducer
     from pathway.internals.table import Table
 
 
+@dataclasses.dataclass(frozen=True)
+class InternalColExpr:
+    kind: type[ColumnExpression]
+    args: tuple[Any, ...]
+    kwargs: tuple[tuple[str, Any], ...]
+
+    @staticmethod
+    def build(kind: type[ColumnExpression], *args, **kwargs) -> InternalColExpr:
+        def wrap(arg):
+            if isinstance(arg, ColumnExpression):
+                return arg._to_internal()
+            else:
+                return arg
+
+        args = tuple(wrap(arg) for arg in args)
+        kwargs = {name: wrap(kwarg) for name, kwarg in kwargs.items()}
+
+        return InternalColExpr(kind, args, tuple(sorted(kwargs.items())))
+
+    def __post_init__(self):
+        assert issubclass(self.kind, ColumnExpression)
+
+    def to_column_expression(self) -> ColumnExpression:
+        def wrap(arg):
+            if isinstance(arg, InternalColExpr):
+                return arg.to_column_expression()
+            else:
+                return arg
+
+        args = tuple(wrap(arg) for arg in self.args)
+        kwargs = {name: wrap(kwarg) for name, kwarg in self.kwargs}
+        return self.kind(*args, **kwargs)
+
+
+@dataclasses.dataclass(frozen=True)
+class InternalColRef(InternalColExpr):
+    kind: type[ColumnReference]
+
+    def to_column_expression(self) -> ColumnReference:
+        return cast(ColumnReference, super().to_column_expression())
+
+    @staticmethod
+    def build(kind, *args, **kwargs) -> InternalColRef:
+        assert kind == ColumnReference
+        ret = InternalColExpr.build(kind, *args, **kwargs)
+        return InternalColRef(kind, args=ret.args, kwargs=ret.kwargs)
+
+    @property
+    def _name(self) -> str:
+        return self.to_column_expression()._name
+
+    @property
+    def _table(self) -> Table:
+        return self.to_column_expression()._table
+
+    @property
+    def _column(self) -> Column:
+        return self.to_column_expression()._column
+
+
 class ColumnExpression(OperatorInput, ABC):
-    _deps: helpers.SetOnceProperty[
-        Iterable[ColumnExpression]
-    ] = helpers.SetOnceProperty(wrapper=tuple)
     _dtype: dt.DType
+    _trace: Trace
 
     def __init__(self):
         self._trace = Trace.from_traceback()
@@ -37,10 +95,25 @@ class ColumnExpression(OperatorInput, ABC):
     def __bool__(self):
         raise RuntimeError("Cannot use expression as boolean.")
 
+    @property
+    @abstractmethod
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        ...
+
+    @abstractmethod
+    def _to_internal(self) -> InternalColExpr:
+        ...
+
     def __repr__(self):
         from pathway.internals.expression_printer import ExpressionFormatter
 
         return ExpressionFormatter().eval_expression(self)
+
+    @staticmethod
+    def _wrap(arg: ColumnExpression | Value) -> ColumnExpression:
+        if not isinstance(arg, ColumnExpression):
+            return ColumnConstExpression(arg)
+        return arg
 
     @lru_cache
     def _dependencies(self) -> helpers.StableSet[InternalColRef]:
@@ -61,12 +134,15 @@ class ColumnExpression(OperatorInput, ABC):
     @lru_cache
     def _operator_dependencies(self) -> helpers.StableSet[Table]:
         return helpers.StableSet(
-            expression._table for expression in self._dependencies()
+            expression.to_column_expression()._table
+            for expression in self._dependencies()
         )
 
     @lru_cache
     def _column_dependencies(self) -> helpers.StableSet[Column]:
-        expression_dependencies = (dep.to_column() for dep in self._dependencies())
+        expression_dependencies = (
+            dep.to_column_expression()._column for dep in self._dependencies()
+        )
         return helpers.StableSet(expression_dependencies)
 
     @property
@@ -75,100 +151,102 @@ class ColumnExpression(OperatorInput, ABC):
 
         return ColumnWithExpression
 
-    def __add__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __add__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.add)
 
-    def __radd__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __radd__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.add)
 
-    def __sub__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __sub__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.sub)
 
-    def __rsub__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rsub__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.sub)
 
-    def __mul__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __mul__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.mul)
 
-    def __rmul__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rmul__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.mul)
 
-    def __truediv__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __truediv__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.truediv)
 
-    def __rtruediv__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rtruediv__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.truediv)
 
-    def __floordiv__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __floordiv__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.floordiv)
 
-    def __rfloordiv__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rfloordiv__(
+        self, other: ColumnExpression | Value
+    ) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.floordiv)
 
-    def __mod__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __mod__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.mod)
 
-    def __rmod__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rmod__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.mod)
 
-    def __pow__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __pow__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.pow)
 
-    def __rpow__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rpow__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.pow)
 
-    def __lshift__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __lshift__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.lshift)
 
-    def __rlshift__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rlshift__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.lshift)
 
-    def __rshift__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rshift__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.rshift)
 
-    def __rrshift__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rrshift__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.rshift)
 
-    def __eq__(self, other) -> ColumnBinaryOpExpression:  # type: ignore
+    def __eq__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:  # type: ignore[override]
         return ColumnBinaryOpExpression(self, other, operator.eq)
 
-    def __ne__(self, other) -> ColumnBinaryOpExpression:  # type: ignore
+    def __ne__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:  # type: ignore[override]
         return ColumnBinaryOpExpression(self, other, operator.ne)
 
-    def __le__(self, other) -> ColumnBinaryOpExpression:
+    def __le__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.le)
 
-    def __ge__(self, other) -> ColumnBinaryOpExpression:
+    def __ge__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.ge)
 
-    def __lt__(self, other) -> ColumnBinaryOpExpression:
+    def __lt__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.lt)
 
-    def __gt__(self, other) -> ColumnBinaryOpExpression:
+    def __gt__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.gt)
 
-    def __and__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __and__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.and_)
 
-    def __rand__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rand__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.and_)
 
-    def __or__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __or__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.or_)
 
-    def __ror__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __ror__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.or_)
 
-    def __xor__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __xor__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.xor)
 
-    def __rxor__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rxor__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.xor)
 
-    def __matmul__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __matmul__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(self, other, operator.matmul)
 
-    def __rmatmul__(self, other: ColumnExpressionOrValue) -> ColumnBinaryOpExpression:
+    def __rmatmul__(self, other: ColumnExpression | Value) -> ColumnBinaryOpExpression:
         return ColumnBinaryOpExpression(other, self, operator.matmul)
 
     def __neg__(self) -> ColumnUnaryOpExpression:
@@ -263,7 +341,7 @@ class ColumnExpression(OperatorInput, ABC):
     def get(
         self,
         index: ColumnExpression | int | str,
-        default: ColumnExpressionOrValue = None,
+        default: ColumnExpression | Value = None,
     ) -> ColumnExpression:
         """Extracts element at `index` from an object. The object has to be a Tuple or Json.
         If no element is present at `index`, it returns value specified by a `default` parameter.
@@ -442,20 +520,23 @@ class ColumnExpression(OperatorInput, ABC):
         return ConvertExpression(dt.BOOL, self)
 
 
-ColumnExpressionOrValue = Union[ColumnExpression, Value]
-
-
 class ColumnCallExpression(ColumnExpression):
     _args: tuple[ColumnExpression, ...]
     _col_expr: ColumnReference
 
     def __init__(
-        self, col_expr: ColumnReference, args: Iterable[ColumnExpressionOrValue]
+        self, col_expr: ColumnReference, args: Iterable[ColumnExpression | Value]
     ):
         super().__init__()
         self._col_expr = col_expr
-        self._args = tuple(_wrap_arg(arg) for arg in args)
-        self._deps = self._args
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._col_expr, self._args)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return self._args
 
 
 class ColumnConstExpression(ColumnExpression):
@@ -464,7 +545,13 @@ class ColumnConstExpression(ColumnExpression):
     def __init__(self, val: Value):
         super().__init__()
         self._val = val
-        self._deps = []
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._val)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return ()
 
 
 class ColumnReference(ColumnExpression):
@@ -491,20 +578,21 @@ class ColumnReference(ColumnExpression):
     _table: Table
     _name: str
 
-    def __init__(self, *, column: Column, table: Table, name: str):
+    def __init__(self, column: Column, table: Table, name: str):
         super().__init__()
         self._column = column
         self._table = table
         self._name = name
-        self._deps = []
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return ()
 
     def _to_internal(self) -> InternalColRef:
-        return InternalColRef(_table=self._table, _name=self._name)
+        return InternalColRef.build(type(self), self._column, self._table, self._name)
 
-    def _to_original_internal(self) -> InternalColRef:
-        return InternalColRef(
-            _table=self._column.lineage.table, _name=self._column.lineage.name
-        )
+    def _to_original(self) -> ColumnReference:
+        return self._column.lineage.table[self._column.lineage.name]
 
     @property
     def table(self):
@@ -564,23 +652,6 @@ class ColumnReference(ColumnExpression):
         return ColumnWithReference
 
 
-@dataclasses.dataclass(frozen=True)
-class InternalColRef:
-    _table: Table
-    _name: str
-
-    def to_colref(self) -> ColumnReference:
-        return self._table[self._name]
-
-    def to_original(self) -> InternalColRef:
-        return self.to_colref()._to_original_internal()
-
-    def to_column(self) -> Column:
-        if self._name == "id":
-            return self._table._id_column
-        return self._table._columns[self._name]
-
-
 class ColumnBinaryOpExpression(ColumnExpression):
     _left: ColumnExpression
     _right: ColumnExpression
@@ -588,45 +659,67 @@ class ColumnBinaryOpExpression(ColumnExpression):
 
     def __init__(
         self,
-        left: ColumnExpressionOrValue,
-        right: ColumnExpressionOrValue,
+        left: ColumnExpression | Value,
+        right: ColumnExpression | Value,
         operator: Callable[[Any, Any], Any],
     ):
         super().__init__()
-        self._left = _wrap_arg(left)
-        self._right = _wrap_arg(right)
+        self._left = ColumnExpression._wrap(left)
+        self._right = ColumnExpression._wrap(right)
         self._operator = operator
-        self._deps = [self._left, self._right]
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._left, self._right)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self), self._left, self._right, self._operator
+        )
 
 
 class ColumnUnaryOpExpression(ColumnExpression):
     _expr: ColumnExpression
     _operator: Callable[[Any], Any]
 
-    def __init__(self, expr: ColumnExpressionOrValue, operator: Callable[[Any], Any]):
+    def __init__(self, expr: ColumnExpression | Value, operator: Callable[[Any], Any]):
         super().__init__()
-        self._expr = _wrap_arg(expr)
+        self._expr = ColumnExpression._wrap(expr)
         self._operator = operator
-        self._deps = [self._expr]
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._expr, self._operator)
 
 
 class ReducerExpression(ColumnExpression):
-    _reducer: UnaryReducer
+    _reducer: Reducer
     _args: tuple[ColumnExpression, ...]
     # needed only for repr
     _kwargs: dict[str, ColumnExpression]
 
     def __init__(
         self,
-        reducer: UnaryReducer,
-        *args: ColumnExpressionOrValue,
-        **kwargs: ColumnExpressionOrValue,
+        reducer: Reducer,
+        *args: ColumnExpression | Value,
+        **kwargs: ColumnExpression | Value,
     ):
         super().__init__()
         self._reducer = reducer
-        self._args = tuple(_wrap_arg(arg) for arg in args)
-        self._deps = self._args
-        self._kwargs = {k: _wrap_arg(v) for k, v in kwargs.items()}
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
+        self._kwargs = {k: ColumnExpression._wrap(v) for k, v in kwargs.items()}
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return self._args
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self), self._reducer, *self._args, **self._kwargs
+        )
 
     @lru_cache
     def _dependencies_above_reducer(self) -> helpers.StableSet[InternalColRef]:
@@ -640,13 +733,16 @@ class ReducerExpression(ColumnExpression):
 
 
 class CountExpression(ColumnExpression):
-    def __init__(self):
-        super().__init__()
-        self._deps = []
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self))
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return ()
 
 
 class ApplyExpression(ColumnExpression):
-    _return_type: Any
+    _return_type: dt.DType
     _args: tuple[ColumnExpression, ...]
     _kwargs: dict[str, ColumnExpression]
     _fun: Callable
@@ -655,8 +751,8 @@ class ApplyExpression(ColumnExpression):
         self,
         fun: Callable,
         return_type=None,
-        *args: ColumnExpressionOrValue,
-        **kwargs: ColumnExpressionOrValue,
+        *args: ColumnExpression | Value,
+        **kwargs: ColumnExpression | Value,
     ):
         super().__init__()
         self._fun = fun
@@ -667,27 +763,27 @@ class ApplyExpression(ColumnExpression):
                 return_type = Any
         self._return_type = dt.wrap(return_type)
 
-        self._args = tuple(_wrap_arg(arg) for arg in args)
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
 
-        self._kwargs = {k: _wrap_arg(v) for k, v in kwargs.items()}
-        self._deps = [*self._args, *self._kwargs.values()]
+        self._kwargs = {k: ColumnExpression._wrap(v) for k, v in kwargs.items()}
         assert len(args) + len(kwargs) > 0
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (*self._args, *self._kwargs.values())
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self),
+            self._fun,
+            self._return_type,
+            *self._args,
+            **self._kwargs,
+        )
 
 
 class NumbaApplyExpression(ApplyExpression):
-    def __init__(
-        self,
-        fun: Callable,
-        return_type: Any,
-        *args: ColumnExpressionOrValue,
-        **kwargs: ColumnExpressionOrValue,
-    ):
-        super().__init__(
-            fun,
-            dt.wrap(return_type),
-            *args,
-            **kwargs,
-        )
+    ...
 
 
 class AsyncApplyExpression(ApplyExpression):
@@ -695,8 +791,8 @@ class AsyncApplyExpression(ApplyExpression):
         self,
         fun: Callable,
         return_type: Any,
-        *args: ColumnExpressionOrValue,
-        **kwargs: ColumnExpressionOrValue,
+        *args: ColumnExpression | Value,
+        **kwargs: ColumnExpression | Value,
     ):
         super().__init__(
             fun,
@@ -710,39 +806,57 @@ class CastExpression(ColumnExpression):
     _return_type: dt.DType
     _expr: ColumnExpression
 
-    def __init__(self, return_type: Any, expr: ColumnExpressionOrValue):
+    def __init__(self, return_type: Any, expr: ColumnExpression | Value):
         super().__init__()
         self._return_type = dt.wrap(return_type)
-        self._expr = _wrap_arg(expr)
-        self._deps = [self._expr]
+        self._expr = ColumnExpression._wrap(expr)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._return_type, self._expr)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
 
 
 class ConvertExpression(ColumnExpression):
     _return_type: dt.DType
     _expr: ColumnExpression
 
-    def __init__(self, return_type: dt.DType, expr: ColumnExpressionOrValue):
+    def __init__(self, return_type: dt.DType, expr: ColumnExpression | Value):
         super().__init__()
         self._return_type = dt.Optional(return_type)
-        self._expr = _wrap_arg(expr)
-        self._deps = [self._expr]
+        self._expr = ColumnExpression._wrap(expr)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._return_type, self._expr)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
 
 
 class DeclareTypeExpression(ColumnExpression):
     _return_type: Any
     _expr: ColumnExpression
 
-    def __init__(self, return_type: Any, expr: ColumnExpressionOrValue):
+    def __init__(self, return_type: Any, expr: ColumnExpression | Value):
         super().__init__()
         self._return_type = dt.wrap(return_type)
-        self._expr = _wrap_arg(expr)
-        self._deps = [self._expr]
+        self._expr = ColumnExpression._wrap(expr)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._return_type, self._expr)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
 
 
 class CoalesceExpression(ColumnExpression):
-    _args: Iterable[ColumnExpression]
+    _args: tuple[ColumnExpression, ...]
 
-    def __init__(self, *args: ColumnExpressionOrValue):
+    def __init__(self, *args: ColumnExpression | Value):
         super().__init__()
         assert len(args) > 0
 
@@ -753,21 +867,35 @@ class CoalesceExpression(ColumnExpression):
                 return arg._val is None
             return False
 
-        self._args = tuple(_wrap_arg(arg) for arg in args if not _test_for_none(arg))
+        self._args = tuple(
+            ColumnExpression._wrap(arg) for arg in args if not _test_for_none(arg)
+        )
         if self._args == ():
-            self._args = (_wrap_arg(None),)
-        self._deps = self._args
+            self._args = (ColumnExpression._wrap(None),)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), *self._args)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return self._args
 
 
 class RequireExpression(ColumnExpression):
     _val: ColumnExpression
-    _args: Iterable[ColumnExpression]
+    _args: tuple[ColumnExpression, ...]
 
-    def __init__(self, val: ColumnExpressionOrValue, *args: ColumnExpressionOrValue):
+    def __init__(self, val: ColumnExpression | Value, *args: ColumnExpression | Value):
         super().__init__()
-        self._val = _wrap_arg(val)
-        self._args = tuple(_wrap_arg(arg) for arg in args)
-        self._deps = [self._val, *self._args]
+        self._val = ColumnExpression._wrap(val)
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._val, *self._args)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._val, *self._args)
 
 
 class IfElseExpression(ColumnExpression):
@@ -777,33 +905,51 @@ class IfElseExpression(ColumnExpression):
 
     def __init__(
         self,
-        _if: ColumnExpressionOrValue,
-        _then: ColumnExpressionOrValue,
-        _else: ColumnExpressionOrValue,
+        _if: ColumnExpression | Value,
+        _then: ColumnExpression | Value,
+        _else: ColumnExpression | Value,
     ):
         super().__init__()
-        self._if = _wrap_arg(_if)
-        self._then = _wrap_arg(_then)
-        self._else = _wrap_arg(_else)
-        self._deps = [self._if, self._then, self._else]
+        self._if = ColumnExpression._wrap(_if)
+        self._then = ColumnExpression._wrap(_then)
+        self._else = ColumnExpression._wrap(_else)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._if, self._then, self._else)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._if, self._then, self._else)
 
 
 class IsNoneExpression(ColumnExpression):
     _expr: ColumnExpression
 
-    def __init__(self, _expr: ColumnExpressionOrValue):
+    def __init__(self, _expr: ColumnExpression | Value):
         super().__init__()
-        self._expr = _wrap_arg(_expr)
-        self._deps = [self._expr]
+        self._expr = ColumnExpression._wrap(_expr)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._expr)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
 
 
 class IsNotNoneExpression(ColumnExpression):
     _expr: ColumnExpression
 
-    def __init__(self, _expr: ColumnExpressionOrValue):
+    def __init__(self, _expr: ColumnExpression | Value):
         super().__init__()
-        self._expr = _wrap_arg(_expr)
-        self._deps = [self._expr]
+        self._expr = ColumnExpression._wrap(_expr)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._expr)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
 
 
 class PointerExpression(ColumnExpression):
@@ -812,23 +958,37 @@ class PointerExpression(ColumnExpression):
     _optional: bool
 
     def __init__(
-        self, table: Table, *args: ColumnExpressionOrValue, optional=False
+        self, table: Table, *args: ColumnExpression | Value, optional=False
     ) -> None:
         super().__init__()
 
-        self._args = tuple(_wrap_arg(arg) for arg in args)
-        self._deps = self._args
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
         self._optional = optional
         self._table = table
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self), self._table, *self._args, optional=self._optional
+        )
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return self._args
 
 
 class MakeTupleExpression(ColumnExpression):
     _args: tuple[ColumnExpression, ...]
 
-    def __init__(self, *args: ColumnExpressionOrValue):
+    def __init__(self, *args: ColumnExpression | Value):
         super().__init__()
-        self._args = tuple(_wrap_arg(arg) for arg in args)
-        self._deps = self._args
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), *self._args)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return self._args
 
 
 class GetExpression(ColumnExpression):
@@ -842,13 +1002,13 @@ class GetExpression(ColumnExpression):
         self,
         object: ColumnExpression,
         index: ColumnExpression | int | str,
-        default: ColumnExpressionOrValue = None,
+        default: ColumnExpression | Value = None,
         check_if_exists=True,
     ) -> None:
         super().__init__()
         self._object = object
-        self._index = _wrap_arg(index)
-        self._default = _wrap_arg(default)
+        self._index = ColumnExpression._wrap(index)
+        self._default = ColumnExpression._wrap(default)
         self._check_if_exists = check_if_exists
         if isinstance(self._index, ColumnConstExpression) and isinstance(
             self._index._val, (int, str)
@@ -856,7 +1016,15 @@ class GetExpression(ColumnExpression):
             self._const_index = self._index._val
         else:
             self._const_index = None
-        self._deps = (self._object, self._index, self._default)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self), self._object, self._index, self._default, self._check_if_exists
+        )
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._object, self._index, self._default)
 
 
 ReturnTypeFunType = Callable[[tuple[Any, ...]], Any]
@@ -873,7 +1041,7 @@ class MethodCallExpression(ColumnExpression):
             tuple[tuple[dt.DType, ...] | dt.DType, dt.DType, Callable], ...
         ],
         name: str,
-        *args: ColumnExpressionOrValue,
+        *args: ColumnExpression | Value,
     ) -> None:
         """Creates an Expression that represents a method call on object `args[0]`.
 
@@ -897,9 +1065,8 @@ class MethodCallExpression(ColumnExpression):
         self._fun_mapping = self._wrap_mapping_key_in_tuple(fun_mapping)
         self._name = name
 
-        self._args = tuple(_wrap_arg(arg) for arg in args)
+        self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
 
-        self._deps = self._args
         assert len(args) > 0
         for key_dtypes, _, _ in self._fun_mapping:
             if len(key_dtypes) != len(self._args):
@@ -907,6 +1074,18 @@ class MethodCallExpression(ColumnExpression):
                     f"In MethodCallExpression the number of args ({len(args)}) has to "
                     + f"be the same as the number of types in key ({len(key_dtypes)})"
                 )
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return self._args
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self),
+            self._fun_mapping,
+            self._name,
+            *self._args,
+        )
 
     def _wrap_mapping_key_in_tuple(
         self,
@@ -933,16 +1112,19 @@ class MethodCallExpression(ColumnExpression):
 class UnwrapExpression(ColumnExpression):
     _expr: ColumnExpression
 
-    def __init__(self, expr: ColumnExpressionOrValue):
+    def __init__(self, expr: ColumnExpression | Value):
         super().__init__()
-        self._expr = _wrap_arg(expr)
-        self._deps = [self._expr]
+        self._expr = ColumnExpression._wrap(expr)
 
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(
+            type(self),
+            self._expr,
+        )
 
-def _wrap_arg(arg: ColumnExpressionOrValue) -> ColumnExpression:
-    if not isinstance(arg, ColumnExpression):
-        return ColumnConstExpression(arg)
-    return arg
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr,)
 
 
 def smart_name(arg: ColumnExpression) -> str | None:

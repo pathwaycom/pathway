@@ -16,6 +16,7 @@ use crate::connectors::snapshot::{
     LocalBinarySnapshotReader, LocalBinarySnapshotWriter, S3SnapshotReader, S3SnapshotWriter,
     SnapshotReader, SnapshotReaderImpl,
 };
+use crate::connectors::{ReplayMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
@@ -53,6 +54,9 @@ pub struct PersistenceManagerOuterConfig {
     refresh_duration: Duration,
     metadata_storage: MetadataStorageConfig,
     stream_storage: StreamStorageConfig,
+    snapshot_access: SnapshotAccess,
+    replay_mode: ReplayMode,
+    continue_after_replay: bool,
 }
 
 impl PersistenceManagerOuterConfig {
@@ -60,11 +64,17 @@ impl PersistenceManagerOuterConfig {
         refresh_duration: Duration,
         metadata_storage: MetadataStorageConfig,
         stream_storage: StreamStorageConfig,
+        snapshot_access: SnapshotAccess,
+        replay_mode: ReplayMode,
+        continue_after_replay: bool,
     ) -> Self {
         Self {
             refresh_duration,
             metadata_storage,
             stream_storage,
+            snapshot_access,
+            replay_mode,
+            continue_after_replay,
         }
     }
 
@@ -72,8 +82,11 @@ impl PersistenceManagerOuterConfig {
         PersistenceManagerConfig::new(self, worker_id, total_workers)
     }
 
-    pub fn create_workers_persistence_coordinator(&self) -> WorkersPersistenceCoordinator {
-        WorkersPersistenceCoordinator::new(self.refresh_duration)
+    pub fn create_workers_persistence_coordinator(
+        &self,
+        num_workers: usize,
+    ) -> WorkersPersistenceCoordinator {
+        WorkersPersistenceCoordinator::new(self.refresh_duration, num_workers)
     }
 }
 
@@ -83,6 +96,9 @@ impl PersistenceManagerOuterConfig {
 pub struct PersistenceManagerConfig {
     metadata_storage: MetadataStorageConfig,
     stream_storage: StreamStorageConfig,
+    pub snapshot_access: SnapshotAccess,
+    pub replay_mode: ReplayMode,
+    pub continue_after_replay: bool,
     pub worker_id: usize,
     total_workers: usize,
 }
@@ -96,6 +112,9 @@ impl PersistenceManagerConfig {
         Self {
             stream_storage: outer_config.stream_storage,
             metadata_storage: outer_config.metadata_storage,
+            snapshot_access: outer_config.snapshot_access,
+            replay_mode: outer_config.replay_mode,
+            continue_after_replay: outer_config.continue_after_replay,
             worker_id,
             total_workers,
         }

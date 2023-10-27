@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use pathway_engine::connectors::data_format::{Formatter, FormatterError, PsqlUpdatesFormatter};
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Value};
 
@@ -11,8 +9,8 @@ fn test_psql_columns_mismatch() -> eyre::Result<()> {
     );
 
     let result = formatter.format(
-        &Key::from_str("1")?,
-        &[Value::from_str("x")?, Value::from_str("y")?],
+        &Key::for_value(&Value::from("1")),
+        &[Value::from("x"), Value::from("y")],
         0,
         1,
     );
@@ -33,8 +31,8 @@ fn test_psql_format_strings() -> eyre::Result<()> {
     );
 
     let result = formatter.format(
-        &Key::from_str("1")?,
-        &[Value::from_str("x")?, Value::from_str("y")?],
+        &Key::for_value(&Value::from("1")),
+        &[Value::from("x"), Value::from("y")],
         0,
         1,
     )?;
@@ -53,7 +51,7 @@ fn test_psql_format_null() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::None], 0, 1)?;
+        let result = formatter.format(&Key::for_value(&Value::from("1")), &[Value::None], 0, 1)?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -70,7 +68,12 @@ fn test_psql_format_bool() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::Bool(true)], 0, 1)?;
+        let result = formatter.format(
+            &Key::for_value(&Value::from("1")),
+            &[Value::Bool(true)],
+            0,
+            1,
+        )?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -78,7 +81,12 @@ fn test_psql_format_bool() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::Bool(false)], 0, 1)?;
+        let result = formatter.format(
+            &Key::for_value(&Value::from("1")),
+            &[Value::Bool(false)],
+            0,
+            1,
+        )?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -95,7 +103,8 @@ fn test_psql_format_int() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::Int(123)], 0, 1)?;
+        let result =
+            formatter.format(&Key::for_value(&Value::from("1")), &[Value::Int(123)], 0, 1)?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -103,7 +112,8 @@ fn test_psql_format_int() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::Int(-2)], 0, 1)?;
+        let result =
+            formatter.format(&Key::for_value(&Value::from("1")), &[Value::Int(-2)], 0, 1)?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -111,7 +121,8 @@ fn test_psql_format_int() -> eyre::Result<()> {
         assert_eq!(result.values.len(), 1);
     }
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::Int(0)], 0, 1)?;
+        let result =
+            formatter.format(&Key::for_value(&Value::from("1")), &[Value::Int(0)], 0, 1)?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -128,7 +139,12 @@ fn test_psql_format_floats() -> eyre::Result<()> {
         PsqlUpdatesFormatter::new("table_name".to_string(), vec!["column".to_string()]);
 
     {
-        let result = formatter.format(&Key::from_str("1")?, &[Value::from(5.5)], 0, 1)?;
+        let result = formatter.format(
+            &Key::for_value(&Value::from("1")),
+            &[Value::from(5.5)],
+            0,
+            1,
+        )?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -147,7 +163,12 @@ fn test_psql_format_pointers() -> eyre::Result<()> {
     {
         let key = pathway_engine::engine::Key(1);
 
-        let result = formatter.format(&Key::from_str("1")?, &[Value::Pointer(key)], 0, 1)?;
+        let result = formatter.format(
+            &Key::for_value(&Value::from("1")),
+            &[Value::Pointer(key)],
+            0,
+            1,
+        )?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -170,7 +191,7 @@ fn test_psql_format_tuple() -> eyre::Result<()> {
 
         let tuple_value = Value::from(values.as_slice());
 
-        let result = formatter.format(&Key::from_str("1")?, &[tuple_value], 0, 1)?;
+        let result = formatter.format(&Key::for_value(&Value::from("1")), &[tuple_value], 0, 1)?;
         assert_eq!(
             result.payloads,
             vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
@@ -188,7 +209,7 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
 
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::DateTimeNaive(DateTimeNaive::new(
                 1684147860000000000,
             ))],
@@ -203,7 +224,7 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
     }
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::DateTimeNaive(DateTimeNaive::new(
                 1684147883546378921,
             ))],
@@ -218,7 +239,7 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
     }
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::DateTimeNaive(DateTimeNaive::new(0))],
             0,
             1,
@@ -240,7 +261,7 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
 
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::DateTimeUtc(DateTimeUtc::new(1684147860000000000))],
             0,
             1,
@@ -253,7 +274,7 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
     }
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::DateTimeUtc(DateTimeUtc::new(1684147883546378921))],
             0,
             1,
@@ -266,7 +287,7 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
     }
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::DateTimeUtc(DateTimeUtc::new(0))],
             0,
             1,
@@ -288,7 +309,7 @@ fn test_psql_format_duration() -> eyre::Result<()> {
 
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::Duration(Duration::new(1197780000000000))],
             0,
             1,
@@ -301,7 +322,7 @@ fn test_psql_format_duration() -> eyre::Result<()> {
     }
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::Duration(Duration::new(-1197780000000000))],
             0,
             1,
@@ -314,7 +335,7 @@ fn test_psql_format_duration() -> eyre::Result<()> {
     }
     {
         let result = formatter.format(
-            &Key::from_str("1")?,
+            &Key::for_value(&Value::from("1")),
             &[Value::Duration(Duration::new(0))],
             0,
             1,

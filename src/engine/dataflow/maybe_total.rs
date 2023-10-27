@@ -3,94 +3,116 @@ use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;
 use differential_dataflow::trace::TraceReader;
 use differential_dataflow::{operators, Collection, Data};
-use timely::dataflow::scopes::Child;
-use timely::dataflow::{Scope, ScopeParent};
-use timely::order::Product;
+use timely::dataflow::Scope;
+use timely::order::{Product, TotalOrder};
 use timely::progress::Timestamp;
 
-pub trait MaybeTotalScope: Scope<Timestamp = Self::MaybeTotalTimestamp> {
-    type MaybeTotalTimestamp: Timestamp + Lattice;
+pub trait MaybeTotalTimestamp: Timestamp + Lattice {
+    type IsTotal: MaybeTotalSwitch<Self>;
+}
 
-    fn count<T>(arranged: &Arranged<Self, T>) -> Collection<Self, (T::Key, T::R), isize>
+pub trait MaybeTotalSwitch<Time>
+where
+    Time: Timestamp + Lattice,
+{
+    fn count<S, T>(arranged: &Arranged<S, T>) -> Collection<S, (T::Key, T::R), isize>
     where
-        T: TraceReader<Val = (), Time = Self::Timestamp> + Clone + 'static,
+        S: MaybeTotalScope<MaybeTotalTimestamp = Time>,
+        T: TraceReader<Val = (), Time = Time> + Clone + 'static,
+        T::Key: Data,
+        T::R: Semigroup;
+
+    fn distinct<S, T>(arranged: &Arranged<S, T>) -> Collection<S, T::Key, isize>
+    where
+        S: MaybeTotalScope<MaybeTotalTimestamp = Time>,
+        T: TraceReader<Val = (), Time = Time> + Clone + 'static,
+        T::Key: Data,
+        T::R: Semigroup;
+}
+
+pub struct Total;
+pub struct NotTotal;
+
+impl<Time> MaybeTotalSwitch<Time> for Total
+where
+    Time: Timestamp + Lattice + TotalOrder,
+{
+    fn count<S, T>(arranged: &Arranged<S, T>) -> Collection<S, (T::Key, T::R), isize>
+    where
+        S: MaybeTotalScope<MaybeTotalTimestamp = Time>,
+        T: TraceReader<Val = (), Time = Time> + Clone + 'static,
         T::Key: Data,
         T::R: Semigroup,
     {
-        // This is a safe default, override this method if you can implement it better
+        operators::CountTotal::count_total(arranged)
+    }
 
+    fn distinct<S, T>(arranged: &Arranged<S, T>) -> Collection<S, T::Key, isize>
+    where
+        S: MaybeTotalScope<MaybeTotalTimestamp = Time>,
+        T: TraceReader<Val = (), Time = Time> + Clone + 'static,
+        T::Key: Data,
+        T::R: Semigroup,
+    {
+        operators::ThresholdTotal::distinct_total(arranged)
+    }
+}
+
+impl<Time> MaybeTotalSwitch<Time> for NotTotal
+where
+    Time: Timestamp + Lattice,
+{
+    fn count<S, T>(arranged: &Arranged<S, T>) -> Collection<S, (T::Key, T::R), isize>
+    where
+        S: MaybeTotalScope<MaybeTotalTimestamp = Time>,
+        T: TraceReader<Val = (), Time = Time> + Clone + 'static,
+        T::Key: Data,
+        T::R: Semigroup,
+    {
         #[allow(clippy::disallowed_methods)]
         operators::Count::count(arranged)
     }
 
-    fn distinct<T>(arranged: &Arranged<Self, T>) -> Collection<Self, T::Key, isize>
+    fn distinct<S, T>(arranged: &Arranged<S, T>) -> Collection<S, T::Key, isize>
     where
-        T: TraceReader<Val = (), Time = Self::Timestamp> + Clone + 'static,
+        S: MaybeTotalScope<MaybeTotalTimestamp = Time>,
+        T: TraceReader<Val = (), Time = Time> + Clone + 'static,
         T::Key: Data,
         T::R: Semigroup,
     {
-        // This is a safe default, override this method if you can implement it better
-
         #[allow(clippy::disallowed_methods)]
         operators::Threshold::distinct(arranged)
     }
 }
 
-impl<'a, S> MaybeTotalScope for Child<'a, S, u64>
-where
-    S: ScopeParent<Timestamp = ()>,
-{
-    type MaybeTotalTimestamp = Self::Timestamp;
-
-    fn count<T>(arranged: &Arranged<Self, T>) -> Collection<Self, (T::Key, T::R), isize>
-    where
-        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
-        T::Key: Data,
-        T::R: Semigroup,
-    {
-        operators::CountTotal::count_total(arranged)
-    }
-
-    fn distinct<T>(arranged: &Arranged<Self, T>) -> Collection<Self, T::Key, isize>
-    where
-        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
-        T::Key: Data,
-        T::R: Semigroup,
-    {
-        operators::ThresholdTotal::distinct_total(arranged)
-    }
+impl MaybeTotalTimestamp for u64 {
+    type IsTotal = Total;
 }
 
-impl<'a, S> MaybeTotalScope for Child<'a, S, i32>
-where
-    S: ScopeParent<Timestamp = ()>,
-{
-    type MaybeTotalTimestamp = Self::Timestamp;
-
-    fn count<T>(arranged: &Arranged<Self, T>) -> Collection<Self, (T::Key, T::R), isize>
-    where
-        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
-        T::Key: Data,
-        T::R: Semigroup,
-    {
-        operators::CountTotal::count_total(arranged)
-    }
-
-    fn distinct<T>(arranged: &Arranged<Self, T>) -> Collection<Self, T::Key, isize>
-    where
-        T: TraceReader<Val = (), Time = <Self>::Timestamp> + Clone + 'static,
-        T::Key: Data,
-        T::R: Semigroup,
-    {
-        operators::ThresholdTotal::distinct_total(arranged)
-    }
+impl MaybeTotalTimestamp for i32 {
+    type IsTotal = Total;
 }
 
-impl<'a, S, T1, T2> MaybeTotalScope for Child<'a, S, Product<T1, T2>>
+impl<T1, T2> MaybeTotalTimestamp for Product<T1, T2>
 where
-    S: ScopeParent<Timestamp = T1>,
     T1: Timestamp + Lattice,
     T2: Timestamp + Lattice,
 {
-    type MaybeTotalTimestamp = Self::Timestamp;
+    type IsTotal = NotTotal;
+}
+
+pub trait MaybeTotalScope: Scope<Timestamp = Self::MaybeTotalTimestamp> {
+    type MaybeTotalTimestamp: MaybeTotalTimestamp;
+
+    type IsTotal: MaybeTotalSwitch<Self::MaybeTotalTimestamp>;
+}
+
+impl<S> MaybeTotalScope for S
+where
+    S: Scope,
+    S::Timestamp: MaybeTotalTimestamp,
+{
+    type MaybeTotalTimestamp = S::Timestamp;
+
+    type IsTotal = <S::Timestamp as MaybeTotalTimestamp>::IsTotal;
 }

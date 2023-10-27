@@ -28,6 +28,7 @@ def generate_custom_stream(
     nb_rows: int | None = None,
     autocommit_duration_ms: int = 1000,
     input_rate: float = 1.0,
+    persistent_id: str | None = None,
 ) -> pw.Table:
     """Generates a data stream.
 
@@ -103,6 +104,7 @@ provided the default type is ``pw.Type.ANY``.
         schema=schema,
         format="json",
         autocommit_duration_ms=autocommit_duration_ms,
+        persistent_id=persistent_id,
     )
 
     return table

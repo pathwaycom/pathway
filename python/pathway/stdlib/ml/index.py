@@ -2,6 +2,7 @@
 
 import pathway.internals as pw
 from pathway.stdlib.ml.classifiers import knn_lsh_classifier_train
+from pathway.stdlib.ml.utils import _predict_asof_now
 from pathway.stdlib.utils.col import unpack_col
 
 
@@ -52,8 +53,11 @@ class KNNIndex:
         collapse_rows: bool = True,
     ):
         """
-        This method queries the index with given queries and returns the 'k' most relevant documents
-        for each query in the stream.
+        This method queries the index with given queries and returns 'k' most relevant documents
+        for each query in the stream. While using this method, documents associated with
+        the queries will be updated if new more relevant documents appear.
+        If you don't want queries results to get updated in the future, take a look at
+        `get_nearest_items_asof_now`.
 
         Parameters:
         query_embedding (pw.ColumnReference): column of embedding vectors precomputed from the query.
@@ -119,6 +123,34 @@ class KNNIndex:
         if collapse_rows:
             return self._extract_data_collapsed_rows(knns_ids, queries)
         return self._extract_data_flat(knns_ids, queries)
+
+    def get_nearest_items_asof_now(
+        self,
+        query_embedding: pw.ColumnReference,
+        k: int = 3,
+        collapse_rows: bool = True,
+    ):
+        """
+        This method queries the index with given queries and returns 'k' most relevant documents
+        for each query in the stream. The already answered queries are not updated in
+        the future if new documents appear.
+
+        Parameters:
+        query_embedding (pw.ColumnReference): column of embedding vectors precomputed from the query.
+        k (int, optional): The number of most relevant documents to return for each query.
+                            Defaults to 3.
+        collapse_rows (bool, optional): Determines the format of the output. If set to True,
+            multiple rows corresponding to a single query will be collapsed into a single row,
+            with each column containing a tuple of values from the original rows. If set to False,
+            the output will retain the multi-row format for each query. Defaults to True.
+
+        For examples, see `get_nearest_items`.
+        """
+        return _predict_asof_now(
+            query_embedding,
+            lambda x: self.get_nearest_items(x, k=k, collapse_rows=collapse_rows),
+            with_queries_universe=collapse_rows,
+        )
 
     def _extract_data_collapsed_rows(self, knns_ids, queries):
         selected_data = (

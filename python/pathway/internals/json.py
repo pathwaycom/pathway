@@ -17,9 +17,10 @@ class _JsonEncoder(_json.JSONEncoder):
 
 @dataclass(frozen=True, eq=True)
 class Json:
-    """Represents Json value.
+    """Represents JSON values.
 
     Example:
+
     >>> import pathway as pw
     >>> t1 = pw.debug.parse_to_table('''
     ... a    | b | c

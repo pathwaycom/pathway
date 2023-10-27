@@ -35,6 +35,7 @@ def read(
     mode: str = "streaming",
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    object_pattern: str = "*",
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
@@ -61,9 +62,14 @@ option is chosen, it's split by the newlines. Otherwise, the files are split in 
 and one row will correspond to one file. In case the "binary" format is specified, \
 the data is read as raw bytes without UTF-8 parsing.
         schema: Schema of the resulting table.
-        mode: If set to "streaming", the engine will wait for the new input
-            files in the directory. Set it to "static", it will only consider the available
-            data and ingest all of it in one commit. Default value is "streaming".
+        mode: denotes how the engine polls the new data from the source. Currently \
+"streaming", "static", and "streaming_with_deletions" are supported. If set to \
+"streaming" the engine will wait for the new input files in the directory. On the other \
+hand, "streaming_with_deletions" mode also tracks file deletions and modifications and \
+reflects them in the state. For example, if a file was deleted, "streaming_with_deletions"\
+mode will also remove rows obtained by reading this file from the table. Finally, the \
+"static" mode will only consider the available data and ingest all of it in one commit. \
+The default value is "streaming".
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -71,6 +77,8 @@ the data is read as raw bytes without UTF-8 parsing.
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        object_pattern: Unix shell style pattern for filtering only certain files in the \
+directory. Ignored in case a path to a single file is specified.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -208,6 +216,7 @@ the data is read as raw bytes without UTF-8 parsing.
             path=fspath(path),
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
             mode=internal_connector_mode(mode),
+            object_pattern=object_pattern,
             persistent_id=persistent_id,
         )
     else:
@@ -216,6 +225,7 @@ the data is read as raw bytes without UTF-8 parsing.
             path=fspath(path),
             mode=internal_connector_mode(mode),
             read_method=internal_read_method(format),
+            object_pattern=object_pattern,
             persistent_id=persistent_id,
         )
 

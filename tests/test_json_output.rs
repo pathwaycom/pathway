@@ -1,5 +1,4 @@
 use std::str::from_utf8;
-use std::str::FromStr;
 
 use pathway_engine::connectors::data_format::{Formatter, JsonLinesFormatter};
 use pathway_engine::engine::DateTimeNaive;
@@ -11,7 +10,12 @@ use pathway_engine::engine::{Key, Value};
 fn test_json_format_ok() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
-    let result = formatter.format(&Key::from_str("1")?, &[Value::from_str("b")?], 0, 1)?;
+    let result = formatter.format(
+        &Key::for_value(&Value::from("1")),
+        &[Value::from("b")],
+        0,
+        1,
+    )?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -26,7 +30,7 @@ fn test_json_format_ok() -> eyre::Result<()> {
 fn test_json_int_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
-    let result = formatter.format(&Key::from_str("1")?, &[Value::Int(555)], 0, 1)?;
+    let result = formatter.format(&Key::for_value(&Value::from("1")), &[Value::Int(555)], 0, 1)?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -41,7 +45,12 @@ fn test_json_int_serialization() -> eyre::Result<()> {
 fn test_json_float_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
-    let result = formatter.format(&Key::from_str("1")?, &[Value::Float(5.55.into())], 0, 1)?;
+    let result = formatter.format(
+        &Key::for_value(&Value::from("1")),
+        &[Value::Float(5.55.into())],
+        0,
+        1,
+    )?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -56,7 +65,12 @@ fn test_json_float_serialization() -> eyre::Result<()> {
 fn test_json_bool_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
-    let result = formatter.format(&Key::from_str("1")?, &[Value::Bool(true)], 0, 1)?;
+    let result = formatter.format(
+        &Key::for_value(&Value::from("1")),
+        &[Value::Bool(true)],
+        0,
+        1,
+    )?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -71,7 +85,7 @@ fn test_json_bool_serialization() -> eyre::Result<()> {
 fn test_json_null_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
-    let result = formatter.format(&Key::from_str("1")?, &[Value::None], 0, 1)?;
+    let result = formatter.format(&Key::for_value(&Value::from("1")), &[Value::None], 0, 1)?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -87,7 +101,12 @@ fn test_json_pointer_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
     let key = pathway_engine::engine::Key(1);
-    let result = formatter.format(&Key::from_str("1")?, &[Value::Pointer(key)], 0, 1)?;
+    let result = formatter.format(
+        &Key::for_value(&Value::from("1")),
+        &[Value::Pointer(key)],
+        0,
+        1,
+    )?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -107,7 +126,7 @@ fn test_json_tuple_serialization() -> eyre::Result<()> {
     let values = [value1, value2];
     let tuple_value = Value::from(values.as_slice());
 
-    let result = formatter.format(&Key::from_str("1")?, &[tuple_value], 0, 1)?;
+    let result = formatter.format(&Key::for_value(&Value::from("1")), &[tuple_value], 0, 1)?;
     assert_eq!(result.payloads.len(), 1);
     assert_eq!(
         from_utf8(&result.payloads[0])?,
@@ -123,7 +142,7 @@ fn test_json_date_time_naive_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
     let result = formatter.format(
-        &Key::from_str("1")?,
+        &Key::for_value(&Value::from("1")),
         &[Value::DateTimeNaive(DateTimeNaive::new(
             1684147860000000000,
         ))],
@@ -145,7 +164,7 @@ fn test_json_date_time_utc_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
     let result = formatter.format(
-        &Key::from_str("1")?,
+        &Key::for_value(&Value::from("1")),
         &[Value::DateTimeUtc(DateTimeUtc::new(1684147860000000000))],
         0,
         1,
@@ -166,7 +185,7 @@ fn test_json_duration_serialization() -> eyre::Result<()> {
     let mut formatter = JsonLinesFormatter::new(vec!["a".to_string()]);
 
     let result = formatter.format(
-        &Key::from_str("1")?,
+        &Key::for_value(&Value::from("1")),
         &[Value::Duration(Duration::new(1197780000000000))],
         0,
         1,

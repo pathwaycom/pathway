@@ -9,6 +9,12 @@ from ._asof_join import (
     asof_join_outer,
     asof_join_right,
 )
+from ._asof_now_join import (
+    AsofNowJoinResult,
+    asof_now_join,
+    asof_now_join_inner,
+    asof_now_join_left,
+)
 from ._interval_join import (
     IntervalJoinResult,
     interval,
@@ -31,12 +37,16 @@ from .temporal_behavior import WindowBehavior, window_behavior
 
 __all__ = [
     "AsofJoinResult",
+    "AsofNowJoinResult",
     "IntervalJoinResult",
     "WindowJoinResult",
     "asof_join",
     "asof_join_left",
     "asof_join_right",
     "asof_join_outer",
+    "asof_now_join",
+    "asof_now_join_inner",
+    "asof_now_join_left",
     "interval_join",
     "interval_join_inner",
     "interval_join_left",

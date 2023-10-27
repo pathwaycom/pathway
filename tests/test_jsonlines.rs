@@ -3,7 +3,7 @@ use helpers::{assert_error_shown, read_data_from_reader};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::str::FromStr;
+
 use std::sync::Arc;
 
 use pathway_engine::connectors::data_format::{JsonLinesParser, ParsedEvent};
@@ -17,6 +17,7 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -30,15 +31,15 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
 
     let expected_values = vec![
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("abc")?]),
+            Some(vec![Value::from("abc")]),
             vec![Value::Int(7), Value::Int(15)],
         )),
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("def")?]),
+            Some(vec![Value::from("def")]),
             vec![Value::Int(1), Value::Int(3)],
         )),
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("ghi")?]),
+            Some(vec![Value::from("ghi")]),
             vec![Value::Int(2), Value::Int(4)],
         )),
         ParsedEvent::AdvanceTime,
@@ -55,6 +56,7 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -80,6 +82,7 @@ fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -102,6 +105,7 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -127,6 +131,7 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -147,14 +152,14 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
     let expected_values = vec![ParsedEvent::Insert((
-        Some(vec![Value::from_str("abc")?]),
+        Some(vec![Value::from("abc")]),
         vec![
             Value::Float(1.23.into()),
             Value::Int(50),
             Value::Int(-60),
-            Value::from_str("hello")?,
+            Value::from("hello"),
             Value::Tuple(Arc::new([
-                Value::from_str("world")?,
+                Value::from("world"),
                 Value::Int(1),
                 Value::Int(-4),
                 Value::Float(7.38.into()),
@@ -176,6 +181,7 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
 
     let mut routes = HashMap::new();
@@ -231,6 +237,7 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
 
     let mut routes = HashMap::new();
@@ -271,6 +278,7 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
 
     let mut routes = HashMap::new();
@@ -308,6 +316,7 @@ fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -336,6 +345,7 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
@@ -361,6 +371,7 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = JsonLinesParser::new(
         None,

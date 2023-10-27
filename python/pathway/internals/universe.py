@@ -21,6 +21,11 @@ class Universe:
 
         return G.universe_solver.get_subset(self)
 
+    def superset(self) -> Universe:
+        from pathway.internals.parse_graph import G
+
+        return G.universe_solver.get_superset(self)
+
     def is_subset_of(self, other: Universe) -> bool:
         from pathway.internals.parse_graph import G
 

@@ -132,6 +132,10 @@ class Joinable(TableLike, DesugaringContext):
         """
         return ColumnNamespace(self)
 
+    @property
+    def _C(self):
+        return self.C
+
     @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
     @arg_handler(handler=join_kwargs_handler(allow_how=True, allow_id=True))
@@ -470,7 +474,7 @@ class JoinResult(Joinable, OperatorInput):
     """
 
     _inner_table: Table
-    _columns_mapping: dict[clmn.InternalColRef, expr.ColumnReference]
+    _columns_mapping: dict[expr.InternalColRef, expr.ColumnReference]
     _left_table: Table
     _right_table: Table
     _original_left: Joinable
@@ -485,7 +489,7 @@ class JoinResult(Joinable, OperatorInput):
         self,
         _universe: Universe,
         _inner_table: Table,
-        _columns_mapping: dict[clmn.InternalColRef, expr.ColumnReference],
+        _columns_mapping: dict[expr.InternalColRef, expr.ColumnReference],
         _left_table: Table,
         _right_table: Table,
         _original_left: Joinable,

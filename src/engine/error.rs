@@ -68,14 +68,8 @@ pub enum Error {
     #[error("graph is not capable of iteration")]
     IterationNotPossible,
 
-    #[error("freeze is not supported inside iterate")]
-    FreezeNotSupportedInIteration,
-
-    #[error("forget is not supported inside iterate")]
-    ForgetNotSupportedInIteration,
-
-    #[error("buffer is not supported inside iterate")]
-    BufferNotSupportedInIteration,
+    #[error("operation is not supported inside iterate")]
+    NotSupportedInIteration,
 
     #[error("wrong id assignment")]
     BadIdAssign,

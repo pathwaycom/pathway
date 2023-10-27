@@ -63,13 +63,26 @@ class PersistenceConfig:
     refresh_duration_ms: int = 0
     metadata_storage: PersistentStorageBackend
     snapshot_storage: PersistentStorageBackend
+    snapshot_access: api.SnapshotAccess
+    replay_mode: api.ReplayMode
+    continue_after_replay: bool
 
     @classmethod
-    def single_backend(cls, backend: PersistentStorageBackend, refresh_duration_ms=0):
+    def single_backend(
+        cls,
+        backend: PersistentStorageBackend,
+        refresh_duration_ms=0,
+        snapshot_access=api.SnapshotAccess.FULL,
+        replay_mode=api.ReplayMode.PERSISTING,
+        continue_after_replay=True,
+    ):
         return cls(
             refresh_duration_ms=refresh_duration_ms,
             metadata_storage=backend,
             snapshot_storage=backend,
+            snapshot_access=snapshot_access,
+            replay_mode=replay_mode,
+            continue_after_replay=continue_after_replay,
         )
 
     @property
@@ -78,6 +91,9 @@ class PersistenceConfig:
             refresh_duration_ms=self.refresh_duration_ms,
             metadata_storage=self.metadata_storage.engine_data_storage,
             stream_storage=self.snapshot_storage.engine_data_storage,
+            snapshot_access=self.snapshot_access,
+            replay_mode=self.replay_mode,
+            continue_after_replay=self.continue_after_replay,
         )
 
     def on_before_run(self):

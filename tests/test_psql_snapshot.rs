@@ -1,5 +1,4 @@
 use std::str::from_utf8;
-use std::str::FromStr;
 
 use assert_matches::assert_matches;
 
@@ -22,10 +21,10 @@ fn test_psql_format_snapshot_command() -> eyre::Result<()> {
     );
 
     let result = formatter?.format(
-        &Key::from_str("1")?,
+        &Key::for_value(&Value::from("1")),
         &[
-            Value::from_str("k")?,
-            Value::from_str("string")?,
+            Value::from("k"),
+            Value::from("string"),
             Value::Bool(true),
             Value::from(1.23),
         ],
@@ -72,10 +71,10 @@ fn test_psql_format_snapshot_composite() -> eyre::Result<()> {
     );
 
     let result = formatter?.format(
-        &Key::from_str("1")?,
+        &Key::for_value(&Value::from("1")),
         &[
-            Value::from_str("k")?,
-            Value::from_str("string")?,
+            Value::from("k"),
+            Value::from("string"),
             Value::Bool(true),
             Value::from(1.23),
         ],

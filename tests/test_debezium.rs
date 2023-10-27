@@ -2,7 +2,6 @@ mod helpers;
 use helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
 
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use pathway_engine::connectors::data_format::{DebeziumMessageParser, ParsedEvent};
 use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader, ReadMethod};
@@ -15,6 +14,7 @@ fn test_debezium_reads_ok() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
+        "*",
     )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),
@@ -25,35 +25,14 @@ fn test_debezium_reads_ok() -> eyre::Result<()> {
     let changelog = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
     let expected_values = vec![
-        ParsedEvent::Insert((
-            Some(vec![Value::Int(1001)]),
-            vec![Value::from_str("Sally")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::Int(1002)]),
-            vec![Value::from_str("George")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::Int(1003)]),
-            vec![Value::from_str("Edward")?],
-        )),
-        ParsedEvent::Insert((Some(vec![Value::Int(1004)]), vec![Value::from_str("Anne")?])),
-        ParsedEvent::Insert((
-            Some(vec![Value::Int(1005)]),
-            vec![Value::from_str("Sergey")?],
-        )),
-        ParsedEvent::Delete((
-            Some(vec![Value::Int(1005)]),
-            vec![Value::from_str("Sergey")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::Int(1005)]),
-            vec![Value::from_str("Siarhei")?],
-        )),
-        ParsedEvent::Delete((
-            Some(vec![Value::Int(1005)]),
-            vec![Value::from_str("Siarhei")?],
-        )),
+        ParsedEvent::Insert((Some(vec![Value::Int(1001)]), vec![Value::from("Sally")])),
+        ParsedEvent::Insert((Some(vec![Value::Int(1002)]), vec![Value::from("George")])),
+        ParsedEvent::Insert((Some(vec![Value::Int(1003)]), vec![Value::from("Edward")])),
+        ParsedEvent::Insert((Some(vec![Value::Int(1004)]), vec![Value::from("Anne")])),
+        ParsedEvent::Insert((Some(vec![Value::Int(1005)]), vec![Value::from("Sergey")])),
+        ParsedEvent::Delete((Some(vec![Value::Int(1005)]), vec![Value::from("Sergey")])),
+        ParsedEvent::Insert((Some(vec![Value::Int(1005)]), vec![Value::from("Siarhei")])),
+        ParsedEvent::Delete((Some(vec![Value::Int(1005)]), vec![Value::from("Siarhei")])),
     ];
     assert_eq!(changelog, expected_values);
 

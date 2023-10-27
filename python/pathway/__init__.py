@@ -218,6 +218,10 @@ Table.asof_join_left = temporal.asof_join_left
 Table.asof_join_right = temporal.asof_join_right
 Table.asof_join_outer = temporal.asof_join_outer
 
+Table.asof_now_join = temporal.asof_now_join
+Table.asof_now_join_inner = temporal.asof_now_join_inner
+Table.asof_now_join_left = temporal.asof_now_join_left
+
 Table.window_join = temporal.window_join
 Table.window_join_inner = temporal.window_join_inner
 Table.window_join_left = temporal.window_join_left

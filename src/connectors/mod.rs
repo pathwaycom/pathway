@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use differential_dataflow::input::InputSession;
 use scopeguard::guard;
+use timely::dataflow::operators::probe::Handle;
 use timely::progress::Timestamp as TimelyTimestamp;
 
 pub mod data_format;
@@ -19,6 +20,7 @@ pub mod data_storage;
 pub mod monitoring;
 pub mod offset;
 pub mod snapshot;
+pub mod upsert_session;
 
 use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::report_error::{ReportError, SpawnWithReporter};
@@ -92,6 +94,66 @@ pub enum Entry {
     Realtime(ReadResult),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ReplayMode {
+    Realtime,
+    Speedrun,
+    Batch,
+    Persisting,
+}
+
+impl ReplayMode {
+    fn on_before_reading_snapshot(self, sender: &Sender<Entry>) {
+        // In case of Batch replay we need to start with AdvanceTime to set a new timestamp
+        if matches!(self, ReplayMode::Batch) {
+            let timestamp = u64::try_from(current_unix_timestamp_ms())
+                .expect("number of milliseconds should fit in 64 bits");
+            let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(timestamp)));
+            if let Err(e) = send_res {
+                panic!("Failed to initialize time for batch replay: {e}");
+            }
+        }
+    }
+
+    fn handle_snapshot_time_advancement(self, sender: &Sender<Entry>, entry_read: SnapshotEvent) {
+        match self {
+            ReplayMode::Batch | ReplayMode::Persisting => {}
+            ReplayMode::Speedrun => {
+                let send_res = sender.send(Entry::Snapshot(entry_read));
+                if let Err(e) = send_res {
+                    error!("Failed to send rewind entry: {e}");
+                }
+            }
+            ReplayMode::Realtime => {
+                unreachable!()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SnapshotAccess {
+    Replay,
+    Record,
+    Full,
+}
+
+impl SnapshotAccess {
+    fn is_replay_allowed(self) -> bool {
+        match self {
+            SnapshotAccess::Full | SnapshotAccess::Replay => true,
+            SnapshotAccess::Record => false,
+        }
+    }
+
+    fn is_snapshot_writing_allowed(self) -> bool {
+        match self {
+            SnapshotAccess::Full | SnapshotAccess::Record => true,
+            SnapshotAccess::Replay => false,
+        }
+    }
+}
+
 impl<Timestamp> Connector<Timestamp>
 where
     Timestamp: TimelyTimestamp + Default + From<u64>,
@@ -134,6 +196,7 @@ where
         persistent_id: PersistentId,
         persistent_storage: &Arc<Mutex<SingleWorkerPersistentStorage>>,
         sender: &Sender<Entry>,
+        replay_mode: ReplayMode,
     ) {
         let snapshot_readers = persistent_storage
             .lock()
@@ -158,7 +221,9 @@ where
                                 error!("Failed to send rewind entry: {e}");
                             }
                         }
-                        SnapshotEvent::AdvanceTime(_) => {}
+                        SnapshotEvent::AdvanceTime(_) => {
+                            replay_mode.handle_snapshot_time_advancement(sender, entry_read);
+                        }
                     }
                 }
             }
@@ -207,38 +272,48 @@ where
         reader: &mut dyn Reader,
         persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
         sender: &Sender<Entry>,
+        replay_mode: ReplayMode,
+        snapshot_access: SnapshotAccess,
     ) {
-        // Rewind the data source
-        if let Some(persistent_storage) = persistent_storage {
-            if let Some(persistent_id) = reader.persistent_id() {
-                Self::rewind_from_disk_snapshot(persistent_id, persistent_storage, sender);
+        if snapshot_access.is_replay_allowed() {
+            replay_mode.on_before_reading_snapshot(sender);
+            // Rewind the data source
+            if let Some(persistent_storage) = persistent_storage {
+                if let Some(persistent_id) = reader.persistent_id() {
+                    Self::rewind_from_disk_snapshot(
+                        persistent_id,
+                        persistent_storage,
+                        sender,
+                        replay_mode,
+                    );
 
-                let frontier = persistent_storage
-                    .lock()
-                    .unwrap()
-                    .frontier_for(persistent_id);
+                    let frontier = persistent_storage
+                        .lock()
+                        .unwrap()
+                        .frontier_for(persistent_id);
 
-                info!("Seek the data source to the frontier {frontier:?}");
-                if let Err(e) = reader.seek(&frontier) {
-                    error!("Failed to seek to frontier: {e}");
+                    info!("Seek the data source to the frontier {frontier:?}");
+                    if let Err(e) = reader.seek(&frontier) {
+                        error!("Failed to seek to frontier: {e}");
+                    }
                 }
             }
         }
-
         // Report that rewind has finished, so that autocommits start to work
-        {
-            let send_res = sender.send(Entry::RewindFinishSentinel);
-            if let Err(e) = send_res {
-                panic!("Failed to switch from persisted to realtime: {e}");
-            }
+        let send_res = sender.send(Entry::RewindFinishSentinel);
+        if let Err(e) = send_res {
+            panic!("Failed to switch from persisted to realtime: {e}");
         }
     }
 
     pub fn snapshot_writer(
         reader: &dyn ReaderBuilder,
         persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
+        snapshot_access: SnapshotAccess,
     ) -> Result<Option<SharedSnapshotWriter>, WriteError> {
-        if let Some(persistent_storage) = &persistent_storage {
+        if !snapshot_access.is_snapshot_writing_allowed() {
+            Ok(None)
+        } else if let Some(persistent_storage) = &persistent_storage {
             if let Some(persistent_id) = reader.persistent_id() {
                 Ok(Some(
                     persistent_storage
@@ -257,16 +332,20 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     pub fn run(
         mut self,
         reader: Box<dyn ReaderBuilder>,
         mut parser: Box<dyn Parser>,
         mut input_session: InputSession<Timestamp, (Key, Value), isize>,
         mut values_to_key: impl FnMut(Option<Vec<Value>>, Option<&Offset>) -> Key + 'static,
+        probe: Handle<Timestamp>,
         persistent_storage: Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
         connector_id: usize,
         realtime_reader_needed: bool,
         external_persistent_id: &Option<ExternalPersistentId>,
+        replay_mode: ReplayMode,
+        snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
     ) -> Result<StartedConnectorState<Timestamp>, EngineError> {
         assert_eq!(self.num_columns, parser.column_count());
@@ -281,9 +360,12 @@ where
         );
         let reader_name = reader.name(external_persistent_id, connector_id);
 
-        let mut snapshot_writer =
-            Self::snapshot_writer(reader.as_ref(), persistent_storage.as_ref())
-                .map_err(EngineError::SnapshotWriterError)?;
+        let mut snapshot_writer = Self::snapshot_writer(
+            reader.as_ref(),
+            persistent_storage.as_ref(),
+            snapshot_access,
+        )
+        .map_err(EngineError::SnapshotWriterError)?;
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
@@ -296,7 +378,13 @@ where
                 });
 
                 let mut reader = reader.build()?;
-                Self::read_snapshot(&mut *reader, persistent_storage.as_ref(), &sender);
+                Self::read_snapshot(
+                    &mut *reader,
+                    persistent_storage.as_ref(),
+                    &sender,
+                    replay_mode,
+                    snapshot_access,
+                );
                 if realtime_reader_needed {
                     Self::read_realtime_updates(&mut *reader, &sender, &main_thread);
                 }
@@ -315,6 +403,12 @@ where
         let cloned_connector_monitor = connector_monitor.clone();
         let poller = Box::new(move || {
             let iteration_start = SystemTime::now();
+            if matches!(replay_mode, ReplayMode::Speedrun)
+                && !backfilling_finished
+                && probe.less_than(input_session.time())
+            {
+                return ControlFlow::Continue(Some(iteration_start));
+            }
 
             if let Some(next_commit_at_timestamp) = next_commit_at {
                 if next_commit_at_timestamp <= iteration_start {
@@ -347,6 +441,13 @@ where
                             (*connector_monitor).borrow_mut().finish();
                             return ControlFlow::Break(());
                         }
+                    }
+                    Ok(Entry::Snapshot(SnapshotEvent::AdvanceTime(new_timestamp))) => {
+                        input_session.flush();
+                        let new_timestamp_even = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
+                        input_session.advance_to(new_timestamp_even.into());
+                        input_session.flush();
+                        return ControlFlow::Continue(Some(iteration_start));
                     }
                     Ok(entry) => {
                         self.handle_input_entry(

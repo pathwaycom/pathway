@@ -16,6 +16,7 @@ def read(
     path: str | PathLike,
     *,
     mode: str = "streaming",
+    object_pattern: str = "*",
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data=None,
@@ -30,9 +31,16 @@ def read(
 
     Args:
         path: Path to a file or to a folder.
-        mode: If set to "streaming", the engine will wait for the new input \
-files in the directory. Set it to "static", it will only consider the available \
-data and ingest all of it in one commit. Default value is "streaming".
+        mode: denotes how the engine polls the new data from the source. Currently \
+"streaming", "static", and "streaming_with_deletions" are supported. If set to \
+"streaming" the engine will wait for the new input files in the directory. On the other \
+hand, "streaming_with_deletions" mode also tracks file deletions and modifications and \
+reflects them in the state. For example, if a file was deleted, "streaming_with_deletions"\
+mode will also remove rows obtained by reading this file from the table. Finally, the \
+"static" mode will only consider the available data and ingest all of it in one commit. \
+The default value is "streaming".
+        object_pattern: Unix shell style pattern for filtering only certain files in the \
+directory. Ignored in case a path to a single file is specified.
         persistent_id: (unstable) An identifier, under which the state of the table \
 will be persisted or ``None``, if there is no need to persist the state of this table. \
 When a program restarts, it restores the state for all input tables according to what \
@@ -56,6 +64,7 @@ computations from the moment they were terminated last time.
         path,
         format="plaintext",
         mode=mode,
+        object_pattern=object_pattern,
         persistent_id=persistent_id,
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,

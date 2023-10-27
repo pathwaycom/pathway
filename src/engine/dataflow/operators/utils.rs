@@ -1,11 +1,13 @@
-use differential_dataflow::difference::Abelian;
-use differential_dataflow::difference::Semigroup;
+use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::cursor::Cursor;
 use differential_dataflow::trace::implementations::ord::{OrdValBatch, OrdValBuilder};
-use differential_dataflow::trace::Builder;
+use differential_dataflow::trace::{BatchReader, Builder};
+use differential_dataflow::ExchangeData;
 use std::cmp::Ord;
-use timely::progress::Antichain;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+use timely::progress::{Antichain, Timestamp};
 /// This struct allows to sort entries by key, val, time, before building a batch
 /// it is essentially a buffer than later calls the DD batch builder
 /// possible improvement: write a batch builder that allows sorting entries without buffering them
@@ -71,5 +73,36 @@ where
             ret = Some(val);
         }
     });
+    ret
+}
+
+/// Reorganizes a set of batches into set of vectors, each vector corresponding
+/// to updates from a specific time
+pub(crate) fn batch_by_time<K, V, T, R>(
+    input: &Vec<Rc<OrdValBatch<K, V, T, R>>>,
+) -> BTreeMap<T, Vec<(K, V, T, R)>>
+where
+    K: ExchangeData,
+    V: ExchangeData,
+    T: Timestamp + Lattice,
+    R: ExchangeData + Abelian,
+{
+    let mut ret: BTreeMap<T, Vec<(K, V, T, R)>> = BTreeMap::new();
+    for batch in input {
+        let mut cursor = batch.cursor();
+        while let Some(key) = cursor.get_key(batch) {
+            while let Some(val) = cursor.get_val(batch) {
+                cursor.map_times(batch, |time, diff| {
+                    if !ret.contains_key(time) {
+                        ret.insert(time.clone(), Vec::new());
+                    }
+                    let state = ret.get_mut(time).unwrap();
+                    state.push((key.clone(), val.clone(), time.clone(), diff.clone()));
+                });
+                cursor.step_val(batch);
+            }
+            cursor.step_key(batch);
+        }
+    }
     ret
 }

@@ -311,6 +311,20 @@ class RowwiseContext(
 
 
 @dataclass(eq=False, frozen=True)
+class GradualBroadcastContext(Context):
+    lower_column: ColumnWithExpression
+    value_column: ColumnWithExpression
+    upper_column: ColumnWithExpression
+    apx_value_column: MaterializedColumn
+
+    def column_dependencies_internal(self) -> Iterable[Column]:
+        return [self.lower_column, self.value_column, self.upper_column]
+
+    def universe_dependencies(self) -> Iterable[Universe]:
+        return [self.universe, self.value_column.universe]
+
+
+@dataclass(eq=False, frozen=True)
 class TableRestrictedRowwiseContext(RowwiseContext):
     """Restricts expression to specific table."""
 
@@ -331,12 +345,10 @@ class GroupedContext(Context):
 
     def column_dependencies_external(self) -> Iterable[Column]:
         if self.sort_by is not None:
-            sort_by = [self.sort_by.to_colref()._column]
+            sort_by = [self.sort_by._column]
         else:
             sort_by = []
-        return sort_by + [
-            int_colref.to_colref()._column for int_colref in self.grouping_columns
-        ]
+        return sort_by + [int_colref._column for int_colref in self.grouping_columns]
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.inner_context.universe]
@@ -378,6 +390,16 @@ class ForgetContext(TimeColumnContext):
     """Context of `table._forget() operation."""
 
     mark_forgetting_records: bool
+
+
+@dataclass(eq=False, frozen=True)
+class ForgetImmediatelyContext(Context):
+    """Context of `table._forget_immediately operation."""
+
+    orig_universe: Universe
+
+    def universe_dependencies(self) -> Iterable[Universe]:
+        return [self.orig_universe]
 
 
 @dataclass(eq=False, frozen=True)
@@ -575,7 +597,8 @@ class JoinRowwiseContext(RowwiseContext):
 
     @staticmethod
     def from_mapping(
-        universe: Universe, columns_mapping: dict[InternalColRef, ColumnReference]
+        universe: Universe,
+        columns_mapping: dict[InternalColRef, ColumnReference],
     ) -> JoinRowwiseContext:
         temporary_column_to_original = {}
         for orig_colref, expression in columns_mapping.items():

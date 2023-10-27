@@ -16,12 +16,14 @@ class Result(pw.Schema):
 @runtime_type_check
 @trace_user_frame
 def pagerank(edges: pw.Table[Edge], steps: int = 5) -> pw.Table[Result]:
-    in_vertices = edges.groupby(id=edges.v).reduce(degree=0)
-    out_vertices = edges.groupby(id=edges.u).reduce(degree=pw.reducers.count())
-    degrees = pw.Table.update_rows(in_vertices, out_vertices)
-    base = out_vertices.difference(in_vertices).select(flow=0)
+    in_vertices: pw.Table = edges.groupby(id=edges.v).reduce(degree=0)
+    out_vertices: pw.Table = edges.groupby(id=edges.u).reduce(
+        degree=pw.reducers.count()
+    )
+    degrees: pw.Table = pw.Table.update_rows(in_vertices, out_vertices)
+    base: pw.Table = out_vertices.difference(in_vertices).select(rank=1_000)
 
-    ranks = degrees.select(rank=6_000)
+    ranks: pw.Table = degrees.select(rank=6_000)
 
     for step in range(steps):
         outflow = degrees.select(
@@ -31,12 +33,9 @@ def pagerank(edges: pw.Table[Edge], steps: int = 5) -> pw.Table[Result]:
         )
 
         inflows = edges.groupby(id=edges.v).reduce(
-            flow=pw.reducers.sum(outflow.ix(edges.u).flow)
+            rank=pw.reducers.sum(outflow.ix(edges.u).flow) + 1_000
         )
 
-        inflows = pw.Table.concat(base, inflows)
+        ranks = pw.Table.concat(base, inflows).with_universe_of(degrees)
 
-        ranks = inflows.select(
-            rank=inflows.flow + 1_000,
-        ).with_universe_of(degrees)
     return ranks

@@ -21,6 +21,7 @@ def read(
     schema: type[Schema] | None = None,
     mode: str = "streaming",
     json_field_paths: dict[str, str] | None = None,
+    object_pattern: str = "*",
     autocommit_duration_ms: int | None = 1500,
     persistent_id: str | None = None,
     debug_data=None,
@@ -39,13 +40,20 @@ def read(
     Args:
         path: Path to the file or to the folder with files.
         schema: Schema of the resulting table.
-        mode: If set to "streaming", the engine will wait for the new input
-            files in the directory. Set it to "static", it will only consider the available
-            data and ingest all of it in one commit. Default value is "streaming".
+        mode: denotes how the engine polls the new data from the source. Currently \
+"streaming", "static", and "streaming_with_deletions" are supported. If set to \
+"streaming" the engine will wait for the new input files in the directory. On the other \
+hand, "streaming_with_deletions" mode also tracks file deletions and modifications and \
+reflects them in the state. For example, if a file was deleted, "streaming_with_deletions"\
+mode will also remove rows obtained by reading this file from the table. Finally, the \
+"static" mode will only consider the available data and ingest all of it in one commit. \
+The default value is "streaming".
         json_field_paths: This field allows to map field names into path in the field.
             For the field which require such mapping, it should be given in the format
             ``<field_name>: <path to be mapped>``, where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        object_pattern: Unix shell style pattern for filtering only certain files in the \
+directory. Ignored in case a path to a single file is specified.
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway's computation graph.
@@ -159,6 +167,7 @@ def read(
         persistent_id=persistent_id,
         autocommit_duration_ms=autocommit_duration_ms,
         value_columns=value_columns,
+        object_pattern=object_pattern,
         primary_key=primary_key,
         types=types,
         default_values=default_values,

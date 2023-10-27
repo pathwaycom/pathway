@@ -17,7 +17,7 @@ use elasticsearch::{
 use itertools::Itertools;
 use log::warn;
 use numpy::{PyArray, PyReadonlyArrayDyn};
-use once_cell::sync::{Lazy, OnceCell};
+use once_cell::sync::Lazy;
 use postgres::{Client, NoTls};
 use pyo3::exceptions::{
     PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyRuntimeError, PyTypeError,
@@ -59,10 +59,12 @@ use crate::connectors::data_storage::{
     KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReadMethod,
     ReaderBuilder, S3CsvReader, S3GenericReader, Writer,
 };
+use crate::connectors::{ReplayMode, SnapshotAccess};
 use crate::engine::dataflow::config_from_env;
 use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
 use crate::engine::graph::ScopedContext;
 use crate::engine::progress_reporter::MonitoringLevel;
+use crate::engine::reduce::StatefulCombineFn;
 use crate::engine::time::DateTime;
 use crate::engine::ReducerData;
 use crate::engine::{
@@ -362,7 +364,7 @@ impl IntoPy<PyObject> for Value {
 
 impl<'source> FromPyObject<'source> for Reducer {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        Ok(ob.extract::<PyRef<PyReducer>>()?.0)
+        Ok(ob.extract::<PyRef<PyReducer>>()?.0.clone())
     }
 }
 
@@ -554,12 +556,12 @@ impl PyReducer {
 
     #[staticmethod]
     fn sorted_tuple(skip_nones: bool) -> Reducer {
-        Reducer::SortedTuple(skip_nones)
+        Reducer::SortedTuple { skip_nones }
     }
 
     #[staticmethod]
     fn tuple(skip_nones: bool) -> Reducer {
-        Reducer::Tuple(skip_nones)
+        Reducer::Tuple { skip_nones }
     }
 
     #[classattr]
@@ -570,6 +572,19 @@ impl PyReducer {
 
     #[classattr]
     pub const ANY: Reducer = Reducer::Any;
+
+    #[staticmethod]
+    fn stateful_many(combine: Py<PyAny>) -> Reducer {
+        let combine_fn: StatefulCombineFn = Arc::new(move |state, values| {
+            with_gil_and_pool(|py| {
+                let combine = combine.as_ref(py);
+                let state = state.to_object(py);
+                let values = values.to_object(py);
+                combine.call1((state, values)).unwrap().extract().unwrap()
+            })
+        });
+        Reducer::Stateful { combine_fn }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1260,7 +1275,6 @@ impl PyMonitoringLevel {
 pub struct Universe {
     scope: Py<Scope>,
     handle: UniverseHandle,
-    id_column: OnceCell<Py<Column>>,
 }
 
 impl Universe {
@@ -1274,7 +1288,6 @@ impl Universe {
             Self {
                 scope: scope.into(),
                 handle,
-                id_column: OnceCell::new(),
             },
         )?;
         scope
@@ -1288,20 +1301,6 @@ impl Universe {
 
 #[pymethods]
 impl Universe {
-    #[getter]
-    pub fn id_column(self_: &PyCell<Self>) -> PyResult<Py<Column>> {
-        let this = self_.borrow();
-        let id_column = this
-            .id_column
-            .get_or_try_init(|| {
-                let py = self_.py();
-                let handle = this.scope.borrow(py).graph.id_column(this.handle)?;
-                Column::new(self_, handle)
-            })?
-            .clone();
-        Ok(id_column)
-    }
-
     pub fn __repr__(&self) -> String {
         format!("<Universe {:?}>", self.handle)
     }
@@ -1888,6 +1887,7 @@ impl Scope {
             .collect::<PyResult<_>>()?;
         Ok((result, result_with_universe))
     }
+
     pub fn map_column(
         self_: &PyCell<Self>,
         table: &LegacyTable,
@@ -1918,6 +1918,7 @@ impl Scope {
         )?;
         Column::new(universe, handle)
     }
+
     pub fn async_apply_table(
         self_: &PyCell<Self>,
         table: PyRef<Table>,
@@ -1957,7 +1958,7 @@ impl Scope {
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         #[pyo3(from_py_with = "from_py_iterable")] expressions: Vec<(
             PyRef<PyExpression>,
-            ColumnProperties,
+            TableProperties,
         )>,
     ) -> PyResult<Py<Table>> {
         let gil = expressions
@@ -1981,25 +1982,6 @@ impl Scope {
             wrapper,
         )?;
         Table::new(self_, table_handle)
-    }
-
-    pub fn table_properties(
-        self_: &PyCell<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] column_properties: Vec<(
-            ColumnPath,
-            ColumnProperties,
-        )>,
-    ) -> PyResult<Py<TableProperties>> {
-        let py = self_.py();
-
-        let column_properties: Vec<_> = column_properties
-            .into_iter()
-            .map(|(path, props)| (path, props.0))
-            .collect();
-
-        let table_properties = EngineTableProperties::from_paths(column_properties)?;
-
-        TableProperties::new(py, Arc::new(table_properties))
     }
 
     pub fn columns_to_table(
@@ -2037,6 +2019,15 @@ impl Scope {
         Universe::new(self_, universe_handle)
     }
 
+    pub fn table_properties(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+    ) -> PyResult<Py<TableProperties>> {
+        let py = self_.py();
+        let properties = self_.borrow().graph.table_properties(table.handle)?;
+        TableProperties::new(py, properties)
+    }
+
     pub fn flatten_table_storage(
         self_: &PyCell<Self>,
         table: PyRef<Table>,
@@ -2071,14 +2062,26 @@ impl Scope {
         mark_forgetting_records: bool,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let new_storage_handle = self_.borrow().graph.forget(
+        let new_table_handle = self_.borrow().graph.forget(
             table.handle,
             threshold_column_path,
             current_time_column_path,
             mark_forgetting_records,
             table_properties.0,
         )?;
-        Table::new(self_, new_storage_handle)
+        Table::new(self_, new_table_handle)
+    }
+
+    pub fn forget_immediately(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_
+            .borrow()
+            .graph
+            .forget_immediately(table.handle, table_properties.0)?;
+        Table::new(self_, new_table_handle)
     }
 
     pub fn filter_out_results_of_forgetting(
@@ -2086,11 +2089,11 @@ impl Scope {
         table: PyRef<Table>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let new_storage_handle = self_
+        let new_table_handle = self_
             .borrow()
             .graph
             .filter_out_results_of_forgetting(table.handle, table_properties.0)?;
-        Table::new(self_, new_storage_handle)
+        Table::new(self_, new_table_handle)
     }
 
     pub fn freeze(
@@ -2100,13 +2103,33 @@ impl Scope {
         current_time_column_path: ColumnPath,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let new_storage_handle = self_.borrow().graph.freeze(
+        let new_table_handle = self_.borrow().graph.freeze(
             table.handle,
             threshold_column_path,
             current_time_column_path,
             table_properties.0,
         )?;
-        Table::new(self_, new_storage_handle)
+        Table::new(self_, new_table_handle)
+    }
+
+    pub fn gradual_broadcast(
+        self_: &PyCell<Self>,
+        input_table: PyRef<Table>,
+        threshold_table: PyRef<Table>,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_.borrow().graph.gradual_broadcast(
+            input_table.handle,
+            threshold_table.handle,
+            lower_path,
+            value_path,
+            upper_path,
+            table_properties.0,
+        )?;
+        Table::new(self_, new_table_handle)
     }
 
     pub fn buffer(
@@ -2116,13 +2139,13 @@ impl Scope {
         current_time_column_path: ColumnPath,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let new_storage_handle = self_.borrow().graph.buffer(
+        let new_table_handle = self_.borrow().graph.buffer(
             table.handle,
             threshold_column_path,
             current_time_column_path,
             table_properties.0,
         )?;
-        Table::new(self_, new_storage_handle)
+        Table::new(self_, new_table_handle)
     }
 
     pub fn intersect_tables(
@@ -2446,6 +2469,7 @@ impl Scope {
         self_: &PyCell<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        skip_persisted_batch: bool,
         on_change: Py<PyAny>,
         on_end: Py<PyAny>,
     ) -> PyResult<()> {
@@ -2471,6 +2495,7 @@ impl Scope {
             }),
             table.handle,
             column_paths,
+            skip_persisted_batch,
         )?;
         Ok(())
     }
@@ -2554,7 +2579,7 @@ pub fn run_with_new_graph(
     defer! {
         log::logger().flush();
     }
-    let config =
+    let (config, num_workers) =
         config_from_env().map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg))?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
@@ -2592,6 +2617,7 @@ pub fn run_with_new_graph(
                 monitoring_level,
                 with_http_server,
                 persistence_config,
+                num_workers,
             )
         })
     })??;
@@ -2928,6 +2954,59 @@ pub struct DataStorage {
     python_subject: Option<Py<PythonSubject>>,
     persistent_id: Option<ExternalPersistentId>,
     max_batch_size: Option<usize>,
+    object_pattern: String,
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "ReplayMode")]
+pub struct PyReplayMode(ReplayMode);
+
+#[pymethods]
+impl PyReplayMode {
+    #[classattr]
+    pub const REALTIME: ReplayMode = ReplayMode::Realtime;
+    #[classattr]
+    pub const SPEEDRUN: ReplayMode = ReplayMode::Speedrun;
+    #[classattr]
+    pub const BATCH: ReplayMode = ReplayMode::Batch;
+    #[classattr]
+    pub const PERSISTING: ReplayMode = ReplayMode::Persisting;
+}
+
+impl<'source> FromPyObject<'source> for ReplayMode {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyReplayMode>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for ReplayMode {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyReplayMode(self).into_py(py)
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "SnapshotAccess")]
+pub struct PySnapshotAccess(SnapshotAccess);
+
+#[pymethods]
+impl PySnapshotAccess {
+    #[classattr]
+    pub const REPLAY: SnapshotAccess = SnapshotAccess::Replay;
+    #[classattr]
+    pub const RECORD: SnapshotAccess = SnapshotAccess::Record;
+    #[classattr]
+    pub const FULL: SnapshotAccess = SnapshotAccess::Full;
+}
+
+impl<'source> FromPyObject<'source> for SnapshotAccess {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PySnapshotAccess>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for SnapshotAccess {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PySnapshotAccess(self).into_py(py)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2936,6 +3015,9 @@ pub struct PersistenceConfig {
     refresh_duration: ::std::time::Duration,
     metadata_storage: DataStorage,
     stream_storage: DataStorage,
+    snapshot_access: SnapshotAccess,
+    replay_mode: ReplayMode,
+    continue_after_replay: bool,
 }
 
 #[pymethods]
@@ -2946,16 +3028,25 @@ impl PersistenceConfig {
         refresh_duration_ms,
         metadata_storage,
         stream_storage,
+        snapshot_access = SnapshotAccess::Full,
+        replay_mode = ReplayMode::Batch,
+        continue_after_replay = true,
     ))]
     fn new(
         refresh_duration_ms: u64,
         metadata_storage: DataStorage,
         stream_storage: DataStorage,
+        snapshot_access: SnapshotAccess,
+        replay_mode: ReplayMode,
+        continue_after_replay: bool,
     ) -> Self {
         Self {
             refresh_duration: ::std::time::Duration::from_millis(refresh_duration_ms),
             metadata_storage,
             stream_storage,
+            snapshot_access,
+            replay_mode,
+            continue_after_replay,
         }
     }
 }
@@ -2967,6 +3058,9 @@ impl PersistenceConfig {
             self.metadata_storage
                 .construct_metadata_storage_config(py)?,
             self.stream_storage.construct_stream_storage_config(py)?,
+            self.snapshot_access,
+            self.replay_mode,
+            self.continue_after_replay,
         ))
     }
 }
@@ -3056,6 +3150,7 @@ impl DataStorage {
         python_subject = None,
         persistent_id = None,
         max_batch_size = None,
+        object_pattern = "*".to_string(),
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3073,6 +3168,7 @@ impl DataStorage {
         python_subject: Option<Py<PythonSubject>>,
         persistent_id: Option<ExternalPersistentId>,
         max_batch_size: Option<usize>,
+        object_pattern: String,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -3089,6 +3185,7 @@ impl DataStorage {
             python_subject,
             persistent_id,
             max_batch_size,
+            object_pattern,
         }
     }
 }
@@ -3284,7 +3381,11 @@ impl DataStorage {
                     self.mode,
                     self.internal_persistent_id(),
                     self.read_method,
-                )?;
+                    &self.object_pattern,
+                )
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}"))
+                })?;
                 Ok((Box::new(storage), 1))
             }
             "s3" => {
@@ -3317,7 +3418,11 @@ impl DataStorage {
                     self.build_csv_parser_settings(py),
                     self.mode,
                     self.internal_persistent_id(),
-                )?;
+                    &self.object_pattern,
+                )
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))
+                })?;
                 Ok((Box::new(reader), 1))
             }
             "kafka" => {
@@ -3626,6 +3731,40 @@ impl TableProperties {
     }
 }
 
+#[pymethods]
+impl TableProperties {
+    #[staticmethod]
+    fn column(py: Python, column_properties: ColumnProperties) -> PyResult<Py<Self>> {
+        let inner = Arc::new(EngineTableProperties::Column(column_properties.0));
+        TableProperties::new(py, inner)
+    }
+
+    #[staticmethod]
+    fn from_column_properties(
+        py: Python,
+        #[pyo3(from_py_with = "from_py_iterable")] column_properties: Vec<(
+            ColumnPath,
+            ColumnProperties,
+        )>,
+    ) -> PyResult<Py<Self>> {
+        let column_properties: Vec<_> = column_properties
+            .into_iter()
+            .map(|(path, props)| (path, props.0))
+            .collect();
+
+        let table_properties = EngineTableProperties::from_paths(
+            column_properties
+                .into_iter()
+                .map(|(path, column_properties)| {
+                    (path, EngineTableProperties::Column(column_properties))
+                })
+                .collect(),
+        )?;
+
+        TableProperties::new(py, Arc::new(table_properties))
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen)]
 #[derive(Clone)]
 pub struct ConnectorProperties {
@@ -3845,6 +3984,8 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<DataFormat>()?;
     m.add_class::<PersistenceConfig>()?;
     m.add_class::<PythonSubject>()?;
+    m.add_class::<PyReplayMode>()?;
+    m.add_class::<PySnapshotAccess>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

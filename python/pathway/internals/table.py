@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
 from pathway.internals import dtype as dt, groupby, thisclass, universes
+from pathway.internals.api import Value
 from pathway.internals.arg_handlers import (
     arg_handler,
     groupby_handler,
@@ -82,6 +83,9 @@ class Table(
             asof_join_left,
             asof_join_outer,
             asof_join_right,
+            asof_now_join,
+            asof_now_join_inner,
+            asof_now_join_left,
             interval_join,
             interval_join_inner,
             interval_join_left,
@@ -98,7 +102,6 @@ class Table(
     _columns: dict[str, clmn.Column]
     _context: clmn.RowwiseContext
     _schema: type[Schema]
-    _pk_columns: dict[str, clmn.Column]
     _id_column: clmn.IdColumn
     _source: SetOnceProperty[OutputHandle] = SetOnceProperty()
     """Lateinit by operator."""
@@ -107,7 +110,6 @@ class Table(
         self,
         columns: Mapping[str, clmn.Column],
         universe: Universe,
-        pk_columns: Mapping[str, clmn.Column] = {},
         schema: type[Schema] | None = None,
         id_column: clmn.IdColumn | None = None,
     ):
@@ -115,7 +117,6 @@ class Table(
             schema = schema_from_columns(columns)
         super().__init__(universe)
         self._columns = dict(columns)
-        self._pk_columns = dict(pk_columns)
         self._schema = schema
         self._context = clmn.RowwiseContext(self._universe)
         self._id_column = id_column or clmn.IdColumn(self._context)
@@ -161,6 +162,10 @@ class Table(
 
     def __dir__(self):
         return list(super().__dir__()) + list(self.column_names())
+
+    @property
+    def _C(self) -> TSchema:
+        return self.C  # type: ignore
 
     @property
     def schema(self) -> type[Schema]:
@@ -524,6 +529,49 @@ class Table(
     @trace_user_frame
     @desugar
     @runtime_type_check
+    def _gradual_broadcast(
+        self,
+        threshold_table,
+        lower_column,
+        value_column,
+        upper_column,
+    ) -> Table:
+        return self + self.__gradual_broadcast(
+            threshold_table, lower_column, value_column, upper_column
+        )
+
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
+    @contextualized_operator
+    def __gradual_broadcast(
+        self,
+        threshold_table,
+        lower_column,
+        value_column,
+        upper_column,
+    ):
+        apx_value = clmn.MaterializedColumn(
+            self._universe, ColumnProperties(dtype=dt.FLOAT)
+        )
+
+        context = clmn.GradualBroadcastContext(
+            self._universe,
+            threshold_table._eval(lower_column),
+            threshold_table._eval(value_column),
+            threshold_table._eval(upper_column),
+            apx_value_column=apx_value,
+        )
+
+        return Table(
+            columns={"apx_value": apx_value},
+            universe=context.universe,
+            id_column=clmn.IdColumn(context),
+        )
+
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
     @contextualized_operator
     def _forget(
         self,
@@ -545,10 +593,27 @@ class Table(
     @desugar
     @runtime_type_check
     @contextualized_operator
-    def _filter_out_results_of_forgetting(
+    def _forget_immediately(
         self,
     ) -> Table:
         universe = self._universe.subset()
+        context = clmn.ForgetImmediatelyContext(
+            universe,
+            self._universe,
+        )
+        return self._table_with_context(context)
+
+    @trace_user_frame
+    @desugar
+    @runtime_type_check
+    @contextualized_operator
+    def _filter_out_results_of_forgetting(
+        self,
+    ) -> Table:
+        universe = self._universe.superset()
+        # The output universe is a superset of input universe because forgetting entries
+        # are filtered out. At each point in time, the set of keys with +1 diff can be
+        # bigger than a set of keys with +1 diff in an input table.
         context = clmn.FilterOutForgettingContext(
             universe,
             self._universe,
@@ -738,7 +803,6 @@ class Table(
         return Table(
             columns=columns,
             universe=other._universe,
-            pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
 
@@ -776,7 +840,6 @@ class Table(
         return Table(
             columns=columns,
             universe=self._universe,
-            pk_columns=self._pk_columns,
         )
 
     @trace_user_frame
@@ -1121,7 +1184,6 @@ class Table(
         ret: Table = Table(
             columns=columns,
             universe=universe,
-            pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
         return ret
@@ -1214,7 +1276,6 @@ class Table(
         return Table(
             columns=columns,
             universe=self._universe,
-            pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
 
@@ -1299,7 +1360,6 @@ class Table(
         ret: Table = Table(
             columns=columns,
             universe=universe,
-            pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
         return ret
@@ -1381,7 +1441,7 @@ class Table(
     @trace_user_frame
     @desugar
     @runtime_type_check
-    def with_id_from(self, *args: expr.ColumnExpressionOrValue) -> Table:
+    def with_id_from(self, *args: expr.ColumnExpression | Value) -> Table:
         """Compute new ids based on values in columns.
         Ids computed from `columns` must be row-wise unique.
 
@@ -1417,14 +1477,9 @@ class Table(
         """
         # new_index should be a column, so a little workaround
         new_index = self.select(ref_column=self.pointer_from(*args)).ref_column
-        if all(isinstance(arg, expr.ColumnReference) for arg in args):
-            args_typed: tuple[expr.ColumnReference] = args  # type: ignore
-            pk_columns = {arg.name: self._eval(arg) for arg in args_typed}
-        else:
-            pk_columns = {}
+
         return self._with_new_index(
             new_index=new_index,
-            pk_columns=pk_columns,
         )
 
     @trace_user_frame
@@ -1433,7 +1488,6 @@ class Table(
     def _with_new_index(
         self,
         new_index: expr.ColumnExpression,
-        pk_columns: dict[str, clmn.ColumnWithExpression] = {},
     ) -> Table:
         self._validate_expression(new_index)
         index_type = self.eval_type(new_index)
@@ -1455,7 +1509,6 @@ class Table(
         return Table(
             columns=columns,
             universe=universe,
-            pk_columns=pk_columns,
             id_column=clmn.IdColumn(context),
         )
 
@@ -1830,7 +1883,6 @@ class Table(
                 **columns,
             },
             universe=universe,
-            pk_columns={},
             id_column=clmn.IdColumn(context),
         )
 
@@ -1864,7 +1916,6 @@ class Table(
                 "next": next_column,
             },
             universe=self._universe,
-            pk_columns={},
             id_column=clmn.IdColumn(context),
         )
 
@@ -1889,15 +1940,14 @@ class Table(
         return Table(
             columns=columns,
             universe=context.universe,
-            pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
 
     def _validate_expression(self, expression: expr.ColumnExpression):
         for dep in expression._dependencies_above_reducer():
-            if self._universe != dep.to_colref()._column.universe:
+            if self._universe != dep._column.universe:
                 raise ValueError(
-                    f"You cannot use {dep.to_colref()} in this context."
+                    f"You cannot use {dep.to_column_expression()} in this context."
                     + " Its universe is different than the universe of the table the method"
                     + " was called on. You can use <table1>.with_universe_of(<table2>)"
                     + " to assign universe of <table2> to <table1> if you're sure their"
@@ -1929,7 +1979,6 @@ class Table(
         return Table(
             columns=columns,
             universe=context.universe,
-            pk_columns=self._pk_columns,
             id_column=clmn.IdColumn(context),
         )
 
@@ -1960,7 +2009,7 @@ class Table(
             )
             for name in schema.column_names()
         }
-        return cls(columns=columns, universe=universe, pk_columns={}, schema=schema)
+        return cls(columns=columns, universe=universe, schema=schema)
 
     def __repr__(self) -> str:
         return f"<pathway.Table schema={dict(self.typehints())}>"
@@ -1972,7 +2021,6 @@ class Table(
     ) -> Table:
         return Table(
             columns=dict(columns),
-            pk_columns=self._pk_columns,
             universe=self._universe,
             schema=schema,
             id_column=clmn.IdColumn(self._context),
@@ -2003,7 +2051,6 @@ class Table(
         return Table(
             columns=columns,
             universe=universe,
-            pk_columns=self._pk_columns,
             schema=self.schema,
         )
 
@@ -2031,7 +2078,7 @@ class Table(
 
     @trace_user_frame
     def ix_ref(
-        self, *args: expr.ColumnExpressionOrValue, optional: bool = False, context=None
+        self, *args: expr.ColumnExpression | Value, optional: bool = False, context=None
     ):
         """Reindexes the table using expressions as primary keys.
         Uses keys from context, or tries to infer proper context from the expression.

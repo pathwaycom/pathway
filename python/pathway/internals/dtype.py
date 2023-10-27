@@ -6,9 +6,9 @@ import collections
 import datetime
 import typing
 from abc import ABC, abstractmethod
+from enum import Enum
 from functools import cached_property
 from types import EllipsisType, NoneType, UnionType
-from warnings import warn
 
 import numpy as np
 
@@ -501,6 +501,14 @@ def wrap(input_type) -> DType:
             return Tuple(*[wrap(arg) for arg in args])
     elif input_type == np.ndarray:
         return ARRAY
+    elif issubclass(input_type, Enum):
+        return ANY
+    elif input_type == datetime.datetime:
+        raise TypeError(
+            f"Unsupported type {input_type}, use pw.DATE_TIME_UTC or pw.DATE_TIME_NAIVE"
+        )
+    elif input_type == datetime.timedelta:
+        raise TypeError(f"Unsupported type {input_type}, use pw.DURATION")
     else:
         dtype = {
             int: INT,
@@ -510,11 +518,9 @@ def wrap(input_type) -> DType:
             datetime_types.Duration: DURATION,
             datetime_types.DateTimeNaive: DATE_TIME_NAIVE,
             datetime_types.DateTimeUtc: DATE_TIME_UTC,
-        }.get(input_type, ANY)
-        if dtype == ANY:
-            # TODO ideally below line would be uncommented
-            # raise TypeError(f"Unsupported type {input_type}.")
-            warn(f"Unsupported type {input_type}, falling back to ANY.")
+        }.get(input_type, None)
+        if dtype is None:
+            raise TypeError(f"Unsupported type {input_type}.")
         return dtype
 
 

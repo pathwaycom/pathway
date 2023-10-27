@@ -30,6 +30,11 @@ class UniverseSolver:
         self.register_as_subset(subset, superset)
         return subset
 
+    def get_superset(self, subset: Universe) -> Universe:
+        superset = Universe()
+        self.register_as_subset(subset, superset)
+        return superset
+
     def register_as_difference(
         self, result: Universe, setLeft: Universe, setRight: Universe
     ) -> None:

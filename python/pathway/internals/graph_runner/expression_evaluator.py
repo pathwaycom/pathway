@@ -133,7 +133,7 @@ class ExpressionEvaluator(ABC):
                 properties.append(
                     (storage.get_path(column), self.column_properties(column))
                 )
-        return self.scope.table_properties(properties)
+        return api.TableProperties.from_column_properties(properties)
 
 
 class RowwiseEvalState:
@@ -214,9 +214,7 @@ class RowwiseEvaluator(
             expressions.append(
                 (
                     self.eval_dependency(placeholder_column, eval_state=eval_state),
-                    api.ColumnProperties(
-                        dtype=placeholder_column.dtype.map_to_engine()
-                    ),
+                    self.scope.table_properties(engine_input_table),
                 )
             )
             input_storage = input_storage.with_updated_paths(
@@ -229,10 +227,10 @@ class RowwiseEvaluator(
             assert isinstance(column, clmn.ColumnWithExpression)
             expression = column.expression
             expression = self.context.expression_with_type(expression)
-            column_properties = self.column_properties(column)
+            properties = api.TableProperties.column(self.column_properties(column))
 
             engine_expression = self.eval_expression(expression, eval_state=eval_state)
-            expressions.append((engine_expression, column_properties))
+            expressions.append((engine_expression, properties))
 
         # START temporary solution for eval_async_apply
         for intermediate_storage in eval_state.storages:
@@ -762,6 +760,43 @@ class ForgetEvaluator(ExpressionEvaluator, context_type=clmn.ForgetContext):
         )
 
 
+class GradualBroadcastEvaluator(
+    ExpressionEvaluator, context_type=clmn.GradualBroadcastContext
+):
+    context: clmn.GradualBroadcastContext
+
+    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
+        [input_storage, threshold_storage] = input_storages
+        lower_path = threshold_storage.get_path(self.context.lower_column)
+        value_path = threshold_storage.get_path(self.context.value_column)
+        upper_path = threshold_storage.get_path(self.context.upper_column)
+        properties = self._table_properties(output_storage)
+
+        return self.scope.gradual_broadcast(
+            self.state.get_table(input_storage),
+            self.state.get_table(threshold_storage),
+            lower_path,
+            value_path,
+            upper_path,
+            properties,
+        )
+
+
+class ForgetImmediatelyEvaluator(
+    ExpressionEvaluator, context_type=clmn.ForgetImmediatelyContext
+):
+    context: clmn.ForgetImmediatelyContext
+
+    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
+        [input_storage] = input_storages
+        properties = self._table_properties(output_storage)
+
+        return self.scope.forget_immediately(
+            self.state.get_table(input_storage),
+            properties,
+        )
+
+
 class FilterOutForgettingContext(
     ExpressionEvaluator, context_type=clmn.FilterOutForgettingContext
 ):
@@ -1008,7 +1043,7 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
             reducers.append((reducer_data.reducer, inner_paths))
 
         groupby_columns_paths = [
-            input_storage.get_path(col_ref.to_column())
+            input_storage.get_path(col_ref._column)
             for col_ref in self.context.grouping_columns
         ]
 

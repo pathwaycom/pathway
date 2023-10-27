@@ -1,4 +1,6 @@
+pub mod gradual_broadcast;
 pub mod prev_next;
+pub mod stateful_reduce;
 pub mod time_column;
 mod utils;
 
@@ -19,7 +21,7 @@ use timely::dataflow::operators::Operator;
 
 use crate::engine::BatchWrapper;
 
-use super::maybe_total::MaybeTotalScope;
+use super::maybe_total::{MaybeTotalScope, MaybeTotalSwitch};
 use super::shard::Shard;
 use super::ArrangedBySelf;
 
@@ -192,11 +194,11 @@ where
     T::R: Semigroup,
 {
     fn count(&self) -> Collection<S, (T::Key, T::R), isize> {
-        S::count(self)
+        S::IsTotal::count(self)
     }
 
     fn distinct(&self) -> Collection<S, T::Key, isize> {
-        S::distinct(self)
+        S::IsTotal::distinct(self)
     }
 }
 

@@ -8,46 +8,29 @@ use crate::persistence::tracker::SingleWorkerPersistentStorage;
 pub struct WorkersPersistenceCoordinator {
     refresh_frequency: Duration,
     last_flush_at: Option<SystemTime>,
-    worker_persistence_managers: Vec<Arc<Mutex<SingleWorkerPersistentStorage>>>,
+    worker_persistence_managers: Vec<Option<Arc<Mutex<SingleWorkerPersistentStorage>>>>,
     last_timestamp_flushed: Option<u64>,
 }
 
 impl WorkersPersistenceCoordinator {
-    pub fn new(refresh_frequency: Duration) -> Self {
+    pub fn new(refresh_frequency: Duration, num_workers: usize) -> Self {
         Self {
             refresh_frequency,
             last_flush_at: None,
-            worker_persistence_managers: Vec::new(),
+            worker_persistence_managers: vec![None; num_workers],
             last_timestamp_flushed: Some(0),
         }
     }
 
     /// Record shared pointer to the particular worker's persistent storage in the storage.
-    /// Maintain these pointers in the sorted order, so that the pointer to the storage of the
+    /// Maintain that the pointer to the storage of the
     /// worker K occupies the K-th position in the array.
     pub fn register_worker(
         &mut self,
         persistence_manager: Arc<Mutex<SingleWorkerPersistentStorage>>,
     ) {
-        self.worker_persistence_managers.push(persistence_manager);
-        let mut sorted_position = self.worker_persistence_managers.len() - 1;
-        while sorted_position > 0 {
-            let current_worker_id = self.worker_persistence_managers[sorted_position]
-                .lock()
-                .unwrap()
-                .worker_id();
-            let prev_worker_id = self.worker_persistence_managers[sorted_position - 1]
-                .lock()
-                .unwrap()
-                .worker_id();
-            if current_worker_id < prev_worker_id {
-                self.worker_persistence_managers
-                    .swap(sorted_position, sorted_position - 1);
-                sorted_position -= 1;
-            } else {
-                break;
-            }
-        }
+        let worker_id = persistence_manager.lock().unwrap().worker_id();
+        self.worker_persistence_managers[worker_id] = Some(persistence_manager);
     }
 
     /// Handles the event of the timestamp update within a particular sink in a particular worker.
@@ -63,7 +46,9 @@ impl WorkersPersistenceCoordinator {
         sink_id: usize,
         reported_timestamp: Option<u64>,
     ) {
-        let worker_storage = &self.worker_persistence_managers[worker_id];
+        let worker_storage = self.worker_persistence_managers[worker_id]
+            .as_ref()
+            .unwrap();
         worker_storage
             .lock()
             .unwrap()
@@ -84,6 +69,8 @@ impl WorkersPersistenceCoordinator {
 
                 for persistence_manager in &self.worker_persistence_managers {
                     let commit_data = persistence_manager
+                        .as_ref()
+                        .unwrap()
                         .lock()
                         .unwrap()
                         .accept_globally_finalized_timestamp(global_finalized_timestamp);
@@ -100,7 +87,7 @@ impl WorkersPersistenceCoordinator {
                     if !is_prepared {
                         error!(
                             "Failed to prepare frontier commit for worker {}",
-                            tracker.lock().unwrap().worker_id()
+                            tracker.as_ref().unwrap().lock().unwrap().worker_id()
                         );
                         return;
                     }
@@ -113,6 +100,8 @@ impl WorkersPersistenceCoordinator {
                     .zip(worker_futures.iter_mut())
                 {
                     tracker
+                        .as_ref()
+                        .unwrap()
                         .lock()
                         .unwrap()
                         .commit_globally_finalized_timestamp(commit_data);
@@ -124,6 +113,10 @@ impl WorkersPersistenceCoordinator {
     pub fn global_closed_timestamp(&mut self) -> Option<u64> {
         let mut min_closed_timestamp = None;
         for worker_pm in &self.worker_persistence_managers {
+            let Some(worker_pm) = worker_pm else {
+                // Don't flush changes until all workers are ready
+                return Some(0);
+            };
             let worker_closed_timestamp = worker_pm.lock().unwrap().finalized_time_within_worker();
             if let Some(worker_closed_timestamp) = worker_closed_timestamp {
                 match min_closed_timestamp {

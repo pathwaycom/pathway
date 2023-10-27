@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::{
@@ -17,8 +15,8 @@ fn test_dsv_format_ok() -> eyre::Result<()> {
     ));
 
     let result = formatter.format(
-        &Key::from_str("1")?,
-        &[Value::from_str("x")?, Value::from_str("y")?],
+        &Key::for_value(&Value::from("1")),
+        &[Value::from("x"), Value::from("y")],
         0,
         1,
     )?;
@@ -40,8 +38,8 @@ fn test_dsv_columns_mismatch() -> eyre::Result<()> {
     ));
 
     let result = formatter.format(
-        &Key::from_str("1")?,
-        &[Value::from_str("x")?, Value::from_str("y")?],
+        &Key::for_value(&Value::from("1")),
+        &[Value::from("x"), Value::from("y")],
         0,
         1,
     );

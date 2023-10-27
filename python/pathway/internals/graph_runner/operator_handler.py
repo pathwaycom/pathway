@@ -175,6 +175,7 @@ class OutputOperatorHandler(
                 column_paths=column_paths,
                 on_change=datasink.on_change,
                 on_end=datasink.on_end,
+                skip_persisted_batch=datasink.skip_persisted_batch,
             )
         else:
             raise RuntimeError("datasink not supported")

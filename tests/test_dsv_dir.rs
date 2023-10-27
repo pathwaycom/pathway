@@ -2,11 +2,7 @@ mod helpers;
 use helpers::read_data_from_reader;
 
 use std::collections::HashMap;
-use std::io;
 use std::path::PathBuf;
-use std::str::FromStr;
-
-use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::ParsedEvent;
 use pathway_engine::connectors::data_format::{DsvParser, DsvSettings};
@@ -23,6 +19,7 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["key".to_string()]), vec!["foo".to_string()], ','),
@@ -33,30 +30,12 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
 
     assert_eq!(read_lines.len(), 6);
     let expected_values = vec![
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("1")?]),
-            vec![Value::from_str("abc")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("2")?]),
-            vec![Value::from_str("def")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("3")?]),
-            vec![Value::from_str("ghi")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("4")?]),
-            vec![Value::from_str("jkl")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("5")?]),
-            vec![Value::from_str("mno")?],
-        )),
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("6")?]),
-            vec![Value::from_str("pqr")?],
-        )),
+        ParsedEvent::Insert((Some(vec![Value::from("1")]), vec![Value::from("abc")])),
+        ParsedEvent::Insert((Some(vec![Value::from("2")]), vec![Value::from("def")])),
+        ParsedEvent::Insert((Some(vec![Value::from("3")]), vec![Value::from("ghi")])),
+        ParsedEvent::Insert((Some(vec![Value::from("4")]), vec![Value::from("jkl")])),
+        ParsedEvent::Insert((Some(vec![Value::from("5")]), vec![Value::from("mno")])),
+        ParsedEvent::Insert((Some(vec![Value::from("6")]), vec![Value::from("pqr")])),
     ];
     assert_eq!(read_lines, expected_values);
 
@@ -73,6 +52,7 @@ fn test_single_file_ok() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -97,6 +77,7 @@ fn test_custom_delimiter() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -123,6 +104,7 @@ fn test_escape_fields() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -141,16 +123,16 @@ fn test_escape_fields() -> eyre::Result<()> {
     assert_eq!(read_lines.len(), 3);
     let expected_values = vec![
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("1")?]),
-            vec![Value::from_str("2")?, Value::from_str("3")?],
+            Some(vec![Value::from("1")]),
+            vec![Value::from("2"), Value::from("3")],
         )),
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("4")?]),
-            vec![Value::from_str("5")?, Value::from_str("6")?],
+            Some(vec![Value::from("4")]),
+            vec![Value::from("5"), Value::from("6")],
         )),
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("7")?]),
-            vec![Value::from_str("8")?, Value::from_str("9")?],
+            Some(vec![Value::from("7")]),
+            vec![Value::from("8"), Value::from("9")],
         )),
     ];
     assert_eq!(read_lines, expected_values);
@@ -168,6 +150,7 @@ fn test_escape_newlines() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -183,13 +166,10 @@ fn test_escape_newlines() -> eyre::Result<()> {
     assert_eq!(read_lines.len(), 2);
     let expected_values = vec![
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("1")?]),
-            vec![Value::from_str("2\n3 4\n5 6")?],
+            Some(vec![Value::from("1")]),
+            vec![Value::from("2\n3 4\n5 6")],
         )),
-        ParsedEvent::Insert((
-            Some(vec![Value::from_str("a")?]),
-            vec![Value::from_str("b")?],
-        )),
+        ParsedEvent::Insert((Some(vec![Value::from("a")]), vec![Value::from("b")])),
     ];
     assert_eq!(read_lines, expected_values);
 
@@ -206,8 +186,9 @@ fn test_nonexistent_file() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     );
-    assert_matches!(reader.unwrap_err().kind(), io::ErrorKind::NotFound);
+    assert!(reader.is_err());
 
     Ok(())
 }
@@ -222,6 +203,7 @@ fn test_special_fields() -> eyre::Result<()> {
         builder,
         ConnectorMode::Static,
         None,
+        "*",
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -236,8 +218,8 @@ fn test_special_fields() -> eyre::Result<()> {
 
     let expected_values = vec![
         ParsedEvent::Insert((
-            Some(vec![Value::from_str("1")?]),
-            vec![Value::from_str("abc")?, Value::from_str("def")?],
+            Some(vec![Value::from("1")]),
+            vec![Value::from("abc"), Value::from("def")],
         )),
         ParsedEvent::AdvanceTime,
     ];

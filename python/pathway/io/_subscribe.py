@@ -3,17 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any
 
-from pathway.internals import datasink
-from pathway.internals.api import Pointer
-
-
-class OnChangeCallback(Protocol):
-    def __call__(
-        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
-    ) -> Any:
-        ...
+from pathway.internals.table_subscription import (
+    OnChangeCallback,
+    subscribe as internal_subscribe,
+)
 
 
 def subscribe(
@@ -35,28 +30,9 @@ def subscribe(
         None
     """
 
-    def wrapper(key, values, time, diff):
-        """
-        Wraps a change event from Pathway in a more human-friendly format.
-
-        What we get:
-          key: key in Pathway format, e.g. a hash
-          values: an array of values of the columns. The order is guaranteed to be the
-            same as in the table's schema
-          time: time of the change
-          diff: diff in the format of +1/-1
-
-          What format do we provide for the user:
-            values: a dict from the column name to the column value
-            time: time of the change
-            is_addition: is this an addition of a row to the collection. In case the field
-              if False, that means that this row has been extracted from collection
-        """
-
-        row = {}
-        for field_name, field_value in zip(table._columns.keys(), values):
-            row[field_name] = field_value
-
-        return on_change(key=key, row=row, time=time, is_addition=(diff == 1))
-
-    return table.to(datasink.CallbackDataSink(wrapper, on_end))
+    internal_subscribe(
+        table,
+        skip_persisted_batch=True,
+        on_change=on_change,
+        on_end=on_end,
+    )

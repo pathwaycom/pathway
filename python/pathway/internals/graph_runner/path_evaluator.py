@@ -105,6 +105,7 @@ class AddNewColumnsPathEvaluator(
         clmn.RowwiseContext,
         clmn.JoinRowwiseContext,
         clmn.SortingContext,
+        clmn.GradualBroadcastContext,
     ],
 ):
     def compute(
@@ -198,6 +199,7 @@ class NoNewColumnsPathEvaluator(
         clmn.DifferenceContext,
         clmn.HavingContext,
         clmn.ForgetContext,
+        clmn.ForgetImmediatelyContext,
         clmn.FilterOutForgettingContext,
         clmn.FreezeContext,
         clmn.BufferContext,

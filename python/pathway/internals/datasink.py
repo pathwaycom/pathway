@@ -22,3 +22,4 @@ class GenericDataSink(DataSink):
 class CallbackDataSink(DataSink):
     on_change: Callable[[str, list[Any], int, int], Any]
     on_end: Callable[[], Any]
+    skip_persisted_batch: bool
