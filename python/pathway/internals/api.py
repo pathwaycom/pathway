@@ -42,12 +42,7 @@ class CombineMany(Protocol, Generic[S]):
         ...
 
 
-def static_table_from_pandas(
-    scope,
-    df: pd.DataFrame,
-    connector_properties: ConnectorProperties | None = None,
-    id_from: list[str] | None = None,
-) -> Table:
+def denumpify(x):
     def denumpify_inner(x):
         if pd.api.types.is_scalar(x) and pd.isna(x):
             return None
@@ -55,20 +50,34 @@ def static_table_from_pandas(
             return x.item()
         return x
 
-    def denumpify(x):
-        v = denumpify_inner(x)
-        if isinstance(v, str):
-            return v.encode("utf-8", "ignore").decode("utf-8")
-        else:
-            return v
+    v = denumpify_inner(x)
+    if isinstance(v, str):
+        return v.encode("utf-8", "ignore").decode("utf-8")
+    else:
+        return v
 
+
+def ids_from_pandas(
+    df: pd.DataFrame,
+    connector_properties: ConnectorProperties | None,
+    id_from: list[str] | None,
+) -> dict[Any, Pointer]:
     if id_from is None:
         if connector_properties is not None and connector_properties.unsafe_trusted_ids:
-            ids = {k: unsafe_make_pointer(k) for k in df.index}
+            return {k: unsafe_make_pointer(k) for k in df.index}
         else:
-            ids = {k: ref_scalar(k) for k in df.index}
+            return {k: ref_scalar(k) for k in df.index}
     else:
-        ids = {k: ref_scalar(*args) for (k, *args) in df[id_from].itertuples()}
+        return {k: ref_scalar(*args) for (k, *args) in df[id_from].itertuples()}
+
+
+def static_table_from_pandas(
+    scope,
+    df: pd.DataFrame,
+    connector_properties: ConnectorProperties | None = None,
+    id_from: list[str] | None = None,
+) -> Table:
+    ids = ids_from_pandas(df, connector_properties, id_from)
 
     all_data: list[tuple[Pointer, list[Value]]] = [(key, []) for key in ids.values()]
 

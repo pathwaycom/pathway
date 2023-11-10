@@ -12,7 +12,6 @@ from .sorting import (
     filter_smallest_k,
     prefix_sum_oracle,
     retrieve_prev_next_values,
-    sort,
     sort_from_index,
 )
 
@@ -24,6 +23,5 @@ __all__ = [
     "filter_smallest_k",
     "prefix_sum_oracle",
     "retrieve_prev_next_values",
-    "sort",
     "sort_from_index",
 ]

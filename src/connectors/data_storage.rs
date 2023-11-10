@@ -31,6 +31,7 @@ use postgres::types::ToSql;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use crate::connectors::data_format::FormatterContext;
+use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
 use crate::deepcopy::DeepCopy;
 use crate::engine::Value;
@@ -121,6 +122,7 @@ pub enum S3CommandName {
 pub enum DataEventType {
     Insert,
     Delete,
+    Upsert,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -159,7 +161,7 @@ impl ReaderContext {
 #[derive(Debug, Eq, PartialEq)]
 pub enum ReadResult {
     Finished,
-    NewSource,
+    NewSource(Option<SourceMetadata>),
     Data(ReaderContext, Offset),
 }
 
@@ -227,6 +229,7 @@ pub trait Reader {
     #[allow(clippy::missing_errors_doc)]
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError>;
 
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>);
     fn persistent_id(&self) -> Option<PersistentId>;
 
     fn merge_two_frontiers(lhs: &OffsetAntichain, rhs: &OffsetAntichain) -> OffsetAntichain
@@ -297,7 +300,7 @@ pub trait ReaderBuilder: Send + 'static {
         type_name::<Self>().into()
     }
 
-    fn name(&self, persistent_id: &Option<ExternalPersistentId>, id: usize) -> String {
+    fn name(&self, persistent_id: Option<&ExternalPersistentId>, id: usize) -> String {
         let desc = self.short_description();
         let name = desc.split("::").last().unwrap().replace("Builder", "");
         if let Some(id) = persistent_id {
@@ -312,6 +315,7 @@ pub trait ReaderBuilder: Send + 'static {
     }
 
     fn persistent_id(&self) -> Option<PersistentId>;
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>);
 
     fn storage_type(&self) -> StorageType;
 }
@@ -326,6 +330,10 @@ where
 
     fn persistent_id(&self) -> Option<PersistentId> {
         Reader::persistent_id(self)
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        Reader::update_persistent_id(self, persistent_id);
     }
 
     fn storage_type(&self) -> StorageType {
@@ -437,9 +445,15 @@ impl FilesystemReader {
         persistent_id: Option<PersistentId>,
         read_method: ReadMethod,
         object_pattern: &str,
+        with_metadata: bool,
     ) -> Result<FilesystemReader, ReadError> {
-        let filesystem_scanner =
-            FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
+        let filesystem_scanner = FilesystemScanner::new(
+            path,
+            persistent_id,
+            streaming_mode,
+            object_pattern,
+            with_metadata,
+        )?;
 
         Ok(Self {
             persistent_id,
@@ -528,7 +542,9 @@ impl Reader for FilesystemReader {
                         .as_path(),
                 )?;
                 self.reader = Some(BufReader::new(file));
-                return Ok(ReadResult::NewSource);
+                return Ok(ReadResult::NewSource(
+                    self.filesystem_scanner.maybe_current_object_metadata(),
+                ));
             }
 
             if self.filesystem_scanner.is_polling_enabled() {
@@ -541,6 +557,10 @@ impl Reader for FilesystemReader {
 
     fn persistent_id(&self) -> Option<PersistentId> {
         self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
     }
 
     fn storage_type(&self) -> StorageType {
@@ -649,6 +669,10 @@ impl Reader for KafkaReader {
         self.persistent_id
     }
 
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
+    }
+
     fn storage_type(&self) -> StorageType {
         StorageType::Kafka
     }
@@ -690,6 +714,7 @@ struct FilesystemScanner {
     cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
     inotify: Option<inotify_support::Inotify>,
     object_pattern: GlobPattern,
+    with_metadata: bool,
 }
 
 impl FilesystemScanner {
@@ -698,6 +723,7 @@ impl FilesystemScanner {
         persistent_id: Option<PersistentId>,
         streaming_mode: ConnectorMode,
         object_pattern: &str,
+        with_metadata: bool,
     ) -> Result<FilesystemScanner, ReadError> {
         let path = std::fs::canonicalize(path.into())?;
 
@@ -740,6 +766,7 @@ impl FilesystemScanner {
             cached_modify_times: HashMap::new(),
             inotify,
             object_pattern: GlobPattern::new(object_pattern)?,
+            with_metadata,
         })
     }
 
@@ -765,6 +792,19 @@ impl FilesystemScanner {
             Some(PosixScannerAction::Delete(path)) => self.cached_file_path(path).map(Arc::new),
             None => None,
         }
+    }
+
+    fn maybe_current_object_metadata(&self) -> Option<SourceMetadata> {
+        if !self.with_metadata {
+            return None;
+        }
+        let path: &Path = match &self.current_action {
+            Some(PosixScannerAction::Read(path) | PosixScannerAction::Delete(path)) => {
+                path.as_ref()
+            }
+            None => return None,
+        };
+        Some(SourceMetadata::from_fs_path(path))
     }
 
     /// Returns the name of the currently processed file in the input directory
@@ -1063,9 +1103,15 @@ impl CsvFilesystemReader {
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
         object_pattern: &str,
+        with_metadata: bool,
     ) -> Result<CsvFilesystemReader, ReadError> {
-        let filesystem_scanner =
-            FilesystemScanner::new(path.into(), persistent_id, streaming_mode, object_pattern)?;
+        let filesystem_scanner = FilesystemScanner::new(
+            path.into(),
+            persistent_id,
+            streaming_mode,
+            object_pattern,
+            with_metadata,
+        )?;
         Ok(CsvFilesystemReader {
             parser_builder,
             persistent_id,
@@ -1180,7 +1226,9 @@ impl Reader for CsvFilesystemReader {
                                     .as_path(),
                             )?,
                         );
-                        return Ok(ReadResult::NewSource);
+                        return Ok(ReadResult::NewSource(
+                            self.filesystem_scanner.maybe_current_object_metadata(),
+                        ));
                     }
                     // The file came to its end, so we should drop the reader
                     self.reader = None;
@@ -1196,7 +1244,9 @@ impl Reader for CsvFilesystemReader {
                                     .as_path(),
                             )?,
                         );
-                        return Ok(ReadResult::NewSource);
+                        return Ok(ReadResult::NewSource(
+                            self.filesystem_scanner.maybe_current_object_metadata(),
+                        ));
                     }
                 }
             }
@@ -1211,6 +1261,10 @@ impl Reader for CsvFilesystemReader {
 
     fn persistent_id(&self) -> Option<PersistentId> {
         self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
     }
 
     fn storage_type(&self) -> StorageType {
@@ -1265,6 +1319,10 @@ impl ReaderBuilder for PythonReaderBuilder {
 
     fn persistent_id(&self) -> Option<PersistentId> {
         self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
     }
 
     fn storage_type(&self) -> StorageType {
@@ -1332,6 +1390,10 @@ impl Reader for PythonReader {
 
     fn persistent_id(&self) -> Option<PersistentId> {
         self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
     }
 
     fn storage_type(&self) -> StorageType {
@@ -1807,12 +1869,14 @@ impl Reader for S3CsvReader {
                         ));
                     }
                     if self.stream_next_object()? {
-                        return Ok(ReadResult::NewSource);
+                        // No metadata is currently provided by S3 scanner
+                        return Ok(ReadResult::NewSource(None));
                     }
                 }
                 None => {
                     if self.stream_next_object()? {
-                        return Ok(ReadResult::NewSource);
+                        // No metadata is currently provided by S3 scanner
+                        return Ok(ReadResult::NewSource(None));
                     }
                 }
             }
@@ -1831,6 +1895,10 @@ impl Reader for S3CsvReader {
 
     fn persistent_id(&self) -> Option<PersistentId> {
         self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
     }
 }
 
@@ -2094,12 +2162,14 @@ impl Reader for S3GenericReader {
                     }
 
                     if self.stream_next_object()? {
-                        return Ok(ReadResult::NewSource);
+                        // No metadata is currently provided by S3 scanner
+                        return Ok(ReadResult::NewSource(None));
                     }
                 }
                 None => {
                     if self.stream_next_object()? {
-                        return Ok(ReadResult::NewSource);
+                        // No metadata is currently provided by S3 scanner
+                        return Ok(ReadResult::NewSource(None));
                     }
                 }
             }
@@ -2118,5 +2188,9 @@ impl Reader for S3GenericReader {
 
     fn persistent_id(&self) -> Option<PersistentId> {
         self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
     }
 }

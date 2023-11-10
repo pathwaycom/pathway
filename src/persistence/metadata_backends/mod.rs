@@ -6,8 +6,10 @@ use ::s3::error::S3Error;
 use serde_json::Error as ParseError;
 
 pub mod file;
+pub mod mock;
 pub mod s3;
 pub use file::FilesystemKVStorage;
+pub use mock::MockKVStorage;
 pub use s3::S3KVStorage;
 
 #[derive(Debug, thiserror::Error)]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pathway.engine import DebeziumDBType
 from pathway.internals import api, datasource
 from pathway.internals.api import PathwayType
 from pathway.internals.decorators import table_from_datasource
@@ -20,6 +21,7 @@ def read(
     rdkafka_settings: dict,
     topic_name: str,
     *,
+    db_type: DebeziumDBType = DebeziumDBType.POSTGRES,
     schema: type[Schema] | None = None,
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
@@ -38,6 +40,7 @@ def read(
         rdkafka_settings: Connection settings in the format of
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic_name: Name of topic in Kafka to which the updates are streamed.
+        db_type: Type of the database from which events are streamed;
         schema: Schema of the resulting table.
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
@@ -135,7 +138,9 @@ def read(
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms
     )
-    data_format = api.DataFormat(format_type="debezium", **data_format_definition)
+    data_format = api.DataFormat(
+        format_type="debezium", debezium_db_type=db_type, **data_format_definition
+    )
     return table_from_datasource(
         datasource.GenericDataSource(
             datastorage=data_storage,

@@ -9,10 +9,23 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import CsvParserSettings
-from pathway.io.s3 import AwsS3Settings, read as s3_csv_read
+from pathway.io.s3 import AwsS3Settings, read as s3_read
 
 
 class MinIOSettings:
+    """Stores MinIO bucket connection settings.
+
+    Args:
+        endpoint: Endpoint for the bucket.
+        bucket_name: Name of a bucket.
+        access_key: Access key for the bucket.
+        secret_access_key: Secret access key for the bucket.
+        region: Region of the bucket.
+        with_path_style: Whether to use path-style addresses for bucket access. It defaults \
+to True as this is the most widespread way to access MinIO, but can be overridden in case \
+of a custom configuration.
+    """
+
     def __init__(
         self,
         endpoint,
@@ -23,15 +36,6 @@ class MinIOSettings:
         with_path_style=True,
         region=None,
     ):
-        """Constructs MinIO bucket connection settings.
-
-        Args:
-            endpoint: Endpoint for the bucket.
-            bucket_name: Name of a bucket.
-            access_key: Access key for the bucket.
-            secret_access_key: Secret access key for the bucket.
-            region: Region of the bucket.
-        """
         self.endpoint = endpoint
         self.bucket_name = bucket_name
         self.access_key = access_key
@@ -65,7 +69,7 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
 ) -> Table:
-    """Reads a table from one or several objects in CSV format from S3 bucket in MinIO.
+    """Reads a table from one or several objects from S3 bucket in MinIO.
 
     In case the prefix is specified, and there are several objects lying under this
     prefix, their order is determined according to their modification times: the smaller
@@ -122,7 +126,7 @@ def read(
     ... )
     """
 
-    return s3_csv_read(
+    return s3_read(
         path=path,
         aws_s3_settings=minio_settings.create_aws_settings(),
         format=format,

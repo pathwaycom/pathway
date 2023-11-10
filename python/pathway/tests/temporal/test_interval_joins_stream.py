@@ -1,7 +1,7 @@
 import pytest
 
 import pathway as pw
-from pathway.tests.utils import assert_values_in_stream_consistent
+from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
 class TimeInputSchema(pw.Schema):
@@ -38,31 +38,37 @@ def test_forgetting(keep_results: bool):
         behavior=pw.temporal.window_behavior(0, 2, keep_results=keep_results),
     ).select(left_t=pw.left.t, right_t=pw.right.t)
     if keep_results:
-        expected = [
-            (0, 0),
-            (1, 1),
-            (2, 2),
-            (3, 3),
-            (3, 3),
-            (3, 3),
-            (3, 3),
-            (4, 4),
-            (4, 4),
-            (4, 4),
-            (4, 4),
-        ]
+        expected = T(
+            """
+            left_t | right_t
+               0   |    0
+               1   |    1
+               2   |    2
+               3   |    3
+               3   |    3
+               3   |    3
+               3   |    3
+               4   |    4
+               4   |    4
+               4   |    4
+               4   |    4
+            """
+        )
     else:
-        expected = [
-            (3, 3),
-            (3, 3),
-            (3, 3),
-            (3, 3),
-            (4, 4),
-            (4, 4),
-            (4, 4),
-            (4, 4),
-        ]
-    assert_values_in_stream_consistent(result, expected)
+        expected = T(
+            """
+            left_t | right_t
+               3   |    3
+               3   |    3
+               3   |    3
+               3   |    3
+               4   |    4
+               4   |    4
+               4   |    4
+               4   |    4
+            """
+        )
+    assert_table_equality_wo_index(result, expected)
 
 
 class TimeValueInputSchema(pw.Schema):
@@ -101,47 +107,53 @@ def test_forgetting_sharded(keep_results: bool):
         behavior=pw.temporal.window_behavior(0, 2, keep_results=keep_results),
     ).select(v=pw.this.v, left_t=pw.left.t, right_t=pw.right.t)
     if keep_results:
-        expected = [
-            (0, 0, 0),
-            (0, 1, 1),
-            (0, 2, 2),
-            (0, 3, 3),
-            (0, 3, 3),
-            (0, 3, 3),
-            (0, 3, 3),
-            (0, 4, 4),
-            (0, 4, 4),
-            (0, 4, 4),
-            (0, 4, 4),
-            (1, 0, 0),
-            (1, 1, 1),
-            (1, 2, 2),
-            (1, 3, 3),
-            (1, 3, 3),
-            (1, 3, 3),
-            (1, 3, 3),
-            (1, 4, 4),
-            (1, 4, 4),
-            (1, 4, 4),
-            (1, 4, 4),
-        ]
+        expected = T(
+            """
+            v | left_t | right_t
+            0 |   0    |    0
+            0 |   1    |    1
+            0 |   2    |    2
+            0 |   3    |    3
+            0 |   3    |    3
+            0 |   3    |    3
+            0 |   3    |    3
+            0 |   4    |    4
+            0 |   4    |    4
+            0 |   4    |    4
+            0 |   4    |    4
+            1 |   0    |    0
+            1 |   1    |    1
+            1 |   2    |    2
+            1 |   3    |    3
+            1 |   3    |    3
+            1 |   3    |    3
+            1 |   3    |    3
+            1 |   4    |    4
+            1 |   4    |    4
+            1 |   4    |    4
+            1 |   4    |    4
+            """
+        )
     else:
-        expected = [
-            (0, 3, 3),
-            (0, 3, 3),
-            (0, 3, 3),
-            (0, 3, 3),
-            (0, 4, 4),
-            (0, 4, 4),
-            (0, 4, 4),
-            (0, 4, 4),
-            (1, 3, 3),
-            (1, 3, 3),
-            (1, 3, 3),
-            (1, 3, 3),
-            (1, 4, 4),
-            (1, 4, 4),
-            (1, 4, 4),
-            (1, 4, 4),
-        ]
-    assert_values_in_stream_consistent(result, expected)
+        expected = T(
+            """
+            v | left_t | right_t
+            0 |   3    |    3
+            0 |   3    |    3
+            0 |   3    |    3
+            0 |   3    |    3
+            0 |   4    |    4
+            0 |   4    |    4
+            0 |   4    |    4
+            0 |   4    |    4
+            1 |   3    |    3
+            1 |   3    |    3
+            1 |   3    |    3
+            1 |   3    |    3
+            1 |   4    |    4
+            1 |   4    |    4
+            1 |   4    |    4
+            1 |   4    |    4
+            """
+        )
+    assert_table_equality_wo_index(result, expected)

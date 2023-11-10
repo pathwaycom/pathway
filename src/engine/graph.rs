@@ -232,14 +232,14 @@ impl ComplexColumn {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnProperties {
     pub dtype: Type,
     pub append_only: bool,
     pub trace: Trace,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableProperties {
     Table(Arc<[TableProperties]>),
     Column(Arc<ColumnProperties>),
@@ -260,9 +260,18 @@ impl TableProperties {
         fn produce_nested_tuple(
             props: &[(Vec<usize>, TableProperties)],
             depth: usize,
-        ) -> TableProperties {
-            if props.len() == 1 && props.first().unwrap().0.len() == depth {
-                return props.first().unwrap().1.clone();
+        ) -> Result<TableProperties> {
+            if !props.is_empty() && props.first().unwrap().0.len() == depth {
+                let first = &props.first().unwrap().1;
+                for (_path, other) in &props[1..] {
+                    assert_eq!(first, other);
+                    if first != other {
+                        return Err(Error::ValueError(
+                            "Properties of two columns with the same path are not equal".into(),
+                        ));
+                    }
+                }
+                return Ok(first.clone());
             }
             let mut prefix = 0;
             let mut begin = 0;
@@ -281,11 +290,11 @@ impl TableProperties {
                     continue;
                 }
                 assert!(begin < end);
-                result.push(produce_nested_tuple(&props[begin..end], depth + 1));
+                result.push(produce_nested_tuple(&props[begin..end], depth + 1)?);
                 begin = end;
             }
 
-            TableProperties::Table(result.as_slice().into())
+            Ok(TableProperties::Table(result.as_slice().into()))
         }
 
         let mut properties: Vec<(Vec<usize>, TableProperties)> = properties
@@ -300,7 +309,7 @@ impl TableProperties {
 
         properties.sort_unstable_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
 
-        Ok(produce_nested_tuple(properties.as_slice(), 0))
+        produce_nested_tuple(properties.as_slice(), 0)
     }
 
     pub fn trace(&self) -> &Trace {
@@ -693,7 +702,7 @@ pub trait Graph {
         commit_duration: Option<Duration>,
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
-        external_persistent_id: &Option<ExternalPersistentId>,
+        external_persistent_id: Option<&ExternalPersistentId>,
     ) -> Result<TableHandle>;
 
     fn output_table(
@@ -1232,7 +1241,7 @@ impl Graph for ScopedGraph {
         commit_duration: Option<Duration>,
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
-        external_persistent_id: &Option<ExternalPersistentId>,
+        external_persistent_id: Option<&ExternalPersistentId>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.connector_table(

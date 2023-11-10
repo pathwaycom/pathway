@@ -98,8 +98,8 @@ pub fn full_cycle_read(
                                 let key = Key::random();
                                 SnapshotEvent::Insert(key, values.clone())
                             }
-                            ParsedEvent::Delete((_, _)) => {
-                                todo!("remove isn't supported in this test")
+                            ParsedEvent::Delete((_, _)) | ParsedEvent::Upsert((_, _)) => {
+                                todo!("delete and upsert aren't supported in this test")
                             }
                             ParsedEvent::AdvanceTime => SnapshotEvent::AdvanceTime(1),
                         };
@@ -112,8 +112,8 @@ pub fn full_cycle_read(
                     new_parsed_entries.push(event);
                 }
             }
-            Entry::Realtime(ReadResult::NewSource) => {
-                parser.on_new_source_started();
+            Entry::Realtime(ReadResult::NewSource(metadata)) => {
+                parser.on_new_source_started(metadata.as_ref());
             }
             Entry::Snapshot(snapshot_entry) => {
                 snapshot_entries.push(snapshot_entry.clone());
@@ -174,7 +174,7 @@ pub fn read_data_from_reader(
                     panic!("Unexpected erroneous reply: {parse_result:?}");
                 }
             }
-            ReadResult::NewSource => parser.on_new_source_started(),
+            ReadResult::NewSource(metadata) => parser.on_new_source_started(metadata.as_ref()),
             ReadResult::Finished => break,
         }
     }
@@ -249,7 +249,7 @@ pub fn data_parsing_fails(
                     return Ok(true);
                 }
             }
-            ReadResult::NewSource => parser.on_new_source_started(),
+            ReadResult::NewSource(metadata) => parser.on_new_source_started(metadata.as_ref()),
             ReadResult::Finished => break,
         }
     }

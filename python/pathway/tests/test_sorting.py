@@ -19,7 +19,6 @@ from pathway.stdlib.indexing.sorting import (
     filter_cmp_helper,
     filter_smallest_k,
     prefix_sum_oracle,
-    sort_from_index,
 )
 from pathway.tests.utils import T, assert_table_equality, assert_table_equality_wo_index
 
@@ -578,7 +577,7 @@ def test_prevnext_single_instance():
         5 |  2  | 42
         """
     )
-    result = sort_from_index(**build_sorted_index(nodes))
+    result = nodes.sort(key=nodes.key, instance=nodes.instance)
 
     assert_table_equality(
         result,
@@ -592,8 +591,8 @@ def test_prevnext_single_instance():
             5   |  3   | 1
             """,
         ).select(
-            next=nodes.pointer_from(this.next, optional=True),
             prev=nodes.pointer_from(this.prev, optional=True),
+            next=nodes.pointer_from(this.next, optional=True),
         ),
     )
 
@@ -616,7 +615,7 @@ def test_prevnext_many_instance():
         10|  2  | 28
         """
     )
-    result = sort_from_index(**build_sorted_index(nodes))
+    result = nodes.sort(key=nodes.key, instance=nodes.instance)
 
     assert_table_equality(
         result,
@@ -633,49 +632,6 @@ def test_prevnext_many_instance():
             8   |      | 4
             9   |  5   | 1
             10   |  6   | 2
-            """,
-        ).select(
-            next=nodes.pointer_from(this.next, optional=True),
-            prev=nodes.pointer_from(this.prev, optional=True),
-        ),
-    )
-
-
-def test_prevnext_many_instances_experimental():
-    # FIXME: remove when experimental integrated into main sort
-    nodes = T(
-        """
-          | key
-        1 |  11
-        2 |   1
-        3 |  15
-        4 |   5
-        5 |  13
-        6 |   3
-        7 |  18
-        8 |   8
-        9 |  12
-        10|   2
-        """
-    )
-
-    result = nodes._sort_experimental(key=nodes.key, instance=None)
-
-    assert_table_equality(
-        result,
-        T(
-            """
-                | next | prev
-            1   |  9   | 8
-            2   |  10  |
-            3   |  7   | 5
-            4   |  8   | 6
-            5   |  3   | 9
-            6   |  4   | 10
-            7   |      | 3
-            8   |  1   | 4
-            9   |  5   | 1
-            10  |  6   | 2
             """,
         ).select(
             prev=nodes.pointer_from(this.prev, optional=True),

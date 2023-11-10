@@ -75,7 +75,6 @@ class Table(
     """
 
     if TYPE_CHECKING:
-        from pathway.stdlib.indexing import sort  # type: ignore[misc]
         from pathway.stdlib.ordered import diff  # type: ignore[misc]
         from pathway.stdlib.statistical import interpolate  # type: ignore[misc]
         from pathway.stdlib.temporal import (  # type: ignore[misc]
@@ -1890,11 +1889,61 @@ class Table(
     @desugar
     @contextualized_operator
     @runtime_type_check
-    def _sort_experimental(
+    def sort(
         self,
         key: expr.ColumnExpression,
         instance: expr.ColumnExpression | None = None,
     ) -> Table:
+        """
+        Sorts a table by the specified keys.
+
+        Args:
+            table : pw.Table
+                The table to be sorted.
+            key : ColumnReference
+                An expression to sort by.
+            instance : ColumnReference or None
+                An expression with instance. Rows are sorted within an instance.
+                ``prev`` and ``next`` columns will only point to rows that have the same instance.
+
+        Returns:
+            pw.Table: The sorted table. Contains two columns: ``prev`` and ``next``, containing the pointers
+            to the previous and next rows.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> table = pw.debug.table_from_markdown('''
+        ... name     | age | score
+        ... Alice    | 25  | 80
+        ... Bob      | 20  | 90
+        ... Charlie  | 30  | 80
+        ... ''')
+        >>> table = table.with_id_from(pw.this.name)
+        >>> table += table.sort(key=pw.this.age)
+        >>> pw.debug.compute_and_print(table, include_id=True)
+                    | name    | age | score | prev        | next
+        ^GBSDEEW... | Alice   | 25  | 80    | ^EDPSSB1... | ^DS9AT95...
+        ^EDPSSB1... | Bob     | 20  | 90    |             | ^GBSDEEW...
+        ^DS9AT95... | Charlie | 30  | 80    | ^GBSDEEW... |
+        >>> table = pw.debug.table_from_markdown('''
+        ... name     | age | score
+        ... Alice    | 25  | 80
+        ... Bob      | 20  | 90
+        ... Charlie  | 30  | 80
+        ... David    | 35  | 90
+        ... Eve      | 15  | 80
+        ... ''')
+        >>> table = table.with_id_from(pw.this.name)
+        >>> table += table.sort(key=pw.this.age, instance=pw.this.score)
+        >>> pw.debug.compute_and_print(table, include_id=True)
+                    | name    | age | score | prev        | next
+        ^GBSDEEW... | Alice   | 25  | 80    | ^T0B95XH... | ^DS9AT95...
+        ^EDPSSB1... | Bob     | 20  | 90    |             | ^RT0AZWX...
+        ^DS9AT95... | Charlie | 30  | 80    | ^GBSDEEW... |
+        ^RT0AZWX... | David   | 35  | 90    | ^EDPSSB1... |
+        ^T0B95XH... | Eve     | 15  | 80    |             | ^GBSDEEW...
+        """
         if not isinstance(instance, expr.ColumnExpression):
             instance = expr.ColumnConstExpression(instance)
         prev_column = clmn.MaterializedColumn(

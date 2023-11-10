@@ -2091,15 +2091,15 @@ def test_apply_async_disk_cache(tmp_path: pathlib.Path):
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert os.path.exists(cache_dir)
@@ -2170,15 +2170,15 @@ def test_udf_async_options(tmp_path: pathlib.Path):
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(cache_dir),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert os.path.exists(cache_dir)

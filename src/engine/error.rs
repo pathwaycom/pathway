@@ -7,7 +7,6 @@ use super::{Key, Value};
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 
 use crate::connectors::data_storage::WriteError;
-use crate::connectors::StorageType;
 use crate::persistence::ExternalPersistentId;
 
 #[allow(clippy::module_name_repetitions)]
@@ -150,11 +149,6 @@ pub enum Error {
     #[error("persistent id {0} is assigned, but no persistent storage is configured")]
     NoPersistentStorage(ExternalPersistentId),
 
-    #[error(
-        "persistent storage is configured, but persistent id is not assigned for {0:?} reader"
-    )]
-    PersistentIdNotAssigned(StorageType),
-
     #[error("snapshot writer failed: {0}")]
     SnapshotWriterError(#[source] WriteError),
 }
@@ -200,7 +194,7 @@ impl From<DynError> for Error {
 
 pub type Result<T, E = Error> = result::Result<T, E>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trace {
     Frame {
         line: String,

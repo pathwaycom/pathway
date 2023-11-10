@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import functools
 import io
+import itertools
 import re
+from collections.abc import Iterable
 from os import PathLike
+from warnings import warn
 
 import pandas as pd
 
+from pathway import persistence
 from pathway.internals import Json, api, parse_graph
 from pathway.internals.datasource import DataSourceOptions, PandasDataSource
 from pathway.internals.decorators import table_from_datasource
@@ -18,6 +22,8 @@ from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema, schema_from_pandas
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
+from pathway.io._utils import read_schema
+from pathway.io.python import ConnectorSubject, read
 
 
 @runtime_type_check
@@ -116,7 +122,7 @@ def table_to_pandas(table: Table):
 
 @runtime_type_check
 @trace_user_frame
-def table_from_pandas(
+def _table_from_pandas(
     df: pd.DataFrame,
     id_from: list[str] | None = None,
     unsafe_trusted_ids: bool = False,
@@ -199,5 +205,259 @@ def table_to_parquet(table: Table, filename: str | PathLike):
     return df.to_parquet(filename)
 
 
-# XXX: clean this up
-table_from_markdown = parse_to_table
+class _EmptyConnectorSubject(ConnectorSubject):
+    def run(self):
+        pass
+
+
+class StreamGenerator:
+    _persistent_id = itertools.count()
+    events: dict[tuple[str, int], list[api.SnapshotEvent]] = {}
+
+    def _get_next_persistent_id(self) -> str:
+        return str(next(self._persistent_id))
+
+    def _advance_time_for_all_workers(
+        self, persistent_id: str, workers: Iterable[int], timestamp: int
+    ):
+        for worker in workers:
+            self.events[(persistent_id, worker)].append(
+                api.SnapshotEvent.advance_time(timestamp)
+            )
+
+    def _table_from_dict(
+        self,
+        batches: dict[int, dict[int, list[tuple[int, api.Pointer, list[api.Value]]]]],
+        schema: type[Schema],
+    ) -> Table:
+        """
+        A function that creates a table from a mapping of timestamps to batches. Each batch
+        is a mapping from worker id to list of rows processed in this batch by this worker,
+        and each row is tuple (diff, key, values).
+
+        Note: unless you need to specify timestamps and keys, consider using
+        `table_from_list_of_batches` and `table_from_list_of_batches_by_workers`.
+
+        Args:
+            batches: dictionary with specified batches to be put in the table
+            schema: schema of the table
+        """
+        persistent_id = self._get_next_persistent_id()
+        workers = set([worker for batch in batches.values() for worker in batch])
+        for worker in workers:
+            self.events[(persistent_id, worker)] = []
+
+        timestamps = set(batches.keys())
+
+        if any(timestamp for timestamp in timestamps if timestamp < 0):
+            raise ValueError("negative timestamp cannot be used")
+        elif any(timestamp for timestamp in timestamps if timestamp == 0):
+            warn(
+                "rows with timestamp 0 are only backfilled and are not processed by output connectors"
+            )
+
+        if any(timestamp for timestamp in timestamps if timestamp % 2 == 1):
+            warn("timestamps are required to be even; all timestamps will be doubled")
+            batches = {2 * timestamp: batches[timestamp] for timestamp in batches}
+
+        for timestamp in sorted(batches):
+            self._advance_time_for_all_workers(persistent_id, workers, timestamp)
+            batch = batches[timestamp]
+            for worker, changes in batch.items():
+                for diff, key, values in changes:
+                    if diff == 1:
+                        event = api.SnapshotEvent.insert(key, values)
+                        self.events[(persistent_id, worker)] += [event] * diff
+                    elif diff == -1:
+                        event = api.SnapshotEvent.delete(key, values)
+                        self.events[(persistent_id, worker)] += [event] * (-diff)
+                    else:
+                        raise ValueError("only diffs of 1 and -1 are supported")
+
+        return read(
+            _EmptyConnectorSubject(), persistent_id=persistent_id, schema=schema
+        )
+
+    def table_from_list_of_batches_by_workers(
+        self,
+        batches: list[dict[int, list[dict[str, api.Value]]]],
+        schema: type[Schema],
+    ) -> Table:
+        key = itertools.count()
+        schema, api_schema = read_schema(schema=schema)
+        value_fields: list[api.ValueField] = api_schema["value_fields"]
+
+        def next_key() -> api.Pointer:
+            api_key = api.ref_scalar(next(key))
+            return api_key
+
+        def add_diffs_and_keys(list_of_values: list[dict[str, api.Value]]):
+            return [
+                (1, next_key(), [values[field.name] for field in value_fields])
+                for values in list_of_values
+            ]
+
+        formatted_batches: dict[
+            int, dict[int, list[tuple[int, api.Pointer, list[api.Value]]]]
+        ] = {}
+        timestamp = itertools.count(2, 2)
+
+        for batch in batches:
+            changes = {worker: add_diffs_and_keys(batch[worker]) for worker in batch}
+            formatted_batches[next(timestamp)] = changes
+
+        return self._table_from_dict(formatted_batches, schema)
+
+    def table_from_list_of_batches(
+        self,
+        batches: list[list[dict[str, api.Value]]],
+        schema: type[Schema],
+    ) -> Table:
+        batches_by_worker = [{0: batch} for batch in batches]
+        return self.table_from_list_of_batches_by_workers(batches_by_worker, schema)
+
+    def table_from_pandas(
+        self,
+        df: pd.DataFrame,
+        id_from: list[str] | None = None,
+        unsafe_trusted_ids: bool = False,
+        schema: type[Schema] | None = None,
+    ) -> Table:
+        if schema is None:
+            schema = schema_from_pandas(
+                df, exclude_columns=["_time", "_diff", "_worker"]
+            )
+        schema, api_schema = read_schema(schema=schema)
+        value_fields: list[api.ValueField] = api_schema["value_fields"]
+
+        if "_time" not in df:
+            df["_time"] = [2] * len(df)
+        if "_worker" not in df:
+            df["_worker"] = [0] * len(df)
+        if "_diff" not in df:
+            df["_diff"] = [1] * len(df)
+
+        persistent_id = self._get_next_persistent_id()
+        workers = set(df["_worker"])
+        for worker in workers:
+            self.events[(persistent_id, worker)] = []
+
+        batches: dict[
+            int, dict[int, list[tuple[int, api.Pointer, list[api.Value]]]]
+        ] = {}
+
+        ids = api.ids_from_pandas(
+            df, api.ConnectorProperties(unsafe_trusted_ids=unsafe_trusted_ids), id_from
+        )
+
+        for row_index in range(len(df)):
+            row = df.iloc[row_index]
+            time = row["_time"]
+            key = ids[df.index[row_index]]
+            worker = row["_worker"]
+
+            if time not in batches:
+                batches[time] = {}
+
+            if worker not in batches[time]:
+                batches[time][worker] = []
+
+            values = []
+            for value_field in value_fields:
+                column = value_field.name
+                value = api.denumpify(row[column])
+                values.append(value)
+            diff = row["_diff"]
+
+            batches[time][worker].append((diff, key, values))
+
+        return self._table_from_dict(batches, schema)
+
+    def table_from_markdown(
+        self,
+        table: str,
+        id_from: list[str] | None = None,
+        unsafe_trusted_ids: bool = False,
+        schema: type[Schema] | None = None,
+    ) -> Table:
+        df = _markdown_to_pandas(table)
+        return self.table_from_pandas(df, id_from, unsafe_trusted_ids, schema)
+
+    def persistence_config(self) -> persistence.Config | None:
+        if len(self.events) == 0:
+            return None
+        return persistence.Config.simple_config(
+            persistence.Backend.mock(self.events),
+            snapshot_access=api.SnapshotAccess.REPLAY,
+            replay_mode=api.ReplayMode.SPEEDRUN,
+        )
+
+
+stream_generator = StreamGenerator()
+
+
+def table_from_list_of_batches_by_workers(
+    batches: list[dict[int, list[dict[str, api.Value]]]],
+    schema: type[Schema],
+) -> Table:
+    """
+    A function that creates a table from a list of batches, where each batch is a mapping
+    from worker id to a list of rows processed by this worker in this batch.
+    Each row is a mapping from column name to a value.
+
+    Args:
+        batches: list of batches to be put in the table
+        schema: schema of the table
+    """
+    return stream_generator.table_from_list_of_batches_by_workers(batches, schema)
+
+
+def table_from_list_of_batches(
+    batches: list[list[dict[str, api.Value]]],
+    schema: type[Schema],
+) -> Table:
+    """
+    A function that creates a table from a list of batches, where each batch is a list of
+    rows in this batch. Each row is a mapping from column name to a value.
+
+    Args:
+        batches: list of batches to be put in the table
+        schema: schema of the table
+    """
+    return stream_generator.table_from_list_of_batches(batches, schema)
+
+
+def table_from_pandas(
+    df: pd.DataFrame,
+    id_from: list[str] | None = None,
+    unsafe_trusted_ids: bool = False,
+    schema: type[Schema] | None = None,
+):
+    """
+    A function for creating a table from a pandas DataFrame. If the DataFrame
+    contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
+    Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
+    ``_diff`` column as an event type with ``1`` treated as inserting row and ``-1`` as removing.
+    """
+    if "_time" in df:
+        return stream_generator.table_from_pandas(
+            df, id_from, unsafe_trusted_ids, schema
+        )
+    else:
+        return _table_from_pandas(df, id_from, unsafe_trusted_ids, schema)
+
+
+def table_from_markdown(
+    table_def: str,
+    id_from: list[str] | None = None,
+    unsafe_trusted_ids: bool = False,
+    schema: type[Schema] | None = None,
+) -> Table:
+    """
+    A function for creating a table from its definition in markdown. If it
+    contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
+    Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
+    ``_diff`` column as an event type - with ``1`` treated as inserting row and ``-1`` as removing.
+    """
+    df = _markdown_to_pandas(table_def)
+    return table_from_pandas(df, id_from, unsafe_trusted_ids, schema)

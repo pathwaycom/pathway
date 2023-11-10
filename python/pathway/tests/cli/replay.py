@@ -1,26 +1,14 @@
+import pathlib
 import sys
 
 import pathway as pw
-
-
-class CountDifferentTimestampsCallback(pw.io.OnChangeCallback):
-    times: set[int]
-
-    def __init__(self, expected):
-        self.times = set()
-        self.expected = expected
-
-    def __call__(self, key, row, time: int, is_addition):
-        self.times.add(time)
-
-    def on_end(self):
-        assert len(self.times) == self.expected
+from pathway.tests.utils import CountDifferentTimestampsCallback
 
 
 def run_graph(
-    expected_count,
+    expected_count: int | None,
     rows_to_generate,
-):
+) -> int:
     class InputSchema(pw.Schema):
         number: int
 
@@ -42,12 +30,25 @@ def run_graph(
     pw.io.subscribe(t, callback, callback.on_end)
 
     pw.run()
+    return len(callback.timestamps)
 
 
 def main():
-    expected_count = int(sys.argv[1])
+    expected_count: int | None = int(sys.argv[1])
     rows_to_generate = int(sys.argv[2])
-    run_graph(expected_count, rows_to_generate)
+
+    if len(sys.argv) > 3:
+        timestamp_file = pathlib.Path(sys.argv[3])
+    else:
+        timestamp_file = None
+
+    # When generating rows, we can't be sure that new rows will have distinct timestamps,
+    # so we don't check their number
+    if rows_to_generate > 0:
+        expected_count = None
+    n_timestamps = run_graph(expected_count, rows_to_generate)
+    if timestamp_file is not None:
+        timestamp_file.write_text(str(n_timestamps))
 
 
 if __name__ == "__main__":

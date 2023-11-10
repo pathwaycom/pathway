@@ -16,7 +16,7 @@ from pathway.internals.graph_runner.storage_graph import OperatorStorageGraph
 from pathway.internals.helpers import StableSet
 from pathway.internals.monitoring import MonitoringLevel, monitor_stats
 from pathway.internals.operator import ContextualizedIntermediateOperator, Operator
-from pathway.internals.persistence import PersistenceConfig
+from pathway.persistence import Config as PersistenceConfig
 
 
 class GraphRunner:
@@ -37,6 +37,8 @@ class GraphRunner:
         default_logging: bool = True,
         persistence_config: PersistenceConfig | None = None,
     ) -> None:
+        from pathway.debug import stream_generator
+
         self._graph = input_graph
         self.debug = debug
         if ignore_asserts is None:
@@ -45,7 +47,11 @@ class GraphRunner:
         self.monitoring_level = monitoring_level
         self.with_http_server = with_http_server
         self.default_logging = default_logging
-        self.persistence_config = persistence_config or environ.get_replay_config()
+        self.persistence_config = (
+            persistence_config
+            or environ.get_replay_config()
+            or stream_generator.persistence_config()
+        )
 
     def run_tables(
         self,

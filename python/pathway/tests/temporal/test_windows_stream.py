@@ -170,7 +170,6 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
         autocommit_duration_ms=5,
         input_rate=25,
     )
-
     gb = t.windowby(
         t.time,
         window=pw.temporal.sliding(duration=duration, hop=hop),
@@ -206,7 +205,7 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
         order = in_entry["value"]
         max_value = in_entry["value"]
         max_window_time = in_entry["time"]
-        max_global_time = max(max_window_time, max_global_time)
+        max_global_time = max(max(in_entry["time"], window[1] + delay), max_global_time)
         old_entry_state = simulated_state.get(entry_id)
 
         if old_entry_state is not None:

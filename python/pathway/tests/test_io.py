@@ -15,9 +15,11 @@ import pandas as pd
 import pytest
 
 import pathway as pw
+from pathway.engine import ref_scalar
 from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
+    CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
     T,
     assert_table_equality,
@@ -680,8 +682,8 @@ def test_async_transformer_disk_cache(tmp_path: pathlib.Path):
         assert_table_equality(
             result,
             expected,
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(cache_dir),
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.filesystem(cache_dir),
             ),
         )
 
@@ -1046,8 +1048,8 @@ def test_python_connector_persistence(tmp_path: pathlib.Path):
         )
         pw.io.csv.write(table_joined, output_path)
         pw.run(
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(persistent_storage_path),
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.filesystem(persistent_storage_path),
             )
         )
 
@@ -1094,28 +1096,26 @@ def test_no_pstorage(tmp_path: pathlib.Path):
         match="persistent metadata backend failed: target object should be a directory",
     ):
         pw.run(
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(path),
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.filesystem(path),
             )
         )
 
 
-def test_persistent_id_not_assigned(tmp_path: pathlib.Path):
+def test_persistent_id_not_assigned_autogenerate(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     write_lines(input_path, "test_data")
     pstorage_path = tmp_path / "PStrorage"
 
-    table = pw.io.plaintext.read(input_path)
+    write_lines(input_path, "test_data")
+
+    table = pw.io.plaintext.read(input_path, mode="static")
     pw.io.csv.write(table, tmp_path / "output.txt")
-    with pytest.raises(
-        ValueError,
-        match="persistent storage is configured, but persistent id is not assigned for FileSystem reader",
-    ):
-        pw.run(
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(pstorage_path)
-            )
+    pw.run(
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(pstorage_path)
         )
+    )
 
 
 def test_no_persistent_storage(tmp_path: pathlib.Path):
@@ -1151,8 +1151,8 @@ def test_duplicated_persistent_id(tmp_path: pathlib.Path):
         match="Persistent ID 'one' used more than once",
     ):
         pw.run(
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(pstorage_path)
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.filesystem(pstorage_path)
             )
         )
 
@@ -1513,8 +1513,8 @@ def test_persistent_subscribe(tmp_path):
     root.on_change, root.on_end = on_change, on_end
     pw.io.subscribe(table, on_change=on_change, on_end=on_end)
     pw.run(
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(pstorage_dir),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(pstorage_dir),
         ),
     )
 
@@ -1552,8 +1552,8 @@ def test_persistent_subscribe(tmp_path):
     root = mock.Mock()
     pw.io.subscribe(table, on_change=root.on_change, on_end=root.on_end)
     pw.run(
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(pstorage_dir),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(pstorage_dir),
         ),
     )
     root.assert_has_calls(
@@ -1653,8 +1653,8 @@ def test_replay(tmp_path: pathlib.Path):
         pw.io.subscribe(t, callback, callback.on_end)
 
         pw.run(
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(replay_dir),
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.filesystem(replay_dir),
                 replay_mode=replay_mode,
                 continue_after_replay=continue_after_replay,
                 snapshot_access=snapshot_access,
@@ -1709,20 +1709,6 @@ def test_replay(tmp_path: pathlib.Path):
     run_graph(api.ReplayMode.SPEEDRUN, expected)
 
 
-class CountDifferentTimestampsCallback(pw.io.OnChangeCallback):
-    times: set[int]
-
-    def __init__(self, expected):
-        self.times = set()
-        self.expected = expected
-
-    def __call__(self, key, row, time: int, is_addition):
-        self.times.add(time)
-
-    def on_end(self):
-        assert len(self.times) == self.expected
-
-
 def test_replay_timestamps(tmp_path: pathlib.Path):
     replay_dir = tmp_path / "test_replay_timestamps"
 
@@ -1737,11 +1723,11 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
 
     def run_graph(
         replay_mode,
-        expected_count,
+        expected_count: int | None = None,
         generate_rows=0,
         continue_after_replay=True,
         snapshot_access=api.SnapshotAccess.FULL,
-    ):
+    ) -> int:
         G.clear()
 
         t = pw.demo.generate_custom_stream(
@@ -1758,16 +1744,22 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
         pw.io.subscribe(t, callback, callback.on_end)
 
         pw.run(
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.filesystem(replay_dir),
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.filesystem(replay_dir),
                 replay_mode=replay_mode,
                 continue_after_replay=continue_after_replay,
                 snapshot_access=snapshot_access,
             )
         )
 
+        return len(callback.timestamps)
+
+    # Workaround for demo.generate_custom_stream sometimes putting two rows in the same batch:
+    # when generating rows we count number of different timestamp, and then during replay in Speedrun mode
+    # we expect the number of different timestamps to be the same as when generating data.
+
     # First run to persist data in local storage
-    run_graph(api.ReplayMode.PERSISTING, 15, generate_rows=15)
+    n_timestamps = run_graph(api.ReplayMode.PERSISTING, generate_rows=15)
 
     # In Persistency there should not be any data in output connector
     run_graph(api.ReplayMode.PERSISTING, 0)
@@ -1775,5 +1767,386 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
     # In Batch every row should have the same timestamp
     run_graph(api.ReplayMode.BATCH, 1)
 
-    # In Speedrun every row should have different timestamp
-    run_graph(api.ReplayMode.SPEEDRUN, 15)
+    # In Speedrun we should have the same number of timestamps as when generating data
+    run_graph(api.ReplayMode.SPEEDRUN, n_timestamps)
+
+
+def test_metadata_column_identity(tmp_path: pathlib.Path):
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+
+    input_contents_1 = "abc\n\ndef\nghi"
+    input_contents_2 = "ttt\nppp\nqqq"
+    input_contents_3 = "zzz\nyyy\n\nxxx"
+    write_lines(inputs_path / "input1.txt", input_contents_1)
+    write_lines(inputs_path / "input2.txt", input_contents_2)
+    write_lines(inputs_path / "input3.txt", input_contents_3)
+
+    output_path = tmp_path / "output.json"
+    table = pw.io.fs.read(
+        inputs_path,
+        with_metadata=True,
+        format="plaintext_by_file",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    metadata_file_names = []
+    with open(output_path, "r") as f:
+        for line in f.readlines():
+            metadata_file_names.append(json.loads(line)["_metadata"]["path"])
+
+    assert len(metadata_file_names) == 3, metadata_file_names
+    metadata_file_names.sort()
+    assert metadata_file_names[0].endswith("input1.txt")
+    assert metadata_file_names[1].endswith("input2.txt")
+    assert metadata_file_names[2].endswith("input3.txt")
+
+
+def test_metadata_column_regular_parser(tmp_path: pathlib.Path):
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+
+    input_contents_1 = json.dumps({"a": 1, "b": 10})
+    input_contents_2 = json.dumps({"a": 2, "b": 20})
+    write_lines(inputs_path / "input1.txt", input_contents_1)
+    write_lines(inputs_path / "input2.txt", input_contents_2)
+
+    class InputSchema(pw.Schema):
+        a: int
+        b: int
+
+    output_path = tmp_path / "output.json"
+    table = pw.io.fs.read(
+        inputs_path,
+        with_metadata=True,
+        schema=InputSchema,
+        format="json",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    metadata_file_names = []
+    with open(output_path, "r") as f:
+        for line in f.readlines():
+            metadata_file_names.append(json.loads(line)["_metadata"]["path"])
+
+    assert len(metadata_file_names) == 2, metadata_file_names
+    metadata_file_names.sort()
+    assert metadata_file_names[0].endswith("input1.txt")
+    assert metadata_file_names[1].endswith("input2.txt")
+
+
+def test_mock_snapshot_reader():
+    class InputSchema(pw.Schema):
+        number: int
+
+    events = {
+        ("1", 0): [
+            api.SnapshotEvent.advance_time(2),
+            api.SnapshotEvent.insert(ref_scalar(0), [1]),
+            api.SnapshotEvent.insert(ref_scalar(1), [1]),
+            api.SnapshotEvent.advance_time(4),
+            api.SnapshotEvent.insert(ref_scalar(2), [4]),
+            api.SnapshotEvent.delete(ref_scalar(0), [1]),
+            api.SnapshotEvent.FINISHED,
+        ]
+    }
+
+    t = pw.demo.generate_custom_stream(
+        {},
+        schema=InputSchema,
+        nb_rows=0,
+        input_rate=15,
+        autocommit_duration_ms=50,
+        persistent_id="1",
+    )
+
+    on_change = mock.Mock()
+    pw.io.subscribe(t, on_change=on_change)
+
+    pw.run(
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.mock(events),
+            replay_mode=api.ReplayMode.SPEEDRUN,
+            snapshot_access=api.SnapshotAccess.REPLAY,
+        )
+    )
+
+    on_change.assert_has_calls(
+        [
+            mock.call.on_change(
+                key=ref_scalar(0),
+                row={"number": 1},
+                time=2,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=ref_scalar(1),
+                row={"number": 1},
+                time=2,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=ref_scalar(2),
+                row={"number": 4},
+                time=4,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=ref_scalar(0),
+                row={"number": 1},
+                time=4,
+                is_addition=False,
+            ),
+        ],
+        any_order=True,
+    )
+    assert on_change.call_count == 4
+
+
+def test_stream_generator_from_list():
+    class InputSchema(pw.Schema):
+        number: int
+
+    events = [
+        [{"number": 1}, {"number": 2}, {"number": 5}],
+        [{"number": 4}, {"number": 4}],
+    ]
+
+    t = pw.debug.table_from_list_of_batches(events, InputSchema)
+    on_change = mock.Mock()
+    pw.io.subscribe(t, on_change=on_change)
+
+    pw.run()
+
+    timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
+    assert len(timestamps) == 2
+
+    on_change.assert_has_calls(
+        [
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 1},
+                time=min(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 2},
+                time=min(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 5},
+                time=min(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 4},
+                time=max(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 4},
+                time=max(timestamps),
+                is_addition=True,
+            ),
+        ],
+        any_order=True,
+    )
+    assert on_change.call_count == 5
+
+
+def test_stream_generator_from_list_multiple_workers(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PATHWAY_THREADS", "2")
+
+    class InputSchema(pw.Schema):
+        number: int
+
+    events = [
+        {0: [{"number": 1}, {"number": 2}], 1: [{"number": 5}]},
+        {0: [{"number": 4}], 1: [{"number": 4}]},
+    ]
+
+    t = pw.debug.table_from_list_of_batches_by_workers(events, InputSchema)
+    on_change = mock.Mock()
+    pw.io.subscribe(t, on_change=on_change)
+
+    pw.run()
+
+    timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
+    assert len(timestamps) == 2
+
+    on_change.assert_has_calls(
+        [
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 1},
+                time=min(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 2},
+                time=min(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 5},
+                time=min(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 4},
+                time=max(timestamps),
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"number": 4},
+                time=max(timestamps),
+                is_addition=True,
+            ),
+        ],
+        any_order=True,
+    )
+    assert on_change.call_count == 5
+
+
+@pytest.mark.filterwarnings("ignore:timestamps are required to be even")
+def test_stream_generator_from_markdown():
+    t = pw.debug.table_from_markdown(
+        """
+       | colA | colB | _time
+    1  | 1    | 2    | 1
+    5  | 2    | 3    | 1
+    10 | 5    | 1    | 2
+    """
+    )
+    on_change = mock.Mock()
+    pw.io.subscribe(t, on_change=on_change)
+
+    pw.run()
+
+    on_change.assert_has_calls(
+        [
+            mock.call.on_change(
+                key=api.ref_scalar(1),
+                row={"colA": 1, "colB": 2},
+                time=2,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=api.ref_scalar(5),
+                row={"colA": 2, "colB": 3},
+                time=2,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=api.ref_scalar(10),
+                row={"colA": 5, "colB": 1},
+                time=4,
+                is_addition=True,
+            ),
+        ],
+        any_order=True,
+    )
+    assert on_change.call_count == 3
+
+
+def test_stream_generator_from_markdown_with_diffs():
+    t = pw.debug.table_from_markdown(
+        """
+       | colA | colB | _time | _diff
+    1  | 1    | 2    | 2     | 1
+    5  | 2    | 3    | 2     | 1
+    1  | 1    | 2    | 4     | -1
+    10 | 5    | 1    | 4     | 1
+    3  | 1    | 1    | 4     | 1
+    10 | 5    | 1    | 8     | -1
+    """
+    )
+
+    expected = pw.debug.table_from_markdown(
+        """
+       | colA | colB
+    5  | 2    | 3
+    3  | 1    | 1
+    """
+    )
+
+    assert_table_equality(t, expected)
+
+
+def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PATHWAY_THREADS", "4")
+
+    class InputSchema(pw.Schema):
+        colA: int
+        colB: int
+
+    t1 = pw.debug.table_from_markdown(
+        """
+    colA | colB | _time | _worker
+    1    | 2    | 2     | 0
+    2    | 3    | 2     | 1
+    5    | 1    | 4     | 2
+    3    | 5    | 6     | 3
+    7    | 4    | 8     | 0
+    """
+    )
+
+    t2 = pw.debug.stream_generator._table_from_dict(
+        {
+            2: {0: [(1, api.ref_scalar(0), [1, 4])]},
+            4: {2: [(1, api.ref_scalar(1), [3, 7])]},
+            8: {0: [(1, api.ref_scalar(2), [2, 2])]},
+        },
+        InputSchema,
+    )
+
+    t3 = (
+        t1.join(t2, t1.colA == t2.colA)
+        .select(colA=pw.left.colA, left=pw.left.colB, right=pw.right.colB)
+        .with_columns(sum=pw.this.left + pw.this.right)
+    )
+
+    on_change = mock.Mock()
+    pw.io.subscribe(t3, on_change=on_change)
+
+    pw.run()
+
+    on_change.assert_has_calls(
+        [
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"colA": 1, "left": 2, "right": 4, "sum": 6},
+                time=2,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"colA": 3, "left": 5, "right": 7, "sum": 12},
+                time=6,
+                is_addition=True,
+            ),
+            mock.call.on_change(
+                key=mock.ANY,
+                row={"colA": 2, "left": 3, "right": 2, "sum": 5},
+                time=8,
+                is_addition=True,
+            ),
+        ],
+        any_order=True,
+    )
+    assert on_change.call_count == 3

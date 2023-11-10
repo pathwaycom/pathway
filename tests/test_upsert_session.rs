@@ -3,7 +3,7 @@ use helpers::get_entries_in_receiver;
 
 use std::sync::{mpsc, Arc, Mutex};
 
-use pathway_engine::connectors::upsert_session::UpsertSession;
+use pathway_engine::connectors::adaptors::{InputAdaptor, UpsertSession};
 use pathway_engine::engine::dataflow::operators::ConsolidateNondecreasing;
 use pathway_engine::engine::{Key, Value};
 
@@ -30,11 +30,11 @@ fn test_upsert_session_replacement() {
                 });
             },
         );
-        input.insert(k1, Value::from("one"));
+        input.upsert(k1, Some(Value::from("one")));
         input.advance_to(123);
-        input.insert(k2, Value::from("two"));
+        input.upsert(k2, Some(Value::from("two")));
         input.advance_to(246);
-        input.insert(k1, Value::from("three"));
+        input.upsert(k1, Some(Value::from("three")));
         input.advance_to(369);
     })
     .expect("Computation terminated abnormally");
@@ -73,11 +73,11 @@ fn test_removal_by_key() {
                 });
             },
         );
-        input.insert(k1, Value::from("one"));
+        input.upsert(k1, Some(Value::from("one")));
         input.advance_to(123);
-        input.insert(k2, Value::from("two"));
+        input.upsert(k2, Some(Value::from("two")));
         input.advance_to(246);
-        input.remove(k1);
+        input.upsert(k1, None);
         input.advance_to(369);
     })
     .expect("Computation terminated abnormally");

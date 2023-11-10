@@ -19,9 +19,9 @@ if __name__ == "__main__":
     os.environ["PATHWAY_THREADS"] = str(args.n_cpus)
 
     if args.pstorage_type == "fs":
-        pstorage_config = pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(path=args.pstorage),
-            refresh_duration_ms=5000,
+        pstorage_config = pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(path=args.pstorage),
+            snapshot_interval_ms=5000,
         )
     elif args.pstorage_type == "s3":
         aws_s3_settings = pw.io.s3.AwsS3Settings(
@@ -30,12 +30,12 @@ if __name__ == "__main__":
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         )
-        pstorage_config = pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.s3(
+        pstorage_config = pw.persistence.Config.simple_config(
+            pw.persistence.Backend.s3(
                 root_path=args.pstorage,
                 bucket_settings=aws_s3_settings,
             ),
-            refresh_duration_ms=5000,
+            snapshot_interval_ms=5000,
         )
     else:
         raise ValueError(

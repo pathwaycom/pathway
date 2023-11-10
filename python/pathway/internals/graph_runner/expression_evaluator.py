@@ -203,6 +203,8 @@ class RowwiseEvaluator(
     ) -> api.Table:
         [input_storage] = input_storages
         engine_input_table = self.state.get_table(input_storage)
+        if output_storage.has_only_references:
+            return engine_input_table
 
         expressions = []
         eval_state = RowwiseEvalState()

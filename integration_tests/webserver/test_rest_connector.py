@@ -151,7 +151,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path):
         ).raise_for_status()
 
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, keep_queries=True
+        host="127.0.0.1", port=port, schema=InputSchema, delete_queries=False
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 

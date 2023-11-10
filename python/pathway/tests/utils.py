@@ -13,7 +13,7 @@ import sys
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -134,79 +134,6 @@ class CheckKeyConsistentInStreamCallback(CheckKeyEntriesInStreamCallback):
 def assert_key_entries_in_stream_consistent(expected: list[DiffEntry], table: pw.Table):
     callback = CheckKeyConsistentInStreamCallback(expected)
     pw.io.subscribe(table, callback, callback.on_end)
-
-
-@dataclass
-class Entry:
-    last_modified: int = 0
-    values: collections.Counter[tuple[api.Value, ...]] = field(
-        default_factory=collections.Counter
-    )
-
-    def validate(self, key: api.Pointer) -> None:
-        if len(self.values) > 1:
-            raise AssertionError(f"Multiple entries {self.values} found for key {key}.")
-        elif len(self.values) == 1:
-            (value, count) = next(iter(self.values.items()))
-            assert (
-                count == 1
-            ), f"Entry {value} with cardinality {count}!=1 found for key {key}."
-
-    def empty(self) -> bool:
-        return len(self.values) == 0
-
-    def get_element(self, key: api.Pointer) -> tuple[api.Value, ...]:
-        self.validate(key)
-        return next(iter(self.values))
-
-
-class CheckValuesConsistentInStreamCallback(pw.io._subscribe.OnChangeCallback):
-    data: dict[api.Pointer, Entry]
-    expected: list[tuple[api.Value, ...]]
-
-    def __init__(self, expected: list[tuple[api.Value, ...]]):
-        super().__init__()
-        self.expected = expected
-        self.data = collections.defaultdict(Entry)
-
-    def __call__(
-        self,
-        key: api.Pointer,
-        row: dict[str, api.Value],
-        time: int,
-        is_addition: bool,
-    ) -> Any:
-        hashable_row = make_row_hashable(tuple(row.values()))
-        entry = self.data[key]
-        if entry.last_modified < time:
-            entry.validate(key)
-            entry.last_modified = time
-        if is_addition:
-            entry.values[hashable_row] += 1
-        else:
-            entry.values[hashable_row] -= 1
-            if entry.values[hashable_row] == 0:
-                del entry.values[hashable_row]
-
-    def on_end(self):
-        result = collections.Counter(
-            (
-                entry.get_element(key)
-                for key, entry in self.data.items()
-                if not entry.empty()
-            )
-        )
-        expected = collections.Counter(make_row_hashable(row) for row in self.expected)
-        if result != expected:
-            raise AssertionError(
-                f"Tables are different, result: {result} vs expected: {expected}."
-            )
-
-
-def assert_values_in_stream_consistent(table: pw.Table, expected: list):
-    callback = CheckValuesConsistentInStreamCallback(expected)
-    pw.io.subscribe(table, callback, callback.on_end)
-    run()
 
 
 def assert_equal_tables(t0: api.CapturedTable, t1: api.CapturedTable):
@@ -451,3 +378,20 @@ def generate_custom_stream_with_deletions(
     )
 
     return table
+
+
+# Callback class for checking whether number of distinct timestamps of
+# rows is equal to expected
+class CountDifferentTimestampsCallback(pw.io.OnChangeCallback):
+    timestamps: set[int]
+
+    def __init__(self, expected: int | None = None):
+        self.timestamps = set()
+        self.expected = expected
+
+    def __call__(self, key, row, time: int, is_addition):
+        self.timestamps.add(time)
+
+    def on_end(self):
+        if self.expected is not None:
+            assert len(self.timestamps) == self.expected

@@ -18,12 +18,17 @@ from pathway.io._utils import (
     internal_connector_mode,
 )
 
-S3_PATH_PREFIX = "s3://"
-S3_DEFAULT_REGION = "us-east-1"
-S3_LOCATION_FIELD = "LocationConstraint"
-
 
 class DigitalOceanS3Settings:
+    """Stores Digital Ocean S3 connection settings.
+
+    Args:
+        bucket_name: Name of Digital Ocean S3 bucket.
+        access_key: Access key for the bucket.
+        secret_access_key: Secret access key for the bucket.
+        region: Region of the bucket.
+    """
+
     @trace_user_frame
     def __init__(
         self,
@@ -33,14 +38,6 @@ class DigitalOceanS3Settings:
         secret_access_key=None,
         region=None,
     ):
-        """Constructs Digital Ocean S3 connection settings.
-
-        Args:
-            bucket_name: Name of S3 bucket.
-            access_key: Access key for the bucket.
-            secret_access_key: Secret access key for the bucket.
-            region: Region of the bucket.
-        """
         self.settings = api.AwsS3Settings(
             bucket_name,
             access_key,
@@ -52,6 +49,15 @@ class DigitalOceanS3Settings:
 
 
 class WasabiS3Settings:
+    """Stores Wasabi S3 connection settings.
+
+    Args:
+        bucket_name: Name of Wasabi S3 bucket.
+        access_key: Access key for the bucket.
+        secret_access_key: Secret access key for the bucket.
+        region: Region of the bucket.
+    """
+
     @trace_user_frame
     def __init__(
         self,
@@ -61,14 +67,6 @@ class WasabiS3Settings:
         secret_access_key=None,
         region=None,
     ):
-        """Constructs Wasabi S3 connection settings.
-
-        Args:
-            bucket_name: Name of S3 bucket.
-            access_key: Access key for the bucket.
-            secret_access_key: Secret access key for the bucket.
-            region: Region of the bucket.
-        """
         self.settings = api.AwsS3Settings(
             bucket_name,
             access_key,
@@ -421,3 +419,14 @@ def read_from_wasabi(
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+
+
+# This is made to force AwsS3Settings documentation
+__all__ = [
+    "AwsS3Settings",
+    "DigitalOceanS3Settings",
+    "WasabiS3Settings",
+    "read",
+    "read_from_digital_ocean",
+    "read_from_wasabi",
+]

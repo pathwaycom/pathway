@@ -3,7 +3,10 @@
 import os
 
 from pathway.internals import api
-from pathway.internals.persistence import PersistenceConfig, PersistentStorageBackend
+from pathway.persistence import (
+    Backend as PersistentStorageBackend,
+    Config as PersistenceConfig,
+)
 
 ignore_asserts = os.environ.get("PATHWAY_IGNORE_ASSERTS", "false").lower() in (
     "1",
@@ -44,7 +47,7 @@ def get_replay_config():
         continue_after_replay = bool(os.environ.get("PATHWAY_CONTINUE_AFTER_REPLAY"))
 
         data_storage = PersistentStorageBackend.filesystem(replay_storage)
-        persistence_config = PersistenceConfig.single_backend(
+        persistence_config = PersistenceConfig.simple_config(
             data_storage,
             replay_mode=replay_mode,
             snapshot_access=snapshot_access,

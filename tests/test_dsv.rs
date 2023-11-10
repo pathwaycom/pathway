@@ -21,6 +21,7 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -64,6 +65,7 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["c".to_string()], ','),
@@ -87,6 +89,7 @@ fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -123,6 +126,7 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -168,6 +172,7 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(None, vec!["a".to_string(), "b".to_string()], ','),
@@ -195,7 +200,7 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
                 }
             }
             ReadResult::Finished => break,
-            ReadResult::NewSource => continue,
+            ReadResult::NewSource(_) => continue,
         }
     }
 
@@ -210,6 +215,7 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -240,7 +246,7 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
                 }
             }
             ReadResult::Finished => break,
-            ReadResult::NewSource => continue,
+            ReadResult::NewSource(_) => continue,
         }
     }
 
@@ -272,6 +278,7 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -341,6 +348,7 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(

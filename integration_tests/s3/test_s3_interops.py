@@ -147,8 +147,8 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
     pw.run(
         monitoring_level=MonitoringLevel.NONE,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(pathway_persistent_storage),
         ),
     )
     G.clear()
@@ -166,8 +166,8 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
     pw.run(
         monitoring_level=MonitoringLevel.NONE,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(pathway_persistent_storage),
         ),
     )
     G.clear()
@@ -189,8 +189,8 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     pw.io.csv.write(table, str(output_path))
     pw.run(
         monitoring_level=MonitoringLevel.NONE,
-        persistence_config=pw.io.PersistenceConfig.single_backend(
-            pw.io.PersistentStorageBackend.filesystem(pathway_persistent_storage),
+        persistence_config=pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(pathway_persistent_storage),
         ),
     )
 
@@ -231,8 +231,8 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
         pw.io.jsonlines.write(table, str(output_path))
         pw.run(
             monitoring_level=MonitoringLevel.NONE,
-            persistence_config=pw.io.PersistenceConfig.single_backend(
-                pw.io.PersistentStorageBackend.s3(
+            persistence_config=pw.persistence.Config.simple_config(
+                pw.persistence.Backend.s3(
                     root_path=pstorage_s3_path,
                     bucket_settings=get_aws_s3_settings(),
                 ),

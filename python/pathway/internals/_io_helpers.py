@@ -14,6 +14,19 @@ S3_LOCATION_FIELD = "LocationConstraint"
 
 
 class AwsS3Settings:
+    """Stores Amazon S3 connection settings. You may also use this class to store
+    configuration settings for any custom S3 installation, however you will need to
+    specify the region and the endpoint.
+
+    Args:
+        bucket_name: Name of S3 bucket.
+        access_key: Access key for the bucket.
+        secret_access_key: Secret access key for the bucket.
+        with_path_style: Whether to use path-style requests.
+        region: Region of the bucket.
+        endpoint: Custom endpoint in case of self-hosted storage.
+    """
+
     @trace_user_frame
     def __init__(
         self,
@@ -25,16 +38,6 @@ class AwsS3Settings:
         region=None,
         endpoint=None,
     ):
-        """Constructs Amazon S3 connection settings.
-
-        Args:
-            bucket_name: Name of S3 bucket.
-            access_key: Access key for the bucket.
-            secret_access_key: Secret access key for the bucket.
-            with_path_style: Whether to use path-style requests for the bucket.
-            region: Region of the bucket.
-            endpoint: Custom endpoint in case of self-hosted storage.
-        """
         self.settings = api.AwsS3Settings(
             bucket_name,
             access_key,
@@ -46,6 +49,20 @@ class AwsS3Settings:
 
     @classmethod
     def new_from_path(cls, s3_path: str):
+        """
+        Constructs settings from S3 path. The engine will look for the credentials in
+        environment variables and in local AWS profiles. It will also automatically
+        detect the region of the bucket.
+
+        This method may fail if there are no credentials or they are incorrect. It may
+        also fail if the bucket does not exist.
+
+        Args:
+            s3_path: full path to the object in the form ``s3://<bucket_name>/<path>``.
+
+        Returns:
+            Configuration object.
+        """
         starts_with_prefix = s3_path.startswith(S3_PATH_PREFIX)
         has_extra_chars = len(s3_path) > len(S3_PATH_PREFIX)
         if not starts_with_prefix or not has_extra_chars:

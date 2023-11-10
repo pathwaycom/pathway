@@ -14,6 +14,8 @@ STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
 SNAPSHOT_MODE_NAME = "streaming_with_deletions"
 
+METADATA_COLUMN_NAME = "_metadata"
+
 _INPUT_MODES_MAPPING = {
     STATIC_MODE_NAME: ConnectorMode.STATIC,
     STREAMING_MODE_NAME: ConnectorMode.SIMPLE_STREAMING,
@@ -57,6 +59,10 @@ class RawDataSchema(pw.Schema):
     data: Any
 
 
+class MetadataSchema(Schema):
+    _metadata: dict
+
+
 def get_data_format_type(format: str, supported_formats: set[str]):
     if format not in _DATA_FORMAT_MAPPING or format not in supported_formats:
         raise ValueError(f"data format `{format}` not supported")
@@ -98,7 +104,19 @@ def internal_read_method(format: str) -> ReadMethod:
 
 
 class CsvParserSettings:
-    """Class representing settings for the CSV parser."""
+    """
+    Class representing settings for the CSV parser.
+
+    Args:
+        delimiter: Field delimiter to use when parsing CSV.
+        quote: Quote character to use when parsing CSV.
+        escape: What character to use for escaping fields in CSV.
+        enable_double_quote_escapes: Enable escapes of double quotes.
+        enable_quoting: Enable quoting for the fields.
+        comment_character: If specified, the lines starting with the comment \
+character will be treated as comments and therefore, will be ignored by \
+parser
+    """
 
     def __init__(
         self,
@@ -109,18 +127,6 @@ class CsvParserSettings:
         enable_quoting=True,
         comment_character=None,
     ):
-        """Constructs the CSV parser settings.
-
-        Args:
-            delimiter: Field delimiter to use when parsing CSV.
-            quote: Quote character to use when parsing CSV.
-            escape: What character to use for escaping fields in CSV.
-            enable_double_quote_escapes: Enable escapes of double quotes.
-            enable_quoting: Enable quoting for the fields.
-            comment_character: If specified, the lines starting with the comment
-            character will be treated as comments and therefore, will be ignored by
-            parser
-        """
         self.api_settings = api.CsvParserSettings(
             delimiter,
             quote,
@@ -199,10 +205,10 @@ def _read_schema(
 def read_schema(
     *,
     schema: type[Schema] | None,
-    value_columns: list[str] | None,
-    primary_key: list[str] | None,
-    types: dict[str, api.PathwayType] | None,
-    default_values: dict[str, Any] | None,
+    value_columns: list[str] | None = None,
+    primary_key: list[str] | None = None,
+    types: dict[str, api.PathwayType] | None = None,
+    default_values: dict[str, Any] | None = None,
 ) -> tuple[type[Schema], dict[str, Any]]:
     schema = _read_schema(
         schema=schema,
@@ -225,6 +231,7 @@ def construct_schema_and_data_format(
     format: str,
     *,
     schema: type[Schema] | None = None,
+    with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     value_columns: list[str] | None = None,
@@ -248,12 +255,31 @@ def construct_schema_and_data_format(
             if param in kwargs and kwargs[param] is not None:
                 raise ValueError(f"Unexpected argument for plaintext format: {param}")
 
-        return RawDataSchema, api.DataFormat(
+        schema = RawDataSchema
+        if with_metadata:
+            schema |= MetadataSchema
+        schema, api_schema = read_schema(
+            schema=schema,
+            value_columns=None,
+            primary_key=None,
+            types=None,
+            default_values=None,
+        )
+
+        return schema, api.DataFormat(
             format_type=data_format_type,
-            key_field_names=None,
-            value_fields=[api.ValueField("data", PathwayType.ANY)],
+            **api_schema,
             parse_utf8=(format != "binary"),
         )
+
+    if with_metadata:
+        if schema is not None:
+            schema |= MetadataSchema
+        elif value_columns is not None:
+            value_columns.append(METADATA_COLUMN_NAME)
+        else:
+            raise ValueError("Neither schema nor value_columns were specified")
+
     schema, api_schema = read_schema(
         schema=schema,
         value_columns=value_columns,

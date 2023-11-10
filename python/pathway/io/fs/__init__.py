@@ -36,6 +36,7 @@ def read(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     object_pattern: str = "*",
+    with_metadata: bool = False,
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
@@ -79,6 +80,13 @@ The default value is "streaming".
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         object_pattern: Unix shell style pattern for filtering only certain files in the \
 directory. Ignored in case a path to a single file is specified.
+        with_metadata: When set to true, the connector will add an additional column \
+named ``_metadata`` to the table. This column will be a JSON field that will contain two \
+optional fields - ``created_at`` and ``modified_at``. These fields will have integral \
+UNIX timestamps for the creation and modification time respectively. Additionally, the \
+column will also have an optional field named ``owner`` that will contain the name of \
+the file owner (applicable only for Un). Finally, the column will also contain a field \
+named ``path`` that will show the full path to the file from where a row was filled.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -218,6 +226,7 @@ directory. Ignored in case a path to a single file is specified.
             mode=internal_connector_mode(mode),
             object_pattern=object_pattern,
             persistent_id=persistent_id,
+            with_metadata=with_metadata,
         )
     else:
         data_storage = api.DataStorage(
@@ -227,11 +236,13 @@ directory. Ignored in case a path to a single file is specified.
             read_method=internal_read_method(format),
             object_pattern=object_pattern,
             persistent_id=persistent_id,
+            with_metadata=with_metadata,
         )
 
     schema, data_format = construct_schema_and_data_format(
         format,
         schema=schema,
+        with_metadata=with_metadata,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
         value_columns=value_columns,
@@ -239,6 +250,7 @@ directory. Ignored in case a path to a single file is specified.
         types=types,
         default_values=default_values,
     )
+
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms
     )

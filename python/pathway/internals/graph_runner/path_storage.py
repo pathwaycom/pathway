@@ -19,6 +19,7 @@ class Storage:
     _column_paths: dict[Column, ColumnPath]
     flattened_inputs: list[Storage] | None = None
     flattened_output: Storage | None = None
+    has_only_references: bool = False
 
     def get_columns(self) -> Iterable[Column]:
         return self._column_paths.keys()

@@ -345,6 +345,14 @@ class _SlidingWindow(Window):
                 target = target._buffer(
                     target._pw_window_start + behavior.delay, target._pw_key
                 )
+                target = target.with_columns(
+                    _pw_key=pw.if_else(
+                        target._pw_key > target._pw_window_start + behavior.delay,
+                        target._pw_key,
+                        target._pw_window_start + behavior.delay,
+                    )
+                )
+
             if behavior.cutoff is not None:
                 cutoff_threshold = pw.this._pw_window_end + behavior.cutoff
                 target = target._freeze(cutoff_threshold, pw.this._pw_key)

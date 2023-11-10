@@ -414,7 +414,7 @@ pub enum SimpleType {
     Json,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     #[default]
     Any,

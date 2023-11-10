@@ -1,7 +1,7 @@
 mod helpers;
 use helpers::assert_error_shown_for_reader_context;
 
-use pathway_engine::connectors::data_format::DebeziumMessageParser;
+use pathway_engine::connectors::data_format::{DebeziumDBType, DebeziumMessageParser};
 use pathway_engine::connectors::data_storage::{DataEventType, ReaderContext};
 
 #[test]
@@ -10,6 +10,7 @@ fn test_utf8_decode_error() -> eyre::Result<()> {
         Some(vec!["id".to_string()]),
         vec!["first_name".to_string()],
         "        ".to_string(),
+        DebeziumDBType::Postgres,
     );
 
     let invalid_utf8_bytes: &[u8] = &[0xC0, 0x80, 0xE0, 0x80, 0x80];
@@ -28,6 +29,7 @@ fn test_empty_payload() -> eyre::Result<()> {
         Some(vec!["id".to_string()]),
         vec!["first_name".to_string()],
         "        ".to_string(),
+        DebeziumDBType::Postgres,
     );
 
     assert_error_shown_for_reader_context(
@@ -45,6 +47,7 @@ fn test_unsupported_context() -> eyre::Result<()> {
         Some(vec!["id".to_string()]),
         vec!["first_name".to_string()],
         "        ".to_string(),
+        DebeziumDBType::Postgres,
     );
 
     assert_error_shown_for_reader_context(

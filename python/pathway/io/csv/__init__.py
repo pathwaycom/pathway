@@ -23,6 +23,7 @@ def read(
     csv_settings: CsvParserSettings | None = None,
     mode: str = "streaming",
     object_pattern: str = "*",
+    with_metadata: bool = False,
     autocommit_duration_ms: int | None = 1500,
     persistent_id: str | None = None,
     debug_data=None,
@@ -56,6 +57,13 @@ mode will also remove rows obtained by reading this file from the table. Finally
 The default value is "streaming".
         object_pattern: Unix shell style pattern for filtering only certain files in the \
 directory. Ignored in case a path to a single file is specified.
+        with_metadata: When set to true, the connector will add an additional column \
+named ``_metadata`` to the table. This column will be a JSON field that will contain two \
+optional fields - ``created_at`` and ``modified_at``. These fields will have integral \
+UNIX timestamps for the creation and modification time respectively. Additionally, the \
+column will also have an optional field named ``owner`` that will contain the name of \
+the file owner (applicable only for Un). Finally, the column will also contain a field \
+named ``path`` that will show the full path to the file from where a row was filled.
         types: Dictionary containing the mapping between the columns and the data
             types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
             provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
@@ -158,6 +166,7 @@ directory. Ignored in case a path to a single file is specified.
         format="csv",
         mode=mode,
         object_pattern=object_pattern,
+        with_metadata=with_metadata,
         csv_settings=csv_settings,
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=None,

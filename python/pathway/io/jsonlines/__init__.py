@@ -22,6 +22,7 @@ def read(
     mode: str = "streaming",
     json_field_paths: dict[str, str] | None = None,
     object_pattern: str = "*",
+    with_metadata: bool = False,
     autocommit_duration_ms: int | None = 1500,
     persistent_id: str | None = None,
     debug_data=None,
@@ -54,6 +55,13 @@ The default value is "streaming".
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         object_pattern: Unix shell style pattern for filtering only certain files in the \
 directory. Ignored in case a path to a single file is specified.
+        with_metadata: When set to true, the connector will add an additional column \
+named ``_metadata`` to the table. This column will be a JSON field that will contain two \
+optional fields - ``created_at`` and ``modified_at``. These fields will have integral \
+UNIX timestamps for the creation and modification time respectively. Additionally, the \
+column will also have an optional field named ``owner`` that will contain the name of \
+the file owner (applicable only for Un). Finally, the column will also contain a field \
+named ``path`` that will show the full path to the file from where a row was filled.
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway's computation graph.
@@ -168,6 +176,7 @@ directory. Ignored in case a path to a single file is specified.
         autocommit_duration_ms=autocommit_duration_ms,
         value_columns=value_columns,
         object_pattern=object_pattern,
+        with_metadata=with_metadata,
         primary_key=primary_key,
         types=types,
         default_values=default_values,

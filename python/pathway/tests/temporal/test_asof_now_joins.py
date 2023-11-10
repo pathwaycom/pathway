@@ -2,7 +2,8 @@ import pytest
 
 import pathway as pw
 from pathway.tests.utils import (
-    assert_values_in_stream_consistent,
+    T,
+    assert_table_equality_wo_index,
     generate_custom_stream_with_deletions,
 )
 
@@ -60,22 +61,25 @@ def test_update_old():
     result = queries.join(data, pw.left.instance == pw.right.instance).select(
         query=pw.left.value, ans=pw.right.value
     )
-    expected = [
-        (1, 9),
-        (2, 9),
-        (3, 9),
-        (4, 9),
-        (5, 3),
-        (6, 9),
-        (7, 3),
-        (8, 9),
-        (9, 3),
-    ]
-    assert_values_in_stream_consistent(result, expected)
+    expected = T(
+        """
+        query | ans
+          1   |  9
+          2   |  9
+          3   |  9
+          4   |  9
+          5   |  3
+          6   |  9
+          7   |  3
+          8   |  9
+          9   |  3
+        """
+    )
+    assert_table_equality_wo_index(result, expected)
 
 
 @pytest.mark.parametrize("set_id", [True, False])
-def test_asof_now_inner(set_id):
+def test_asof_now_inner(set_id: bool):
     if set_id:
         id = pw.left.id
     else:
@@ -84,23 +88,26 @@ def test_asof_now_inner(set_id):
     result = queries.asof_now_join(
         data, pw.left.instance == pw.right.instance, id=id
     ).select(query=pw.left.value, ans=pw.right.value)
-    expected = [
-        (2, 4),
-        (3, 4),
-        (4, 5),
-        (5, 2),
-        (6, 5),
-        (7, 2),
-        (8, 5),
-        (9, 3),
-    ]
+    expected = T(
+        """
+        query | ans
+          2   |  4
+          3   |  4
+          4   |  5
+          5   |  2
+          6   |  5
+          7   |  2
+          8   |  5
+          9   |  3
+        """
+    )
     if set_id:
         assert result._universe.is_subset_of(queries._universe)
-    assert_values_in_stream_consistent(result, expected)
+    assert_table_equality_wo_index(result, expected)
 
 
 @pytest.mark.parametrize("set_id", [True, False])
-def test_asof_now_left(set_id):
+def test_asof_now_left(set_id: bool):
     if set_id:
         id = pw.left.id
     else:
@@ -109,17 +116,20 @@ def test_asof_now_left(set_id):
     result = queries.asof_now_join_left(
         data, pw.left.instance == pw.right.instance, id=id
     ).select(query=pw.left.value, ans=pw.right.value)
-    expected = [
-        (1, None),
-        (2, 4),
-        (3, 4),
-        (4, 5),
-        (5, 2),
-        (6, 5),
-        (7, 2),
-        (8, 5),
-        (9, 3),
-    ]
+    expected = T(
+        """
+        query | ans
+          1   |
+          2   |  4
+          3   |  4
+          4   |  5
+          5   |  2
+          6   |  5
+          7   |  2
+          8   |  5
+          9   |  3
+        """
+    )
     if set_id:
         assert result._universe == queries._universe
-    assert_values_in_stream_consistent(result, expected)
+    assert_table_equality_wo_index(result, expected)

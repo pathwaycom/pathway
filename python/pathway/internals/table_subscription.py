@@ -1,16 +1,54 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Protocol
 
 from pathway.internals import datasink
 from pathway.internals.api import Pointer
 
 
+class OnFinishCallback(Protocol):
+    """
+    The callback function to be called when the stream of changes ends. It will be called \
+    on each engine worker separately.
+    """
+
+    def __call__(self) -> Any:
+        """
+        The callable part of the callback. It will be called without arguments and its
+        return result won't be used by the engine.
+        """
+        ...
+
+
 class OnChangeCallback(Protocol):
+    """
+    The callback to be called on every change in the table. It is required to be
+    callable and to accept four parameters: the key, the row changed, the time of the
+    change in milliseconds and the flag stating if the change had been an addition
+    of the row.
+    """
+
     def __call__(
         self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
     ) -> Any:
+        """
+        The callable part of the callback.
+
+        Args:
+            key: the key of the changed row;
+            row: the changed row as a dict mapping from the field name to the value;
+            time: the time of the modification, also can be referred as minibatch ID of \
+the change;
+            is_addition: boolean value, equals to true if the row is inserted into the \
+table, false otherwise. Please note that update is basically two operations: the \
+deletion of the old value and the insertion of a new value, which happen within a single \
+transaction;
+
+        Returns:
+            None
+
+        The return result of this method will be ignored by the engine.
+        """
         ...
 
 
@@ -19,7 +57,7 @@ def subscribe(
     *,
     skip_persisted_batch: bool,
     on_change: OnChangeCallback,
-    on_end: Callable[[], Any] = lambda: None,
+    on_end: OnFinishCallback = lambda: None,
 ):
     """
     Calls a callback function on_change on every change happening in table. This method
@@ -33,8 +71,8 @@ def subscribe(
           outputting things twice is required from persistence). However, it can be
           overridden, which is required by some parts of internal functionality.
         on_change: the callback function to be called on every change in the table. The
-          function is required to accept three parameters: the row changed, the time
-          of the change in microseconds and the flag stating if the change had been an
+          function is required to accept four parameters: the key, the row changed, the time
+          of the change in milliseconds and the flag stating if the change had been an
           addition of the row. These parameters of the callback are expected to have
           names row, time and is_addition respectively.
         on_end: the callback function to be called when the stream of changes ends.

@@ -45,6 +45,10 @@ class ReadMethod(Enum):
     BY_LINE: ReadMethod
     FULL: ReadMethod
 
+class DebeziumDBType(Enum):
+    POSTGRES: DebeziumDBType
+    MONGO_DB: DebeziumDBType
+
 class Universe:
     pass
 
@@ -586,6 +590,7 @@ class AwsS3Settings:
     def __init__(self, *args, **kwargs): ...
 
 class ValueField:
+    name: str
     def __init__(self, *args, **kwargs): ...
     def set_default(self, *args, **kwargs): ...
 
@@ -611,3 +616,16 @@ class SnapshotAccess(Enum):
     RECORD: SnapshotAccess
     REPLAY: SnapshotAccess
     FULL: SnapshotAccess
+
+class SnapshotEvent:
+    @staticmethod
+    def insert(key: Pointer, values: list[Value]) -> SnapshotEvent: ...
+    @staticmethod
+    def delete(key: Pointer, values: list[Value]) -> SnapshotEvent: ...
+    @staticmethod
+    def advance_time(timestamp: int) -> SnapshotEvent: ...
+    FINISHED: SnapshotEvent
+
+class LocalBinarySnapshotWriter:
+    def __init__(self, path: str, persistent_id: str, worker_id: int): ...
+    def write(self, events: list[SnapshotEvent]): ...

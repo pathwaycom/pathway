@@ -4,8 +4,8 @@
 from pathway.internals import parse_graph
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
-from pathway.internals.persistence import PersistenceConfig
 from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.persistence import Config as PersistenceConfig
 
 
 @runtime_type_check
@@ -28,6 +28,8 @@ def run(
             more in a `tutorial </developers/tutorials/prometheus-monitoring/>`_ .
         default_logging: whether to allow pathway to set its own logging handler. Set
             it to False if you want to set your own logging handler.
+        persistence_config: the config for persisting the state in case this
+            persistence is required.
     """
     GraphRunner(
         parse_graph.G,

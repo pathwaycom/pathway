@@ -78,6 +78,7 @@ def schema_from_pandas(
     *,
     id_from: list[str] | None = None,
     name: str | None = None,
+    exclude_columns: list[str] = [],
 ) -> type[Schema]:
     if name is None:
         name = "schema_from_pandas(" + str(dframe.columns) + ")"
@@ -86,6 +87,7 @@ def schema_from_pandas(
     columns: dict[str, ColumnDefinition] = {
         name: column_definition(dtype=_type_converter(dframe[name]))
         for name in dframe.columns
+        if name not in exclude_columns
     }
     for name in id_from:
         columns[name] = dataclasses.replace(columns[name], primary_key=True)

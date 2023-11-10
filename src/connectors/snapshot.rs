@@ -33,6 +33,7 @@ use crate::timestamp::current_unix_timestamp_ms;
 pub enum Event {
     Insert(Key, Vec<Value>),
     Delete(Key, Vec<Value>),
+    Upsert(Key, Option<Vec<Value>>),
     AdvanceTime(u64),
     Finished,
 }
@@ -49,6 +50,14 @@ pub trait SnapshotReaderImpl {
     /// It must ensure that no further data is present in the snapshot so that when it gets appended,
     /// the unused data is not written next to the non-processed tail.
     fn truncate(&mut self) -> Result<(), ReadError>;
+
+    /// This method will be called to check, whether snapshot reading should end, when timestamp exceeds
+    /// threshold from metadata or will the snapshot reader finish rewinding by itself.
+    ///
+    /// In the latter case, snapshot reader needs to end by sending `Event::Finished`.
+    fn check_threshold_from_metadata(&mut self) -> bool {
+        true
+    }
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -528,6 +537,36 @@ impl SnapshotWriter for S3SnapshotWriter {
     }
 }
 
+pub struct MockSnapshotReader {
+    events: Box<dyn Iterator<Item = Event>>,
+}
+
+impl MockSnapshotReader {
+    pub fn new(events: Vec<Event>) -> Self {
+        Self {
+            events: Box::new(events.into_iter()),
+        }
+    }
+}
+
+impl SnapshotReaderImpl for MockSnapshotReader {
+    fn read(&mut self) -> Result<Event, ReadError> {
+        if let Some(event) = self.events.next() {
+            Ok(event)
+        } else {
+            Ok(Event::Finished)
+        }
+    }
+
+    fn truncate(&mut self) -> Result<(), ReadError> {
+        Ok(())
+    }
+
+    fn check_threshold_from_metadata(&mut self) -> bool {
+        false
+    }
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub struct SnapshotReader {
     reader_impl: Box<dyn SnapshotReaderImpl>,
@@ -558,7 +597,7 @@ impl SnapshotReader {
     pub fn read(&mut self) -> Result<Event, ReadError> {
         let event = self.reader_impl.read()?;
         if let Event::AdvanceTime(new_time) = event {
-            if new_time >= self.threshold_time {
+            if self.reader_impl.check_threshold_from_metadata() && new_time >= self.threshold_time {
                 if let Err(e) = self.reader_impl.truncate() {
                     error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
                     return Err(e);

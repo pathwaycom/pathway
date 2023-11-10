@@ -13,19 +13,23 @@ use s3::bucket::Bucket as S3Bucket;
 use crate::connectors::data_storage::S3CommandName;
 use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::connectors::snapshot::{
-    LocalBinarySnapshotReader, LocalBinarySnapshotWriter, S3SnapshotReader, S3SnapshotWriter,
-    SnapshotReader, SnapshotReaderImpl,
+    Event, LocalBinarySnapshotReader, LocalBinarySnapshotWriter, MockSnapshotReader,
+    S3SnapshotReader, S3SnapshotWriter, SnapshotReader, SnapshotReaderImpl,
 };
 use crate::connectors::{ReplayMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
-use crate::persistence::metadata_backends::{FilesystemKVStorage, MetadataBackend, S3KVStorage};
+use crate::persistence::metadata_backends::{
+    FilesystemKVStorage, MetadataBackend, MockKVStorage, S3KVStorage,
+};
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::sync::WorkersPersistenceCoordinator;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
+
+pub type ConnectorWorkerPair = (PersistentId, usize);
 
 /// Metadata storage handles the frontier over all persisted data sources.
 /// When we restart the computation, it will start from the frontier stored
@@ -34,6 +38,7 @@ const STREAMS_DIRECTORY_NAME: &str = "streams";
 pub enum MetadataStorageConfig {
     Filesystem(PathBuf),
     S3 { bucket: S3Bucket, root_path: String },
+    Mock,
 }
 
 /// Stream storage handles the snapshot, which will be loaded when Pathway
@@ -42,6 +47,7 @@ pub enum MetadataStorageConfig {
 pub enum StreamStorageConfig {
     Filesystem(PathBuf),
     S3 { bucket: S3Bucket, root_path: String },
+    Mock(HashMap<ConnectorWorkerPair, Vec<Event>>),
 }
 
 /// Persistence in Pathway consists of two parts: actual frontier
@@ -51,7 +57,7 @@ pub enum StreamStorageConfig {
 /// which is passed from Python program by user.
 #[derive(Debug, Clone)]
 pub struct PersistenceManagerOuterConfig {
-    refresh_duration: Duration,
+    snapshot_interval: Duration,
     metadata_storage: MetadataStorageConfig,
     stream_storage: StreamStorageConfig,
     snapshot_access: SnapshotAccess,
@@ -61,7 +67,7 @@ pub struct PersistenceManagerOuterConfig {
 
 impl PersistenceManagerOuterConfig {
     pub fn new(
-        refresh_duration: Duration,
+        snapshot_interval: Duration,
         metadata_storage: MetadataStorageConfig,
         stream_storage: StreamStorageConfig,
         snapshot_access: SnapshotAccess,
@@ -69,7 +75,7 @@ impl PersistenceManagerOuterConfig {
         continue_after_replay: bool,
     ) -> Self {
         Self {
-            refresh_duration,
+            snapshot_interval,
             metadata_storage,
             stream_storage,
             snapshot_access,
@@ -86,7 +92,7 @@ impl PersistenceManagerOuterConfig {
         &self,
         num_workers: usize,
     ) -> WorkersPersistenceCoordinator {
-        WorkersPersistenceCoordinator::new(self.refresh_duration, num_workers)
+        WorkersPersistenceCoordinator::new(self.snapshot_interval, num_workers)
     }
 }
 
@@ -128,6 +134,7 @@ impl PersistenceManagerConfig {
             MetadataStorageConfig::S3 { bucket, root_path } => {
                 Box::new(S3KVStorage::new(bucket.deep_copy(), root_path))
             }
+            MetadataStorageConfig::Mock => Box::new(MockKVStorage {}),
         };
         MetadataAccessor::new(backend, self.worker_id)
     }
@@ -160,6 +167,16 @@ impl PersistenceManagerConfig {
                 }
                 reader_impls
             }
+            StreamStorageConfig::Mock(event_map) => {
+                let mut reader_impls = HashMap::<usize, Box<dyn SnapshotReaderImpl>>::new();
+                let events = event_map
+                    .get(&(persistent_id, self.worker_id))
+                    .unwrap_or(&vec![])
+                    .clone();
+                let reader = MockSnapshotReader::new(events);
+                reader_impls.insert(self.worker_id, Box::new(reader));
+                reader_impls
+            }
         };
 
         for (worker_id, reader_impl) in reader_impls {
@@ -190,6 +207,9 @@ impl PersistenceManagerConfig {
                     bucket.deep_copy(),
                     &snapshot_path,
                 ))))
+            }
+            StreamStorageConfig::Mock(_) => {
+                unreachable!()
             }
         }
     }

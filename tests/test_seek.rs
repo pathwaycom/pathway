@@ -32,6 +32,7 @@ fn csv_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dyn
         ConnectorMode::Static,
         Some(1),
         "*",
+        false,
     )
     .unwrap();
     let parser = DsvParser::new(
@@ -52,6 +53,7 @@ fn json_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dy
         Some(1),
         ReadMethod::ByLine,
         "*",
+        false,
     )
     .unwrap();
     let parser = JsonLinesParser::new(

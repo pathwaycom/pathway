@@ -108,12 +108,37 @@ class AddNewColumnsPathEvaluator(
         clmn.GradualBroadcastContext,
     ],
 ):
+    def compute_if_all_new_are_references(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storage: Storage,
+    ) -> Storage | None:
+        paths = {}
+        for column in output_columns:
+            if input_storage.has_column(column):
+                paths[column] = input_storage.get_path(column)
+            elif (
+                isinstance(column, clmn.ColumnWithReference)
+                and input_storage.has_column(column.expression._column)
+                and input_storage.get_path(column.expression._column) != ColumnPath.KEY
+            ):
+                paths[column] = input_storage.get_path(column.expression._column)
+            else:
+                return None
+        return Storage(self.context.universe, paths, has_only_references=True)
+
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
         input_storage = input_storages.get(self.context.universe)
+        if input_storage is not None and isinstance(self.context, clmn.RowwiseContext):
+            maybe_storage = self.compute_if_all_new_are_references(
+                output_columns, input_storage
+            )
+            if maybe_storage is not None:
+                return maybe_storage
         paths = {}
         counter = itertools.count(start=1)
         for column in output_columns:

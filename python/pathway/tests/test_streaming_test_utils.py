@@ -6,12 +6,7 @@ import pytest
 import pathway as pw
 from pathway import demo
 from pathway.internals import Schema, api
-from pathway.tests.utils import (
-    DiffEntry,
-    assert_key_entries_in_stream_consistent,
-    assert_values_in_stream_consistent,
-    run,
-)
+from pathway.tests.utils import DiffEntry, assert_key_entries_in_stream_consistent, run
 
 
 def test_stream_success():
@@ -189,63 +184,3 @@ def test_stream_test_util_should_fail_empty_final_state():
     assert_key_entries_in_stream_consistent(list, gb)
     with pytest.raises(AssertionError):
         run()
-
-
-class ValueInputSchema(pw.Schema):
-    value: int
-    instance: int
-
-
-def test_values_consistency_checker_1():
-    value_functions = {"value": lambda x: 200 - x, "instance": lambda x: x % 3}
-
-    t1 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=ValueInputSchema,
-        nb_rows=200,
-        autocommit_duration_ms=10,
-        input_rate=400,
-    )
-
-    res = t1.groupby(pw.this.instance).reduce(
-        pw.this.instance, min=pw.reducers.min(pw.this.value)
-    )
-
-    assert_values_in_stream_consistent(res, [(0, 2), (1, 1), (2, 3)])
-
-
-def test_values_consistency_checker_2():
-    value_functions = {"value": lambda x: x, "instance": lambda x: x % 3}
-
-    t1 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=ValueInputSchema,
-        nb_rows=200,
-        autocommit_duration_ms=10,
-        input_rate=400,
-    )
-
-    res = t1.groupby(pw.this.instance).reduce(
-        pw.this.instance, max=pw.reducers.max(pw.this.value)
-    )
-
-    assert_values_in_stream_consistent(res, [(0, 198), (1, 199), (2, 197)])
-
-
-def test_values_consistency_checker_raises():
-    value_functions = {"value": lambda x: 200 - x, "instance": lambda x: x % 3}
-
-    t1 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=ValueInputSchema,
-        nb_rows=200,
-        autocommit_duration_ms=10,
-        input_rate=400,
-    )
-
-    res = t1.groupby(pw.this.instance).reduce(
-        pw.this.instance, min=pw.reducers.min(pw.this.value)
-    )
-
-    with pytest.raises(AssertionError):
-        assert_values_in_stream_consistent(res, [(0, 2), (1, 1), (2, 0)])

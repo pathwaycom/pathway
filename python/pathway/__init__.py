@@ -236,5 +236,4 @@ Table.interval_join_outer = temporal.interval_join_outer
 
 Table.interpolate = statistical.interpolate
 Table.windowby = temporal.windowby
-Table.sort = indexing.sort
 Table.diff = ordered.diff

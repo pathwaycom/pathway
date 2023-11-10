@@ -46,19 +46,19 @@ use std::os::unix::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
-use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::threads::PythonThreadState;
 use crate::connectors::data_format::{
-    DebeziumMessageParser, DsvSettings, Formatter, IdentityParser, InnerSchemaField,
-    JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser, PsqlSnapshotFormatter,
-    PsqlUpdatesFormatter,
+    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
+    InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
+    PsqlSnapshotFormatter, PsqlUpdatesFormatter,
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, ElasticSearchWriter, FileWriter, FilesystemReader,
     KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReadMethod,
     ReaderBuilder, S3CsvReader, S3GenericReader, Writer,
 };
+use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{ReplayMode, SnapshotAccess};
 use crate::engine::dataflow::config_from_env;
 use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
@@ -81,9 +81,9 @@ use crate::engine::{Expression, IntExpression};
 use crate::engine::{FloatExpression, Graph};
 use crate::engine::{LegacyTable as EngineLegacyTable, StringExpression};
 use crate::persistence::config::{
-    MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
+    ConnectorWorkerPair, MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
 };
-use crate::persistence::{ExternalPersistentId, PersistentId};
+use crate::persistence::{ExternalPersistentId, IntoPersistentId, PersistentId};
 use crate::pipe::{pipe, ReaderType, WriterType};
 use s3::creds::Credentials as AwsCredentials;
 
@@ -410,6 +410,18 @@ impl IntoPy<PyObject> for ConnectorMode {
     }
 }
 
+impl<'source> FromPyObject<'source> for DebeziumDBType {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyDebeziumDBType>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for DebeziumDBType {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyDebeziumDBType(self).into_py(py)
+    }
+}
+
 impl<'source> FromPyObject<'source> for MonitoringLevel {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyMonitoringLevel>>()?.0)
@@ -443,7 +455,6 @@ impl From<EngineError> for PyErr {
                 EngineError::DivisionByZero => PyZeroDivisionError::type_object(py),
                 EngineError::IterationLimitTooSmall
                 | EngineError::ValueError(_)
-                | EngineError::PersistentIdNotAssigned(_)
                 | EngineError::NoPersistentStorage(_)
                 | EngineError::ParseError(_) => PyValueError::type_object(py),
                 EngineError::IndexOutOfBounds => PyIndexError::type_object(py),
@@ -1256,6 +1267,17 @@ impl PyConnectorMode {
     pub const STREAMING_WITH_DELETIONS: ConnectorMode = ConnectorMode::StreamingWithDeletions;
 }
 
+#[pyclass(module = "pathway.engine", frozen, name = "DebeziumDBType")]
+pub struct PyDebeziumDBType(DebeziumDBType);
+
+#[pymethods]
+impl PyDebeziumDBType {
+    #[classattr]
+    pub const POSTGRES: DebeziumDBType = DebeziumDBType::Postgres;
+    #[classattr]
+    pub const MONGO_DB: DebeziumDBType = DebeziumDBType::MongoDB;
+}
+
 #[pyclass(module = "pathway.engine", frozen, name = "MonitoringLevel")]
 pub struct PyMonitoringLevel(MonitoringLevel);
 
@@ -1815,7 +1837,7 @@ impl Scope {
                 .map(time::Duration::from_millis),
             parallel_readers,
             Arc::new(EngineTableProperties::flat(column_properties)),
-            &persistent_id,
+            persistent_id.as_ref(),
         )?;
         Table::new(self_, table_handle)
     }
@@ -2955,6 +2977,8 @@ pub struct DataStorage {
     persistent_id: Option<ExternalPersistentId>,
     max_batch_size: Option<usize>,
     object_pattern: String,
+    with_metadata: bool,
+    mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReplayMode")]
@@ -3012,7 +3036,7 @@ impl IntoPy<PyObject> for SnapshotAccess {
 #[derive(Clone, Debug)]
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct PersistenceConfig {
-    refresh_duration: ::std::time::Duration,
+    snapshot_interval: ::std::time::Duration,
     metadata_storage: DataStorage,
     stream_storage: DataStorage,
     snapshot_access: SnapshotAccess,
@@ -3025,7 +3049,7 @@ impl PersistenceConfig {
     #[new]
     #[pyo3(signature = (
         *,
-        refresh_duration_ms,
+        snapshot_interval_ms,
         metadata_storage,
         stream_storage,
         snapshot_access = SnapshotAccess::Full,
@@ -3033,7 +3057,7 @@ impl PersistenceConfig {
         continue_after_replay = true,
     ))]
     fn new(
-        refresh_duration_ms: u64,
+        snapshot_interval_ms: u64,
         metadata_storage: DataStorage,
         stream_storage: DataStorage,
         snapshot_access: SnapshotAccess,
@@ -3041,7 +3065,7 @@ impl PersistenceConfig {
         continue_after_replay: bool,
     ) -> Self {
         Self {
-            refresh_duration: ::std::time::Duration::from_millis(refresh_duration_ms),
+            snapshot_interval: ::std::time::Duration::from_millis(snapshot_interval_ms),
             metadata_storage,
             stream_storage,
             snapshot_access,
@@ -3054,7 +3078,7 @@ impl PersistenceConfig {
 impl PersistenceConfig {
     fn prepare(self, py: pyo3::Python) -> PyResult<PersistenceManagerOuterConfig> {
         Ok(PersistenceManagerOuterConfig::new(
-            self.refresh_duration,
+            self.snapshot_interval,
             self.metadata_storage
                 .construct_metadata_storage_config(py)?,
             self.stream_storage.construct_stream_storage_config(py)?,
@@ -3063,6 +3087,39 @@ impl PersistenceConfig {
             self.continue_after_replay,
         ))
     }
+}
+
+impl<'source> FromPyObject<'source> for SnapshotEvent {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PySnapshotEvent>>()?.0.clone())
+    }
+}
+
+impl IntoPy<PyObject> for SnapshotEvent {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PySnapshotEvent(self).into_py(py)
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "SnapshotEvent")]
+pub struct PySnapshotEvent(SnapshotEvent);
+
+#[pymethods]
+impl PySnapshotEvent {
+    #[staticmethod]
+    pub fn insert(key: Key, values: Vec<Value>) -> SnapshotEvent {
+        SnapshotEvent::Insert(key, values)
+    }
+    #[staticmethod]
+    pub fn delete(key: Key, values: Vec<Value>) -> SnapshotEvent {
+        SnapshotEvent::Delete(key, values)
+    }
+    #[staticmethod]
+    pub fn advance_time(timestamp: u64) -> SnapshotEvent {
+        SnapshotEvent::AdvanceTime(timestamp)
+    }
+    #[classattr]
+    pub const FINISHED: SnapshotEvent = SnapshotEvent::Finished;
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
@@ -3130,6 +3187,7 @@ pub struct DataFormat {
     column_paths: Option<HashMap<String, String>>,
     field_absence_is_error: bool,
     parse_utf8: bool,
+    debezium_db_type: DebeziumDBType,
 }
 
 #[pymethods]
@@ -3151,6 +3209,8 @@ impl DataStorage {
         persistent_id = None,
         max_batch_size = None,
         object_pattern = "*".to_string(),
+        with_metadata = false,
+        mock_events = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3169,6 +3229,8 @@ impl DataStorage {
         persistent_id: Option<ExternalPersistentId>,
         max_batch_size: Option<usize>,
         object_pattern: String,
+        with_metadata: bool,
+        mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -3186,6 +3248,8 @@ impl DataStorage {
             persistent_id,
             max_batch_size,
             object_pattern,
+            with_metadata,
+            mock_events,
         }
     }
 }
@@ -3203,6 +3267,7 @@ impl DataFormat {
         column_paths = None,
         field_absence_is_error = true,
         parse_utf8 = true,
+        debezium_db_type = DebeziumDBType::Postgres,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3214,6 +3279,7 @@ impl DataFormat {
         column_paths: Option<HashMap<String, String>>,
         field_absence_is_error: bool,
         parse_utf8: bool,
+        debezium_db_type: DebeziumDBType,
     ) -> Self {
         DataFormat {
             format_type,
@@ -3224,6 +3290,7 @@ impl DataFormat {
             column_paths,
             field_absence_is_error,
             parse_utf8,
+            debezium_db_type,
         }
     }
 }
@@ -3366,11 +3433,9 @@ impl DataStorage {
     }
 
     fn internal_persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id.clone().map(|external_persistent_id| {
-            let mut hasher = Hasher::default();
-            hasher.update(external_persistent_id.as_bytes());
-            hasher.digest128()
-        })
+        self.persistent_id
+            .clone()
+            .map(IntoPersistentId::into_persistent_id)
     }
 
     fn construct_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
@@ -3382,6 +3447,7 @@ impl DataStorage {
                     self.internal_persistent_id(),
                     self.read_method,
                     &self.object_pattern,
+                    self.with_metadata,
                 )
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}"))
@@ -3419,6 +3485,7 @@ impl DataStorage {
                     self.mode,
                     self.internal_persistent_id(),
                     &self.object_pattern,
+                    self.with_metadata,
                 )
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))
@@ -3474,6 +3541,16 @@ impl DataStorage {
                     root_path: path.into(),
                 })
             }
+            "mock" => {
+                let mut events = HashMap::<ConnectorWorkerPair, Vec<SnapshotEvent>>::new();
+                for ((external_persistent_id, worker_id), es) in self.mock_events.as_ref().unwrap()
+                {
+                    let internal_persistent_id =
+                        external_persistent_id.clone().into_persistent_id();
+                    events.insert((internal_persistent_id, *worker_id), es.clone());
+                }
+                Ok(StreamStorageConfig::Mock(events))
+            }
             other => Err(PyValueError::new_err(format!(
                 "Unsupported snapshot storage format: {other:?}"
             ))),
@@ -3494,6 +3571,7 @@ impl DataStorage {
                     root_path: path.into(),
                 })
             }
+            "mock" => Ok(MetadataStorageConfig::Mock),
             other => Err(PyValueError::new_err(format!(
                 "Unsupported metadata storage format: {other:?}"
             ))),
@@ -3632,6 +3710,7 @@ impl DataFormat {
                     self.key_field_names.clone(),
                     self.value_field_names(py),
                     DebeziumMessageParser::standard_separator(),
+                    self.debezium_db_type,
                 );
                 Ok(Box::new(parser))
             }
@@ -3645,7 +3724,10 @@ impl DataFormat {
                 );
                 Ok(Box::new(parser))
             }
-            "identity" => Ok(Box::new(IdentityParser::new(self.parse_utf8))),
+            "identity" => Ok(Box::new(IdentityParser::new(
+                self.value_field_names(py),
+                self.parse_utf8,
+            ))),
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
     }
@@ -3965,6 +4047,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyExpression>()?;
     m.add_class::<PathwayType>()?;
     m.add_class::<PyConnectorMode>()?;
+    m.add_class::<PyDebeziumDBType>()?;
     m.add_class::<PyReadMethod>()?;
     m.add_class::<PyMonitoringLevel>()?;
     m.add_class::<Universe>()?;
@@ -3986,6 +4069,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PythonSubject>()?;
     m.add_class::<PyReplayMode>()?;
     m.add_class::<PySnapshotAccess>()?;
+    m.add_class::<PySnapshotEvent>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;
