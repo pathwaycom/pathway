@@ -34,7 +34,6 @@ fn test_metadata_fs_dir() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        true,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -65,7 +64,6 @@ fn test_metadata_fs_file() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        true,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -97,7 +95,6 @@ fn test_metadata_csv_dir() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        true,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -131,7 +128,6 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        true,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -160,7 +156,6 @@ fn test_metadata_json_file() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        true,
     )?;
     let parser = JsonLinesParser::new(
         None,
@@ -184,7 +179,6 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        true,
     )?;
     let parser = JsonLinesParser::new(
         None,
@@ -209,7 +203,6 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        true,
     )?;
     let parser = IdentityParser::new(vec!["data".to_string(), "_metadata".to_string()], false);
 
@@ -227,7 +220,6 @@ fn test_metadata_identity_dir() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        true,
     )?;
     let parser = IdentityParser::new(vec!["data".to_string(), "_metadata".to_string()], false);
 

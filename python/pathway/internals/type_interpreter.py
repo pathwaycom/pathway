@@ -526,6 +526,11 @@ class TypeInterpreter(IdentityTransform):
 
 
 class JoinTypeInterpreter(TypeInterpreter):
+    """This type interpreter is used by JoinContext.
+    It evaluates only column references, and is used to decide which columns
+    to optionalize when unrolling left and right table columns to internal table columns.
+    """
+
     left: Table
     right: Table
     optionalize_left: bool
@@ -553,6 +558,10 @@ class JoinTypeInterpreter(TypeInterpreter):
 
 
 class JoinRowwiseTypeInterpreter(TypeInterpreter):
+    """Type interpreter for evaluating expressions in join.
+    Colrefs are already properly optionalized (dependning on type of join and
+    left/right table) and properly unrolled and stored in internal table."""
+
     temporary_column_to_original: dict[expr.InternalColRef, expr.InternalColRef]
     original_column_to_temporary: dict[expr.InternalColRef, expr.ColumnReference]
 

@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
+from warnings import warn
 
 from aiohttp import web
 
@@ -18,7 +19,7 @@ class RestServerSubject(io.python.ConnectorSubject):
     _host: str
     _port: int
     _loop: asyncio.AbstractEventLoop
-    _delete_queries: bool
+    _delete_completed_queries: bool
 
     def __init__(
         self,
@@ -28,7 +29,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         loop: asyncio.AbstractEventLoop,
         tasks: dict[Any, Any],
         schema: type[pw.Schema],
-        delete_queries: bool,
+        delete_completed_queries: bool,
         format: str = "raw",
     ) -> None:
         super().__init__()
@@ -38,7 +39,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._loop = loop
         self._tasks = tasks
         self._schema = schema
-        self._delete_queries = delete_queries
+        self._delete_completed_queries = delete_completed_queries
         self._format = format
 
     def run(self):
@@ -75,7 +76,7 @@ class RestServerSubject(io.python.ConnectorSubject):
 
         self._add(id, data)
         response = await self._fetch_response(id, event)
-        if self._delete_queries:
+        if self._delete_completed_queries:
             self._remove(id, data)
         return web.json_response(status=200, data=response)
 
@@ -98,7 +99,8 @@ def rest_connector(
     route: str = "/",
     schema: type[pw.Schema] | None = None,
     autocommit_duration_ms=1500,
-    delete_queries: bool = False,
+    keep_queries: bool | None = None,
+    delete_completed_queries: bool | None = None,
 ) -> tuple[pw.Table, Callable]:
     """
     Runs a lightweight HTTP server and inputs a collection from the HTTP endpoint,
@@ -116,13 +118,28 @@ def rest_connector(
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway's computation graph;
-        delete_queries: whether to send a deletion entry after the query is processed.
+        keep_queries: whether to keep queries after processing; defaults to False. [deprecated]
+        delete_completed_queries: whether to send a deletion entry after the query is processed.
           Allows to remove it from the system if it is stored by operators such as ``join`` or ``groupby``;
 
     Returns:
         table: the table read;
         response_writer: a callable, where the result table should be provided.
     """
+
+    if delete_completed_queries is None:
+        if keep_queries is None:
+            warn(
+                "delete_completed_queries arg of rest_connector should be set explicitly."
+                + " It will soon be required."
+            )
+            delete_completed_queries = True
+        else:
+            warn(
+                "DEPRECATED: keep_queries arg of rest_connector is deprecated,"
+                + " use delete_completed_queries with an opposite meaning instead."
+            )
+            delete_completed_queries = not keep_queries
 
     loop = asyncio.new_event_loop()
     tasks: dict[Any, Any] = {}
@@ -141,7 +158,7 @@ def rest_connector(
             loop=loop,
             tasks=tasks,
             schema=schema,
-            delete_queries=delete_queries,
+            delete_completed_queries=delete_completed_queries,
             format=format,
         ),
         schema=schema,

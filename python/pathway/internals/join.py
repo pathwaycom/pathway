@@ -487,7 +487,7 @@ class JoinResult(Joinable, OperatorInput):
 
     def __init__(
         self,
-        _universe: Universe,
+        _context: clmn.Context,
         _inner_table: Table,
         _columns_mapping: dict[expr.InternalColRef, expr.ColumnReference],
         _left_table: Table,
@@ -498,7 +498,7 @@ class JoinResult(Joinable, OperatorInput):
         _joined_on_names: StableSet[str],
         _join_mode: JoinMode,
     ):
-        super().__init__(_universe)
+        super().__init__(_context)
         self._inner_table = _inner_table
         self._columns_mapping = _columns_mapping
         self._left_table = _left_table
@@ -658,17 +658,19 @@ class JoinResult(Joinable, OperatorInput):
             filter_expression
         )
         inner_table = self._inner_table.filter(desugared_filter_expression)
-        new_columns_mapping = {}
-        for int_ref, expression in self._columns_mapping.items():
-            new_columns_mapping[int_ref] = inner_table[expression.name]
+        new_columns_mapping = {
+            int_ref: inner_table[expression.name]
+            for int_ref, expression in self._columns_mapping.items()
+        }
         new_columns_mapping[inner_table.id._to_internal()] = inner_table.id
 
-        inner_table._context = clmn.JoinRowwiseContext.from_mapping(
-            inner_table._universe, new_columns_mapping
-        )  # FIXME don't set _context property of table
+        context = clmn.JoinRowwiseContext.from_mapping(
+            inner_table._id_column, new_columns_mapping
+        )
+        inner_table._rowwise_context = context
 
         return JoinResult(
-            _universe=inner_table._universe,
+            _context=context,
             _inner_table=inner_table,
             _columns_mapping=new_columns_mapping,
             _left_table=self._left_table,
@@ -817,8 +819,7 @@ class JoinResult(Joinable, OperatorInput):
 
         return Table(
             columns=columns,
-            universe=context.universe,
-            id_column=clmn.IdColumn(context),
+            context=context,
         )
 
     @staticmethod
@@ -861,9 +862,12 @@ class JoinResult(Joinable, OperatorInput):
                 final_mapping[colref._to_internal()] = colref
         final_mapping[inner_table.id._to_internal()] = inner_table.id
 
-        inner_table._context = clmn.JoinRowwiseContext.from_mapping(
-            inner_table._universe, final_mapping
-        )  # FIXME don't set _context property of table
+        rowwise_context = clmn.JoinRowwiseContext.from_mapping(
+            inner_table._id_column, final_mapping
+        )
+        inner_table._rowwise_context = (
+            rowwise_context  # FIXME don't set _context property of table
+        )
 
         return (inner_table, final_mapping)
 
@@ -964,7 +968,7 @@ class JoinResult(Joinable, OperatorInput):
             common_column_names,
         )
         return JoinResult(
-            universe,
+            context,
             inner_table,
             columns_mapping,
             left_table,

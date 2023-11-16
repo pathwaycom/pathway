@@ -21,6 +21,7 @@ from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
+    FileLinesNumberChecker,
     T,
     assert_table_equality,
     assert_table_equality_wo_index,
@@ -1184,11 +1185,17 @@ def test_immediate_connector_errors():
 
 
 def run_replacement_test(
-    streaming_target, input_format, expected_output_lines, tmp_path, monkeypatch
+    streaming_target,
+    input_format,
+    expected_output_lines,
+    tmp_path,
+    monkeypatch,
+    inputs_path_override=None,
+    has_only_file_replacements=False,
 ):
     monkeypatch.setenv("PATHWAY_PERSISTENT_STORAGE", str(tmp_path / "PStorage"))
-    inputs_path = tmp_path / "inputs"
-    os.mkdir(inputs_path)
+    inputs_path = inputs_path_override or (tmp_path / "inputs")
+    os.mkdir(tmp_path / "inputs")
 
     class InputSchema(pw.Schema):
         key: int = pw.column_definition(primary_key=True)
@@ -1199,22 +1206,52 @@ def run_replacement_test(
         format=input_format,
         schema=InputSchema,
         mode="streaming_with_deletions",
-        autocommit_duration_ms=10,
+        autocommit_duration_ms=1,
+        with_metadata=True,
     )
 
     output_path = tmp_path / "output.csv"
-    pw.io.csv.write(table, str(output_path))
+    pw.io.jsonlines.write(table, str(output_path))
 
     inputs_thread = threading.Thread(target=streaming_target, daemon=True)
     inputs_thread.start()
 
     assert wait_result_with_checker(
-        CsvLinesNumberChecker(output_path, expected_output_lines), 30
+        FileLinesNumberChecker(output_path, expected_output_lines), 30
     )
+
+    parsed_rows = []
+    with open(output_path, "r") as f:
+        for row in f:
+            parsed_row = json.loads(row)
+            parsed_rows.append(parsed_row)
+    parsed_rows.sort(key=lambda row: (row["time"], row["diff"]))
+
+    key_metadata = {}
+    time_removed = {}
+    for parsed_row in parsed_rows:
+        key = parsed_row["key"]
+        metadata = parsed_row["_metadata"]
+        file_name = metadata["path"]
+        is_insertion = parsed_row["diff"] == 1
+        timestamp = parsed_row["time"]
+
+        if is_insertion:
+            if has_only_file_replacements and file_name in time_removed:
+                # If there are only replacement and the file has been removed
+                # already, then we need to check that the insertion and its'
+                # removal were consolidated, i.e. happened in the same timestamp
+                assert time_removed[file_name] == timestamp
+            key_metadata[key] = metadata
+        else:
+            # Check that the metadata for the deleted object corresponds to the
+            # initially reported metadata
+            assert key_metadata[key] == metadata
+            time_removed[file_name] = timestamp
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
-def test_simple_forgetting(tmp_path: pathlib.Path, monkeypatch):
+def test_simple_replacement_with_removal(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
         first_line = {"key": 1, "value": "one"}
@@ -1231,6 +1268,54 @@ def test_simple_forgetting(tmp_path: pathlib.Path, monkeypatch):
         expected_output_lines=3,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
+    )
+
+
+@xfail_on_darwin(reason="running pw.run from separate process not supported")
+def test_simple_insert_consolidation(tmp_path: pathlib.Path, monkeypatch):
+    def stream_inputs():
+        time.sleep(1)
+        first_line = {"key": 1, "value": "one"}
+        second_line = {"key": 2, "value": "two"}
+        write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
+        time.sleep(1)
+        write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(second_line))
+        time.sleep(1)
+        write_lines(tmp_path / "inputs/input1.jsonlines", json.dumps(first_line))
+        time.sleep(1)
+
+    run_replacement_test(
+        streaming_target=stream_inputs,
+        input_format="json",
+        expected_output_lines=5,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        has_only_file_replacements=True,
+    )
+
+
+@xfail_on_darwin(reason="running pw.run from separate process not supported")
+def test_simple_replacement_on_file(tmp_path: pathlib.Path, monkeypatch):
+    def stream_inputs():
+        time.sleep(1)
+        first_line = {"key": 1, "value": "one"}
+        second_line = {"key": 2, "value": "two"}
+        third_line = {"key": 3, "value": "three"}
+        write_lines(tmp_path / "inputs/input.jsonlines", json.dumps(first_line))
+        time.sleep(1)
+        write_lines(tmp_path / "inputs/input.jsonlines", json.dumps(second_line))
+        time.sleep(1)
+        os.remove(tmp_path / "inputs/input.jsonlines")
+        time.sleep(1)
+        write_lines(tmp_path / "inputs/input.jsonlines", json.dumps(third_line))
+
+    run_replacement_test(
+        streaming_target=stream_inputs,
+        input_format="json",
+        expected_output_lines=5,
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        inputs_path_override=tmp_path / "inputs/input.jsonlines",
     )
 
 
@@ -1253,6 +1338,7 @@ def test_simple_replacement(tmp_path: pathlib.Path, monkeypatch):
         expected_output_lines=4,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
+        has_only_file_replacements=True,
     )
 
 
@@ -1275,6 +1361,7 @@ def test_last_file_replacement_json(tmp_path: pathlib.Path, monkeypatch):
         expected_output_lines=4,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
+        has_only_file_replacements=True,
     )
 
 
@@ -1306,11 +1393,12 @@ def test_last_file_replacement_csv(tmp_path: pathlib.Path, monkeypatch):
         expected_output_lines=4,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
+        has_only_file_replacements=True,
     )
 
 
 @xfail_on_darwin(reason="running pw.run from separate process not supported")
-def test_simple_forgetting_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
+def test_file_removal_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
         first_line = {"key": 1, "value": "one"}
@@ -1349,6 +1437,7 @@ def test_simple_replacement_autogenerated_key(tmp_path: pathlib.Path, monkeypatc
         expected_output_lines=4,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
+        has_only_file_replacements=True,
     )
 
 
@@ -1913,16 +2002,18 @@ def test_stream_generator_from_list():
     class InputSchema(pw.Schema):
         number: int
 
+    stream_generator = pw.debug.StreamGenerator()
+
     events = [
         [{"number": 1}, {"number": 2}, {"number": 5}],
         [{"number": 4}, {"number": 4}],
     ]
 
-    t = pw.debug.table_from_list_of_batches(events, InputSchema)
+    t = stream_generator.table_from_list_of_batches(events, InputSchema)
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run()
+    pw.run(persistence_config=stream_generator.persistence_config())
 
     timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
     assert len(timestamps) == 2
@@ -1967,6 +2058,7 @@ def test_stream_generator_from_list():
 
 def test_stream_generator_from_list_multiple_workers(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("PATHWAY_THREADS", "2")
+    stream_generator = pw.debug.StreamGenerator()
 
     class InputSchema(pw.Schema):
         number: int
@@ -1976,11 +2068,11 @@ def test_stream_generator_from_list_multiple_workers(monkeypatch: pytest.MonkeyP
         {0: [{"number": 4}], 1: [{"number": 4}]},
     ]
 
-    t = pw.debug.table_from_list_of_batches_by_workers(events, InputSchema)
+    t = stream_generator.table_from_list_of_batches_by_workers(events, InputSchema)
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run()
+    pw.run(persistence_config=stream_generator.persistence_config())
 
     timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
     assert len(timestamps) == 2
@@ -2025,7 +2117,8 @@ def test_stream_generator_from_list_multiple_workers(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.filterwarnings("ignore:timestamps are required to be even")
 def test_stream_generator_from_markdown():
-    t = pw.debug.table_from_markdown(
+    stream_generator = pw.debug.StreamGenerator()
+    t = stream_generator.table_from_markdown(
         """
        | colA | colB | _time
     1  | 1    | 2    | 1
@@ -2036,7 +2129,7 @@ def test_stream_generator_from_markdown():
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run()
+    pw.run(persistence_config=stream_generator.persistence_config())
 
     on_change.assert_has_calls(
         [
@@ -2065,7 +2158,8 @@ def test_stream_generator_from_markdown():
 
 
 def test_stream_generator_from_markdown_with_diffs():
-    t = pw.debug.table_from_markdown(
+    stream_generator = pw.debug.StreamGenerator()
+    t = stream_generator.table_from_markdown(
         """
        | colA | colB | _time | _diff
     1  | 1    | 2    | 2     | 1
@@ -2085,17 +2179,20 @@ def test_stream_generator_from_markdown_with_diffs():
     """
     )
 
-    assert_table_equality(t, expected)
+    assert_table_equality(
+        t, expected, persistence_config=stream_generator.persistence_config()
+    )
 
 
 def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.MonkeyPatch):
+    stream_generator = pw.debug.StreamGenerator()
     monkeypatch.setenv("PATHWAY_THREADS", "4")
 
     class InputSchema(pw.Schema):
         colA: int
         colB: int
 
-    t1 = pw.debug.table_from_markdown(
+    t1 = stream_generator.table_from_markdown(
         """
     colA | colB | _time | _worker
     1    | 2    | 2     | 0
@@ -2106,7 +2203,7 @@ def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.Monkey
     """
     )
 
-    t2 = pw.debug.stream_generator._table_from_dict(
+    t2 = stream_generator._table_from_dict(
         {
             2: {0: [(1, api.ref_scalar(0), [1, 4])]},
             4: {2: [(1, api.ref_scalar(1), [3, 7])]},
@@ -2124,7 +2221,7 @@ def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.Monkey
     on_change = mock.Mock()
     pw.io.subscribe(t3, on_change=on_change)
 
-    pw.run()
+    pw.run(persistence_config=stream_generator.persistence_config())
 
     on_change.assert_has_calls(
         [

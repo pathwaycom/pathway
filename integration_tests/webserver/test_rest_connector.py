@@ -32,17 +32,21 @@ def test_server(tmp_path: pathlib.Path):
 
     def target():
         time.sleep(5)
-        requests.post(
+        r = requests.post(
             f"http://127.0.0.1:{port}",
             json={"query": "one", "user": "sergey"},
-        ).raise_for_status()
-        requests.post(
+        )
+        r.raise_for_status()
+        assert r.text == '"ONE"', r.text
+        r = requests.post(
             f"http://127.0.0.1:{port}",
             json={"query": "two", "user": "sergey"},
-        ).raise_for_status()
+        )
+        r.raise_for_status()
+        assert r.text == '"TWO"', r.text
 
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema
+        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=True
     )
     responses = logic(queries)
     response_writer(responses)
@@ -80,7 +84,11 @@ def test_server_customization(tmp_path: pathlib.Path):
         ).raise_for_status()
 
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, route="/endpoint"
+        host="127.0.0.1",
+        port=port,
+        schema=InputSchema,
+        route="/endpoint",
+        delete_completed_queries=True,
     )
     responses = logic(queries)
     response_writer(responses)
@@ -118,7 +126,7 @@ def test_server_schema_customization(tmp_path: pathlib.Path):
         ).raise_for_status()
 
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema
+        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=True
     )
     responses = logic(queries)
     response_writer(responses)
@@ -151,7 +159,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path):
         ).raise_for_status()
 
     queries, response_writer = pw.io.http.rest_connector(
-        host="127.0.0.1", port=port, schema=InputSchema, delete_queries=False
+        host="127.0.0.1", port=port, schema=InputSchema, delete_completed_queries=False
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 

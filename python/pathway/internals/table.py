@@ -17,7 +17,6 @@ from pathway.internals.arg_handlers import (
     reduce_args_handler,
     select_args_handler,
 )
-from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.decorators import (
     contextualized_operator,
     empty_from_schema,
@@ -99,27 +98,26 @@ class Table(
         )
 
     _columns: dict[str, clmn.Column]
-    _context: clmn.RowwiseContext
     _schema: type[Schema]
     _id_column: clmn.IdColumn
+    _rowwise_context: clmn.RowwiseContext
     _source: SetOnceProperty[OutputHandle] = SetOnceProperty()
     """Lateinit by operator."""
 
     def __init__(
         self,
         columns: Mapping[str, clmn.Column],
-        universe: Universe,
+        context: clmn.Context,
         schema: type[Schema] | None = None,
-        id_column: clmn.IdColumn | None = None,
     ):
         if schema is None:
             schema = schema_from_columns(columns)
-        super().__init__(universe)
+        super().__init__(context)
         self._columns = dict(columns)
         self._schema = schema
-        self._context = clmn.RowwiseContext(self._universe)
-        self._id_column = id_column or clmn.IdColumn(self._context)
+        self._id_column = context.id_column
         self._substitution = {thisclass.this: self}
+        self._rowwise_context = clmn.RowwiseContext(self._id_column)
 
     @property
     def id(self) -> expr.ColumnReference:
@@ -520,8 +518,7 @@ class Table(
         filtering_column = self._eval(filter_expression)
         assert self._universe == filtering_column.universe
 
-        universe = self._universe.subset()
-        context = clmn.FilterContext(universe, filtering_column, self._universe)
+        context = clmn.FilterContext(filtering_column, self._id_column)
 
         return self._table_with_context(context)
 
@@ -550,23 +547,14 @@ class Table(
         value_column,
         upper_column,
     ):
-        apx_value = clmn.MaterializedColumn(
-            self._universe, ColumnProperties(dtype=dt.FLOAT)
-        )
-
         context = clmn.GradualBroadcastContext(
-            self._universe,
+            self._id_column,
             threshold_table._eval(lower_column),
             threshold_table._eval(value_column),
             threshold_table._eval(upper_column),
-            apx_value_column=apx_value,
         )
 
-        return Table(
-            columns={"apx_value": apx_value},
-            universe=context.universe,
-            id_column=clmn.IdColumn(context),
-        )
+        return Table(columns={"apx_value": context.apx_value_column}, context=context)
 
     @trace_user_frame
     @desugar
@@ -578,10 +566,8 @@ class Table(
         time_column: expr.ColumnExpression,
         mark_forgetting_records: bool,
     ) -> Table:
-        universe = self._universe.subset()
         context = clmn.ForgetContext(
-            universe,
-            self._universe,
+            self._id_column,
             self._eval(threshold_column),
             self._eval(time_column),
             mark_forgetting_records,
@@ -595,11 +581,7 @@ class Table(
     def _forget_immediately(
         self,
     ) -> Table:
-        universe = self._universe.subset()
-        context = clmn.ForgetImmediatelyContext(
-            universe,
-            self._universe,
-        )
+        context = clmn.ForgetImmediatelyContext(self._id_column)
         return self._table_with_context(context)
 
     @trace_user_frame
@@ -609,14 +591,10 @@ class Table(
     def _filter_out_results_of_forgetting(
         self,
     ) -> Table:
-        universe = self._universe.superset()
         # The output universe is a superset of input universe because forgetting entries
         # are filtered out. At each point in time, the set of keys with +1 diff can be
         # bigger than a set of keys with +1 diff in an input table.
-        context = clmn.FilterOutForgettingContext(
-            universe,
-            self._universe,
-        )
+        context = clmn.FilterOutForgettingContext(self._id_column)
         return self._table_with_context(context)
 
     @trace_user_frame
@@ -628,10 +606,8 @@ class Table(
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
     ) -> Table:
-        universe = self._universe.subset()
         context = clmn.FreezeContext(
-            universe,
-            self._universe,
+            self._id_column,
             self._eval(threshold_column),
             self._eval(time_column),
         )
@@ -646,10 +622,8 @@ class Table(
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
     ) -> Table:
-        universe = self._universe.subset()
         context = clmn.BufferContext(
-            universe,
-            self._universe,
+            self._id_column,
             self._eval(threshold_column),
             self._eval(time_column),
         )
@@ -687,11 +661,9 @@ class Table(
         age | owner | pet
         10  | Alice | 1
         """
-        universe = G.universe_solver.get_difference(self._universe, other._universe)
         context = clmn.DifferenceContext(
-            universe=universe,
-            left=self._universe,
-            right=other._universe,
+            left=self._id_column,
+            right=other._id_column,
         )
         return self._table_with_context(context)
 
@@ -734,14 +706,14 @@ class Table(
         )
         universe = G.universe_solver.get_intersection(*intersecting_universes)
         if universe in intersecting_universes:
-            context: clmn.Context = clmn.RestrictContext(
-                universe=universe,
-                orig_universe=self._universe,
-            )
+            context: clmn.Context = clmn.RestrictContext(self._id_column, universe)
         else:
+            intersecting_ids = (
+                self._id_column,
+                *tuple(table._id_column for table in tables),
+            )
             context = clmn.IntersectContext(
-                universe=universe,
-                intersecting_universes=intersecting_universes,
+                intersecting_ids=intersecting_ids,
             )
 
         return self._table_with_context(context)
@@ -789,10 +761,7 @@ class Table(
                 "Table.restrict(): other universe has to be a subset of self universe."
                 + "Consider using Table.promise_universe_is_subset_of() to assert it."
             )
-        context = clmn.RestrictContext(
-            universe=other._universe,
-            orig_universe=self._universe,
-        )
+        context = clmn.RestrictContext(self._id_column, other._universe)
 
         columns = {
             name: self._wrap_column_in_context(context, column, name)
@@ -801,8 +770,7 @@ class Table(
 
         return Table(
             columns=columns,
-            universe=other._universe,
-            id_column=clmn.IdColumn(context),
+            context=context,
         )
 
     @contextualized_operator
@@ -832,14 +800,11 @@ class Table(
         """
 
         columns = {
-            name: self._wrap_column_in_context(self._context, column, name)
+            name: self._wrap_column_in_context(self._rowwise_context, column, name)
             for name, column in self._columns.items()
         }
 
-        return Table(
-            columns=columns,
-            universe=self._universe,
-        )
+        return Table(columns=columns, context=self._rowwise_context)
 
     @trace_user_frame
     @desugar
@@ -1041,11 +1006,8 @@ class Table(
         key_expression: expr.ColumnReference,
         optional: bool,
     ) -> Table:
-        key_universe_table = key_expression._table
-        universe = key_universe_table._universe
         key_column = key_expression._column
-
-        context = clmn.IxContext(universe, self._universe, key_column, optional)
+        context = clmn.IxContext(key_column, self._id_column, optional)
 
         return self._table_with_context(context)
 
@@ -1160,32 +1122,21 @@ class Table(
     @trace_user_frame
     @contextualized_operator
     def _concat(self, *others: Table[TSchema]) -> Table[TSchema]:
-        union_universes = (self._universe, *(other._universe for other in others))
-        if not G.universe_solver.query_are_disjoint(*union_universes):
+        union_ids = (self._id_column, *(other._id_column for other in others))
+        if not G.universe_solver.query_are_disjoint(*(c.universe for c in union_ids)):
             raise ValueError(
                 "Universes of the arguments of Table.concat() have to be disjoint.\n"
                 + "Consider using Table.promise_universes_are_disjoint() to assert it.\n"
                 + "(However, untrue assertion might result in runtime errors.)"
             )
-        universe = G.universe_solver.get_union(*union_universes)
         context = clmn.ConcatUnsafeContext(
-            universe=universe,
-            union_universes=union_universes,
+            union_ids=union_ids,
             updates=tuple(
                 {col_name: other._columns[col_name] for col_name in self.keys()}
                 for other in others
             ),
         )
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-        ret: Table = Table(
-            columns=columns,
-            universe=universe,
-            id_column=clmn.IdColumn(context),
-        )
-        return ret
+        return self._table_with_context(context)
 
     @trace_user_frame
     @runtime_type_check
@@ -1259,24 +1210,12 @@ class Table(
                 + "Consider using Table.promise_is_subset_of() to assert this.\n"
                 + "(However, untrue assertion might result in runtime errors.)"
             )
-
-        union_universes = [self._universe]
-        if other._universe != self._universe:
-            union_universes.append(other._universe)
         context = clmn.UpdateCellsContext(
-            universe=self._universe,
-            union_universes=tuple(union_universes),
+            left=self._id_column,
+            right=other._id_column,
             updates={name: other._columns[name] for name in other.keys()},
         )
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-        return Table(
-            columns=columns,
-            universe=self._universe,
-            id_column=clmn.IdColumn(context),
-        )
+        return self._table_with_context(context)
 
     @trace_user_frame
     @runtime_type_check
@@ -1332,36 +1271,27 @@ class Table(
             key: dt.types_lca(self.schema.__dtypes__[key], other.schema.__dtypes__[key])
             for key in self.keys()
         }
-        return Table._update_rows(
-            self.cast_to_types(**schema), other.cast_to_types(**schema)
-        )
+        union_universes = (self._universe, other._universe)
+        universe = G.universe_solver.get_union(*union_universes)
+        if universe == self._universe:
+            return Table._update_cells(
+                self.cast_to_types(**schema), other.cast_to_types(**schema)
+            )
+        else:
+            return Table._update_rows(
+                self.cast_to_types(**schema), other.cast_to_types(**schema)
+            )
 
     @trace_user_frame
     @contextualized_operator
     @runtime_type_check
     def _update_rows(self, other: Table[TSchema]) -> Table[TSchema]:
-        union_universes = (self._universe, other._universe)
-        universe = G.universe_solver.get_union(*union_universes)
-        context_cls = (
-            clmn.UpdateCellsContext
-            if universe == self._universe
-            else clmn.UpdateRowsContext
-        )
-        context = context_cls(
-            universe=universe,
-            union_universes=union_universes,
+        union_ids = (self._id_column, other._id_column)
+        context = clmn.UpdateRowsContext(
             updates={col_name: other._columns[col_name] for col_name in self.keys()},
+            union_ids=union_ids,
         )
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-        ret: Table = Table(
-            columns=columns,
-            universe=universe,
-            id_column=clmn.IdColumn(context),
-        )
-        return ret
+        return self._table_with_context(context)
 
     @trace_user_frame
     @desugar
@@ -1497,19 +1427,9 @@ class Table(
         reindex_column = self._eval(new_index)
         assert self._universe == reindex_column.universe
 
-        universe = Universe()
-        context = clmn.ReindexContext(universe, reindex_column)
+        context = clmn.ReindexContext(reindex_column)
 
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-
-        return Table(
-            columns=columns,
-            universe=universe,
-            id_column=clmn.IdColumn(context),
-        )
+        return self._table_with_context(context)
 
     @trace_user_frame
     @desugar
@@ -1559,7 +1479,9 @@ class Table(
 
         columns_wrapped = {
             name: self._wrap_column_in_context(
-                self._context, column, mapping[name] if name in mapping else name
+                self._rowwise_context,
+                column,
+                mapping[name] if name in mapping else name,
             )
             for name, column in renamed_columns.items()
         }
@@ -1704,7 +1626,7 @@ class Table(
                 assert isinstance(col, str)
                 new_columns.pop(col)
         columns_wrapped = {
-            name: self._wrap_column_in_context(self._context, column, name)
+            name: self._wrap_column_in_context(self._rowwise_context, column, name)
             for name, column in new_columns.items()
         }
         return self._with_same_universe(*columns_wrapped.items())
@@ -1760,11 +1682,9 @@ class Table(
     @contextualized_operator
     @runtime_type_check
     def _having(self, indexer: expr.ColumnReference) -> Table[TSchema]:
-        universe = indexer.table._universe.subset()
         context = clmn.HavingContext(
-            universe=universe, orig_universe=self._universe, key_column=indexer._column
+            orig_id_column=self._id_column, key_column=indexer._column
         )
-
         return self._table_with_context(context)
 
     @trace_user_frame
@@ -1856,18 +1776,9 @@ class Table(
         flatten_column = self._columns[flatten_name]
         assert isinstance(flatten_column, clmn.ColumnWithExpression)
 
-        universe = Universe()
-        flatten_result_column = clmn.MaterializedColumn(
-            universe,
-            ColumnProperties(
-                dtype=clmn.FlattenContext.get_flatten_column_dtype(flatten_column),
-            ),
-        )
         context = clmn.FlattenContext(
-            universe=universe,
             orig_universe=self._universe,
             flatten_column=flatten_column,
-            flatten_result_column=flatten_result_column,
         )
 
         columns = {
@@ -1878,11 +1789,10 @@ class Table(
 
         return Table(
             columns={
-                flatten_name: flatten_result_column,
+                flatten_name: context.flatten_result_column,
                 **columns,
             },
-            universe=universe,
-            id_column=clmn.IdColumn(context),
+            context=context,
         )
 
     @trace_user_frame
@@ -1944,33 +1854,23 @@ class Table(
         ^RT0AZWX... | David   | 35  | 90    | ^EDPSSB1... |
         ^T0B95XH... | Eve     | 15  | 80    |             | ^GBSDEEW...
         """
-        if not isinstance(instance, expr.ColumnExpression):
-            instance = expr.ColumnConstExpression(instance)
-        prev_column = clmn.MaterializedColumn(
-            self._universe, ColumnProperties(dtype=dt.Optional(dt.POINTER))
-        )
-        next_column = clmn.MaterializedColumn(
-            self._universe, ColumnProperties(dtype=dt.Optional(dt.POINTER))
-        )
+        instance = clmn.ColumnExpression._wrap(instance)
         context = clmn.SortingContext(
-            self._universe,
             self._eval(key),
             self._eval(instance),
-            prev_column,
-            next_column,
         )
         return Table(
             columns={
-                "prev": prev_column,
-                "next": next_column,
+                "prev": context.prev_column,
+                "next": context.next_column,
             },
-            universe=self._universe,
-            id_column=clmn.IdColumn(context),
+            context=context,
         )
 
     def _set_source(self, source: OutputHandle):
         self._source = source
-        self._id_column.lineage = clmn.ColumnLineage(name="id", source=source)
+        if not hasattr(self._id_column, "lineage"):
+            self._id_column.lineage = clmn.ColumnLineage(name="id", source=source)
         for name, column in self._columns.items():
             if not hasattr(column, "lineage"):
                 column.lineage = clmn.ColumnLineage(name=name, source=source)
@@ -1980,17 +1880,8 @@ class Table(
 
     @contextualized_operator
     def _unsafe_promise_universe(self, other: TableLike) -> Table:
-        context = clmn.PromiseSameUniverseContext(other._universe, self._universe)
-        columns = {
-            name: self._wrap_column_in_context(context, column, name)
-            for name, column in self._columns.items()
-        }
-
-        return Table(
-            columns=columns,
-            universe=context.universe,
-            id_column=clmn.IdColumn(context),
-        )
+        context = clmn.PromiseSameUniverseContext(self._id_column, other._id_column)
+        return self._table_with_context(context)
 
     def _validate_expression(self, expression: expr.ColumnExpression):
         for dep in expression._dependencies_above_reducer():
@@ -2027,20 +1918,19 @@ class Table(
 
         return Table(
             columns=columns,
-            universe=context.universe,
-            id_column=clmn.IdColumn(context),
+            context=context,
         )
 
     @functools.cached_property
     def _table_restricted_context(self) -> clmn.TableRestrictedRowwiseContext:
-        return clmn.TableRestrictedRowwiseContext(self._universe, self)
+        return clmn.TableRestrictedRowwiseContext(self._id_column, self)
 
     def _eval(
         self, expression: expr.ColumnExpression, context: clmn.Context | None = None
     ) -> clmn.ColumnWithExpression:
         """Desugar expression and wrap it in given context."""
         if context is None:
-            context = self._context
+            context = self._rowwise_context
         column = expression._column_with_expression_cls(
             context=context,
             universe=context.universe,
@@ -2051,6 +1941,7 @@ class Table(
     @classmethod
     def _from_schema(cls, schema: type[Schema]) -> Table:
         universe = Universe()
+        context = clmn.MaterializedContext(universe, schema.universe_properties)
         columns = {
             name: clmn.MaterializedColumn(
                 universe,
@@ -2058,7 +1949,7 @@ class Table(
             )
             for name in schema.column_names()
         }
-        return cls(columns=columns, universe=universe, schema=schema)
+        return cls(columns=columns, schema=schema, context=context)
 
     def __repr__(self) -> str:
         return f"<pathway.Table schema={dict(self.typehints())}>"
@@ -2070,9 +1961,8 @@ class Table(
     ) -> Table:
         return Table(
             columns=dict(columns),
-            universe=self._universe,
             schema=schema,
-            id_column=clmn.IdColumn(self._context),
+            context=self._rowwise_context,
         )
 
     def _sort_columns_by_other(self, other: Table):
@@ -2093,14 +1983,15 @@ class Table(
         table_to_datasink(self, sink)
 
     def _materialize(self, universe: Universe):
+        context = clmn.MaterializedContext(universe)
         columns = {
             name: clmn.MaterializedColumn(universe, column.properties)
             for (name, column) in self._columns.items()
         }
         return Table(
             columns=columns,
-            universe=universe,
             schema=self.schema,
+            context=context,
         )
 
     @trace_user_frame
@@ -2237,7 +2128,7 @@ class Table(
 
     def eval_type(self, expression: expr.ColumnExpression) -> dt.DType:
         return (
-            self._context._get_type_interpreter()
+            self._rowwise_context._get_type_interpreter()
             .eval_expression(expression, state=TypeInterpreterState())
             ._dtype
         )

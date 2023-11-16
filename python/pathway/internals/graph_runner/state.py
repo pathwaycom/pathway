@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-import pathway.internals.graph_runner.expression_evaluator as evaluator
 from pathway.internals import api, column, table, universe
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.graph_runner.path_storage import Storage
@@ -19,7 +18,6 @@ class ScopeState:
     legacy_tables: dict[table.Table, api.LegacyTable]
     universes: dict[universe.Universe, api.Universe]
     computers: list[Callable]
-    evaluators: dict[column.Context, evaluator.ExpressionEvaluator]
     tables: dict[universe.Universe, api.Table]
     storages: dict[universe.Universe, Storage]
 
@@ -28,7 +26,6 @@ class ScopeState:
         self.columns = {}
         self.universes = {}
         self.computers = []
-        self.evaluators = {}
         self.legacy_tables = {}
         self.tables = {}
         self.storages = {}
@@ -141,16 +138,6 @@ class ScopeState:
 
     def get_computer_logic(self, id: int) -> Callable:
         return self.computers[id]
-
-    def get_or_create_evaluator(
-        self,
-        context: column.Context,
-        evaluator_factory: Callable[[column.Context], evaluator.ExpressionEvaluator],
-    ):
-        if context not in self.evaluators:
-            evaluator = evaluator_factory(context)
-            self.evaluators[context] = evaluator
-        return self.evaluators[context]
 
     def get_table(self, key: Storage) -> api.Table:
         return self.tables[key._universe]

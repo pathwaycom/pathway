@@ -13,7 +13,6 @@ fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
         None,
         ReadMethod::Full,
         "*",
-        false,
     )?;
     let mut parser = IdentityParser::new(vec!["data".to_string()], false);
     let mut events = Vec::new();
@@ -30,6 +29,7 @@ fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
                 }
             }
             ReadResult::Finished => break,
+            ReadResult::FinishedSource { .. } => continue,
             ReadResult::NewSource(_) => continue,
         }
     }

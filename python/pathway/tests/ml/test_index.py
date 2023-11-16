@@ -72,11 +72,13 @@ def test_all_at_once():
     assert_table_equality_wo_index(result, expected)
 
 
-def stream_points() -> tuple[pw.Table, pw.Table]:
+def stream_points() -> tuple[pw.Table, pw.Table, pw.persistence.Config]:
     """Returns (points, queries)."""
     points = get_points()
 
-    table = pw.debug.table_from_list_of_batches(
+    stream_generator = pw.debug.StreamGenerator()
+
+    table = stream_generator.table_from_list_of_batches(
         [[{"coords": point[0], "is_query": point[1]}] for point in points],
         PointSchema,
     ).update_types(coords=tuple[int, ...])
@@ -84,11 +86,12 @@ def stream_points() -> tuple[pw.Table, pw.Table]:
     return (
         table.filter(~pw.this.is_query).without(pw.this.is_query),
         table.filter(pw.this.is_query).without(pw.this.is_query),
+        stream_generator.persistence_config(),
     )
 
 
 def test_update_old():
-    points, queries = stream_points()
+    points, queries, persistence_config = stream_points()
     index = KNNIndex(points.coords, points, n_dimensions=2, n_and=5)
     result = queries + index.get_nearest_items(queries.coords, k=2).with_universe_of(
         queries
@@ -101,11 +104,13 @@ def test_update_old():
             ((-2, -3), ((-1, 0), (1, -4))),
         ]
     )
-    assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(
+        result, expected, persistence_config=persistence_config
+    )
 
 
 def test_asof_now():
-    points, queries = stream_points()
+    points, queries, persistence_config = stream_points()
     index = KNNIndex(points.coords, points, n_dimensions=2, n_and=5)
     result = queries + index.get_nearest_items_asof_now(queries.coords, k=2).select(
         nn=pw.apply(sort_arrays, pw.this.coords)
@@ -118,4 +123,6 @@ def test_asof_now():
             ((-2, -3), ((-3, 1), (-1, 0))),
         ]
     )
-    assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(
+        result, expected, persistence_config=persistence_config
+    )

@@ -122,7 +122,7 @@ def table_to_pandas(table: Table):
 
 @runtime_type_check
 @trace_user_frame
-def _table_from_pandas(
+def table_from_pandas(
     df: pd.DataFrame,
     id_from: list[str] | None = None,
     unsafe_trusted_ids: bool = False,
@@ -205,6 +205,10 @@ def table_to_parquet(table: Table, filename: str | PathLike):
     return df.to_parquet(filename)
 
 
+# XXX: clean this up
+table_from_markdown = parse_to_table
+
+
 class _EmptyConnectorSubject(ConnectorSubject):
     def run(self):
         pass
@@ -215,7 +219,7 @@ class StreamGenerator:
     events: dict[tuple[str, int], list[api.SnapshotEvent]] = {}
 
     def _get_next_persistent_id(self) -> str:
-        return str(next(self._persistent_id))
+        return str(f"_stream_generator_{next(self._persistent_id)}")
 
     def _advance_time_for_all_workers(
         self, persistent_id: str, workers: Iterable[int], timestamp: int
@@ -283,6 +287,15 @@ class StreamGenerator:
         batches: list[dict[int, list[dict[str, api.Value]]]],
         schema: type[Schema],
     ) -> Table:
+        """
+        A function that creates a table from a list of batches, where each batch is a mapping
+        from worker id to a list of rows processed by this worker in this batch.
+        Each row is a mapping from column name to a value.
+
+        Args:
+            batches: list of batches to be put in the table
+            schema: schema of the table
+        """
         key = itertools.count()
         schema, api_schema = read_schema(schema=schema)
         value_fields: list[api.ValueField] = api_schema["value_fields"]
@@ -313,6 +326,14 @@ class StreamGenerator:
         batches: list[list[dict[str, api.Value]]],
         schema: type[Schema],
     ) -> Table:
+        """
+        A function that creates a table from a list of batches, where each batch is a list of
+        rows in this batch. Each row is a mapping from column name to a value.
+
+        Args:
+            batches: list of batches to be put in the table
+            schema: schema of the table
+        """
         batches_by_worker = [{0: batch} for batch in batches]
         return self.table_from_list_of_batches_by_workers(batches_by_worker, schema)
 
@@ -323,6 +344,12 @@ class StreamGenerator:
         unsafe_trusted_ids: bool = False,
         schema: type[Schema] | None = None,
     ) -> Table:
+        """
+        A function for creating a table from a pandas DataFrame. If the DataFrame
+        contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
+        Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
+        ``_diff`` column as an event type with ``1`` treated as inserting row and ``-1`` as removing.
+        """
         if schema is None:
             schema = schema_from_pandas(
                 df, exclude_columns=["_time", "_diff", "_worker"]
@@ -336,11 +363,6 @@ class StreamGenerator:
             df["_worker"] = [0] * len(df)
         if "_diff" not in df:
             df["_diff"] = [1] * len(df)
-
-        persistent_id = self._get_next_persistent_id()
-        workers = set(df["_worker"])
-        for worker in workers:
-            self.events[(persistent_id, worker)] = []
 
         batches: dict[
             int, dict[int, list[tuple[int, api.Pointer, list[api.Value]]]]
@@ -380,10 +402,21 @@ class StreamGenerator:
         unsafe_trusted_ids: bool = False,
         schema: type[Schema] | None = None,
     ) -> Table:
+        """
+        A function for creating a table from its definition in markdown. If it
+        contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
+        Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
+        ``_diff`` column as an event type - with ``1`` treated as inserting row and ``-1`` as removing.
+        """
         df = _markdown_to_pandas(table)
         return self.table_from_pandas(df, id_from, unsafe_trusted_ids, schema)
 
     def persistence_config(self) -> persistence.Config | None:
+        """
+        Returns a persistece config to be used during run. Needs to be passed to ``pw.run``
+        so that tables created using StreamGenerator are filled with data.
+        """
+
         if len(self.events) == 0:
             return None
         return persistence.Config.simple_config(
@@ -391,73 +424,3 @@ class StreamGenerator:
             snapshot_access=api.SnapshotAccess.REPLAY,
             replay_mode=api.ReplayMode.SPEEDRUN,
         )
-
-
-stream_generator = StreamGenerator()
-
-
-def table_from_list_of_batches_by_workers(
-    batches: list[dict[int, list[dict[str, api.Value]]]],
-    schema: type[Schema],
-) -> Table:
-    """
-    A function that creates a table from a list of batches, where each batch is a mapping
-    from worker id to a list of rows processed by this worker in this batch.
-    Each row is a mapping from column name to a value.
-
-    Args:
-        batches: list of batches to be put in the table
-        schema: schema of the table
-    """
-    return stream_generator.table_from_list_of_batches_by_workers(batches, schema)
-
-
-def table_from_list_of_batches(
-    batches: list[list[dict[str, api.Value]]],
-    schema: type[Schema],
-) -> Table:
-    """
-    A function that creates a table from a list of batches, where each batch is a list of
-    rows in this batch. Each row is a mapping from column name to a value.
-
-    Args:
-        batches: list of batches to be put in the table
-        schema: schema of the table
-    """
-    return stream_generator.table_from_list_of_batches(batches, schema)
-
-
-def table_from_pandas(
-    df: pd.DataFrame,
-    id_from: list[str] | None = None,
-    unsafe_trusted_ids: bool = False,
-    schema: type[Schema] | None = None,
-):
-    """
-    A function for creating a table from a pandas DataFrame. If the DataFrame
-    contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
-    Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
-    ``_diff`` column as an event type with ``1`` treated as inserting row and ``-1`` as removing.
-    """
-    if "_time" in df:
-        return stream_generator.table_from_pandas(
-            df, id_from, unsafe_trusted_ids, schema
-        )
-    else:
-        return _table_from_pandas(df, id_from, unsafe_trusted_ids, schema)
-
-
-def table_from_markdown(
-    table_def: str,
-    id_from: list[str] | None = None,
-    unsafe_trusted_ids: bool = False,
-    schema: type[Schema] | None = None,
-) -> Table:
-    """
-    A function for creating a table from its definition in markdown. If it
-    contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
-    Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
-    ``_diff`` column as an event type - with ``1`` treated as inserting row and ``-1`` as removing.
-    """
-    df = _markdown_to_pandas(table_def)
-    return table_from_pandas(df, id_from, unsafe_trusted_ids, schema)

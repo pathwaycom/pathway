@@ -6,7 +6,12 @@ import typing
 
 import pathway as pw
 from pathway.internals import api
-from pathway.tests.utils import DiffEntry, assert_key_entries_in_stream_consistent, run
+from pathway.tests.utils import (
+    DiffEntry,
+    assert_key_entries_in_stream_consistent,
+    assert_stream_equal,
+    run,
+)
 
 
 class TimeColumnInputSchema(pw.Schema):
@@ -31,6 +36,7 @@ def generate_buffer_output(
     duration,
     hop,
     delay,
+    cutoff,
 ):
     now = 0
     buffer = {}
@@ -44,7 +50,12 @@ def generate_buffer_output(
         for _pw_window_start, _pw_window_end in windows:
             shard = None
             window = (shard, _pw_window_start, _pw_window_end)
+            freeze_threshold = window[2] + cutoff
+            if freeze_threshold <= now:
+                continue
+
             threshold = window[1] + delay
+
             if threshold <= now:
                 to_process.append((window, entry))
             else:
@@ -58,7 +69,6 @@ def generate_buffer_output(
                 to_process.append((window, entry))
         output.extend(to_process)
 
-    # print(buffer)
     return output
 
 
@@ -68,8 +78,7 @@ def test_keep_results_manual():
         "value": lambda x: x,
     }
 
-    # 68 is 4*17, 1
-    # 7 is a nice number I chose arbitrarily
+    # 68 is 4*17, 17 is a nice number I chose arbitrarily
     # 4 comes from the fact that I wanted 2 old entries and two fresh (possibly late)
     # entries in a window
 
@@ -84,7 +93,7 @@ def test_keep_results_manual():
     gb = t.windowby(
         t.time,
         window=pw.temporal.sliding(duration=5, hop=3),
-        behavior=pw.temporal.window_behavior(delay=0, cutoff=0, keep_results=True),
+        behavior=pw.temporal.common_behavior(delay=0, cutoff=0, keep_results=True),
     )
 
     expected_entries = []
@@ -146,14 +155,13 @@ def test_keep_results_manual():
         pw.this._pw_window_end,
         max_time=pw.reducers.max(pw.this.time),
         max_value=pw.reducers.max(pw.this.value),
-    ).select(pw.this._pw_window_end, pw.this.max_time, pw.this.max_value)
-
+    )
     assert_key_entries_in_stream_consistent(expected_entries, result)
 
-    run(debug=True)
+    run()
 
 
-def parametrized_test(duration, hop, delay, cutoff, keep_results):
+def create_windowby_scenario(duration, hop, delay, cutoff, keep_results):
     value_functions = {
         "time": lambda x: (x // 2) % 17,
         "value": lambda x: x,
@@ -170,25 +178,38 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
         autocommit_duration_ms=5,
         input_rate=25,
     )
+
     gb = t.windowby(
         t.time,
         window=pw.temporal.sliding(duration=duration, hop=hop),
-        behavior=pw.temporal.window_behavior(
+        behavior=pw.temporal.common_behavior(
             delay=delay, cutoff=cutoff, keep_results=keep_results
         ),
     )
 
+    result = gb.reduce(
+        pw.this._pw_window_end,
+        max_time=pw.reducers.max(pw.this.time),
+        max_value=pw.reducers.max(pw.this.value),
+    )
+    result.debug("res")
+    return result
+
+
+def generate_expected(duration, hop, delay, cutoff, keep_results, result_table):
     entries = []
     for i in range(68):
         entries.append({"value": i, "time": (i // 2) % 17})
-    buf_out = generate_buffer_output(entries, duration=duration, hop=hop, delay=delay)
+    buf_out = generate_buffer_output(
+        entries, duration=duration, hop=hop, delay=delay, cutoff=cutoff
+    )
 
-    simulated_state: dict = {}
+    simulated_state: dict[pw.Pointer, DiffEntry] = {}
     expected_entries = []
     max_global_time = 0
 
     order = 0
-    print(buf_out)
+
     for (
         window,
         in_entry,
@@ -200,7 +221,7 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
             "_pw_window_end": window[2],
         }
 
-        entry_id = DiffEntry.create_id_from(gb, pk_row)
+        entry_id = DiffEntry.create_id_from(result_table, pk_row)
 
         order = in_entry["value"]
         max_value = in_entry["value"]
@@ -209,13 +230,11 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
         old_entry_state = simulated_state.get(entry_id)
 
         if old_entry_state is not None:
-            # cutoff
-            if max_global_time < typing.cast(
-                int, old_entry_state.row["_pw_window_end"] + cutoff
-            ):
-                expected_entries.append(
-                    DiffEntry.create(gb, pk_row, order, False, old_entry_state.row)
+            expected_entries.append(
+                DiffEntry.create(
+                    result_table, pk_row, order, False, old_entry_state.row
                 )
+            )
 
             max_value = max(
                 max_value, typing.cast(int, old_entry_state.row["max_value"])
@@ -229,28 +248,24 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
             "max_value": max_value,
             "max_time": max_window_time,
         }
-        insert_entry = DiffEntry.create(gb, pk_row, order, True, row)
+        insert_entry = DiffEntry.create(result_table, pk_row, order, True, row)
 
-        if (
-            max_global_time
-            < typing.cast(int, insert_entry.row["_pw_window_end"]) + cutoff
-        ):
-            simulated_state[entry_id] = insert_entry
-            expected_entries.append(insert_entry)
-
+        simulated_state[entry_id] = insert_entry
+        expected_entries.append(insert_entry)
     if not keep_results:
         for entry in simulated_state.values():
             if entry.row["_pw_window_end"] + cutoff <= max_global_time:
                 expected_entries.append(entry.final_cleanup_entry())
+    return expected_entries
 
-    result = gb.reduce(
-        pw.this._pw_window_end,
-        max_time=pw.reducers.max(pw.this.time),
-        max_value=pw.reducers.max(pw.this.value),
-    ).select(pw.this._pw_window_end, pw.this.max_time, pw.this.max_value)
-    assert_key_entries_in_stream_consistent(expected_entries, result)
 
-    run(debug=True)
+def parametrized_test(duration, hop, delay, cutoff, keep_results):
+    result_table = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
+    expected = generate_expected(
+        duration, hop, delay, cutoff, keep_results, result_table
+    )
+    assert_key_entries_in_stream_consistent(expected, result_table)
+    run()
 
 
 def test_keep_results():
@@ -287,3 +302,93 @@ def test_high_delay_high_buffer_keep_results():
 
 def test_non_zero_delay_non_zero_buffer_remove_results():
     parametrized_test(5, 3, 1, 1, False)
+
+
+def test_exactly_once():
+    duration = 5
+    hop = 3
+    delay = 6
+    cutoff = 1
+    keep_results = True
+    result = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
+    expected = []
+    for i, window_end in enumerate([2, 5, 8, 11, 14]):
+        pk_row: dict = {
+            "_pw_window": (None, window_end - duration, window_end),
+            "_pw_shard": None,
+            "_pw_window_start": window_end - duration,
+            "_pw_window_end": window_end,
+        }
+
+        row: dict = {
+            "_pw_window_end": window_end,
+            "max_time": window_end - 1,
+            "max_value": 2 * window_end - 1,
+        }
+
+        expected.append(DiffEntry.create(result, pk_row, i, True, row))
+    assert_stream_equal(expected, result)
+    run()
+
+
+def test_exactly_once_from_behavior():
+    duration = 5
+    hop = 3
+    value_functions = {
+        "time": lambda x: (x // 2) % 17,
+        "value": lambda x: x,
+    }
+
+    # 68 is 4*17, 17 is a nice number I chose arbitrarily
+    # 4 comes from the fact that I wanted 2 old entries and two fresh (possibly late)
+    # entries in a window
+
+    t = pw.demo.generate_custom_stream(
+        value_functions,
+        schema=TimeColumnInputSchema,
+        nb_rows=68,
+        autocommit_duration_ms=5,
+        input_rate=25,
+    )
+    gb = t.windowby(
+        t.time,
+        window=pw.temporal.sliding(duration=duration, hop=hop),
+        behavior=pw.temporal.temporal_behavior.exactly_once_behavior(),
+    )
+
+    result = gb.reduce(
+        pw.this._pw_window_end,
+        max_time=pw.reducers.max(pw.this.time),
+        max_value=pw.reducers.max(pw.this.value),
+    )
+
+    expected = []
+    for i, window_end in enumerate([2, 5, 8, 11, 14]):
+        pk_row: dict = {
+            "_pw_window": (None, window_end - duration, window_end),
+            "_pw_shard": None,
+            "_pw_window_start": window_end - duration,
+            "_pw_window_end": window_end,
+        }
+
+        row: dict = {
+            "_pw_window_end": window_end,
+            "max_time": window_end - 1,
+            "max_value": 2 * window_end - 1,
+        }
+
+        expected.append(DiffEntry.create(result, pk_row, i, True, row))
+    assert_stream_equal(expected, result)
+    run()
+
+
+def test_exactly_once_empty():
+    duration = 5
+    hop = 3
+    delay = 6
+    cutoff = 1
+    keep_results = False
+    result = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
+    expected: list[DiffEntry] = []
+    assert_stream_equal(expected, result)
+    run()

@@ -16,11 +16,22 @@
             alt="follow on Twitter"></a>
   <a href="https://linkedin.com/company/pathway">
         <img src="https://img.shields.io/badge/pathway-0077B5?style=social&logo=linkedin" alt="follow on LinkedIn"></a>
+      <br>
+    <a href="#getting-started">Getting Started</a> |
+    <a href="#example">Example</a> |
+    <a href="#performance">Performance</a> |
+    <a href="#deployment">Deployment</a> |
+    <a href="#resources">Resources</a> |
+    <a href="https://pathway.com/developers/">Documentation</a> |
+    <a href="https://pathway.com/blog/">Blog</a> |
+    <a href="#get-help">Get Help</a>
 
   
 </p>
 
-# Pathway
+
+
+# Pathway<a id="pathway"></a>
 
 [Pathway](https://pathway.com) is an open framework for high-throughput and low-latency real-time data processing. It is used to create Python code which seamlessly combines batch processing, streaming, and real-time API's for LLM apps. Pathway's distributed runtime (🦀-🐍) provides fresh results of your data pipelines whenever new inputs and requests are received.
 
@@ -37,7 +48,10 @@ In Pathway, data is represented in the form of Tables. Live data streams are als
 
 For any questions, you will find the community and team behind the project [on Discord](https://discord.com/invite/pathway).
 
-## Installation
+## Getting started<a id="getting-started"></a>
+
+
+### Installation<a id="installation"></a>
 
 Pathway requires Python 3.10 or above.
 
@@ -49,7 +63,7 @@ $ pip install -U pathway
 
 ⚠️ Pathway is available on MacOS and Linux. Users of other systems should run Pathway on a Virtual Machine.
 
-## Getting started
+### Running Pathway locally<a id="running-pathway-locally"></a>
 
 To use Pathway, you only need to import it:
 
@@ -78,7 +92,7 @@ $ pathway spawn --threads 3 python main.py
 To jumpstart a Pathway project, you can use our [cookiecutter template](https://github.com/pathwaycom/cookiecutter-pathway).
 
 
-### Example
+### Example<a id="example"></a>
 
 ```python
 import pathway as pw
@@ -99,7 +113,18 @@ pw.run()
 
 Run this example [in Google Colab](https://colab.research.google.com/drive/1kLx5-vKKg0IeQ88ydS-ehtrxSujEZrXK?usp=sharing)!
 
-## Monitoring Pathway
+## Deployment<a id="deployment"></a>
+
+Do you feel limited by a local run?
+If you want to scale your Pathway application, you may be interested in our Pathway for Enterprise.
+Pathway for Enterprise is specially tailored towards end-to-end data processing and real time intelligent analytics.
+It scales using distributed computing on the cloud and supports Kubernetes deployment.
+
+You can learn more about the features of Pathway for Enterprise on our [website](https://pathway.com/features).
+
+If you are interested, don't hesitate to [contact us](mailto:contact@pathway.com) to learn more.
+
+## Monitoring Pathway<a id="monitoring-pathway"></a>
 
 Pathway comes with a monitoring dashboard that allows you to keep track of the number of messages sent by each connector and the latency of the system. The dashboard also includes log messages. 
 
@@ -109,18 +134,18 @@ This dashboard is enabled by default; you can disable it by passing `monitoring_
 
 In addition to Pathway's built-in dashboard, you can [use Prometheus](https://pathway.com/developers/tutorials/prometheus-monitoring) to monitor your Pathway application.
 
-## Resources
+## Resources<a id="resources"></a>
 
-See also: **[Pathway Developer Resources](https://pathway.com/developers/)** webpage (including API Docs).
+See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webpage (including API Docs).
 
-### Videos about Pathway
+### Videos about Pathway<a id="videos-about-pathway"></a>
 [▶️ Building an LLM Application without a vector database](https://www.youtube.com/watch?v=kcrJSk00duw) - by [Jan Chorowski](https://scholar.google.com/citations?user=Yc94070AAAAJ) (7min 56s)
 
 [▶️ Linear regression on a Kafka Stream](https://vimeo.com/805069039) - by [Richard Pelgrim](https://twitter.com/richardpelgrim) (7min 53s)
 
 [▶️ Introduction to reactive data processing](https://pathway.com/developers/user-guide/introduction/welcome) - by [Adrian Kosowski](https://scholar.google.com/citations?user=om8De_0AAAAJ) (27min 54s)
 
-### Guides 
+### Guides<a id="guides"></a>
 - [Core concepts of Pathway](https://pathway.com/developers/user-guide/introduction/key-concepts/)
 - [Basic operations](https://pathway.com/developers/user-guide/introduction/survival-guide/)
 - [Joins](https://pathway.com/developers/user-guide/table-operations/join-manual/)
@@ -132,7 +157,7 @@ See also: **[Pathway Developer Resources](https://pathway.com/developers/)** web
 - [API docs](https://pathway.com/developers/api-docs/pathway)
 - [Troubleshooting](https://pathway.com/developers/user-guide/introduction/troubleshooting/)
 
-### Tutorials
+### Tutorials<a id="tutorials"></a>
 - [Linear regression on a Kafka Stream](https://pathway.com/developers/tutorials/linear_regression_with_kafka/) ([video](https://vimeo.com/805069039)) 
 - Joins:
   - [Interval joins](https://pathway.com/developers/tutorials/fleet_eta_interval_join/)
@@ -147,12 +172,12 @@ See also: **[Pathway Developer Resources](https://pathway.com/developers/)** web
 - [Monitoring Pathway with Prometheus](https://pathway.com/developers/tutorials/prometheus-monitoring/)
 - [Time between events in a multi-topic event stream](https://pathway.com/developers/tutorials/event_stream_processing_time_between_occurrences/)
 
-### Showcases
+### Showcases<a id="showcases"></a>
 - [Realtime Twitter Analysis App](https://pathway.com/developers/showcases/twitter/)
 - [Realtime classification with Nearest Neighbors](https://pathway.com/developers/showcases/lsh/lsh_chapter1/)
 - [Realtime Fuzzy joins](https://pathway.com/developers/showcases/fuzzy_join/fuzzy_join_chapter1/)
 
-### External and community content
+### External and community content<a id="external-and-community-content"></a>
 - [Real-time linear regression (Data Engineering Weekly)](https://pathway.com/developers/tutorials/unlocking-data-stream-processing-1/)
 - [Realtime server logs monitoring (Data Engineering Weekly)](https://pathway.com/developers/tutorials/unlocking-data-stream-processing-2/)
 - [Data enrichment with fuzzy joins (Data Engineering Weekly)](https://pathway.com/developers/tutorials/unlocking-data-stream-processing-3/)
@@ -160,13 +185,13 @@ See also: **[Pathway Developer Resources](https://pathway.com/developers/)** web
 
 If you would like to share with us some Pathway-related content, please give an admin a shout on [Discord](https://discord.gg/pathway).
 
-### Manul conventions
+### Manul conventions<a id="manul-conventions"></a>
 
 Manuls (aka Pallas's Cats) [are creatures with fascinating habits](https://www.youtube.com/watch?v=rlSTBvViflc). As a tribute to them, we usually read `pw`, one of the most frequent tokens in Pathway code, as: `"paw"`. 
 
 <img src="https://d14l3brkh44201.cloudfront.net/PathwayManul.svg" alt="manul" width="50px"></img>
 
-## Performance
+## Performance<a id="performance"></a>
 
 Pathway is made to outperform state-of-the-art technologies designed for streaming and batch data processing tasks, including: Flink, Spark, and Kafka Streaming. It also makes it possible to implement a lot of algorithms/UDF's in streaming mode which are not readily supported by other streaming frameworks (especially: temporal joins, iterative graph algorithms, machine learning routines).
 
@@ -176,29 +201,39 @@ If you are curious, here are [some benchmarks to play with](https://github.com/p
 
 If you try your own benchmarks, please don't hesitate to let us know. We investigate situations in which Pathway is underperforming on par with bugs (i.e., to our knowledge, they shouldn't happen...).
 
-## Coming soon
+## Coming soon<a id="coming-soon"></a>
 
-Pathway continues to evolve and gain new capabilities. Here are some exciting new features that we plan to incorporate in the near future:
+Here are some features we plan to incorporate in the near future:
 
 - Enhanced monitoring, observability, and data drift detection (integrates with Grafana visualization and other dashboarding tools).
 - New connectors: interoperability with Delta Lake and Snowflake data sources.
 - Easier connection setup for MongoDB.
 - More performant garbage collection.
 
-Stay up to date with the latest developments and news surrounding Pathway on [our blog](https://pathway.com/blog/), or [subscribe to our newsletter].  
 
 
-## Dependencies
+## Dependencies<a id="dependencies"></a>
 
 Pathway is made to run in a "clean" Linux/MacOS + Python environment. When installing the pathway package with `pip` (from a wheel), you are likely to encounter a small number of Python package dependencies, such as sqlglot (used in the SQL API) and python-sat (useful for resolving dependencies during compilation). All necessary Rust crates are pre-built; the Rust compiler is not required to install Pathway, unless building from sources. A modified version of Timely/Differential Dataflow (which provides a dataflow assembly layer) is part of this repo. 
 
-## License
+## License<a id="license"></a>
 
 Pathway is distributed on a [BSL 1.1 License](https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt) which allows for unlimited non-commercial use, as well as use of the Pathway package [for most commercial purposes](https://pathway.com/license/), free of charge. Code in this repository automatically converts to Open Source (Apache 2.0 License) after 4 years. Some [public repos](https://github.com/pathwaycom) which are complementary to this one (examples, libraries, connectors, etc.) are licensed as Open Source, under the MIT license.
 
 
-## Contribution guidelines
+## Contribution guidelines<a id="contribution-guidelines"></a>
 
 If you develop a library or connector which you would like to integrate with this repo, we suggest releasing it first as a separate repo on a MIT/Apache 2.0 license. 
 
 For all concerns regarding core Pathway functionalities, Issues are encouraged. For further information, don't hesitate to engage with Pathway's [Discord community](https://discord.gg/pathway).
+
+## Get Help<a id="get-help"></a>
+
+If you have any questions, issues, or just want to chat about Pathway, we're here to help! Feel free to:
+- Check out the [documentation](https://pathway.com/developers/) for detailed information.
+- [Open an issue on GitHub](https://github.com/pathwaycom/pathway/issues) if you encounter any bugs or have feature requests.
+- Join us on [Discord](https://discord.com/invite/pathway) to connect with other users and get support.
+- Reach out to us via email at [contact@pathway.com](mailto:contact@pathway.com).
+
+ Our team is always happy to help you and ensure that you get the most out of Pathway.
+If you would like to better understand how best to use Pathway in your project, please don't hesitate to reach out to us.

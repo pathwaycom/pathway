@@ -8,7 +8,6 @@ from collections.abc import Iterable, Iterator
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from pathway.internals import universes
 from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.trace import trace_user_frame
 
@@ -17,7 +16,7 @@ if TYPE_CHECKING:
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import table, table_like, thisclass
+from pathway.internals import table, thisclass
 from pathway.internals.arg_handlers import arg_handler, reduce_args_handler
 from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
@@ -34,14 +33,15 @@ from pathway.internals.parse_graph import G
 from pathway.internals.universe import Universe
 
 
-class GroupedJoinable(DesugaringContext, table_like.TableLike, OperatorInput):
+class GroupedJoinable(DesugaringContext, OperatorInput):
     _substitution: dict[thisclass.ThisMetaclass, table.Joinable]
     _joinable_to_group: table.Joinable
+    _universe: Universe
 
     def __init__(self, _universe: Universe, _substitution, _joinable: table.Joinable):
-        super().__init__(_universe)
         self._substitution = _substitution
         self._joinable_to_group = _joinable
+        self._universe = _universe
 
     @property
     def _desugaring(self) -> TableReduceDesugaring:
@@ -198,13 +198,11 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     def _reduce(self, **kwargs: expr.ColumnExpression) -> table.Table:
         reduced_columns: dict[str, clmn.ColumnWithExpression] = {}
 
-        universe = Universe()
         context = clmn.GroupedContext(
             table=self._joinable_to_group,
-            universe=universe,
             grouping_columns=tuple(self._grouping_columns),
             set_id=self._set_id,
-            inner_context=self._joinable_to_group._context,
+            inner_context=self._joinable_to_group._rowwise_context,
             sort_by=self._sort_by,
         )
 
@@ -214,10 +212,9 @@ class GroupedTable(GroupedJoinable, OperatorInput):
 
         result: table.Table = table.Table(
             columns=reduced_columns,
-            universe=universe,
-            id_column=clmn.IdColumn(context),
+            context=context,
         )
-        universes.promise_are_equal(result, self)
+        G.universe_solver.register_as_equal(self._universe, result._universe)
         return result
 
     def _validate_expression(self, expression: expr.ColumnExpression):

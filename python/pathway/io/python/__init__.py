@@ -12,7 +12,12 @@ from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import RawDataSchema, get_data_format_type, read_schema
+from pathway.io._utils import (
+    RawDataSchema,
+    assert_schema_or_value_columns_not_none,
+    get_data_format_type,
+    read_schema,
+)
 
 SUPPORTED_INPUT_FORMATS: set[str] = {
     "json",
@@ -174,6 +179,8 @@ computations from the moment they were terminated last time.
         if value_columns:
             raise ValueError("raw format must not be used with value_columns property")
         schema = RawDataSchema
+
+    assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)
 
     schema, api_schema = read_schema(
         schema=schema,

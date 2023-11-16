@@ -226,7 +226,6 @@ named ``path`` that will show the full path to the file from where a row was fil
             mode=internal_connector_mode(mode),
             object_pattern=object_pattern,
             persistent_id=persistent_id,
-            with_metadata=with_metadata,
         )
     else:
         data_storage = api.DataStorage(
@@ -236,7 +235,6 @@ named ``path`` that will show the full path to the file from where a row was fil
             read_method=internal_read_method(format),
             object_pattern=object_pattern,
             persistent_id=persistent_id,
-            with_metadata=with_metadata,
         )
 
     schema, data_format = construct_schema_and_data_format(

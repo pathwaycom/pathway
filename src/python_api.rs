@@ -2977,7 +2977,6 @@ pub struct DataStorage {
     persistent_id: Option<ExternalPersistentId>,
     max_batch_size: Option<usize>,
     object_pattern: String,
-    with_metadata: bool,
     mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
 }
 
@@ -3209,7 +3208,6 @@ impl DataStorage {
         persistent_id = None,
         max_batch_size = None,
         object_pattern = "*".to_string(),
-        with_metadata = false,
         mock_events = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -3229,7 +3227,6 @@ impl DataStorage {
         persistent_id: Option<ExternalPersistentId>,
         max_batch_size: Option<usize>,
         object_pattern: String,
-        with_metadata: bool,
         mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
     ) -> Self {
         DataStorage {
@@ -3248,7 +3245,6 @@ impl DataStorage {
             persistent_id,
             max_batch_size,
             object_pattern,
-            with_metadata,
             mock_events,
         }
     }
@@ -3447,7 +3443,6 @@ impl DataStorage {
                     self.internal_persistent_id(),
                     self.read_method,
                     &self.object_pattern,
-                    self.with_metadata,
                 )
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}"))
@@ -3485,7 +3480,6 @@ impl DataStorage {
                     self.mode,
                     self.internal_persistent_id(),
                     &self.object_pattern,
-                    self.with_metadata,
                 )
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))

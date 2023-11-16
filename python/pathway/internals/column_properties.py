@@ -40,5 +40,4 @@ class PreserveDependenciesPropsEvaluator(ColumnPropertiesEvaluator):
         return all(
             getattr(col.properties, name) == value
             for col in column.column_dependencies()
-            if col != column
         )

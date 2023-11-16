@@ -127,12 +127,43 @@ class CheckKeyConsistentInStreamCallback(CheckKeyEntriesInStreamCallback):
         assert not self.state, f"Non empty final state = {self.state!r}"
 
 
+# this callback does not verify the order of entries, only that all of them were present
+class CheckStreamEntriesEqualityCallback(CheckKeyEntriesInStreamCallback):
+    def __call__(
+        self,
+        key: api.Pointer,
+        row: dict[str, api.Value],
+        time: int,
+        is_addition: bool,
+    ) -> Any:
+        q = self.state.get(key)
+        assert (
+            q
+        ), f"Got unexpected entry {key=} {row=} {time=} {is_addition=}, expected entries= {self.state!r}"
+
+        entry = q.popleft()
+        assert (is_addition, row) == (
+            entry.insertion,
+            entry.row,
+        ), f"Got unexpected entry {key=} {row=} {time=} {is_addition=}, expected entries= {self.state!r}"
+        if not q:
+            self.state.pop(key)
+
+    def on_end(self):
+        assert not self.state, f"Non empty final state = {self.state!r}"
+
+
 # assert_key_entries_in_stream_consistent verifies for each key, whether:
 # - a sequence of updates in the table is a subsequence
 # of the sequence of updates defined in expected
 # - the final entry for both stream and list is the same
 def assert_key_entries_in_stream_consistent(expected: list[DiffEntry], table: pw.Table):
     callback = CheckKeyConsistentInStreamCallback(expected)
+    pw.io.subscribe(table, callback, callback.on_end)
+
+
+def assert_stream_equal(expected: list[DiffEntry], table: pw.Table):
+    callback = CheckStreamEntriesEqualityCallback(expected)
     pw.io.subscribe(table, callback, callback.on_end)
 
 
@@ -165,6 +196,19 @@ class CsvLinesNumberChecker:
     def __call__(self):
         result = pd.read_csv(self.path).sort_index()
         return len(result) == self.n_lines
+
+
+class FileLinesNumberChecker:
+    def __init__(self, path, n_lines):
+        self.path = path
+        self.n_lines = n_lines
+
+    def __call__(self):
+        n_lines_actual = 0
+        with open(self.path, "r") as f:
+            for row in f:
+                n_lines_actual += 1
+        return n_lines_actual == self.n_lines
 
 
 def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):

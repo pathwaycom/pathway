@@ -26,6 +26,8 @@ After a pull request is opened it will be reviewed, and merged after
 passing continuous integration tests and being accepted by a project or
 sub-system maintainer.
 
+We maintain a [Changelog](https://github.com/pathwaycom/pathway/blob/main/CHANGELOG.md) where all notable changes to this project are documented. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
 We ask that developers sign our [contributor license
 agreement](https://cla-assistant.io/pathwaycom/pathway). The
 process of signing the CLA is automated, and you'll be prompted with instructions

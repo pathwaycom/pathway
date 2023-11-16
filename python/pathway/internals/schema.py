@@ -34,11 +34,14 @@ def schema_from_columns(
 ) -> type[Schema]:
     if _name is None:
         _name = "schema_from_columns(" + str(list(columns.keys())) + ")"
-    __dict = {
-        "__metaclass__": SchemaMetaclass,
-        "__annotations__": {name: c.dtype for name, c in columns.items()},
-    }
-    return _schema_builder(_name, __dict)
+
+    return schema_builder(
+        columns={
+            name: ColumnDefinition.from_properties(c.properties)
+            for name, c in columns.items()
+        },
+        name=_name,
+    )
 
 
 def _type_converter(series: pd.Series) -> dt.DType:
@@ -210,6 +213,18 @@ def _create_column_definitions(
     return columns
 
 
+def _universe_properties(
+    columns: list[ColumnSchema], schema_properties: SchemaProperties
+) -> ColumnProperties:
+    append_only: bool = False
+    if len(columns) > 0:
+        append_only = any(c.append_only for c in columns)
+    elif schema_properties.append_only is not None:
+        append_only = schema_properties.append_only
+
+    return ColumnProperties(dtype=dt.POINTER, append_only=append_only)
+
+
 @dataclass(frozen=True)
 class SchemaProperties:
     append_only: bool | None = None
@@ -219,13 +234,15 @@ class SchemaMetaclass(type):
     __columns__: dict[str, ColumnSchema]
     __dtypes__: dict[str, dt.DType]
     __types__: dict[str, Any]
+    __universe_properties__: ColumnProperties
 
     @trace.trace_user_frame
     def __init__(self, *args, append_only: bool | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-
-        self.__columns__ = _create_column_definitions(
-            self, SchemaProperties(append_only=append_only)
+        schema_properties = SchemaProperties(append_only=append_only)
+        self.__columns__ = _create_column_definitions(self, schema_properties)
+        self.__universe_properties__ = _universe_properties(
+            list(self.__columns__.values()), schema_properties
         )
         self.__dtypes__ = {
             name: column.dtype for name, column in self.__columns__.items()
@@ -240,6 +257,10 @@ class SchemaMetaclass(type):
 
     def column_names(self) -> list[str]:
         return list(self.keys())
+
+    @property
+    def universe_properties(self) -> ColumnProperties:
+        return self.__universe_properties__
 
     def column_properties(self, name: str) -> ColumnProperties:
         column = self.__columns__[name]
@@ -509,6 +530,10 @@ class ColumnDefinition:
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)
+
+    @classmethod
+    def from_properties(cls, properties: ColumnProperties) -> ColumnDefinition:
+        return cls(dtype=properties.dtype, append_only=properties.append_only)
 
 
 def column_definition(

@@ -126,5 +126,4 @@ def promise_are_equal(self: TableLike, *others: TableLike) -> None:
     15  | Alice | tortoise
     """
     for other in others:
-        promise_is_subset_of(self, other)
-        promise_is_subset_of(other, self)
+        G.universe_solver.register_as_equal(self._universe, other._universe)

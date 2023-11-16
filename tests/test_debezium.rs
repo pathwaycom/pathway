@@ -20,7 +20,6 @@ fn test_debezium_reads_ok() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        false,
     )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),
@@ -166,7 +165,6 @@ fn test_debezium_mongodb_format() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        false,
     )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),

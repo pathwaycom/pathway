@@ -35,7 +35,7 @@ def test_forgetting(keep_results: bool):
         t1.t,
         t2.t,
         pw.temporal.interval(-0.1, 0.1),
-        behavior=pw.temporal.window_behavior(0, 2, keep_results=keep_results),
+        behavior=pw.temporal.common_behavior(0, 2, keep_results=keep_results),
     ).select(left_t=pw.left.t, right_t=pw.right.t)
     if keep_results:
         expected = T(
@@ -104,7 +104,7 @@ def test_forgetting_sharded(keep_results: bool):
         t2.t,
         pw.temporal.interval(-0.1, 0.1),
         t1.v == t2.v,
-        behavior=pw.temporal.window_behavior(0, 2, keep_results=keep_results),
+        behavior=pw.temporal.common_behavior(0, 2, keep_results=keep_results),
     ).select(v=pw.this.v, left_t=pw.left.t, right_t=pw.right.t)
     if keep_results:
         expected = T(

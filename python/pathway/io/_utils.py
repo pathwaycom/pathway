@@ -227,6 +227,21 @@ def read_schema(
     )
 
 
+def assert_schema_or_value_columns_not_none(
+    schema: type[Schema] | None,
+    value_columns: list[str] | None,
+    data_format_type: str | None = None,
+):
+    if schema is None and value_columns is None:
+        if data_format_type == "dsv":
+            raise ValueError(
+                "Neither schema nor value_columns were specified. "
+                "Consider using `pw.schema_from_csv` for generating schema from a CSV file"
+            )
+        else:
+            raise ValueError("Neither schema nor value_columns were specified")
+
+
 def construct_schema_and_data_format(
     format: str,
     *,
@@ -271,6 +286,8 @@ def construct_schema_and_data_format(
             **api_schema,
             parse_utf8=(format != "binary"),
         )
+
+    assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)
 
     if with_metadata:
         if schema is not None:

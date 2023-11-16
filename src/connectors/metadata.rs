@@ -1,4 +1,3 @@
-use log::error;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,7 +10,7 @@ pub struct SourceMetadata {
     // Creation and modification time may not be available at some platforms
     // Stored in u64 for easy serialization
     created_at: Option<u64>,
-    modified_at: Option<u64>,
+    pub modified_at: Option<u64>,
 
     // Owner may be unavailable at some platforms and on S3
     owner: Option<String>,
@@ -23,18 +22,10 @@ pub struct SourceMetadata {
 }
 
 impl SourceMetadata {
-    pub fn from_fs_path(path: &Path) -> Self {
-        let (created_at, modified_at, owner) = match std::fs::metadata(path) {
-            Ok(metadata) => (
-                metadata_time_to_unix_timestamp(metadata.created().ok()),
-                metadata_time_to_unix_timestamp(metadata.modified().ok()),
-                file_owner::get_owner(&metadata),
-            ),
-            Err(e) => {
-                error!("Failed to get metadata for filesystem object {path:?}, details: {e}");
-                (None, None, None)
-            }
-        };
+    pub fn from_fs_meta(path: &Path, meta: &std::fs::Metadata) -> Self {
+        let created_at = metadata_time_to_unix_timestamp(meta.created().ok());
+        let modified_at = metadata_time_to_unix_timestamp(meta.modified().ok());
+        let owner = file_owner::get_owner(meta);
 
         Self {
             created_at,

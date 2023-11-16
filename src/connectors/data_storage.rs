@@ -22,8 +22,7 @@ use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use std::thread;
 use std::thread::sleep;
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, FixedOffset};
 use log::{error, warn};
@@ -41,6 +40,7 @@ use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::with_gil_and_pool;
 use crate::python_api::PythonSubject;
+use crate::timestamp::current_unix_timestamp_secs;
 
 use bincode::ErrorKind as BincodeError;
 use elasticsearch::{BulkParts, Elasticsearch};
@@ -162,6 +162,7 @@ impl ReaderContext {
 pub enum ReadResult {
     Finished,
     NewSource(Option<SourceMetadata>),
+    FinishedSource { commit_allowed: bool },
     Data(ReaderContext, Offset),
 }
 
@@ -436,6 +437,7 @@ pub struct FilesystemReader {
     reader: Option<BufReader<std::fs::File>>,
     filesystem_scanner: FilesystemScanner,
     total_entries_read: u64,
+    deferred_read_result: Option<ReadResult>,
 }
 
 impl FilesystemReader {
@@ -445,15 +447,9 @@ impl FilesystemReader {
         persistent_id: Option<PersistentId>,
         read_method: ReadMethod,
         object_pattern: &str,
-        with_metadata: bool,
     ) -> Result<FilesystemReader, ReadError> {
-        let filesystem_scanner = FilesystemScanner::new(
-            path,
-            persistent_id,
-            streaming_mode,
-            object_pattern,
-            with_metadata,
-        )?;
+        let filesystem_scanner =
+            FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
 
         Ok(Self {
             persistent_id,
@@ -462,6 +458,7 @@ impl FilesystemReader {
             filesystem_scanner,
             total_entries_read: 0,
             read_method,
+            deferred_read_result: None,
         })
     }
 }
@@ -497,6 +494,10 @@ impl Reader for FilesystemReader {
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
+        if let Some(deferred_read_result) = self.deferred_read_result.take() {
+            return Ok(deferred_read_result);
+        }
+
         loop {
             if let Some(reader) = &mut self.reader {
                 let mut line = Vec::new();
@@ -522,6 +523,9 @@ impl Reader for FilesystemReader {
                         .expect("scanner action can't be empty");
 
                     if self.read_method == ReadMethod::Full {
+                        self.deferred_read_result = Some(ReadResult::FinishedSource {
+                            commit_allowed: !self.filesystem_scanner.has_planned_insertion(),
+                        });
                         self.reader = None;
                     }
 
@@ -530,21 +534,20 @@ impl Reader for FilesystemReader {
                         offset,
                     ));
                 }
+
+                self.reader = None;
+                return Ok(ReadResult::FinishedSource {
+                    commit_allowed: !self.filesystem_scanner.has_planned_insertion(),
+                });
             }
 
-            self.reader = None;
-            if self.filesystem_scanner.next_action_determined()? {
-                let file = File::open(
-                    self.filesystem_scanner
-                        .current_file()
-                        .as_ref()
-                        .unwrap()
-                        .as_path(),
-                )?;
-                self.reader = Some(BufReader::new(file));
-                return Ok(ReadResult::NewSource(
-                    self.filesystem_scanner.maybe_current_object_metadata(),
-                ));
+            let next_read_result = self.filesystem_scanner.next_action_determined()?;
+            if let Some(next_read_result) = next_read_result {
+                if let Some(selected_file) = self.filesystem_scanner.current_file() {
+                    let file = File::open(&*selected_file)?;
+                    self.reader = Some(BufReader::new(file));
+                }
+                return Ok(next_read_result);
             }
 
             if self.filesystem_scanner.is_polling_enabled() {
@@ -714,7 +717,8 @@ struct FilesystemScanner {
     cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
     inotify: Option<inotify_support::Inotify>,
     object_pattern: GlobPattern,
-    with_metadata: bool,
+    next_file_for_insertion: Option<PathBuf>,
+    cached_metadata: HashMap<PathBuf, Option<SourceMetadata>>,
 }
 
 impl FilesystemScanner {
@@ -723,12 +727,10 @@ impl FilesystemScanner {
         persistent_id: Option<PersistentId>,
         streaming_mode: ConnectorMode,
         object_pattern: &str,
-        with_metadata: bool,
     ) -> Result<FilesystemScanner, ReadError> {
-        let path = std::fs::canonicalize(path.into())?;
-
-        if !path.exists() {
-            return Err(io::Error::from(io::ErrorKind::NotFound).into());
+        let mut path = path.into();
+        if path.exists() || matches!(streaming_mode, ConnectorMode::Static) {
+            path = std::fs::canonicalize(path)?;
         }
 
         let is_directory = path.is_dir();
@@ -766,8 +768,13 @@ impl FilesystemScanner {
             cached_modify_times: HashMap::new(),
             inotify,
             object_pattern: GlobPattern::new(object_pattern)?,
-            with_metadata,
+            next_file_for_insertion: None,
+            cached_metadata: HashMap::new(),
         })
+    }
+
+    fn has_planned_insertion(&self) -> bool {
+        self.next_file_for_insertion.is_some()
     }
 
     fn is_polling_enabled(&self) -> bool {
@@ -794,19 +801,6 @@ impl FilesystemScanner {
         }
     }
 
-    fn maybe_current_object_metadata(&self) -> Option<SourceMetadata> {
-        if !self.with_metadata {
-            return None;
-        }
-        let path: &Path = match &self.current_action {
-            Some(PosixScannerAction::Read(path) | PosixScannerAction::Delete(path)) => {
-                path.as_ref()
-            }
-            None => return None,
-        };
-        Some(SourceMetadata::from_fs_path(path))
-    }
-
     /// Returns the name of the currently processed file in the input directory
     fn current_offset_file(&self) -> Option<Arc<PathBuf>> {
         match &self.current_action {
@@ -822,14 +816,21 @@ impl FilesystemScanner {
             todo!("seek for snapshot mode");
         }
 
+        self.known_files.clear();
         if !self.is_directory {
             self.current_action = Some(PosixScannerAction::Read(Arc::new(
                 seek_file_path.to_path_buf(),
             )));
+            let modify_system_time = std::fs::metadata(seek_file_path)?.modified().unwrap();
+            let modify_unix_timestamp = modify_system_time
+                .duration_since(UNIX_EPOCH)
+                .expect("File modified earlier than UNIX epoch")
+                .as_secs();
+            self.known_files
+                .insert(seek_file_path.to_path_buf(), modify_unix_timestamp);
             return Ok(());
         }
 
-        self.known_files.clear();
         let target_modify_time = match std::fs::metadata(seek_file_path) {
             Ok(metadata) => metadata.modified()?,
             Err(e) => {
@@ -882,37 +883,54 @@ impl FilesystemScanner {
         }
     }
 
-    fn next_action_determined(&mut self) -> io::Result<bool> {
+    /// Finish reading the current file and find the next one to read from.
+    /// If there is a file to read from, the method returns a `ReadResult`
+    /// specifying the action to be provided downstream.
+    ///
+    /// It can either be a `NewSource` event when the new action is found or
+    /// a `FinishedSource` event when we've had a scheduled action but the
+    /// corresponding file was deleted before we were able to execute this scheduled action.
+    /// scheduled action.
+    fn next_action_determined(&mut self) -> io::Result<Option<ReadResult>> {
         // Finalize the current processing action
-        let is_processing_finalized = match take(&mut self.current_action) {
-            Some(PosixScannerAction::Read(_)) => true,
-            Some(PosixScannerAction::Delete(path)) => {
-                let cached_path = self
-                    .cached_file_path(&path)
-                    .expect("in case of enabled deletions cache should exist");
-                std::fs::remove_file(cached_path)?;
-                true
-            }
-            None => false,
-        };
+        if let Some(PosixScannerAction::Delete(path)) = take(&mut self.current_action) {
+            let cached_path = self
+                .cached_file_path(&path)
+                .expect("in case of enabled deletions cache should exist");
+            std::fs::remove_file(cached_path)?;
+        }
 
-        if !self.is_directory && is_processing_finalized {
-            return Ok(false);
+        // File modification is handled as combination of its deletion and insertion
+        // If a file was deleted in the last action, now we must add it, and after that
+        // we may allow commit
+        if let Some(next_file_for_insertion) = take(&mut self.next_file_for_insertion) {
+            if next_file_for_insertion.exists() {
+                return Ok(Some(
+                    self.initiate_file_insertion(&next_file_for_insertion)?,
+                ));
+            }
+
+            // The scheduled insertion after deletion is impossible because
+            // the file has already been deleted.
+            // The action was done in full now, and we can allow commits.
+            return Ok(Some(ReadResult::FinishedSource {
+                commit_allowed: true,
+            }));
         }
 
         // First check if we need to delete something
         if self.streaming_mode.are_deletions_enabled() {
-            let has_something_to_delete = self.next_file_for_deletion_found();
-            if has_something_to_delete {
-                return Ok(true);
+            let next_for_deletion = self.next_deletion_entry();
+            if next_for_deletion.is_some() {
+                return Ok(next_for_deletion);
             }
         }
 
         // If there is nothing to delete, ingest the new entries
-        self.next_file_for_insertion_found()
+        self.next_insertion_entry()
     }
 
-    fn next_file_for_deletion_found(&mut self) -> bool {
+    fn next_deletion_entry(&mut self) -> Option<ReadResult> {
         let mut path_for_deletion: Option<PathBuf> = None;
         for (path, modified_at) in &self.known_files {
             let metadata = std::fs::metadata(path);
@@ -946,11 +964,22 @@ impl FilesystemScanner {
 
         match path_for_deletion {
             Some(path) => {
+                // Metadata of the deleted file must be the same as when it was added
+                // so that the deletion event is processed correctly by timely. To achieve
+                // this, we just take the cached metadata
+                let old_metadata = self
+                    .cached_metadata
+                    .remove(&path)
+                    .expect("inconsistency between known_files and cached_metadata");
+
                 self.known_files.remove(&path.clone().clone());
                 self.current_action = Some(PosixScannerAction::Delete(Arc::new(path.clone())));
-                true
+                if path.exists() {
+                    self.next_file_for_insertion = Some(path);
+                }
+                Some(ReadResult::NewSource(old_metadata))
             }
-            None => false,
+            None => None,
         }
     }
 
@@ -962,7 +991,7 @@ impl FilesystemScanner {
         })
     }
 
-    fn next_file_for_insertion_found(&mut self) -> io::Result<bool> {
+    fn next_insertion_entry(&mut self) -> io::Result<Option<ReadResult>> {
         let mut selected_file: Option<(PathBuf, SystemTime)> = None;
         if self.is_directory {
             let files_in_directory = std::fs::read_dir(self.path.as_path())?;
@@ -1009,31 +1038,38 @@ impl FilesystemScanner {
                 }
             }
         } else {
+            let is_existing_file = self.path.exists() && self.path.is_file();
+            if !self.known_files.is_empty() || !is_existing_file {
+                return Ok(None);
+            }
             selected_file = Some((self.path.clone(), SystemTime::now()));
         }
 
         match selected_file {
-            Some((new_file_name, new_file_modify_time)) => {
-                let new_file_path = self.path.as_path().join(new_file_name);
-
-                let new_file_modify_timestamp = new_file_modify_time
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("System time should be after the Unix epoch")
-                    .as_secs();
-
-                self.known_files
-                    .insert(new_file_path.clone(), new_file_modify_timestamp);
-
-                let cached_path = self.cached_file_path(&new_file_path);
-                if let Some(cached_path) = cached_path {
-                    std::fs::copy(&new_file_path, cached_path)?;
-                }
-
-                self.current_action = Some(PosixScannerAction::Read(Arc::new(new_file_path)));
-                Ok(true)
-            }
-            None => Ok(false),
+            Some((new_file_name, _)) => Ok(Some(self.initiate_file_insertion(&new_file_name)?)),
+            None => Ok(None),
         }
+    }
+
+    fn initiate_file_insertion(&mut self, new_file_name: &PathBuf) -> io::Result<ReadResult> {
+        let new_file_meta =
+            SourceMetadata::from_fs_meta(new_file_name, &std::fs::metadata(new_file_name)?);
+        self.cached_metadata
+            .insert(new_file_name.clone(), Some(new_file_meta.clone()));
+        self.known_files.insert(
+            new_file_name.clone(),
+            new_file_meta
+                .modified_at
+                .unwrap_or(current_unix_timestamp_secs()),
+        );
+
+        let cached_path = self.cached_file_path(new_file_name);
+        if let Some(cached_path) = cached_path {
+            std::fs::copy(new_file_name, cached_path)?;
+        }
+
+        self.current_action = Some(PosixScannerAction::Read(Arc::new(new_file_name.clone())));
+        Ok(ReadResult::NewSource(Some(new_file_meta)))
     }
 
     fn sleep_duration() -> Duration {
@@ -1103,15 +1139,9 @@ impl CsvFilesystemReader {
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
         object_pattern: &str,
-        with_metadata: bool,
     ) -> Result<CsvFilesystemReader, ReadError> {
-        let filesystem_scanner = FilesystemScanner::new(
-            path.into(),
-            persistent_id,
-            streaming_mode,
-            object_pattern,
-            with_metadata,
-        )?;
+        let filesystem_scanner =
+            FilesystemScanner::new(path.into(), persistent_id, streaming_mode, object_pattern)?;
         Ok(CsvFilesystemReader {
             parser_builder,
             persistent_id,
@@ -1216,37 +1246,31 @@ impl Reader for CsvFilesystemReader {
                             offset,
                         ));
                     }
-                    if self.filesystem_scanner.next_action_determined()? {
-                        self.reader = Some(
-                            self.parser_builder.from_path(
-                                self.filesystem_scanner
-                                    .current_file()
-                                    .as_ref()
-                                    .unwrap()
-                                    .as_path(),
-                            )?,
-                        );
-                        return Ok(ReadResult::NewSource(
-                            self.filesystem_scanner.maybe_current_object_metadata(),
-                        ));
+
+                    let next_read_result = self.filesystem_scanner.next_action_determined()?;
+                    if let Some(next_read_result) = next_read_result {
+                        if let Some(selected_file) = self.filesystem_scanner.current_file() {
+                            self.reader = Some(self.parser_builder.from_path(&*selected_file)?);
+                        }
+                        return Ok(next_read_result);
                     }
                     // The file came to its end, so we should drop the reader
                     self.reader = None;
+                    return Ok(ReadResult::FinishedSource {
+                        commit_allowed: !self.filesystem_scanner.has_planned_insertion(),
+                    });
                 }
                 None => {
-                    if self.filesystem_scanner.next_action_determined()? {
-                        self.reader = Some(
-                            self.parser_builder.flexible(true).from_path(
-                                self.filesystem_scanner
-                                    .current_file()
-                                    .as_ref()
-                                    .unwrap()
-                                    .as_path(),
-                            )?,
-                        );
-                        return Ok(ReadResult::NewSource(
-                            self.filesystem_scanner.maybe_current_object_metadata(),
-                        ));
+                    let next_read_result = self.filesystem_scanner.next_action_determined()?;
+                    if let Some(next_read_result) = next_read_result {
+                        if let Some(selected_file) = self.filesystem_scanner.current_file() {
+                            self.reader = Some(
+                                self.parser_builder
+                                    .flexible(true)
+                                    .from_path(&*selected_file)?,
+                            );
+                        }
+                        return Ok(next_read_result);
                     }
                 }
             }
@@ -2047,6 +2071,7 @@ pub struct S3GenericReader {
     persistent_id: Option<PersistentId>,
     total_entries_read: u64,
     current_bytes_read: u64,
+    deferred_read_result: Option<ReadResult>,
 }
 
 impl S3GenericReader {
@@ -2066,6 +2091,7 @@ impl S3GenericReader {
             persistent_id,
             total_entries_read: 0,
             current_bytes_read: 0,
+            deferred_read_result: None,
         })
     }
 
@@ -2133,6 +2159,10 @@ impl Reader for S3GenericReader {
     }
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
+        if let Some(deferred_read_result) = self.deferred_read_result.take() {
+            return Ok(deferred_read_result);
+        }
+
         loop {
             match &mut self.reader {
                 Some(reader) => {
@@ -2152,6 +2182,9 @@ impl Reader for S3GenericReader {
                         );
 
                         if self.read_method == ReadMethod::Full {
+                            self.deferred_read_result = Some(ReadResult::FinishedSource {
+                                commit_allowed: true,
+                            });
                             self.reader = None;
                         }
 

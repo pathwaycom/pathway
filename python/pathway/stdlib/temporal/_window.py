@@ -19,8 +19,19 @@ from pathway.internals.type_interpreter import eval_type
 
 from ._interval_join import interval, interval_join
 from ._window_join import WindowJoinResult
-from .temporal_behavior import WindowBehavior
-from .utils import IntervalType, TimeEventType, check_joint_types, get_default_shift
+from .temporal_behavior import (
+    Behavior,
+    CommonBehavior,
+    ExactlyOnceBehavior,
+    common_behavior,
+)
+from .utils import (
+    IntervalType,
+    TimeEventType,
+    check_joint_types,
+    get_default_shift,
+    zero_length_interval,
+)
 
 
 class Window(ABC):
@@ -29,7 +40,7 @@ class Window(ABC):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        behavior: WindowBehavior | None,
+        behavior: Behavior | None,
         shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         ...
@@ -100,7 +111,7 @@ class _SessionWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        behavior: WindowBehavior | None,
+        behavior: Behavior | None,
         shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         if self.max_gap is not None:
@@ -307,7 +318,7 @@ class _SlidingWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        behavior: WindowBehavior | None,
+        behavior: Behavior | None,
         shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         check_joint_types(
@@ -318,6 +329,7 @@ class _SlidingWindow(Window):
                 "window.offset": (self.offset, TimeEventType),
             }
         )
+
         target = table.select(
             _pw_window=pw.apply_with_type(
                 self._assign_windows,
@@ -341,6 +353,31 @@ class _SlidingWindow(Window):
         )
 
         if behavior is not None:
+            if isinstance(behavior, ExactlyOnceBehavior):
+                duration: IntervalType
+                # that is split in two if-s, as it helps mypy figure out proper types
+                # one if impl left either self.ratio or self.duration as optionals
+                # which won't fit into the duration variable of type IntervalType
+                if self.duration is not None:
+                    duration = self.duration
+                elif self.ratio is not None:
+                    duration = self.ratio * self.hop
+                shift = (
+                    self.shift
+                    if self.shift is not None
+                    else zero_length_interval(type(duration))
+                )
+                behavior = common_behavior(
+                    duration + shift, shift, True  # type:ignore
+                )
+            elif not isinstance(behavior, CommonBehavior):
+                raise ValueError(
+                    f"behavior {behavior} unsupported in sliding/tumbling window"
+                )
+
+            if behavior.cutoff is not None:
+                cutoff_threshold = pw.this._pw_window_end + behavior.cutoff
+                target = target._freeze(cutoff_threshold, pw.this._pw_key)
             if behavior.delay is not None:
                 target = target._buffer(
                     target._pw_window_start + behavior.delay, target._pw_key
@@ -355,7 +392,6 @@ class _SlidingWindow(Window):
 
             if behavior.cutoff is not None:
                 cutoff_threshold = pw.this._pw_window_end + behavior.cutoff
-                target = target._freeze(cutoff_threshold, pw.this._pw_key)
                 target = target._forget(
                     cutoff_threshold, pw.this._pw_key, behavior.keep_results
                 )
@@ -470,7 +506,7 @@ class _IntervalsOverWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        behavior: WindowBehavior | None,
+        behavior: CommonBehavior | None,
         shard: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         check_joint_types(
@@ -803,7 +839,7 @@ def windowby(
     time_expr: pw.ColumnExpression,
     *,
     window: Window,
-    behavior: WindowBehavior | None = None,
+    behavior: Behavior | None = None,
     shard: pw.ColumnExpression | None = None,
 ) -> pw.GroupedTable:
     """

@@ -33,7 +33,7 @@ from ._window_join import (
     window_join_outer,
     window_join_right,
 )
-from .temporal_behavior import WindowBehavior, window_behavior
+from .temporal_behavior import CommonBehavior, common_behavior
 
 __all__ = [
     "AsofJoinResult",
@@ -65,6 +65,6 @@ __all__ = [
     "tumbling",
     "sliding",
     "session",
-    "window_behavior",
-    "WindowBehavior",
+    "common_behavior",
+    "CommonBehavior",
 ]

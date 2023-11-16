@@ -112,6 +112,7 @@ pub fn full_cycle_read(
                     new_parsed_entries.push(event);
                 }
             }
+            Entry::Realtime(ReadResult::FinishedSource { .. }) => continue,
             Entry::Realtime(ReadResult::NewSource(metadata)) => {
                 parser.on_new_source_started(metadata.as_ref());
             }
@@ -174,6 +175,7 @@ pub fn read_data_from_reader(
                     panic!("Unexpected erroneous reply: {parse_result:?}");
                 }
             }
+            ReadResult::FinishedSource { .. } => continue,
             ReadResult::NewSource(metadata) => parser.on_new_source_started(metadata.as_ref()),
             ReadResult::Finished => break,
         }
@@ -249,6 +251,7 @@ pub fn data_parsing_fails(
                     return Ok(true);
                 }
             }
+            ReadResult::FinishedSource { .. } => continue,
             ReadResult::NewSource(metadata) => parser.on_new_source_started(metadata.as_ref()),
             ReadResult::Finished => break,
         }

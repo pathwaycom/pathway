@@ -24,7 +24,7 @@ from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
 
-from .temporal_behavior import WindowBehavior
+from .temporal_behavior import CommonBehavior
 from .utils import IntervalType, TimeEventType, check_joint_types, get_default_shift
 
 
@@ -156,7 +156,7 @@ class IntervalJoinResult(DesugaringContext):
 
     @staticmethod
     def _apply_temporal_behavior(
-        table: pw.Table, behavior: WindowBehavior | None
+        table: pw.Table, behavior: CommonBehavior | None
     ) -> pw.Table:
         if behavior is not None:
             if behavior.delay is not None:
@@ -179,7 +179,7 @@ class IntervalJoinResult(DesugaringContext):
         right_time_expression: pw.ColumnExpression,
         interval: Interval,
         *on: pw.ColumnExpression,
-        behavior: WindowBehavior | None = None,
+        behavior: CommonBehavior | None = None,
         mode: pw.JoinMode,
     ):
         """Creates an IntervalJoinResult. To perform an interval join uses it uses two
@@ -428,7 +428,7 @@ def interval_join(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
-    behavior: WindowBehavior | None = None,
+    behavior: CommonBehavior | None = None,
     how: pw.JoinMode = pw.JoinMode.INNER,
 ) -> IntervalJoinResult:
     """Performs an interval join of self with other using a time difference
@@ -545,7 +545,7 @@ def interval_join_inner(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
-    behavior: WindowBehavior | None = None,
+    behavior: CommonBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -659,7 +659,7 @@ def interval_join_left(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
-    behavior: WindowBehavior | None = None,
+    behavior: CommonBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval left join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -778,7 +778,7 @@ def interval_join_right(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
-    behavior: WindowBehavior | None = None,
+    behavior: CommonBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval right join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -899,7 +899,7 @@ def interval_join_outer(
     other_time: pw.ColumnExpression,
     interval: Interval,
     *on: pw.ColumnExpression,
-    behavior: WindowBehavior | None = None,
+    behavior: CommonBehavior | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval outer join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=

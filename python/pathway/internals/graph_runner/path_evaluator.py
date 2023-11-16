@@ -162,7 +162,7 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
     ) -> Storage:
         context = self.context
         output_columns_list = list(output_columns)
-        source_universe = context.union_universes[0]
+        source_universe = context.union_ids[0].universe
         # ensure that keeping structure is possible,
         # i.e. all sources have the same path to required columns
         keep_structure = True
@@ -328,7 +328,7 @@ class PromiseSameUniversePathEvaluator(
         input_storages: dict[Universe, Storage],
     ) -> Storage:
         paths: dict[clmn.Column, ColumnPath] = {}
-        orig_storage = input_storages[self.context.orig_universe]
+        orig_storage = input_storages[self.context.orig_id_column.universe]
         new_storage = input_storages[self.context.universe]
         for column in output_columns:
             if (

@@ -126,11 +126,11 @@ def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
 
         if "behavior" in kwargs:
             behavior = processed_kwargs["behavior"] = kwargs.pop("behavior")
-            from pathway.stdlib.temporal import WindowBehavior
+            from pathway.stdlib.temporal import CommonBehavior
 
-            if not isinstance(behavior, WindowBehavior):
+            if not isinstance(behavior, CommonBehavior):
                 raise ValueError(
-                    "The behavior argument of join should be of type pathway.temporal.WindowBehavior."
+                    "The behavior argument of join should be of type pathway.temporal.CommonBehavior."
                 )
 
         if kwargs:

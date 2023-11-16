@@ -1,7 +1,7 @@
 # Copyright © 2023 Pathway
 
 import datetime
-from typing import Any, Union
+from typing import Any, Type, Union
 
 from pathway.internals import dtype as dt
 from pathway.internals.type_interpreter import eval_type
@@ -17,6 +17,17 @@ def get_default_shift(interval: IntervalType) -> TimeEventType:
         return 0
     else:
         return 0.0
+
+
+def zero_length_interval(interval_type: Type[IntervalType]) -> IntervalType:
+    if issubclass(interval_type, datetime.timedelta):
+        return datetime.timedelta(0)
+    elif issubclass(interval_type, int):
+        return 0
+    elif issubclass(interval_type, float):
+        return 0.0
+    else:
+        raise Exception("unsupported interval type")
 
 
 def _get_possible_types(type: Any) -> tuple[dt.DType, ...]:

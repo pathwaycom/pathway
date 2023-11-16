@@ -224,7 +224,7 @@ def test_sliding_compacting():
     gb = t.windowby(
         t.t,
         window=pw.temporal.sliding(duration=10, hop=3),
-        behavior=pw.temporal.window_behavior(delay=0, cutoff=1, keep_results=False),
+        behavior=pw.temporal.common_behavior(delay=0, cutoff=1, keep_results=False),
         shard=t.shard,
     )
 
@@ -271,7 +271,7 @@ def test_sliding_compacting_2():
     gb = t.windowby(
         t.t,
         window=pw.temporal.sliding(duration=10, hop=3),
-        behavior=pw.temporal.window_behavior(delay=0, cutoff=2, keep_results=False),
+        behavior=pw.temporal.common_behavior(delay=0, cutoff=2, keep_results=False),
         shard=t.shard,
     )
 

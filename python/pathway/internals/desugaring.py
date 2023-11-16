@@ -131,12 +131,9 @@ class TableReplacementWithNoneDesugaring(IdentityTransform):
 
 
 class TableCallbackDesugaring(DesugaringTransform):
-    table_like: table.TableLike
+    table_like: table.TableLike | groupby.GroupedJoinable
 
-    def __init__(self, table_like: table.TableLike):
-        from pathway.internals import table
-
-        assert isinstance(table_like, table.TableLike)
+    def __init__(self, table_like: table.TableLike | groupby.GroupedJoinable):
         self.table_like = table_like
 
     @abstractmethod

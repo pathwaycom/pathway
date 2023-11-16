@@ -20,7 +20,6 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["key".to_string()]), vec!["foo".to_string()], ','),
@@ -54,7 +53,6 @@ fn test_single_file_ok() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -80,7 +78,6 @@ fn test_custom_delimiter() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -108,7 +105,6 @@ fn test_escape_fields() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -155,7 +151,6 @@ fn test_escape_newlines() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -192,7 +187,6 @@ fn test_nonexistent_file() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     );
     assert!(reader.is_err());
 
@@ -210,7 +204,6 @@ fn test_special_fields() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(

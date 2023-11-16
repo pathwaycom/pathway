@@ -14,15 +14,16 @@ import pathway.internals as pw
 from pathway.internals import column_properties as cp, dtype as dt, trace
 from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
+from pathway.internals.parse_graph import G
+from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
     from pathway.internals.expression import InternalColRef
     from pathway.internals.operator import OutputHandle
     from pathway.internals.table import Table
-    from pathway.internals.universe import Universe
 
 
-@dataclass(eq=False, frozen=True)
+@dataclass(frozen=True)
 class Lineage:
     source: OutputHandle
     """Source handle."""
@@ -32,7 +33,7 @@ class Lineage:
         return self.source.operator.trace
 
 
-@dataclass(eq=False, frozen=True)
+@dataclass(frozen=True)
 class ColumnLineage(Lineage):
     name: str
     """Original name of a column."""
@@ -63,7 +64,7 @@ class Column(ABC):
         self._trace = trace.Trace.from_traceback()
 
     def column_dependencies(self) -> StableSet[Column]:
-        return StableSet([self])
+        return StableSet([])
 
     @property
     def trace(self) -> trace.Trace:
@@ -117,7 +118,11 @@ class ColumnWithContext(Column, ABC):
 
     context: Context
 
-    def __init__(self, context: Context, universe: Universe):
+    def __init__(
+        self,
+        context: Context,
+        universe: Universe,
+    ):
         super().__init__(universe)
         self.context = context
 
@@ -141,6 +146,20 @@ class IdColumn(ColumnWithContext):
     @cached_property
     def context_dtype(self) -> dt.DType:
         return dt.POINTER
+
+
+class MaterializedIdColumn(IdColumn):
+    context: MaterializedContext
+
+    def __init__(
+        self, context: MaterializedContext, properties: cp.ColumnProperties
+    ) -> None:
+        super().__init__(context)
+        self._properties = properties
+
+    @property
+    def properties(self) -> cp.ColumnProperties:
+        return self._properties
 
 
 class ColumnWithExpression(ColumnWithContext):
@@ -210,25 +229,30 @@ class ContextTable:
         assert all((column.universe == self.universe) for column in self.columns)
 
 
-def _create_internal_table(
-    columns: Iterable[Column], universe: Universe, context: Context
-) -> Table:
+def _create_internal_table(columns: Iterable[Column], context: Context) -> Table:
     from pathway.internals.table import Table
 
     columns_dict = {f"{i}": column for i, column in enumerate(columns)}
-    return Table(columns_dict, universe, id_column=IdColumn(context))
+    return Table(columns_dict, context=context)
 
 
 @dataclass(eq=False, frozen=True)
-class Context:
+class Context(ABC):
     """Context of the column evaluation.
 
     Context will be mapped to proper evaluator based on its type.
     """
 
-    universe: Universe
-    """Resulting universe."""
     _column_properties_evaluator: ClassVar[type[cp.ColumnPropertiesEvaluator]]
+
+    @cached_property
+    def id_column(self) -> IdColumn:
+        return IdColumn(self)
+
+    @property
+    @abstractmethod
+    def universe(self) -> Universe:
+        ...
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return []
@@ -240,7 +264,8 @@ class Context:
         # columns depend on columns in their context, not dependencies of columns in context
         return StableSet(
             chain(
-                self.column_dependencies_external(), self.column_dependencies_internal()
+                self.column_dependencies_external(),
+                self.column_dependencies_internal(),
             )
         )
 
@@ -269,21 +294,17 @@ class Context:
         dependencies = list(self.column_dependencies_internal())
         if len(dependencies) == 0:
             return []
-        universe = None
         context = None
         columns: list[ColumnWithContext] = []
         for column in dependencies:
             assert isinstance(
                 column, ColumnWithContext
             ), f"Column {column} that is not ColumnWithContext appeared in column_dependencies_internal()"
-            assert universe is None or universe == column.universe
             assert context is None or context == column.context
             columns.append(column)
-            universe = column.universe
             context = column.context
-        assert universe is not None
         assert context is not None
-        return [_create_internal_table(columns, universe, context)]
+        return [_create_internal_table(columns, context)]
 
     def column_properties(self, column: ColumnWithContext) -> cp.ColumnProperties:
         return self._column_properties_evaluator().eval(column)
@@ -306,22 +327,56 @@ class RowwiseContext(
 ):
     """Context for basic expressions."""
 
+    _id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self._id_column]
+
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.universe]
+
+    @property
+    def universe(self) -> Universe:
+        return self._id_column.universe
+
+
+@dataclass(eq=False, frozen=True)
+class MaterializedContext(Context):
+    _universe: Universe
+    _universe_properties: cp.ColumnProperties = cp.ColumnProperties(dtype=dt.POINTER)
+
+    def universe_dependencies(self) -> Iterable[Universe]:
+        return [self.universe]
+
+    @property
+    def id_column(self) -> MaterializedIdColumn:
+        return MaterializedIdColumn(self, self._universe_properties)
+
+    @property
+    def universe(self) -> Universe:
+        return self._universe
 
 
 @dataclass(eq=False, frozen=True)
 class GradualBroadcastContext(Context):
+    orig_id_column: IdColumn
     lower_column: ColumnWithExpression
     value_column: ColumnWithExpression
     upper_column: ColumnWithExpression
-    apx_value_column: MaterializedColumn
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.lower_column, self.value_column, self.upper_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.universe, self.value_column.universe]
+
+    @cached_property
+    def apx_value_column(self):
+        return MaterializedColumn(self.universe, cp.ColumnProperties(dtype=dt.FLOAT))
+
+    @property
+    def universe(self) -> Universe:
+        return self.orig_id_column.universe
 
 
 @dataclass(eq=False, frozen=True)
@@ -353,6 +408,10 @@ class GroupedContext(Context):
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.inner_context.universe]
 
+    @cached_property
+    def universe(self) -> Universe:
+        return Universe()
+
 
 @dataclass(eq=False, frozen=True)
 class FilterContext(
@@ -361,28 +420,42 @@ class FilterContext(
     """Context of `table.filter() operation."""
 
     filtering_column: ColumnWithExpression
-    universe_to_filter: Universe
+    id_column_to_filter: IdColumn
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.filtering_column]
 
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.id_column_to_filter]
+
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe_to_filter]
+        return [self.id_column_to_filter.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.id_column_to_filter.universe.subset()
 
 
 @dataclass(eq=False, frozen=True)
 class TimeColumnContext(Context):
     """Context of operations that use time columns."""
 
-    orig_universe: Universe
+    orig_id_column: IdColumn
     threshold_column: ColumnWithExpression
     time_column: ColumnWithExpression
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.threshold_column, self.time_column]
 
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
+
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe]
+        return [self.orig_id_column.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.orig_id_column.universe.subset()
 
 
 @dataclass(eq=False, frozen=True)
@@ -396,20 +469,34 @@ class ForgetContext(TimeColumnContext):
 class ForgetImmediatelyContext(Context):
     """Context of `table._forget_immediately operation."""
 
-    orig_universe: Universe
+    orig_id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe]
+        return [self.orig_id_column.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.orig_id_column.universe.subset()
 
 
 @dataclass(eq=False, frozen=True)
 class FilterOutForgettingContext(Context):
     """Context of `table._filter_out_results_of_forgetting() operation."""
 
-    orig_universe: Universe
+    orig_id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe]
+        return [self.orig_id_column.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.orig_id_column.universe.superset()
 
 
 @dataclass(eq=False, frozen=True)
@@ -434,66 +521,96 @@ class ReindexContext(Context):
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.reindex_column.universe]
 
+    @cached_property
+    def universe(self) -> Universe:
+        return Universe()
+
 
 @dataclass(eq=False, frozen=True)
 class IxContext(Context):
     """Context of `table.ix() operation."""
 
-    orig_universe: Universe
     key_column: Column
+    orig_id_column: IdColumn
     optional: bool
 
     def column_dependencies_external(self) -> Iterable[Column]:
-        return [self.key_column]
+        return [self.orig_id_column, self.key_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe, self.orig_universe]
+        return [self.universe, self.orig_id_column.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.key_column.universe
 
 
 @dataclass(eq=False, frozen=True)
 class IntersectContext(Context):
     """Context of `table.intersect() operation."""
 
-    intersecting_universes: tuple[Universe, ...]
+    intersecting_ids: tuple[IdColumn, ...]
 
     def __post_init__(self):
-        assert len(self.intersecting_universes) > 0
+        assert len(self.intersecting_ids) > 0
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return self.intersecting_universes
+        return [c.universe for c in self.intersecting_ids]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return G.universe_solver.get_intersection(
+            *[c.universe for c in self.intersecting_ids]
+        )
 
 
 @dataclass(eq=False, frozen=True)
 class RestrictContext(Context):
     """Context of `table.restrict() operation."""
 
-    orig_universe: Universe
+    orig_id_column: IdColumn
+    _universe: Universe
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe, self.universe]
+        return [self.orig_id_column.universe, self.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self._universe
 
 
 @dataclass(eq=False, frozen=True)
 class DifferenceContext(Context):
     """Context of `table.difference() operation."""
 
-    left: Universe
-    right: Universe
+    left: IdColumn
+    right: IdColumn
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.left, self.right]
+        return [self.left.universe, self.right.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return G.universe_solver.get_difference(self.left.universe, self.right.universe)
 
 
 @dataclass(eq=False, frozen=True)
 class HavingContext(Context):
-    orig_universe: Universe
+    orig_id_column: IdColumn
     key_column: Column
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.key_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe, self.key_column.universe]
+        return [self.orig_id_column.universe, self.key_column.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.key_column.universe.subset()
 
 
 @dataclass(eq=False, frozen=True)
@@ -501,24 +618,39 @@ class UpdateRowsContext(Context):
     """Context of `table.update_rows()` and related operations."""
 
     updates: dict[str, Column]
-    union_universes: tuple[Universe, ...]
+    union_ids: tuple[IdColumn, ...]
 
     def __post_init__(self):
-        assert len(self.union_universes) > 0
+        assert len(self.union_ids) > 0
 
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([self.updates[ref.name]])
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return self.union_universes
+        return [c.universe for c in self.union_ids]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return G.universe_solver.get_union(*[c.universe for c in self.union_ids])
 
 
 @dataclass(eq=False, frozen=True)
-class UpdateCellsContext(UpdateRowsContext):
+class UpdateCellsContext(Context):
+    left: IdColumn
+    right: IdColumn
+    updates: dict[str, Column]
+
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         if ref.name in self.updates:
-            return super().reference_column_dependencies(ref)
+            return StableSet([self.updates[ref.name]])
         return StableSet()
+
+    def universe_dependencies(self) -> Iterable[Universe]:
+        return [self.left.universe, self.right.universe]
+
+    @property
+    def universe(self) -> Universe:
+        return self.left.universe
 
 
 @dataclass(eq=False, frozen=True)
@@ -526,16 +658,20 @@ class ConcatUnsafeContext(Context):
     """Context of `table.concat_unsafe()`."""
 
     updates: tuple[dict[str, Column], ...]
-    union_universes: tuple[Universe, ...]
+    union_ids: tuple[IdColumn, ...]
 
     def __post_init__(self):
-        assert len(self.union_universes) > 0
+        assert len(self.union_ids) > 0
 
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([update[ref.name] for update in self.updates])
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return self.union_universes
+        return [c.universe for c in self.union_ids]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return G.universe_solver.get_union(*[c.universe for c in self.union_ids])
 
 
 @dataclass(eq=False, frozen=True)
@@ -544,16 +680,24 @@ class PromiseSameUniverseContext(
 ):
     """Context of table.unsafe_promise_same_universe_as() operation."""
 
-    orig_universe: Universe
+    orig_id_column: IdColumn
+    _id_column: IdColumn
 
     def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe, self.universe]
+        return [self.orig_id_column.universe, self.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self._id_column.universe
 
 
 @dataclass(eq=True, frozen=True)
 class JoinContext(Context):
-    """Context of `table.join() operation."""
+    """Context for building inner table of a join, where all columns from left and right
+    are properly unrolled. Uses JoinTypeInterpreter to properly evaluate which columns
+    should be optionalized."""
 
+    _universe: Universe
     left_table: pw.Table
     right_table: pw.Table
     on_left: ContextTable
@@ -579,32 +723,37 @@ class JoinContext(Context):
         return [
             _create_internal_table(
                 self.on_left.columns,
-                self.on_left.universe,
                 self.left_table._table_restricted_context,
             ),
             _create_internal_table(
                 self.on_right.columns,
-                self.on_right.universe,
                 self.right_table._table_restricted_context,
             ),
         ]
 
+    @cached_property
+    def universe(self) -> Universe:
+        return self._universe
+
 
 @dataclass(eq=False, frozen=True)
 class JoinRowwiseContext(RowwiseContext):
+    """Context for actually evaluating join expressions."""
+
     temporary_column_to_original: dict[InternalColRef, InternalColRef]
     original_column_to_temporary: dict[InternalColRef, ColumnReference]
 
     @staticmethod
     def from_mapping(
-        universe: Universe,
+        id_column: IdColumn,
         columns_mapping: dict[InternalColRef, ColumnReference],
     ) -> JoinRowwiseContext:
-        temporary_column_to_original = {}
-        for orig_colref, expression in columns_mapping.items():
-            temporary_column_to_original[expression._to_internal()] = orig_colref
+        temporary_column_to_original = {
+            expression._to_internal(): orig_colref
+            for orig_colref, expression in columns_mapping.items()
+        }
         return JoinRowwiseContext(
-            universe, temporary_column_to_original, columns_mapping.copy()
+            id_column, temporary_column_to_original, columns_mapping.copy()
         )
 
     def _get_type_interpreter(self):
@@ -620,15 +769,13 @@ class FlattenContext(Context):
     """Context of `table.flatten() operation."""
 
     orig_universe: Universe
-    flatten_column: Column
-    flatten_result_column: MaterializedColumn
+    flatten_column: ColumnWithExpression
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.flatten_column]
 
-    @staticmethod
-    def get_flatten_column_dtype(flatten_column: ColumnWithExpression):
-        dtype = flatten_column.dtype
+    def _get_flatten_column_dtype(self):
+        dtype = self.flatten_column.dtype
         if isinstance(dtype, dt.List):
             return dtype.wrapped
         if isinstance(dtype, dt.Tuple):
@@ -645,11 +792,24 @@ class FlattenContext(Context):
             return dt.ANY
         else:
             raise TypeError(
-                f"Cannot flatten column {flatten_column.expression!r} of type {dtype}."
+                f"Cannot flatten column {self.flatten_column.expression!r} of type {dtype}."
             )
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.orig_universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return Universe()
+
+    @cached_property
+    def flatten_result_column(self) -> Column:
+        return MaterializedColumn(
+            self.universe,
+            cp.ColumnProperties(
+                dtype=self._get_flatten_column_dtype(),
+            ),
+        )
 
 
 @dataclass(eq=False, frozen=True)
@@ -658,11 +818,25 @@ class SortingContext(Context):
 
     key_column: ColumnWithExpression
     instance_column: ColumnWithExpression
-    prev_column: MaterializedColumn
-    next_column: MaterializedColumn
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.key_column, self.instance_column]
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [self.universe]
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.key_column.universe
+
+    @cached_property
+    def prev_column(self) -> Column:
+        return MaterializedColumn(
+            self.universe, cp.ColumnProperties(dtype=dt.Optional(dt.POINTER))
+        )
+
+    @cached_property
+    def next_column(self) -> Column:
+        return MaterializedColumn(
+            self.universe, cp.ColumnProperties(dtype=dt.Optional(dt.POINTER))
+        )

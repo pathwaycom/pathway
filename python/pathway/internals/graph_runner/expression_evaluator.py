@@ -1001,7 +1001,7 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
     def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
         joined_storage = self.run_join(self.context.universe, *input_storages)
         rowwise_evaluator = RowwiseEvaluator(
-            clmn.RowwiseContext(self.context.universe),
+            clmn.RowwiseContext(self.context.id_column),
             self.scope,
             self.state,
             self.scope_context,
@@ -1117,7 +1117,7 @@ class UpdateRowsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateRowsConte
         return self.scope.update_rows_table(input_table, update_input_table, properties)
 
 
-class UpdateCellsEvaluator(UpdateRowsEvaluator, context_type=clmn.UpdateCellsContext):
+class UpdateCellsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateCellsContext):
     context: clmn.UpdateCellsContext
 
     def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:

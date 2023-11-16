@@ -30,7 +30,6 @@ fn test_dsv_with_default_end_of_line() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -85,7 +84,6 @@ fn test_dsv_with_default_middle_of_line() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -136,7 +134,6 @@ fn test_dsv_fails_without_default() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -170,7 +167,6 @@ fn test_dsv_with_default_nullable() -> eyre::Result<()> {
         ConnectorMode::Static,
         None,
         "*",
-        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -215,7 +211,6 @@ fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        false,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -244,7 +239,6 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        false,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -297,7 +291,6 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        false,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
@@ -344,7 +337,6 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
         None,
         ReadMethod::ByLine,
         "*",
-        false,
     )?;
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),

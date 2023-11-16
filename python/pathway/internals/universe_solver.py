@@ -19,6 +19,10 @@ class UniverseSolver:
         self.var_counter = itertools.count(start=1)
         self.universe_vars = defaultdict(lambda: next(self.var_counter))
 
+    def register_as_equal(self, left: Universe, right: Universe) -> None:
+        self.register_as_subset(left, right)
+        self.register_as_subset(right, left)
+
     def register_as_subset(self, subset: Universe, superset: Universe) -> None:
         varA = self.universe_vars[subset]
         varB = self.universe_vars[superset]

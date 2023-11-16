@@ -402,6 +402,7 @@ where
 
         let connector_monitor = Rc::new(RefCell::new(ConnectorMonitor::new(reader_name)));
         let cloned_connector_monitor = connector_monitor.clone();
+        let mut commit_allowed = true;
         let poller = Box::new(move || {
             let iteration_start = SystemTime::now();
             if matches!(replay_mode, ReplayMode::Speedrun)
@@ -413,7 +414,7 @@ where
 
             if let Some(next_commit_at_timestamp) = next_commit_at {
                 if next_commit_at_timestamp <= iteration_start {
-                    if backfilling_finished {
+                    if backfilling_finished && commit_allowed {
                         /*
                             We don't auto-commit for the initial batch, which consists of the
                             data, which shouldn't trigger any output.
@@ -460,6 +461,7 @@ where
                             &mut snapshot_writer,
                             &offsets_by_time_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
+                            &mut commit_allowed,
                         );
                     }
                     Err(TryRecvError::Empty) => return ControlFlow::Continue(next_commit_at),
@@ -489,24 +491,38 @@ where
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         offsets_by_time_writer: &Mutex<HashMap<Timestamp, OffsetAntichain>>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
+        commit_allowed: &mut bool,
     ) {
         let has_persistent_storage = snapshot_writer.is_some();
 
         match entry {
             Entry::Realtime(read_result) => match read_result {
                 ReadResult::Finished => {}
+                ReadResult::FinishedSource {
+                    commit_allowed: commit_allowed_external,
+                } => {
+                    *commit_allowed = commit_allowed_external;
+                    if *commit_allowed {
+                        let parsed_entries = vec![ParsedEvent::AdvanceTime];
+                        self.on_parsed_data(
+                            parsed_entries,
+                            None, // no key generation for time advancement
+                            input_session,
+                            values_to_key,
+                            snapshot_writer,
+                            connector_monitor,
+                        );
+                    }
+                }
                 ReadResult::NewSource(metadata) => {
+                    // If a connector produces events of this kind, we consider the
+                    // objects atomic. That means that we won't do commits in between
+                    // of data source processing.
+                    //
+                    // So, we will block the ability to commit until an event allowing
+                    // the commits is received again.
+                    *commit_allowed = false;
                     parser.on_new_source_started(metadata.as_ref());
-
-                    let parsed_entries = vec![ParsedEvent::AdvanceTime];
-                    self.on_parsed_data(
-                        parsed_entries,
-                        None, // no key generation for time advancement
-                        input_session,
-                        values_to_key,
-                        snapshot_writer,
-                        connector_monitor,
-                    );
                 }
                 ReadResult::Data(reader_context, offset) => {
                     let mut parsed_entries = match parser.parse(&reader_context) {

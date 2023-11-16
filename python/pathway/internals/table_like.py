@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from pathway.internals import universes
+from pathway.internals import column as clmn, universes
 from pathway.internals.deprecation_meta import DeprecationSuperclass
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.universe import Universe
@@ -37,9 +37,13 @@ class TableLike(DeprecationSuperclass):
     """
 
     _universe: Universe
+    _context: clmn.Context
+    _id_column: clmn.IdColumn
 
-    def __init__(self, universe: Universe):
-        self._universe = universe
+    def __init__(self, context: clmn.Context):
+        self._context = context
+        self._universe = context.universe
+        self._id_column = context.id_column
 
     @runtime_type_check
     def promise_universes_are_disjoint(

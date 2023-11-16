@@ -37,8 +37,6 @@ class GraphRunner:
         default_logging: bool = True,
         persistence_config: PersistenceConfig | None = None,
     ) -> None:
-        from pathway.debug import stream_generator
-
         self._graph = input_graph
         self.debug = debug
         if ignore_asserts is None:
@@ -47,11 +45,7 @@ class GraphRunner:
         self.monitoring_level = monitoring_level
         self.with_http_server = with_http_server
         self.default_logging = default_logging
-        self.persistence_config = (
-            persistence_config
-            or environ.get_replay_config()
-            or stream_generator.persistence_config()
-        )
+        self.persistence_config = persistence_config or environ.get_replay_config()
 
     def run_tables(
         self,
@@ -102,7 +96,6 @@ class GraphRunner:
             for operator in context.nodes
             if isinstance(operator, ContextualizedIntermediateOperator)
         ]
-
         monitoring_level = self.monitoring_level.to_internal()
 
         with new_event_loop() as event_loop, monitor_stats(

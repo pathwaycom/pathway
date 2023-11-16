@@ -1,6 +1,9 @@
+import pytest
+
 import pathway.internals as pw
 from pathway.internals import dtype as dt
 from pathway.internals.column_properties import ColumnProperties
+from pathway.internals.decorators import empty_from_schema
 from pathway.tests.utils import T
 
 
@@ -68,3 +71,44 @@ def test_preserve_context_dependency_properties():
 
     assert_col_props(res1.a, ColumnProperties(dtype=dt.INT, append_only=True))
     assert_col_props(res2.a, ColumnProperties(dtype=dt.INT, append_only=False))
+
+
+@pytest.mark.parametrize("append_only", [True, False])
+def test_const_column_properties(append_only):
+    class Schema(pw.Schema, append_only=append_only):
+        a: int = pw.column_definition(primary_key=True)
+
+    table = empty_from_schema(Schema)
+
+    result = table.select(ret=42)
+
+    assert table.a._column.properties.append_only == append_only
+    assert result.ret._column.properties.append_only == append_only
+
+
+@pytest.mark.parametrize("append_only", [True, False])
+def test_universe_properties(append_only):
+    class Schema(pw.Schema, append_only=append_only):
+        a: int = pw.column_definition(primary_key=True)
+
+    table = empty_from_schema(Schema)
+    result = table.select()
+
+    assert table._id_column.properties.append_only == append_only
+    assert result._id_column.properties.append_only == append_only
+
+
+def test_universe_properties_with_universe_of():
+    class Schema(pw.Schema, append_only=True):
+        a: int = pw.column_definition(primary_key=True)
+
+    table = empty_from_schema(Schema)
+
+    reduced = table.groupby(pw.this.a).reduce(pw.this.a)
+    reduced_same_universe = (
+        table.groupby(pw.this.a).reduce(pw.this.a).with_universe_of(table)
+    )
+
+    assert table._id_column.properties.append_only
+    assert not reduced._id_column.properties.append_only
+    assert reduced_same_universe._id_column.properties.append_only
