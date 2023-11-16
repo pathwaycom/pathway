@@ -5,14 +5,16 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.0] - 2023-11-16
+
 ### Added
-- class `Behavior`, a superclass of all behavior classes
-- class `ExactlyOnceBehavior` indicating we want to create a `CommonBehavior` that results in each window prodcucing exactly one output (shifted in time by an optional `shift` parameter)
-- function `exactly_once_behavior` creating an instance of `ExactlyOnceBehavior`
+- class `Behavior`, a superclass of all behavior classes.
+- class `ExactlyOnceBehavior` indicating we want to create a `CommonBehavior` that results in each window producing exactly one output (shifted in time by an optional `shift` parameter).
+- function `exactly_once_behavior` creating an instance of `ExactlyOnceBehavior`.
 
 ### Changed
-- **BREAKING**: `WindowBehavior` is now called `CommonBehavior`, as it can be also used with interval joins
-- **BREAKING**: `window_behavior` is now called `common_behavior`, as it can be also used with interval joins
+- **BREAKING**: `WindowBehavior` is now called `CommonBehavior`, as it can be also used with interval joins.
+- **BREAKING**: `window_behavior` is now called `common_behavior`, as it can be also used with interval joins.
 - Deprecating parameter `keep_queries` in `pw.io.http.rest_connector`. Now `delete_completed_queries` with an opposite meaning should be used instead. The default is still `delete_completed_queries=True` (equivalent to `keep_queries=False`) but it will soon be required to be set explicitly.
 
 ## [0.6.0] - 2023-11-10
