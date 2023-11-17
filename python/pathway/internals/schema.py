@@ -81,7 +81,7 @@ def schema_from_pandas(
     *,
     id_from: list[str] | None = None,
     name: str | None = None,
-    exclude_columns: list[str] = [],
+    exclude_columns: set[str] = set(),
 ) -> type[Schema]:
     if name is None:
         name = "schema_from_pandas(" + str(dframe.columns) + ")"

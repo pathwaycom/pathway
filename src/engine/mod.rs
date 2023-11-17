@@ -15,9 +15,9 @@ pub use reduce::Reducer;
 pub mod graph;
 pub use graph::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Computer,
-    ConcatHandle, Context, ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle,
-    JoinType, LegacyTable, OperatorStats, ProberStats, ReducerData, ScopedGraph, TableHandle,
-    TableProperties, UniverseHandle,
+    ConcatHandle, Context, ExpressionData, Graph, InputRow, IterationLogic, IxKeyPolicy,
+    IxerHandle, JoinType, LegacyTable, OperatorStats, ProberStats, ReducerData, ScopedGraph,
+    TableHandle, TableProperties, UniverseHandle,
 };
 
 pub mod http_server;

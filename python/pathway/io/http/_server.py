@@ -174,9 +174,10 @@ def rest_connector(
             task = tasks.get(key, None)
 
             if task is None:
-                logging.info(
-                    "Query response has changed. It probably indicates an error in the pipeline."
-                )
+                if delete_completed_queries:
+                    logging.info(
+                        "Query response has changed. It probably indicates an error in the pipeline."
+                    )
                 return
 
             def set_task():

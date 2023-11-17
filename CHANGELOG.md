@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.1] - 2023-11-17
+
+### Added
+
+- Experimental Google Drive input connector.
+- Stateful deduplication function (`pw.stateful.deduplicate`) allowing alerting on significant changes.
+- The ability to split data into batches in `pw.debug.table_from_markdown` and `pw.debug.table_from_pandas`.
+
 ## [0.7.0] - 2023-11-16
 
 ### Added

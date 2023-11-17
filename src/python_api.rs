@@ -54,12 +54,12 @@ use crate::connectors::data_format::{
     PsqlSnapshotFormatter, PsqlUpdatesFormatter,
 };
 use crate::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, ElasticSearchWriter, FileWriter, FilesystemReader,
-    KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder, ReadMethod,
-    ReaderBuilder, S3CsvReader, S3GenericReader, Writer,
+    ConnectorMode, CsvFilesystemReader, DataEventType, ElasticSearchWriter, FileWriter,
+    FilesystemReader, KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder,
+    ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
-use crate::connectors::{ReplayMode, SnapshotAccess};
+use crate::connectors::{ReplayMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::config_from_env;
 use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
 use crate::engine::graph::ScopedContext;
@@ -70,8 +70,9 @@ use crate::engine::ReducerData;
 use crate::engine::{
     run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ColumnPath,
     ColumnProperties as EngineColumnProperties, DateTimeNaive, DateTimeUtc, Duration,
-    ExpressionData, IxKeyPolicy, JoinType, Key, KeyImpl, PointerExpression, Reducer, ScopedGraph,
-    TableHandle, TableProperties as EngineTableProperties, Type, UniverseHandle, Value,
+    ExpressionData, InputRow as EngineInputRow, IxKeyPolicy, JoinType, Key, KeyImpl,
+    PointerExpression, Reducer, ScopedGraph, TableHandle, TableProperties as EngineTableProperties,
+    Type, UniverseHandle, Value,
 };
 use crate::engine::{AnyExpression, Context as EngineContext};
 use crate::engine::{BoolExpression, Error as EngineError};
@@ -407,6 +408,30 @@ impl<'source> FromPyObject<'source> for ConnectorMode {
 impl IntoPy<PyObject> for ConnectorMode {
     fn into_py(self, py: Python<'_>) -> PyObject {
         PyConnectorMode(self).into_py(py)
+    }
+}
+
+impl<'source> FromPyObject<'source> for SessionType {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PySessionType>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for SessionType {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PySessionType(self).into_py(py)
+    }
+}
+
+impl<'source> FromPyObject<'source> for DataEventType {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyDataEventType>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for DataEventType {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyDataEventType(self).into_py(py)
     }
 }
 
@@ -1267,6 +1292,30 @@ impl PyConnectorMode {
     pub const STREAMING_WITH_DELETIONS: ConnectorMode = ConnectorMode::StreamingWithDeletions;
 }
 
+#[pyclass(module = "pathway.engine", frozen, name = "SessionType")]
+pub struct PySessionType(SessionType);
+
+#[pymethods]
+impl PySessionType {
+    #[classattr]
+    pub const NATIVE: SessionType = SessionType::Native;
+    #[classattr]
+    pub const UPSERT: SessionType = SessionType::Upsert;
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "DataEventType")]
+pub struct PyDataEventType(DataEventType);
+
+#[pymethods]
+impl PyDataEventType {
+    #[classattr]
+    pub const INSERT: DataEventType = DataEventType::Insert;
+    #[classattr]
+    pub const DELETE: DataEventType = DataEventType::Delete;
+    #[classattr]
+    pub const UPSERT: DataEventType = DataEventType::Upsert;
+}
+
 #[pyclass(module = "pathway.engine", frozen, name = "DebeziumDBType")]
 pub struct PyDebeziumDBType(DebeziumDBType);
 
@@ -1510,6 +1559,37 @@ impl<'source> FromPyObject<'source> for ColumnPath {
                 ob.get_type().name()?
             )))
         }
+    }
+}
+#[derive(Clone)]
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct InputRow(EngineInputRow);
+
+#[pymethods]
+impl InputRow {
+    #[new]
+    #[pyo3(signature = (
+        key,
+        values,
+        time = 0,
+        diff = 1,
+        shard = None,
+    ))]
+    pub fn new(
+        key: Key,
+        values: Vec<Value>,
+        time: u64,
+        diff: isize,
+        shard: Option<usize>,
+    ) -> InputRow {
+        let inner = EngineInputRow {
+            key,
+            values,
+            time,
+            diff,
+            shard,
+        };
+        Self(inner)
     }
 }
 
@@ -1790,12 +1870,12 @@ impl Scope {
 
     pub fn static_table(
         self_: &PyCell<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] values: Vec<(Key, Vec<Value>)>,
+        #[pyo3(from_py_with = "from_py_iterable")] data: Vec<InputRow>,
         properties: ConnectorProperties,
     ) -> PyResult<Py<Table>> {
         let column_properties = properties.column_properties();
         let handle = self_.borrow().graph.static_table(
-            values,
+            data.into_iter().map(|row| row.0).collect(),
             Arc::new(EngineTableProperties::flat(column_properties)),
         )?;
         Table::new(self_, handle)
@@ -3187,6 +3267,7 @@ pub struct DataFormat {
     field_absence_is_error: bool,
     parse_utf8: bool,
     debezium_db_type: DebeziumDBType,
+    session_type: SessionType,
 }
 
 #[pymethods]
@@ -3264,6 +3345,7 @@ impl DataFormat {
         field_absence_is_error = true,
         parse_utf8 = true,
         debezium_db_type = DebeziumDBType::Postgres,
+        session_type = SessionType::Native,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3276,6 +3358,7 @@ impl DataFormat {
         field_absence_is_error: bool,
         parse_utf8: bool,
         debezium_db_type: DebeziumDBType,
+        session_type: SessionType,
     ) -> Self {
         DataFormat {
             format_type,
@@ -3287,6 +3370,7 @@ impl DataFormat {
             field_absence_is_error,
             parse_utf8,
             debezium_db_type,
+            session_type,
         }
     }
 }
@@ -3715,12 +3799,14 @@ impl DataFormat {
                     self.column_paths.clone().unwrap_or_default(),
                     self.field_absence_is_error,
                     self.schema(py),
+                    self.session_type,
                 );
                 Ok(Box::new(parser))
             }
             "identity" => Ok(Box::new(IdentityParser::new(
                 self.value_field_names(py),
                 self.parse_utf8,
+                self.session_type,
             ))),
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
@@ -4041,6 +4127,8 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyExpression>()?;
     m.add_class::<PathwayType>()?;
     m.add_class::<PyConnectorMode>()?;
+    m.add_class::<PySessionType>()?;
+    m.add_class::<PyDataEventType>()?;
     m.add_class::<PyDebeziumDBType>()?;
     m.add_class::<PyReadMethod>()?;
     m.add_class::<PyMonitoringLevel>()?;
@@ -4048,6 +4136,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Column>()?;
     m.add_class::<LegacyTable>()?;
     m.add_class::<Table>()?;
+    m.add_class::<InputRow>()?;
     m.add_class::<Computer>()?;
     m.add_class::<Scope>()?;
     m.add_class::<Context>()?;

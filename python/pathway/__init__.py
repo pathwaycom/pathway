@@ -79,7 +79,16 @@ from pathway.internals import (
     unwrap,
 )
 from pathway.internals.api import PathwayType as Type
-from pathway.stdlib import graphs, indexing, ml, ordered, statistical, temporal, utils
+from pathway.stdlib import (
+    graphs,
+    indexing,
+    ml,
+    ordered,
+    stateful,
+    statistical,
+    temporal,
+    utils,
+)
 from pathway.stdlib.utils.async_transformer import AsyncTransformer
 from pathway.stdlib.utils.pandas_transformer import pandas_transformer
 
@@ -161,6 +170,7 @@ __all__ = [
     "Duration",
     "Json",
     "table_transformer",
+    "stateful",
 ]
 
 

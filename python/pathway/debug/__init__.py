@@ -120,6 +120,27 @@ def table_to_pandas(table: Table):
     return res
 
 
+def _validate_dataframe(df: pd.DataFrame) -> None:
+    for pseudocolumn in api.PANDAS_PSEUDOCOLUMNS:
+        if pseudocolumn in df.columns:
+            if not pd.api.types.is_integer_dtype(df[pseudocolumn].dtype):
+                raise ValueError(f"Column {pseudocolumn} has to contain integers only.")
+    if api.TIME_PSEUDOCOLUMN in df.columns:
+        if any(df[api.TIME_PSEUDOCOLUMN] < 0):
+            raise ValueError(
+                f"Column {api.TIME_PSEUDOCOLUMN} cannot contain negative times."
+            )
+        if any(df[api.TIME_PSEUDOCOLUMN] % 2 == 1):
+            warn("timestamps are required to be even; all timestamps will be doubled")
+            df[api.TIME_PSEUDOCOLUMN] = 2 * df[api.TIME_PSEUDOCOLUMN]
+
+    if api.DIFF_PSEUDOCOLUMN in df.columns:
+        if any((df[api.DIFF_PSEUDOCOLUMN] != 1) & (df[api.DIFF_PSEUDOCOLUMN] != -1)):
+            raise ValueError(
+                f"Column {api.DIFF_PSEUDOCOLUMN} can only have 1 and -1 values."
+            )
+
+
 @runtime_type_check
 @trace_user_frame
 def table_from_pandas(
@@ -128,13 +149,26 @@ def table_from_pandas(
     unsafe_trusted_ids: bool = False,
     schema: type[Schema] | None = None,
 ) -> Table:
+    """
+    A function for creating a table from a pandas DataFrame. If it contains a special
+    column ``__time__``, rows will be split into batches with timestamps from the column.
+    A special column ``__diff__`` can be used to set an event type - with ``1`` treated
+    as inserting the row and ``-1`` as removing it.
+    """
     if id_from is not None and schema is not None:
         raise ValueError("parameters `schema` and `id_from` are mutually exclusive")
 
+    ordinary_columns_names = [
+        column for column in df.columns if column not in api.PANDAS_PSEUDOCOLUMNS
+    ]
     if schema is None:
-        schema = schema_from_pandas(df, id_from=id_from)
-    elif list(df.columns) != schema.column_names():
+        schema = schema_from_pandas(
+            df, id_from=id_from, exclude_columns=api.PANDAS_PSEUDOCOLUMNS
+        )
+    elif ordinary_columns_names != schema.column_names():
         raise ValueError("schema does not match given dataframe")
+
+    _validate_dataframe(df)
 
     return table_from_datasource(
         PandasDataSource(
@@ -168,16 +202,26 @@ def _markdown_to_pandas(table_def):
     ).convert_dtypes()
 
 
-def parse_to_table(
+def table_from_markdown(
     table_def,
     id_from=None,
     unsafe_trusted_ids=False,
     schema: type[Schema] | None = None,
 ) -> Table:
+    """
+    A function for creating a table from its definition in markdown. If it contains a special
+    column ``__time__``, rows will be split into batches with timestamps from the column.
+    A special column ``__diff__`` can be used to set an event type - with ``1`` treated
+    as inserting the row and ``-1`` as removing it.
+    """
     df = _markdown_to_pandas(table_def)
     return table_from_pandas(
         df, id_from=id_from, unsafe_trusted_ids=unsafe_trusted_ids, schema=schema
     )
+
+
+# XXX: clean this up
+parse_to_table = table_from_markdown
 
 
 @runtime_type_check
@@ -203,10 +247,6 @@ def table_to_parquet(table: Table, filename: str | PathLike):
     df = df.reset_index()
     df = df.drop(["index"], axis=1)
     return df.to_parquet(filename)
-
-
-# XXX: clean this up
-table_from_markdown = parse_to_table
 
 
 class _EmptyConnectorSubject(ConnectorSubject):
@@ -352,7 +392,7 @@ class StreamGenerator:
         """
         if schema is None:
             schema = schema_from_pandas(
-                df, exclude_columns=["_time", "_diff", "_worker"]
+                df, exclude_columns={"_time", "_diff", "_worker"}
             )
         schema, api_schema = read_schema(schema=schema)
         value_fields: list[api.ValueField] = api_schema["value_fields"]

@@ -7,7 +7,7 @@ from queue import Queue
 from typing import Any
 
 from pathway.internals import api, datasource
-from pathway.internals.api import PathwayType, Pointer
+from pathway.internals.api import DataEventType, PathwayType, Pointer, SessionType
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
@@ -16,12 +16,14 @@ from pathway.io._utils import (
     RawDataSchema,
     assert_schema_or_value_columns_not_none,
     get_data_format_type,
+    internal_read_method,
     read_schema,
 )
 
 SUPPORTED_INPUT_FORMATS: set[str] = {
     "json",
     "raw",
+    "binary",
 }
 
 
@@ -100,10 +102,15 @@ class ConnectorSubject(ABC):
         threading.Thread(target=target).start()
 
     def _add(self, key: Pointer | None, message: Any) -> None:
-        self._buffer.put((True, key, message))
+        if self._session_type == SessionType.NATIVE:
+            self._buffer.put((DataEventType.INSERT, key, message))
+        elif self._session_type == SessionType.UPSERT:
+            self._buffer.put((DataEventType.UPSERT, key, message))
+        else:
+            raise NotImplementedError(f"session type {self._session_type} not handled")
 
     def _remove(self, key: Pointer, message: Any) -> None:
-        self._buffer.put((False, key, message))
+        self._buffer.put((DataEventType.DELETE, key, message))
 
     def _read(self) -> Any:
         """Allows to retrieve data from a buffer.
@@ -123,6 +130,10 @@ class ConnectorSubject(ABC):
         and not to store the snapshot of its inputs.
         """
         return False
+
+    @property
+    def _session_type(self) -> SessionType:
+        return SessionType.NATIVE
 
 
 @runtime_type_check
@@ -145,7 +156,7 @@ def read(
     Args:
         subject: An instance of a :py:class:`~pathway.python.ConnectorSubject`.
         schema: Schema of the resulting table.
-        format: Format of the data produced by a subject, "json" or "raw". In case of
+        format: Format of the data produced by a subject, "json", "raw" or "binary". In case of
             a "raw" format, table with single "data" column will be produced.
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: the maximum time between two commits. Every
@@ -192,12 +203,15 @@ computations from the moment they were terminated last time.
     data_format = api.DataFormat(
         **api_schema,
         format_type=data_format_type,
+        session_type=subject._session_type,
+        parse_utf8=(format != "binary"),
     )
     data_storage = api.DataStorage(
         storage_type="python",
         python_subject=api.PythonSubject(
             start=subject.start, read=subject._read, is_internal=subject._is_internal()
         ),
+        read_method=internal_read_method(format),
         persistent_id=persistent_id,
     )
     data_source_options = datasource.DataSourceOptions(

@@ -546,14 +546,20 @@ pub struct IdentityParser {
     value_fields: Vec<String>,
     parse_utf8: bool,
     metadata_column_value: Value,
+    session_type: SessionType,
 }
 
 impl IdentityParser {
-    pub fn new(value_fields: Vec<String>, parse_utf8: bool) -> IdentityParser {
+    pub fn new(
+        value_fields: Vec<String>,
+        parse_utf8: bool,
+        session_type: SessionType,
+    ) -> IdentityParser {
         Self {
             value_fields,
             parse_utf8,
             metadata_column_value: Value::None,
+            session_type,
         }
     }
 
@@ -601,11 +607,22 @@ impl Parser for IdentityParser {
                     values.push(value.clone());
                 }
             }
-            match event {
-                DataEventType::Insert => ParsedEvent::Insert((key, values)),
-                DataEventType::Delete => ParsedEvent::Delete((key, values)),
-                DataEventType::Upsert => {
-                    unreachable!("readers can't send upserts to IdentityParser")
+            match self.session_type {
+                SessionType::Native => {
+                    match event {
+                        DataEventType::Insert => ParsedEvent::Insert((key, values)),
+                        DataEventType::Delete => ParsedEvent::Delete((key, values)),
+                        DataEventType::Upsert => {
+                            panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session")
+                        }
+                    }
+                }
+                SessionType::Upsert => {
+                    match event {
+                        DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
+                        DataEventType::Delete => ParsedEvent::Upsert((key, None)),
+                        DataEventType::Upsert => ParsedEvent::Upsert((key, Some(values))),
+                    }
                 }
             }
         };
@@ -623,6 +640,10 @@ impl Parser for IdentityParser {
 
     fn column_count(&self) -> usize {
         self.value_fields.len()
+    }
+
+    fn session_type(&self) -> SessionType {
+        self.session_type
     }
 }
 
@@ -1067,6 +1088,7 @@ pub struct JsonLinesParser {
     field_absence_is_error: bool,
     schema: HashMap<String, InnerSchemaField>,
     metadata_column_value: Value,
+    session_type: SessionType,
 }
 
 impl JsonLinesParser {
@@ -1076,6 +1098,7 @@ impl JsonLinesParser {
         column_paths: HashMap<String, String>,
         field_absence_is_error: bool,
         schema: HashMap<String, InnerSchemaField>,
+        session_type: SessionType,
     ) -> JsonLinesParser {
         JsonLinesParser {
             key_field_names,
@@ -1084,6 +1107,7 @@ impl JsonLinesParser {
             field_absence_is_error,
             schema,
             metadata_column_value: Value::None,
+            session_type,
         }
     }
 }
@@ -1147,10 +1171,21 @@ impl Parser for JsonLinesParser {
             &self.metadata_column_value,
         )?;
 
-        let event = match data_event {
-            DataEventType::Insert => ParsedEvent::Insert((key, values)),
-            DataEventType::Delete => ParsedEvent::Delete((key, values)),
-            DataEventType::Upsert => unreachable!("readers can't send upserts to JsonLinesParser"),
+        let event = match self.session_type {
+            SessionType::Native => {
+                match data_event {
+                    DataEventType::Insert => ParsedEvent::Insert((key, values)),
+                    DataEventType::Delete => ParsedEvent::Delete((key, values)),
+                    DataEventType::Upsert => panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session"),
+                }
+            }
+            SessionType::Upsert => {
+                match data_event {
+                    DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
+                    DataEventType::Delete => ParsedEvent::Upsert((key, None)),
+                    DataEventType::Upsert => ParsedEvent::Upsert((key, Some(values))),
+                }
+            }
         };
 
         Ok(vec![event])
@@ -1166,6 +1201,10 @@ impl Parser for JsonLinesParser {
 
     fn column_count(&self) -> usize {
         self.value_field_names.len()
+    }
+
+    fn session_type(&self) -> SessionType {
+        self.session_type
     }
 }
 

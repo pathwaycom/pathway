@@ -10,6 +10,7 @@ use pathway_engine::connectors::data_format::{
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
+use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 
 /// This function requires that _metadata field is the last in the `value_names_list`
@@ -163,6 +164,7 @@ fn test_metadata_json_file() -> eyre::Result<()> {
         HashMap::new(),
         false,
         HashMap::new(),
+        SessionType::Native,
     );
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -186,6 +188,7 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
         HashMap::new(),
         false,
         HashMap::new(),
+        SessionType::Native,
     );
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -204,7 +207,11 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
-    let parser = IdentityParser::new(vec!["data".to_string(), "_metadata".to_string()], false);
+    let parser = IdentityParser::new(
+        vec!["data".to_string(), "_metadata".to_string()],
+        false,
+        SessionType::Native,
+    );
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/jsonlines.txt\"");
@@ -221,7 +228,11 @@ fn test_metadata_identity_dir() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
-    let parser = IdentityParser::new(vec!["data".to_string(), "_metadata".to_string()], false);
+    let parser = IdentityParser::new(
+        vec!["data".to_string(), "_metadata".to_string()],
+        false,
+        SessionType::Native,
+    );
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/jsonlines/one.jsonlines\"");

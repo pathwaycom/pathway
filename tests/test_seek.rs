@@ -14,6 +14,7 @@ use pathway_engine::connectors::data_storage::ReaderBuilder;
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
+use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 use pathway_engine::persistence::sync::SharedWorkersPersistenceCoordinator;
 use pathway_engine::persistence::tracker::SingleWorkerPersistentStorage;
@@ -60,6 +61,7 @@ fn json_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dy
         HashMap::new(),
         true,
         HashMap::new(),
+        SessionType::Native,
     );
     (Box::new(reader), Box::new(parser))
 }

@@ -84,6 +84,7 @@ use self::operators::{ConsolidateNondecreasingMap, MaybeTotal};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
+use super::graph::InputRow;
 use super::http_server::maybe_run_http_server_thread;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
@@ -847,10 +848,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         self.static_column(universe_handle, Vec::new(), column_properties)
     }
 
-    fn empty_table(&mut self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
-        self.static_table(Vec::new(), table_properties)
-    }
-
     #[track_caller]
     fn assert_collections_same_size<V1: Data, V2: Data>(
         &self,
@@ -957,32 +954,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .with_column_properties(column_properties),
         );
         Ok(column_handle)
-    }
-
-    fn static_table(
-        &mut self,
-        values: Vec<(Key, Vec<Value>)>,
-        table_properties: Arc<TableProperties>,
-    ) -> Result<TableHandle> {
-        let worker_count = self.scope.peers();
-        let worker_index = self.scope.index();
-        let values = values
-            .into_iter()
-            .filter(move |(k, _v)| k.shard_as_usize() % worker_count == worker_index)
-            .map(|(key, values)| {
-                (
-                    (key, Value::from(values.as_slice())),
-                    S::Timestamp::minimum(),
-                    1,
-                )
-            })
-            .to_stream(&mut self.scope)
-            .as_collection()
-            .probe_with(&mut self.input_probe);
-
-        Ok(self
-            .tables
-            .alloc(Table::from_collection(values).with_properties(table_properties)))
     }
 
     fn tuples(
@@ -2590,6 +2561,39 @@ enum OutputEvent {
 
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
 impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
+    fn empty_table(&mut self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
+        self.static_table(Vec::new(), table_properties)
+    }
+
+    fn static_table(
+        &mut self,
+        values: Vec<InputRow>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let worker_count = self.scope.peers();
+        let worker_index = self.scope.index();
+        let values = values
+            .into_iter()
+            .filter(move |row| {
+                row.shard.unwrap_or_else(|| row.key.shard_as_usize()) % worker_count == worker_index
+            })
+            .map(|row| {
+                assert!(row.diff == 1 || row.diff == -1);
+                (
+                    (row.key, Value::from(row.values.as_slice())),
+                    row.time,
+                    row.diff,
+                )
+            })
+            .to_stream(&mut self.scope)
+            .as_collection()
+            .probe_with(&mut self.input_probe);
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(values).with_properties(table_properties)))
+    }
+
     fn connector_table(
         &mut self,
         mut reader: Box<dyn ReaderBuilder>,
@@ -3582,8 +3586,8 @@ where
             .empty_column(universe_handle, column_properties)
     }
 
-    fn empty_table(&self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
-        self.0.borrow_mut().empty_table(table_properties)
+    fn empty_table(&self, _table_properties: Arc<TableProperties>) -> Result<TableHandle> {
+        Err(Error::IoNotPossible)
     }
 
     fn static_universe(&self, keys: Vec<Key>) -> Result<UniverseHandle> {
@@ -3603,10 +3607,10 @@ where
 
     fn static_table(
         &self,
-        values: Vec<(Key, Vec<Value>)>,
-        table_properties: Arc<TableProperties>,
+        _data: Vec<InputRow>,
+        _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0.borrow_mut().static_table(values, table_properties)
+        Err(Error::IoNotPossible)
     }
 
     fn expression_column(
@@ -4121,10 +4125,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
 
     fn static_table(
         &self,
-        values: Vec<(Key, Vec<Value>)>,
+        data: Vec<InputRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0.borrow_mut().static_table(values, table_properties)
+        self.0.borrow_mut().static_table(data, table_properties)
     }
 
     fn expression_column(

@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, FixedOffset};
 use log::{error, warn};
 use postgres::types::ToSql;
+use tempfile::{tempdir, TempDir};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use crate::connectors::data_format::FormatterContext;
@@ -719,6 +720,10 @@ struct FilesystemScanner {
     object_pattern: GlobPattern,
     next_file_for_insertion: Option<PathBuf>,
     cached_metadata: HashMap<PathBuf, Option<SourceMetadata>>,
+
+    // Storage is deleted on object destruction, so we need to store it
+    // for the connector's life time
+    _connector_tmp_storage: Option<TempDir>,
 }
 
 impl FilesystemScanner {
@@ -740,20 +745,26 @@ impl FilesystemScanner {
             None
         };
 
-        let cache_directory_path = {
+        let (cache_directory_path, connector_tmp_storage) = {
             if streaming_mode.are_deletions_enabled() {
-                let root_dir_str_path = env::var("PATHWAY_PERSISTENT_STORAGE")
-                    .ok()
-                    .unwrap_or("/tmp/pathway".to_string());
-                let root_dir_path = Path::new(&root_dir_str_path);
-                ensure_directory(root_dir_path)?;
-
-                let unique_id = persistent_id.unwrap_or_else(|| rand::thread_rng().gen::<u128>());
-                let connector_tmp_directory = root_dir_path.join(format!("cache-{unique_id}"));
-                ensure_directory(&connector_tmp_directory)?;
-                Some(connector_tmp_directory)
+                if let Ok(root_dir_str_path) = env::var("PATHWAY_PERSISTENT_STORAGE") {
+                    let root_dir_path = Path::new(&root_dir_str_path);
+                    ensure_directory(root_dir_path)?;
+                    let unique_id =
+                        persistent_id.unwrap_or_else(|| rand::thread_rng().gen::<u128>());
+                    let connector_tmp_directory = root_dir_path.join(format!("cache-{unique_id}"));
+                    ensure_directory(&connector_tmp_directory)?;
+                    (Some(connector_tmp_directory), None)
+                } else {
+                    let cache_tmp_storage = tempdir()?;
+                    let connector_tmp_directory = cache_tmp_storage.path();
+                    (
+                        Some(connector_tmp_directory.to_path_buf()),
+                        Some(cache_tmp_storage),
+                    )
+                }
             } else {
-                None
+                (None, None)
             }
         };
 
@@ -770,6 +781,7 @@ impl FilesystemScanner {
             object_pattern: GlobPattern::new(object_pattern)?,
             next_file_for_insertion: None,
             cached_metadata: HashMap::new(),
+            _connector_tmp_storage: connector_tmp_storage,
         })
     }
 
@@ -1376,7 +1388,7 @@ impl Reader for PythonReader {
         }
 
         with_gil_and_pool(|py| {
-            let (addition, key, values): (bool, Option<Value>, Vec<u8>) = self
+            let (event, key, values): (DataEventType, Option<Value>, Vec<u8>) = self
                 .subject
                 .borrow(py)
                 .read
@@ -1396,13 +1408,6 @@ impl Reader for PythonReader {
                     OffsetKey::Empty,
                     OffsetValue::PythonEntrySequentialId(self.total_entries_read),
                 );
-
-                // bridge from Python to internal representation
-                let event = if addition {
-                    DataEventType::Insert
-                } else {
-                    DataEventType::Delete
-                };
 
                 Ok(ReadResult::Data(
                     ReaderContext::from_diff(event, key, values),

@@ -17,6 +17,7 @@ import pytest
 import pathway as pw
 from pathway.engine import ref_scalar
 from pathway.internals import api
+from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CountDifferentTimestampsCallback,
@@ -2247,3 +2248,82 @@ def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.Monkey
         any_order=True,
     )
     assert on_change.call_count == 3
+
+
+def test_python_connector_upsert_raw(tmp_path: pathlib.Path):
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+        def run(self):
+            self._add(api.ref_scalar(0), b"one")
+            time.sleep(5e-2)
+            self._add(api.ref_scalar(0), b"two")
+            time.sleep(5e-2)
+            self._add(api.ref_scalar(0), b"three")
+            self.close()
+
+    table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
+    pw.io.csv.write(table, tmp_path / "output.csv")
+    pw.run()
+
+    result = pd.read_csv(tmp_path / "output.csv")
+    return len(result) == 5
+
+
+def test_python_connector_removal_by_key(tmp_path: pathlib.Path):
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+        def run(self):
+            self._add(api.ref_scalar(0), b"one")
+            time.sleep(5e-2)
+            self._remove(api.ref_scalar(0), b"")  # Note: we don't pass an actual value
+            self.close()
+
+    table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
+    pw.io.csv.write(table, tmp_path / "output.csv")
+    pw.run()
+
+    result = pd.read_csv(tmp_path / "output.csv")
+    return len(result) == 2
+
+
+def test_python_connector_upsert_json(tmp_path: pathlib.Path):
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+        def run(self):
+            self._add(
+                api.ref_scalar(0),
+                json.dumps({"word": "one", "digit": 1}).encode("utf-8"),
+            )
+            time.sleep(5e-2)
+            self._add(
+                api.ref_scalar(0),
+                json.dumps({"word": "two", "digit": 2}).encode("utf-8"),
+            )
+            time.sleep(5e-2)
+            self._add(
+                api.ref_scalar(0),
+                json.dumps({"word": "three", "digit": 3}).encode("utf-8"),
+            )
+            self.close()
+
+    class InputSchema(pw.Schema):
+        word: str
+        digit: int
+
+    table = pw.io.python.read(
+        TestSubject(), format="json", schema=InputSchema, autocommit_duration_ms=10
+    )
+    pw.io.csv.write(table, tmp_path / "output.csv")
+    pw.run()
+
+    result = pd.read_csv(tmp_path / "output.csv")
+    return len(result) == 5

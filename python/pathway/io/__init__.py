@@ -5,6 +5,7 @@ from pathway.io import (
     debezium,
     elasticsearch,
     fs,
+    gdrive,
     http,
     jsonlines,
     kafka,
@@ -42,4 +43,5 @@ __all__ = [
     "subscribe",
     "s3",
     "s3_csv",
+    "gdrive",
 ]

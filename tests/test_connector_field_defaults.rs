@@ -10,6 +10,7 @@ use pathway_engine::connectors::data_format::{
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
+use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{Type, Value};
 
 #[test]
@@ -218,6 +219,7 @@ fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
         HashMap::new(),
         true,
         HashMap::new(),
+        SessionType::Native,
     );
 
     assert!(data_parsing_fails(Box::new(reader), Box::new(parser))?);
@@ -246,6 +248,7 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
         HashMap::new(),
         true,
         schema,
+        SessionType::Native,
     );
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -298,6 +301,7 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
         routes,
         true,
         schema,
+        SessionType::Native,
     );
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
@@ -344,6 +348,7 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
         HashMap::new(),
         true,
         schema,
+        SessionType::Native,
     );
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;

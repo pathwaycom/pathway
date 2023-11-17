@@ -104,6 +104,18 @@ class LegacyTable:
 class Table:
     """Table with tuples containing values from multiple columns."""
 
+class InputRow:
+    """Row of data for static_table"""
+
+    def __init__(
+        self,
+        key: Pointer,
+        value: list[Value],
+        time: int = 0,
+        diff: int = 1,
+        shard: int | None = None,
+    ) -> None: ...
+
 class MissingValueError(BaseException):
     "Marker class to indicate missing attributes"
 
@@ -374,7 +386,7 @@ class Scope:
     def static_table(
         self,
         universe: Universe,
-        rows: Iterable[tuple[Pointer, list[Value]]],
+        rows: Iterable[InputRow],
         dt: DType,
     ) -> Table: ...
     def map_column(
@@ -616,6 +628,15 @@ class SnapshotAccess(Enum):
     RECORD: SnapshotAccess
     REPLAY: SnapshotAccess
     FULL: SnapshotAccess
+
+class DataEventType(Enum):
+    INSERT: DataEventType
+    DELETE: DataEventType
+    UPSERT: DataEventType
+
+class SessionType(Enum):
+    NATIVE: SessionType
+    UPSERT: SessionType
 
 class SnapshotEvent:
     @staticmethod

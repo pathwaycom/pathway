@@ -71,6 +71,12 @@ def ids_from_pandas(
         return {k: ref_scalar(*args) for (k, *args) in df[id_from].itertuples()}
 
 
+TIME_PSEUDOCOLUMN = "__time__"
+DIFF_PSEUDOCOLUMN = "__diff__"
+SHARD_PSEUDOCOLUMN = "__shard__"
+PANDAS_PSEUDOCOLUMNS = {TIME_PSEUDOCOLUMN, DIFF_PSEUDOCOLUMN, SHARD_PSEUDOCOLUMN}
+
+
 def static_table_from_pandas(
     scope,
     df: pd.DataFrame,
@@ -79,17 +85,19 @@ def static_table_from_pandas(
 ) -> Table:
     ids = ids_from_pandas(df, connector_properties, id_from)
 
-    all_data: list[tuple[Pointer, list[Value]]] = [(key, []) for key in ids.values()]
-
     data = {}
     for c in df.columns:
-        data[c] = {ids[k]: denumpify(v) for k, v in df[c].items()}
+        data[c] = [denumpify(v) for _, v in df[c].items()]
+        # df[c].items() is used because df[c].values is a numpy array
+    ordinary_columns = [
+        column for column in df.columns if column not in PANDAS_PSEUDOCOLUMNS
+    ]
 
     if connector_properties is None:
         column_properties = []
-        for c in df.columns:
+        for c in ordinary_columns:
             dtype: type = int
-            for v in data[c].values():
+            for v in data[c]:
                 if v is not None:
                     dtype = type(v)
                     break
@@ -99,13 +107,19 @@ def static_table_from_pandas(
         connector_properties = ConnectorProperties(column_properties=column_properties)
 
     assert len(connector_properties.column_properties) == len(
-        df.columns
+        ordinary_columns
     ), "prrovided connector properties do not match the dataframe"
 
-    for c in df.columns:
-        for (key, values), (column_key, value) in zip(
-            all_data, data[c].items(), strict=True
-        ):
-            assert key == column_key
-            values.append(value)
-    return scope.static_table(all_data, connector_properties)
+    input_data: list[InputRow] = []
+    for i, index in enumerate(df.index):
+        key = ids[index]
+        values = [data[c][i] for c in ordinary_columns]
+        time = data[TIME_PSEUDOCOLUMN][i] if TIME_PSEUDOCOLUMN in data else 0
+        diff = data[DIFF_PSEUDOCOLUMN][i] if DIFF_PSEUDOCOLUMN in data else 1
+        if diff not in [-1, 1]:
+            raise ValueError(f"Column {DIFF_PSEUDOCOLUMN} can only contain 1 and -1.")
+        shard = data[SHARD_PSEUDOCOLUMN][i] if SHARD_PSEUDOCOLUMN in data else None
+        input_row = InputRow(key, values, time=time, diff=diff, shard=shard)
+        input_data.append(input_row)
+
+    return scope.static_table(input_data, connector_properties)

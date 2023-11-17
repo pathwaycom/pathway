@@ -161,6 +161,15 @@ impl ColumnPath {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct InputRow {
+    pub key: Key,
+    pub values: Vec<Value>,
+    pub time: u64,
+    pub diff: isize,
+    pub shard: Option<usize>,
+}
+
 pub struct ExpressionData {
     pub expression: Arc<Expression>,
     pub properties: Arc<TableProperties>,
@@ -457,7 +466,7 @@ pub trait Graph {
 
     fn static_table(
         &self,
-        values: Vec<(Key, Vec<Value>)>,
+        data: Vec<InputRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -824,10 +833,10 @@ impl Graph for ScopedGraph {
 
     fn static_table(
         &self,
-        values: Vec<(Key, Vec<Value>)>,
+        data: Vec<InputRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.static_table(values, table_properties))
+        self.try_with(|g| g.static_table(data, table_properties))
     }
 
     fn expression_column(

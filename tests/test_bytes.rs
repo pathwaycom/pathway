@@ -4,6 +4,7 @@ use pathway_engine::connectors::data_format::{IdentityParser, ParseResult, Parse
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, FilesystemReader, ReadMethod, ReadResult, Reader,
 };
+use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 
 fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
@@ -14,7 +15,7 @@ fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
         ReadMethod::Full,
         "*",
     )?;
-    let mut parser = IdentityParser::new(vec!["data".to_string()], false);
+    let mut parser = IdentityParser::new(vec!["data".to_string()], false, SessionType::Native);
     let mut events = Vec::new();
 
     loop {
