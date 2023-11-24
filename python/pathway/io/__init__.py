@@ -18,6 +18,7 @@ from pathway.io import (
     redpanda,
     s3,
     s3_csv,
+    sqlite,
 )
 from pathway.io._subscribe import OnChangeCallback, OnFinishCallback, subscribe
 from pathway.io._utils import CsvParserSettings
@@ -44,4 +45,5 @@ __all__ = [
     "s3",
     "s3_csv",
     "gdrive",
+    "sqlite",
 ]

@@ -27,13 +27,21 @@ from pathway.io.python import ConnectorSubject, read
 
 
 @runtime_type_check
-def table_to_dicts(table: Table):
+def _compute_table(table: Table) -> api.CapturedStream:
     [captured] = GraphRunner(
         parse_graph.G, debug=True, monitoring_level=MonitoringLevel.NONE
     ).run_tables(table)
-    keys = list(captured.keys())
+    return captured
+
+
+def table_to_dicts(
+    table: Table,
+) -> tuple[list[api.Pointer], dict[str, dict[api.Pointer, api.Value]]]:
+    captured = _compute_table(table)
+    output_data = api.squash_updates(captured)
+    keys = list(output_data.keys())
     columns = {
-        name: {key: captured[key][index] for key in keys}
+        name: {key: output_data[key][index] for key in keys}
         for index, name in enumerate(table._columns.keys())
     }
     return keys, columns
@@ -62,10 +70,22 @@ class _NoneAwareComparisonWrapper:
         return self.inner < other.inner
 
 
-@runtime_type_check
-@trace_user_frame
-def compute_and_print(table: Table, *, include_id=True, short_pointers=True):
-    keys, columns = table_to_dicts(table)
+def _compute_and_print_internal(
+    table: Table,
+    *,
+    squash_updates: bool,
+    include_id: bool,
+    short_pointers: bool,
+) -> None:
+    captured = _compute_table(table)
+    columns = list(table._columns.keys())
+    if squash_updates:
+        output_data = list(api.squash_updates(captured).items())
+    else:
+        columns.extend([api.TIME_PSEUDOCOLUMN, api.DIFF_PSEUDOCOLUMN])
+        output_data = []
+        for row in captured:
+            output_data.append((row.key, tuple(row.values) + (row.time, row.diff)))
 
     if not columns and not include_id:
         return
@@ -85,31 +105,76 @@ def compute_and_print(table: Table, *, include_id=True, short_pointers=True):
             return s
         return str(x)
 
-    def _key(id):
-        return tuple(
-            _NoneAwareComparisonWrapper(column[id]) for column in columns.values()
-        )
+    if squash_updates:
+
+        def _key(row: tuple[api.Pointer, tuple[api.Value, ...]]):
+            return tuple(_NoneAwareComparisonWrapper(value) for value in row[1])
+
+    else:
+        # sort by time and diff first if there is no squashing
+        def _key(row: tuple[api.Pointer, tuple[api.Value, ...]]):
+            return row[1][-2:] + tuple(
+                _NoneAwareComparisonWrapper(value) for value in row[1]
+            )
 
     try:
-        keys = sorted(keys, key=_key)
+        output_data = sorted(output_data, key=_key)
     except ValueError:
         pass  # Some values (like arrays) cannot be sorted this way, so just don't sort them.
     data = []
     if include_id:
-        if columns:
-            name = ""
-        else:
-            name = "id"
-        data.append([name] + [_format(k) for k in keys])
-    for name, column in columns.items():
-        data.append([name] + [_format(column[k]) for k in keys])
-    max_lens = [max(len(row) for row in column) for column in data]
+        name = "" if columns else "id"
+        data.append([name] + columns)
+    else:
+        data.append(columns)
+    for key, values in output_data:
+        formatted_row = []
+        if include_id:
+            formatted_row.append(_format(key))
+        formatted_row.extend(_format(value) for value in values)
+        data.append(formatted_row)
+    max_lens = [max(len(row[i]) for row in data) for i in range(len(data[0]))]
     max_lens[-1] = 0
-    for row in zip(*data):
+    for row in data:
         formatted = " | ".join(
             value.ljust(max_len) for value, max_len in zip(row, max_lens)
         )
         print(formatted.rstrip())
+
+
+@runtime_type_check
+@trace_user_frame
+def compute_and_print(table: Table, *, include_id=True, short_pointers=True) -> None:
+    """
+    A function running the computations and printing the table.
+    Args:
+        table: a table to be computed and printed
+        include_id: whether to show ids of rows
+        short_pointers: whether to shorten printed ids
+    """
+    _compute_and_print_internal(
+        table, squash_updates=True, include_id=include_id, short_pointers=short_pointers
+    )
+
+
+@runtime_type_check
+@trace_user_frame
+def compute_and_print_update_stream(
+    table: Table, *, include_id=True, short_pointers=True
+) -> None:
+    """
+    A function running the computations and printing the update stream of the table.
+    Args:
+        table: a table for which the update stream is to be computed and printed
+        include_id: whether to show ids of rows
+        short_pointers: whether to shorten printed ids
+    """
+    _compute_and_print_internal(
+        table,
+        squash_updates=False,
+        include_id=include_id,
+        short_pointers=short_pointers,
+    )
 
 
 @runtime_type_check
@@ -220,8 +285,13 @@ def table_from_markdown(
     )
 
 
-# XXX: clean this up
-parse_to_table = table_from_markdown
+def parse_to_table(*args, **kwargs) -> Table:
+    warn(
+        "pw.debug.parse_to_table is deprecated, use pw.debug.table_from_markdown instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return table_from_markdown(*args, **kwargs)
 
 
 @runtime_type_check

@@ -31,7 +31,7 @@ def flatten_column(
     Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | pet  |  age
         ... 1 | Dog  |   2
         ... 7 | Cat  |   5

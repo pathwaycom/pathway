@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any, Generic, TypeVar, Union, final
 
-from pathway.internals.api import CapturedTable, CombineMany, S, Value
+from pathway.internals.api import CapturedStream, CombineMany, S, Value
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.dtype import DType
 from pathway.internals.monitoring import StatsMonitor
@@ -104,13 +104,19 @@ class LegacyTable:
 class Table:
     """Table with tuples containing values from multiple columns."""
 
-class InputRow:
+class DataRow:
     """Row of data for static_table"""
+
+    key: Pointer
+    values: list[Value]
+    time: int
+    diff: int
+    shard: int | None
 
     def __init__(
         self,
         key: Pointer,
-        value: list[Value],
+        values: list[Value],
         time: int = 0,
         diff: int = 1,
         shard: int | None = None,
@@ -386,7 +392,7 @@ class Scope:
     def static_table(
         self,
         universe: Universe,
-        rows: Iterable[InputRow],
+        rows: Iterable[DataRow],
         dt: DType,
     ) -> Table: ...
     def map_column(
@@ -584,7 +590,7 @@ def run_with_new_graph(
     monitoring_level: MonitoringLevel = MonitoringLevel.NONE,
     with_http_server: bool = False,
     persistence_config: PersistenceConfig | None = None,
-) -> list[CapturedTable]: ...
+) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
 
 class DataFormat:

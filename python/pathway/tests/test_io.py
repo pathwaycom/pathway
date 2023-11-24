@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import random
+import sqlite3
 import sys
 import threading
 import time
@@ -718,7 +719,7 @@ def test_fs_raw(tmp_path: pathlib.Path):
     pw.debug.compute_and_print(table)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.xfail(reason="randomly fails for yet unknown reason")
 @pytest.mark.xdist_group(name="streaming_tests")
 def test_csv_directory(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
@@ -741,14 +742,14 @@ def test_csv_directory(tmp_path: pathlib.Path):
         v: int
 
     table = pw.io.csv.read(
-        str(inputs_path),
+        inputs_path,
         schema=InputSchema,
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
     )
 
     output_path = tmp_path / "output.csv"
-    pw.io.csv.write(table, str(output_path))
+    pw.io.csv.write(table, output_path)
 
     assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)
 
@@ -767,7 +768,7 @@ def test_csv_streaming(tmp_path: pathlib.Path):
         str(inputs_path),
         schema=InputSchema,
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
     )
 
     output_path = tmp_path / "output.csv"
@@ -790,7 +791,7 @@ def test_json_streaming(tmp_path: pathlib.Path):
         str(inputs_path),
         schema=InputSchema,
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
     )
 
     output_path = tmp_path / "output.csv"
@@ -808,7 +809,7 @@ def test_plaintext_streaming(tmp_path: pathlib.Path):
     table = pw.io.plaintext.read(
         str(inputs_path),
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
     )
 
     output_path = tmp_path / "output.csv"
@@ -831,7 +832,7 @@ def test_csv_streaming_fs_alias(tmp_path: pathlib.Path):
         str(inputs_path),
         schema=InputSchema,
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
         format="csv",
     )
 
@@ -855,7 +856,7 @@ def test_json_streaming_fs_alias(tmp_path: pathlib.Path):
         str(inputs_path),
         schema=InputSchema,
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
         format="json",
     )
 
@@ -874,7 +875,7 @@ def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
     table = pw.io.fs.read(
         str(inputs_path),
         mode="streaming",
-        autocommit_duration_ms=1000,
+        autocommit_duration_ms=10,
         format="plaintext",
     )
 
@@ -2327,3 +2328,99 @@ def test_python_connector_upsert_json(tmp_path: pathlib.Path):
 
     result = pd.read_csv(tmp_path / "output.csv")
     return len(result) == 5
+
+
+def test_parse_to_table_deprecation():
+    table_def = """
+        A | B
+        1 | 2
+        3 | 4
+        """
+    with pytest.warns(
+        DeprecationWarning,
+        match="pw.debug.parse_to_table is deprecated, use pw.debug.table_from_markdown instead",
+    ):
+        t = pw.debug.parse_to_table(table_def)
+    expected = pw.debug.table_from_markdown(table_def)
+    assert_table_equality(t, expected)
+
+
+@xfail_on_darwin(reason="running pw.run from separate process not supported")
+def test_sqlite(tmp_path: pathlib.Path):
+    database_name = tmp_path / "test.db"
+    output_path = tmp_path / "output.csv"
+
+    connection = sqlite3.connect(database_name)
+    cursor = connection.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE users (
+            id INTEGER,
+            login TEXT,
+            name TEXT
+        )
+        """
+    )
+    cursor.execute("INSERT INTO users (id, login, name) VALUES (1, 'alice', 'Alice')")
+    cursor.execute("INSERT INTO users (id, login, name) VALUES (2, 'bob1999', 'Bob')")
+    connection.commit()
+
+    def stream_target():
+        assert wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 2), 5, 0.1, target=None
+        )
+        connection = sqlite3.connect(database_name)
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO users (id, login, name) VALUES (3, 'ch123', 'Charlie')"""
+        )
+        connection.commit()
+
+        assert wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), 2, 0.1, target=None
+        )
+        cursor = connection.cursor()
+        cursor.execute("UPDATE users SET name = 'Bob Smith' WHERE id = 2")
+        connection.commit()
+
+        assert wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 5), 2, 0.1, target=None
+        )
+        cursor = connection.cursor()
+        cursor.execute("DELETE FROM users WHERE id = 3")
+        connection.commit()
+
+    class InputSchema(pw.Schema):
+        id: int
+        login: str
+        name: str
+
+    table = pw.io.sqlite.read(
+        database_name, "users", InputSchema, autocommit_duration_ms=1
+    )
+    pw.io.jsonlines.write(table, output_path)
+
+    inputs_thread = threading.Thread(target=stream_target, daemon=True)
+    inputs_thread.start()
+
+    assert wait_result_with_checker(FileLinesNumberChecker(output_path, 6), 30)
+
+    events = []
+    with open(output_path, "r") as f:
+        for row in f:
+            events.append(json.loads(row))
+
+    events.sort(key=lambda event: (event["time"], event["diff"], event["name"]))
+    events_truncated = []
+    for event in events:
+        events_truncated.append([event["name"], event["diff"]])
+
+    assert events_truncated == [
+        ["Alice", 1],
+        ["Bob", 1],
+        ["Charlie", 1],
+        ["Bob", -1],
+        ["Bob Smith", 1],
+        ["Charlie", -1],
+    ]

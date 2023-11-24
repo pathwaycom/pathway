@@ -76,7 +76,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet
     ... 10  | Alice | dog
     ... 9   | Bob   | dog
@@ -157,7 +157,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -290,13 +290,13 @@ class GroupedJoinResult(GroupedJoinable):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    cost  owner  pet
         ... 1   100  Alice    1
         ... 2    90    Bob    1
         ... 3    80  Alice    2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...     cost  owner  pet size
         ... 11   100  Alice    3    M
         ... 12    90    Bob    1    L

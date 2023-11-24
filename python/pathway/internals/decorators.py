@@ -49,7 +49,7 @@ def input_attribute(type=float):
     ...         def ret(self) -> float:
     ...             return self.arg + 1
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9
@@ -90,7 +90,7 @@ def input_method(type=float):
     ...         def val(self):
     ...             return self.m(2)
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9
@@ -130,7 +130,7 @@ def attribute(func, **kwargs):
     ...         def ret(self) -> float:
     ...             return self.attr + 1
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9
@@ -163,7 +163,7 @@ def output_attribute(func, **kwargs):
     ...         def ret(self) -> float:
     ...             return self.arg + 1
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9
@@ -200,7 +200,7 @@ def method(func, **kwargs):
     ...         def fun(self, arg) -> float:
     ...             return self.a * arg
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9
@@ -257,7 +257,7 @@ def transformer(cls):
     ...         def ret(self) -> float:
     ...             return self.arg + 1
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9

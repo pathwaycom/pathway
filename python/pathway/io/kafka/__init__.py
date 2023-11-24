@@ -505,7 +505,7 @@ def write(
     You want to send a Pathway table t to the Kafka instance.
 
     >>> import pathway as pw
-    >>> t = pw.debug.parse_to_table("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
+    >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
 
     To connect to the topic "animals" and send messages, the connector must be used \
         as follows, depending on the format:

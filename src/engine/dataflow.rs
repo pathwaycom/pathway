@@ -79,12 +79,12 @@ use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
 use self::operators::time_column::TimeColumnBuffer;
 use self::operators::{ArrangeWithTypes, MapWrapped};
-use self::operators::{ConsolidateNondecreasing, Reshard};
-use self::operators::{ConsolidateNondecreasingMap, MaybeTotal};
+use self::operators::{ConsolidateForOutput, Reshard};
+use self::operators::{ConsolidateForOutputMap, MaybeTotal};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
-use super::graph::InputRow;
+use super::graph::DataRow;
 use super::http_server::maybe_run_http_server_thread;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
@@ -479,10 +479,6 @@ impl<S: MaybeTotalScope> Table<S> {
 
     fn values_arranged(&self) -> &ValuesArranged<S> {
         self.data.arranged()
-    }
-
-    fn values_consolidated(&self) -> &Values<S> {
-        self.data.consolidated()
     }
 
     fn keys(&self) -> &Keys<S> {
@@ -1109,31 +1105,28 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
-        let new_values = table
-            .values()
-            .consolidate_nondecreasing()
-            .map_wrapped_named(
-                "expression_table::evaluate_expression",
-                wrapper,
-                move |(key, values)| {
-                    let args: Vec<Value> = column_paths
-                        .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter);
-                    let new_values = expressions.iter().map(|expression_data| {
-                        let result = expression_data
-                            .expression
-                            .eval(&args)
-                            .unwrap_with_reporter_and_trace(
-                                &error_reporter,
-                                expression_data.properties.trace(),
-                            );
-                        result
-                    });
-                    (key, Value::Tuple(new_values.collect()))
-                },
-            );
+        let new_values = table.values().consolidate_for_output().map_wrapped_named(
+            "expression_table::evaluate_expression",
+            wrapper,
+            move |(key, values)| {
+                let args: Vec<Value> = column_paths
+                    .iter()
+                    .map(|path| path.extract(&key, &values))
+                    .collect::<Result<_>>()
+                    .unwrap_with_reporter(&error_reporter);
+                let new_values = expressions.iter().map(|expression_data| {
+                    let result = expression_data
+                        .expression
+                        .eval(&args)
+                        .unwrap_with_reporter_and_trace(
+                            &error_reporter,
+                            expression_data.properties.trace(),
+                        );
+                    result
+                });
+                (key, Value::Tuple(new_values.collect()))
+            },
+        );
 
         Ok(self
             .tables
@@ -1420,7 +1413,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 Pipeline,
                 OrdValSpine<Key, Value, <S as MaybeTotalScope>::MaybeTotalTimestamp, isize>,
             >(&gathered, Pipeline, "consolidate_without_shard")
-            .consolidate_nondecreasing_map(|k, v| (*k, v.clone()));
+            .consolidate_for_output_map(|k, v| (*k, v.clone()));
 
         let (on_time, _late) = consolidated.freeze(
             move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
@@ -1452,7 +1445,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         //TODO: report errors
         let _error_reporter = self.error_reporter.clone();
 
-        let new_table = table.values().consolidate_nondecreasing().postpone(
+        let new_table = table.values().consolidate_for_output().postpone(
             table.values().scope(),
             move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
             move |val| current_time_column_path.extract_from_value(val).unwrap(),
@@ -2239,69 +2232,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(())
     }
 
-    fn on_universe_data(
-        &mut self,
-        universe_handle: UniverseHandle,
-        mut function: Box<dyn FnMut(&Key, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        let universe = self
-            .universes
-            .get(universe_handle)
-            .ok_or(Error::InvalidUniverseHandle)?;
-        universe
-            .keys_consolidated()
-            .inner
-            .exchange(|_| 0)
-            .inspect(move |(key, _time, diff)| {
-                function(key, *diff).unwrap();
-            })
-            .probe_with(&mut self.output_probe);
-
-        Ok(())
-    }
-
-    fn on_column_data(
-        &mut self,
-        column_handle: ColumnHandle,
-        mut function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        let column = self
-            .columns
-            .get(column_handle)
-            .ok_or(Error::InvalidColumnHandle)?;
-        column
-            .values_consolidated()
-            .inner
-            .exchange(|_| 0)
-            .inspect(move |((key, value), _time, diff)| {
-                function(key, value, *diff).unwrap();
-            })
-            .probe_with(&mut self.output_probe);
-
-        Ok(())
-    }
-
-    fn on_table_data(
-        &mut self,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        mut function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        let handle = self.flatten_table_storage(table_handle, column_paths)?;
-
-        let table = self.tables.get(handle).ok_or(Error::InvalidColumnHandle)?;
-        table
-            .values_consolidated()
-            .inner
-            .exchange(|_| 0)
-            .inspect(move |((key, value), _time, diff)| {
-                function(key, value.as_tuple().unwrap(), *diff).unwrap();
-            })
-            .probe_with(&mut self.output_probe);
-
-        Ok(())
-    }
-
     fn probe_table(&mut self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
         let table = self
             .tables
@@ -2567,7 +2497,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
     fn static_table(
         &mut self,
-        values: Vec<InputRow>,
+        values: Vec<DataRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let worker_count = self.scope.peers();
@@ -2727,7 +2657,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let error_reporter_1 = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
 
-        let new_table = table.values().consolidate_nondecreasing().forget(
+        let new_table = table.values().consolidate_for_output().forget(
             move |val| {
                 threshold_time_column_path
                     .extract_from_value(val)
@@ -2850,7 +2780,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             .as_collection();
         let single_threaded = data_sink.single_threaded();
 
-        let output = output_columns.consolidate_nondecreasing().inner;
+        let output = output_columns.consolidate_for_output().inner;
         let inspect_output = {
             if single_threaded {
                 output.exchange(|_| 0)
@@ -2970,7 +2900,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let skip_initial_time = skip_persisted_batch && global_persistent_storage.is_some();
         self.extract_columns(table_handle, column_paths)?
             .as_collection()
-            .consolidate_nondecreasing()
+            .consolidate_for_output()
             .inner
             .probe_with(&mut self.output_probe)
             .sink(Pipeline, "SubscribeColumn", move |input| {
@@ -3607,7 +3537,7 @@ where
 
     fn static_table(
         &self,
-        _data: Vec<InputRow>,
+        _data: Vec<DataRow>,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
@@ -4014,35 +3944,6 @@ where
         Err(Error::IoNotPossible)
     }
 
-    fn on_universe_data(
-        &self,
-        universe_handle: UniverseHandle,
-        function: Box<dyn FnMut(&Key, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .on_universe_data(universe_handle, function)
-    }
-
-    fn on_column_data(
-        &self,
-        column_handle: ColumnHandle,
-        function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.0.borrow_mut().on_column_data(column_handle, function)
-    }
-
-    fn on_table_data(
-        &self,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .on_table_data(table_handle, column_paths, function)
-    }
-
     fn attach_prober(
         &self,
         _logic: Box<dyn FnMut(ProberStats)>,
@@ -4125,7 +4026,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
 
     fn static_table(
         &self,
-        data: Vec<InputRow>,
+        data: Vec<DataRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().static_table(data, table_properties)
@@ -4568,35 +4469,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         self.0
             .borrow_mut()
             .output_table(data_sink, data_formatter, table_handle, column_paths)
-    }
-
-    fn on_universe_data(
-        &self,
-        universe_handle: UniverseHandle,
-        function: Box<dyn FnMut(&Key, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .on_universe_data(universe_handle, function)
-    }
-
-    fn on_column_data(
-        &self,
-        column_handle: ColumnHandle,
-        function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.0.borrow_mut().on_column_data(column_handle, function)
-    }
-
-    fn on_table_data(
-        &self,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.0
-            .borrow_mut()
-            .on_table_data(table_handle, column_paths, function)
     }
 
     fn attach_prober(

@@ -51,14 +51,14 @@ class GraphRunner:
         self,
         *tables: table.Table,
         after_build: Callable[[ScopeState], None] | None = None,
-    ) -> list[api.CapturedTable]:
+    ) -> list[api.CapturedStream]:
         nodes, columns = self.tree_shake_tables(self._graph.global_scope, tables)
         context = ScopeContext(nodes, columns)
         return self._run(context, output_tables=tables, after_build=after_build)
 
     def run_all(
         self, after_build: Callable[[ScopeState], None] | None = None
-    ) -> list[api.CapturedTable]:
+    ) -> list[api.CapturedStream]:
         context = ScopeContext(nodes=self._graph.global_scope.nodes, run_all=True)
         return self._run(context, after_build=after_build)
 
@@ -75,7 +75,7 @@ class GraphRunner:
         context: ScopeContext,
         output_tables: Iterable[table.Table] = (),
         after_build: Callable[[ScopeState], None] | None = None,
-    ) -> list[api.CapturedTable]:
+    ) -> list[api.CapturedStream]:
         storage_graph = OperatorStorageGraph.from_scope_context(
             context, self, output_tables
         )

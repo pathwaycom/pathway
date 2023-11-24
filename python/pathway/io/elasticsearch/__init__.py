@@ -74,7 +74,7 @@ def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> 
     Elasticsearch.
 
     >>> import pathway as pw
-    >>> pets = pw.debug.parse_to_table('''
+    >>> pets = pw.debug.table_from_markdown('''
     ... age | owner | pet
     ... 10  | Alice | dog
     ... 9   | Bob   | cat

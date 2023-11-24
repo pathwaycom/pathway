@@ -4,7 +4,7 @@ import io
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Any, NewType
+from typing import Any, Callable, NewType
 
 from google.oauth2.service_account import Credentials as ServiceCredentials
 from googleapiclient.discovery import build
@@ -29,8 +29,8 @@ DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
 GDriveFile = NewType("GDriveFile", dict)
 
 
-class GDriveClient:
-    def __init__(self, credentials: Any) -> None:
+class _GDriveClient:
+    def __init__(self, credentials: ServiceCredentials) -> None:
         self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
 
@@ -107,18 +107,18 @@ class GDriveClient:
             warnings.warn(f"cannot fetch file with id {file_id}, reason: {reason}")
             return None
 
-    def tree(self, root_id: str) -> GDriveTree:
-        return GDriveTree({file["id"]: file for file in self._ls(root_id)})
+    def tree(self, root_id: str) -> _GDriveTree:
+        return _GDriveTree({file["id"]: file for file in self._ls(root_id)})
 
 
 @dataclass(frozen=True)
-class GDriveTree:
+class _GDriveTree:
     files: dict[str, GDriveFile]
 
-    def _diff(self, other: GDriveTree) -> list[GDriveFile]:
+    def _diff(self, other: _GDriveTree) -> list[GDriveFile]:
         return [file for file in self.files.values() if file["id"] not in other.files]
 
-    def _modified_files(self, previous: GDriveTree) -> list[GDriveFile]:
+    def _modified_files(self, previous: _GDriveTree) -> list[GDriveFile]:
         result = []
         for file in self.files.values():
             previous_file = previous.files.get(file["id"], None)
@@ -129,28 +129,27 @@ class GDriveTree:
                 result.append(file)
         return result
 
-    def removed_files(self, previous: GDriveTree) -> list[GDriveFile]:
+    def removed_files(self, previous: _GDriveTree) -> list[GDriveFile]:
         return previous._diff(self)
 
-    def new_and_changed_files(self, previous: GDriveTree) -> list[GDriveFile]:
+    def new_and_changed_files(self, previous: _GDriveTree) -> list[GDriveFile]:
         return self._diff(previous) + self._modified_files(previous)
 
 
-class GDriveSubject(ConnectorSubject):
-    client: GDriveClient
+class _GDriveSubject(ConnectorSubject):
     root: str
     refresh_interval: int
 
     def __init__(
         self,
         *,
-        credentials: Any,
+        credentials_factory: Callable[[], ServiceCredentials],
         root: str,
         refresh_interval: int,
         mode: str,
     ) -> None:
         super().__init__()
-        self.client = GDriveClient(credentials)
+        self.credentials_factory = credentials_factory
         self.refresh_interval = refresh_interval
         self.root = root
         self.mode = mode
@@ -161,14 +160,15 @@ class GDriveSubject(ConnectorSubject):
         return SessionType.UPSERT if self.mode == "streaming" else SessionType.NATIVE
 
     def run(self) -> None:
-        prev = GDriveTree({})
+        client = _GDriveClient(self.credentials_factory())
+        prev = _GDriveTree({})
 
         while True:
-            tree = self.client.tree(self.root)
+            tree = client.tree(self.root)
             for file in tree.removed_files(prev):
                 self.remove(file)
             for file in tree.new_and_changed_files(prev):
-                payload = self.client.download(file)
+                payload = client.download(file)
                 if payload is not None:
                     self.upsert(file, payload)
 
@@ -191,32 +191,42 @@ def read(
     refresh_interval: int = 30,
     service_user_credentials_file: str,
 ) -> pw.Table:
-    """Reads a table from a Google Drive directory.
+    """Reads a table from a Google Drive directory or file.
 
     It will return a table with single column `data` containing each file in a binary format.
 
     Args:
         object_id: id of a directory or file. Directories will be scanned recursively.
-        mode: denotes how the engine polls the new data from the source. Currently "streaming",
+        mode: denotes how the engine polls the new data from the source. Currently "streaming"
             and "static" are supported. If set to "streaming", it will check for updates, deletions
-            and new files every `refresh_interval` seconds.
-            "static" mode will only consider the available data and ingest all of it in one commit.
+            and new files every `refresh_interval` seconds. "static" mode will only consider
+            the available data and ingest all of it in one commit.
             The default value is "streaming".
         refresh_interval: time in seconds between scans. Applicable if mode is set to 'streaming'.
         service_user_credentials_file: Google API service user json file.
     Returns:
         The table read.
+
+    Example:
+
+    >>> import pathway as pw
+    ...
+    >>> table = pw.io.gdrive.read(
+    ...     object_id="0BzDTMZY18pgfcGg4ZXFRTDFBX0j",
+    ...     service_user_credentials_file="credentials.json"
+    ... )
     """
 
     if mode not in ["streaming", "static"]:
         raise ValueError(f"Unrecognized connector mode: {mode}")
 
-    service_credentials = ServiceCredentials.from_service_account_file(
-        service_user_credentials_file
-    )
+    def credentials_factory() -> ServiceCredentials:
+        return ServiceCredentials.from_service_account_file(
+            service_user_credentials_file
+        )
 
-    subject = GDriveSubject(
-        credentials=service_credentials,
+    subject = _GDriveSubject(
+        credentials_factory=credentials_factory,
         root=object_id,
         refresh_interval=refresh_interval,
         mode=mode,

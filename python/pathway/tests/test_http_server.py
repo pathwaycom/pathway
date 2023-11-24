@@ -41,10 +41,10 @@ def test_http_server_runs_when_enabled():
         response_code=pw.apply_async(http_server_status, table.foo, max_retries=4)
     )
 
-    result = graph_runner.GraphRunner(
+    updates_stream = graph_runner.GraphRunner(
         G, with_http_server=True, monitoring_level=pw.MonitoringLevel.NONE
     ).run_tables(response_code)[0]
-    assert list(result.values())[0][0] == 200
+    assert updates_stream[0].values[0] == 200
 
 
 @pytest.mark.xdist_group(name="http_server_tests")
@@ -60,7 +60,7 @@ def test_http_server_doesnt_run_when_disabled():
         response_code=pw.apply_async(http_server_status, table.foo)
     )
 
-    result = graph_runner.GraphRunner(
+    updates_stream = graph_runner.GraphRunner(
         G, with_http_server=False, monitoring_level=pw.MonitoringLevel.NONE
     ).run_tables(response_code)[0]
-    assert list(result.values())[0][0] == -1
+    assert updates_stream[0].values[0] == -1

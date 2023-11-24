@@ -9,12 +9,13 @@ use std::mem::take;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Diff, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{Diff, KeyValue, PreparedEvent, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
 use crate::engine::error::DynError;
 use crate::engine::{Key, Result, Type, Value};
 
 use itertools::Itertools;
+use log::error;
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
 use serde_json::Value as JsonValue;
@@ -524,7 +525,7 @@ impl Parser for DsvParser {
                 Some(bytes) => self.parse_bytes_simple(DataEventType::Insert, bytes), // In Kafka we only have additions now
                 None => Err(ParseError::EmptyKafkaPayload),
             },
-            Diff(_) => Err(ParseError::UnsupportedReaderContext),
+            Diff(_) | PreparedEvent(_) => Err(ParseError::UnsupportedReaderContext),
         }
     }
 
@@ -585,7 +586,9 @@ impl Parser for IdentityParser {
                 key.as_ref().map(|k| vec![k.clone()]),
                 self.prepare_bytes(values)?,
             ),
-            TokenizedEntries(_, _) => return Err(ParseError::UnsupportedReaderContext),
+            TokenizedEntries(_, _) | PreparedEvent(_) => {
+                return Err(ParseError::UnsupportedReaderContext)
+            }
         };
 
         let is_commit = {
@@ -1019,7 +1022,7 @@ impl Parser for DebeziumMessageParser {
                 };
                 (key, value)
             }
-            Diff(_) | TokenizedEntries(_, _) => {
+            Diff(_) | TokenizedEntries(_, _) | PreparedEvent(_) => {
                 return Err(ParseError::UnsupportedReaderContext);
             }
         };
@@ -1132,7 +1135,7 @@ impl Parser for JsonLinesParser {
                 let key = key.as_ref().map(|k| vec![k.clone()]);
                 (*event, key, line)
             }
-            TokenizedEntries(..) => {
+            TokenizedEntries(..) | PreparedEvent(_) => {
                 return Err(ParseError::UnsupportedReaderContext);
             }
         };
@@ -1205,6 +1208,36 @@ impl Parser for JsonLinesParser {
 
     fn session_type(&self) -> SessionType {
         self.session_type
+    }
+}
+
+/// Receives `ParsedEvent` objects directly from Reader and passes them
+/// further without any changes.
+///
+/// This is useful for cases where there is no benefit from Reader/Parser
+/// separation.
+pub struct TransparentParser {
+    column_count: usize,
+}
+
+impl TransparentParser {
+    pub fn new(column_count: usize) -> Self {
+        Self { column_count }
+    }
+}
+
+impl Parser for TransparentParser {
+    fn parse(&mut self, data: &ReaderContext) -> ParseResult {
+        match data {
+            PreparedEvent(result) => Ok(vec![result.clone()]),
+            _ => Err(ParseError::UnsupportedReaderContext),
+        }
+    }
+
+    fn on_new_source_started(&mut self, _metadata: Option<&SourceMetadata>) {}
+
+    fn column_count(&self) -> usize {
+        self.column_count
     }
 }
 

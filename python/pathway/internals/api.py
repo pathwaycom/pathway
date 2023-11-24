@@ -33,12 +33,15 @@ Value: TypeAlias = Union[
     tuple[_Value, ...],
 ]
 CapturedTable = dict[Pointer, tuple[Value, ...]]
+CapturedStream = list[DataRow]
 
 S = TypeVar("S", bound=Value)
 
 
 class CombineMany(Protocol, Generic[S]):
-    def __call__(self, state: S | None, rows: list[tuple[list[Value], int]]) -> S:
+    def __call__(
+        self, state: S | None, rows: list[tuple[list[Value], int]], /
+    ) -> S | None:
         ...
 
 
@@ -110,7 +113,7 @@ def static_table_from_pandas(
         ordinary_columns
     ), "prrovided connector properties do not match the dataframe"
 
-    input_data: list[InputRow] = []
+    input_data: CapturedStream = []
     for i, index in enumerate(df.index):
         key = ids[index]
         values = [data[c][i] for c in ordinary_columns]
@@ -119,7 +122,25 @@ def static_table_from_pandas(
         if diff not in [-1, 1]:
             raise ValueError(f"Column {DIFF_PSEUDOCOLUMN} can only contain 1 and -1.")
         shard = data[SHARD_PSEUDOCOLUMN][i] if SHARD_PSEUDOCOLUMN in data else None
-        input_row = InputRow(key, values, time=time, diff=diff, shard=shard)
+        input_row = DataRow(key, values, time=time, diff=diff, shard=shard)
         input_data.append(input_row)
 
     return scope.static_table(input_data, connector_properties)
+
+
+def squash_updates(updates: CapturedStream) -> CapturedTable:
+    state: CapturedTable = {}
+    updates.sort(key=lambda row: (row.time, row.diff))
+    for row in updates:
+        if row.diff == 1:
+            assert row.key not in state, f"duplicated entries for key {row.key}"
+            state[row.key] = tuple(row.values)
+        elif row.diff == -1:
+            assert state[row.key] == tuple(
+                row.values
+            ), f"deleting non-existing entry {row.values}"
+            del state[row.key]
+        else:
+            raise AssertionError(f"Invalid diff value: {row.diff}")
+
+    return state

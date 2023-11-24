@@ -62,7 +62,7 @@ class Table(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet
     ... 10  | Alice | dog
     ... 9   | Bob   | dog
@@ -126,7 +126,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -171,7 +171,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -222,7 +222,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -314,12 +314,12 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | pet
         ... 1 | Dog
         ... 7 | Cat
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | pet
         ... 1 | Manul
         ... 8 | Octopus
@@ -385,7 +385,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... pet
         ... Dog
         ... Cat
@@ -427,12 +427,12 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    pet
         ... 1  Dog
         ... 7  Cat
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...    age
         ... 1   10
         ... 7    3
@@ -459,7 +459,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -488,7 +488,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> vertices = pw.debug.parse_to_table('''
+        >>> vertices = pw.debug.table_from_markdown('''
         ... label outdegree
         ...     1         3
         ...     7         0
@@ -644,13 +644,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age  | owner  | pet
         ... 1 | 10   | Alice  | 1
         ... 2 | 9    | Bob    | 1
         ... 3 | 8    | Alice  | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | cost
         ... 2 | 100
         ... 3 | 200
@@ -682,13 +682,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age  | owner  | pet
         ... 1 | 10   | Alice  | 1
         ... 2 | 9    | Bob    | 1
         ... 3 | 8    | Alice  | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | cost
         ... 2 | 100
         ... 3 | 200
@@ -733,7 +733,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table(
+        >>> t1 = pw.debug.table_from_markdown(
         ...     '''
         ...   | age  | owner  | pet
         ... 1 | 10   | Alice  | 1
@@ -741,7 +741,7 @@ class Table(
         ... 3 | 8    | Alice  | 2
         ... '''
         ... )
-        >>> t2 = pw.debug.parse_to_table(
+        >>> t2 = pw.debug.table_from_markdown(
         ...     '''
         ...   | cost
         ... 2 | 100
@@ -781,7 +781,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -832,7 +832,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -900,7 +900,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -937,14 +937,14 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t_animals = pw.debug.parse_to_table('''
+        >>> t_animals = pw.debug.table_from_markdown('''
         ...   | epithet    | genus
         ... 1 | upupa      | epops
         ... 2 | acherontia | atropos
         ... 3 | bubo       | scandiacus
         ... 4 | dynastes   | hercules
         ... ''')
-        >>> t_birds = pw.debug.parse_to_table('''
+        >>> t_birds = pw.debug.table_from_markdown('''
         ...   | desc
         ... 2 | hoopoe
         ... 4 | owl
@@ -1034,13 +1034,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 30
         ... ''')
@@ -1078,13 +1078,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...    | age | owner | pet
         ... 11 | 11  | Alice | 30
         ... 12 | 12  | Tom   | 40
@@ -1161,13 +1161,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...     age | owner | pet
         ... 1 | 10  | Alice | 30
         ... ''')
@@ -1238,13 +1238,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...    | age | owner | pet
         ... 1  | 10  | Alice | 30
         ... 12 | 12  | Tom   | 40
@@ -1302,13 +1302,13 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | owner | pet | size
         ... 1 | Tom   | 1   | 10
         ... 2 | Bob   | 1   | 9
@@ -1346,13 +1346,13 @@ class Table(
 
         >>> import pytest; pytest.xfail("with_id is hard to test")
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | new_id
         ... 1 | 2
         ... 2 | 3
@@ -1383,7 +1383,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    | age | owner  | pet
         ...  1 | 10  | Alice  | 1
         ...  2 | 9   | Bob    | 1
@@ -1449,7 +1449,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | 1
         ... 9   | Bob   | 1
@@ -1504,7 +1504,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | 1
         ... 9   | Bob   | 1
@@ -1528,7 +1528,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | 1
         ... 9   | Bob   | 1
@@ -1550,7 +1550,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | 1
         ... 9   | Bob   | 1
@@ -1605,7 +1605,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet
         ...  10  | Alice  | 1
         ...   9  | Bob    | 1
@@ -1699,12 +1699,12 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | pet
         ... 1 | Dog
         ... 7 | Cat
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | age
         ... 1 | 10
         ... 7 | 3
@@ -1734,7 +1734,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | pet  |  age
         ... 1 | Dog  |   2
         ... 7 | Cat  |   5
@@ -2001,7 +2001,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    age  owner  pet
         ... 1   10  Alice  dog
         ... 2    9    Bob  dog
@@ -2039,7 +2039,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... name   | pet
         ... Alice  | dog
         ... Bob    | cat
@@ -2058,7 +2058,7 @@ class Table(
         Tables obtained by a groupby/reduce scheme always have primary keys:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... name   | pet
         ... Alice  | dog
         ... Bob    | cat
@@ -2077,7 +2077,7 @@ class Table(
         Single-row tables can be accessed via `ix_ref()`:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... name   | pet
         ... Alice  | dog
         ... Bob    | cat
@@ -2114,7 +2114,7 @@ class Table(
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog

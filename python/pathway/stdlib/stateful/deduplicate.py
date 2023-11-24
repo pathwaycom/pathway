@@ -33,6 +33,7 @@ def deduplicate(
     """
     assert col.table == table
 
+    @pw.reducers.stateful_many
     def is_different_with_state(
         state: tuple[Any, ...] | None, rows
     ) -> tuple[Any, ...] | None:
@@ -47,9 +48,7 @@ def deduplicate(
     _table = table.select(*table, _instance=instance)
     res = _table.groupby(_table._instance).reduce(
         _table._instance,
-        res=pw.reducers.stateful_many(
-            is_different_with_state, col, *_table.without(_table._instance)
-        ),
+        res=is_different_with_state(col, *_table.without(_table._instance)),
     )
     res = res.select(res=pw.apply(lambda x: x[1:], res.res))
     return unpack_col(res.res, *_table.without(_table._instance))

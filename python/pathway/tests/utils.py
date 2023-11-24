@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway.debug import _markdown_to_pandas, parse_to_table, table_from_pandas
+from pathway.debug import _markdown_to_pandas, table_from_markdown, table_from_pandas
 from pathway.internals import api, datasource
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.schema import is_subschema, schema_from_columns
@@ -167,8 +167,8 @@ def assert_stream_equal(expected: list[DiffEntry], table: pw.Table):
     pw.io.subscribe(table, callback, callback.on_end)
 
 
-def assert_equal_tables(t0: api.CapturedTable, t1: api.CapturedTable):
-    assert t0 == t1
+def assert_equal_tables(t0: api.CapturedStream, t1: api.CapturedStream) -> None:
+    assert api.squash_updates(t0) == api.squash_updates(t1)
 
 
 def make_value_hashable(val: api.Value):
@@ -182,10 +182,36 @@ def make_row_hashable(row: tuple[api.Value, ...]):
     return tuple(make_value_hashable(val) for val in row)
 
 
-def assert_equal_tables_wo_index(t0: api.CapturedTable, t1: api.CapturedTable):
+def assert_equal_tables_wo_index(
+    s0: api.CapturedStream, s1: api.CapturedStream
+) -> None:
+    t0 = api.squash_updates(s0)
+    t1 = api.squash_updates(s1)
     assert collections.Counter(
         make_row_hashable(row) for row in t0.values()
     ) == collections.Counter(make_row_hashable(row) for row in t1.values())
+
+
+def assert_equal_streams(t0: api.CapturedStream, t1: api.CapturedStream) -> None:
+    def transform(row: api.DataRow):
+        t = (row.key,) + tuple(row.values) + (row.time, row.diff)
+        return make_row_hashable(t)
+
+    assert collections.Counter(transform(row) for row in t0) == collections.Counter(
+        transform(row) for row in t1
+    )
+
+
+def assert_equal_streams_wo_index(
+    t0: api.CapturedStream, t1: api.CapturedStream
+) -> None:
+    def transform(row: api.DataRow):
+        t = tuple(row.values) + (row.time, row.diff)
+        return make_row_hashable(t)
+
+    assert collections.Counter(transform(row) for row in t0) == collections.Counter(
+        transform(row) for row in t1
+    )
 
 
 class CsvLinesNumberChecker:
@@ -195,7 +221,15 @@ class CsvLinesNumberChecker:
 
     def __call__(self):
         result = pd.read_csv(self.path).sort_index()
+        print(
+            f"Actual (expected) lines number: {len(result)} ({self.n_lines})",
+            file=sys.stderr,
+        )
         return len(result) == self.n_lines
+
+    def provide_information_on_failure(self):
+        with open(self.path, "r") as f:
+            print(f"Final output contents:\n{f.read()}", file=sys.stderr)
 
 
 class FileLinesNumberChecker:
@@ -208,7 +242,15 @@ class FileLinesNumberChecker:
         with open(self.path, "r") as f:
             for row in f:
                 n_lines_actual += 1
+        print(
+            f"Actual (expected) lines number: {n_lines_actual} ({self.n_lines})",
+            file=sys.stderr,
+        )
         return n_lines_actual == self.n_lines
+
+    def provide_information_on_failure(self):
+        with open(self.path, "r") as f:
+            print(f"Final output contents:\n{f.read()}", file=sys.stderr)
 
 
 def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):
@@ -284,7 +326,7 @@ def T(*args, format="markdown", **kwargs):
     if format == "pandas":
         return table_from_pandas(*args, **kwargs)
     assert format == "markdown"
-    return parse_to_table(*args, **kwargs)
+    return table_from_markdown(*args, **kwargs)
 
 
 def remove_ansi_escape_codes(msg: str) -> str:
@@ -307,6 +349,20 @@ assert_table_equality_wo_index_types = run_graph_and_validate_result(
     assert_equal_tables_wo_index, assert_schemas=False
 )
 
+assert_stream_equality = run_graph_and_validate_result(assert_equal_streams)
+
+assert_stream_equality_wo_index = run_graph_and_validate_result(
+    assert_equal_streams_wo_index
+)
+
+assert_stream_equality_wo_types = run_graph_and_validate_result(
+    assert_equal_streams, assert_schemas=False
+)
+
+assert_stream_equality_wo_index_types = run_graph_and_validate_result(
+    assert_equal_streams_wo_index, assert_schemas=False
+)
+
 
 def run(**kwargs):
     apply_defaults_for_run_kwargs(kwargs)
@@ -318,14 +374,22 @@ def run_all(**kwargs):
     pw.run_all(**kwargs)
 
 
-def wait_result_with_checker(checker, timeout_sec, target=run, args=(), kwargs={}):
-    p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
-    p.start()
+def wait_result_with_checker(
+    checker,
+    timeout_sec,
+    step=1.0,
+    target=run,
+    args=(),
+    kwargs={},
+):
+    if target is not None:
+        p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
+        p.start()
     started_at = time.time()
 
     succeeded = False
-    for _ in range(timeout_sec):
-        time.sleep(1.0)
+    for _ in range(int(timeout_sec / step) + 1):
+        time.sleep(step)
         try:
             succeeded = checker()
             if succeeded:
@@ -339,11 +403,15 @@ def wait_result_with_checker(checker, timeout_sec, target=run, args=(), kwargs={
         except Exception:
             pass
 
+    if not succeeded:
+        checker.provide_information_on_failure()
+
     if "persistence_config" in kwargs:
         time.sleep(5.0)  # allow a little gap to persist state
 
-    p.terminate()
-    p.join()
+    if target is not None:
+        p.terminate()
+        p.join()
 
     return succeeded
 

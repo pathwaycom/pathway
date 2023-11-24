@@ -16,6 +16,7 @@ from pathway.internals.reducers import (
     stateful_single,
     sum,
     tuple_reducer as tuple,
+    udf_reducer,
     unique,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "stateful_single",
     "sum",
     "tuple",
+    "udf_reducer",
     "unique",
 ]

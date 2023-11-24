@@ -210,7 +210,7 @@ named ``path`` that will show the full path to the file from where a row was fil
     With this method, you obtain a table updated dynamically. The changes in the logs would incur
     changes in the Business-Intelligence 'BI'-ready data, namely, in the tables you would like to output. To see
     how these changes are reported by Pathway, have a look at the
-    `"Streams of Updates and Snapshots" </developers/documentation/input-and-output-streams/stream-of-updates/>`_
+    `"Streams of Updates and Snapshots" </developers/user-guide/concepts/stream-of-updates/>`_
     article.
 
     Finally, a simple example for the plaintext format would look as follows:
@@ -283,7 +283,7 @@ def write(table: Table, filename: str | PathLike, format: str) -> None:
     First, import Pathway and create a table:
 
     >>> import pathway as pw
-    >>> t = pw.debug.parse_to_table("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
+    >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
 
     Consider you would want to output the stream of changes of this table in csv format.
     In order to do that you simply do:

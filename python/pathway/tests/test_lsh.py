@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from pathway.debug import table_to_pandas
+from pathway.internals import api
 from pathway.stdlib.ml.classifiers import knn_lsh_classifier_train, knn_lsh_classify
 from pathway.tests.utils import T, assert_table_equality
 
@@ -34,8 +35,9 @@ def test_aknn():
                 np.array([-11, -11, -11]),
                 np.array([2, 2, 2]),
                 np.array([1000, 1000, 1000]),
-            ]
-        }
+            ],
+        },
+        index=[0, 1, 2, 3],
     )
     queries = T(queries, format="pandas", unsafe_trusted_ids=True)
     lsh_index = knn_lsh_classifier_train(data, L=5, type="euclidean", d=3, M=7, A=10)
@@ -44,10 +46,12 @@ def test_aknn():
     result_pd = table_to_pandas(result)
     result_pd["knns_ids"] = result_pd["knns_ids"].map(lambda ids: set(map(int, ids)))
     assert len(result_pd) == 4
-    assert set() < result_pd["knns_ids"].iloc[0] <= {0, 1, 2}
-    assert set() < result_pd["knns_ids"].iloc[1] <= {3, 4, 5}
-    assert set() < result_pd["knns_ids"].iloc[2] <= {6, 7}
-    assert result_pd["knns_ids"].iloc[3] == set()  # no matches for last querypoint
+    assert set() < result_pd["knns_ids"].loc[api.unsafe_make_pointer(0)] <= {0, 1, 2}
+    assert set() < result_pd["knns_ids"].loc[api.unsafe_make_pointer(1)] <= {3, 4, 5}
+    assert set() < result_pd["knns_ids"].loc[api.unsafe_make_pointer(2)] <= {6, 7}
+    assert (
+        result_pd["knns_ids"].loc[api.unsafe_make_pointer(3)] == set()
+    )  # no matches for last querypoint
 
 
 def test_knn_classifier():

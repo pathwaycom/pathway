@@ -5,6 +5,7 @@ use std::any::type_name;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::env;
 use std::fmt::Debug;
 use std::fs::DirEntry;
@@ -32,7 +33,8 @@ use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::{Offset, OffsetKey, OffsetValue};
+use crate::connectors::offset::EMPTY_OFFSET;
+use crate::connectors::{Offset, OffsetKey, OffsetValue, ParsedEvent};
 use crate::deepcopy::DeepCopy;
 use crate::engine::Value;
 use crate::fs_helpers::ensure_directory;
@@ -55,6 +57,12 @@ use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedProducer};
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
 use rdkafka::Message;
+use rusqlite::types::ValueRef as SqliteValue;
+use rusqlite::types::{
+    FromSql as FromSqlite, FromSqlError as FromSqliteError, FromSqlResult as FromSqliteResult,
+};
+use rusqlite::Connection as SqliteConnection;
+use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +140,7 @@ pub enum ReaderContext {
     TokenizedEntries(DataEventType, Vec<String>),
     KeyValue((Option<Vec<u8>>, Option<Vec<u8>>)),
     Diff((DataEventType, Option<Value>, Vec<u8>)),
+    PreparedEvent(ParsedEvent),
 }
 
 impl ReaderContext {
@@ -167,6 +176,12 @@ pub enum ReadResult {
     Data(ReaderContext, Offset),
 }
 
+impl ReadResult {
+    pub fn from_event(event: ParsedEvent, offset: Offset) -> Self {
+        ReadResult::Data(ReaderContext::PreparedEvent(event), offset)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReadError {
@@ -181,6 +196,9 @@ pub enum ReadError {
 
     #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
     S3(S3CommandName, S3Error),
+
+    #[error("failed to perform Sqlite request: {0}")]
+    Sqlite(#[from] SqliteError),
 
     #[error(transparent)]
     Py(#[from] PyErr),
@@ -206,6 +224,7 @@ pub enum StorageType {
     CsvFilesystem,
     Kafka,
     Python,
+    Sqlite,
 }
 
 impl StorageType {
@@ -221,6 +240,7 @@ impl StorageType {
             StorageType::Kafka => KafkaReader::merge_two_frontiers(lhs, rhs),
             StorageType::Python => PythonReader::merge_two_frontiers(lhs, rhs),
             StorageType::S3Lines => S3GenericReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Sqlite => SqliteReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -355,7 +375,7 @@ pub enum WriteError {
     #[error("failed to perform S3 operation {0:?} reason: {1:?}")]
     S3(S3CommandName, S3Error),
 
-    #[error("failed to perform write in postgres")]
+    #[error("failed to perform write in postgres: {0}")]
     Postgres(#[from] postgres::Error),
 
     #[error(transparent)]
@@ -1098,7 +1118,7 @@ impl FilesystemScanner {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectorMode {
     Static,
     SimpleStreaming,
@@ -1452,10 +1472,17 @@ mod to_sql {
     use bytes::BytesMut;
     use chrono::{DateTime, NaiveDateTime, Utc};
     use ordered_float::OrderedFloat;
-    use postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type, WrongType};
+    use postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type};
 
     use crate::engine::time::DateTime as _;
     use crate::engine::Value;
+
+    #[derive(Debug, Clone, thiserror::Error)]
+    #[error("cannot convert value of type {pathway_type:?} to Postgres type {postgres_type}")]
+    struct WrongPathwayType {
+        pathway_type: String,
+        postgres_type: Type,
+    }
 
     impl ToSql for Value {
         fn to_sql(
@@ -1474,10 +1501,11 @@ mod to_sql {
                 };
             }
             #[allow(clippy::match_same_arms)]
-            match self {
+            let pathway_type = match self {
                 Self::None => return Ok(IsNull::Yes),
                 Self::Bool(b) => {
                     try_forward!(bool, *b);
+                    "bool"
                 }
                 Self::Int(i) => {
                     try_forward!(i64, *i);
@@ -1489,6 +1517,7 @@ mod to_sql {
                         try_forward!(f64, *i as f64);
                         try_forward!(f32, *i as f32);
                     }
+                    "int"
                 }
                 Self::Float(OrderedFloat(f)) => {
                     try_forward!(f64, *f);
@@ -1496,33 +1525,44 @@ mod to_sql {
                     {
                         try_forward!(f32, *f as f32);
                     }
+                    "float"
                 }
                 Self::Pointer(p) => {
                     try_forward!(String, p.to_string());
+                    "pointer"
                 }
                 Self::String(s) => {
                     try_forward!(&str, s.as_str());
+                    "string"
                 }
                 Self::Bytes(b) => {
                     try_forward!(&[u8], &b[..]);
+                    "bytes"
                 }
                 Self::Tuple(t) => {
                     try_forward!(&[Value], &t[..]);
+                    "tuple"
                 }
-                Self::IntArray(_) => {}   // TODO
-                Self::FloatArray(_) => {} // TODO
+                Self::IntArray(_) => "int array",     // TODO
+                Self::FloatArray(_) => "float array", // TODO
                 Self::DateTimeNaive(dt) => {
                     try_forward!(NaiveDateTime, dt.as_chrono_datetime());
+                    "naive date/time"
                 }
                 Self::DateTimeUtc(dt) => {
                     try_forward!(DateTime<Utc>, dt.as_chrono_datetime().and_utc());
+                    "UTC date/time"
                 }
-                Self::Duration(_) => {} // TODO
+                Self::Duration(_) => "duration", // TODO
                 Self::Json(j) => {
                     try_forward!(&serde_json::Value, &**j);
+                    "JSON"
                 }
             };
-            Err(Box::new(WrongType::new::<Self>(ty.clone())))
+            Err(Box::new(WrongPathwayType {
+                pathway_type: pathway_type.to_owned(),
+                postgres_type: ty.clone(),
+            }))
         }
 
         fn accepts(_ty: &Type) -> bool {
@@ -2230,5 +2270,175 @@ impl Reader for S3GenericReader {
 
     fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
         self.persistent_id = persistent_id;
+    }
+}
+
+impl FromSqlite for Value {
+    /// Convert raw `SQLite` field into one of internal value types
+    /// There are only five supported types: null, integer, real, text, blob
+    /// See also: <https://www.sqlite.org/datatype3.html>
+    fn column_result(value: SqliteValue<'_>) -> FromSqliteResult<Self> {
+        match value {
+            SqliteValue::Null => Ok(Value::None),
+            SqliteValue::Integer(val) => Ok(Value::Int(val)),
+            SqliteValue::Real(val) => Ok(Value::Float(val.into())),
+            SqliteValue::Text(val) => {
+                let parsed_string =
+                    from_utf8(val).map_err(|e| FromSqliteError::Other(Box::new(e)))?;
+                Ok(Value::String(parsed_string.into()))
+            }
+            SqliteValue::Blob(val) => Ok(Value::Bytes(val.into())),
+        }
+    }
+}
+
+const SQLITE_DATA_VERSION_PRAGMA: &str = "data_version";
+
+pub struct SqliteReader {
+    connection: SqliteConnection,
+    table_name: String,
+    column_names: Vec<String>,
+
+    last_saved_data_version: Option<i64>,
+    stored_state: HashMap<i64, Vec<Value>>,
+    queued_updates: VecDeque<ReadResult>,
+}
+
+impl SqliteReader {
+    pub fn new(
+        connection: SqliteConnection,
+        table_name: String,
+        column_names: Vec<String>,
+    ) -> Self {
+        Self {
+            connection,
+            table_name,
+            column_names,
+
+            last_saved_data_version: None,
+            queued_updates: VecDeque::new(),
+            stored_state: HashMap::new(),
+        }
+    }
+
+    /// Data version is required to check if there was an update in the database.
+    /// There are also hooks, but they only work for changes happened in the same
+    /// connection.
+    /// More details why hooks don't help here: <https://sqlite.org/forum/forumpost/3174b39eeb79b6a4>
+    pub fn data_version(&self) -> i64 {
+        let version: ::rusqlite::Result<i64> = self.connection.pragma_query_value(
+            Some(::rusqlite::DatabaseName::Main),
+            SQLITE_DATA_VERSION_PRAGMA,
+            |row| row.get(0),
+        );
+        version.expect("pragma.data_version request should not fail")
+    }
+
+    fn load_table(&mut self) -> Result<(), ReadError> {
+        let query = format!(
+            "SELECT {},_rowid_ FROM {}",
+            self.column_names.join(","),
+            self.table_name
+        );
+
+        let mut statement = self.connection.prepare(&query)?;
+        let mut rows = statement.query([])?;
+
+        let mut present_rowids = HashSet::new();
+        while let Some(row) = rows.next()? {
+            let rowid: i64 = row.get(self.column_names.len())?;
+            let mut values = Vec::with_capacity(self.column_names.len());
+            for column_idx in 0..self.column_names.len() {
+                values.push(row.get(column_idx)?);
+            }
+            self.stored_state
+                .entry(rowid)
+                .and_modify(|current_values| {
+                    if current_values != &values {
+                        let key = vec![Value::Int(rowid)];
+                        self.queued_updates.push_back(ReadResult::from_event(
+                            ParsedEvent::Delete((Some(key.clone()), take(current_values))),
+                            EMPTY_OFFSET,
+                        ));
+                        self.queued_updates.push_back(ReadResult::from_event(
+                            ParsedEvent::Insert((Some(key), values.clone())),
+                            EMPTY_OFFSET,
+                        ));
+                        *current_values = values.clone();
+                    }
+                })
+                .or_insert_with(|| {
+                    let key = vec![Value::Int(rowid)];
+                    self.queued_updates.push_back(ReadResult::from_event(
+                        ParsedEvent::Insert((Some(key), values.clone())),
+                        EMPTY_OFFSET,
+                    ));
+                    values
+                });
+            present_rowids.insert(rowid);
+        }
+
+        self.stored_state.retain(|rowid, values| {
+            if present_rowids.contains(rowid) {
+                true
+            } else {
+                let key = vec![Value::Int(*rowid)];
+                self.queued_updates.push_back(ReadResult::from_event(
+                    ParsedEvent::Delete((Some(key), take(values))),
+                    EMPTY_OFFSET,
+                ));
+                false
+            }
+        });
+
+        if !self.queued_updates.is_empty() {
+            self.queued_updates.push_back(ReadResult::FinishedSource {
+                commit_allowed: true,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn wait_period() -> Duration {
+        Duration::from_millis(500)
+    }
+}
+
+impl Reader for SqliteReader {
+    fn seek(&mut self, _frontier: &OffsetAntichain) -> Result<(), ReadError> {
+        todo!("seek is not supported for Sqlite source: persistent history of changes unavailable")
+    }
+
+    fn read(&mut self) -> Result<ReadResult, ReadError> {
+        loop {
+            if let Some(queued_update) = self.queued_updates.pop_front() {
+                return Ok(queued_update);
+            }
+
+            let current_data_version = self.data_version();
+            if self.last_saved_data_version != Some(current_data_version) {
+                self.load_table()?;
+                self.last_saved_data_version = Some(current_data_version);
+                return Ok(ReadResult::NewSource(None));
+            }
+            // Sleep to avoid non-stop pragma requests of a table
+            // that did not change
+            sleep(Self::wait_period());
+        }
+    }
+
+    fn storage_type(&self) -> StorageType {
+        StorageType::Sqlite
+    }
+
+    fn persistent_id(&self) -> Option<PersistentId> {
+        None
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        if persistent_id.is_some() {
+            unimplemented!("persistence is not supported for Sqlite data source")
+        }
     }
 }

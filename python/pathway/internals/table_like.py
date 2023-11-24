@@ -19,7 +19,7 @@ class TableLike(DeprecationSuperclass):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet
     ... 10  | Alice | dog
     ... 9   | Bob   | dog
@@ -62,13 +62,13 @@ class TableLike(DeprecationSuperclass):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...    | age | owner | pet
         ... 11 | 11  | Alice | 30
         ... 12 | 12  | Tom   | 40
@@ -102,13 +102,13 @@ class TableLike(DeprecationSuperclass):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 1
         ... 2 | 9   | Bob   | 1
         ... 3 | 8   | Alice | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...   | age | owner | pet
         ... 1 | 10  | Alice | 30
         ... ''').promise_universe_is_subset_of(t1)
@@ -140,7 +140,7 @@ class TableLike(DeprecationSuperclass):
 
         >>> import pathway as pw
         >>> import pytest
-        >>> t1 = pw.debug.parse_to_table(
+        >>> t1 = pw.debug.table_from_markdown(
         ...     '''
         ...   | age | owner | pet
         ... 1 | 8   | Alice | cat
@@ -148,7 +148,7 @@ class TableLike(DeprecationSuperclass):
         ... 3 | 15  | Alice | tortoise
         ... '''
         ... )
-        >>> t2 = pw.debug.parse_to_table(
+        >>> t2 = pw.debug.table_from_markdown(
         ...     '''
         ...   | age | owner
         ... 1 | 11  | Alice

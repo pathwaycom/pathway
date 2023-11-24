@@ -25,7 +25,7 @@ def write(
 
     In order for write to be successful, it is required that the table contains ``time``
     and ``diff`` columns of the integer type - you can refer to the article
-    `"Streams of Updates and Snapshots" </developers/documentation/input-and-output-streams/stream-of-updates/>`_
+    `"Streams of Updates and Snapshots" </developers/user-guide/concepts/stream-of-updates/>`_
     to learn more about the reasoning behind it.
 
     Args:
@@ -63,7 +63,7 @@ single transaction.
     Now let's load a table, which we will output to the database:
 
     >>> import pathway as pw
-    >>> t = pw.debug.parse_to_table("age owner pet \\n 1 10 Alice 1 \\n 2 9 Bob 1 \\n 3 8 Alice 2")
+    >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice 1 \\n 2 9 Bob 1 \\n 3 8 Alice 2")
 
     In order to output the table, we will need to create a new table in the database. The table
     would need to have all the columns that the output data has. Moreover it will need
@@ -123,7 +123,7 @@ def write_snapshot(
 
     In order for write to be successful, it is required that the table contains ``time``
     and ``diff`` columns of the integer type - you can refer to the article
-    `"Streams of Updates and Snapshots" </developers/documentation/input-and-output-streams/stream-of-updates/>`_
+    `"Streams of Updates and Snapshots" </developers/user-guide/concepts/stream-of-updates/>`_
     to understand the reasoning behind it.
 
     Args:

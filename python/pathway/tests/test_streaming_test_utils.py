@@ -6,7 +6,14 @@ import pytest
 import pathway as pw
 from pathway import demo
 from pathway.internals import Schema, api
-from pathway.tests.utils import DiffEntry, assert_key_entries_in_stream_consistent, run
+from pathway.tests.utils import (
+    DiffEntry,
+    T,
+    assert_key_entries_in_stream_consistent,
+    assert_stream_equality,
+    assert_stream_equality_wo_index,
+    run,
+)
 
 
 def test_stream_success():
@@ -184,3 +191,197 @@ def test_stream_test_util_should_fail_empty_final_state():
     assert_key_entries_in_stream_consistent(list, gb)
     with pytest.raises(AssertionError):
         run()
+
+
+def test_assert_stream_equality():
+    t = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 | 2        |    1
+    7 | 2 | 4        |    1
+    8 | 1 | 4        |    1
+    6 | 3 | 6        |    1
+    7 | 2 | 6        |   -1
+    6 | 4 | 8        |    1
+    5 | 4 | 8        |    1
+    6 | 3 | 8        |   -1
+    """
+    )
+    expected = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 | 2        |    1
+    8 | 1 | 4        |    1
+    7 | 2 | 4        |    1
+    6 | 3 | 6        |    1
+    7 | 2 | 6        |   -1
+    5 | 4 | 8        |    1
+    6 | 3 | 8        |   -1
+    6 | 4 | 8        |    1
+    """
+    )
+    assert_stream_equality(t, expected)
+
+
+def test_assert_table_revisions_equality_with_id():
+    t = T(
+        """
+    a | __time__ | __diff__
+    0 |    2     |    1
+    1 |    4     |    1
+    2 |    4     |    1
+    3 |    6     |    1
+    4 |    8     |    1
+    4 |    8     |    1
+    """
+    )
+    expected = T(
+        """
+    a | __time__ | __diff__
+    0 |    2     |    1
+    2 |    4     |    1
+    1 |    4     |    1
+    3 |    6     |    1
+    4 |    8     |    1
+    4 |    8     |    1
+    """
+    )
+    assert_stream_equality_wo_index(t, expected)
+
+
+def test_assert_table_revisions_equality_with_id_multiple_workers():
+    t = T(
+        """
+      | a | __time__ | __diff__ | __shard__
+    9 | 0 |    2     |    1     |     0
+    8 | 1 |    4     |    1     |     0
+    7 | 2 |    4     |    1     |     1
+    2 | 8 |    4     |    1     |     2
+    6 | 3 |    6     |    1     |     3
+    7 | 2 |    6     |   -1     |     1
+    5 | 4 |    8     |    1     |     0
+    6 | 3 |    8     |   -1     |     3
+    6 | 4 |    8     |    1     |     3
+    2 | 8 |    8     |   -1     |     2
+    """
+    )
+    expected = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    2 | 8 |    4     |    1
+    6 | 3 |    6     |    1
+    7 | 2 |    6     |   -1
+    5 | 4 |    8     |    1
+    6 | 3 |    8     |   -1
+    6 | 4 |    8     |    1
+    2 | 8 |    8     |   -1
+    """
+    )
+    assert_stream_equality(t, expected)
+
+
+def test_raises_when_not_equal_1():
+    t = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    """
+    )
+    expected = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    """
+    )
+    with pytest.raises(AssertionError):
+        assert_stream_equality(t, expected)
+
+
+def test_raises_when_not_equal_2():
+    t = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    """
+    )
+    expected = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    7 | 2 |    4     |    1
+    """
+    )
+    with pytest.raises(AssertionError):
+        assert_stream_equality(t, expected)
+
+
+def test_raises_when_schemas_dont_match():
+    t = T(
+        """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    """
+    )
+    expected = T(
+        """
+      | b | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    """
+    )
+    with pytest.raises(RuntimeError):
+        assert_stream_equality(t, expected)
+
+
+def test_compute_and_print_update_stream(capsys):
+    table_def = """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    8 | 1 |    6     |   -1
+    8 | 2 |    6     |    1
+    """
+    expected = """
+a | __time__ | __diff__
+0 | 2        | 1
+1 | 4        | 1
+2 | 4        | 1
+1 | 6        | -1
+2 | 6        | 1
+    """
+    t = T(table_def)
+    pw.debug.compute_and_print_update_stream(t, include_id=False)
+    caputed = capsys.readouterr()
+    assert caputed.out.strip() == expected.strip()
+
+
+def test_compute_and_print(capsys):
+    table_def = """
+      | a | __time__ | __diff__
+    9 | 0 |    2     |    1
+    8 | 1 |    4     |    1
+    7 | 2 |    4     |    1
+    8 | 1 |    6     |   -1
+    8 | 2 |    6     |    1
+    """
+    expected = """
+a
+0
+2
+2
+    """
+    t = T(table_def)
+    pw.debug.compute_and_print(t, include_id=False)
+    caputed = capsys.readouterr()
+    assert caputed.out.strip() == expected.strip()

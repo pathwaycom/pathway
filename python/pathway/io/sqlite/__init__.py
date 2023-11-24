@@ -1,0 +1,70 @@
+# Copyright © 2023 Pathway
+
+from __future__ import annotations
+
+from os import PathLike, fspath
+from typing import Any
+
+from pathway.internals import api, datasource
+from pathway.internals.decorators import table_from_datasource
+from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.schema import Schema
+from pathway.internals.table import Table
+from pathway.internals.trace import trace_user_frame
+from pathway.io._utils import read_schema
+
+
+@runtime_type_check
+@trace_user_frame
+def read(
+    path: PathLike | str,
+    table_name: str,
+    schema: type[Schema],
+    *,
+    autocommit_duration_ms: int | None = 1500,
+    debug_data: Any = None,
+) -> Table:
+    """Reads a table from a rowid table in `SQLite <https://www.sqlite.org/>`_ database.
+
+    Args:
+        path: Path to the database file.
+        table_name: Name of the table in the database to be read.
+        schema: Schema of the resulting table.
+        autocommit_duration_ms: The maximum time between two commits. Every
+            autocommit_duration_ms milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
+
+    Returns:
+        Table: The table read.
+    """
+    schema, api_schema = read_schema(
+        schema=schema,
+        value_columns=None,
+        primary_key=None,
+        types=None,
+        default_values=None,
+    )
+
+    data_storage = api.DataStorage(
+        storage_type="sqlite",
+        path=fspath(path),
+        table_name=table_name,
+        column_names=schema.column_names(),
+    )
+    data_format = api.DataFormat(
+        format_type="transparent",
+        **api_schema,
+    )
+
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
+    )
+    return table_from_datasource(
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            schema=schema,
+            data_source_options=data_source_options,
+        ),
+        debug_datasource=datasource.debug_datasource(debug_data),
+    )

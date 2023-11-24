@@ -25,53 +25,53 @@ use super::maybe_total::{MaybeTotalScope, MaybeTotalSwitch};
 use super::shard::Shard;
 use super::ArrangedBySelf;
 
-pub trait ConsolidateNondecreasing<S, D, R>
+pub trait ConsolidateForOutput<S, D, R>
 where
     S: MaybeTotalScope,
     R: Semigroup,
 {
-    fn consolidate_nondecreasing_named(&self, name: &str) -> Collection<S, D, R>;
+    fn consolidate_for_output_named(&self, name: &str) -> Collection<S, D, R>;
 
     #[track_caller]
-    fn consolidate_nondecreasing(&self) -> Collection<S, D, R> {
-        self.consolidate_nondecreasing_named("ConsolidateNondecreasing")
+    fn consolidate_for_output(&self) -> Collection<S, D, R> {
+        self.consolidate_for_output_named("ConsolidateForOutput")
     }
 }
 
-impl<S, D, R> ConsolidateNondecreasing<S, D, R> for Collection<S, D, R>
+impl<S, D, R> ConsolidateForOutput<S, D, R> for Collection<S, D, R>
 where
     S: MaybeTotalScope,
     D: ExchangeData + Shard,
     R: Semigroup + ExchangeData,
 {
     #[track_caller]
-    fn consolidate_nondecreasing_named(&self, name: &str) -> Self {
+    fn consolidate_for_output_named(&self, name: &str) -> Self {
         let arranged: ArrangedBySelf<S, D, R> = self.arrange_named(&format!("Arrange: {name}"));
-        arranged.consolidate_nondecreasing_map_named(name, |k, ()| k.clone())
+        arranged.consolidate_for_output_map_named(name, |k, ()| k.clone())
     }
 }
 
-pub trait ConsolidateNondecreasingMap<S, K, V, R>
+pub trait ConsolidateForOutputMap<S, K, V, R>
 where
     S: MaybeTotalScope,
     R: Semigroup,
 {
-    fn consolidate_nondecreasing_map_named<D: Data>(
+    fn consolidate_for_output_map_named<D: Data>(
         &self,
         name: &str,
         logic: impl FnMut(&K, &V) -> D + 'static,
     ) -> Collection<S, D, R>;
 
     #[track_caller]
-    fn consolidate_nondecreasing_map<D: Data>(
+    fn consolidate_for_output_map<D: Data>(
         &self,
         logic: impl FnMut(&K, &V) -> D + 'static,
     ) -> Collection<S, D, R> {
-        self.consolidate_nondecreasing_map_named("ConsolidateNondecreasing", logic)
+        self.consolidate_for_output_map_named("ConsolidateForOutput", logic)
     }
 }
 
-impl<S, Tr> ConsolidateNondecreasingMap<S, Tr::Key, Tr::Val, Tr::R> for Arranged<S, Tr>
+impl<S, Tr> ConsolidateForOutputMap<S, Tr::Key, Tr::Val, Tr::R> for Arranged<S, Tr>
 where
     S: MaybeTotalScope,
     Tr: TraceReader<Time = S::Timestamp> + Clone,
@@ -80,7 +80,7 @@ where
     Tr::R: Semigroup,
 {
     #[track_caller]
-    fn consolidate_nondecreasing_map_named<D: Data>(
+    fn consolidate_for_output_map_named<D: Data>(
         &self,
         name: &str,
         mut logic: impl FnMut(&Tr::Key, &Tr::Val) -> D + 'static,
@@ -91,28 +91,24 @@ where
             .unary(Pipeline, &name, move |_cap, _info| {
                 move |input, output| {
                     input.for_each(|cap, data| {
-                        let mut times = BTreeMap::new();
+                        let mut time_diffs = BTreeMap::new();
                         for batch in data.iter() {
                             let mut cursor = batch.cursor();
                             while let Some(key) = cursor.get_key(batch) {
                                 while let Some(val) = cursor.get_val(batch) {
                                     cursor.map_times(batch, |time, diff| {
-                                        if !times.contains_key(time) {
-                                            times.insert(time.clone(), Vec::new());
-                                        }
                                         let data = logic(key, val);
-                                        times.get_mut(time).unwrap().push((
-                                            data,
-                                            time.clone(),
-                                            diff.clone(),
-                                        ));
+                                        time_diffs
+                                            .entry((time.clone(), diff.clone()))
+                                            .or_insert_with(Vec::new)
+                                            .push((data, time.clone(), diff.clone()));
                                     });
                                     cursor.step_val(batch);
                                 }
                                 cursor.step_key(batch);
                             }
                         }
-                        for (time, mut vec) in times {
+                        for ((time, _diff), mut vec) in time_diffs {
                             output.session(&cap.delayed(&time)).give_vec(&mut vec);
                         }
                     });

@@ -276,7 +276,7 @@ impl Display for Value {
             Self::None => write!(fmt, "None"),
             Self::Bool(b) => write!(fmt, "{}", if *b { "True" } else { "False" }),
             Self::Int(i) => write!(fmt, "{i}"),
-            Self::Float(OrderedFloat(f)) => write!(fmt, "{f}"),
+            Self::Float(OrderedFloat(f)) => write!(fmt, "{f:?}"),
             Self::Pointer(p) => write!(fmt, "{p}"),
             Self::String(s) => write!(fmt, "\"{}\"", s.escape_default()),
             Self::Bytes(b) => write!(fmt, "{b:?}"),

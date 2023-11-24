@@ -24,7 +24,7 @@ where
     #[track_caller]
     fn stateful_reduce<V2: Data>(
         &self,
-        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> V2 + 'static,
+        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> Option<V2> + 'static,
     ) -> Collection<S, (K, V2), R> {
         self.stateful_reduce_named("StatefulReduce", logic)
     }
@@ -32,7 +32,7 @@ where
     fn stateful_reduce_named<V2: Data>(
         &self,
         name: &str,
-        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> V2 + 'static,
+        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> Option<V2> + 'static,
     ) -> Collection<S, (K, V2), R>;
 }
 
@@ -48,7 +48,7 @@ where
     fn stateful_reduce_named<V2: Data>(
         &self,
         name: &str,
-        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> V2 + 'static,
+        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> Option<V2> + 'static,
     ) -> Collection<S, (K, V2), R> {
         let arranged: ArrangedByKey<S, K, V, R> = self.arrange_named(&format!("Arrange: {name}"));
         arranged.stateful_reduce_named(name, logic)
@@ -68,7 +68,7 @@ where
     fn stateful_reduce_named<V2: Data>(
         &self,
         name: &str,
-        mut logic: impl FnMut(Option<&V2>, &[(Tr::Val, Tr::R)]) -> V2 + 'static,
+        mut logic: impl FnMut(Option<&V2>, &[(Tr::Val, Tr::R)]) -> Option<V2> + 'static,
     ) -> Collection<S, (Tr::Key, V2), Tr::R> {
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
@@ -105,12 +105,14 @@ where
                                             Tr::R::from(-1),
                                         ));
                                     }
-                                    session.give((
-                                        (key.clone(), new_state.clone()),
-                                        time.clone(),
-                                        Tr::R::from(1),
-                                    ));
-                                    state = Some(new_state);
+                                    if let Some(new_state) = new_state.clone() {
+                                        session.give((
+                                            (key.clone(), new_state),
+                                            time.clone(),
+                                            Tr::R::from(1),
+                                        ));
+                                    }
+                                    state = new_state;
                                 }
                                 if let Some(state) = state {
                                     state_by_key.insert(key.clone(), state);

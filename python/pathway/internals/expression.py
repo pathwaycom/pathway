@@ -403,7 +403,7 @@ class ColumnExpression(OperatorInput, ABC):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... val
         ... 1
         ... 2
@@ -562,7 +562,7 @@ class ColumnReference(ColumnExpression):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...    age  owner  pet
     ... 1   10  Alice  dog
     ... 2    9    Bob  dog
@@ -601,7 +601,7 @@ class ColumnReference(ColumnExpression):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    age  owner  pet
         ... 1   10  Alice  dog
         ... 2    9    Bob  dog
@@ -619,7 +619,7 @@ class ColumnReference(ColumnExpression):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    age  owner  pet
         ... 1   10  Alice  dog
         ... 2    9    Bob  dog

@@ -178,7 +178,7 @@ class AsyncTransformer(ABC):
     ...         await asyncio.sleep(0.1)
     ...         return {"ret": value + 1 }
     ...
-    >>> input = pw.debug.parse_to_table('''
+    >>> input = pw.debug.table_from_markdown('''
     ...   | value
     ... 1 | 42
     ... 2 | 44

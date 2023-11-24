@@ -16,7 +16,7 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 
-from pathway.internals import dtype as dt, trace
+from pathway.internals import api, dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.runtime_type_check import runtime_type_check
 
@@ -76,6 +76,12 @@ def _type_converter(series: pd.Series) -> dt.DType:
         return ret_type
 
 
+def _is_dataframe_append_only(dframe: pd.DataFrame) -> bool:
+    return api.DIFF_PSEUDOCOLUMN not in dframe.columns or all(
+        dframe[api.DIFF_PSEUDOCOLUMN] == 1
+    )
+
+
 def schema_from_pandas(
     dframe: pd.DataFrame,
     *,
@@ -94,9 +100,9 @@ def schema_from_pandas(
     }
     for name in id_from:
         columns[name] = dataclasses.replace(columns[name], primary_key=True)
-
+    append_only = _is_dataframe_append_only(dframe)
     return schema_builder(
-        columns=columns, properties=SchemaProperties(append_only=True), name=name
+        columns=columns, properties=SchemaProperties(append_only=append_only), name=name
     )
 
 
@@ -448,7 +454,7 @@ class Schema(metaclass=SchemaMetaclass):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...    age  owner  pet
     ... 1   10  Alice  dog
     ... 2    9    Bob  dog
@@ -695,8 +701,10 @@ def schema_from_csv(
     name: str | None = None,
     properties: SchemaProperties = SchemaProperties(),
     delimiter: str = ",",
+    quote: str = '"',
     comment_character: str | None = None,
     escape: str | None = None,
+    double_quote_escapes: bool = True,
     num_parsed_rows: int | None = None,
 ):
     """Allows to generate schema based on a CSV file.
@@ -709,9 +717,11 @@ def schema_from_csv(
         name: schema name.
         properties: schema properties.
         delimiter: delimiter used in CSV file. Defaults to ",".
+        quote: quote character used in CSV file. Defaults to '"'.
         comment_character: character used in CSV file to denote comments.
           Defaults to None
         escape: escape character used in CSV file. Defaults to None.
+        double_quote_escapes: enable escapes of double quotes. Defaults to True.
         num_parsed_rows: number of rows, which will be parsed when inferring types. When
             set to None, all rows will be parsed. When set to 0, types of all columns
             will be set to str. Defaults to None.
@@ -730,7 +740,9 @@ def schema_from_csv(
             remove_comments_from_file(f, comment_character),
             delimiter=delimiter,
             escapechar=escape,
-            quoting=csv.QUOTE_NONE,
+            quoting=csv.QUOTE_ALL,
+            quotechar=quote,
+            doublequote=double_quote_escapes,
         )
         if csv_reader.fieldnames is None:
             raise ValueError("can't generate Schema based on an empty CSV file")

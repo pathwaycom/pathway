@@ -5,7 +5,6 @@
 
 use crate::engine::{Computer as EngineComputer, Expressions};
 use csv::ReaderBuilder as CsvReaderBuilder;
-use differential_dataflow::consolidation::consolidate_updates;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
     http::{
@@ -32,6 +31,8 @@ use pyo3::{AsPyPointer, PyTypeInfo};
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
 use rdkafka::ClientConfig;
+use rusqlite::Connection as SqliteConnection;
+use rusqlite::OpenFlags as SqliteOpenFlags;
 use s3::bucket::Bucket as S3Bucket;
 use scopeguard::defer;
 use send_wrapper::SendWrapper;
@@ -51,12 +52,12 @@ use self::threads::PythonThreadState;
 use crate::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
     InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
-    PsqlSnapshotFormatter, PsqlUpdatesFormatter,
+    PsqlSnapshotFormatter, PsqlUpdatesFormatter, TransparentParser,
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, DataEventType, ElasticSearchWriter, FileWriter,
     FilesystemReader, KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder,
-    ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, Writer,
+    ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, SqliteReader, Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{ReplayMode, SessionType, SnapshotAccess};
@@ -69,10 +70,9 @@ use crate::engine::time::DateTime;
 use crate::engine::ReducerData;
 use crate::engine::{
     run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ColumnPath,
-    ColumnProperties as EngineColumnProperties, DateTimeNaive, DateTimeUtc, Duration,
-    ExpressionData, InputRow as EngineInputRow, IxKeyPolicy, JoinType, Key, KeyImpl,
-    PointerExpression, Reducer, ScopedGraph, TableHandle, TableProperties as EngineTableProperties,
-    Type, UniverseHandle, Value,
+    ColumnProperties as EngineColumnProperties, DataRow, DateTimeNaive, DateTimeUtc, Duration,
+    ExpressionData, IxKeyPolicy, JoinType, Key, KeyImpl, PointerExpression, Reducer, ScopedGraph,
+    TableHandle, TableProperties as EngineTableProperties, Type, UniverseHandle, Value,
 };
 use crate::engine::{AnyExpression, Context as EngineContext};
 use crate::engine::{BoolExpression, Error as EngineError};
@@ -616,7 +616,17 @@ impl PyReducer {
                 let combine = combine.as_ref(py);
                 let state = state.to_object(py);
                 let values = values.to_object(py);
-                combine.call1((state, values)).unwrap().extract().unwrap()
+                combine
+                    .call1((state, values))
+                    .unwrap_or_else(|e| {
+                        Python::with_gil(|py| e.print(py));
+                        panic!("python error");
+                    })
+                    .extract()
+                    .unwrap_or_else(|e| {
+                        Python::with_gil(|py| e.print(py));
+                        panic!("python error");
+                    })
             })
         });
         Reducer::Stateful { combine_fn }
@@ -1290,6 +1300,18 @@ impl PyConnectorMode {
     pub const SIMPLE_STREAMING: ConnectorMode = ConnectorMode::SimpleStreaming;
     #[classattr]
     pub const STREAMING_WITH_DELETIONS: ConnectorMode = ConnectorMode::StreamingWithDeletions;
+
+    pub fn __richcmp__(&self, other: &PyAny, op: CompareOp) -> Py<PyAny> {
+        let py = other.py();
+
+        if let Ok(other) = other.extract::<PyRef<Self>>() {
+            return match op {
+                CompareOp::Eq => (self.0 == other.0).into_py(py),
+                _ => py.NotImplemented(),
+            };
+        }
+        py.NotImplemented()
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "SessionType")]
@@ -1559,37 +1581,6 @@ impl<'source> FromPyObject<'source> for ColumnPath {
                 ob.get_type().name()?
             )))
         }
-    }
-}
-#[derive(Clone)]
-#[pyclass(module = "pathway.engine", frozen)]
-pub struct InputRow(EngineInputRow);
-
-#[pymethods]
-impl InputRow {
-    #[new]
-    #[pyo3(signature = (
-        key,
-        values,
-        time = 0,
-        diff = 1,
-        shard = None,
-    ))]
-    pub fn new(
-        key: Key,
-        values: Vec<Value>,
-        time: u64,
-        diff: isize,
-        shard: Option<usize>,
-    ) -> InputRow {
-        let inner = EngineInputRow {
-            key,
-            values,
-            time,
-            diff,
-            shard,
-        };
-        Self(inner)
     }
 }
 
@@ -1870,12 +1861,12 @@ impl Scope {
 
     pub fn static_table(
         self_: &PyCell<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] data: Vec<InputRow>,
+        #[pyo3(from_py_with = "from_py_iterable")] data: Vec<DataRow>,
         properties: ConnectorProperties,
     ) -> PyResult<Py<Table>> {
         let column_properties = properties.column_properties();
         let handle = self_.borrow().graph.static_table(
-            data.into_iter().map(|row| row.0).collect(),
+            data,
             Arc::new(EngineTableProperties::flat(column_properties)),
         )?;
         Table::new(self_, handle)
@@ -2615,7 +2606,7 @@ impl Scope {
     }
 }
 
-type CapturedTableData = Arc<Mutex<Vec<(Key, Arc<[Value]>, isize)>>>;
+type CapturedTableData = Arc<Mutex<Vec<DataRow>>>;
 
 fn capture_table_data(
     graph: &dyn Graph,
@@ -2625,36 +2616,33 @@ fn capture_table_data(
     let table_data = Arc::new(Mutex::new(Vec::new()));
     {
         let table_data = table_data.clone();
-        graph.on_table_data(
-            table.handle,
-            column_paths,
-            Box::new(move |key, values, diff| {
-                table_data
-                    .lock()
-                    .unwrap()
-                    .push((*key, Arc::from(values), diff));
+        graph.subscribe_table(
+            BatchWrapper::None,
+            Box::new(move |key, values, time, diff| {
+                assert!(diff == 1 || diff == -1);
+                table_data.lock().unwrap().push(DataRow::from_engine(
+                    key,
+                    Vec::from(values),
+                    time,
+                    diff,
+                ));
                 Ok(())
             }),
+            Box::new(|| Ok(())),
+            table.handle,
+            column_paths,
+            false,
         )?;
     }
     Ok(table_data)
 }
 
-pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Py<PyDict>> {
+pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<DataRow>> {
     let mut combined_table_data = Vec::new();
     for single_table_data in table_data {
         combined_table_data.extend(take(&mut *single_table_data.lock().unwrap()));
     }
-    consolidate_updates(&mut combined_table_data);
-    with_gil_and_pool(|py| {
-        let dict = PyDict::new(py);
-        for (key, values, diff) in combined_table_data {
-            assert_eq!(diff, 1);
-            let tuple = PyTuple::new(py, values.iter());
-            dict.set_item(key, tuple)?;
-        }
-        Ok(dict.into())
-    })
+    Ok(combined_table_data)
 }
 
 #[pyfunction]
@@ -2677,7 +2665,7 @@ pub fn run_with_new_graph(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceConfig>,
-) -> PyResult<Vec<Py<PyDict>>> {
+) -> PyResult<Vec<Vec<DataRow>>> {
     defer! {
         log::logger().flush();
     }
@@ -3040,7 +3028,7 @@ impl ElasticSearchParams {
 }
 
 #[derive(Clone, Debug)]
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(module = "pathway.engine", frozen, get_all)]
 pub struct DataStorage {
     storage_type: String,
     path: Option<String>,
@@ -3058,6 +3046,8 @@ pub struct DataStorage {
     max_batch_size: Option<usize>,
     object_pattern: String,
     mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
+    table_name: Option<String>,
+    column_names: Option<Vec<String>>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReplayMode")]
@@ -3255,11 +3245,10 @@ impl ValueField {
     }
 }
 
-#[pyclass(module = "pathway.engine", frozen)]
+#[pyclass(module = "pathway.engine", frozen, get_all)]
 pub struct DataFormat {
     format_type: String,
     key_field_names: Option<Vec<String>>,
-    #[pyo3(get)]
     value_fields: Vec<Py<ValueField>>,
     delimiter: Option<char>,
     table_name: Option<String>,
@@ -3290,6 +3279,8 @@ impl DataStorage {
         max_batch_size = None,
         object_pattern = "*".to_string(),
         mock_events = None,
+        table_name = None,
+        column_names = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3309,6 +3300,8 @@ impl DataStorage {
         max_batch_size: Option<usize>,
         object_pattern: String,
         mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
+        table_name: Option<String>,
+        column_names: Option<Vec<String>>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -3327,6 +3320,8 @@ impl DataStorage {
             max_batch_size,
             object_pattern,
             mock_events,
+            table_name,
+            column_names,
         }
     }
 }
@@ -3602,6 +3597,23 @@ impl DataStorage {
                 let reader = PythonReaderBuilder::new(subject, self.internal_persistent_id());
                 Ok((Box::new(reader), 1))
             }
+            "sqlite" => {
+                let connection = SqliteConnection::open_with_flags(
+                    self.path()?,
+                    SqliteOpenFlags::SQLITE_OPEN_READ_ONLY | SqliteOpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to open Sqlite connection: {e}"))
+                })?;
+                let table_name = self.table_name.clone().ok_or_else(|| {
+                    PyValueError::new_err("For Sqlite connector, table_name should be specified")
+                })?;
+                let column_names = self.column_names.clone().ok_or_else(|| {
+                    PyValueError::new_err("For Sqlite connector, column_names should be specified")
+                })?;
+                let reader = SqliteReader::new(connection, table_name, column_names);
+                Ok((Box::new(reader), 1))
+            }
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -3808,6 +3820,7 @@ impl DataFormat {
                 self.parse_utf8,
                 self.session_type,
             ))),
+            "transparent" => Ok(Box::new(TransparentParser::new(self.value_fields.len()))),
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
     }
@@ -4136,7 +4149,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Column>()?;
     m.add_class::<LegacyTable>()?;
     m.add_class::<Table>()?;
-    m.add_class::<InputRow>()?;
+    m.add_class::<DataRow>()?;
     m.add_class::<Computer>()?;
     m.add_class::<Scope>()?;
     m.add_class::<Context>()?;

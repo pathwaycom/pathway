@@ -63,7 +63,7 @@ def iterate(
     ...             return 3 * x + 1
     ...     new_iterated = iterated.select(val=pw.apply(collatz_step, iterated.val))
     ...     return dict(iterated=new_iterated)
-    >>> tab = pw.debug.parse_to_table('''
+    >>> tab = pw.debug.table_from_markdown('''
     ... val
     ...   1
     ...   2
@@ -108,7 +108,7 @@ def apply(
     >>> import pathway as pw
     >>> def concat(left: str, right: str) -> str:
     ...   return left+right
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age  owner  pet
     ...  10  Alice  dog
     ...   9    Bob  dog
@@ -137,7 +137,7 @@ def udf(fun: Callable):
     ... def concat(left: str, right: str) -> str:
     ...     return left+right
     ...
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age  owner  pet
     ...     10  Alice  dog
     ...     9    Bob  dog
@@ -197,7 +197,7 @@ def udf_async(
     ... async def concat(left: str, right: str) -> str:
     ...   await asyncio.sleep(0.1)
     ...   return left+right
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age  owner  pet
     ...  10  Alice  dog
     ...   9    Bob  dog
@@ -250,7 +250,7 @@ def numba_apply(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...    val
     ... 1    1
     ... 2    3
@@ -298,7 +298,7 @@ def apply_with_type(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...    age  owner  pet
     ... 1   10  Alice  dog
     ... 2    9    Bob  dog
@@ -333,7 +333,7 @@ def apply_async(
     >>> async def concat(left: str, right: str) -> str:
     ...   await asyncio.sleep(0.1)
     ...   return left+right
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age  owner  pet
     ...  10  Alice  dog
     ...   9    Bob  dog
@@ -364,7 +364,7 @@ def declare_type(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...    val
     ... 1   10
     ... 2    9.5
@@ -389,7 +389,7 @@ def cast(target_type: Any, col: expr.ColumnExpression | Value) -> expr.CastExpre
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...   val
     ... 1   10
     ... 2    9
@@ -424,7 +424,7 @@ def coalesce(*args: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... colA   colB
     ...      |   10
     ...    2 |
@@ -450,7 +450,7 @@ def require(val, *deps: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... colA   colB
     ...      |   10
     ...    2 |
@@ -484,7 +484,7 @@ def if_else(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... colA   colB
     ...    1 |    0
     ...    2 |    2
@@ -547,7 +547,7 @@ def unwrap(col: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... colA | colB
     ... 1    | 5
     ... 2    | 9
@@ -600,7 +600,7 @@ def assert_table_has_schema(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet
     ... 10  | Alice | dog
     ... 9   | Bob   | dog
@@ -663,7 +663,7 @@ def table_transformer(
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... A | B
     ... 1 | 6
     ... 3 | 8

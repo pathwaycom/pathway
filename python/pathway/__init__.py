@@ -21,6 +21,7 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
 import pathway.reducers as reducers
 from pathway import debug, demo, io
 from pathway.internals import (
+    BaseCustomAccumulator,
     ClassArg,
     ColumnExpression,
     ColumnReference,
@@ -170,6 +171,7 @@ __all__ = [
     "Duration",
     "Json",
     "table_transformer",
+    "BaseCustomAccumulator",
     "stateful",
 ]
 

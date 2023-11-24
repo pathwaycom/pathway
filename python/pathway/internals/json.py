@@ -22,7 +22,7 @@ class Json:
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... a    | b | c
     ... True | 2 | manul
     ... ''')

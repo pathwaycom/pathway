@@ -215,7 +215,7 @@ class this(_those):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet
     ... 10  | Alice | 1
     ... 9   | Bob   | 1
@@ -244,13 +244,13 @@ class left(_those):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age  | owner  | pet
     ...  10  | Alice  | 1
     ...   9  | Bob    | 1
     ...   8  | Alice  | 2
     ... ''')
-    >>> t2 = pw.debug.parse_to_table('''
+    >>> t2 = pw.debug.table_from_markdown('''
     ... age  | owner  | pet | size
     ...  10  | Alice  | 3   | M
     ...  9   | Bob    | 1   | L
@@ -279,13 +279,13 @@ class right(_those):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age  | owner  | pet
     ...  10  | Alice  | 1
     ...   9  | Bob    | 1
     ...   8  | Alice  | 2
     ... ''')
-    >>> t2 = pw.debug.parse_to_table('''
+    >>> t2 = pw.debug.table_from_markdown('''
     ... age  | owner  | pet | size
     ...  10  | Alice  | 3   | M
     ...  9   | Bob    | 1   | L

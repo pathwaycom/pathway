@@ -189,9 +189,9 @@ def test_schema_from_csv(tmp_path: pathlib.Path):
         filename,
         """
         id   | value    | time          | diff
-        "1"  | "worrld" | 1692262484324 | 1
-        #"2" | "worrld" | 1692262510368 | 1.1
-        "3"  | "worrld" | 1692262510368 | 1
+        "a"  | "worrld" | 1692262484324 | 1
+        #"b" | "worrld" | 1692262510368 | 1.1
+        "c"  | "worrld" | 1692262510368 | 1
         """,
         quoting=csv.QUOTE_NONE,
         float_format="%g",
@@ -230,6 +230,47 @@ def test_schema_from_csv(tmp_path: pathlib.Path):
         {"id,value,time,diff": pw.column_definition(dtype=str)}, name="schema5"
     )
     assert_same_schema(schema5, expected5)
+
+    write_csv(
+        filename,
+        """
+        id   | "va""l""ue"
+        "1"  | "worrld"
+        "3"  | "worrld"
+        """,
+        quoting=csv.QUOTE_NONE,
+        float_format="%g",
+    )
+
+    schema6 = pw.schema_from_csv(filename, name="schema6")
+    expected6 = pw.schema_builder(
+        {
+            "id": pw.column_definition(dtype=int),
+            'va"l"ue': pw.column_definition(dtype=str),
+        },
+        name="schema6",
+    )
+    assert_same_schema(schema6, expected6)
+
+    schema7 = pw.schema_from_csv(filename, name="schema7", quote="'")
+    expected7 = pw.schema_builder(
+        {
+            "id": pw.column_definition(dtype=str),
+            '"va""l""ue"': pw.column_definition(dtype=str),
+        },
+        name="schema7",
+    )
+    assert_same_schema(schema7, expected7)
+
+    schema8 = pw.schema_from_csv(filename, name="schema8", double_quote_escapes=False)
+    expected8 = pw.schema_builder(
+        {
+            "id": pw.column_definition(dtype=int),
+            'va"l""ue"': pw.column_definition(dtype=str),
+        },
+        name="schema8",
+    )
+    assert_same_schema(schema8, expected8)
 
 
 def test_schema_canonical_json():

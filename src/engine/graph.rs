@@ -5,7 +5,10 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::BoxFuture;
 use id_arena::ArenaBehavior;
-use pyo3::{pyclass, Python};
+use pyo3::exceptions::PyTypeError;
+use pyo3::prelude::pymethods;
+use pyo3::pyclass::CompareOp;
+use pyo3::{pyclass, PyResult, Python};
 use scopeguard::defer;
 
 use crate::connectors::data_format::{Formatter, Parser};
@@ -161,13 +164,57 @@ impl ColumnPath {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct InputRow {
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[pyclass(module = "pathway.engine", frozen, get_all)]
+pub struct DataRow {
     pub key: Key,
     pub values: Vec<Value>,
     pub time: u64,
     pub diff: isize,
     pub shard: Option<usize>,
+}
+
+#[pymethods]
+impl DataRow {
+    #[new]
+    #[pyo3(signature = (
+        key,
+        values,
+        time = 0,
+        diff = 1,
+        shard = None,
+    ))]
+    pub fn new(key: Key, values: Vec<Value>, time: u64, diff: isize, shard: Option<usize>) -> Self {
+        Self {
+            key,
+            values,
+            time,
+            diff,
+            shard,
+        }
+    }
+    fn __richcmp__(&self, other: &Self, op: CompareOp) -> PyResult<bool> {
+        // TODO: replace with __eq__ when pyo3 is updated to 0.20
+        match op {
+            CompareOp::Eq => Ok(self == other),
+            CompareOp::Ne => Ok(self != other),
+            _ => Err(PyTypeError::new_err(format!(
+                "{op:?} not supported between instances of DataRow and DataRow"
+            ))),
+        }
+    }
+}
+
+impl DataRow {
+    pub fn from_engine(key: Key, values: Vec<Value>, time: u64, diff: isize) -> Self {
+        Self {
+            key,
+            values,
+            time,
+            diff,
+            shard: None,
+        }
+    }
 }
 
 pub struct ExpressionData {
@@ -466,7 +513,7 @@ pub trait Graph {
 
     fn static_table(
         &self,
-        data: Vec<InputRow>,
+        data: Vec<DataRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -722,25 +769,6 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
     ) -> Result<()>;
 
-    fn on_universe_data(
-        &self,
-        universe_handle: UniverseHandle,
-        function: Box<dyn FnMut(&Key, isize) -> DynResult<()>>,
-    ) -> Result<()>;
-
-    fn on_column_data(
-        &self,
-        column_handle: ColumnHandle,
-        function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
-    ) -> Result<()>;
-
-    fn on_table_data(
-        &self,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
-    ) -> Result<()>;
-
     fn attach_prober(
         &self,
         logic: Box<dyn FnMut(ProberStats)>,
@@ -833,7 +861,7 @@ impl Graph for ScopedGraph {
 
     fn static_table(
         &self,
-        data: Vec<InputRow>,
+        data: Vec<DataRow>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| g.static_table(data, table_properties))
@@ -1272,31 +1300,6 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
         self.try_with(|g| g.output_table(data_sink, data_formatter, table_handle, column_paths))
-    }
-
-    fn on_universe_data(
-        &self,
-        universe_handle: UniverseHandle,
-        function: Box<dyn FnMut(&Key, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.try_with(|g| g.on_universe_data(universe_handle, function))
-    }
-
-    fn on_column_data(
-        &self,
-        column_handle: ColumnHandle,
-        function: Box<dyn FnMut(&Key, &Value, isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.try_with(|g| g.on_column_data(column_handle, function))
-    }
-
-    fn on_table_data(
-        &self,
-        table_handle: TableHandle,
-        column_paths: Vec<ColumnPath>,
-        function: Box<dyn FnMut(&Key, &[Value], isize) -> DynResult<()>>,
-    ) -> Result<()> {
-        self.try_with(|g| g.on_table_data(table_handle, column_paths, function))
     }
 
     fn attach_prober(

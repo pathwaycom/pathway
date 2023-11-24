@@ -16,7 +16,7 @@ import pytest
 import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
-from pathway.internals import api, dtype as dt
+from pathway.internals import dtype as dt
 from pathway.internals.decorators import empty_from_schema
 from pathway.internals.expression import NumbaApplyExpression
 from pathway.tests.utils import (
@@ -26,7 +26,6 @@ from pathway.tests.utils import (
     assert_table_equality_wo_index_types,
     assert_table_equality_wo_types,
     run_all,
-    run_graph_and_validate_result,
     xfail_no_numba,
 )
 
@@ -5346,10 +5345,7 @@ def test_sequence_get_from_2d_ndarray(dtype, index, checked):
 
     result = result.select(a=pw.declare_type(np.ndarray, pw.this.a))
 
-    def check_all_rows_equal(t0: api.CapturedTable, t1: api.CapturedTable) -> None:
-        assert all([(r0[0] == r1[0]).all() for r0, r1 in zip(t0.values(), t1.values())])  # type: ignore[attr-defined]
-
-    run_graph_and_validate_result(check_all_rows_equal)(result, expected)
+    assert_table_equality_wo_index(result, expected)
 
 
 @pytest.mark.parametrize("dtype", [int, float])

@@ -156,7 +156,7 @@ class ClassArg(metaclass=ClassArgMeta):
     ...         @pw.output_attribute
     ...         def ret(self) -> int:
     ...             return self.arg + 1
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age
     ... 10
     ... 9

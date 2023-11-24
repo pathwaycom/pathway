@@ -4,7 +4,7 @@ use helpers::get_entries_in_receiver;
 use std::sync::{mpsc, Arc, Mutex};
 
 use pathway_engine::connectors::adaptors::{InputAdaptor, UpsertSession};
-use pathway_engine::engine::dataflow::operators::ConsolidateNondecreasing;
+use pathway_engine::engine::dataflow::operators::ConsolidateForOutput;
 use pathway_engine::engine::{Key, Value};
 
 #[test]
@@ -23,7 +23,7 @@ fn test_upsert_session_replacement() {
             >| {
                 let sender = sender.lock().unwrap().clone();
                 let table = input.to_collection(scope);
-                table.consolidate_nondecreasing().inspect(move |x| {
+                table.consolidate_for_output().inspect(move |x| {
                     sender
                         .send(x.clone())
                         .expect("inspected entry sending failed");
@@ -66,7 +66,7 @@ fn test_removal_by_key() {
             >| {
                 let sender = sender.lock().unwrap().clone();
                 let table = input.to_collection(scope);
-                table.consolidate_nondecreasing().inspect(move |x| {
+                table.consolidate_for_output().inspect(move |x| {
                     sender
                         .send(x.clone())
                         .expect("inspected entry sending failed");

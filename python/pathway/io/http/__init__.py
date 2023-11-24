@@ -204,7 +204,7 @@ def write(
     just two columns: the pet and the owner's name.
 
     >>> import pathway as pw
-    >>> pets = pw.debug.parse_to_table("owner pet \\n Alice dog \\n Bob cat \\n Alice cat")
+    >>> pets = pw.debug.table_from_markdown("owner pet \\n Alice dog \\n Bob cat \\n Alice cat")
 
     Consider that there is a need to send the stream of changes on such table to the
     external API endpoint (let's pick some exemplary URL for the sake of demonstation).

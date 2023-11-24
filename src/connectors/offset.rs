@@ -41,6 +41,7 @@ pub enum OffsetValue {
         bytes_offset: u64,
     },
     PythonEntrySequentialId(u64),
+    Empty,
 }
 
 impl HashInto for OffsetValue {
@@ -62,8 +63,12 @@ impl HashInto for OffsetValue {
             OffsetValue::PythonEntrySequentialId(sequential_id) => {
                 sequential_id.hash_into(hasher);
             }
+            OffsetValue::Empty => {}
         };
     }
 }
 
 pub type Offset = (OffsetKey, OffsetValue);
+
+/// Empty offset for connectors that don't support persistence
+pub const EMPTY_OFFSET: Offset = (OffsetKey::Empty, OffsetValue::Empty);

@@ -112,3 +112,32 @@ def test_universe_properties_with_universe_of():
     assert table._id_column.properties.append_only
     assert not reduced._id_column.properties.append_only
     assert reduced_same_universe._id_column.properties.append_only
+
+
+def test_table_from_markdown_append_only():
+    input1 = T(
+        """
+            | a
+        1   | 42
+        2   | 13
+        """
+    )
+    assert input1._id_column.properties.append_only
+
+    input2 = T(
+        """
+            | a  | __diff__
+        1   | 42 |     1
+        2   | 13 |     1
+        """
+    )
+    assert input2._id_column.properties.append_only
+
+    input3 = T(
+        """
+            | a  | __diff__
+        1   | 42 |     1
+        1   | 42 |    -1
+        """
+    )
+    assert not input3._id_column.properties.append_only

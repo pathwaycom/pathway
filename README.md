@@ -143,19 +143,19 @@ See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webp
 
 [▶️ Linear regression on a Kafka Stream](https://vimeo.com/805069039) - by [Richard Pelgrim](https://twitter.com/richardpelgrim) (7min 53s)
 
-[▶️ Introduction to reactive data processing](https://pathway.com/developers/user-guide/introduction/welcome) - by [Adrian Kosowski](https://scholar.google.com/citations?user=om8De_0AAAAJ) (27min 54s)
+[▶️ Introduction to reactive data processing](https://pathway.com/developers/user-guide/concepts/welcome) - by [Adrian Kosowski](https://scholar.google.com/citations?user=om8De_0AAAAJ) (27min 54s)
 
 ### Guides<a id="guides"></a>
-- [Core concepts of Pathway](https://pathway.com/developers/user-guide/introduction/key-concepts/)
-- [Basic operations](https://pathway.com/developers/user-guide/introduction/survival-guide/)
-- [Joins](https://pathway.com/developers/user-guide/table-operations/join-manual/)
-- [Groupby](https://pathway.com/developers/user-guide/table-operations/groupby-reduce-manual/)
-- [Windowby](https://pathway.com/developers/user-guide/table-operations/windowby-reduce-manual/)
-- [Transformer classes](https://pathway.com/developers/user-guide/transformer-classes/transformer-intro/)
-- [Input and output connectors](https://pathway.com/developers/user-guide/input-and-output-streams/connectors/)
+- [Core concepts of Pathway](https://pathway.com/developers/user-guide/concepts/data-representation/)
+- [Basic operations](https://pathway.com/developers/user-guide/guides/basic-operations/)
+- [Joins](https://pathway.com/developers/user-guide/guides/join-manual/)
+- [Groupby](https://pathway.com/developers/user-guide/guides/groupby-reduce-manual/)
+- [Windowby](https://pathway.com/developers/user-guide/guides/windowby-reduce-manual/)
+- [Transformer classes](https://pathway.com/developers/user-guide/advanced-topics/transformer-classes/transformer-intro/)
+- [Input and output connectors](https://pathway.com/developers/user-guide/concepts/connectors/)
 - [Coming from pandas](https://pathway.com/developers/user-guide/migrate-from-pandas/)
 - [API docs](https://pathway.com/developers/api-docs/pathway)
-- [Troubleshooting](https://pathway.com/developers/user-guide/introduction/troubleshooting/)
+- [Troubleshooting](https://pathway.com/developers/user-guide/troubleshooting/)
 
 ### Tutorials<a id="tutorials"></a>
 - [Linear regression on a Kafka Stream](https://pathway.com/developers/tutorials/linear_regression_with_kafka/) ([video](https://vimeo.com/805069039)) 

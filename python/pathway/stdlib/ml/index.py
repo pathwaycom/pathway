@@ -12,15 +12,14 @@ class KNNIndex:
     algorithm within Pathway. This index is designed to efficiently find the
     nearest neighbors of a given query embedding within a dataset.
 
-    Parameters:
-
-    data_embedding (pw.ColumnExpression): The column expression representing embeddings in the data.
-    data (pw.Table): The table containing the data to be indexed.
-    n_dimensions (int): number of dimensions in the data
-    n_or (int): number of ORS
-    n_and (int): number of ANDS
-    bucket_length (float): bucket length (after projecting on a line)
-    distance_type (str): euclidean metric is supported.
+    Args:
+        data_embedding (pw.ColumnExpression): The column expression representing embeddings in the data.
+        data (pw.Table): The table containing the data to be indexed.
+        n_dimensions (int): number of dimensions in the data
+        n_or (int): number of ORs
+        n_and (int): number of ANDs
+        bucket_length (float): bucket length (after projecting on a line)
+        distance_type (str): euclidean metric is supported.
     """
 
     def __init__(
@@ -59,33 +58,40 @@ class KNNIndex:
         If you don't want queries results to get updated in the future, take a look at
         `get_nearest_items_asof_now`.
 
-        Parameters:
-        query_embedding (pw.ColumnReference): column of embedding vectors precomputed from the query.
-        k (int, optional): The number of most relevant documents to return for each query.
-                            Defaults to 3.
-        collapse_rows (bool, optional): Determines the format of the output. If set to True,
-            multiple rows corresponding to a single query will be collapsed into a single row,
-            with each column containing a tuple of values from the original rows. If set to False,
-            the output will retain the multi-row format for each query. Defaults to True.
+        Args:
+            query_embedding: column of embedding vectors precomputed from the query.
+            k: The number of most relevant documents to return for each query.
+                                Defaults to 3.
+            collapse_rows: Determines the format of the output. If set to True,
+                multiple rows corresponding to a single query will be collapsed into a single row,
+                with each column containing a tuple of values from the original rows. If set to False,
+                the output will retain the multi-row format for each query. Defaults to True.
 
         Returns:
-        pw.Table:
-            - If `collapse_rows` is set to True: Returns a table where each row corresponds to a unique query.
-            Each column in the row contains a tuple (or list) of values, aggregating up
-            to 'k' matches from the dataset.
-            For example:
-                            | name                        | age
-                ^YYY4HAB... | ()                          | ()
-                ^X1MXHYY... | ('bluejay', 'cat', 'eagle') | (43, 42, 41)
+            pw.Table
 
-            - If `collapse_rows` is set to False: Returns a table where each row represents a match from the dataset
-            for a given query. Multiple rows can correspond to the same query, up to 'k' matches.
-            Example:
-                name    | age | embedding | query_id
-                        |     |           | ^YYY4HAB...
-                bluejay | 43  | (4, 3, 2) | ^X1MXHYY...
-                cat     | 42  | (3, 3, 2) | ^X1MXHYY...
-                eagle   | 41  | (2, 3, 2) | ^X1MXHYY...
+        - If ``collapse_rows`` is set to True: Returns a table where each row corresponds to a unique query.
+        Each column in the row contains a tuple (or list) of values, aggregating up
+        to 'k' matches from the dataset.
+        For example:
+
+        .. code-block:: text
+
+                        | name                        | age
+            ^YYY4HAB... | ()                          | ()
+            ^X1MXHYY... | ('bluejay', 'cat', 'eagle') | (43, 42, 41)
+
+        - If ``collapse_rows`` is set to False: Returns a table where each row represents a match from the dataset
+        for a given query. Multiple rows can correspond to the same query, up to 'k' matches.
+        Example:
+
+        .. code-block:: text
+
+            name    | age | embedding | query_id
+                    |     |           | ^YYY4HAB...
+            bluejay | 43  | (4, 3, 2) | ^X1MXHYY...
+            cat     | 42  | (3, 3, 2) | ^X1MXHYY...
+            eagle   | 41  | (2, 3, 2) | ^X1MXHYY...
 
 
         Example:
@@ -135,16 +141,16 @@ class KNNIndex:
         for each query in the stream. The already answered queries are not updated in
         the future if new documents appear.
 
-        Parameters:
-        query_embedding (pw.ColumnReference): column of embedding vectors precomputed from the query.
-        k (int, optional): The number of most relevant documents to return for each query.
-                            Defaults to 3.
-        collapse_rows (bool, optional): Determines the format of the output. If set to True,
-            multiple rows corresponding to a single query will be collapsed into a single row,
-            with each column containing a tuple of values from the original rows. If set to False,
-            the output will retain the multi-row format for each query. Defaults to True.
+        Args:
+            query_embedding: column of embedding vectors precomputed from the query.
+            k: The number of most relevant documents to return for each query.
+                                Defaults to 3.
+            collapse_rows: Determines the format of the output. If set to True,
+                multiple rows corresponding to a single query will be collapsed into a single row,
+                with each column containing a tuple of values from the original rows. If set to False,
+                the output will retain the multi-row format for each query. Defaults to True.
 
-        For examples, see `get_nearest_items`.
+        For examples, see ``get_nearest_items``.
         """
         return _predict_asof_now(
             query_embedding,

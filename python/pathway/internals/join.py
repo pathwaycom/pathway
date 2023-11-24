@@ -88,7 +88,7 @@ class Joinable(TableLike, DesugaringContext):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age | owner | pet
         ... 10  | Alice | dog
         ... 9   | Bob   | dog
@@ -115,7 +115,7 @@ class Joinable(TableLike, DesugaringContext):
         Allows accessing column names that might otherwise be a reserved methods.
 
         >>> import pathway as pw
-        >>> tab = pw.debug.parse_to_table('''
+        >>> tab = pw.debug.table_from_markdown('''
         ... age | owner | pet | filter
         ... 10  | Alice | dog | True
         ... 9   | Bob   | dog | True
@@ -163,13 +163,13 @@ class Joinable(TableLike, DesugaringContext):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet
         ...  10  | Alice  | 1
         ...   9  | Bob    | 1
         ...   8  | Alice  | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet | size
         ...  10  | Alice  | 3   | M
         ...  9   | Bob    | 1   | L
@@ -210,13 +210,13 @@ class Joinable(TableLike, DesugaringContext):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet
         ...  10  | Alice  | 1
         ...   9  | Bob    | 1
         ...   8  | Alice  | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet | size
         ...  10  | Alice  | 3   | M
         ...  9   | Bob    | 1   | L
@@ -453,13 +453,13 @@ class JoinResult(Joinable, OperatorInput):
     Example:
 
     >>> import pathway as pw
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ...    age  owner  pet
     ... 1   10  Alice    1
     ... 2    9    Bob    1
     ... 3    8  Alice    2
     ... ''')
-    >>> t2 = pw.debug.parse_to_table('''
+    >>> t2 = pw.debug.table_from_markdown('''
     ...     age  owner  pet size
     ... 11   10  Alice    3    M
     ... 12    9    Bob    1    L
@@ -593,13 +593,13 @@ class JoinResult(Joinable, OperatorInput):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet
         ...  10  | Alice  | 1
         ...   9  | Bob    | 1
         ...   8  | Alice  | 2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ... age  | owner  | pet | size
         ...  10  | Alice  | 3   | M
         ...  9   | Bob    | 1   | L
@@ -635,13 +635,13 @@ class JoinResult(Joinable, OperatorInput):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    age  owner  pet
         ... 1   10  Alice    1
         ... 2    9    Bob    1
         ... 3    8  Alice    2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...     age  owner  pet size
         ... 11   10  Alice    3    M
         ... 12    9    Bob    1    L
@@ -704,13 +704,13 @@ class JoinResult(Joinable, OperatorInput):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    cost  owner  pet
         ... 1   100  Alice    1
         ... 2    90    Bob    1
         ... 3    80  Alice    2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...     cost  owner  pet size
         ... 11   100  Alice    3    M
         ... 12    90    Bob    1    L
@@ -761,13 +761,13 @@ class JoinResult(Joinable, OperatorInput):
         Example:
 
         >>> import pathway as pw
-        >>> t1 = pw.debug.parse_to_table('''
+        >>> t1 = pw.debug.table_from_markdown('''
         ...    cost  owner  pet
         ... 1   100  Alice    1
         ... 2    90    Bob    1
         ... 3    80  Alice    2
         ... ''')
-        >>> t2 = pw.debug.parse_to_table('''
+        >>> t2 = pw.debug.table_from_markdown('''
         ...     cost  owner  pet size
         ... 11   100  Alice    3    M
         ... 12    90    Bob    1    L

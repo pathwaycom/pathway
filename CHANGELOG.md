@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.2] - 2023-11-24
+
+### Added
+- Added ability of creating custom reducers using `pw.reducers.udf_reducer` decorator. Use `pw.BaseCustomAccumulator` as a base class
+  for creating accumulators. Decorating accumulator returns reducer following custom logic.
+- A function `pw.debug.compute_and_print_update_stream` that computes and prints the update stream of the table.
+- SQLite input connector (`pw.io.sqlite`).
+
+### Changed
+- `pw.debug.parse_to_table` is now deprecated, `pw.debug.table_from_markdown` should be used instead.
+- `pw.schema_from_csv` now has `quote` and `double_quote_escapes` arguments.
+
+### Fixed
+- Schema returned from `pw.schema_from_csv` will have quotes removed from column names, so it will now work properly with `pw.io.csv.read`.
+
 ## [0.7.1] - 2023-11-17
 
 ### Added
