@@ -76,6 +76,7 @@ def _compute_and_print_internal(
     squash_updates: bool,
     include_id: bool,
     short_pointers: bool,
+    n_rows: int | None,
 ) -> None:
     captured = _compute_table(table)
     columns = list(table._columns.keys())
@@ -121,13 +122,14 @@ def _compute_and_print_internal(
         output_data = sorted(output_data, key=_key)
     except ValueError:
         pass  # Some values (like arrays) cannot be sorted this way, so just don't sort them.
+    output_data_truncated = itertools.islice(output_data, n_rows)
     data = []
     if include_id:
         name = "" if columns else "id"
         data.append([name] + columns)
     else:
         data.append(columns)
-    for key, values in output_data:
+    for key, values in output_data_truncated:
         formatted_row = []
         if include_id:
             formatted_row.append(_format(key))
@@ -144,23 +146,38 @@ def _compute_and_print_internal(
 
 @runtime_type_check
 @trace_user_frame
-def compute_and_print(table: Table, *, include_id=True, short_pointers=True) -> None:
+def compute_and_print(
+    table: Table,
+    *,
+    include_id=True,
+    short_pointers=True,
+    n_rows: int | None = None,
+) -> None:
     """
     A function running the computations and printing the table.
     Args:
         table: a table to be computed and printed
         include_id: whether to show ids of rows
         short_pointers: whether to shorten printed ids
+        n_rows: number of rows to print, if None whole table will be printed
     """
     _compute_and_print_internal(
-        table, squash_updates=True, include_id=include_id, short_pointers=short_pointers
+        table,
+        squash_updates=True,
+        include_id=include_id,
+        short_pointers=short_pointers,
+        n_rows=n_rows,
     )
 
 
 @runtime_type_check
 @trace_user_frame
 def compute_and_print_update_stream(
-    table: Table, *, include_id=True, short_pointers=True
+    table: Table,
+    *,
+    include_id=True,
+    short_pointers=True,
+    n_rows: int | None = None,
 ) -> None:
     """
     A function running the computations and printing the update stream of the table.
@@ -168,20 +185,27 @@ def compute_and_print_update_stream(
         table: a table for which the update stream is to be computed and printed
         include_id: whether to show ids of rows
         short_pointers: whether to shorten printed ids
+        n_rows: number of rows to print, if None whole update stream will be printed
     """
     _compute_and_print_internal(
         table,
         squash_updates=False,
         include_id=include_id,
         short_pointers=short_pointers,
+        n_rows=n_rows,
     )
 
 
 @runtime_type_check
 @trace_user_frame
-def table_to_pandas(table: Table):
+def table_to_pandas(table: Table, *, include_id: bool = True):
     keys, columns = table_to_dicts(table)
-    res = pd.DataFrame(columns, index=keys)
+    if include_id:
+        res = pd.DataFrame(columns, index=keys)
+    else:
+        # we need to remove keys, otherwise pandas will use them to create index
+        columns_wo_keys = {name: columns[name].values() for name in columns}
+        res = pd.DataFrame(columns_wo_keys)
     return res
 
 
@@ -532,5 +556,5 @@ class StreamGenerator:
         return persistence.Config.simple_config(
             persistence.Backend.mock(self.events),
             snapshot_access=api.SnapshotAccess.REPLAY,
-            replay_mode=api.ReplayMode.SPEEDRUN,
+            persistence_mode=api.PersistenceMode.SPEEDRUN_REPLAY,
         )

@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from pathway.internals import datasink
 from pathway.internals.api import Pointer
+from pathway.internals.decorators import table_to_datasink
 
 
 class OnFinishCallback(Protocol):
@@ -105,4 +106,6 @@ def subscribe(
 
         return on_change(key=key, row=row, time=time, is_addition=(diff == 1))
 
-    return table.to(datasink.CallbackDataSink(wrapper, on_end, skip_persisted_batch))
+    return table_to_datasink(
+        table, datasink.CallbackDataSink(wrapper, on_end, skip_persisted_batch)
+    )

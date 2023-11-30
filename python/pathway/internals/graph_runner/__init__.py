@@ -15,7 +15,11 @@ from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.graph_runner.storage_graph import OperatorStorageGraph
 from pathway.internals.helpers import StableSet
 from pathway.internals.monitoring import MonitoringLevel, monitor_stats
-from pathway.internals.operator import ContextualizedIntermediateOperator, Operator
+from pathway.internals.operator import (
+    ContextualizedIntermediateOperator,
+    InputOperator,
+    Operator,
+)
 from pathway.persistence import Config as PersistenceConfig
 
 
@@ -69,6 +73,15 @@ class GraphRunner:
         )
         context = ScopeContext(nodes=nodes, columns=columns)
         return self._run(context, after_build=after_build)
+
+    def has_bounded_input(self, table: table.Table) -> bool:
+        nodes, _ = self.tree_shake_tables(self._graph.global_scope, [table])
+
+        for node in nodes:
+            if isinstance(node, InputOperator) and not node.datasource.is_bounded():
+                return False
+
+        return True
 
     def _run(
         self,

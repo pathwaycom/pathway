@@ -25,31 +25,33 @@ def classifier_accuracy(predicted_labels, exact_labels):
 
 
 def _predict_asof_now(
-    query: pw.ColumnReference,
-    prediction_function: Callable[[pw.ColumnReference], pw.Table],
+    prediction_function: Callable[..., pw.Table],
+    *queries: pw.ColumnReference,
     with_queries_universe: bool = False,
 ) -> pw.Table:
     """
-    Helper function used to predict answers to queries without updating them in the future.
-    It passes query and its forgetting counterpart through prediction function.
+    A helper function used to predict answers to queries without updating them in the future.
+    It passes a query and its forgetting counterpart through the prediction function.
 
     Parameters:
-        query: A reference to column with queries.
-        prediction_function: Function that is called with transformed column reference `query`.
-        with_queries_universe: Whether result should have the same universe (set of keys)
-            as table with queries.
+        prediction_function: A function that is called with transformed column reference `query`.
+        queries: References to a column/columns with query data.
+        with_queries_universe: Whether the result should have the same universe (set of keys)
+            as the table with queries.
 
     Returns:
         pw.Table: A table created by applying `prediction_function` on `query`.
     """
-    queries = query.table.select(_pw_query=query)
-    queries = queries._forget_immediately()
-    results = prediction_function(queries._pw_query)
+    assert len(queries) > 0
+    cols = {f"_pw_{i}": q for i, q in enumerate(queries)}
+    queries_table = queries[0].table.select(**cols)
+    queries_table = queries_table._forget_immediately()
+    results = prediction_function(*(queries_table[name] for name in cols))
     results = results._filter_out_results_of_forgetting()
     if with_queries_universe:
         # FIXME assert that query.table is append-only,
         # then results should also be append-only (promise that)
         # then we should have a version of with_universe_of for both append only tables
         # that frees memory when records are joined
-        results = results.with_universe_of(query.table)
+        results = results.with_universe_of(queries[0].table)
     return results

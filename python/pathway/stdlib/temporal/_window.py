@@ -10,7 +10,11 @@ from typing import Any
 
 import pathway.internals as pw
 from pathway.internals import dtype as dt
-from pathway.internals.arg_handlers import arg_handler, windowby_handler
+from pathway.internals.arg_handlers import (
+    arg_handler,
+    shard_deprecation,
+    windowby_handler,
+)
 from pathway.internals.desugaring import desugar
 from pathway.internals.join import validate_join_condition
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -41,7 +45,7 @@ class Window(ABC):
         table: pw.Table,
         key: pw.ColumnExpression,
         behavior: Behavior | None,
-        shard: pw.ColumnExpression | None,
+        instance: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         ...
 
@@ -54,6 +58,8 @@ class Window(ABC):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
     ) -> WindowJoinResult:
         ...
 
@@ -78,9 +84,9 @@ class _SessionWindow(Window):
         self,
         table: pw.Table,
         key: pw.ColumnExpression,
-        shard: pw.ColumnExpression | None,
+        instance: pw.ColumnExpression | None,
     ) -> pw.Table:
-        target = table.select(key=key, instance=shard)
+        target = table.select(key=key, instance=instance)
         import pathway.stdlib.indexing
 
         target = target + pathway.stdlib.indexing.sort_from_index(
@@ -112,7 +118,7 @@ class _SessionWindow(Window):
         table: pw.Table,
         key: pw.ColumnExpression,
         behavior: Behavior | None,
-        shard: pw.ColumnExpression | None,
+        instance: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         if self.max_gap is not None:
             check_joint_types(
@@ -122,7 +128,7 @@ class _SessionWindow(Window):
                 }
             )
 
-        target = self._compute_group_repr(table, key, shard)
+        target = self._compute_group_repr(table, key, instance)
         tmp = target.groupby(target._pw_window).reduce(
             _pw_window_start=pw.reducers.min(key),
             _pw_window_end=pw.reducers.max(key),
@@ -132,12 +138,12 @@ class _SessionWindow(Window):
             target._pw_window,
             tmp.ix_ref(target._pw_window)._pw_window_start,
             tmp.ix_ref(target._pw_window)._pw_window_end,
-            _pw_shard=shard,
+            _pw_instance=instance,
         ).groupby(
             pw.this._pw_window,
             pw.this._pw_window_start,
             pw.this._pw_window_end,
-            pw.this._pw_shard,
+            instance=pw.this._pw_instance,
         )
 
         return gb
@@ -151,6 +157,8 @@ class _SessionWindow(Window):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
     ) -> WindowJoinResult:
         def maybe_make_tuple(
             conditions: Sequence[pw.ColumnExpression],
@@ -170,6 +178,11 @@ class _SessionWindow(Window):
             }
         )
 
+        if left_instance is not None and right_instance is not None:
+            on = (*on, left_instance == right_instance)
+        else:
+            assert left_instance is None and right_instance is None
+
         left_on: list[pw.ColumnReference] = []
         right_on: list[pw.ColumnReference] = []
         for cond in on:
@@ -180,19 +193,19 @@ class _SessionWindow(Window):
         concatenated_events = pw.Table.concat_reindex(
             left.select(
                 key=left_time_expression,
-                shard=maybe_make_tuple(left_on),
+                instance=maybe_make_tuple(left_on),
                 is_left=True,
                 original_id=left.id,
             ),
             right.select(
                 key=right_time_expression,
-                shard=maybe_make_tuple(right_on),
+                instance=maybe_make_tuple(right_on),
                 is_left=False,
                 original_id=right.id,
             ),
         )
         group_repr = self._compute_group_repr(
-            concatenated_events, concatenated_events.key, concatenated_events.shard
+            concatenated_events, concatenated_events.key, concatenated_events.instance
         )
         tmp = group_repr.groupby(group_repr._pw_window).reduce(
             _pw_window_start=pw.reducers.min(concatenated_events.key),
@@ -283,7 +296,7 @@ class _SlidingWindow(Window):
         return (start, end)
 
     def _assign_windows(
-        self, shard: Any, key: TimeEventType
+        self, instance: Any, key: TimeEventType
     ) -> list[tuple[Any, TimeEventType, TimeEventType]]:
         """Returns the list of all the windows the given key belongs to.
 
@@ -306,7 +319,7 @@ class _SlidingWindow(Window):
 
         # filtering below is needed to handle case when hop > duration
         return [
-            (shard, start, end)
+            (instance, start, end)
             for (start, end) in candidate_windows
             if start <= key
             and key < end
@@ -319,7 +332,7 @@ class _SlidingWindow(Window):
         table: pw.Table,
         key: pw.ColumnExpression,
         behavior: Behavior | None,
-        shard: pw.ColumnExpression | None,
+        instance: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         check_joint_types(
             {
@@ -335,19 +348,19 @@ class _SlidingWindow(Window):
                 self._assign_windows,
                 dt.List(
                     dt.Tuple(
-                        eval_type(shard),  # type: ignore
+                        eval_type(instance),  # type: ignore
                         eval_type(key),
                         eval_type(key),
                     )
                 ),
-                shard,
+                instance,
                 key,
             ),
             _pw_key=key,
         )
         target = target.flatten(target._pw_window, _pw_key=target._pw_key, *table)
         target = target.with_columns(
-            _pw_shard=pw.this._pw_window.get(0),
+            _pw_instance=pw.this._pw_window.get(0),
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
         )
@@ -404,9 +417,9 @@ class _SlidingWindow(Window):
 
         target = target.groupby(
             target._pw_window,
-            target._pw_shard,
             target._pw_window_start,
             target._pw_window_end,
+            instance=target._pw_instance,
             _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
         )
 
@@ -421,6 +434,8 @@ class _SlidingWindow(Window):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
     ) -> WindowJoinResult:
         from pathway.internals.type_interpreter import eval_type
 
@@ -489,6 +504,8 @@ class _SlidingWindow(Window):
             left_window._pw_window == right_window._pw_window,
             *on,
             mode=mode,
+            left_instance=left_instance,
+            right_instance=right_instance,
         )
 
         return WindowJoinResult(join_result, left, right, left_window, right_window)
@@ -507,7 +524,7 @@ class _IntervalsOverWindow(Window):
         table: pw.Table,
         key: pw.ColumnExpression,
         behavior: CommonBehavior | None,
-        shard: pw.ColumnExpression | None,
+        instance: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
         check_joint_types(
             {
@@ -537,7 +554,7 @@ class _IntervalsOverWindow(Window):
                 _pw_window_location=pw.left[self.at.name],
                 _pw_window_start=pw.left[self.at.name] + self.lower_bound,
                 _pw_window_end=pw.left[self.at.name] + self.upper_bound,
-                _pw_shard=shard,
+                _pw_instance=instance,
                 _pw_key=key,
                 *pw.right,
             )
@@ -545,7 +562,7 @@ class _IntervalsOverWindow(Window):
                 pw.this._pw_window_location,
                 pw.this._pw_window_start,
                 pw.this._pw_window_end,
-                pw.this._pw_shard,
+                instance=pw.this._pw_instance,
                 sort_by=pw.this._pw_key,
             )
         )
@@ -559,6 +576,8 @@ class _IntervalsOverWindow(Window):
         right_time_expression: pw.ColumnExpression,
         *on: pw.ColumnExpression,
         mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
     ) -> WindowJoinResult:
         raise NotImplementedError(
             "window_join doesn't support windows of type intervals_over"
@@ -593,20 +612,20 @@ def session(
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown(
     ... '''
-    ...     | shard |  t |  v
-    ... 1   | 0     |  1 |  10
-    ... 2   | 0     |  2 |  1
-    ... 3   | 0     |  4 |  3
-    ... 4   | 0     |  8 |  2
-    ... 5   | 0     |  9 |  4
-    ... 6   | 0     |  10|  8
-    ... 7   | 1     |  1 |  9
-    ... 8   | 1     |  2 |  16
+    ...     | instance |  t |  v
+    ... 1   | 0        |  1 |  10
+    ... 2   | 0        |  2 |  1
+    ... 3   | 0        |  4 |  3
+    ... 4   | 0        |  8 |  2
+    ... 5   | 0        |  9 |  4
+    ... 6   | 0        |  10|  8
+    ... 7   | 1        |  1 |  9
+    ... 8   | 1        |  2 |  16
     ... ''')
     >>> result = t.windowby(
-    ...     t.t, window=pw.temporal.session(predicate=lambda a, b: abs(a-b) <= 1), shard=t.shard
+    ...     t.t, window=pw.temporal.session(predicate=lambda a, b: abs(a-b) <= 1), instance=t.instance
     ... ).reduce(
-    ... pw.this._pw_shard,
+    ... pw.this._pw_instance,
     ... pw.this._pw_window_start,
     ... pw.this._pw_window_end,
     ... min_t=pw.reducers.min(pw.this.t),
@@ -614,11 +633,11 @@ def session(
     ... count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
-    _pw_shard | _pw_window_start | _pw_window_end | min_t | max_v | count
-    0         | 1                | 2              | 1     | 10    | 2
-    0         | 4                | 4              | 4     | 3     | 1
-    0         | 8                | 10             | 8     | 8     | 3
-    1         | 1                | 2              | 1     | 16    | 2
+    _pw_instance | _pw_window_start | _pw_window_end | min_t | max_v | count
+    0            | 1                | 2              | 1     | 10    | 2
+    0            | 4                | 4              | 4     | 3     | 1
+    0            | 8                | 10             | 8     | 8     | 3
+    1            | 1                | 2              | 1     | 16    | 2
     """
     if predicate is None and max_gap is None:
         raise ValueError(
@@ -659,20 +678,20 @@ def sliding(
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown(
     ... '''
-    ...        | shard | t
-    ...    1   | 0     |  12
-    ...    2   | 0     |  13
-    ...    3   | 0     |  14
-    ...    4   | 0     |  15
-    ...    5   | 0     |  16
-    ...    6   | 0     |  17
-    ...    7   | 1     |  10
-    ...    8   | 1     |  11
+    ...        | instance | t
+    ...    1   | 0        |  12
+    ...    2   | 0        |  13
+    ...    3   | 0        |  14
+    ...    4   | 0        |  15
+    ...    5   | 0        |  16
+    ...    6   | 0        |  17
+    ...    7   | 1        |  10
+    ...    8   | 1        |  11
     ... ''')
     >>> result = t.windowby(
-    ...     t.t, window=pw.temporal.sliding(duration=10, hop=3), shard=t.shard
+    ...     t.t, window=pw.temporal.sliding(duration=10, hop=3), instance=t.instance
     ... ).reduce(
-    ...   pw.this._pw_shard,
+    ...   pw.this._pw_instance,
     ...   pw.this._pw_window_start,
     ...   pw.this._pw_window_end,
     ...   min_t=pw.reducers.min(pw.this.t),
@@ -680,15 +699,15 @@ def sliding(
     ...   count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
-    _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
-    0         | 3                | 13             | 12    | 12    | 1
-    0         | 6                | 16             | 12    | 15    | 4
-    0         | 9                | 19             | 12    | 17    | 6
-    0         | 12               | 22             | 12    | 17    | 6
-    0         | 15               | 25             | 15    | 17    | 3
-    1         | 3                | 13             | 10    | 11    | 2
-    1         | 6                | 16             | 10    | 11    | 2
-    1         | 9                | 19             | 10    | 11    | 2
+    _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
+    0            | 3                | 13             | 12    | 12    | 1
+    0            | 6                | 16             | 12    | 15    | 4
+    0            | 9                | 19             | 12    | 17    | 6
+    0            | 12               | 22             | 12    | 17    | 6
+    0            | 15               | 25             | 15    | 17    | 3
+    1            | 3                | 13             | 10    | 11    | 2
+    1            | 6                | 16             | 10    | 11    | 2
+    1            | 9                | 19             | 10    | 11    | 2
     """
     if duration is None and ratio is None:
         raise ValueError(
@@ -729,20 +748,20 @@ def tumbling(
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown(
     ... '''
-    ...        | shard | t
-    ...    1   | 0     |  12
-    ...    2   | 0     |  13
-    ...    3   | 0     |  14
-    ...    4   | 0     |  15
-    ...    5   | 0     |  16
-    ...    6   | 0     |  17
-    ...    7   | 1     |  12
-    ...    8   | 1     |  13
+    ...        | instance | t
+    ...    1   | 0        |  12
+    ...    2   | 0        |  13
+    ...    3   | 0        |  14
+    ...    4   | 0        |  15
+    ...    5   | 0        |  16
+    ...    6   | 0        |  17
+    ...    7   | 1        |  12
+    ...    8   | 1        |  13
     ... ''')
     >>> result = t.windowby(
-    ...     t.t, window=pw.temporal.tumbling(duration=5), shard=t.shard
+    ...     t.t, window=pw.temporal.tumbling(duration=5), instance=t.instance
     ... ).reduce(
-    ...   pw.this._pw_shard,
+    ...   pw.this._pw_instance,
     ...   pw.this._pw_window_start,
     ...   pw.this._pw_window_end,
     ...   min_t=pw.reducers.min(pw.this.t),
@@ -750,10 +769,10 @@ def tumbling(
     ...   count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
-    _pw_shard | _pw_window_start | _pw_window_end | min_t | max_t | count
-    0         | 10               | 15             | 12    | 14    | 3
-    0         | 15               | 20             | 15    | 17    | 3
-    1         | 10               | 15             | 12    | 13    | 2
+    _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
+    0            | 10               | 15             | 12    | 14    | 3
+    0            | 15               | 20             | 15    | 17    | 3
+    1            | 10               | 15             | 12    | 13    | 2
     """
     return _SlidingWindow(
         duration=None,
@@ -832,6 +851,7 @@ def intervals_over(
 
 @trace_user_frame
 @desugar
+@arg_handler(handler=shard_deprecation)
 @arg_handler(handler=windowby_handler)
 @runtime_type_check
 def windowby(
@@ -840,45 +860,45 @@ def windowby(
     *,
     window: Window,
     behavior: Behavior | None = None,
-    shard: pw.ColumnExpression | None = None,
+    instance: pw.ColumnExpression | None = None,
 ) -> pw.GroupedTable:
     """
     Create a GroupedTable by windowing the table (based on `expr` and `window`),
-    optionally sharded with `shard`
+    optionally with `instance` argument.
 
     Args:
         time_expr: Column expression used for windowing
         window: type window to use
-        shard: optional column expression to act as a shard key
+        instance: optional column expression to act as a shard key
 
     Examples:
 
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown(
     ... '''
-    ...     | shard |  t |  v
-    ... 1   | 0     |  1 |  10
-    ... 2   | 0     |  2 |  1
-    ... 3   | 0     |  4 |  3
-    ... 4   | 0     |  8 |  2
-    ... 5   | 0     |  9 |  4
-    ... 6   | 0     |  10|  8
-    ... 7   | 1     |  1 |  9
-    ... 8   | 1     |  2 |  16
+    ...     | instance |  t |  v
+    ... 1   | 0        |  1 |  10
+    ... 2   | 0        |  2 |  1
+    ... 3   | 0        |  4 |  3
+    ... 4   | 0        |  8 |  2
+    ... 5   | 0        |  9 |  4
+    ... 6   | 0        |  10|  8
+    ... 7   | 1        |  1 |  9
+    ... 8   | 1        |  2 |  16
     ... ''')
     >>> result = t.windowby(
-    ...     t.t, window=pw.temporal.session(predicate=lambda a, b: abs(a-b) <= 1), shard=t.shard
+    ...     t.t, window=pw.temporal.session(predicate=lambda a, b: abs(a-b) <= 1), instance=t.instance
     ... ).reduce(
-    ... pw.this.shard,
+    ... pw.this.instance,
     ... min_t=pw.reducers.min(pw.this.t),
     ... max_v=pw.reducers.max(pw.this.v),
     ... count=pw.reducers.count(),
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
-    shard | min_t | max_v | count
-    0     | 1     | 10    | 2
-    0     | 4     | 3     | 1
-    0     | 8     | 8     | 3
-    1     | 1     | 16    | 2
+    instance | min_t | max_v | count
+    0        | 1     | 10    | 2
+    0        | 4     | 3     | 1
+    0        | 8     | 8     | 3
+    1        | 1     | 16    | 2
     """
-    return window._apply(self, time_expr, behavior, shard)
+    return window._apply(self, time_expr, behavior, instance)

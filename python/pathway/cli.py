@@ -152,6 +152,7 @@ def replay(
     env = os.environ.copy()
     env["PATHWAY_REPLAY_STORAGE"] = record_path
     env["PATHWAY_SNAPSHOT_ACCESS"] = "replay"
+    env["PATHWAY_PERSISTENCE_MODE"] = mode
     env["PATHWAY_REPLAY_MODE"] = mode
     if continue_after_replay:
         env["PATHWAY_CONTINUE_AFTER_REPLAY"] = "true"

@@ -7,6 +7,13 @@ import pathway.internals.expression as expr
 from pathway.internals import api, dtype as dt
 
 
+def _str_as_duration(freq: str) -> pd.Timedelta:
+    duration = pd.tseries.frequencies.to_offset(freq)
+    if duration is None:
+        raise ValueError(f"string {freq} cannot be parsed as a duration")
+    return pd.Timedelta(duration.nanos)
+
+
 class DateTimeNamespace:
     """A module containing methods related to DateTimes.
     They can be called using a `dt` attribute of an expression.
@@ -925,12 +932,19 @@ class DateTimeNamespace:
         )
 
     def round(
-        self, duration: expr.ColumnExpression | pd.Timedelta
+        self, duration: expr.ColumnExpression | pd.Timedelta | str
     ) -> expr.ColumnExpression:
         """Rounds DateTime to precision specified by `duration` argument.
 
         Args:
             duration: rounding precision
+
+        Note:
+            Duration can be given as a string, in such case we accept aliases used
+            by `Pandas <https://pandas.pydata.org/docs/user_guide/timeseries.html#timeseries-offset-aliases>`_
+            that represent a fixed duration, so e.g. "M" will not be accepted.
+            For ambiguous frequencies, you can use other methods, e.g. ``column.dt.month()``
+            instead of ``column.dt.floor("1M")``.
 
         Returns:
             DateTimeNaive or DateTimeUtc depending on the type of an object \
@@ -963,6 +977,12 @@ class DateTimeNamespace:
         2023-05-15 13:20:35 | 2023-05-15 13:00:00 | 2023-05-15 13:20:00 | 2023-05-15 13:20:30
         2023-05-15 13:51:41 | 2023-05-15 14:00:00 | 2023-05-15 13:50:00 | 2023-05-15 13:51:45
         """
+        if isinstance(duration, str):
+            parsed_duration: expr.ColumnExpression | pd.Timedelta = _str_as_duration(
+                duration
+            )
+        else:
+            parsed_duration = duration
 
         return expr.MethodCallExpression(
             (
@@ -979,16 +999,24 @@ class DateTimeNamespace:
             ),
             "dt.round",
             self._expression,
-            duration,
+            parsed_duration,
+            args_used_for_repr=[self._expression, duration],
         )
 
     def floor(
-        self, duration: expr.ColumnExpression | pd.Timedelta
+        self, duration: expr.ColumnExpression | pd.Timedelta | str
     ) -> expr.ColumnExpression:
         """Truncates DateTime to precision specified by `duration` argument.
 
         Args:
             duration: truncation precision
+
+        Note:
+            Duration can be given as a string, in such case we accept aliases used
+            by `Pandas <https://pandas.pydata.org/docs/user_guide/timeseries.html#timeseries-offset-aliases>`_
+            that represent a fixed duration, so e.g. "M" will not be accepted.
+            For ambiguous frequencies, you can use other methods, e.g. ``column.dt.month()``
+            instead of ``column.dt.floor("1M")``.
 
         Returns:
             DateTimeNaive or DateTimeUtc depending on the type of an object \
@@ -1021,6 +1049,12 @@ class DateTimeNamespace:
         2023-05-15 13:20:35 | 2023-05-15 13:00:00 | 2023-05-15 13:20:00 | 2023-05-15 13:20:30
         2023-05-15 13:51:41 | 2023-05-15 13:00:00 | 2023-05-15 13:50:00 | 2023-05-15 13:51:30
         """
+        if isinstance(duration, str):
+            parsed_duration: expr.ColumnExpression | pd.Timedelta = _str_as_duration(
+                duration
+            )
+        else:
+            parsed_duration = duration
 
         return expr.MethodCallExpression(
             (
@@ -1037,7 +1071,8 @@ class DateTimeNamespace:
             ),
             "dt.floor",
             self._expression,
-            duration,
+            parsed_duration,
+            args_used_for_repr=[self._expression, duration],
         )
 
     def nanoseconds(self) -> expr.ColumnExpression:
@@ -1428,4 +1463,52 @@ class DateTimeNamespace:
             "datetime_from_timestamp",
             self._expression,
             unit,
+        )
+
+    def weekday(self) -> expr.ColumnExpression:
+        """
+        Converts a DateTime to an int representing its day of the week, where 0 denotes
+        a Monday, and 6 denotes a Sunday.
+
+        Returns:
+            int
+
+        Example:
+
+        >>> import pathway as pw
+        >>> table = pw.debug.table_from_markdown(
+        ...     '''
+        ...      |               t1
+        ...    1 | 1970-02-03T10:13:00
+        ...    2 | 2023-03-25T10:13:00
+        ...    3 | 2023-03-26T12:13:00
+        ...    4 | 2023-05-15T14:13:23
+        ... '''
+        ... )
+        >>> fmt = "%Y-%m-%dT%H:%M:%S"
+        >>> table_with_datetime = table.select(t1=pw.this.t1.dt.strptime(fmt=fmt))
+        >>> table_with_dayofweek = table_with_datetime.with_columns(weekday=pw.this.t1.dt.weekday())
+        >>> pw.debug.compute_and_print(table_with_dayofweek, include_id=False)
+        t1                  | weekday
+        1970-02-03 10:13:00 | 1
+        2023-03-25 10:13:00 | 5
+        2023-03-26 12:13:00 | 6
+        2023-05-15 14:13:23 | 0
+        """
+
+        return expr.MethodCallExpression(
+            (
+                (
+                    (dt.DATE_TIME_NAIVE,),
+                    dt.INT,
+                    api.Expression.date_time_naive_weekday,
+                ),
+                (
+                    (dt.DATE_TIME_UTC,),
+                    dt.INT,
+                    api.Expression.date_time_utc_weekday,
+                ),
+            ),
+            "dt.weekday",
+            self._expression,
         )

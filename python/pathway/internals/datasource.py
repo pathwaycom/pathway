@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,9 +40,16 @@ class DataSource(ABC):
             column_properties=columns,
         )
 
+    @abstractmethod
+    def is_bounded(self) -> bool:
+        ...
+
 
 class StaticDataSource(DataSource, ABC):
     data: Any
+
+    def is_bounded(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -55,10 +62,14 @@ class GenericDataSource(DataSource):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
 
+    def is_bounded(self) -> bool:
+        return self.datastorage.mode == api.ConnectorMode.STATIC
+
 
 @dataclass(frozen=True)
 class EmptyDataSource(DataSource):
-    ...
+    def is_bounded(self) -> bool:
+        return True
 
 
 def debug_datasource(debug_data) -> StaticDataSource | None:

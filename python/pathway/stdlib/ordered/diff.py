@@ -30,8 +30,8 @@ def diff(
         ValueError: If the columns are not ColumnReference.
 
     Note:
-        - The value of the "first" value (the row with the lower value
-            in the ``timestamp`` column) is ``None``.
+        - The value of the "first" value (the row with the lower value \
+        in the ``timestamp`` column) is ``None``.
 
     Example:
 

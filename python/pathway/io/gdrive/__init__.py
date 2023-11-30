@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import warnings
 from dataclasses import dataclass
@@ -18,7 +19,9 @@ from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 MIME_TYPE_FOLDER = "application/vnd.google-apps.folder"
-FILE_FIELDS = "id, name, mimeType, parents, modifiedTime"
+FILE_FIELDS = (
+    "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser"
+)
 
 DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
     "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -137,8 +140,11 @@ class _GDriveTree:
 
 
 class _GDriveSubject(ConnectorSubject):
-    root: str
-    refresh_interval: int
+    _credentials_factory: Callable[[], ServiceCredentials]
+    _root: str
+    _refresh_interval: int
+    _mode: str
+    _append_metadata: bool
 
     def __init__(
         self,
@@ -147,24 +153,30 @@ class _GDriveSubject(ConnectorSubject):
         root: str,
         refresh_interval: int,
         mode: str,
+        with_metadata: bool,
     ) -> None:
         super().__init__()
-        self.credentials_factory = credentials_factory
-        self.refresh_interval = refresh_interval
-        self.root = root
-        self.mode = mode
+        self._credentials_factory = credentials_factory
+        self._refresh_interval = refresh_interval
+        self._root = root
+        self._mode = mode
+        self._append_metadata = with_metadata
         assert mode in ["streaming", "static"]
 
     @property
     def _session_type(self) -> SessionType:
-        return SessionType.UPSERT if self.mode == "streaming" else SessionType.NATIVE
+        return SessionType.UPSERT if self._mode == "streaming" else SessionType.NATIVE
+
+    @property
+    def _with_metadata(self) -> bool:
+        return self._append_metadata
 
     def run(self) -> None:
-        client = _GDriveClient(self.credentials_factory())
+        client = _GDriveClient(self._credentials_factory())
         prev = _GDriveTree({})
 
         while True:
-            tree = client.tree(self.root)
+            tree = client.tree(self._root)
             for file in tree.removed_files(prev):
                 self.remove(file)
             for file in tree.new_and_changed_files(prev):
@@ -172,13 +184,14 @@ class _GDriveSubject(ConnectorSubject):
                 if payload is not None:
                     self.upsert(file, payload)
 
-            if self.mode == "static":
+            if self._mode == "static":
                 break
             prev = tree
-            time.sleep(self.refresh_interval)
+            time.sleep(self._refresh_interval)
 
     def upsert(self, file: GDriveFile, payload: bytes):
-        self._add(api.ref_scalar(file["id"]), payload)
+        metadata = json.dumps(file).encode(encoding="utf-8")
+        self._add(api.ref_scalar(file["id"]), payload, metadata)
 
     def remove(self, file: GDriveFile):
         self._remove(api.ref_scalar(file["id"]), b"")
@@ -190,6 +203,7 @@ def read(
     mode: str = "streaming",
     refresh_interval: int = 30,
     service_user_credentials_file: str,
+    with_metadata: bool = False,
 ) -> pw.Table:
     """Reads a table from a Google Drive directory or file.
 
@@ -204,6 +218,9 @@ def read(
             The default value is "streaming".
         refresh_interval: time in seconds between scans. Applicable if mode is set to 'streaming'.
         service_user_credentials_file: Google API service user json file.
+        with_metadata: when set to True, the connector will add an additional column named
+            `_metadata` to the table. This column will contain file metadata,
+            such as: `id`, `name`, `mimeType`, `parents`, `modifiedTime`, `thumbnailLink`, `lastModifyingUser`.
     Returns:
         The table read.
 
@@ -230,6 +247,7 @@ def read(
         root=object_id,
         refresh_interval=refresh_interval,
         mode=mode,
+        with_metadata=with_metadata,
     )
 
     return pw.io.python.read(

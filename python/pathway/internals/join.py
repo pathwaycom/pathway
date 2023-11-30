@@ -145,6 +145,8 @@ class Joinable(TableLike, DesugaringContext):
         *on: expr.ColumnExpression,
         id: expr.ColumnReference | None = None,
         how: JoinMode = JoinMode.INNER,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """Join self with other using the given join expression.
 
@@ -155,6 +157,8 @@ class Joinable(TableLike, DesugaringContext):
             id: optional argument for id of result, can be only self.id or other.id
             how: by default, inner join is performed. Possible values are JoinMode.{INNER,LEFT,RIGHT,OUTER}
               correspond to inner, left, right and outer join respectively.
+            left_instance/right_instance: optional arguments describing partitioning of the data into
+              separate instances
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -184,7 +188,15 @@ class Joinable(TableLike, DesugaringContext):
         """
         from pathway.internals import join
 
-        return join.JoinResult._table_join(self, other, *on, mode=how, id=id)
+        return join.JoinResult._table_join(
+            self,
+            other,
+            *on,
+            mode=how,
+            id=id,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
 
     @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
@@ -194,6 +206,8 @@ class Joinable(TableLike, DesugaringContext):
         other: Joinable,
         *on: expr.ColumnExpression,
         id: expr.ColumnReference | None = None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """Inner-joins two tables or join results.
 
@@ -202,6 +216,7 @@ class Joinable(TableLike, DesugaringContext):
             on:  a list of column expressions. Each must have == as the top level operation
                 and be of the form LHS: ColumnReference == RHS: ColumnReference.
             id: optional argument for id of result, can be only self.id or other.id
+            left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -229,7 +244,15 @@ class Joinable(TableLike, DesugaringContext):
         """
         from pathway.internals import join
 
-        return join.JoinResult._table_join(self, other, *on, mode=JoinMode.INNER, id=id)
+        return join.JoinResult._table_join(
+            self,
+            other,
+            *on,
+            mode=JoinMode.INNER,
+            id=id,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
 
     @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
@@ -239,6 +262,8 @@ class Joinable(TableLike, DesugaringContext):
         other: Joinable,
         *on: expr.ColumnExpression,
         id: expr.ColumnReference | None = None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """
         Left-joins two tables or join results.
@@ -247,6 +272,8 @@ class Joinable(TableLike, DesugaringContext):
             other: Table or join result.
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
+            left_instance/right_instance: optional arguments describing partitioning of the data into
+              separate instances
 
         Remarks:
         args cannot contain id column from either of tables, \
@@ -296,7 +323,15 @@ class Joinable(TableLike, DesugaringContext):
         """
         from pathway.internals import join
 
-        return join.JoinResult._table_join(self, other, *on, mode=JoinMode.LEFT, id=id)
+        return join.JoinResult._table_join(
+            self,
+            other,
+            *on,
+            mode=JoinMode.LEFT,
+            id=id,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
 
     @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
@@ -306,6 +341,8 @@ class Joinable(TableLike, DesugaringContext):
         other: Joinable,
         *on: expr.ColumnExpression,
         id: expr.ColumnReference | None = None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """
         Outer-joins two tables or join results.
@@ -314,6 +351,8 @@ class Joinable(TableLike, DesugaringContext):
             other: Table or join result.
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
+            left_instance/right_instance: optional arguments describing partitioning of the data into separate
+              instances
 
         Remarks: args cannot contain id column from either of tables, \
         as the result table has id column with auto-generated ids; \
@@ -366,7 +405,15 @@ class Joinable(TableLike, DesugaringContext):
         """
         from pathway.internals import join
 
-        return join.JoinResult._table_join(self, other, *on, mode=JoinMode.RIGHT, id=id)
+        return join.JoinResult._table_join(
+            self,
+            other,
+            *on,
+            mode=JoinMode.RIGHT,
+            id=id,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
 
     @trace_user_frame
     @desugar(substitution={thisclass.left: "self", thisclass.right: "other"})
@@ -376,6 +423,8 @@ class Joinable(TableLike, DesugaringContext):
         other: Joinable,
         *on: expr.ColumnExpression,
         id: expr.ColumnReference | None = None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> JoinResult:
         """Outer-joins two tables or join results.
 
@@ -383,6 +432,7 @@ class Joinable(TableLike, DesugaringContext):
             other: Table or join result.
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
+            instance: optional argument describing partitioning of the data into separate instances
 
         Remarks: args cannot contain id column from either of tables, \
             as the result table has id column with auto-generated ids; \
@@ -434,7 +484,15 @@ class Joinable(TableLike, DesugaringContext):
         """
         from pathway.internals import join
 
-        return join.JoinResult._table_join(self, other, *on, mode=JoinMode.OUTER, id=id)
+        return join.JoinResult._table_join(
+            self,
+            other,
+            *on,
+            mode=JoinMode.OUTER,
+            id=id,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
 
     @property
     def _desugaring(self) -> TableSelectDesugaring:
@@ -551,6 +609,7 @@ class JoinResult(Joinable, OperatorInput):
         name: str,
         exception_type,
     ) -> expr.ColumnReference:
+        name = self._column_deprecation_rename(name)
         if name == "id":
             return self._inner_table.id
         elif name in self._joined_on_names:
@@ -878,6 +937,8 @@ class JoinResult(Joinable, OperatorInput):
         *on: expr.ColumnExpression,
         mode: JoinMode,
         id: expr.ColumnReference | None = None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> JoinResult:
         if left == right:
             raise ValueError(
@@ -898,6 +959,10 @@ class JoinResult(Joinable, OperatorInput):
             id_column = None
 
         common_column_names: StableSet[str] = StableSet()
+        if left_instance is not None and right_instance is not None:
+            on = (*on, left_instance == right_instance)
+        else:
+            assert left_instance is None and right_instance is None
 
         on_ = tuple(validate_shape(cond) for cond in on)
 

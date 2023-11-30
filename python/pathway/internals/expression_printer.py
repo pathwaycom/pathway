@@ -125,8 +125,8 @@ class ExpressionFormatter(ExpressionVisitor):
         return f"{args}.is_none())"
 
     def eval_method_call(self, expression: expr.MethodCallExpression):
-        object_ = self.eval_expression(expression._args[0])
-        args = self._eval_args_kwargs(expression._args[1:])
+        object_ = self.eval_expression(expression._args_used_for_repr[0])
+        args = self._eval_args_kwargs(expression._args_used_for_repr[1:])
         return f"({object_}).{expression._name}({args})"
 
     def _eval_args_kwargs(

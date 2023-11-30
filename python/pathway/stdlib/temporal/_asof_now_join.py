@@ -58,6 +58,8 @@ class AsofNowJoinResult(DesugaringContext):
         *on: expr.ColumnExpression,
         mode: pw.JoinMode,
         id: expr.ColumnReference | None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
     ) -> AsofNowJoinResult:
         # TODO assert that left is append-only
 
@@ -67,6 +69,10 @@ class AsofNowJoinResult(DesugaringContext):
             )
 
         left_with_forgetting = left._forget_immediately()
+        if left_instance is not None and right_instance is not None:
+            on = (*on, left_instance == right_instance)
+        else:
+            assert left_instance is None and right_instance is None
         for cond in on:
             cond_left, _, cond = validate_join_condition(cond, left, right)
             cond._left = left_with_forgetting[cond_left._name]
@@ -107,6 +113,42 @@ class AsofNowJoinResult(DesugaringContext):
 
         Returns:
             Table: Created table.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> data = pw.debug.table_from_markdown(
+        ...     '''
+        ...     id | value | instance | __time__ | __diff__
+        ...      2 |   4   |    1     |     4    |     1
+        ...      2 |   4   |    1     |    10    |    -1
+        ...      5 |   5   |    1     |    10    |     1
+        ...      7 |   2   |    2     |    14    |     1
+        ...      7 |   2   |    2     |    22    |    -1
+        ...     11 |   3   |    2     |    26    |     1
+        ...      5 |   5   |    1     |    30    |    -1
+        ...     14 |   9   |    1     |    32    |     1
+        ...     '''
+        ... )
+        >>> queries = pw.debug.table_from_markdown(
+        ...     '''
+        ...     value | instance | __time__
+        ...       1   |    1     |     2
+        ...       2   |    1     |     6
+        ...       4   |    1     |    12
+        ...       5   |    2     |    16
+        ...      10   |    1     |    26
+        ...     '''
+        ... )
+        >>> result = queries.asof_now_join(
+        ...     data, pw.left.instance == pw.right.instance
+        ... ).select(query=pw.left.value, ans=pw.right.value)
+        >>> pw.debug.compute_and_print_update_stream(result, include_id=False)
+        query | ans | __time__ | __diff__
+        2     | 4   | 6        | 1
+        4     | 5   | 12       | 1
+        5     | 2   | 16       | 1
+        10    | 5   | 26       | 1
         """
         result = self._join_result.select(*args, **kwargs)
         result = result._filter_out_results_of_forgetting()
@@ -134,6 +176,8 @@ def asof_now_join(
     *on: pw.ColumnExpression,
     how: pw.JoinMode = pw.JoinMode.INNER,
     id: expr.ColumnReference | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> AsofNowJoinResult:
     """
     Performs asof now join of self with other using join expressions. Each row of self
@@ -153,8 +197,53 @@ def asof_now_join(
     Returns:
         AsofNowJoinResult: an object on which `.select()` may be called to extract relevant
         columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> data = pw.debug.table_from_markdown(
+    ...     '''
+    ...     id | value | instance | __time__ | __diff__
+    ...      2 |   4   |    1     |     4    |     1
+    ...      2 |   4   |    1     |    10    |    -1
+    ...      5 |   5   |    1     |    10    |     1
+    ...      7 |   2   |    2     |    14    |     1
+    ...      7 |   2   |    2     |    22    |    -1
+    ...     11 |   3   |    2     |    26    |     1
+    ...      5 |   5   |    1     |    30    |    -1
+    ...     14 |   9   |    1     |    32    |     1
+    ...     '''
+    ... )
+    >>> queries = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | __time__
+    ...       1   |    1     |     2
+    ...       2   |    1     |     6
+    ...       4   |    1     |    12
+    ...       5   |    2     |    16
+    ...      10   |    1     |    26
+    ...     '''
+    ... )
+    >>> result = queries.asof_now_join(
+    ...     data, pw.left.instance == pw.right.instance, how=pw.JoinMode.LEFT
+    ... ).select(query=pw.left.value, ans=pw.right.value)
+    >>> pw.debug.compute_and_print_update_stream(result, include_id=False)
+    query | ans | __time__ | __diff__
+    1     |     | 2        | 1
+    2     | 4   | 6        | 1
+    4     | 5   | 12       | 1
+    5     | 2   | 16       | 1
+    10    | 5   | 26       | 1
     """
-    return AsofNowJoinResult._asof_now_join(self, other, *on, mode=how, id=id)
+    return AsofNowJoinResult._asof_now_join(
+        self,
+        other,
+        *on,
+        mode=how,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
+    )
 
 
 @trace_user_frame
@@ -166,6 +255,8 @@ def asof_now_join_inner(
     other: pw.Table,
     *on: pw.ColumnExpression,
     id: expr.ColumnReference | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> AsofNowJoinResult:
     """
     Performs asof now join of self with other using join expressions. Each row of self
@@ -183,9 +274,51 @@ def asof_now_join_inner(
     Returns:
         AsofNowJoinResult: an object on which `.select()` may be called to extract relevant
         columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> data = pw.debug.table_from_markdown(
+    ...     '''
+    ...     id | value | instance | __time__ | __diff__
+    ...      2 |   4   |    1     |     4    |     1
+    ...      2 |   4   |    1     |    10    |    -1
+    ...      5 |   5   |    1     |    10    |     1
+    ...      7 |   2   |    2     |    14    |     1
+    ...      7 |   2   |    2     |    22    |    -1
+    ...     11 |   3   |    2     |    26    |     1
+    ...      5 |   5   |    1     |    30    |    -1
+    ...     14 |   9   |    1     |    32    |     1
+    ...     '''
+    ... )
+    >>> queries = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | __time__
+    ...       1   |    1     |     2
+    ...       2   |    1     |     6
+    ...       4   |    1     |    12
+    ...       5   |    2     |    16
+    ...      10   |    1     |    26
+    ...     '''
+    ... )
+    >>> result = queries.asof_now_join_inner(
+    ...     data, pw.left.instance == pw.right.instance
+    ... ).select(query=pw.left.value, ans=pw.right.value)
+    >>> pw.debug.compute_and_print_update_stream(result, include_id=False)
+    query | ans | __time__ | __diff__
+    2     | 4   | 6        | 1
+    4     | 5   | 12       | 1
+    5     | 2   | 16       | 1
+    10    | 5   | 26       | 1
     """
     return AsofNowJoinResult._asof_now_join(
-        self, other, *on, mode=pw.JoinMode.INNER, id=id
+        self,
+        other,
+        *on,
+        mode=pw.JoinMode.INNER,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -198,6 +331,8 @@ def asof_now_join_left(
     other: pw.Table,
     *on: pw.ColumnExpression,
     id: expr.ColumnReference | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> AsofNowJoinResult:
     """
     Performs asof now join of self with other using join expressions. Each row of self
@@ -216,7 +351,50 @@ def asof_now_join_left(
     Returns:
         AsofNowJoinResult: an object on which `.select()` may be called to extract relevant
         columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> data = pw.debug.table_from_markdown(
+    ...     '''
+    ...     id | value | instance | __time__ | __diff__
+    ...      2 |   4   |    1     |     4    |     1
+    ...      2 |   4   |    1     |    10    |    -1
+    ...      5 |   5   |    1     |    10    |     1
+    ...      7 |   2   |    2     |    14    |     1
+    ...      7 |   2   |    2     |    22    |    -1
+    ...     11 |   3   |    2     |    26    |     1
+    ...      5 |   5   |    1     |    30    |    -1
+    ...     14 |   9   |    1     |    32    |     1
+    ...     '''
+    ... )
+    >>> queries = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | __time__
+    ...       1   |    1     |     2
+    ...       2   |    1     |     6
+    ...       4   |    1     |    12
+    ...       5   |    2     |    16
+    ...      10   |    1     |    26
+    ...     '''
+    ... )
+    >>> result = queries.asof_now_join_left(
+    ...     data, pw.left.instance == pw.right.instance
+    ... ).select(query=pw.left.value, ans=pw.right.value)
+    >>> pw.debug.compute_and_print_update_stream(result, include_id=False)
+    query | ans | __time__ | __diff__
+    1     |     | 2        | 1
+    2     | 4   | 6        | 1
+    4     | 5   | 12       | 1
+    5     | 2   | 16       | 1
+    10    | 5   | 26       | 1
     """
     return AsofNowJoinResult._asof_now_join(
-        self, other, *on, mode=pw.JoinMode.LEFT, id=id
+        self,
+        other,
+        *on,
+        mode=pw.JoinMode.LEFT,
+        id=id,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )

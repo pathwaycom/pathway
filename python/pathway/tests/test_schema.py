@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-import importlib.util
+import importlib
 import pathlib
 import sys
 from typing import Any
@@ -138,20 +138,26 @@ def test_schema_class_generation(tmp_path: pathlib.Path):
             "c": pw.column_definition(dtype=Any),
             "d": pw.column_definition(default_value=5, dtype=int),
             "e": pw.column_definition(dtype=float),
+            "f": pw.column_definition(dtype=tuple[int, Any]),
+            "g": pw.column_definition(dtype=pw.DATE_TIME_UTC),
+            "h": pw.column_definition(dtype=tuple[int, ...]),
         },
         name="Foo",
     )
 
-    path = str(tmp_path / "foo.py")
+    path = tmp_path / "foo.py"
 
-    schema_from_builder.generate_class_to_file(path)
+    module_name = "pathway_schema_test"
 
-    spec = importlib.util.spec_from_file_location("foo", path)
-    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    sys.modules["foo"] = module
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-
-    assert_same_schema(schema_from_builder, module.Foo)
+    try:
+        schema_from_builder.generate_class_to_file(path, generate_imports=True)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        assert_same_schema(schema_from_builder, module.Foo)
+    finally:
+        del sys.modules[module_name]
 
 
 def test_schema_from_dict():

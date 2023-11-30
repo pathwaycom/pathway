@@ -161,6 +161,8 @@ def window_join(
     window: temporal.Window,
     *on: pw.ColumnExpression,
     how: pw.JoinMode = pw.JoinMode.INNER,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> WindowJoinResult:
     """Performs a window join of self with other using a window and join expressions.
     If two records belong to the same window and meet the conditions specified in
@@ -185,6 +187,7 @@ def window_join(
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
         how: decides whether to run `window_join_inner`, `window_join_left`, `window_join_right`
             or `window_join_outer`. Default is INNER.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         WindowJoinResult: a result of the window join. A method `.select()`
@@ -345,6 +348,8 @@ def window_join(
         other_time,
         *on,
         mode=how,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -359,6 +364,8 @@ def window_join_inner(
     other_time: pw.ColumnExpression,
     window: temporal.Window,
     *on: pw.ColumnExpression,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> WindowJoinResult:
     """Performs a window join of self with other using a window and join expressions.
     If two records belong to the same window and meet the conditions specified in
@@ -381,6 +388,7 @@ def window_join_inner(
         window: a window to use.
         on:  a list of column expressions. Each must have == on the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         WindowJoinResult: a result of the window join. A method `.select()`
@@ -541,6 +549,8 @@ def window_join_inner(
         other_time,
         *on,
         mode=pw.JoinMode.INNER,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -555,6 +565,8 @@ def window_join_left(
     other_time: pw.ColumnExpression,
     window: temporal.Window,
     *on: pw.ColumnExpression,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> WindowJoinResult:
     """Performs a window left join of self with other using a window and join expressions.
     If two records belong to the same window and meet the conditions specified in
@@ -583,6 +595,7 @@ def window_join_left(
         window: a window to use.
         on:  a list of column expressions. Each must have == on the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         WindowJoinResult: a result of the window join. A method `.select()`
@@ -756,6 +769,8 @@ def window_join_left(
         other_time,
         *on,
         mode=pw.JoinMode.LEFT,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -770,6 +785,8 @@ def window_join_right(
     other_time: pw.ColumnExpression,
     window: temporal.Window,
     *on: pw.ColumnExpression,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> WindowJoinResult:
     """Performs a window right join of self with other using a window and join expressions.
     If two records belong to the same window and meet the conditions specified in
@@ -797,6 +814,7 @@ def window_join_right(
         window: a window to use.
         on:  a list of column expressions. Each must have == on the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         WindowJoinResult: a result of the window join. A method `.select()`
@@ -966,6 +984,8 @@ def window_join_right(
         other_time,
         *on,
         mode=pw.JoinMode.RIGHT,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -980,6 +1000,8 @@ def window_join_outer(
     other_time: pw.ColumnExpression,
     window: temporal.Window,
     *on: pw.ColumnExpression,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> WindowJoinResult:
     """Performs a window outer join of self with other using a window and join expressions.
     If two records belong to the same window and meet the conditions specified in
@@ -1007,6 +1029,7 @@ def window_join_outer(
         window: a window to use.
         on:  a list of column expressions. Each must have == on the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         WindowJoinResult: a result of the window join. A method `.select()`
@@ -1189,4 +1212,6 @@ def window_join_outer(
         other_time,
         *on,
         mode=pw.JoinMode.OUTER,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )

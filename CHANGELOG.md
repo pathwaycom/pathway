@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.3] - 2023-11-30
+
+### Added
+- A method `weekday` has been added to the `dt` namespace, that can be called on column expressions containing datetime data. This method returns an integer that represents the day of the week.
+- **EXPERIMENTAL**: Methods `show` and `plot` on Tables, providing visualizations of data using HoloViz Panel.
+- Added support for `instance` parameter to `groupby`, `join`, `windowby` and temporal join methods.
+- `pw.PersistenceMode.UDF_CACHING` persistence mode enabling automatic caching of `AsyncTransformer` invocations.
+
+### Changed
+- Methods `round` and `floor` on columns with datetimes now accept duration argument to be a string.
+- `pw.debug.compute_and_print` and `pw.debug.compute_and_print_update_stream` have a new argument `n_rows` that limits the number of rows printed.
+- `pw.debug.table_to_pandas` has a new argument `include_id` (by default `True`). If set to `False`, creates a new index for the Pandas DataFrame, rather than using the keys of the Pathway Table.
+- `windowby` function `shard` argument is now deprecated and `instance` should be used.
+- Special column name `_pw_shard` is now deprecated, and `_pw_instance` should be used.
+- `pw.ReplayMode` now can be accessed as `pw.PersistenceMode`, while the `SPEEDRUN` and `REALTIME` variants are now accessible as `SPEEDRUN_REPLAY` and `REALTIME_REPLAY`.
+- **EXPERIMENTAL**: `pw.io.gdrive.read` has a new argument `with_metadata` (by default `False`). If set to `True`, adds a `_metadata` column containing file metadata to the resulting table.
+- Methods `get_nearest_items` and `get_nearest_items_asof_now` of `KNNIndex` allow to specify `k` (number of returned elements) separately in each query.
+
 ## [0.7.2] - 2023-11-24
 
 ### Added

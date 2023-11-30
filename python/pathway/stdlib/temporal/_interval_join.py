@@ -181,6 +181,8 @@ class IntervalJoinResult(DesugaringContext):
         *on: pw.ColumnExpression,
         behavior: CommonBehavior | None = None,
         mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
     ):
         """Creates an IntervalJoinResult. To perform an interval join uses it uses two
         tumbling windows of size `lower_bound` + `upper_bound` and then filters the result.
@@ -193,6 +195,10 @@ class IntervalJoinResult(DesugaringContext):
                 "upper_bound": (interval.upper_bound, IntervalType),
             }
         )
+        if left_instance is not None and right_instance is not None:
+            on = (*on, left_instance == right_instance)
+        else:
+            assert left_instance is None and right_instance is None
         if left == right:
             raise ValueError(
                 "Cannot join table with itself. Use <table>.copy() as one of the arguments of the join."
@@ -430,6 +436,8 @@ def interval_join(
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
     how: pw.JoinMode = pw.JoinMode.INNER,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -446,10 +454,12 @@ def interval_join(
             and self_time.
         on:  a list of column expressions. Each must have == as the top level
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
-        behavior: defines temporal behavior of a join - features like delaying entries
-            or ignoring late entries.
+        behavior: defines a temporal behavior of a join - features like delaying entries
+            or ignoring late entries. You can see examples below or read more in the
+            `temporal behavior of interval join tutorial </developers/tutorials/temporal_behavior>`_ .
         how: decides whether to run `interval_join_inner`, `interval_join_left`, `interval_join_right`
             or `interval_join_outer`. Default is INNER.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -521,6 +531,86 @@ def interval_join(
     2 | 2      | 0
     2 | 2      | 2
     2 | 3      | 2
+
+    Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
+    the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    The arguments of `behavior` mean in the context of an interval join what follows:
+    - **delay** - buffers results until their time is greater or equal to the maximal already \
+        seen time minus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, interval join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Example without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       1   |     1    |      0     |     2
+    ...       2   |     2    |      2     |     4
+    ...       3   |     1    |      4     |     4
+    ...       4   |     2    |      8     |     8
+    ...       5   |     1    |      0     |    10
+    ...       6   |     1    |      4     |    10
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       42  |     1    |      2     |     2
+    ...        8  |     2    |     10     |    14
+    ...       10  |     2    |      4     |    30
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.interval_join(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    5          | 42          | 1        | 0         | 2          | 10       | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+    2          | 10          | 2        | 2         | 4          | 30       | 1
+    >>> result_with_cutoff = t1.interval_join(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ...     behavior=pw.temporal.common_behavior(cutoff=6),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_with_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+
+    The record with ``value=5`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``0 <= 8-6``).
+    The record with ``value=10`` from table ``t2`` was not joined because its ``event_time``
+    was equal to the maximal already seen time minus ``cutoff`` (``4 <= 10-6``).
     """
     return IntervalJoinResult._interval_join(
         self,
@@ -531,6 +621,8 @@ def interval_join(
         *on,
         behavior=behavior,
         mode=how,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -546,6 +638,8 @@ def interval_join_inner(
     interval: Interval,
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -564,6 +658,7 @@ def interval_join_inner(
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
         behavior: defines temporal behavior of a join - features like delaying entries
             or ignoring late entries.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -635,6 +730,86 @@ def interval_join_inner(
     2 | 2      | 0
     2 | 2      | 2
     2 | 3      | 2
+
+    Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
+    the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    The arguments of `behavior` mean in the context of an interval join what follows:
+    - **delay** - buffers results until their time is greater or equal to the maximal already \
+        seen time minus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, interval join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Example without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       1   |     1    |      0     |     2
+    ...       2   |     2    |      2     |     4
+    ...       3   |     1    |      4     |     4
+    ...       4   |     2    |      8     |     8
+    ...       5   |     1    |      0     |    10
+    ...       6   |     1    |      4     |    10
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       42  |     1    |      2     |     2
+    ...        8  |     2    |     10     |    14
+    ...       10  |     2    |      4     |    30
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.interval_join_inner(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    5          | 42          | 1        | 0         | 2          | 10       | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+    2          | 10          | 2        | 2         | 4          | 30       | 1
+    >>> result_with_cutoff = t1.interval_join_inner(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ...     behavior=pw.temporal.common_behavior(cutoff=6),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_with_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+
+    The record with ``value=5`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``0 <= 8-6``).
+    The record with ``value=10`` from table ``t2`` was not joined because its ``event_time``
+    was equal to the maximal already seen time minus ``cutoff`` (``4 <= 10-6``).
     """
     return IntervalJoinResult._interval_join(
         self,
@@ -645,6 +820,8 @@ def interval_join_inner(
         *on,
         behavior=behavior,
         mode=pw.JoinMode.INNER,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -660,6 +837,8 @@ def interval_join_left(
     interval: Interval,
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval left join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -680,6 +859,7 @@ def interval_join_left(
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
         behavior: defines temporal behavior of a join - features like delaying entries
             or ignoring late entries.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -754,6 +934,99 @@ def interval_join_left(
     2 | 2      | 2
     2 | 3      | 2
     3 | 4      |
+
+    Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
+    the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    The arguments of `behavior` mean in the context of an interval join what follows:
+    - **delay** - buffers results until their time is greater or equal to the maximal already \
+        seen time minus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, interval join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Example without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       1   |     1    |      0     |     2
+    ...       2   |     2    |      2     |     4
+    ...       3   |     1    |      4     |     4
+    ...       4   |     2    |      8     |     8
+    ...       5   |     1    |      0     |    10
+    ...       6   |     1    |      4     |    10
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       42  |     1    |      2     |     2
+    ...        8  |     2    |     10     |    14
+    ...       10  |     2    |      4     |    30
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.interval_join_left(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    2          |             | 2        | 2         |            | 4        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    4          |             | 2        | 8         |            | 8        | 1
+    5          | 42          | 1        | 0         | 2          | 10       | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          |             | 2        | 8         |            | 14       | -1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+    2          |             | 2        | 2         |            | 30       | -1
+    2          | 10          | 2        | 2         | 4          | 30       | 1
+    >>> result_with_cutoff = t1.interval_join_left(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ...     behavior=pw.temporal.common_behavior(cutoff=6),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+
+    >>> pw.debug.compute_and_print_update_stream(result_with_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    2          |             | 2        | 2         |            | 4        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    4          |             | 2        | 8         |            | 8        | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          |             | 2        | 8         |            | 14       | -1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+
+    The record with ``value=5`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``0 <= 8-6``).
+    The record with ``value=10`` from table ``t2`` was not joined because its ``event_time``
+    was equal to the maximal already seen time minus ``cutoff`` (``4 <= 10-6``).
+
+    Notice also the entries with ``__diff__=-1``. They're deletion entries caused by the arrival
+    of matching entries on the right side of the join. The matches caused the removal of entries
+    without values in the fields from the right side and insertion of entries with values
+    in these fields.
     """
     return IntervalJoinResult._interval_join(
         self,
@@ -764,6 +1037,8 @@ def interval_join_left(
         *on,
         behavior=behavior,
         mode=pw.JoinMode.LEFT,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -779,6 +1054,8 @@ def interval_join_right(
     interval: Interval,
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval right join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -799,6 +1076,7 @@ def interval_join_right(
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
         behavior: defines temporal behavior of a join - features like delaying entries
             or ignoring late entries.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -875,6 +1153,86 @@ def interval_join_right(
     2 | 2      | 0
     2 | 2      | 2
     2 | 3      | 2
+
+    Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
+    the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    The arguments of `behavior` mean in the context of an interval join what follows:
+    - **delay** - buffers results until their time is greater or equal to the maximal already \
+        seen time minus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, interval join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Example without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       1   |     1    |      0     |     2
+    ...       2   |     2    |      2     |     4
+    ...       3   |     1    |      4     |     4
+    ...       4   |     2    |      8     |     8
+    ...       5   |     1    |      0     |    10
+    ...       6   |     1    |      4     |    10
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       42  |     1    |      2     |     2
+    ...        8  |     2    |     10     |    14
+    ...       10  |     2    |      4     |    30
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.interval_join_right(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    5          | 42          | 1        | 0         | 2          | 10       | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+    2          | 10          | 2        | 2         | 4          | 30       | 1
+    >>> result_with_cutoff = t1.interval_join_right(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ...     behavior=pw.temporal.common_behavior(cutoff=6),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_with_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+
+    The record with ``value=5`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``0 <= 8-6``).
+    The record with ``value=10`` from table ``t2`` was not joined because its ``event_time``
+    was equal to the maximal already seen time minus ``cutoff`` (``4 <= 10-6``).
     """
     return IntervalJoinResult._interval_join(
         self,
@@ -885,6 +1243,8 @@ def interval_join_right(
         *on,
         behavior=behavior,
         mode=pw.JoinMode.RIGHT,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -900,6 +1260,8 @@ def interval_join_outer(
     interval: Interval,
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
+    left_instance: pw.ColumnReference | None = None,
+    right_instance: pw.ColumnReference | None = None,
 ) -> IntervalJoinResult:
     """Performs an interval outer join of self with other using a time difference
     and join expressions. If `self_time + lower_bound <=
@@ -920,6 +1282,7 @@ def interval_join_outer(
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
         behavior: defines temporal behavior of a join - features like delaying entries
             or ignoring late entries.
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
         IntervalJoinResult: a result of the interval join. A method `.select()`
@@ -999,6 +1362,99 @@ def interval_join_outer(
     2 | 2      | 2
     2 | 3      | 2
     3 | 4      |
+
+    Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
+    the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    The arguments of `behavior` mean in the context of an interval join what follows:
+    - **delay** - buffers results until their time is greater or equal to the maximal already \
+        seen time minus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, interval join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Example without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       1   |     1    |      0     |     2
+    ...       2   |     2    |      2     |     4
+    ...       3   |     1    |      4     |     4
+    ...       4   |     2    |      8     |     8
+    ...       5   |     1    |      0     |    10
+    ...       6   |     1    |      4     |    10
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | instance | event_time | __time__
+    ...       42  |     1    |      2     |     2
+    ...        8  |     2    |     10     |    14
+    ...       10  |     2    |      4     |    30
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.interval_join_outer(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    2          |             | 2        | 2         |            | 4        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    4          |             | 2        | 8         |            | 8        | 1
+    5          | 42          | 1        | 0         | 2          | 10       | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          |             | 2        | 8         |            | 14       | -1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+    2          |             | 2        | 2         |            | 30       | -1
+    2          | 10          | 2        | 2         | 4          | 30       | 1
+    >>> result_with_cutoff = t1.interval_join_outer(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     pw.temporal.interval(-2, 2),
+    ...     t1.instance == t2.instance,
+    ...     behavior=pw.temporal.common_behavior(cutoff=6),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     instance=t1.instance,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+
+    >>> pw.debug.compute_and_print_update_stream(result_with_cutoff, include_id=False)
+    left_value | right_value | instance | left_time | right_time | __time__ | __diff__
+    1          | 42          | 1        | 0         | 2          | 2        | 1
+    2          |             | 2        | 2         |            | 4        | 1
+    3          | 42          | 1        | 4         | 2          | 4        | 1
+    4          |             | 2        | 8         |            | 8        | 1
+    6          | 42          | 1        | 4         | 2          | 10       | 1
+    4          |             | 2        | 8         |            | 14       | -1
+    4          | 8           | 2        | 8         | 10         | 14       | 1
+
+    The record with ``value=5`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``0 <= 8-6``).
+    The record with ``value=10`` from table ``t2`` was not joined because its ``event_time``
+    was equal to the maximal already seen time minus ``cutoff`` (``4 <= 10-6``).
+
+    Notice also the entries with ``__diff__=-1``. They're deletion entries caused by the arrival
+    of matching entries on the right side of the join. The matches caused the removal of entries
+    without values in the fields from the right side and insertion of entries with values
+    in these fields.
     """
     return IntervalJoinResult._interval_join(
         self,
@@ -1009,4 +1465,6 @@ def interval_join_outer(
         *on,
         behavior=behavior,
         mode=pw.JoinMode.OUTER,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )

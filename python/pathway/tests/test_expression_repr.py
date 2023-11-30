@@ -230,6 +230,11 @@ def test_method_call():
     assert repr(t.td.dt.days()) == "(<table1>.td).dt.days()"
     assert repr(t.td.dt.weeks()) == "(<table1>.td).dt.weeks()"
     assert repr(t.txt.dt.strptime("%m")) == "(<table1>.txt).dt.strptime('%m')"
+    assert repr(t.ts.dt.round("D")) == "(<table1>.ts).dt.round('D')"
+    assert repr(t.ts.dt.round(t.td)) == "(<table1>.ts).dt.round(<table1>.td)"
+    assert repr(t.ts.dt.floor("D")) == "(<table1>.ts).dt.floor('D')"
+    assert repr(t.ts.dt.floor(t.td)) == "(<table1>.ts).dt.floor(<table1>.td)"
+    assert repr(t.ts.dt.weekday()) == "(<table1>.ts).dt.weekday()"
 
 
 def test_3_args_with_info():

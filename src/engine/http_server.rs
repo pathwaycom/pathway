@@ -80,7 +80,7 @@ pub fn start_http_server_thread(
 ) -> JoinHandle<()> {
     let monitoring_http_port: u16 = env::var("PATHWAY_MONITORING_HTTP_PORT")
         .ok()
-        .unwrap_or(String::new())
+        .unwrap_or_default()
         .parse::<u16>()
         .unwrap_or(DEFAULT_MONITORING_HTTP_PORT);
 

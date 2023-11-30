@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use tempfile::tempdir;
 
-use pathway_engine::connectors::{Connector, Entry, ReplayMode};
+use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
 
 use pathway_engine::connectors::data_storage::StorageType;
 use pathway_engine::connectors::{OffsetKey, OffsetValue};
@@ -217,7 +217,7 @@ fn test_rewind_for_empty_persistent_storage() -> eyre::Result<()> {
 
     let (sender, receiver) = mpsc::channel();
     let (tracker, _global_tracker) = create_persistence_manager(test_storage_path, false);
-    Connector::<u64>::rewind_from_disk_snapshot(1, &tracker, &sender, ReplayMode::Batch);
+    Connector::<u64>::rewind_from_disk_snapshot(1, &tracker, &sender, PersistenceMode::Batch);
     assert_eq!(get_entries_in_receiver::<Entry>(receiver).len(), 0); // We would not even start rewind when there is no frontier
 
     Ok(())

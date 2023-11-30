@@ -113,9 +113,9 @@ def test_keep_results_manual():
             window = (shard, _pw_window_start, _pw_window_end)
             pk_row = {
                 "_pw_window": window,
-                "_pw_shard": shard,
                 "_pw_window_start": _pw_window_start,
                 "_pw_window_end": _pw_window_end,
+                "_pw_instance": shard,
             }
 
             entry_id = DiffEntry.create_id_from(gb, pk_row)
@@ -216,9 +216,9 @@ def generate_expected(duration, hop, delay, cutoff, keep_results, result_table):
     ) in buf_out:
         pk_row = {
             "_pw_window": window,
-            "_pw_shard": window[0],
             "_pw_window_start": window[1],
             "_pw_window_end": window[2],
+            "_pw_instance": window[0],
         }
 
         entry_id = DiffEntry.create_id_from(result_table, pk_row)
@@ -315,9 +315,9 @@ def test_exactly_once():
     for i, window_end in enumerate([2, 5, 8, 11, 14]):
         pk_row: dict = {
             "_pw_window": (None, window_end - duration, window_end),
-            "_pw_shard": None,
             "_pw_window_start": window_end - duration,
             "_pw_window_end": window_end,
+            "_pw_instance": None,
         }
 
         row: dict = {
@@ -366,9 +366,9 @@ def test_exactly_once_from_behavior():
     for i, window_end in enumerate([2, 5, 8, 11, 14]):
         pk_row: dict = {
             "_pw_window": (None, window_end - duration, window_end),
-            "_pw_shard": None,
             "_pw_window_start": window_end - duration,
             "_pw_window_end": window_end,
+            "_pw_instance": None,
         }
 
         row: dict = {

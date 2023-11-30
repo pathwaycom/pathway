@@ -8,6 +8,7 @@ import itertools
 from collections import ChainMap
 from collections.abc import Callable, Iterable, KeysView, Mapping
 from dataclasses import dataclass
+from os import PathLike
 from pydoc import locate
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, get_type_hints
@@ -18,6 +19,7 @@ import pandas as pd
 
 from pathway.internals import api, dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
+from pathway.internals.helpers import StableSet
 from pathway.internals.runtime_type_check import runtime_type_check
 
 if TYPE_CHECKING:
@@ -351,23 +353,57 @@ class SchemaMetaclass(type):
     def __hash__(self) -> int:
         return hash(self._as_tuple())
 
-    def generate_class(self, class_name: str | None = None) -> str:
+    def generate_class(
+        self, class_name: str | None = None, generate_imports: bool = False
+    ) -> str:
         """Generates class with the definition of given schema and returns it as a string.
 
-        Arguments:
+        Args:
             class_name: name of the class with the schema. If not provided, name created
-            during schema generation will be used.
+                during schema generation will be used.
+            generate_imports: whether the string should start with necessary imports to
+                run code (default is False)
         """
 
-        def render_column_definition(name: str, definition: ColumnDefinition):
+        def get_type_definition_and_modules(type: object) -> tuple[str, list[str]]:
+            if type.__module__ != "builtins":
+                modules = [type.__module__]
+                type_definition = (
+                    type.__module__
+                    + "."
+                    + type.__qualname__  # type:ignore[attr-defined]
+                )
+            else:
+                modules = []
+                type_definition = type.__qualname__  # type:ignore[attr-defined]
+            if not hasattr(type, "__origin__"):
+                return (type_definition, modules)
+            else:
+                args_definitions = []
+                for arg in type.__args__:  # type:ignore[attr-defined]
+                    definition, arg_modules = get_type_definition_and_modules(arg)
+                    args_definitions.append(definition)
+                    modules += arg_modules
+                return (f"{type_definition}[{', '.join(args_definitions)}]", modules)
+
+        required_modules: StableSet[str] = StableSet()
+
+        def render_column_definition(name: str, definition: ColumnSchema):
             properties = [
-                f"{field.name}={repr(definition.__getattribute__(field.name))}"
+                f"{field.name}={repr(getattr(definition, field.name))}"
                 for field in dataclasses.fields(definition)
                 if field.name not in ("name", "dtype")
-                and definition.__getattribute__(field.name) != field.default
+                and getattr(definition, field.name) != field.default
             ]
 
-            column_definition = f"\t{name}: dt.{definition.dtype} = pw.column_definition({','.join(properties)})"
+            type_definition, modules = get_type_definition_and_modules(
+                self.__types__[name]
+            )
+            required_modules.update(modules)
+
+            column_definition = f"    {name}: {type_definition}"
+            if properties:
+                column_definition += f" = pw.column_definition({','.join(properties)})"
             return column_definition
 
         if class_name is None:
@@ -383,28 +419,38 @@ class SchemaMetaclass(type):
 
         class_definition += "\n".join(
             [
-                render_column_definition(name, definition.to_definition())
+                render_column_definition(name, definition)
                 for name, definition in self.__columns__.items()
             ]
         )
 
+        if generate_imports:
+            class_definition = (
+                "\n".join([f"import {module}" for module in required_modules])
+                + "\nimport pathway as pw\n\n"
+                + class_definition
+            )
+
         return class_definition
 
-    def generate_class_to_file(self, path: str, class_name: str | None = None):
+    def generate_class_to_file(
+        self,
+        path: str | PathLike,
+        class_name: str | None = None,
+        generate_imports: bool = False,
+    ) -> None:
         """Generates class with the definition of given schema and saves it to a file.
         Used for persisting definition for schemas, which were automatically generated.
 
-        Note: This function generates also necessary imports, while
-            :func:`~pathway.Schema.generate_class` does not.
-
-        Arguments:
+        Args:
             path: path of the file, in which the schema class definition will be saved.
             class_name: name of the class with the schema. If not provided, name created
-            during schema generation will be used.
+                during schema generation will be used.
+            generate_imports: whether the string should start with necessary imports to
+                run code (default is False)
         """
-        class_definition = (
-            "import pathway as pw\nfrom pathway.internals import dtype as dt\n\n"
-            + self.generate_class(class_name)
+        class_definition = self.generate_class(
+            class_name, generate_imports=generate_imports
         )
 
         with open(path, mode="w") as f:
@@ -503,11 +549,11 @@ _no_default_value_marker = _Undefined()
 
 @dataclass(frozen=True)
 class ColumnSchema:
-    primary_key: bool
-    default_value: Any | None
     dtype: dt.DType
     name: str
-    append_only: bool
+    primary_key: bool = False
+    default_value: Any = _no_default_value_marker
+    append_only: bool = False
 
     def has_default_value(self) -> bool:
         return self.default_value != _no_default_value_marker

@@ -2336,6 +2336,52 @@ def test_join():
     )
 
 
+def test_join_instance():
+    t1 = T(
+        """
+            | owner | age | instance
+        1   | Alice |  10 | 1
+        2   |   Bob |   9 | 1
+        3   |   Tom |   8 | 1
+        4   | Alice |  10 | 2
+        5   |   Bob |   9 | 2
+        6   |   Tom |   8 | 2
+        """
+    )
+    t2 = T(
+        """
+            | owner | age | size | instance
+        11  | Alice |  10 |    M | 1
+        12  |   Bob |   9 |    L | 1
+        13  |   Tom |   8 |   XL | 1
+        14  | Alice |  10 |    M | 2
+        15  |   Bob |   9 |    L | 2
+        16  |   Tom |   8 |   XL | 2
+        """
+    )
+    expected = T(
+        """
+            owner_name | L | R  | age
+            Alice      | 1 | 11 |  10
+            Bob        | 2 | 12 |   9
+            Tom        | 3 | 13 |   8
+            Alice      | 4 | 14 |  10
+            Bob        | 5 | 15 |   9
+            Tom        | 6 | 16 |   8
+            """,
+    ).with_columns(
+        L=t1.pointer_from(pw.this.L),
+        R=t2.pointer_from(pw.this.R),
+    )
+    res = t1.join(
+        t2, t1.owner == t2.owner, left_instance=t1.instance, right_instance=t2.instance
+    ).select(owner_name=t2.owner, L=t1.id, R=t2.id, age=t1.age)
+    assert_table_equality_wo_index(
+        res,
+        expected,
+    )
+
+
 def test_join_swapped_condition():
     t1 = T(
         """

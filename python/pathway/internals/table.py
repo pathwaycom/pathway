@@ -44,10 +44,6 @@ from pathway.internals.universe import Universe
 if TYPE_CHECKING:
     from pathway.internals.datasink import DataSink
 
-# To run doctests use
-# pytest public/pathway/python/pathway/table.py  --doctest-modules
-# .jenkins/bash_scripts/pytest.sh points to this file
-
 
 TSchema = TypeVar("TSchema", bound=Schema)
 
@@ -95,6 +91,11 @@ class Table(
             window_join_outer,
             window_join_right,
             windowby,
+        )
+        from pathway.stdlib.viz import (  # type: ignore[misc]
+            _repr_mimebundle_,
+            plot,
+            show,
         )
 
     _columns: dict[str, clmn.Column]
@@ -186,6 +187,7 @@ class Table(
         return self._schema
 
     def _get_colref_by_name(self, name, exception_type) -> expr.ColumnReference:
+        name = self._column_deprecation_rename(name)
         if name == "id":
             return self.id
         if name not in self.keys():
@@ -816,6 +818,7 @@ class Table(
         id: expr.ColumnReference | None = None,
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
+        instance: expr.ColumnReference | None = None,
     ) -> groupby.GroupedTable:
         """Groups table by columns from args.
 
@@ -825,6 +828,7 @@ class Table(
         Args:
             args: columns to group by.
             id: if provided, is the column used to set id's of the rows of the result
+            instance: optional argument describing partitioning of the data into separate instances
 
         Returns:
             GroupedTable: Groupby object.
@@ -846,6 +850,8 @@ class Table(
         Alice | dog | 10
         Bob   | dog | 16
         """
+        if instance is not None:
+            args = (*args, instance)
         if id is not None:
             if len(args) == 0:
                 args = (id,)
@@ -1370,7 +1376,11 @@ class Table(
     @trace_user_frame
     @desugar
     @runtime_type_check
-    def with_id_from(self, *args: expr.ColumnExpression | Value) -> Table:
+    def with_id_from(
+        self,
+        *args: expr.ColumnExpression | Value,
+        instance: expr.ColumnReference | None = None,
+    ) -> Table:
         """Compute new ids based on values in columns.
         Ids computed from `columns` must be row-wise unique.
 
@@ -1405,7 +1415,9 @@ class Table(
         ^... | 10  | Alice | 1   | False       | True
         """
         # new_index should be a column, so a little workaround
-        new_index = self.select(ref_column=self.pointer_from(*args)).ref_column
+        new_index = self.select(
+            ref_column=self.pointer_from(*args, instance=instance)
+        ).ref_column
 
         return self._with_new_index(
             new_index=new_index,
@@ -1995,7 +2007,9 @@ class Table(
         )
 
     @trace_user_frame
-    def pointer_from(self, *args: Any, optional=False):
+    def pointer_from(
+        self, *args: Any, optional=False, instance: expr.ColumnReference | None = None
+    ):
         """Pseudo-random hash of its argument. Produces pointer types. Applied column-wise.
 
         Example:
@@ -2013,12 +2027,18 @@ class Table(
         True
         True
         """
+        if instance is not None:
+            args = (*args, instance)
         # XXX verify types for the table primary_keys
         return expr.PointerExpression(self, *args, optional=optional)
 
     @trace_user_frame
     def ix_ref(
-        self, *args: expr.ColumnExpression | Value, optional: bool = False, context=None
+        self,
+        *args: expr.ColumnExpression | Value,
+        optional: bool = False,
+        context=None,
+        instance: expr.ColumnReference | None = None,
     ):
         """Reindexes the table using expressions as primary keys.
         Uses keys from context, or tries to infer proper context from the expression.
@@ -2094,7 +2114,7 @@ class Table(
         David  | cat | 4
         """
         return self.ix(
-            self.pointer_from(*args, optional=optional),
+            self.pointer_from(*args, optional=optional, instance=instance),
             optional=optional,
             context=context,
         )

@@ -83,8 +83,10 @@ def knn_lsh_generic_classifier_train(
     buckets_list = data.select(buckets=pw.apply(list, data.buckets))
     data += unpack_col(buckets_list.buckets, *band_col_names)
 
-    def lsh_perform_query(queries: pw.Table, k):
+    def lsh_perform_query(queries: pw.Table, k: int | None = None) -> pw.Table:
         queries += queries.select(buckets=pw.apply(lsh_projection, queries.data))
+        if k is not None:
+            queries += queries.select(k=k)
 
         # Same Fix "UserWarning: ... above"
         buckets_list = queries.select(buckets=pw.apply(list, queries.buckets))
@@ -116,6 +118,7 @@ def knn_lsh_generic_classifier_train(
             result.data,
             query_id=result.id,
             ids=pw.apply(merge_buckets, *[result[f"items_{i}"] for i in range(L)]),
+            k=result.k,
         ).filter(pw.apply_with_type(lambda x: x != (), bool, pw.this.ids))
 
         # step 3: find knns in unioned buckets
@@ -128,6 +131,7 @@ def knn_lsh_generic_classifier_train(
                 data = pw.input_attribute()
                 query_id = pw.input_attribute()
                 ids = pw.input_attribute()
+                k = pw.input_attribute()
 
                 @pw.output_attribute
                 def knns_ids(self) -> np.ndarray:
@@ -144,7 +148,7 @@ def knn_lsh_generic_classifier_train(
                         ]
                     )
 
-                    neighs = min(k, len(data_candidates))
+                    neighs = min(self.k, len(data_candidates))
                     knn_ids = np.argpartition(
                         distance_function(data_candidates, querypoint), neighs - 1
                     )[

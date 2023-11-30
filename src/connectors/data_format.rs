@@ -97,6 +97,9 @@ pub enum ParseError {
     #[error("received message is not json: {0:?}")]
     FailedToParseJson(String),
 
+    #[error("received metadata payload is not a valid json")]
+    FailedToParseMetadata,
+
     #[error("received message doesn't comply with debezium format: {0}")]
     DebeziumFormatViolated(DebeziumFormatError),
 
@@ -340,6 +343,17 @@ fn parse_with_type(
     }
 }
 
+fn parse_metadata(bytes: Option<&[u8]>) -> Result<Option<Value>, ParseError> {
+    if let Some(bytes) = bytes {
+        let Ok(parsed_value) = serde_json::from_slice::<JsonValue>(bytes) else {
+            return Err(ParseError::FailedToParseMetadata);
+        };
+        Ok(Some(parsed_value.into()))
+    } else {
+        Ok(None)
+    }
+}
+
 /// "magic field" containing the metadata
 const METADATA_FIELD_NAME: &str = "_metadata";
 
@@ -348,7 +362,6 @@ impl DsvParser {
         DsvParser {
             settings,
             schema,
-
             metadata_column_value: Value::None,
             header: Vec::new(),
             key_column_indices: None,
@@ -575,16 +588,22 @@ impl IdentityParser {
 
 impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let (event, key, value) = match data {
-            RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes)?),
+        let (event, key, value, metadata) = match data {
+            RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes)?, None),
             KeyValue((_key, value)) => match value {
-                Some(bytes) => (DataEventType::Insert, None, self.prepare_bytes(bytes)?),
+                Some(bytes) => (
+                    DataEventType::Insert,
+                    None,
+                    self.prepare_bytes(bytes)?,
+                    None,
+                ),
                 None => return Err(ParseError::EmptyKafkaPayload),
             },
-            Diff((addition, key, values)) => (
+            Diff((addition, key, values, metadata)) => (
                 *addition,
                 key.as_ref().map(|k| vec![k.clone()]),
                 self.prepare_bytes(values)?,
+                parse_metadata(metadata.as_deref())?,
             ),
             TokenizedEntries(_, _) | PreparedEvent(_) => {
                 return Err(ParseError::UnsupportedReaderContext)
@@ -603,9 +622,10 @@ impl Parser for IdentityParser {
             ParsedEvent::AdvanceTime
         } else {
             let mut values = Vec::new();
+            let metadata = metadata.as_ref().unwrap_or(&self.metadata_column_value);
             for field in &self.value_fields {
                 if field == METADATA_FIELD_NAME {
-                    values.push(self.metadata_column_value.clone());
+                    values.push(metadata.clone());
                 } else {
                     values.push(value.clone());
                 }
@@ -1130,7 +1150,7 @@ impl Parser for JsonLinesParser {
                     return Err(ParseError::EmptyKafkaPayload);
                 }
             }
-            Diff((event, key, line)) => {
+            Diff((event, key, line, _)) => {
                 let line = prepare_plaintext_string(line)?;
                 let key = key.as_ref().map(|k| vec![k.clone()]);
                 (*event, key, line)

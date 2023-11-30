@@ -16,7 +16,7 @@ use crate::connectors::snapshot::{
     Event, LocalBinarySnapshotReader, LocalBinarySnapshotWriter, MockSnapshotReader,
     S3SnapshotReader, S3SnapshotWriter, SnapshotReader, SnapshotReaderImpl,
 };
-use crate::connectors::{ReplayMode, SnapshotAccess};
+use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
@@ -61,7 +61,7 @@ pub struct PersistenceManagerOuterConfig {
     metadata_storage: MetadataStorageConfig,
     stream_storage: StreamStorageConfig,
     snapshot_access: SnapshotAccess,
-    replay_mode: ReplayMode,
+    persistence_mode: PersistenceMode,
     continue_after_replay: bool,
 }
 
@@ -71,7 +71,7 @@ impl PersistenceManagerOuterConfig {
         metadata_storage: MetadataStorageConfig,
         stream_storage: StreamStorageConfig,
         snapshot_access: SnapshotAccess,
-        replay_mode: ReplayMode,
+        persistence_mode: PersistenceMode,
         continue_after_replay: bool,
     ) -> Self {
         Self {
@@ -79,7 +79,7 @@ impl PersistenceManagerOuterConfig {
             metadata_storage,
             stream_storage,
             snapshot_access,
-            replay_mode,
+            persistence_mode,
             continue_after_replay,
         }
     }
@@ -103,7 +103,7 @@ pub struct PersistenceManagerConfig {
     metadata_storage: MetadataStorageConfig,
     stream_storage: StreamStorageConfig,
     pub snapshot_access: SnapshotAccess,
-    pub replay_mode: ReplayMode,
+    pub persistence_mode: PersistenceMode,
     pub continue_after_replay: bool,
     pub worker_id: usize,
     total_workers: usize,
@@ -119,7 +119,7 @@ impl PersistenceManagerConfig {
             stream_storage: outer_config.stream_storage,
             metadata_storage: outer_config.metadata_storage,
             snapshot_access: outer_config.snapshot_access,
-            replay_mode: outer_config.replay_mode,
+            persistence_mode: outer_config.persistence_mode,
             continue_after_replay: outer_config.continue_after_replay,
             worker_id,
             total_workers,

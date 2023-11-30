@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import collections
-import json
 import multiprocessing
 import os
 import pathlib
@@ -38,7 +37,13 @@ xfail_on_darwin = pytest.mark.xfail(
     platform.system() == "Darwin",
     reason="can't do pw.run() from custom process on Darwin",
 )
+
 xfail_no_numba = pytest.mark.xfail(_numba_missing, reason="unable to import numba")
+
+
+def skip_on_multiple_workers() -> None:
+    if os.environ.get("PATHWAY_THREADS", "1") != "1":
+        pytest.skip()
 
 
 @dataclass(order=True)
@@ -276,6 +281,9 @@ def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k"
 class TestDataSource(datasource.DataSource):
     __test__ = False
 
+    def is_bounded(self) -> bool:
+        raise NotImplementedError()
+
 
 def apply_defaults_for_run_kwargs(kwargs):
     kwargs.setdefault("debug", True)
@@ -436,60 +444,6 @@ def get_aws_s3_settings():
         secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
         region="eu-central-1",
     )
-
-
-def generate_custom_stream_with_deletions(
-    value_generators: dict[str, Any],
-    *,
-    schema: type[pw.Schema],
-    nb_rows: int,
-    autocommit_duration_ms: int = 1000,
-    input_rate: float = 1.0,
-) -> pw.Table:
-    """
-    Generates a data stream that allows deletions.
-    requires value_generators to contain "id" and "diff" columns
-    """
-    # TODO remove when we have proper tool for testing
-
-    if nb_rows < 0:
-        raise ValueError("nb_rows has to be non-negative")
-
-    class StreamSubject(pw.io.python.ConnectorSubject):
-        def run(self):
-            def _send_row(row: dict):
-                diff = row.pop("diff", 1)
-                if "id" not in row:
-                    raise ValueError(
-                        "id column has to be present when deletions are allowed"
-                    )
-                id = row.pop("id")
-                message = json.dumps(row, ensure_ascii=False).encode(encoding="utf-8")
-                if diff == 1:
-                    self._add(id, message)
-                elif diff == -1:
-                    self._remove(id, message)
-                else:
-                    raise ValueError("diff column can only be -1 or 1")
-
-            def _create_send_row(i):
-                row = {}
-                for name, fun in value_generators.items():
-                    row[name] = fun(i)
-                _send_row(row)
-
-            for row_index in range(nb_rows):
-                _create_send_row(row_index)
-                time.sleep(1.0 / input_rate)
-
-    table = pw.io.python.read(
-        StreamSubject(),
-        schema=schema,
-        format="json",
-        autocommit_duration_ms=autocommit_duration_ms,
-    )
-
-    return table
 
 
 # Callback class for checking whether number of distinct timestamps of

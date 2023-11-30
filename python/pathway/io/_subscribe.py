@@ -26,6 +26,34 @@ def subscribe(
           It will be called on each engine worker separately.
     Returns:
         None
+
+    Example:
+
+    >>> from pathway.tests import utils  # NODOCS
+    >>> utils.skip_on_multiple_workers()  # NODOCS
+    >>> import pathway as pw
+    ...
+    >>> table = pw.debug.table_from_markdown('''
+    ...      | pet  | owner   | age | __time__ | __diff__
+    ...    1 | dog  | Alice   | 10  | 0        | 1
+    ...    2 | cat  | Alice   | 8   | 1        | 1
+    ...    3 | dog  | Bob     | 7   | 2        | 1
+    ...    2 | cat  | Alice   | 8   | 3        | -1
+    ... ''')
+    ...
+    >>> def on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool):
+    ...     print(f"{row}, {time}, {is_addition}")
+    ...
+    >>> def on_end():
+    ...     print("End of stream.")
+    ...
+    >>> pw.io.subscribe(table, on_change, on_end)
+    >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+    {'pet': 'dog', 'owner': 'Alice', 'age': 10}, 0, True
+    {'pet': 'cat', 'owner': 'Alice', 'age': 8}, 2, True
+    {'pet': 'dog', 'owner': 'Bob', 'age': 7}, 4, True
+    {'pet': 'cat', 'owner': 'Alice', 'age': 8}, 6, False
+    End of stream.
     """
 
     internal_subscribe(

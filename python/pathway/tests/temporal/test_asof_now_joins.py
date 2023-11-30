@@ -1,11 +1,7 @@
 import pytest
 
 import pathway as pw
-from pathway.tests.utils import (
-    T,
-    assert_table_equality_wo_index,
-    generate_custom_stream_with_deletions,
-)
+from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
 class ValueInstanceSchema(pw.Schema):
@@ -15,45 +11,34 @@ class ValueInstanceSchema(pw.Schema):
 
 
 def stream_data() -> tuple[pw.Table, pw.Table]:
-    """Returns (points, queries)."""
-    data = [
-        (1, 1, True, +1, 1),
-        (4, 1, False, +1, 2),
-        (2, 1, True, +1, 3),
-        (3, 1, True, +1, 4),
-        (4, 1, False, -1, 2),
-        (5, 1, False, +1, 5),
-        (4, 1, True, +1, 6),
-        (2, 2, False, +1, 7),
-        (5, 2, True, +1, 8),
-        (6, 1, True, +1, 9),
-        (7, 2, True, +1, 10),
-        (2, 2, False, -1, 7),
-        (3, 2, False, +1, 11),
-        (8, 1, True, +1, 12),
-        (9, 2, True, +1, 13),
-        (5, 1, False, -1, 5),
-        (9, 1, False, +1, 14),
-    ]
-    value_functions = {
-        "value": lambda i: data[i][0],
-        "instance": lambda i: data[i][1],
-        "is_query": lambda i: data[i][2],
-        "diff": lambda i: data[i][3],
-        "id": lambda i: data[i][4],
-    }
-
-    table = generate_custom_stream_with_deletions(
-        value_functions,
-        schema=ValueInstanceSchema,
-        nb_rows=17,
-        autocommit_duration_ms=20,
-        input_rate=10,
+    data = T(
+        """
+           | value | instance | __time__ | __diff__
+         2 |   4   |    1     |     1    |     1
+         2 |   4   |    1     |     4    |    -1
+         5 |   5   |    1     |     5    |     1
+         7 |   2   |    2     |     7    |     1
+         7 |   2   |    2     |    11    |    -1
+        11 |   3   |    2     |    12    |     1
+         5 |   5   |    1     |    15    |    -1
+        14 |   9   |    1     |    16    |     1
+        """
     )
-    return (
-        table.filter(~pw.this.is_query).without(pw.this.is_query),
-        table.filter(pw.this.is_query).without(pw.this.is_query),
+    queries = T(
+        """
+        value | instance | __time__
+          1   |    1     |     0
+          2   |    1     |     2
+          3   |    1     |     3
+          4   |    1     |     6
+          5   |    2     |     8
+          6   |    1     |     9
+          7   |    2     |    10
+          8   |    1     |    13
+          9   |    2     |    14
+        """
     )
+    return data, queries
 
 
 def test_update_old():

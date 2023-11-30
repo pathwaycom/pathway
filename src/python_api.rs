@@ -60,7 +60,7 @@ use crate::connectors::data_storage::{
     ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, SqliteReader, Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
-use crate::connectors::{ReplayMode, SessionType, SnapshotAccess};
+use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::config_from_env;
 use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
 use crate::engine::graph::ScopedContext;
@@ -1190,6 +1190,7 @@ unary_expr!(
     date_time_naive_timestamp,
     IntExpression::DateTimeNaiveTimestamp
 );
+unary_expr!(date_time_naive_weekday, IntExpression::DateTimeNaiveWeekday);
 binary_expr!(date_time_naive_strptime, DateTimeNaiveExpression::Strptime);
 binary_expr!(
     date_time_naive_strftime,
@@ -1221,6 +1222,7 @@ unary_expr!(date_time_utc_day, IntExpression::DateTimeUtcDay);
 unary_expr!(date_time_utc_month, IntExpression::DateTimeUtcMonth);
 unary_expr!(date_time_utc_year, IntExpression::DateTimeUtcYear);
 unary_expr!(date_time_utc_timestamp, IntExpression::DateTimeUtcTimestamp);
+unary_expr!(date_time_utc_weekday, IntExpression::DateTimeUtcWeekday);
 binary_expr!(date_time_utc_strptime, DateTimeUtcExpression::Strptime);
 binary_expr!(
     date_time_utc_strftime,
@@ -3050,30 +3052,32 @@ pub struct DataStorage {
     column_names: Option<Vec<String>>,
 }
 
-#[pyclass(module = "pathway.engine", frozen, name = "ReplayMode")]
-pub struct PyReplayMode(ReplayMode);
+#[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
+pub struct PyPersistenceMode(PersistenceMode);
 
 #[pymethods]
-impl PyReplayMode {
+impl PyPersistenceMode {
     #[classattr]
-    pub const REALTIME: ReplayMode = ReplayMode::Realtime;
+    pub const REALTIME_REPLAY: PersistenceMode = PersistenceMode::RealtimeReplay;
     #[classattr]
-    pub const SPEEDRUN: ReplayMode = ReplayMode::Speedrun;
+    pub const SPEEDRUN_REPLAY: PersistenceMode = PersistenceMode::SpeedrunReplay;
     #[classattr]
-    pub const BATCH: ReplayMode = ReplayMode::Batch;
+    pub const BATCH: PersistenceMode = PersistenceMode::Batch;
     #[classattr]
-    pub const PERSISTING: ReplayMode = ReplayMode::Persisting;
+    pub const PERSISTING: PersistenceMode = PersistenceMode::Persisting;
+    #[classattr]
+    pub const UDF_CACHING: PersistenceMode = PersistenceMode::UdfCaching;
 }
 
-impl<'source> FromPyObject<'source> for ReplayMode {
+impl<'source> FromPyObject<'source> for PersistenceMode {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        Ok(ob.extract::<PyRef<PyReplayMode>>()?.0)
+        Ok(ob.extract::<PyRef<PyPersistenceMode>>()?.0)
     }
 }
 
-impl IntoPy<PyObject> for ReplayMode {
+impl IntoPy<PyObject> for PersistenceMode {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        PyReplayMode(self).into_py(py)
+        PyPersistenceMode(self).into_py(py)
     }
 }
 
@@ -3109,7 +3113,7 @@ pub struct PersistenceConfig {
     metadata_storage: DataStorage,
     stream_storage: DataStorage,
     snapshot_access: SnapshotAccess,
-    replay_mode: ReplayMode,
+    persistence_mode: PersistenceMode,
     continue_after_replay: bool,
 }
 
@@ -3122,7 +3126,7 @@ impl PersistenceConfig {
         metadata_storage,
         stream_storage,
         snapshot_access = SnapshotAccess::Full,
-        replay_mode = ReplayMode::Batch,
+        persistence_mode = PersistenceMode::Batch,
         continue_after_replay = true,
     ))]
     fn new(
@@ -3130,7 +3134,7 @@ impl PersistenceConfig {
         metadata_storage: DataStorage,
         stream_storage: DataStorage,
         snapshot_access: SnapshotAccess,
-        replay_mode: ReplayMode,
+        persistence_mode: PersistenceMode,
         continue_after_replay: bool,
     ) -> Self {
         Self {
@@ -3138,7 +3142,7 @@ impl PersistenceConfig {
             metadata_storage,
             stream_storage,
             snapshot_access,
-            replay_mode,
+            persistence_mode,
             continue_after_replay,
         }
     }
@@ -3152,7 +3156,7 @@ impl PersistenceConfig {
                 .construct_metadata_storage_config(py)?,
             self.stream_storage.construct_stream_storage_config(py)?,
             self.snapshot_access,
-            self.replay_mode,
+            self.persistence_mode,
             self.continue_after_replay,
         ))
     }
@@ -4163,7 +4167,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<DataFormat>()?;
     m.add_class::<PersistenceConfig>()?;
     m.add_class::<PythonSubject>()?;
-    m.add_class::<PyReplayMode>()?;
+    m.add_class::<PyPersistenceMode>()?;
     m.add_class::<PySnapshotAccess>()?;
     m.add_class::<PySnapshotEvent>()?;
 

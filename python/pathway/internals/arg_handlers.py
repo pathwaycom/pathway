@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import wraps
+from warnings import warn
 
 import pathway.internals.expression as expr
 from pathway.internals.join_mode import JoinMode
@@ -29,6 +30,7 @@ def groupby_handler(
     id=None,
     sort_by=None,
     _filter_out_results_of_forgetting=False,
+    instance=None,
     **kwargs,
 ):
     if kwargs:
@@ -40,11 +42,12 @@ def groupby_handler(
         "id": id,
         "sort_by": sort_by,
         "_filter_out_results_of_forgetting": _filter_out_results_of_forgetting,
+        "instance": instance,
     }
 
 
 def windowby_handler(
-    self, time_expr, *args, window, behavior=None, shard=None, **kwargs
+    self, time_expr, *args, window, behavior=None, instance=None, **kwargs
 ):
     if args:
         raise ValueError(
@@ -56,7 +59,28 @@ def windowby_handler(
             "Table.windowby() received extra kwargs.\n"
             + "You probably want to use Table.windowby(...).reduce(**kwargs) to compute output columns."
         )
-    return (self, time_expr), {"window": window, "behavior": behavior, "shard": shard}
+    return (self, time_expr), {
+        "window": window,
+        "behavior": behavior,
+        "instance": instance,
+    }
+
+
+def shard_deprecation(self, *args, shard=None, instance=None, **kwargs):
+    if shard is not None:
+        if instance is None:
+            instance = shard
+            warn(
+                "The `shard` argument is deprecated. Please use `instance` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        else:
+            raise ValueError(
+                "The arguments `shard` and `instance` cannot be set at the same moment.\n"
+                + "Please use `instance` only, as `shard` is deprecated."
+            )
+    return (self, *args), {"instance": instance, **kwargs}
 
 
 def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
@@ -108,6 +132,15 @@ def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
 
         if "defaults" in kwargs:
             processed_kwargs["defaults"] = kwargs.pop("defaults")
+
+        if "left_instance" in kwargs and "right_instance" in kwargs:
+            processed_kwargs["left_instance"] = kwargs.pop("left_instance")
+            processed_kwargs["right_instance"] = kwargs.pop("right_instance")
+        elif "left_instance" in kwargs or "right_instance" in kwargs:
+            raise ValueError(
+                "`left_instance` and `right_instance` arguments to join "
+                + "should always be provided simultaneously"
+            )
 
         if "direction" in kwargs:
             direction = processed_kwargs["direction"] = kwargs.pop("direction")

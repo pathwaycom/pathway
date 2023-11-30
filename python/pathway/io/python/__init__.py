@@ -6,13 +6,14 @@ from abc import ABC, abstractmethod
 from queue import Queue
 from typing import Any
 
-from pathway.internals import api, datasource
+from pathway.internals import Table, api, datasource
 from pathway.internals.api import DataEventType, PathwayType, Pointer, SessionType
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import runtime_type_check
 from pathway.internals.schema import Schema
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
+    MetadataSchema,
     RawDataSchema,
     assert_schema_or_value_columns_not_none,
     get_data_format_type,
@@ -101,16 +102,20 @@ class ConnectorSubject(ABC):
 
         threading.Thread(target=target).start()
 
-    def _add(self, key: Pointer | None, message: Any) -> None:
+    def _add(
+        self, key: Pointer | None, message: bytes, metadata: bytes | None = None
+    ) -> None:
         if self._session_type == SessionType.NATIVE:
-            self._buffer.put((DataEventType.INSERT, key, message))
+            self._buffer.put((DataEventType.INSERT, key, message, metadata))
         elif self._session_type == SessionType.UPSERT:
-            self._buffer.put((DataEventType.UPSERT, key, message))
+            self._buffer.put((DataEventType.UPSERT, key, message, metadata))
         else:
             raise NotImplementedError(f"session type {self._session_type} not handled")
 
-    def _remove(self, key: Pointer, message: Any) -> None:
-        self._buffer.put((DataEventType.DELETE, key, message))
+    def _remove(
+        self, key: Pointer, message: bytes, metadata: bytes | None = None
+    ) -> None:
+        self._buffer.put((DataEventType.DELETE, key, message, metadata))
 
     def _read(self) -> Any:
         """Allows to retrieve data from a buffer.
@@ -132,6 +137,10 @@ class ConnectorSubject(ABC):
         return False
 
     @property
+    def _with_metadata(self) -> bool:
+        return False
+
+    @property
     def _session_type(self) -> SessionType:
         return SessionType.NATIVE
 
@@ -150,7 +159,7 @@ def read(
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
     persistent_id: str | None = None,
-):
+) -> Table:
     """Reads a table from a ConnectorSubject.
 
     Args:
@@ -190,7 +199,8 @@ computations from the moment they were terminated last time.
         if value_columns:
             raise ValueError("raw format must not be used with value_columns property")
         schema = RawDataSchema
-
+        if subject._with_metadata is True:
+            schema |= MetadataSchema
     assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)
 
     schema, api_schema = read_schema(

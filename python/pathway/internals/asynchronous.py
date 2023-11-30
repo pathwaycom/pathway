@@ -194,6 +194,8 @@ class DiskCache(CacheStrategy):
     async def invoke(self, func: Callable, /, *args, **kwargs):
         cache = self._get_cache(func)
         key = str((args, kwargs))
+        if cache is None:
+            return await func(*args, **kwargs)
         if key not in cache:
             result = await func(*args, **kwargs)
             cache[key] = result
@@ -204,10 +206,9 @@ class DiskCache(CacheStrategy):
             if self._name is None:
                 func = inspect.unwrap(self._get_cache)
                 self._name = f"{func.__module__}_{func.__qualname__}"
-            # TODO: slugify name
-            cache_dir = (
-                Path(os.environ.get("PATHWAY_PERSISTENT_STORAGE", "/tmp"))
-                / "runtime_calls"
-            )
+            storage_root = os.environ.get("PATHWAY_PERSISTENT_STORAGE")
+            if storage_root is None:
+                return None
+            cache_dir = Path(storage_root) / "runtime_calls"
             self._cache = diskcache.Cache(cache_dir / self._name)
         return self._cache

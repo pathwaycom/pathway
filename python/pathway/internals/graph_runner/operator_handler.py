@@ -46,7 +46,7 @@ class OperatorHandler(ABC, Generic[T]):
     scope_context: ScopeContext
     graph_builder: GraphRunner
     storage_graph: OperatorStorageGraph
-    operator_id: int | None
+    operator_id: int
 
     _operator_mapping: ClassVar[dict[type[Operator], type[OperatorHandler]]] = {}
     operator_type: ClassVar[type[Operator]]
@@ -58,7 +58,7 @@ class OperatorHandler(ABC, Generic[T]):
         context: ScopeContext,
         graph_builder: GraphRunner,
         storage_graph: OperatorStorageGraph,
-        operator_id: int | None,
+        operator_id: int,
     ):
         self.scope = scope
         self.state = state
@@ -204,8 +204,7 @@ class ContextualizedIntermediateOperatorHandler(
 
             engine_table = evaluator.run(output_storage, *storages)
             self.state.set_table(output_storage, engine_table)
-            if self.operator_id is not None:
-                self.scope.probe_table(engine_table, self.operator_id)
+            self.scope.probe_table(engine_table, self.operator_id)
             evaluator.flatten_table_storage_if_needed(output_storage)
 
 
@@ -220,7 +219,7 @@ class DebugOperatorHandler(
         context: ScopeContext,
         graph_builder: GraphRunner,
         storage_graph: OperatorStorageGraph,
-        operator_id: int | None,
+        operator_id: int,
     ):
         super().__init__(
             scope, state, context, graph_builder, storage_graph, operator_id

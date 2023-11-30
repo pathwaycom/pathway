@@ -79,7 +79,7 @@ from pathway.internals import (
     universes,
     unwrap,
 )
-from pathway.internals.api import PathwayType as Type
+from pathway.internals.api import PathwayType as Type, PersistenceMode
 from pathway.stdlib import (
     graphs,
     indexing,
@@ -89,6 +89,7 @@ from pathway.stdlib import (
     statistical,
     temporal,
     utils,
+    viz,
 )
 from pathway.stdlib.utils.async_transformer import AsyncTransformer
 from pathway.stdlib.utils.pandas_transformer import pandas_transformer
@@ -173,6 +174,8 @@ __all__ = [
     "table_transformer",
     "BaseCustomAccumulator",
     "stateful",
+    "viz",
+    "PersistenceMode",
 ]
 
 
@@ -249,3 +252,7 @@ Table.interval_join_outer = temporal.interval_join_outer
 Table.interpolate = statistical.interpolate
 Table.windowby = temporal.windowby
 Table.diff = ordered.diff
+
+Table.plot = viz.plot
+Table.show = viz.show
+Table._repr_mimebundle_ = viz._repr_mimebundle_

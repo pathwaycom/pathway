@@ -1,4 +1,3 @@
-#![allow(clippy::let_underscore_untyped)] // seems to trigger on Derivative-generated code
 #![allow(clippy::module_name_repetitions)]
 
 use arcstr::ArcStr;
@@ -196,6 +195,7 @@ pub enum IntExpression {
     DateTimeNaiveMonth(Arc<Expression>),
     DateTimeNaiveYear(Arc<Expression>),
     DateTimeNaiveTimestamp(Arc<Expression>),
+    DateTimeNaiveWeekday(Arc<Expression>),
     DateTimeUtcNanosecond(Arc<Expression>),
     DateTimeUtcMicrosecond(Arc<Expression>),
     DateTimeUtcMillisecond(Arc<Expression>),
@@ -206,6 +206,7 @@ pub enum IntExpression {
     DateTimeUtcMonth(Arc<Expression>),
     DateTimeUtcYear(Arc<Expression>),
     DateTimeUtcTimestamp(Arc<Expression>),
+    DateTimeUtcWeekday(Arc<Expression>),
     DurationFloorDiv(Arc<Expression>, Arc<Expression>),
     DurationNanoseconds(Arc<Expression>),
     DurationMicroseconds(Arc<Expression>),
@@ -729,6 +730,7 @@ impl IntExpression {
             Self::DateTimeNaiveMonth(e) => Ok(e.eval_as_date_time_naive(values)?.month()),
             Self::DateTimeNaiveYear(e) => Ok(e.eval_as_date_time_naive(values)?.year()),
             Self::DateTimeNaiveTimestamp(e) => Ok(e.eval_as_date_time_naive(values)?.timestamp()),
+            Self::DateTimeNaiveWeekday(e) => Ok(e.eval_as_date_time_naive(values)?.weekday()),
             Self::DateTimeUtcNanosecond(e) => Ok(e.eval_as_date_time_utc(values)?.nanosecond()),
             Self::DateTimeUtcMicrosecond(e) => Ok(e.eval_as_date_time_utc(values)?.microsecond()),
             Self::DateTimeUtcMillisecond(e) => Ok(e.eval_as_date_time_utc(values)?.millisecond()),
@@ -739,6 +741,7 @@ impl IntExpression {
             Self::DateTimeUtcMonth(e) => Ok(e.eval_as_date_time_utc(values)?.month()),
             Self::DateTimeUtcYear(e) => Ok(e.eval_as_date_time_utc(values)?.year()),
             Self::DateTimeUtcTimestamp(e) => Ok(e.eval_as_date_time_utc(values)?.timestamp()),
+            Self::DateTimeUtcWeekday(e) => Ok(e.eval_as_date_time_utc(values)?.weekday()),
             Self::DurationFloorDiv(lhs, rhs) => {
                 match lhs.eval_as_duration(values)? / rhs.eval_as_duration(values)? {
                     Ok(result) => Ok(result),

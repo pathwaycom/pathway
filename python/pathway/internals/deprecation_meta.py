@@ -31,7 +31,6 @@ class DeprecationMetaclass(type):
             "outer_join": (Joinable, "join_outer", Joinable.join_outer),
             "update_columns": (Table, "with_columns", Table.with_columns),
         }
-
         if name in RENAMES:
             base_cls, new_name, new_fun = RENAMES[name]
             if issubclass(cls, base_cls):
@@ -44,6 +43,20 @@ class DeprecationMetaclass(type):
 
 
 class DeprecationSuperclass(metaclass=DeprecationMetaclass):
+    def _column_deprecation_rename(self, name):
+        from pathway.internals.table import Table
+
+        RENAMES = {"_pw_shard": (Table, "_pw_instance")}
+        if name in RENAMES:
+            base_cls, new_name = RENAMES[name]
+            if isinstance(self, base_cls):
+                from warnings import warn
+
+                warn(f"DEPRECATED: {name} is deprecated, use {new_name}")
+                return new_name
+        else:
+            return name
+
     def __getattr__(self, name):
         from pathway.internals.table import Joinable, Table, TableLike
 
@@ -91,12 +104,11 @@ class DeprecationSuperclass(metaclass=DeprecationMetaclass):
             "outer_join": (Joinable, "join_outer", _outer_join),
             "update_columns": (Table, "with_columns", _update_columns),
         }
-
         if name in RENAMES:
-            base_cls, new_name, new_fun = RENAMES[name]
+            base_cls, new_name, new_fun_delayed = RENAMES[name]
             if isinstance(self, base_cls):
                 from warnings import warn
 
                 warn(f"DEPRECATED: {name} is deprecated, use {new_name}")
-                return new_fun
+                return new_fun_delayed
         raise AttributeError

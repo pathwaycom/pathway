@@ -1034,6 +1034,7 @@ class MethodCallExpression(ColumnExpression):
     _fun_mapping: tuple[tuple[tuple[dt.DType, ...], dt.DType, Callable], ...]
     _name: str
     _args: tuple[ColumnExpression, ...]
+    _args_used_for_repr: tuple[ColumnExpression, ...]
 
     def __init__(
         self,
@@ -1042,6 +1043,7 @@ class MethodCallExpression(ColumnExpression):
         ],
         name: str,
         *args: ColumnExpression | Value,
+        args_used_for_repr: Iterable[ColumnExpression | Value] | None = None,
     ) -> None:
         """Creates an Expression that represents a method call on object `args[0]`.
 
@@ -1060,12 +1062,20 @@ class MethodCallExpression(ColumnExpression):
             name: used to represent the method by `ExpressionFormatter`
             *args: `args[0]` is an object the method is called on `args[1:]` are
                 the parameters of the method
+            args_used_for_repr: if provided, these will be used when printing
+                the expression, rather than `*args`
         """
         super().__init__()
         self._fun_mapping = self._wrap_mapping_key_in_tuple(fun_mapping)
         self._name = name
 
         self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
+        if args_used_for_repr is None:
+            self._args_used_for_repr = self._args
+        else:
+            self._args_used_for_repr = tuple(
+                ColumnExpression._wrap(arg) for arg in args_used_for_repr
+            )
 
         assert len(args) > 0
         for key_dtypes, _, _ in self._fun_mapping:

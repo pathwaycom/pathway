@@ -745,11 +745,18 @@ def test__date_time_sub_in_timezone() -> None:
         pd.Timedelta(seconds=1),
         pd.Timedelta(minutes=43),
         pd.Timedelta(seconds=19),
+        "D",
+        "2H3T",
+        "min",
+        "S",
+        "14L22ms14us",
+        "U",
+        "N",
     ],
 )
 @pytest.mark.parametrize("method_name", ["round", "floor"])
 def test_date_time_round(
-    method_name: str, round_to: pd.Timedelta, is_naive: bool
+    method_name: str, round_to: pd.Timedelta | str, is_naive: bool
 ) -> None:
     data = [
         "2020-03-04 11:13:00.345612",
@@ -885,3 +892,36 @@ def test_from_timestamp_s() -> None:
     table = table.select(date=pw.this.timestamp.dt.from_timestamp(unit="s"))
 
     assert_table_equality(table, expected)
+
+
+@pytest.mark.parametrize("is_naive", [True, False])
+def test_weekday(is_naive: bool) -> None:
+    data = [
+        "1960-02-03 08:00:00.000000000",
+        "2008-02-29 08:00:00.000000000",
+        "2023-03-25 12:00:00.000000000",
+        "2023-03-25 12:00:00.000000001",
+        "2023-03-25 12:00:00.123456789",
+        "2023-03-25 16:43:21.000123000",
+        "2023-03-25 17:00:01.987000000",
+        "2023-03-25 23:59:59.999999999",
+        "2023-03-26 01:59:59.999999999",
+        "2023-03-26 03:00:00.000000001",
+        "2023-03-26 04:00:00.000000001",
+        "2023-03-26 12:00:00.000000001",
+        "2123-03-26 12:00:00.000000001",
+    ]
+    fmt_in = "%Y-%m-%d %H:%M:%S.%f"
+    if not is_naive:
+        data = [entry + "-02:00" for entry in data]
+        fmt_in += "%z"
+    df = pd.DataFrame({"ts": pd.to_datetime(data, format=fmt_in)})
+    if is_naive:
+        df_converted = df
+    else:
+        df_converted = pd.DataFrame({"ts": df.ts.dt.tz_convert(tz.UTC)})
+    df_new = pd.DataFrame({"txt": df_converted.ts.dt.weekday})
+    table = table_from_pandas(df)
+    table_pw = table.select(txt=table.ts.dt.weekday())
+    table_pd = table_from_pandas(df_new)
+    assert_table_equality(table_pw, table_pd)

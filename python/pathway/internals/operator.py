@@ -37,7 +37,7 @@ class InOut(ABC):
     name: str
     operator: Operator
 
-    def __init__(self, operator, name):
+    def __init__(self, operator: Operator, name: str):
         super().__init__()
         self.name = name
         self.operator = operator
@@ -59,7 +59,7 @@ class InputHandle(InOut):
 
     value: OperatorInput
 
-    def __init__(self, operator, name, value):
+    def __init__(self, operator: Operator, name: str, value: OperatorInput):
         assert isinstance(value, OperatorInput)
         super().__init__(operator, name)
         self.value = value
@@ -75,7 +75,7 @@ class OutputHandle(InOut):
 
     value: pw.Table
 
-    def __init__(self, operator, name, value: pw.Table):
+    def __init__(self, operator: Operator, name, value: pw.Table):
         super().__init__(operator, name)
         self.value = value
 
@@ -142,7 +142,7 @@ class Operator(ABC):
         valid_inputs = [
             (name, value)
             for name, value in inputs.items()
-            if self._is_valid_operator_input(value)
+            if isinstance(value, OperatorInput)
         ]
         for name, value in valid_inputs:
             input = InputHandle(self, name, value)
@@ -155,10 +155,7 @@ class Operator(ABC):
             value._set_source(output)
             self._outputs[name] = output
 
-    def _is_valid_operator_input(self, value):
-        return isinstance(value, OperatorInput)
-
-    def set_graph(self, graph):
+    def set_graph(self, graph: ParseGraph):
         self.graph = graph
 
     def input_operators(self) -> StableSet[Operator]:
@@ -203,9 +200,8 @@ class ContextualizedIntermediateOperator(OperatorFromDef):
     operator will be created and added to the graph whenever such function is called.
     """
 
-    def __init__(self, func_spec, id):
+    def __init__(self, func_spec: FunctionSpec, id: int):
         super().__init__(func_spec, id)
-        self.func_spec = func_spec
 
     def __call__(self, *args, **kwargs):
         input = fn_arg_tuple(self.func_spec, args, kwargs)
@@ -267,10 +263,10 @@ class OutputOperator(Operator):
         super().__init__(id)
         self.datasink = datasink
 
-    def __call__(self, table: pw.Table) -> ArgTuple:
+    def __call__(self, table: pw.Table) -> OutputOperator:
         self._prepare_inputs(as_arg_tuple(table))
         self.table = table
-        return ArgTuple.empty()
+        return self
 
 
 @dataclass

@@ -8,9 +8,13 @@ from pathway.stdlib.utils.col import unpack_col
 
 class KNNIndex:
     """
-    A K-Nearest Neighbors (KNN) index implementation using the Locality-Sensitive Hashing (LSH)
+    An approximate K-Nearest Neighbors (KNN) index implementation using the Locality-Sensitive Hashing (LSH)
     algorithm within Pathway. This index is designed to efficiently find the
     nearest neighbors of a given query embedding within a dataset.
+    It is approximate in a sense that it might return less than k records per query or skip some closer points.
+    If it returns not enough points too frequently, increase ``bucket_length`` accordingly.
+    If it skips points too often, increase ``n_or`` or play with other parameters.
+    Note that changing the parameters will influence the time and memory requirements.
 
     Args:
         data_embedding (pw.ColumnExpression): The column expression representing embeddings in the data.
@@ -48,7 +52,7 @@ class KNNIndex:
     def get_nearest_items(
         self,
         query_embedding: pw.ColumnReference,
-        k: int = 3,
+        k: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
     ):
         """
@@ -61,7 +65,8 @@ class KNNIndex:
         Args:
             query_embedding: column of embedding vectors precomputed from the query.
             k: The number of most relevant documents to return for each query.
-                                Defaults to 3.
+                Can be constant for all queries or set per query. If you want to set
+                ``k`` per query, pass a reference to the column. Defaults to 3.
             collapse_rows: Determines the format of the output. If set to True,
                 multiple rows corresponding to a single query will be collapsed into a single row,
                 with each column containing a tuple of values from the original rows. If set to False,
@@ -97,6 +102,7 @@ class KNNIndex:
         Example:
 
         >>> import pathway as pw
+        >>> from pathway.stdlib.ml.index import KNNIndex
         >>> import pandas as pd
         >>> documents = pw.debug.table_from_pandas(
         ...     pd.DataFrame.from_records([
@@ -117,11 +123,39 @@ class KNNIndex:
                     | document                     | embeddings
         ^YYY4HAB... | ()                           | ()
         ^X1MXHYY... | ('document 2', 'document 3') | ((1, 1, 0), (0, 0, 1))
+        >>> data = pw.debug.table_from_markdown(
+        ...     '''
+        ...      x | y | __time__
+        ...      2 | 3 |     2
+        ...      0 | 0 |     2
+        ...      2 | 2 |     6
+        ...     -3 | 3 |    10
+        ...     '''
+        ... ).select(coords=pw.make_tuple(pw.this.x, pw.this.y))
+        >>> queries = pw.debug.table_from_markdown(
+        ...     '''
+        ...      x | y | __time__ | __diff__
+        ...      1 | 1 |     4    |     1
+        ...     -3 | 1 |     8    |     1
+        ...     '''
+        ... ).select(coords=pw.make_tuple(pw.this.x, pw.this.y))
+        >>> index = KNNIndex(data.coords, data, n_dimensions=2)
+        >>> answers = queries + index.get_nearest_items(queries.coords, k=2).select(
+        ...     nn=pw.this.coords
+        ... )
+        >>> pw.debug.compute_and_print_update_stream(answers, include_id=False)
+        coords  | nn                | __time__ | __diff__
+        (1, 1)  | ((0, 0), (2, 3))  | 4        | 1
+        (1, 1)  | ((0, 0), (2, 3))  | 6        | -1
+        (1, 1)  | ((0, 0), (2, 2))  | 6        | 1
+        (-3, 1) | ((0, 0), (2, 2))  | 8        | 1
+        (-3, 1) | ((0, 0), (2, 2))  | 10       | -1
+        (-3, 1) | ((-3, 3), (0, 0)) | 10       | 1
         """
 
-        queries = query_embedding.table.select(data=query_embedding)
+        queries = query_embedding.table.select(data=query_embedding, k=k)
         knns_ids = (
-            self._query(queries, k)
+            self._query(queries)
             .flatten(pw.this.knns_ids, pw.this.query_id)
             .update_types(knns_ids=pw.Pointer)
         )
@@ -133,7 +167,7 @@ class KNNIndex:
     def get_nearest_items_asof_now(
         self,
         query_embedding: pw.ColumnReference,
-        k: int = 3,
+        k: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
     ):
         """
@@ -144,17 +178,49 @@ class KNNIndex:
         Args:
             query_embedding: column of embedding vectors precomputed from the query.
             k: The number of most relevant documents to return for each query.
-                                Defaults to 3.
+                Can be constant for all queries or set per query. If you want to set
+                ``k`` per query, pass a reference to the column. Defaults to 3.
             collapse_rows: Determines the format of the output. If set to True,
                 multiple rows corresponding to a single query will be collapsed into a single row,
                 with each column containing a tuple of values from the original rows. If set to False,
                 the output will retain the multi-row format for each query. Defaults to True.
 
-        For examples, see ``get_nearest_items``.
+        Example:
+
+        >>> import pathway as pw
+        >>> from pathway.stdlib.ml.index import KNNIndex
+        >>> data = pw.debug.table_from_markdown(
+        ...     '''
+        ...      x | y | __time__
+        ...      2 | 3 |     2
+        ...      0 | 0 |     2
+        ...      2 | 2 |     6
+        ...     -3 | 3 |    10
+        ...     '''
+        ... ).select(coords=pw.make_tuple(pw.this.x, pw.this.y))
+        >>> queries = pw.debug.table_from_markdown(
+        ...     '''
+        ...      x | y | __time__ | __diff__
+        ...      1 | 1 |     4    |     1
+        ...     -3 | 1 |     8    |     1
+        ...     '''
+        ... ).select(coords=pw.make_tuple(pw.this.x, pw.this.y))
+        >>> index = KNNIndex(data.coords, data, n_dimensions=2)
+        >>> answers = queries + index.get_nearest_items_asof_now(queries.coords, k=2).select(
+        ...     nn=pw.this.coords
+        ... )
+        >>> pw.debug.compute_and_print_update_stream(answers, include_id=False)
+        coords  | nn               | __time__ | __diff__
+        (1, 1)  | ((0, 0), (2, 3)) | 4        | 1
+        (-3, 1) | ((0, 0), (2, 2)) | 8        | 1
         """
+
         return _predict_asof_now(
+            lambda query, k: self.get_nearest_items(
+                query, k=k, collapse_rows=collapse_rows
+            ),
             query_embedding,
-            lambda x: self.get_nearest_items(x, k=k, collapse_rows=collapse_rows),
+            query_embedding.table.select(k=k).k,
             with_queries_universe=collapse_rows,
         )
 

@@ -14,7 +14,7 @@ use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::snapshot::{
     LocalBinarySnapshotReader, LocalBinarySnapshotWriter, SnapshotReaderImpl, SnapshotWriter,
 };
-use pathway_engine::connectors::{Connector, Entry, ReplayMode};
+use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
 use pathway_engine::engine::{Key, Value};
 use pathway_engine::persistence::PersistentId;
 
@@ -44,11 +44,11 @@ fn read_persistent_buffer(chunks_root: &Path) -> Vec<SnapshotEvent> {
 fn read_persistent_buffer_full(
     chunks_root: &Path,
     persistent_id: PersistentId,
-    replay_mode: ReplayMode,
+    persistence_mode: PersistenceMode,
 ) -> Vec<SnapshotEvent> {
     let (tracker, _global_tracker) = create_persistence_manager(chunks_root, false);
     let (sender, receiver) = mpsc::channel();
-    Connector::<u64>::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, replay_mode);
+    Connector::<u64>::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, persistence_mode);
     let entries: Vec<Entry> = get_entries_in_receiver(receiver);
     let mut result = Vec::new();
     for entry in entries {
@@ -182,7 +182,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     );
 
     assert_eq!(
-        read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Batch),
+        read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
         Vec::new()
     );
     buffer.lock().unwrap().write(&event1).unwrap();
@@ -199,7 +199,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
         .accept_finalized_timestamp(0, mock_sink_id, Some(2));
 
     assert_eq!(
-        read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Batch),
+        read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
         vec![event1.clone(), event2.clone()]
     );
 
@@ -213,7 +213,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     buffer.lock().unwrap().write(&event3).unwrap();
     buffer.lock().unwrap().write(&event4).unwrap();
     assert_eq!(
-        read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Batch),
+        read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
         vec![event1.clone(), event2.clone()]
     );
 
@@ -255,7 +255,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
             .accept_finalized_timestamp(0, mock_sink_id, Some(2));
 
         assert_eq!(
-            read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Batch),
+            read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
             vec![event1.clone()]
         );
     }
@@ -284,7 +284,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
             .accept_finalized_timestamp(0, mock_sink_id, Some(3));
 
         assert_eq!(
-            read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Batch),
+            read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
             vec![event1, event2]
         );
     }
@@ -321,7 +321,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
     let event4 = SnapshotEvent::Insert(Key::random(), vec![Value::Int(3), Value::None]);
 
     assert_eq!(
-        read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Speedrun),
+        read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::SpeedrunReplay),
         Vec::new()
     );
     buffer.lock().unwrap().write(&event1).unwrap();
@@ -335,7 +335,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
         .accept_finalized_timestamp(0, mock_sink_id, Some(3));
 
     assert_eq!(
-        read_persistent_buffer_full(test_storage_path, 42, ReplayMode::Speedrun),
+        read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::SpeedrunReplay),
         vec![
             event1.clone(),
             event2.clone(),

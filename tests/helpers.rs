@@ -17,7 +17,7 @@ use pathway_engine::connectors::data_storage::{
     DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
 };
 use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
-use pathway_engine::connectors::{Connector, Entry, ReplayMode, SnapshotAccess};
+use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
 use pathway_engine::engine::Key;
 use pathway_engine::persistence::frontier::OffsetAntichain;
 use pathway_engine::persistence::sync::{
@@ -64,7 +64,7 @@ pub fn full_cycle_read(
         &mut *reader,
         persistent_storage,
         &sender,
-        ReplayMode::Batch,
+        PersistenceMode::Batch,
         SnapshotAccess::Full,
     );
     Connector::<u64>::read_realtime_updates(&mut *reader, &sender, &main_thread);
@@ -206,7 +206,7 @@ pub fn create_persistence_manager(
                 MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
                 StreamStorageConfig::Filesystem(fs_path.to_path_buf()),
                 SnapshotAccess::Full,
-                ReplayMode::Batch,
+                PersistenceMode::Batch,
                 true,
             )
             .into_inner(0, 1),

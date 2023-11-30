@@ -25,13 +25,14 @@ runtime_typechecking = os.environ.get(
 
 def get_replay_config():
     if replay_storage := os.environ.get("PATHWAY_REPLAY_STORAGE"):
-        match os.environ.get("PATHWAY_REPLAY_MODE", "").lower():
+        fallback_mode = os.environ.get("PATHWAY_REPLAY_MODE", "")
+        match os.environ.get("PATHWAY_PERSISTENCE_MODE", fallback_mode).lower():
             case "speedrun":
-                replay_mode = api.ReplayMode.SPEEDRUN
+                persistence_mode = api.PersistenceMode.SPEEDRUN_REPLAY
             case "batch":
-                replay_mode = api.ReplayMode.BATCH
+                persistence_mode = api.PersistenceMode.BATCH
             case _:
-                replay_mode = api.ReplayMode.BATCH
+                persistence_mode = api.PersistenceMode.BATCH
         match os.environ.get("PATHWAY_SNAPSHOT_ACCESS", "").lower():
             case "record":
                 snapshot_access = api.SnapshotAccess.RECORD
@@ -49,7 +50,7 @@ def get_replay_config():
         data_storage = PersistentStorageBackend.filesystem(replay_storage)
         persistence_config = PersistenceConfig.simple_config(
             data_storage,
-            replay_mode=replay_mode,
+            persistence_mode=persistence_mode,
             snapshot_access=snapshot_access,
             continue_after_replay=continue_after_replay,
         )

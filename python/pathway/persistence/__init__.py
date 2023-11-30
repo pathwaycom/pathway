@@ -98,7 +98,7 @@ milliseconds;
     metadata_storage: Backend
     snapshot_storage: Backend
     snapshot_access: api.SnapshotAccess
-    replay_mode: api.ReplayMode
+    persistence_mode: api.PersistenceMode
     continue_after_replay: bool
 
     @classmethod
@@ -107,7 +107,7 @@ milliseconds;
         backend: Backend,
         snapshot_interval_ms=0,
         snapshot_access=api.SnapshotAccess.FULL,
-        replay_mode=api.ReplayMode.PERSISTING,
+        persistence_mode=api.PersistenceMode.PERSISTING,
         continue_after_replay=True,
     ):
         """
@@ -130,7 +130,7 @@ may fall behind, and the less computational resources are required.
             metadata_storage=backend,
             snapshot_storage=backend,
             snapshot_access=snapshot_access,
-            replay_mode=replay_mode,
+            persistence_mode=persistence_mode,
             continue_after_replay=continue_after_replay,
         )
 
@@ -141,7 +141,7 @@ may fall behind, and the less computational resources are required.
             metadata_storage=self.metadata_storage.engine_data_storage,
             stream_storage=self.snapshot_storage.engine_data_storage,
             snapshot_access=self.snapshot_access,
-            replay_mode=self.replay_mode,
+            persistence_mode=self.persistence_mode,
             continue_after_replay=self.continue_after_replay,
         )
 

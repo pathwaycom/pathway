@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::connectors::data_storage::{ReadError, StorageType, WriteError};
 use crate::connectors::snapshot::{SnapshotReader, SnapshotWriterFlushFuture};
+use crate::connectors::PersistenceMode;
 use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
@@ -74,6 +75,10 @@ impl SingleWorkerPersistentStorage {
             sink_threshold_times: Vec::new(),
             input_sources: Vec::new(),
         })
+    }
+
+    pub fn table_persistence_enabled(&self) -> bool {
+        matches!(self.config.persistence_mode, PersistenceMode::Persisting)
     }
 
     pub fn last_finalized_timestamp(&self) -> u64 {

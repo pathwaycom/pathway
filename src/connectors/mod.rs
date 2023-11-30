@@ -97,17 +97,18 @@ pub enum Entry {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ReplayMode {
-    Realtime,
-    Speedrun,
+pub enum PersistenceMode {
+    RealtimeReplay,
+    SpeedrunReplay,
     Batch,
     Persisting,
+    UdfCaching,
 }
 
-impl ReplayMode {
+impl PersistenceMode {
     fn on_before_reading_snapshot(self, sender: &Sender<Entry>) {
         // In case of Batch replay we need to start with AdvanceTime to set a new timestamp
-        if matches!(self, ReplayMode::Batch) {
+        if matches!(self, PersistenceMode::Batch) {
             let timestamp = u64::try_from(current_unix_timestamp_ms())
                 .expect("number of milliseconds should fit in 64 bits");
             let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(timestamp)));
@@ -119,14 +120,14 @@ impl ReplayMode {
 
     fn handle_snapshot_time_advancement(self, sender: &Sender<Entry>, entry_read: SnapshotEvent) {
         match self {
-            ReplayMode::Batch | ReplayMode::Persisting => {}
-            ReplayMode::Speedrun => {
+            PersistenceMode::Batch | PersistenceMode::Persisting | PersistenceMode::UdfCaching => {}
+            PersistenceMode::SpeedrunReplay => {
                 let send_res = sender.send(Entry::Snapshot(entry_read));
                 if let Err(e) = send_res {
                     error!("Failed to send rewind entry: {e}");
                 }
             }
-            ReplayMode::Realtime => {
+            PersistenceMode::RealtimeReplay => {
                 unreachable!()
             }
         }
@@ -195,7 +196,7 @@ where
         persistent_id: PersistentId,
         persistent_storage: &Arc<Mutex<SingleWorkerPersistentStorage>>,
         sender: &Sender<Entry>,
-        replay_mode: ReplayMode,
+        persistence_mode: PersistenceMode,
     ) {
         let snapshot_readers = persistent_storage
             .lock()
@@ -223,7 +224,7 @@ where
                             }
                         }
                         SnapshotEvent::AdvanceTime(_) => {
-                            replay_mode.handle_snapshot_time_advancement(sender, entry_read);
+                            persistence_mode.handle_snapshot_time_advancement(sender, entry_read);
                         }
                     }
                 }
@@ -273,11 +274,11 @@ where
         reader: &mut dyn Reader,
         persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
         sender: &Sender<Entry>,
-        replay_mode: ReplayMode,
+        persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
     ) {
         if snapshot_access.is_replay_allowed() {
-            replay_mode.on_before_reading_snapshot(sender);
+            persistence_mode.on_before_reading_snapshot(sender);
             // Rewind the data source
             if let Some(persistent_storage) = persistent_storage {
                 if let Some(persistent_id) = reader.persistent_id() {
@@ -285,7 +286,7 @@ where
                         persistent_id,
                         persistent_storage,
                         sender,
-                        replay_mode,
+                        persistence_mode,
                     );
 
                     let frontier = persistent_storage
@@ -323,7 +324,11 @@ where
                         .create_snapshot_writer(persistent_id)?,
                 ))
             } else {
-                assert!(reader.is_internal());
+                let persistent_id_needed = persistent_storage
+                    .lock()
+                    .unwrap()
+                    .table_persistence_enabled();
+                assert!(!persistent_id_needed || reader.is_internal());
                 Ok(None)
             }
         } else {
@@ -345,7 +350,7 @@ where
         connector_id: usize,
         realtime_reader_needed: bool,
         external_persistent_id: Option<&ExternalPersistentId>,
-        replay_mode: ReplayMode,
+        persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
     ) -> Result<StartedConnectorState<Timestamp>, EngineError> {
@@ -383,7 +388,7 @@ where
                     &mut *reader,
                     persistent_storage.as_ref(),
                     &sender,
-                    replay_mode,
+                    persistence_mode,
                     snapshot_access,
                 );
                 if realtime_reader_needed {
@@ -405,7 +410,7 @@ where
         let mut commit_allowed = true;
         let poller = Box::new(move || {
             let iteration_start = SystemTime::now();
-            if matches!(replay_mode, ReplayMode::Speedrun)
+            if matches!(persistence_mode, PersistenceMode::SpeedrunReplay)
                 && !backfilling_finished
                 && probe.less_than(input_session.time())
             {
@@ -553,7 +558,7 @@ where
                             .lock()
                             .unwrap()
                             .entry(self.current_timestamp.clone())
-                            .or_insert(OffsetAntichain::new())
+                            .or_default()
                             .advance_offset(offset_key, offset_value);
                     }
                 }

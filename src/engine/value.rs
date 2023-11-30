@@ -1,4 +1,5 @@
-use std::borrow::Borrow;
+#![allow(clippy::non_canonical_partial_ord_impl)] // False positive with Derivative
+
 use std::fmt::{self, Debug, Display};
 use std::mem::{align_of, size_of};
 use std::ops::Deref;
@@ -60,9 +61,7 @@ impl Key {
             return Self::FOR_EMPTY_TUPLE;
         }
         let mut hasher = Hasher::default();
-        values
-            .iter()
-            .for_each(|v| v.borrow().hash_into(&mut hasher));
+        values.iter().for_each(|v| v.hash_into(&mut hasher));
         Self::from_hasher(&hasher)
     }
 

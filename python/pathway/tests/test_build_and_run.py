@@ -21,7 +21,7 @@ from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
-from pathway.internals.schema import schema_from_pandas
+from pathway.internals.schema import Schema, schema_from_pandas
 from pathway.io import csv
 from pathway.tests.utils import T, TestDataSource
 
@@ -349,3 +349,26 @@ def test_groupby_cache_similar_tables():
     graph_runner.GraphRunner(G, monitoring_level=MonitoringLevel.NONE).run_all(
         after_build=validate
     )
+
+
+def test_bounded_inputs():
+    class MockSchema(Schema):
+        a: int
+
+    t_csv_unbounded = csv.read("data", schema=MockSchema)
+    t_csv_bounded = csv.read("data", schema=MockSchema, mode="static")
+
+    t_markdown = T(
+        """
+            | pet  |  owner  | age
+        1   | dog  | Alice   | 10
+        """
+    )
+
+    t_empty = Table.empty()
+
+    gr = graph_runner.GraphRunner(G, monitoring_level=MonitoringLevel.NONE)
+    assert not gr.has_bounded_input(t_csv_unbounded)
+    assert gr.has_bounded_input(t_csv_bounded)
+    assert gr.has_bounded_input(t_markdown)
+    assert gr.has_bounded_input(t_empty)

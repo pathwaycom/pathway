@@ -9,7 +9,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 from unittest import mock
 
 import pandas as pd
@@ -512,7 +512,10 @@ def test_subscribe():
     )
 
 
-def test_async_transformer():
+def test_async_transformer(monkeypatch):
+    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
+        monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE")
+
     class OutputSchema(pw.Schema):
         ret: int
 
@@ -547,8 +550,52 @@ def test_async_transformer():
     )
 
 
+def test_async_transformer_file_io(monkeypatch, tmp_path: pathlib.Path):
+    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
+        monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE")
+
+    class InputSchema(pw.Schema):
+        value: int
+
+    class OutputSchema(pw.Schema):
+        ret: int
+
+    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
+        async def invoke(self, value: int) -> dict[str, Any]:
+            await asyncio.sleep(random.uniform(0, 0.1))
+            return dict(ret=value + 1)
+
+    input_table = """
+            | value
+        1   | 1
+        2   | 2
+        3   | 3
+        """
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    write_csv(input_path, input_table)
+
+    input_table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    result = TestAsyncTransformer(input_table=input_table).result
+    pw.io.csv.write(result, output_path)
+
+    pstorage_dir = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config.simple_config(
+        backend=pw.persistence.Backend.filesystem(pstorage_dir),
+        persistence_mode=api.PersistenceMode.UDF_CACHING,
+    )
+
+    pw.run(
+        monitoring_level=pw.MonitoringLevel.NONE,
+        persistence_config=persistence_config,
+    )
+
+
 @pytest.mark.xfail(reason="stil fails randomly")
-def test_async_transformer_idempotency():
+def test_async_transformer_idempotency(monkeypatch):
+    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
+        monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE")
+
     class OutputSchema(pw.Schema):
         ret: int
 
@@ -583,7 +630,10 @@ def test_async_transformer_idempotency():
     assert_table_equality(result, expected)
 
 
-def test_async_transformer_filter_failures():
+def test_async_transformer_filter_failures(monkeypatch):
+    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
+        monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE")
+
     class OutputSchema(pw.Schema):
         ret: int
 
@@ -619,7 +669,10 @@ def test_async_transformer_filter_failures():
     )
 
 
-def test_async_transformer_assert_schema_error():
+def test_async_transformer_assert_schema_error(monkeypatch):
+    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
+        monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE")
+
     class OutputSchema(pw.Schema):
         ret: int
 
@@ -676,11 +729,7 @@ def test_async_transformer_disk_cache(tmp_path: pathlib.Path):
             """
         )
 
-        result = (
-            TestAsyncTransformer(input_table=input)
-            .with_options(cache_strategy=pw.asynchronous.DiskCache())
-            .result
-        )
+        result = TestAsyncTransformer(input_table=input).result
 
         assert_table_equality(
             result,
@@ -1717,7 +1766,7 @@ def test_replay(tmp_path: pathlib.Path):
         number: int
 
     def run_graph(
-        replay_mode,
+        persistence_mode,
         expected: list[int],
         value_function_offset=0,
         generate_rows=0,
@@ -1746,7 +1795,7 @@ def test_replay(tmp_path: pathlib.Path):
         pw.run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(replay_dir),
-                replay_mode=replay_mode,
+                persistence_mode=persistence_mode,
                 continue_after_replay=continue_after_replay,
                 snapshot_access=snapshot_access,
             )
@@ -1754,24 +1803,27 @@ def test_replay(tmp_path: pathlib.Path):
 
     # First run to persist data in local storage
     expected = [2 * x + 1 for x in range(15)]
-    run_graph(api.ReplayMode.PERSISTING, expected, generate_rows=15)
+    run_graph(api.PersistenceMode.PERSISTING, expected, generate_rows=15)
 
     # In Persistency there should not be any data in output connector
-    run_graph(api.ReplayMode.PERSISTING, [])
+    run_graph(api.PersistenceMode.PERSISTING, [])
 
-    run_graph(api.ReplayMode.BATCH, expected)
+    run_graph(api.PersistenceMode.BATCH, expected)
 
-    run_graph(api.ReplayMode.SPEEDRUN, expected)
+    run_graph(api.PersistenceMode.SPEEDRUN_REPLAY, expected)
 
     # With continue_after_replay=False, we should not generate new rows
     run_graph(
-        api.ReplayMode.SPEEDRUN, expected, generate_rows=15, continue_after_replay=False
+        api.PersistenceMode.SPEEDRUN_REPLAY,
+        expected,
+        generate_rows=15,
+        continue_after_replay=False,
     )
 
     # Generate rows, but don't record them
     expected = [2 * x + 1 for x in range(30)]
     run_graph(
-        api.ReplayMode.SPEEDRUN,
+        api.PersistenceMode.SPEEDRUN_REPLAY,
         expected,
         generate_rows=15,
         value_function_offset=15,
@@ -1780,15 +1832,19 @@ def test_replay(tmp_path: pathlib.Path):
 
     # Check that the rows weren't recorded
     expected = [2 * x + 1 for x in range(15)]
-    run_graph(api.ReplayMode.SPEEDRUN, expected)
+    run_graph(api.PersistenceMode.SPEEDRUN_REPLAY, expected)
 
     # Without replay (and with empty input connector), there are no rows
-    run_graph(api.ReplayMode.SPEEDRUN, [], snapshot_access=api.SnapshotAccess.RECORD)
+    run_graph(
+        api.PersistenceMode.SPEEDRUN_REPLAY,
+        [],
+        snapshot_access=api.SnapshotAccess.RECORD,
+    )
 
     # Generate rows and record them (but don't replay saved data)
     expected = [2 * x + 1 for x in range(15, 25)]
     run_graph(
-        api.ReplayMode.SPEEDRUN,
+        api.PersistenceMode.SPEEDRUN_REPLAY,
         expected,
         generate_rows=10,
         value_function_offset=15,
@@ -1797,7 +1853,7 @@ def test_replay(tmp_path: pathlib.Path):
 
     # Check that the rows were recorded
     expected = [2 * x + 1 for x in range(25)]
-    run_graph(api.ReplayMode.SPEEDRUN, expected)
+    run_graph(api.PersistenceMode.SPEEDRUN_REPLAY, expected)
 
 
 def test_replay_timestamps(tmp_path: pathlib.Path):
@@ -1813,7 +1869,7 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
     }
 
     def run_graph(
-        replay_mode,
+        persistence_mode,
         expected_count: int | None = None,
         generate_rows=0,
         continue_after_replay=True,
@@ -1837,7 +1893,7 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
         pw.run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(replay_dir),
-                replay_mode=replay_mode,
+                persistence_mode=persistence_mode,
                 continue_after_replay=continue_after_replay,
                 snapshot_access=snapshot_access,
             )
@@ -1850,16 +1906,16 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
     # we expect the number of different timestamps to be the same as when generating data.
 
     # First run to persist data in local storage
-    n_timestamps = run_graph(api.ReplayMode.PERSISTING, generate_rows=15)
+    n_timestamps = run_graph(api.PersistenceMode.PERSISTING, generate_rows=15)
 
     # In Persistency there should not be any data in output connector
-    run_graph(api.ReplayMode.PERSISTING, 0)
+    run_graph(api.PersistenceMode.PERSISTING, 0)
 
     # In Batch every row should have the same timestamp
-    run_graph(api.ReplayMode.BATCH, 1)
+    run_graph(api.PersistenceMode.BATCH, 1)
 
     # In Speedrun we should have the same number of timestamps as when generating data
-    run_graph(api.ReplayMode.SPEEDRUN, n_timestamps)
+    run_graph(api.PersistenceMode.SPEEDRUN_REPLAY, n_timestamps)
 
 
 def test_metadata_column_identity(tmp_path: pathlib.Path):
@@ -1963,7 +2019,7 @@ def test_mock_snapshot_reader():
     pw.run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.mock(events),
-            replay_mode=api.ReplayMode.SPEEDRUN,
+            persistence_mode=api.PersistenceMode.SPEEDRUN_REPLAY,
             snapshot_access=api.SnapshotAccess.REPLAY,
         )
     )
@@ -2328,6 +2384,46 @@ def test_python_connector_upsert_json(tmp_path: pathlib.Path):
 
     result = pd.read_csv(tmp_path / "output.csv")
     return len(result) == 5
+
+
+def test_python_connector_metadata():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _with_metadata(self) -> bool:
+            return True
+
+        def run(self):
+            def encode(obj):
+                return json.dumps(obj).encode()
+
+            self._add(api.ref_scalar(1), b"foo", encode({"createdAt": 1701273920}))
+            self._add(api.ref_scalar(2), b"bar", encode({"createdAt": 1701273912}))
+            self._add(api.ref_scalar(3), b"baz", encode({"createdAt": 1701283942}))
+
+    class OutputSchema(pw.Schema):
+        _metadata: pw.Json
+        data: Any
+
+    table: pw.Table = pw.io.python.read(TestSubject(), format="raw")
+    result = table.select(
+        pw.this.data, createdAt=pw.this._metadata["createdAt"].as_int()
+    )
+
+    table.schema.assert_equal_to(OutputSchema)
+    assert_table_equality(
+        T(
+            """
+                | data | createdAt
+            1   | foo  | 1701273920
+            2   | bar  | 1701273912
+            3   | baz  | 1701283942
+            """,
+        ).update_types(
+            data=Any,
+            createdAt=Optional[int],
+        ),
+        result,
+    )
 
 
 def test_parse_to_table_deprecation():

@@ -236,6 +236,8 @@ class Expression:
     @staticmethod
     def date_time_naive_timestamp(expr: Expression) -> Expression: ...
     @staticmethod
+    def date_time_naive_weekday(expr: Expression) -> Expression: ...
+    @staticmethod
     def date_time_naive_strptime(expr: Expression, fmt: Expression) -> Expression: ...
     @staticmethod
     def date_time_naive_strftime(expr: Expression, fmt: Expression) -> Expression: ...
@@ -271,6 +273,8 @@ class Expression:
     def date_time_utc_year(expr: Expression) -> Expression: ...
     @staticmethod
     def date_time_utc_timestamp(expr: Expression) -> Expression: ...
+    @staticmethod
+    def date_time_utc_weekday(expr: Expression) -> Expression: ...
     @staticmethod
     def date_time_utc_strptime(expr: Expression, fmt: Expression) -> Expression: ...
     @staticmethod
@@ -599,6 +603,24 @@ class DataFormat:
     def __init__(self, *args, **kwargs): ...
 
 class DataStorage:
+    storage_type: str
+    path: str | None
+    rdkafka_settings: dict[str, str] | None
+    topic: str | None
+    connection_string: str | None
+    csv_parser_settings: CsvParserSettings | None
+    mode: ConnectorMode
+    read_method: ReadMethod
+    aws_s3_settings: AwsS3Settings | None
+    elasticsearch_params: ElasticSearchParams | None
+    parallel_readers: int | None
+    python_subject: PythonSubject | None
+    persistent_id: str | None
+    max_batch_size: int | None
+    object_pattern: str
+    mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None
+    table_name: str | None
+    column_names: list[str] | None
     def __init__(self, *args, **kwargs): ...
 
 class CsvParserSettings:
@@ -624,11 +646,12 @@ class ElasticSearchParams:
 class PersistenceConfig:
     def __init__(self, *args, **kwargs): ...
 
-class ReplayMode(Enum):
-    BATCH: ReplayMode
-    SPEEDRUN: ReplayMode
-    REALTIME: ReplayMode
-    PERSISTING: ReplayMode
+class PersistenceMode(Enum):
+    BATCH: PersistenceMode
+    SPEEDRUN_REPLAY: PersistenceMode
+    REALTIME_REPLAY: PersistenceMode
+    PERSISTING: PersistenceMode
+    UDF_CACHING: PersistenceMode
 
 class SnapshotAccess(Enum):
     RECORD: SnapshotAccess

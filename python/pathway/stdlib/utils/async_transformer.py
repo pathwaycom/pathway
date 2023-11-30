@@ -197,6 +197,12 @@ class AsyncTransformer(ABC):
     def __init__(self, input_table: pw.Table) -> None:
         assert self.output_schema is not None
         self._connector = _AsyncConnector(self)
+
+        # TODO: when AsyncTransformer uses persistence backend for cache
+        # just take the settings for persistence config
+        # Use DiskCache for now as the only available option
+        self._connector.set_options(cache_strategy=pw.asynchronous.DiskCache())
+
         self._input_table = input_table
 
     def __init_subclass__(cls, /, output_schema: type[pw.Schema], **kwargs):
@@ -268,7 +274,7 @@ class AsyncTransformer(ABC):
         table: pw.Table = io.python.read(
             self._connector,
             value_columns=[*self.output_schema.column_names(), _ASYNC_STATUS_COLUMN],
-            autocommit_duration_ms=1000,
+            autocommit_duration_ms=100,
         )
         input_node = table._source.operator
 

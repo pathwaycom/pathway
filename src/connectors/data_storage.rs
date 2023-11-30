@@ -139,7 +139,7 @@ pub enum ReaderContext {
     RawBytes(DataEventType, Vec<u8>),
     TokenizedEntries(DataEventType, Vec<String>),
     KeyValue((Option<Vec<u8>>, Option<Vec<u8>>)),
-    Diff((DataEventType, Option<Value>, Vec<u8>)),
+    Diff((DataEventType, Option<Value>, Vec<u8>, Option<Vec<u8>>)),
     PreparedEvent(ParsedEvent),
 }
 
@@ -152,8 +152,9 @@ impl ReaderContext {
         event: DataEventType,
         key: Option<Value>,
         raw_bytes: Vec<u8>,
+        metadata_bytes: Option<Vec<u8>>,
     ) -> ReaderContext {
-        ReaderContext::Diff((event, key, raw_bytes))
+        ReaderContext::Diff((event, key, raw_bytes, metadata_bytes))
     }
 
     pub fn from_tokenized_entries(
@@ -1408,7 +1409,12 @@ impl Reader for PythonReader {
         }
 
         with_gil_and_pool(|py| {
-            let (event, key, values): (DataEventType, Option<Value>, Vec<u8>) = self
+            let (event, key, values, metadata): (
+                DataEventType,
+                Option<Value>,
+                Vec<u8>,
+                Option<Vec<u8>>,
+            ) = self
                 .subject
                 .borrow(py)
                 .read
@@ -1430,7 +1436,7 @@ impl Reader for PythonReader {
                 );
 
                 Ok(ReadResult::Data(
-                    ReaderContext::from_diff(event, key, values),
+                    ReaderContext::from_diff(event, key, values, metadata),
                     offset,
                 ))
             }
@@ -1997,7 +2003,7 @@ impl Writer for KafkaWriter {
                 .key(&key_as_bytes);
             loop {
                 match self.producer.send(entry) {
-                    Ok(_) => break,
+                    Ok(()) => break,
                     Err((
                         KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull),
                         unsent_entry,

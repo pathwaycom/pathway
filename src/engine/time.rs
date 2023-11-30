@@ -87,6 +87,13 @@ pub trait DateTime {
             )))
         }
     }
+
+    fn weekday(&self) -> i64 {
+        self.as_chrono_datetime()
+            .weekday()
+            .num_days_from_monday()
+            .into()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
