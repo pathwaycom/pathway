@@ -107,8 +107,9 @@ def promise_are_equal(self: TableLike, *others: TableLike) -> None:
     ... 1 | 11  | Alice
     ... 2 | 12  | Tom
     ... 3 | 7   | Eve
+    ... 4 | 99  | Papa
     ... '''
-    ... )
+    ... ).filter(pw.this.age<20)
     >>> t3 = t2.filter(pw.this.age > 10)
     >>> with pytest.raises(
     ...     ValueError,

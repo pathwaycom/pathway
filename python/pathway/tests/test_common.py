@@ -105,7 +105,7 @@ def test_select_column_ref():
         2   | 2
         26  | 26
         """
-    ).with_universe_of(t_latin)
+    )
 
     res = t_latin.select(num=t_num.num, upper=t_latin["upper"])
 
@@ -1124,7 +1124,7 @@ def test_from_columns():
     b   | 80  | c
     c   | 90  | b
     """
-    ).with_universe_of(first)
+    )
     expected = T(
         """
     pet | foo
@@ -1306,7 +1306,7 @@ def test_filter():
         2   | True
         26  | False
         """
-    ).with_universe_of(t_latin)
+    )
 
     res = t_latin.filter(t_tmp["bool"])
 
@@ -1738,7 +1738,7 @@ def test_apply_more_args():
         -1
         4
         """
-    ).with_universe_of(a)
+    )
 
     def add(x: int, y: int) -> int:
         return x + y
@@ -1775,7 +1775,7 @@ def test_numba_apply():
         -1
         4
         """,
-    ).with_universe_of(a)
+    )
 
     def add(x, y):
         return x + y
@@ -1815,7 +1815,7 @@ def test_numba_apply_lambda():
         -1
         4
         """,
-    ).with_universe_of(a)
+    )
 
     expression = pw.numba_apply(lambda x, y: x + y, "int64(int64,int64)", a.foo, b.bar)
 
@@ -1852,7 +1852,7 @@ def test_numba_composite():
         -1
         4
         """,
-    ).with_universe_of(a)
+    )
 
     result = a.select(
         ret=pw.numba_apply(lambda x, y: x + y, "int64(int64,int64)", a.foo - 1, 1)
@@ -2399,8 +2399,6 @@ def test_join_swapped_condition():
         3   |   1 |   Tom |   8 |   XL
         """
     )
-    # ensure we are not testing case with completely messed up universes
-    t1.with_universe_of(t2)
     with pytest.raises(ValueError):
         t1.join(t2, t2.pet == t1.pet).select(
             owner_name=t2.owner, L=t1.id, R=t2.id, age=t1.age
@@ -3500,7 +3498,7 @@ def test_update_cells():
         3   |  2   | Alice   | 8
         4   |  1   | Eve     | 3
         """
-    ).with_universe_of(old)
+    )
     pw.universes.promise_is_subset_of(update, old)
 
     new = old.update_cells(update)
@@ -3519,12 +3517,11 @@ def test_update_cells_0_rows():
             | owner  | age
         """
     )
-    pw.universes.promise_is_subset_of(update, old)
     expected = T(
         """
             | pet  |  owner  | age
         """
-    ).with_universe_of(old)
+    )
 
     assert_table_equality(old.update_cells(update), expected)
     assert_table_equality(old << update, expected)
@@ -3564,14 +3561,14 @@ def test_update_cells_warns_when_using_with_columns():
         1   | Eve    | 10
         4   | Eve    | 3
         """
-    ).with_universe_of(old)
+    )
     expected = T(
         """
             | pet  |  owner  | age
         1   |  1   | Eve     | 10
         4   |  1   | Eve     | 3
         """
-    ).with_universe_of(old)
+    )
 
     with pytest.warns(
         UserWarning,
@@ -3769,7 +3766,7 @@ def test_with_columns():
         2   | Eve   | 10  | 11
         3   | Eve   | 15  | 13
         """
-    ).with_universe_of(old)
+    )
     expected = T(
         """
             | pet | owner | age | weight
@@ -3777,7 +3774,7 @@ def test_with_columns():
         2   | 1   | Eve   | 10  | 11
         3   | 2   | Eve   | 15  | 13
         """
-    ).with_universe_of(old)
+    )
 
     new = old.with_columns(*update)
     assert_table_equality(new, expected)
@@ -3793,12 +3790,12 @@ def test_with_columns_0_rows():
         """
             | owner | age | weight
         """
-    ).with_universe_of(old)
+    )
     expected = T(
         """
             | pet | owner | age | weight
         """
-    ).with_universe_of(old)
+    )
 
     assert_table_equality(old.with_columns(**update), expected)
 
@@ -4010,7 +4007,7 @@ def test_wildcard_basic_usage():
            | c | d
         1  | 3 | 4
         """
-    ).with_universe_of(tab1)
+    )
 
     left = tab1.select(*tab1, *tab2)
 

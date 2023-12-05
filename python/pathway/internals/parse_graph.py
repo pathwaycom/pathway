@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import itertools
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pathway.internals import operator, trace
 from pathway.internals.helpers import FunctionSpec, StableSet
 from pathway.internals.universe_solver import UniverseSolver
+
+if TYPE_CHECKING:
+    from pathway.internals import Table
 
 
 class Scope:
@@ -64,6 +67,7 @@ class ParseGraph:
     _scope_stack: list[Scope]
     universe_solver: UniverseSolver
     cache: dict[Any, Any]
+    static_tables_cache: dict[int, Table]
 
     def __init__(self) -> None:
         self.clear()
@@ -129,6 +133,7 @@ class ParseGraph:
         self.scopes = [global_scope]
         self.universe_solver = UniverseSolver()
         self.cache = {}
+        self.static_tables_cache = {}
 
     def sig(self):
         return hashlib.sha256(repr(self).encode()).hexdigest()

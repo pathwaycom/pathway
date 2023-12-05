@@ -482,6 +482,10 @@ impl<S: MaybeTotalScope> Table<S> {
         self.data.arranged()
     }
 
+    fn values_consolidated(&self) -> &Values<S> {
+        self.data.consolidated()
+    }
+
     fn keys(&self) -> &Keys<S> {
         self.data.keys()
     }
@@ -1106,7 +1110,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
-        let new_values = table.values().consolidate_for_output().map_wrapped_named(
+        let new_values = table.values_consolidated().map_wrapped_named(
             "expression_table::evaluate_expression",
             wrapper,
             move |(key, values)| {

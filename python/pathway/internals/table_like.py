@@ -146,8 +146,9 @@ class TableLike(DeprecationSuperclass):
         ... 1 | 8   | Alice | cat
         ... 2 | 9   | Bob   | dog
         ... 3 | 15  | Alice | tortoise
+        ... 4 | 99  | Bob   | seahorse
         ... '''
-        ... )
+        ... ).filter(pw.this.age<30)
         >>> t2 = pw.debug.table_from_markdown(
         ...     '''
         ...   | age | owner

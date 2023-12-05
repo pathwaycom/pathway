@@ -122,7 +122,9 @@ def show(
                 else:
                     del integrated[key]
                 df = (
-                    pd.DataFrame.from_dict(integrated, orient="index")
+                    pd.DataFrame.from_dict(
+                        integrated, orient="index", columns=col_names
+                    )
                     .sort_index()
                     .reset_index(drop=True)
                 )

@@ -438,7 +438,7 @@ class Table(
         ...    age
         ... 1   10
         ... 7    3
-        ... ''').with_universe_of(t1)
+        ... ''')
         >>> t3 = t1 + t2
         >>> pw.debug.compute_and_print(t3, include_id=False)
         pet | age
@@ -1319,7 +1319,7 @@ class Table(
         ... 1 | Tom   | 1   | 10
         ... 2 | Bob   | 1   | 9
         ... 3 | Tom   | 2   | 8
-        ... ''').with_universe_of(t1)
+        ... ''')
         >>> t3 = t1.with_columns(*t2)
         >>> pw.debug.compute_and_print(t3, include_id=False)
         age | owner | pet | size
@@ -1720,9 +1720,11 @@ class Table(
         ...   | age
         ... 1 | 10
         ... 7 | 3
-        ... ''').with_universe_of(t1)
-        >>> t3 = t1 + t2
-        >>> pw.debug.compute_and_print(t3, include_id=False)
+        ... 8 | 100
+        ... ''')
+        >>> t3 = t2.filter(pw.this.age < 30).with_universe_of(t1)
+        >>> t4 = t1 + t3
+        >>> pw.debug.compute_and_print(t4, include_id=False)
         pet | age
         Cat | 3
         Dog | 10

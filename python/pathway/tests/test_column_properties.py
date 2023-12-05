@@ -23,7 +23,7 @@ def test_preserve_dependency_properties():
             | b
         1   | 42
         """,
-    ).with_universe_of(input1)
+    )
     input3 = T(
         """
             | c
@@ -33,7 +33,7 @@ def test_preserve_dependency_properties():
             {"c": pw.column_definition(dtype=int)},
             properties=pw.SchemaProperties(append_only=False),
         ),
-    ).with_universe_of(input1)
+    )
 
     result = input1.select(a=input1.a, b=input1.a + input2.b, c=input1.a + input3.c)
 
@@ -54,7 +54,7 @@ def test_preserve_context_dependency_properties():
             | b
         1   | 42
         """,
-    ).with_universe_of(input1)
+    )
     input3 = T(
         """
             | c
@@ -64,7 +64,7 @@ def test_preserve_context_dependency_properties():
             {"c": pw.column_definition(dtype=int)},
             properties=pw.SchemaProperties(append_only=False),
         ),
-    ).with_universe_of(input1)
+    )
 
     res1 = input1.filter(pw.this.a == input2.b)
     res2 = input1.filter(pw.this.a == input3.c)

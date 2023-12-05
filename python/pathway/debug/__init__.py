@@ -16,6 +16,7 @@ from pathway import persistence
 from pathway.internals import Json, api, parse_graph
 from pathway.internals.datasource import DataSourceOptions, PandasDataSource
 from pathway.internals.decorators import table_from_datasource
+from pathway.internals.fingerprints import fingerprint
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.runtime_type_check import runtime_type_check
@@ -259,7 +260,20 @@ def table_from_pandas(
 
     _validate_dataframe(df)
 
-    return table_from_datasource(
+    if id_from is None:
+        ids_df = pd.DataFrame({"id": df.index})
+        ids_df.index = df.index
+    else:
+        ids_df = df[id_from].copy()
+
+    for column in api.PANDAS_PSEUDOCOLUMNS:
+        if column in df.columns:
+            ids_df[column] = df[column]
+
+    as_hashes = [fingerprint(x) for x in ids_df.to_dict(orient="records")]
+    key = fingerprint((unsafe_trusted_ids, sorted(as_hashes)))
+
+    ret: Table = table_from_datasource(
         PandasDataSource(
             schema=schema,
             data=df.copy(),
@@ -268,6 +282,14 @@ def table_from_pandas(
             ),
         )
     )
+    from pathway.internals.parse_graph import G
+
+    if key in G.static_tables_cache:
+        ret = ret.with_universe_of(G.static_tables_cache[key])
+    else:
+        G.static_tables_cache[key] = ret
+
+    return ret
 
 
 def _markdown_to_pandas(table_def):

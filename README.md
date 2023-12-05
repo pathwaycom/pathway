@@ -37,6 +37,8 @@
 
 ![Pathway is an incremental data stream processing engine](https://github.com/pathwaycom/IoT-Pathway/assets/28102878/084593de-9325-4eee-b84a-06b8666efcd1)
 
+In the first place, Pathway was designed to be a life-saver (or at least a time-saver) for Python developers and ML/AI engineers faced with live data sources, where you need to react quickly to fresh data. Still, Pathway is a powerful tool that can be used for a lot of things. If you want to do streaming in Python, build an AI data pipeline, or if you are looking for your next Python data processing framework, keep reading.
+
 Pathway provides a high-level programming interface in Python for defining data transformations, aggregations, and other operations on data streams.
 With Pathway, you can effortlessly design and deploy sophisticated data workflows that efficiently handle high volumes of data in real time.
 

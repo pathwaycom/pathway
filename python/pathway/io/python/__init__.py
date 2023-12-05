@@ -1,10 +1,15 @@
 # Copyright © 2023 Pathway
-
 import json
+import queue
 import threading
+import time
 from abc import ABC, abstractmethod
 from queue import Queue
 from typing import Any
+
+import pandas as pd
+import panel as pn
+from IPython.display import display
 
 from pathway.internals import Table, api, datasource
 from pathway.internals.api import DataEventType, PathwayType, Pointer, SessionType
@@ -236,3 +241,59 @@ computations from the moment they were terminated last time.
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+
+
+class InteractiveCsvPlayer(ConnectorSubject):
+    q: queue.Queue
+
+    def __init__(self, csv_file="") -> None:
+        super().__init__()
+        self.q = queue.Queue()
+
+        self.df = pd.read_csv(csv_file)
+
+        state = pn.widgets.Spinner(value=0, width=0)
+        int_slider = pn.widgets.IntSlider(
+            name="Row position in csv",
+            start=0,
+            end=len(self.df),
+            step=1,
+            value=0,
+            disabled=True,
+        )
+        int_slider.jscallback(
+            value="""
+        if (int_slider.value < state.value)
+        int_slider.value = state.value
+        """,
+            args={"int_slider": int_slider, "state": state},
+        )
+
+        def updatecallback(target, event):
+            if event.new > event.old:
+                target.value = event.new
+                self.q.put_nowait(target.value)
+
+        int_slider.link(state, callbacks={"value": updatecallback})
+
+        self.state = state
+        self.int_slider = int_slider
+        display(pn.Row(state, int_slider, f"{len(self.df)} rows in csv"))
+
+    def run(self):
+        last_streamed_idx = -1
+        while True:
+            try:
+                new_pos = self.q.get()
+                for i in range(last_streamed_idx + 1, new_pos):
+                    self.next_json(self.df.iloc[i].to_dict())
+                last_streamed_idx = new_pos - 1
+                if new_pos == len(self.df):
+                    break
+            except queue.Empty:
+                pass
+            time.sleep(0.1)
+        self.close()
+
+    def on_stop(self) -> None:
+        self.int_slider.disabled = True

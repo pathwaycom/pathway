@@ -15,6 +15,20 @@ from pathway.internals.table_subscription import subscribe as internal_subscribe
 from pathway.internals.trace import trace_user_frame
 
 
+# after: https://stackoverflow.com/questions/15411967/how-can-i-check-if-code-is-executed-in-the-ipython-notebook
+def _in_notebook():
+    try:
+        from IPython import get_ipython  # noqa
+
+        if "IPKernelApp" not in get_ipython().config:  # noqa
+            return False
+    except ImportError:
+        return False
+    except AttributeError:
+        return False
+    return True
+
+
 @runtime_type_check
 @trace_user_frame
 def plot(
@@ -82,20 +96,33 @@ def plot(
     else:
         integrated = {}
 
+        in_notebook = _in_notebook()
+
         def _update(key, row, time, is_addition):
             if is_addition:
                 integrated[key] = row
             else:
                 del integrated[key]
-            df = pd.DataFrame.from_dict(integrated, orient="index")
+            df = pd.DataFrame.from_dict(integrated, orient="index", columns=col_names)
             if sorting_col:
                 df = df.sort_values(sorting_col)
             else:
                 df = df.sort_index()
             df = df.reset_index(drop=True)
 
-            source.stream(df.to_dict("list"), rollover=len(df))  # type:ignore[arg-type]
-            pn.io.push_notebook(viz)
+            if in_notebook:
+                source.stream(
+                    df.to_dict("list"), rollover=len(df)  # type:ignore[arg-type]
+                )
+                pn.io.push_notebook(viz)
+            else:
+                if plot.document is not None:
+                    plot.document.add_next_tick_callback(
+                        lambda: source.stream(
+                            df.to_dict("list"),  # type:ignore[arg-type]
+                            rollover=len(df),
+                        )
+                    )
 
         internal_subscribe(self, on_change=_update, skip_persisted_batch=True)
 

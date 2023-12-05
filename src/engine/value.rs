@@ -16,7 +16,8 @@ use itertools::Itertools as _;
 use ndarray::ArrayD;
 use ordered_float::OrderedFloat;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
+use serde::de::Visitor;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as JsonValue;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
@@ -142,6 +143,40 @@ impl<T: HashInto> Handle<T> {
     }
 }
 
+fn serialize_json<S>(json: &JsonValue, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_str(&json.to_string())
+}
+
+struct JsonVisitor;
+
+impl<'de> Visitor<'de> for JsonVisitor {
+    type Value = Handle<JsonValue>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("A String containing a serialized JSON.")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        match serde_json::from_str(v) {
+            Ok(json) => Ok(Handle::new(json)),
+            Err(err) => Err(serde::de::Error::custom(err)),
+        }
+    }
+}
+
+fn deserialize_json<'de, D>(d: D) -> Result<Handle<JsonValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    d.deserialize_str(JsonVisitor)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Value {
     None,
@@ -157,6 +192,10 @@ pub enum Value {
     DateTimeNaive(DateTimeNaive),
     DateTimeUtc(DateTimeUtc),
     Duration(Duration),
+    #[serde(
+        serialize_with = "serialize_json",
+        deserialize_with = "deserialize_json"
+    )]
     Json(Handle<JsonValue>),
 }
 

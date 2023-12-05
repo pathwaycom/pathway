@@ -58,9 +58,9 @@ def test_all_at_once():
     points = table.filter(~pw.this.is_query).without(pw.this.is_query)
     queries = table.filter(pw.this.is_query).without(pw.this.is_query)
     index = KNNIndex(points.coords, points, n_dimensions=2, n_and=5)
-    result = queries + index.get_nearest_items(queries.coords, k=2).with_universe_of(
-        queries
-    ).select(nn=pw.apply(sort_arrays, pw.this.coords))
+    result = queries + index.get_nearest_items(queries.coords, k=2).select(
+        nn=pw.apply(sort_arrays, pw.this.coords)
+    )
     expected = nn_as_table(
         [
             ((0, 0), ((-1, 0), (1, 2))),
@@ -101,9 +101,9 @@ def stream_points(with_k: bool = False) -> tuple[pw.Table, pw.Table]:
 def test_update_old():
     points, queries = stream_points()
     index = KNNIndex(points.coords, points, n_dimensions=2, n_and=5)
-    result = queries + index.get_nearest_items(queries.coords, k=2).with_universe_of(
-        queries
-    ).select(nn=pw.apply(sort_arrays, pw.this.coords))
+    result = queries + index.get_nearest_items(queries.coords, k=2).select(
+        nn=pw.apply(sort_arrays, pw.this.coords)
+    )
     expected = nn_as_table(
         [
             ((0, 0), ((-1, 0), (1, 2))),

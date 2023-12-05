@@ -441,7 +441,7 @@ def test_method_call_in_transformer_with_input_attribute():
         2   | 5
         3   | 6
         """
-    ).with_universe_of(input1)
+    )
 
     method_table: Table = foo_transformer(input1).table
 
@@ -920,8 +920,6 @@ def test_twoclass_method():
         8   | 3 | 14
         """
     ).with_columns(h=hypers.pointer_from(this.h))
-    method_table = method_table.with_universe_of(tablec_constants)
-    method_table2 = method_table2.with_universe_of(tablec_constants)
 
     tablec = tablec_constants.select(
         a=tablec_constants.a,
