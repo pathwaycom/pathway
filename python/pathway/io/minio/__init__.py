@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -54,7 +54,7 @@ of a custom configuration.
         )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     path: str,

@@ -3,8 +3,10 @@ use helpers::get_entries_in_receiver;
 
 use std::sync::{mpsc, Arc, Mutex};
 
+use timely::dataflow::operators::Inspect;
+
 use pathway_engine::connectors::adaptors::{InputAdaptor, UpsertSession};
-use pathway_engine::engine::dataflow::operators::ConsolidateForOutput;
+use pathway_engine::engine::dataflow::operators::output::ConsolidateForOutput;
 use pathway_engine::engine::{Key, Value};
 
 #[test]
@@ -23,10 +25,12 @@ fn test_upsert_session_replacement() {
             >| {
                 let sender = sender.lock().unwrap().clone();
                 let table = input.to_collection(scope);
-                table.consolidate_for_output().inspect(move |x| {
-                    sender
-                        .send(x.clone())
-                        .expect("inspected entry sending failed");
+                table.consolidate_for_output(true).inspect(move |batch| {
+                    for (data, diff) in &batch.data {
+                        sender
+                            .send((data.clone(), batch.time, *diff))
+                            .expect("inspected entry sending failed");
+                    }
                 });
             },
         );
@@ -66,10 +70,12 @@ fn test_removal_by_key() {
             >| {
                 let sender = sender.lock().unwrap().clone();
                 let table = input.to_collection(scope);
-                table.consolidate_for_output().inspect(move |x| {
-                    sender
-                        .send(x.clone())
-                        .expect("inspected entry sending failed");
+                table.consolidate_for_output(true).inspect(move |batch| {
+                    for (data, diff) in &batch.data {
+                        sender
+                            .send((data.clone(), batch.time, *diff))
+                            .expect("inspected entry sending failed");
+                    }
                 });
             },
         );

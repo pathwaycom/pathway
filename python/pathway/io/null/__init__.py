@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from pathway.internals import api, datasink
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def write(table: Table) -> None:
     """Writes ``table``'s stream of updates to the empty sink.

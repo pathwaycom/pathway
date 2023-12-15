@@ -38,8 +38,7 @@ class PathwayType(Enum):
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode
-    SIMPLE_STREAMING: ConnectorMode
-    STREAMING_WITH_DELETIONS: ConnectorMode
+    STREAMING: ConnectorMode
 
 class ReadMethod(Enum):
     BY_LINE: ReadMethod
@@ -412,9 +411,7 @@ class Scope:
         expressions: list[tuple[Expression, TableProperties]],
     ) -> Table: ...
     def table_properties(self, table: Table) -> TableProperties: ...
-    def columns_to_table(
-        self, universe: Universe, columns: list[tuple[Column, ColumnPath]]
-    ) -> Table: ...
+    def columns_to_table(self, universe: Universe, columns: list[Column]) -> Table: ...
     def table_column(
         self, universe: Universe, table: Table, column_path: ColumnPath
     ) -> Column: ...
@@ -575,6 +572,7 @@ class Scope:
         column_paths: Iterable[ColumnPath],
         skip_persisted_batch: bool,
         on_change: Callable,
+        on_time_end: Callable,
         on_end: Callable,
     ): ...
     def output_table(

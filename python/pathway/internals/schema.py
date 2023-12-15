@@ -17,10 +17,10 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 
-from pathway.internals import api, dtype as dt, trace
+from pathway.internals import dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.helpers import StableSet
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 
 if TYPE_CHECKING:
     from pathway.internals import column as clmn
@@ -47,12 +47,34 @@ def schema_from_columns(
 
 
 def _type_converter(series: pd.Series) -> dt.DType:
+    if series.empty:
+        return dt.ANY
     if series.apply(lambda x: isinstance(x, (tuple, list))).all():
-        return dt.ANY_TUPLE
+        proposed_len = len(series[0])
+        if (series.apply(lambda x: len(x) == proposed_len)).all():
+            dtypes = [
+                _type_converter(series.apply(lambda x: x[i]))
+                for i in range(proposed_len)
+            ]
+            return dt.Tuple(*dtypes)
+        else:
+            exploded = pd.Series([x for element in series for x in element])
+            to_wrap = _type_converter(exploded)
+            return dt.List(to_wrap)
     if (series.isna() | series.isnull()).all():
         return dt.NONE
     if (series.apply(lambda x: isinstance(x, np.ndarray))).all():
-        return dt.ARRAY
+        if series.apply(lambda x: np.issubdtype(x.dtype, np.integer)).all():
+            wrapped = dt.INT
+        elif series.apply(lambda x: np.issubdtype(x.dtype, np.floating)).all():
+            wrapped = dt.FLOAT
+        else:
+            wrapped = dt.ANY
+        n_dim: int | None = len(series[0].shape)
+        if not series.apply(lambda x: len(x.shape) == n_dim).all():
+            n_dim = None
+
+        return dt.Array(n_dim=n_dim, wrapped=wrapped)
     if pd.api.types.is_integer_dtype(series.dtype):
         ret_type: dt.DType = dt.INT
     elif pd.api.types.is_float_dtype(series.dtype):
@@ -78,12 +100,6 @@ def _type_converter(series: pd.Series) -> dt.DType:
         return ret_type
 
 
-def _is_dataframe_append_only(dframe: pd.DataFrame) -> bool:
-    return api.DIFF_PSEUDOCOLUMN not in dframe.columns or all(
-        dframe[api.DIFF_PSEUDOCOLUMN] == 1
-    )
-
-
 def schema_from_pandas(
     dframe: pd.DataFrame,
     *,
@@ -102,13 +118,10 @@ def schema_from_pandas(
     }
     for name in id_from:
         columns[name] = dataclasses.replace(columns[name], primary_key=True)
-    append_only = _is_dataframe_append_only(dframe)
-    return schema_builder(
-        columns=columns, properties=SchemaProperties(append_only=append_only), name=name
-    )
+    return schema_builder(columns=columns, name=name)
 
 
-@runtime_type_check
+@check_arg_types
 def schema_from_types(
     _name: str | None = None,
     **kwargs,
@@ -308,6 +321,22 @@ class SchemaMetaclass(type):
             columns[name] = dataclasses.replace(columns[name], dtype=dt.wrap(dtype))
 
         return schema_builder(columns=columns)
+
+    def update_properties(self, **kwargs) -> type[Schema]:
+        columns: dict[str, ColumnDefinition] = {
+            col.name: dataclasses.replace(col.to_definition(), **kwargs)
+            for col in self.__columns__.values()
+        }
+        properties = SchemaProperties(
+            **{
+                name: value
+                for name, value in kwargs.items()
+                if name in SchemaProperties.__annotations__
+            }
+        )
+        return schema_builder(
+            columns=columns, name=self.__name__, properties=properties
+        )
 
     def __getitem__(self, name) -> ColumnSchema:
         return self.__columns__[name]

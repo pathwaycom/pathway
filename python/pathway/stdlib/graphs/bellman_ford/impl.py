@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import pathway.internals as pw
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 
 from ..common import Edge
@@ -37,7 +37,7 @@ def _bellman_ford_step(
     return vertices_dist
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def bellman_ford(vertices: pw.Table[Vertex], edges: pw.Table[Edge | Dist]):
     vertices_dist: pw.Table[DistFromSource] = vertices.select(

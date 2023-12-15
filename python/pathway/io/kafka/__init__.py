@@ -10,7 +10,7 @@ from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.api import PathwayType
 from pathway.internals.decorators import table_from_datasource
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -23,7 +23,7 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
 }
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     rdkafka_settings: dict,
@@ -240,6 +240,7 @@ def read(
         topic=topic,
         parallel_readers=parallel_readers,
         persistent_id=persistent_id,
+        mode=api.ConnectorMode.STREAMING,
     )
     schema, data_format = construct_schema_and_data_format(
         format,
@@ -265,7 +266,7 @@ def read(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def simple_read(
     server: str,
@@ -353,7 +354,7 @@ topic.
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read_from_upstash(
     endpoint: str,
@@ -457,7 +458,7 @@ topic.
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def write(
     table: Table,

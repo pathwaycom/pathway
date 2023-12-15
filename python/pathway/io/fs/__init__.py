@@ -9,7 +9,7 @@ from pathway.internals import Schema, api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.api import PathwayType
 from pathway.internals.decorators import table_from_datasource
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
@@ -25,7 +25,7 @@ SUPPORTED_OUTPUT_FORMATS: set[str] = {
 }
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     path: str | PathLike,
@@ -63,14 +63,13 @@ option is chosen, it's split by the newlines. Otherwise, the files are split in 
 and one row will correspond to one file. In case the "binary" format is specified, \
 the data is read as raw bytes without UTF-8 parsing.
         schema: Schema of the resulting table.
-        mode: denotes how the engine polls the new data from the source. Currently \
-"streaming", "static", and "streaming_with_deletions" are supported. If set to \
-"streaming" the engine will wait for the new input files in the directory. On the other \
-hand, "streaming_with_deletions" mode also tracks file deletions and modifications and \
-reflects them in the state. For example, if a file was deleted, "streaming_with_deletions"\
-mode will also remove rows obtained by reading this file from the table. Finally, the \
-"static" mode will only consider the available data and ingest all of it in one commit. \
-The default value is "streaming".
+        mode: Denotes how the engine polls the new data from the source. Currently \
+"streaming" and "static" are supported. If set to "streaming" the engine will wait for \
+the updates in the specified directory. It will track file additions, deletions, and \
+modifications and reflect these events in the state. For example, if a file was deleted,\
+"streaming" mode will also remove rows obtained by reading this file from the table. On \
+the other hand, the "static" mode will only consider the available data and ingest all \
+of it in one commit. The default value is "streaming".
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -263,7 +262,7 @@ named ``path`` that will show the full path to the file from where a row was fil
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def write(table: Table, filename: str | PathLike, format: str) -> None:
     """Writes ``table``'s stream of updates to a file in the given format.

@@ -386,6 +386,14 @@ impl Duration {
             Ok(self.duration as f64 / other.duration as f64)
         }
     }
+
+    pub fn true_div_by_i64(self, other: i64) -> Result<Self> {
+        if other == 0 {
+            Err(Error::DivisionByZero)
+        } else {
+            Ok(Self::new(self.duration / other))
+        }
+    }
 }
 
 impl Neg for Duration {
@@ -428,6 +436,18 @@ impl Mul<i64> for Duration {
     }
 }
 
+impl Mul<f64> for Duration {
+    type Output = Self;
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_precision_loss)]
+    fn mul(self, other: f64) -> Self::Output {
+        Duration {
+            duration: (self.duration as f64 * other) as i64,
+        }
+    }
+}
+
 impl Div for Duration {
     type Output = Result<i64>;
 
@@ -449,6 +469,22 @@ impl Div<i64> for Duration {
         } else {
             Ok(Duration {
                 duration: Integer::div_floor(&self.duration, &other),
+            })
+        }
+    }
+}
+
+impl Div<f64> for Duration {
+    type Output = Result<Duration>;
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_precision_loss)]
+    fn div(self, other: f64) -> Self::Output {
+        if other == 0.0 {
+            Err(Error::DivisionByZero)
+        } else {
+            Ok(Duration {
+                duration: (self.duration as f64 / other) as i64,
             })
         }
     }

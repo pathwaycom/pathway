@@ -3,7 +3,7 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::engine::{Computer as EngineComputer, Expressions};
+use crate::engine::{graph::SubscribeCallbacksBuilder, Computer as EngineComputer, Expressions};
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -1009,6 +1009,14 @@ impl PyExpression {
             (Op::FloorDiv, Tp::Duration, Tp::Int) => {
                 Some(binary_op!(DurationE::DivByInt, lhs, rhs))
             }
+            (Op::TrueDiv, Tp::Duration, Tp::Int) => {
+                Some(binary_op!(DurationE::TrueDivByInt, lhs, rhs))
+            }
+            (Op::Mul, Tp::Duration, Tp::Float) => Some(binary_op!(DurationE::MulByFloat, lhs, rhs)),
+            (Op::Mul, Tp::Float, Tp::Duration) => Some(binary_op!(DurationE::MulByFloat, rhs, lhs)),
+            (Op::TrueDiv, Tp::Duration, Tp::Float) => {
+                Some(binary_op!(DurationE::DivByFloat, lhs, rhs))
+            }
             (Op::FloorDiv, Tp::Duration, Tp::Duration) => {
                 Some(binary_op!(IntExpression::DurationFloorDiv, lhs, rhs))
             }
@@ -1299,20 +1307,10 @@ impl PyConnectorMode {
     #[classattr]
     pub const STATIC: ConnectorMode = ConnectorMode::Static;
     #[classattr]
-    pub const SIMPLE_STREAMING: ConnectorMode = ConnectorMode::SimpleStreaming;
-    #[classattr]
-    pub const STREAMING_WITH_DELETIONS: ConnectorMode = ConnectorMode::StreamingWithDeletions;
+    pub const STREAMING: ConnectorMode = ConnectorMode::Streaming;
 
-    pub fn __richcmp__(&self, other: &PyAny, op: CompareOp) -> Py<PyAny> {
-        let py = other.py();
-
-        if let Ok(other) = other.extract::<PyRef<Self>>() {
-            return match op {
-                CompareOp::Eq => (self.0 == other.0).into_py(py),
-                _ => py.NotImplemented(),
-            };
-        }
-        py.NotImplemented()
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 
@@ -2082,16 +2080,13 @@ impl Scope {
     pub fn columns_to_table(
         self_: &PyCell<Self>,
         universe: &PyCell<Universe>,
-        #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<(PyRef<Column>, ColumnPath)>,
+        #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<PyRef<Column>>,
     ) -> PyResult<Py<Table>> {
-        let columns_with_handles = columns
-            .into_iter()
-            .map(|(column, path)| (column.handle, path))
-            .collect();
+        let column_handles = columns.into_iter().map(|column| column.handle).collect();
         let table_handle = self_
             .borrow()
             .graph
-            .columns_to_table(universe.borrow().handle, columns_with_handles)?;
+            .columns_to_table(universe.borrow().handle, column_handles)?;
         Table::new(self_, table_handle)
     }
 
@@ -2566,30 +2561,34 @@ impl Scope {
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         skip_persisted_batch: bool,
         on_change: Py<PyAny>,
+        on_time_end: Py<PyAny>,
         on_end: Py<PyAny>,
     ) -> PyResult<()> {
-        self_.borrow().graph.subscribe_table(
-            BatchWrapper::WithGil,
-            Box::new(move |key, values, time, diff| {
+        let callbacks = SubscribeCallbacksBuilder::new()
+            .wrapper(BatchWrapper::WithGil)
+            .on_data(Box::new(move |key, values, time, diff| {
                 with_gil_and_pool(|py| {
-                    let py_key = key.to_object(py);
-                    let py_values = PyTuple::new(py, values).to_object(py);
-                    let py_time = time.to_object(py);
-                    let py_diff = diff.to_object(py);
-
-                    let args = PyTuple::new(py, [py_key, py_values, py_time, py_diff]);
-                    on_change.call(py, args, None)?;
+                    on_change.call1(py, (key, PyTuple::new(py, values), time, diff))?;
                     Ok(())
                 })
-            }),
-            Box::new(move || {
+            }))
+            .on_time_end(Box::new(move |new_time| {
+                with_gil_and_pool(|py| {
+                    on_time_end.call1(py, (new_time,))?;
+                    Ok(())
+                })
+            }))
+            .on_end(Box::new(move || {
                 with_gil_and_pool(|py| {
                     on_end.call0(py)?;
                     Ok(())
                 })
-            }),
+            }))
+            .build();
+        self_.borrow().graph.subscribe_table(
             table.handle,
             column_paths,
+            callbacks,
             skip_persisted_batch,
         )?;
         Ok(())
@@ -2618,9 +2617,8 @@ fn capture_table_data(
     let table_data = Arc::new(Mutex::new(Vec::new()));
     {
         let table_data = table_data.clone();
-        graph.subscribe_table(
-            BatchWrapper::None,
-            Box::new(move |key, values, time, diff| {
+        let callbacks = SubscribeCallbacksBuilder::new()
+            .on_data(Box::new(move |key, values, time, diff| {
                 assert!(diff == 1 || diff == -1);
                 table_data.lock().unwrap().push(DataRow::from_engine(
                     key,
@@ -2629,12 +2627,9 @@ fn capture_table_data(
                     diff,
                 ));
                 Ok(())
-            }),
-            Box::new(|| Ok(())),
-            table.handle,
-            column_paths,
-            false,
-        )?;
+            }))
+            .build();
+        graph.subscribe_table(table.handle, column_paths, callbacks, false)?;
     }
     Ok(table_data)
 }
@@ -3200,18 +3195,28 @@ impl PySnapshotEvent {
 pub struct PythonSubject {
     pub start: Py<PyAny>,
     pub read: Py<PyAny>,
+    pub end: Py<PyAny>,
     pub is_internal: bool,
+    pub deletions_enabled: bool,
 }
 
 #[pymethods]
 impl PythonSubject {
     #[new]
-    #[pyo3(signature = (start, read, is_internal))]
-    fn new(start: Py<PyAny>, read: Py<PyAny>, is_internal: bool) -> Self {
+    #[pyo3(signature = (start, read, end, is_internal, deletions_enabled))]
+    fn new(
+        start: Py<PyAny>,
+        read: Py<PyAny>,
+        end: Py<PyAny>,
+        is_internal: bool,
+        deletions_enabled: bool,
+    ) -> Self {
         Self {
             start,
             read,
+            end,
             is_internal,
+            deletions_enabled,
         }
     }
 }
@@ -3273,7 +3278,7 @@ impl DataStorage {
         topic = None,
         connection_string = None,
         csv_parser_settings = None,
-        mode = ConnectorMode::SimpleStreaming,
+        mode = ConnectorMode::Streaming,
         read_method = ReadMethod::ByLine,
         aws_s3_settings = None,
         elasticsearch_params = None,

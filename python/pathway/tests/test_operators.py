@@ -89,14 +89,6 @@ def test_unary(op_fun: Callable, data: list[Any]) -> None:
     assert_table_equality(table_pw, table_pd)
 
 
-def _change_dtypes(table: pw.Table, dtypes: Mapping[str, type]):
-    for key, dtype in dtypes.items():
-        table = table.select(
-            *pw.this.without(key), **{key: pw.declare_type(dtype, pw.this[key])}
-        )
-    return table
-
-
 def _check_pandas_pathway_return_the_same(
     df: pd.DataFrame,
     op_fun: Any,
@@ -104,12 +96,12 @@ def _check_pandas_pathway_return_the_same(
     res_dtype: type | None = None,
 ):
     table = table_from_pandas(copy.deepcopy(df))
-    table = _change_dtypes(table, dtypes)
+    table = table.update_types(**dtypes)
     table_pw = table.select(pw.this.a, pw.this.b, c=op_fun(pw.this.a, pw.this.b))
     df["c"] = op_fun(df["a"], df["b"])
     table_pd = table_from_pandas(df)
     if res_dtype:
-        table_pd = _change_dtypes(table_pd, {"c": res_dtype})
+        table_pd = table_pd.update_types(c=res_dtype)
     assert_table_equality(table_pw, table_pd)
 
 
@@ -904,13 +896,16 @@ def test_date_time_and_duration(op_fun: Any, is_naive: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    "op_fun",
+    "op_fun,dtype",
     [
-        operator.mul,
-        operator.floordiv,
+        (operator.mul, int),
+        (operator.floordiv, int),
+        (operator.truediv, int),
+        (operator.mul, float),
+        (operator.truediv, float),
     ],
 )
-def test_duration_and_int(op_fun: Any) -> None:
+def test_duration_and_int(op_fun: Any, dtype: Any) -> None:
     pairs = [
         [pd.Timedelta(0), 0],
         [pd.Timedelta(1), 0],
@@ -919,6 +914,14 @@ def test_duration_and_int(op_fun: Any) -> None:
         [pd.Timedelta(2), 0],
         [pd.Timedelta(2), -1],
         [pd.Timedelta(-2), -2],
+        [pd.Timedelta(10), 3],
+        [pd.Timedelta(10), -3],
+        [pd.Timedelta(-10), 3],
+        [pd.Timedelta(-10), -3],
+        [pd.Timedelta(11), 3],
+        [pd.Timedelta(11), -3],
+        [pd.Timedelta(-11), 3],
+        [pd.Timedelta(-11), -3],
         [pd.Timedelta(-331399), -227463],
         [pd.Timedelta(253173), -207184],
         [pd.Timedelta(-741012), -856821],
@@ -943,19 +946,22 @@ def test_duration_and_int(op_fun: Any) -> None:
         [pd.Timedelta(weeks=1), 10],
         [pd.Timedelta(weeks=-2), -45],
     ]
-    if op_fun == operator.floordiv:
+    if op_fun in {operator.floordiv, operator.truediv}:
         pairs = [[a, b if b != 0 else 1] for a, b in pairs]
-    expected = table_from_pandas(pd.DataFrame({"c": [op_fun(a, b) for a, b in pairs]}))
+    expected = table_from_pandas(
+        pd.DataFrame({"c": [op_fun(a, dtype(b)) for a, b in pairs]})
+    )
     # computing manually because in pandas when operating on columns
     # (pd.Timedelta(days=-2) // 28).value == -6171428571428, but should be
     # -6171428571429. Suprisingly, working on single values but not on columns
     pairs_T = list(zip(*pairs))
     df = pd.DataFrame({"a": pairs_T[0], "b": pairs_T[1]})
+    df["b"] = df["b"].astype(dtype)
     table = table_from_pandas(df)
     result = table.select(c=op_fun(table.a, table.b))
     assert_table_equality(result, expected)
     if op_fun == operator.mul:
-        result_2 = table.select(c=op_fun(table.a, table.b))
+        result_2 = table.select(c=op_fun(table.b, table.a))
         assert_table_equality(result_2, expected)
 
 
@@ -1043,9 +1049,7 @@ def run_matrix_multiplcation(
     pairs_T = list(zip(*pairs))
     a = [a_i.astype(dtype) for a_i in pairs_T[0]]
     b = [b_i.astype(dtype) for b_i in pairs_T[1]]
-    t = table_from_pandas(
-        pd.DataFrame({"a": a, "b": b, "i": list(range(len(a)))})
-    ).update_types(a=np.ndarray, b=np.ndarray)
+    t = table_from_pandas(pd.DataFrame({"a": a, "b": b, "i": list(range(len(a)))}))
     res = t.select(pw.this.i, c=t.a @ t.b)
     res_pd = table_to_pandas(res).sort_values(by="i")["c"]
     expected = [a_i @ b_i for a_i, b_i in zip(a, b)]
@@ -1155,9 +1159,7 @@ def test_matrix_multiplication_multidimensional(dtype: type) -> None:
     ],
 )
 def test_matrix_multiplication_errors_on_shapes_mismatch(a, b) -> None:
-    t = table_from_pandas(pd.DataFrame({"a": [a], "b": [b]})).update_types(
-        a=np.ndarray, b=np.ndarray
-    )
+    t = table_from_pandas(pd.DataFrame({"a": [a], "b": [b]}))
     t.select(c=t.a @ t.b)
     with pytest.raises(ValueError):
         run_all()

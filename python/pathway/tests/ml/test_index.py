@@ -13,7 +13,7 @@ class PointSchema(pw.Schema):
     is_query: bool
 
 
-def sort_arrays(arrays: list[np.ndarray]) -> list[tuple[int, ...]]:
+def sort_arrays(arrays: list[np.ndarray]) -> list[tuple[int, int]]:
     return sorted([tuple(array) for array in arrays])
 
 
@@ -34,7 +34,7 @@ def get_points() -> list[tuple[tuple[int, ...], bool]]:
 
 
 def nn_as_table(
-    to_table: list[tuple[tuple[int, ...], tuple[tuple[int, ...]]]]
+    to_table: list[tuple[tuple[int, int], tuple[tuple[int, int], ...]]]
 ) -> pw.Table:
     return pw.debug.table_from_pandas(
         pd.DataFrame(
@@ -43,7 +43,7 @@ def nn_as_table(
                 "nn": [point[1] for point in to_table],
             }
         )
-    ).update_types(nn=list[tuple[int, ...]])
+    )
 
 
 def test_all_at_once():
@@ -67,6 +67,48 @@ def test_all_at_once():
             ((2, -2), ((1, -4), (3, -2))),
             ((-1, 1), ((-3, 1), (-1, 0))),
             ((-2, -3), ((-1, 0), (1, -4))),
+        ]
+    )
+    assert_table_equality_wo_index(result, expected)
+
+
+def test_all_at_once_metadata_filter():
+    data = get_points()
+
+    class InputSchema(pw.Schema):
+        coords: tuple[int, int]
+        is_query: bool
+        metadata: pw.Json
+
+    df = pd.DataFrame(
+        {
+            "coords": [point[0] for point in data],
+            "is_query": [point[1] for point in data],
+            "metadata": [{"foo": i} for i, _ in enumerate(data)],
+        }
+    )
+    table = pw.debug.table_from_pandas(df, schema=InputSchema)
+    points = table.filter(~pw.this.is_query).without(pw.this.is_query)
+    queries = table.filter(pw.this.is_query).without(pw.this.is_query, pw.this.metadata)
+    index = KNNIndex(
+        points.coords,
+        points,
+        n_dimensions=2,
+        n_and=5,
+        metadata=points.metadata,
+    )
+    queries += queries.select(metadata_filter="foo > `4`")
+    result = queries.without(pw.this.metadata_filter) + index.get_nearest_items(
+        queries.coords, k=2, metadata_filter=queries.metadata_filter
+    ).select(
+        nn=pw.apply(sort_arrays, pw.this.coords),
+    )
+    expected = nn_as_table(
+        [
+            ((0, 0), ((-3, 1), (1, 2))),
+            ((2, -2), ((1, -4), (1, 2))),
+            ((-1, 1), ((-3, 1), (1, 2))),
+            ((-2, -3), ((-3, 1), (1, -4))),
         ]
     )
     assert_table_equality_wo_index(result, expected)

@@ -62,13 +62,20 @@ def generate_buffer_output(
                 key = (window, entry["value"])
                 buffer[key] = entry
 
-        for window, value in buffer.keys():
+        bufkeys = list(buffer.keys())
+        for window, value in bufkeys:
             entry = buffer[(window, value)]
             threshold = window[1] + delay
             if last_time != now and threshold <= now and threshold > last_time:
                 to_process.append((window, entry))
+                buffer.pop((window, value))
         output.extend(to_process)
 
+    # flush buffer
+    bufkeys = list(buffer.keys())
+    for window, value in bufkeys:
+        entry = buffer.pop((window, value))
+        output.append((window, entry))
     return output
 
 
@@ -304,13 +311,7 @@ def test_non_zero_delay_non_zero_buffer_remove_results():
     parametrized_test(5, 3, 1, 1, False)
 
 
-def test_exactly_once():
-    duration = 5
-    hop = 3
-    delay = 6
-    cutoff = 1
-    keep_results = True
-    result = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
+def create_expected_for_exactly_once(result, duration):
     expected = []
     for i, window_end in enumerate([2, 5, 8, 11, 14]):
         pk_row: dict = {
@@ -327,6 +328,44 @@ def test_exactly_once():
         }
 
         expected.append(DiffEntry.create(result, pk_row, i, True, row))
+
+    # flush buffer
+    row: dict = {
+        "_pw_window_end": 17,
+        "max_time": 16,
+        "max_value": 67,
+    }
+    pk_row: dict = {
+        "_pw_window": (None, 12, 17),
+        "_pw_window_start": 12,
+        "_pw_window_end": 17,
+        "_pw_instance": None,
+    }
+    expected.append(DiffEntry.create(result, pk_row, 17, True, row))
+
+    row: dict = {
+        "_pw_window_end": 20,
+        "max_time": 16,
+        "max_value": 67,
+    }
+    pk_row: dict = {
+        "_pw_window": (None, 15, 20),
+        "_pw_window_start": 15,
+        "_pw_window_end": 20,
+        "_pw_instance": None,
+    }
+    expected.append(DiffEntry.create(result, pk_row, 20, True, row))
+    return expected
+
+
+def test_exactly_once():
+    duration = 5
+    hop = 3
+    delay = 6
+    cutoff = 1
+    keep_results = True
+    result = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
+    expected = create_expected_for_exactly_once(result, duration)
     assert_stream_equal(expected, result)
     run()
 
@@ -361,23 +400,7 @@ def test_exactly_once_from_behavior():
         max_time=pw.reducers.max(pw.this.time),
         max_value=pw.reducers.max(pw.this.value),
     )
-
-    expected = []
-    for i, window_end in enumerate([2, 5, 8, 11, 14]):
-        pk_row: dict = {
-            "_pw_window": (None, window_end - duration, window_end),
-            "_pw_window_start": window_end - duration,
-            "_pw_window_end": window_end,
-            "_pw_instance": None,
-        }
-
-        row: dict = {
-            "_pw_window_end": window_end,
-            "max_time": window_end - 1,
-            "max_value": 2 * window_end - 1,
-        }
-
-        expected.append(DiffEntry.create(result, pk_row, i, True, row))
+    expected = create_expected_for_exactly_once(result, duration)
     assert_stream_equal(expected, result)
     run()
 

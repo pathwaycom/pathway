@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pathway.internals as pw
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 
 from ..common import Edge
@@ -13,7 +13,7 @@ class Result(pw.Schema):
     rank: int
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def pagerank(edges: pw.Table[Edge], steps: int = 5) -> pw.Table[Result]:
     in_vertices: pw.Table = edges.groupby(id=edges.v).reduce(degree=0)

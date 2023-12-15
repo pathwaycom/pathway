@@ -487,6 +487,69 @@ pub struct ProberStats {
     pub connector_stats: Vec<(String, ConnectorStats)>,
 }
 
+pub type OnDataFn = Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>;
+pub type OnTimeEndFn = Box<dyn FnMut(u64) -> DynResult<()>>;
+pub type OnEndFn = Box<dyn FnMut() -> DynResult<()>>;
+
+pub struct SubscribeCallbacks {
+    pub wrapper: BatchWrapper,
+    pub on_data: Option<OnDataFn>,
+    pub on_time_end: Option<OnTimeEndFn>,
+    pub on_end: Option<OnEndFn>,
+}
+
+pub struct SubscribeCallbacksBuilder {
+    inner: SubscribeCallbacks,
+}
+
+impl SubscribeCallbacksBuilder {
+    pub fn new() -> Self {
+        Self {
+            inner: SubscribeCallbacks {
+                wrapper: BatchWrapper::None,
+                on_data: None,
+                on_time_end: None,
+                on_end: None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn build(self) -> SubscribeCallbacks {
+        self.inner
+    }
+
+    #[must_use]
+    pub fn wrapper(mut self, wrapper: BatchWrapper) -> Self {
+        self.inner.wrapper = wrapper;
+        self
+    }
+
+    #[must_use]
+    pub fn on_data(mut self, on_data: OnDataFn) -> Self {
+        self.inner.on_data = Some(on_data);
+        self
+    }
+
+    #[must_use]
+    pub fn on_time_end(mut self, on_time_end: OnTimeEndFn) -> Self {
+        self.inner.on_time_end = Some(on_time_end);
+        self
+    }
+
+    #[must_use]
+    pub fn on_end(mut self, on_end: OnEndFn) -> Self {
+        self.inner.on_end = Some(on_end);
+        self
+    }
+}
+
+impl Default for SubscribeCallbacksBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub trait Graph {
     fn worker_index(&self) -> usize;
 
@@ -538,7 +601,7 @@ pub trait Graph {
     fn columns_to_table(
         &self,
         universe_handle: UniverseHandle,
-        columns: Vec<(ColumnHandle, ColumnPath)>,
+        columns: Vec<ColumnHandle>,
     ) -> Result<TableHandle>;
 
     fn table_column(
@@ -569,11 +632,9 @@ pub trait Graph {
 
     fn subscribe_table(
         &self,
-        wrapper: BatchWrapper,
-        callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
-        on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
     ) -> Result<()>;
 
@@ -901,7 +962,7 @@ impl Graph for ScopedGraph {
     fn columns_to_table(
         &self,
         universe_handle: UniverseHandle,
-        columns: Vec<(ColumnHandle, ColumnPath)>,
+        columns: Vec<ColumnHandle>,
     ) -> Result<TableHandle> {
         self.try_with(|g| g.columns_to_table(universe_handle, columns))
     }
@@ -952,22 +1013,13 @@ impl Graph for ScopedGraph {
 
     fn subscribe_table(
         &self,
-        wrapper: BatchWrapper,
-        callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
-        on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
     ) -> Result<()> {
         self.try_with(|g| {
-            g.subscribe_table(
-                wrapper,
-                callback,
-                on_end,
-                table_handle,
-                column_paths,
-                skip_persisted_batch,
-            )
+            g.subscribe_table(table_handle, column_paths, callbacks, skip_persisted_batch)
         })
     }
 

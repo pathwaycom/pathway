@@ -5,7 +5,28 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.5] - 2023-12-15
+
+### Added
+- Added Table.split() method for splitting table based on an expression into two tables.
+- Columns with datatype duration can now be multiplied and divided by floats.
+- Columns with datatype duration now support both true and floor division (`/` and `//`) by integers.
+
+### Changed
+- Pathway is better at typing if_else expressions when optional types are involved.
+- `table.flatten()` operator now supports Json array.
+- Buffers (used to delay outputs, configured via delay in `common_behavior`) now flush the data when the computation is finished. The effect of this change can be seen when run in bounded (batch / multi-revision) mode.
+- `pw.io.subscribe()` takes additional argument `on_time_end` - the callback function to be called on each closed time of computation.
+- `pw.io.subscribe()` is now a single-worker operator, guaranteeing that `on_end` is triggered at most once.
+- `KNNIndex` supports now metadata filtering. Each query can specify it's own filter in the JMESPath format.
+
+### Fixed
+- Resolved an optimization bug causing `pw.iterate` to malfunction when handling columns effectively pointing to the same data.
+
 ## [0.7.4] - 2023-12-05
+
+### Changed
+- Pathway now keeps track of `array` columntype better - it is able to keep track of Array dtype and number of dimensions, wherever applicable.
 
 ### Fixed
 - Fixed issues with standalone panel+Bokeh dashboards to ensure optimal functionality and performance.

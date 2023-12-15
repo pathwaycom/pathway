@@ -15,7 +15,7 @@ from pathway.internals.desugaring import (
     desugar,
 )
 from pathway.internals.join import validate_join_condition
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
 
@@ -169,7 +169,7 @@ class AsofNowJoinResult(DesugaringContext):
 @trace_user_frame
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=True, allow_id=True))
-@runtime_type_check
+@check_arg_types
 def asof_now_join(
     self: pw.Table,
     other: pw.Table,
@@ -249,7 +249,7 @@ def asof_now_join(
 @trace_user_frame
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=True, allow_id=True))
-@runtime_type_check
+@check_arg_types
 def asof_now_join_inner(
     self: pw.Table,
     other: pw.Table,
@@ -325,7 +325,7 @@ def asof_now_join_inner(
 @trace_user_frame
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=True, allow_id=True))
-@runtime_type_check
+@check_arg_types
 def asof_now_join_left(
     self: pw.Table,
     other: pw.Table,

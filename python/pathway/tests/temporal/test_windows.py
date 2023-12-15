@@ -288,7 +288,7 @@ def test_sliding():
 
 
 # in the batch mode, we can test close to nothing;
-# basically chcecks whether syntax is not broken
+# basically checks whether syntax is not broken
 # for more tests see test_windows_stream.py
 def test_sliding_compacting():
     t = T(
@@ -335,7 +335,7 @@ def test_sliding_compacting():
 
 
 # in the batch mode, we can test close to nothing;
-# basically chcecks whether syntax is not broken
+# basically checks whether syntax is not broken
 # for more tests see test_windows_stream.py
 def test_sliding_compacting_2():
     t = T(
@@ -379,7 +379,95 @@ def test_sliding_compacting_2():
             1        |     9            |     19         | 10    | 11    | 2
             """
     )
+    assert_table_equality_wo_index(result, res)
 
+
+def test_flush_buffer_long_chain_of_operators():
+    t = T(
+        """
+    t
+    12
+    14
+    16
+    18
+    20
+    22
+    24
+    26
+    """
+    )
+
+    expected = T(
+        """
+    t
+    12
+    14
+    16
+    18
+    20
+    22
+    24
+    26
+    """
+    )
+
+    for i in range(5):
+        gb = t.windowby(
+            t.t,
+            window=pw.temporal.sliding(duration=2, hop=2, offset=1),
+            behavior=pw.temporal.common_behavior(
+                delay=8, cutoff=100, keep_results=False
+            ),
+        )
+
+        t = gb.reduce(
+            t=pw.reducers.any(pw.this.t),
+        )
+    assert_table_equality_wo_index(t, expected)
+
+
+def test_sliding_compacting_flush_buffer():
+    t = T(
+        """
+            | instance | t
+        1   | 0     |  12
+        2   | 0     |  13
+        3   | 0     |  14
+        4   | 0     |  15
+        5   | 0     |  16
+        6   | 0     |  17
+        7   | 1     |  10
+        8   | 1     |  11
+    """
+    )
+
+    gb = t.windowby(
+        t.t,
+        window=pw.temporal.sliding(duration=10, hop=3),
+        behavior=pw.temporal.common_behavior(delay=8, cutoff=10, keep_results=False),
+        instance=t.instance,
+    )
+
+    result = gb.reduce(
+        pw.this._pw_shard,
+        pw.this._pw_window_start,
+        pw.this._pw_window_end,
+        min_t=pw.reducers.min(pw.this.t),
+        max_t=pw.reducers.max(pw.this.t),
+        count=pw.reducers.count(),
+    )
+
+    res = T(
+        """
+        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
+            0     |     6            |     16         | 12    | 15    | 4
+            0     |     9            |     19         | 12    | 17    | 6
+            0     |     12           |     22         | 12    | 17    | 6
+            0     |     15           |     25         | 15    | 17    | 3
+            1     |     6            |     16         | 10    | 11    | 2
+            1     |     9            |     19         | 10    | 11    | 2
+            """
+    )
     assert_table_equality_wo_index(result, res)
 
 
@@ -789,14 +877,7 @@ def test_windows_with_datetimes(w):
     ],
 )
 def test_incorrect_args(dtype, window, error_str):
-    t1 = T(
-        """
-      | a | t
-    0 | 1 | -1
-    """
-    )
-
-    t1 = t1.with_columns(t=pw.declare_type(dtype, pw.this.t))
+    t1 = pw.Table.empty(a=int, t=dtype)
 
     with pytest.raises(
         TypeError,

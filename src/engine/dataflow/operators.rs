@@ -1,16 +1,16 @@
 pub mod gradual_broadcast;
+pub mod output;
 pub mod prev_next;
 pub mod stateful_reduce;
 pub mod time_column;
 mod utils;
 
 use std::any::type_name;
-use std::collections::BTreeMap;
 use std::panic::Location;
 
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
-use differential_dataflow::trace::{Batch, BatchReader, Cursor, Trace, TraceReader};
+use differential_dataflow::trace::{Batch, Trace, TraceReader};
 use differential_dataflow::{AsCollection, Collection, Data, ExchangeData};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -24,99 +24,6 @@ use crate::engine::BatchWrapper;
 use super::maybe_total::{MaybeTotalScope, MaybeTotalSwitch};
 use super::shard::Shard;
 use super::ArrangedBySelf;
-
-pub trait ConsolidateForOutput<S, D, R>
-where
-    S: MaybeTotalScope,
-    R: Semigroup,
-{
-    fn consolidate_for_output_named(&self, name: &str) -> Collection<S, D, R>;
-
-    #[track_caller]
-    fn consolidate_for_output(&self) -> Collection<S, D, R> {
-        self.consolidate_for_output_named("ConsolidateForOutput")
-    }
-}
-
-impl<S, D, R> ConsolidateForOutput<S, D, R> for Collection<S, D, R>
-where
-    S: MaybeTotalScope,
-    D: ExchangeData + Shard,
-    R: Semigroup + ExchangeData,
-{
-    #[track_caller]
-    fn consolidate_for_output_named(&self, name: &str) -> Self {
-        let arranged: ArrangedBySelf<S, D, R> = self.arrange_named(&format!("Arrange: {name}"));
-        arranged.consolidate_for_output_map_named(name, |k, ()| k.clone())
-    }
-}
-
-pub trait ConsolidateForOutputMap<S, K, V, R>
-where
-    S: MaybeTotalScope,
-    R: Semigroup,
-{
-    fn consolidate_for_output_map_named<D: Data>(
-        &self,
-        name: &str,
-        logic: impl FnMut(&K, &V) -> D + 'static,
-    ) -> Collection<S, D, R>;
-
-    #[track_caller]
-    fn consolidate_for_output_map<D: Data>(
-        &self,
-        logic: impl FnMut(&K, &V) -> D + 'static,
-    ) -> Collection<S, D, R> {
-        self.consolidate_for_output_map_named("ConsolidateForOutput", logic)
-    }
-}
-
-impl<S, Tr> ConsolidateForOutputMap<S, Tr::Key, Tr::Val, Tr::R> for Arranged<S, Tr>
-where
-    S: MaybeTotalScope,
-    Tr: TraceReader<Time = S::Timestamp> + Clone,
-    Tr::Key: Data,
-    Tr::Val: Data,
-    Tr::R: Semigroup,
-{
-    #[track_caller]
-    fn consolidate_for_output_map_named<D: Data>(
-        &self,
-        name: &str,
-        mut logic: impl FnMut(&Tr::Key, &Tr::Val) -> D + 'static,
-    ) -> Collection<S, D, Tr::R> {
-        let caller = Location::caller();
-        let name = format!("{name} at {caller}");
-        self.stream
-            .unary(Pipeline, &name, move |_cap, _info| {
-                move |input, output| {
-                    input.for_each(|cap, data| {
-                        let mut time_diffs = BTreeMap::new();
-                        for batch in data.iter() {
-                            let mut cursor = batch.cursor();
-                            while let Some(key) = cursor.get_key(batch) {
-                                while let Some(val) = cursor.get_val(batch) {
-                                    cursor.map_times(batch, |time, diff| {
-                                        let data = logic(key, val);
-                                        time_diffs
-                                            .entry((time.clone(), diff.clone()))
-                                            .or_insert_with(Vec::new)
-                                            .push((data, time.clone(), diff.clone()));
-                                    });
-                                    cursor.step_val(batch);
-                                }
-                                cursor.step_key(batch);
-                            }
-                        }
-                        for ((time, _diff), mut vec) in time_diffs {
-                            output.session(&cap.delayed(&time)).give_vec(&mut vec);
-                        }
-                    });
-                }
-            })
-            .as_collection()
-    }
-}
 
 pub trait ArrangeWithTypes<S, K, V, R>
 where
@@ -140,6 +47,35 @@ where
         Tr::Batch: Batch;
 }
 
+pub trait ArrangeWithTypesSharded<S, K, V, R>
+where
+    S: MaybeTotalScope,
+    K: ExchangeData,
+    V: ExchangeData,
+    R: Semigroup + ExchangeData,
+{
+    #[track_caller]
+    fn arrange_sharded<Tr>(
+        &self,
+        sharding: impl FnMut(&K) -> u64 + 'static,
+    ) -> Arranged<S, TraceAgent<Tr>>
+    where
+        Tr: Trace + TraceReader<Key = K, Val = V, Time = S::Timestamp, R = R> + 'static,
+        Tr::Batch: Batch,
+    {
+        self.arrange_sharded_named("Arrange", sharding)
+    }
+
+    fn arrange_sharded_named<Tr>(
+        &self,
+        name: &str,
+        sharding: impl FnMut(&K) -> u64 + 'static,
+    ) -> Arranged<S, TraceAgent<Tr>>
+    where
+        Tr: Trace + TraceReader<Key = K, Val = V, Time = S::Timestamp, R = R> + 'static,
+        Tr::Batch: Batch;
+}
+
 impl<T, S, K, V, R> ArrangeWithTypes<S, K, V, R> for T
 where
     T: differential_dataflow::operators::arrange::arrangement::Arrange<S, K, V, R>,
@@ -151,9 +87,28 @@ where
     #[track_caller]
     fn arrange_named<Tr>(&self, name: &str) -> Arranged<S, TraceAgent<Tr>>
     where
-        K: ExchangeData + Shard,
-        V: ExchangeData,
-        R: ExchangeData,
+        Tr: Trace + TraceReader<Key = K, Val = V, Time = S::Timestamp, R = R> + 'static,
+        Tr::Batch: Batch,
+    {
+        self.arrange_sharded_named(name, Shard::shard)
+    }
+}
+
+impl<T, S, K, V, R> ArrangeWithTypesSharded<S, K, V, R> for T
+where
+    T: differential_dataflow::operators::arrange::arrangement::Arrange<S, K, V, R>,
+    S: MaybeTotalScope,
+    K: ExchangeData,
+    V: ExchangeData,
+    R: Semigroup + ExchangeData,
+{
+    #[track_caller]
+    fn arrange_sharded_named<Tr>(
+        &self,
+        name: &str,
+        mut sharding: impl FnMut(&K) -> u64 + 'static,
+    ) -> Arranged<S, TraceAgent<Tr>>
+    where
         Tr: Trace + TraceReader<Key = K, Val = V, Time = S::Timestamp, R = R> + 'static,
         Tr::Batch: Batch,
     {
@@ -163,7 +118,8 @@ where
             key = type_name::<K>(),
             value = type_name::<V>()
         );
-        let exchange = Exchange::new(|((key, _value), _time, _diff): &((K, V), _, _)| key.shard());
+        let exchange =
+            Exchange::new(move |((key, _value), _time, _diff): &((K, V), _, _)| sharding(key));
         #[allow(clippy::disallowed_methods)]
         differential_dataflow::operators::arrange::arrangement::Arrange::arrange_core(
             self, exchange, &name,

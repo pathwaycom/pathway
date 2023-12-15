@@ -180,6 +180,14 @@ class TypeVerifier(IdentityTransform):
     ) -> expr.ColumnExpression:
         expression = super().eval_expression(expression, **kwargs)
 
+        from pathway.internals.operator import RowTransformerOperator
+
+        if isinstance(expression, expr.ColumnReference):
+            if isinstance(
+                expression._column.lineage.source.operator, RowTransformerOperator
+            ):
+                return expression
+
         dtype = expression._dtype
 
         def test_type(val):
@@ -189,6 +197,7 @@ class TypeVerifier(IdentityTransform):
 
         ret = apply_with_type(test_type, dtype, expression)
         ret._dtype = dtype
+
         return ret
 
 
@@ -200,6 +209,7 @@ class RowwiseEvaluator(
         output_storage: Storage,
         *input_storages: Storage,
         old_path: ColumnPath | None = ColumnPath.EMPTY,
+        disable_runtime_typechecking: bool = False,
     ) -> api.Table:
         [input_storage] = input_storages
         engine_input_table = self.state.get_table(input_storage)
@@ -229,6 +239,11 @@ class RowwiseEvaluator(
             assert isinstance(column, clmn.ColumnWithExpression)
             expression = column.expression
             expression = self.context.expression_with_type(expression)
+            if (
+                self.scope_context.runtime_typechecking
+                and not disable_runtime_typechecking
+            ):
+                expression = TypeVerifier().eval_expression(expression)
             properties = api.TableProperties.column(self.column_properties(column))
 
             engine_expression = self.eval_expression(expression, eval_state=eval_state)
@@ -1010,7 +1025,12 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             old_path = ColumnPath((1,))
         else:
             old_path = None
-        return rowwise_evaluator.run(output_storage, joined_storage, old_path=old_path)
+        return rowwise_evaluator.run(
+            output_storage,
+            joined_storage,
+            old_path=old_path,
+            disable_runtime_typechecking=True,
+        )
 
 
 class JoinRowwiseEvaluator(RowwiseEvaluator, context_type=clmn.JoinRowwiseContext):

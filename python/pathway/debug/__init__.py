@@ -19,7 +19,7 @@ from pathway.internals.decorators import table_from_datasource
 from pathway.internals.fingerprints import fingerprint
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema, schema_from_pandas
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -27,7 +27,7 @@ from pathway.io._utils import read_schema
 from pathway.io.python import ConnectorSubject, read
 
 
-@runtime_type_check
+@check_arg_types
 def _compute_table(table: Table) -> api.CapturedStream:
     [captured] = GraphRunner(
         parse_graph.G, debug=True, monitoring_level=MonitoringLevel.NONE
@@ -145,7 +145,7 @@ def _compute_and_print_internal(
         print(formatted.rstrip())
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def compute_and_print(
     table: Table,
@@ -171,7 +171,7 @@ def compute_and_print(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def compute_and_print_update_stream(
     table: Table,
@@ -197,7 +197,7 @@ def compute_and_print_update_stream(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def table_to_pandas(table: Table, *, include_id: bool = True):
     keys, columns = table_to_dicts(table)
@@ -231,7 +231,38 @@ def _validate_dataframe(df: pd.DataFrame) -> None:
             )
 
 
-@runtime_type_check
+@check_arg_types
+@trace_user_frame
+def table_from_rows(
+    schema: type[Schema],
+    rows: list[tuple],
+    unsafe_trusted_ids: bool = False,
+    is_stream=False,
+) -> Table:
+    """
+    A function for creating a table from a list of tuples. Each tuple should describe
+    one row of the input data (or stream), matching provided schema.
+
+    If ``is_stream`` is set to ``True``, each tuple representing a row should contain
+    two additional columns, the first indicating the time of arrival of particular row
+    and the second indicating whether the row should be inserted (1) or deleted (-1).
+
+    """
+
+    kwargs: dict[str, list] = {}
+    colnames = schema.column_names()
+    if is_stream:
+        colnames += ["__time__", "__diff__"]
+    for colname in colnames:
+        kwargs[colname] = []
+    for row in rows:
+        for colname, entry in zip(colnames, list(row)):
+            kwargs[colname].append(entry)
+    df = pd.DataFrame.from_dict(kwargs)
+    return table_from_pandas(df, unsafe_trusted_ids=unsafe_trusted_ids, schema=schema)
+
+
+@check_arg_types
 @trace_user_frame
 def table_from_pandas(
     df: pd.DataFrame,
@@ -259,6 +290,9 @@ def table_from_pandas(
         raise ValueError("schema does not match given dataframe")
 
     _validate_dataframe(df)
+
+    if id_from is None and schema is not None:
+        id_from = schema.primary_key_columns()
 
     if id_from is None:
         ids_df = pd.DataFrame({"id": df.index})
@@ -340,7 +374,7 @@ def parse_to_table(*args, **kwargs) -> Table:
     return table_from_markdown(*args, **kwargs)
 
 
-@runtime_type_check
+@check_arg_types
 def table_from_parquet(
     path: str | PathLike,
     id_from=None,
@@ -354,7 +388,7 @@ def table_from_parquet(
     return table_from_pandas(df, id_from=None, unsafe_trusted_ids=False)
 
 
-@runtime_type_check
+@check_arg_types
 def table_to_parquet(table: Table, filename: str | PathLike):
     """
     Converts a Pathway Table into a pandas DataFrame and then writes it to Parquet

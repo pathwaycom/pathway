@@ -12,7 +12,6 @@ import pathway.internals.expression as expr
 import pathway.internals.operator as op
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.graph_runner.path_storage import Storage
-from pathway.internals.table import Table
 from pathway.internals.universe import Universe
 
 
@@ -27,7 +26,7 @@ def compute_paths(
         case op.InputOperator():
             evaluator = FlatStoragePathEvaluator(context)
         case op.RowTransformerOperator():
-            evaluator = AddNewColumnsPathEvaluator(context)
+            evaluator = FlatStoragePathEvaluator(context)
         case op.ContextualizedIntermediateOperator():
             evaluator = PathEvaluator.for_context(context)(context)
         case _:
@@ -35,26 +34,6 @@ def compute_paths(
                 f"Operator {operator} in update_storage() but it shouldn't produce tables."
             )
     return evaluator.compute(output_columns, input_storages)
-
-
-def iterate(
-    output_columns: Iterable[clmn.Column],
-    input_storage: Storage,
-    output_table: Table,
-    input_table: Table,
-) -> Storage:
-    column_names = {column: name for name, column in output_table._columns.items()}
-    paths = {}
-    for column in output_columns:
-        column_name = column_names.get(column)
-        if column_name is not None:
-            source_column = input_table._columns[column_name]
-            path = input_storage.get_path(source_column)
-        else:
-            path = input_storage.get_path(column)
-        paths[column] = path
-    storage = Storage(output_table._universe, paths)
-    return storage
 
 
 class PathEvaluator(ABC):

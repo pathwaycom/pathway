@@ -22,7 +22,7 @@ def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
 
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             data
@@ -57,7 +57,7 @@ def test_kafka_json(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
 
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             k    | v
@@ -94,7 +94,7 @@ def test_kafka_csv(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
 
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             k    | v
@@ -119,7 +119,7 @@ def test_kafka_simple_wrapper(tmp_path: pathlib.Path, kafka_context: KafkaTestCo
     )
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             data
@@ -141,7 +141,7 @@ def test_kafka_simple_wrapper(tmp_path: pathlib.Path, kafka_context: KafkaTestCo
     )
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             data
@@ -199,7 +199,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
 
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             k    | v
@@ -240,7 +240,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
     )
 
     pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             k    | v

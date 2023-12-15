@@ -78,7 +78,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         response = await self._fetch_response(id, event)
         if self._delete_completed_queries:
             self._remove(id, data)
-        return web.json_response(status=200, data=response)
+        return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
 
     async def _fetch_response(self, id, event) -> Any:
         await event.wait()
@@ -90,6 +90,10 @@ class RestServerSubject(io.python.ConnectorSubject):
         for column in self._schema.keys():
             if column not in payload and column not in defaults:
                 raise web.HTTPBadRequest(reason=f"`{column}` is required")
+
+    @property
+    def _deletions_enabled(self) -> bool:
+        return self._delete_completed_queries
 
 
 def rest_connector(

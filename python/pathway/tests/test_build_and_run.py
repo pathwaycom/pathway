@@ -19,6 +19,7 @@ from pathway.debug import _markdown_to_pandas
 from pathway.internals import column, datasink, datasource, graph_runner
 from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner.state import ScopeState
+from pathway.internals.graph_runner.storage_graph import OperatorStorageGraph
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.internals.schema import Schema, schema_from_pandas
@@ -32,7 +33,7 @@ def test_process_only_relevant_nodes():
     input2 = Table.empty()
     output = input2.select()
 
-    def validate(state: ScopeState) -> None:
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
         assert not state.has_legacy_table(input1)
         assert state.has_legacy_table(input2)
         assert state.has_legacy_table(output)
@@ -48,7 +49,7 @@ def test_process_relevant_nodes_and_debug_nodes():
     input2.debug("input2")
     input3 = Table.empty()
 
-    def validate(state: ScopeState) -> None:
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
         assert state.has_legacy_table(input1)
         assert state.has_legacy_table(input2)
         assert not state.has_legacy_table(input3)
@@ -66,7 +67,7 @@ def test_process_output_nodes(tmp_path: pathlib.Path):
     file_path = tmp_path / "test_output.csv"
     csv.write(input2, file_path)
 
-    def validate(state: ScopeState) -> None:
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
         assert not state.has_legacy_table(input1)
         assert state.has_legacy_table(input2)
 
@@ -85,7 +86,7 @@ def test_process_output_nodes_and_debug_nodes(tmp_path: pathlib.Path):
     file_path = tmp_path / "test_output.csv"
     csv.write(input2, file_path)
 
-    def validate(state) -> None:
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
         assert state.has_legacy_table(input1)
         assert state.has_legacy_table(input2)
         assert not state.has_legacy_table(input3)
@@ -100,7 +101,7 @@ def test_process_all_nodes():
     input1 = Table.empty()
     input2 = Table.empty()
 
-    def validate(state: ScopeState) -> None:
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
         assert state.has_legacy_table(input1)
         assert state.has_legacy_table(input2)
 
@@ -158,9 +159,6 @@ def test_debug_datasource_schema_mismatch():
         ).run_tables(input)
 
 
-@pytest.mark.xfail(
-    reason="Columns are not used everywhere. Add similar test for columns in storages."
-)
 def test_process_only_relevant_columns():
     input1 = T(
         """
@@ -175,20 +173,17 @@ def test_process_only_relevant_columns():
     filtered = input1.filter(this.foo <= 42)
     result = filtered.select(this.bar)
 
-    def validate(state: ScopeState) -> None:
-        assert state.has_column(filtered._get_column("bar"))
-        assert state.has_column(result._get_column("bar"))
-        assert not state.has_column(filtered._get_column("foo"))
-        assert not state.has_column(filtered._get_column("baz"))
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
+        assert storage_graph.has_column(filtered, filtered._get_column("bar"))
+        assert storage_graph.has_column(result, result._get_column("bar"))
+        assert not storage_graph.has_column(filtered, filtered._get_column("foo"))
+        assert not storage_graph.has_column(filtered, filtered._get_column("baz"))
 
     graph_runner.GraphRunner(G, monitoring_level=MonitoringLevel.NONE).run_tables(
         result, after_build=validate
     )
 
 
-@pytest.mark.xfail(
-    reason="Columns are not used everywhere. Add similar test for columns in storages."
-)
 def test_process_columns_of_debug_nodes():
     input = T(
         """
@@ -199,18 +194,15 @@ def test_process_columns_of_debug_nodes():
     result = input.select(input.foo)
     result.debug(name="result")
 
-    def validate(state: ScopeState):
-        assert state.has_column(input.foo._column)
-        assert state.has_column(result.foo._column)
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph):
+        assert storage_graph.has_column(input, input.foo._column)
+        assert storage_graph.has_column(result, result.foo._column)
 
     graph_runner.GraphRunner(
         G, debug=True, monitoring_level=MonitoringLevel.NONE
     ).run_outputs(after_build=validate)
 
 
-@pytest.mark.xfail(
-    reason="Columns are not used everywhere. Add similar test for columns in storages."
-)
 def test_process_row_transformer_columns_if_needed():
     @transformer
     class foo_transformer:
@@ -234,19 +226,19 @@ def test_process_row_transformer_columns_if_needed():
 
     result1 = foo_transformer(input).table
 
-    def validate(state: ScopeState) -> None:
-        assert state.has_column(input._get_column("arg"))
-        assert state.has_column(input._get_column("foo"))
-        assert state.has_column(result1._get_column("ret"))
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
+        assert storage_graph.has_column(input, input._get_column("arg"))
+        assert storage_graph.has_column(input, input._get_column("foo"))
+        assert storage_graph.has_column(result1, result1._get_column("ret"))
 
     builder.run_tables(result1, after_build=validate)
 
     result2 = input.select(this.arg)
 
-    def validate(state: ScopeState) -> None:
-        assert state.has_column(input._get_column("arg"))
-        assert not state.has_column(input._get_column("foo"))
-        assert state.has_column(result2._get_column("arg"))
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph) -> None:
+        assert storage_graph.has_column(input, input._get_column("arg"))
+        assert not storage_graph.has_column(input, input._get_column("foo"))
+        assert storage_graph.has_column(result2, result2._get_column("arg"))
 
     builder.run_tables(result2, after_build=validate)
 
@@ -271,7 +263,7 @@ def test_groupby_cache():
 
     assert g1 == g2
 
-    def validate(state: ScopeState):
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph):
         groupby_contexts = list(
             ctx
             for ctx in state.evaluators.keys()
@@ -304,7 +296,7 @@ def test_groupby_cache_multiple_cols():
 
     assert g1 == g2
 
-    def validate(state: ScopeState):
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph):
         groupby_contexts = list(
             ctx
             for ctx in state.evaluators.keys()
@@ -338,7 +330,7 @@ def test_groupby_cache_similar_tables():
     g1.reduce(min=reducers.max(table.age))
     g2.reduce(min=reducers.max(copy.age))
 
-    def validate(state: ScopeState):
+    def validate(state: ScopeState, storage_graph: OperatorStorageGraph):
         groupby_contexts = list(
             ctx
             for ctx in state.evaluators.keys()

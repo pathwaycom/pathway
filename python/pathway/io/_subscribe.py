@@ -5,12 +5,16 @@ from __future__ import annotations
 from pathway.internals.table_subscription import (
     OnChangeCallback,
     OnFinishCallback,
+    OnTimeEndCallback,
     subscribe as internal_subscribe,
 )
 
 
 def subscribe(
-    table, on_change: OnChangeCallback, on_end: OnFinishCallback = lambda: None
+    table,
+    on_change: OnChangeCallback,
+    on_end: OnFinishCallback = lambda: None,
+    on_time_end: OnTimeEndCallback = lambda time: None,
 ):
     """
     Calls a callback function on_change on every change happening in table.
@@ -23,7 +27,7 @@ def subscribe(
           addition of the row. These parameters of the callback are expected to have
           names row, time and is_addition respectively.
         on_end: the callback to be called when the stream of changes ends.
-          It will be called on each engine worker separately.
+        on_time_end: the callback function to be called on each closed time of computation.
     Returns:
         None
 
@@ -60,5 +64,6 @@ def subscribe(
         table,
         skip_persisted_batch=True,
         on_change=on_change,
+        on_time_end=on_time_end,
         on_end=on_end,
     )

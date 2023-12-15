@@ -364,19 +364,40 @@ class TypeInterpreter(IdentityTransform):
         state: TypeInterpreterState | None = None,
         **kwargs,
     ) -> expr.IfElseExpression:
-        expression = super().eval_ifelse(expression, state=state, **kwargs)
-        if_dtype = expression._if._dtype
+        assert state is not None
+        if_ = self.eval_expression(expression._if, state=state)
+        if_dtype = if_._dtype
         if if_dtype != dt.BOOL:
             raise TypeError(
                 f"First argument of pathway.if_else has to be bool, found {if_dtype.typehint}."
             )
-        then_dtype = expression._then._dtype
-        else_dtype = expression._else._dtype
+
+        if isinstance(if_, expr.IsNotNoneExpression) and isinstance(
+            if_._expr, expr.ColumnReference
+        ):
+            then_ = self.eval_expression(
+                expression._then, state=state.with_new_col([if_._expr])
+            )
+        else:
+            then_ = self.eval_expression(expression._then, state=state)
+
+        if isinstance(if_, expr.IsNoneExpression) and isinstance(
+            if_._expr, expr.ColumnReference
+        ):
+            else_ = self.eval_expression(
+                expression._else, state=state.with_new_col([if_._expr])
+            )
+        else:
+            else_ = self.eval_expression(expression._else, state=state)
+
+        then_dtype = then_._dtype
+        else_dtype = else_._dtype
         lca = dt.types_lca(then_dtype, else_dtype)
         if lca is dt.ANY:
             raise TypeError(
                 f"Cannot perform pathway.if_else on columns of types {then_dtype.typehint} and {else_dtype.typehint}."
             )
+        expression = expr.IfElseExpression(if_, then_, else_)
         return _wrap(expression, lca)
 
     def eval_make_tuple(
@@ -423,26 +444,18 @@ class TypeInterpreter(IdentityTransform):
             raise TypeError(f"Cannot get from {Json | None}.")
         else:
             # sequence
-            if not isinstance(
-                object_dtype, (dt.Tuple, dt.List)
-            ) and object_dtype not in [
-                dt.ANY,
-                dt.ARRAY,
-            ]:
+            if (
+                not isinstance(object_dtype, (dt.Array, dt.Tuple, dt.List))
+                and object_dtype != dt.ANY
+            ):
                 raise TypeError(
                     f"Object in {expression!r} has to be a JSON or sequence."
                 )
             if index_dtype != dt.INT:
                 raise TypeError(f"Index in {expression!r} has to be an int.")
 
-            if object_dtype == dt.ARRAY:
-                warnings.warn(
-                    f"Object in {expression!r} is of type numpy.ndarray but its number of"
-                    + " dimensions is not known. Pathway cannot determine the return type"
-                    + " and will set Any as the return type. Please use "
-                    + "pathway.declare_type to set the correct return type."
-                )
-                return _wrap(expression, dt.ANY)
+            if isinstance(object_dtype, dt.Array):
+                return _wrap(expression, object_dtype.strip_dimension())
             if object_dtype == dt.ANY:
                 return _wrap(expression, dt.ANY)
 

@@ -284,6 +284,9 @@ pub enum DurationExpression {
     Sub(Arc<Expression>, Arc<Expression>),
     MulByInt(Arc<Expression>, Arc<Expression>),
     DivByInt(Arc<Expression>, Arc<Expression>),
+    TrueDivByInt(Arc<Expression>, Arc<Expression>),
+    MulByFloat(Arc<Expression>, Arc<Expression>),
+    DivByFloat(Arc<Expression>, Arc<Expression>),
     Mod(Arc<Expression>, Arc<Expression>),
     DateTimeNaiveSub(Arc<Expression>, Arc<Expression>),
     DateTimeUtcSub(Arc<Expression>, Arc<Expression>),
@@ -1012,6 +1015,16 @@ impl DurationExpression {
                     Ok(result) => Ok(result),
                     Err(err) => Err(DynError::from(err)),
                 }
+            }
+            Self::TrueDivByInt(lhs, rhs) => lhs
+                .eval_as_duration(values)?
+                .true_div_by_i64(rhs.eval_as_int(values)?)
+                .map_err(DynError::from),
+            Self::MulByFloat(lhs, rhs) => {
+                Ok(lhs.eval_as_duration(values)? * rhs.eval_as_float(values)?)
+            }
+            Self::DivByFloat(lhs, rhs) => {
+                (lhs.eval_as_duration(values)? / rhs.eval_as_float(values)?).map_err(DynError::from)
             }
             Self::Mod(lhs, rhs) => {
                 match lhs.eval_as_duration(values)? % rhs.eval_as_duration(values)? {

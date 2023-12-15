@@ -6,7 +6,6 @@ import collections
 import multiprocessing
 import os
 import pathlib
-import platform
 import re
 import sys
 import time
@@ -33,12 +32,16 @@ try:
 except ImportError:
     _numba_missing = True
 
-xfail_on_darwin = pytest.mark.xfail(
-    platform.system() == "Darwin",
-    reason="can't do pw.run() from custom process on Darwin",
+xfail_no_numba = pytest.mark.xfail(_numba_missing, reason="unable to import numba")
+
+needs_multiprocessing_fork = pytest.mark.xfail(
+    sys.platform != "linux",
+    reason="multiprocessing needs to use fork() for pw.run() to work",
 )
 
-xfail_no_numba = pytest.mark.xfail(_numba_missing, reason="unable to import numba")
+xfail_on_multiple_threads = pytest.mark.xfail(
+    os.getenv("PATHWAY_THREADS", "1") != "1", reason="multiple threads"
+)
 
 
 def skip_on_multiple_workers() -> None:
@@ -225,7 +228,10 @@ class CsvLinesNumberChecker:
         self.n_lines = n_lines
 
     def __call__(self):
-        result = pd.read_csv(self.path).sort_index()
+        try:
+            result = pd.read_csv(self.path).sort_index()
+        except Exception:
+            return False
         print(
             f"Actual (expected) lines number: {len(result)} ({self.n_lines})",
             file=sys.stderr,
@@ -233,8 +239,10 @@ class CsvLinesNumberChecker:
         return len(result) == self.n_lines
 
     def provide_information_on_failure(self):
+        if not self.path.exists():
+            return f"{self.path} does not exist"
         with open(self.path, "r") as f:
-            print(f"Final output contents:\n{f.read()}", file=sys.stderr)
+            return f"Final output contents:\n{f.read()}"
 
 
 class FileLinesNumberChecker:
@@ -243,6 +251,8 @@ class FileLinesNumberChecker:
         self.n_lines = n_lines
 
     def __call__(self):
+        if not self.path.exists():
+            return False
         n_lines_actual = 0
         with open(self.path, "r") as f:
             for row in f:
@@ -254,8 +264,10 @@ class FileLinesNumberChecker:
         return n_lines_actual == self.n_lines
 
     def provide_information_on_failure(self):
+        if not self.path.exists():
+            return f"{self.path} does not exist"
         with open(self.path, "r") as f:
-            print(f"Final output contents:\n{f.read()}", file=sys.stderr)
+            return f"Final output contents:\n{f.read()}"
 
 
 def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k")):
@@ -266,12 +278,15 @@ def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k"
     )
 
     def checker():
-        result = (
-            pd.read_csv(output_path, usecols=[*usecols, *index_col])
-            .convert_dtypes()
-            .set_index(index_col, drop=False)
-            .sort_index()
-        )
+        try:
+            result = (
+                pd.read_csv(output_path, usecols=[*usecols, *index_col])
+                .convert_dtypes()
+                .set_index(index_col, drop=False)
+                .sort_index()
+            )
+        except Exception:
+            return False
         return expected.equals(result)
 
     return checker
@@ -283,6 +298,9 @@ class TestDataSource(datasource.DataSource):
 
     def is_bounded(self) -> bool:
         raise NotImplementedError()
+
+    def is_append_only(self) -> bool:
+        return False
 
 
 def apply_defaults_for_run_kwargs(kwargs):
@@ -385,43 +403,48 @@ def run_all(**kwargs):
 def wait_result_with_checker(
     checker,
     timeout_sec,
-    step=1.0,
+    *,
+    step=0.1,
     target=run,
     args=(),
     kwargs={},
 ):
-    if target is not None:
-        p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
-        p.start()
-    started_at = time.time()
+    try:
+        if target is not None:
+            assert (
+                multiprocessing.get_start_method() == "fork"
+            ), "multiprocessing does not use fork(), pw.run() will not work"
+            p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
+            p.start()
 
-    succeeded = False
-    for _ in range(int(timeout_sec / step) + 1):
-        time.sleep(step)
-        try:
+        succeeded = False
+        start_time = time.monotonic()
+        while True:
+            time.sleep(step)
+
+            elapsed = time.monotonic() - start_time
+            if elapsed >= timeout_sec:
+                break
+
             succeeded = checker()
             if succeeded:
                 print(
-                    "Correct result obtained after {} seconds".format(
-                        time.time() - started_at
-                    ),
+                    f"Correct result obtained after {elapsed:.1f} seconds",
                     file=sys.stderr,
                 )
                 break
-        except Exception:
-            pass
 
-    if not succeeded:
-        checker.provide_information_on_failure()
+        if not succeeded:
+            details = checker.provide_information_on_failure()
+            print(f"Checker failed: {details}", file=sys.stderr)
+            raise AssertionError(details)
+    finally:
+        if target is not None:
+            if "persistence_config" in kwargs:
+                time.sleep(5.0)  # allow a little gap to persist state
 
-    if "persistence_config" in kwargs:
-        time.sleep(5.0)  # allow a little gap to persist state
-
-    if target is not None:
-        p.terminate()
-        p.join()
-
-    return succeeded
+            p.terminate()
+            p.join()
 
 
 def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):

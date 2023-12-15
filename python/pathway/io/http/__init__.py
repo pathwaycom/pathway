@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pathway.internals.api import PathwayType, Pointer
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -18,7 +18,7 @@ from ._server import rest_connector
 from ._streaming import HttpStreamingSubject
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     url: str,
@@ -147,7 +147,7 @@ def read(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def write(
     table: Table,

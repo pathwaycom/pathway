@@ -33,7 +33,7 @@ from pathway.internals.join import Joinable
 from pathway.internals.operator import DebugOperator, OutputHandle
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.parse_graph import G
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema, schema_from_columns, schema_from_types
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
@@ -256,7 +256,7 @@ class Table(
 
     @trace_user_frame
     @staticmethod
-    @runtime_type_check
+    @check_arg_types
     def from_columns(
         *args: expr.ColumnReference, **kwargs: expr.ColumnReference
     ) -> Table:
@@ -301,7 +301,7 @@ class Table(
             return table.select(*args, **kwargs)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def concat_reindex(self, *tables: Table) -> Table:
         """Concatenate contents of several tables.
 
@@ -342,7 +342,7 @@ class Table(
 
     @trace_user_frame
     @staticmethod
-    @runtime_type_check
+    @check_arg_types
     def empty(**kwargs: dt.DType) -> Table:
         """Creates an empty table with a schema specified by kwargs.
 
@@ -475,13 +475,13 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     def filter(self, filter_expression: expr.ColumnExpression) -> Table[TSchema]:
-        """Filter a table according to `filter` condition.
+        """Filter a table according to `filter_expression` condition.
 
 
         Args:
-            filter: `ColumnExpression` that specifies the filtering condition.
+            filter_expression: `ColumnExpression` that specifies the filtering condition.
 
         Returns:
             Table: Result has the same schema as `self` and its ids are subset of `self.id`.
@@ -514,6 +514,48 @@ class Table(
             ret = ret.update_types(**{name: dt.unoptionalize(dtype)})
         return ret
 
+    @trace_user_frame
+    @desugar
+    @check_arg_types
+    def split(
+        self, split_expression: expr.ColumnExpression
+    ) -> tuple[Table[TSchema], Table[TSchema]]:
+        """Split a table according to `split_expression` condition.
+
+
+        Args:
+            split_expression: `ColumnExpression` that specifies the split condition.
+
+        Returns:
+           positive_table, negative_table: tuple of tables,
+           with the same schemas as `self` and with ids that are subsets of `self.id`,
+           and provably disjoint.
+
+
+        Example:
+
+        >>> import pathway as pw
+        >>> vertices = pw.debug.table_from_markdown('''
+        ... label outdegree
+        ...     1         3
+        ...     7         0
+        ... ''')
+        >>> positive, negative = vertices.split(vertices.outdegree == 0)
+        >>> pw.debug.compute_and_print(positive, include_id=False)
+        label | outdegree
+        7     | 0
+        >>> pw.debug.compute_and_print(negative, include_id=False)
+        label | outdegree
+        1     | 3
+        """
+        positive = self.filter(split_expression)
+        negative = self.filter(~split_expression)
+        universes.promise_are_pairwise_disjoint(positive, negative)
+        universes.promise_are_equal(
+            self, Table.concat(positive, negative)
+        )  # TODO: add API method for this
+        return positive, negative
+
     @contextualized_operator
     def _filter(self, filter_expression: expr.ColumnExpression) -> Table[TSchema]:
         self._validate_expression(filter_expression)
@@ -526,7 +568,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     def _gradual_broadcast(
         self,
         threshold_table,
@@ -540,7 +582,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     @contextualized_operator
     def __gradual_broadcast(
         self,
@@ -560,7 +602,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     @contextualized_operator
     def _forget(
         self,
@@ -578,7 +620,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     @contextualized_operator
     def _forget_immediately(
         self,
@@ -588,7 +630,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     @contextualized_operator
     def _filter_out_results_of_forgetting(
         self,
@@ -601,7 +643,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     @contextualized_operator
     def _freeze(
         self,
@@ -617,7 +659,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     @contextualized_operator
     def _buffer(
         self,
@@ -632,7 +674,7 @@ class Table(
         return self._table_with_context(context)
 
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def difference(self, other: Table) -> Table[TSchema]:
         r"""Restrict self universe to keys not appearing in the other table.
 
@@ -670,7 +712,7 @@ class Table(
         return self._table_with_context(context)
 
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def intersect(self, *tables: Table) -> Table[TSchema]:
         """Restrict self universe to keys appearing in all of the tables.
 
@@ -721,7 +763,7 @@ class Table(
         return self._table_with_context(context)
 
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def restrict(self, other: TableLike) -> Table[TSchema]:
         """Restrict self universe to keys appearing in other.
 
@@ -776,7 +818,7 @@ class Table(
         )
 
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def copy(self) -> Table[TSchema]:
         """Returns a copy of a table.
 
@@ -811,7 +853,7 @@ class Table(
     @trace_user_frame
     @desugar
     @arg_handler(handler=groupby_handler)
-    @runtime_type_check
+    @check_arg_types
     def groupby(
         self,
         *args: expr.ColumnReference,
@@ -1061,7 +1103,7 @@ class Table(
         return self.update_cells(other)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def concat(self, *others: Table[TSchema]) -> Table[TSchema]:
         """Concats `self` with every `other` ∊ `others`.
 
@@ -1145,7 +1187,7 @@ class Table(
         return self._table_with_context(context)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def update_cells(self, other: Table) -> Table:
         """Updates cells of `self`, breaking ties in favor of the values in `other`.
 
@@ -1207,7 +1249,7 @@ class Table(
 
     @trace_user_frame
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def _update_cells(self, other: Table) -> Table:
         if not other._universe.is_subset_of(self._universe):
             raise ValueError(
@@ -1224,7 +1266,7 @@ class Table(
         return self._table_with_context(context)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def update_rows(self, other: Table[TSchema]) -> Table[TSchema]:
         """Updates rows of `self`, breaking ties in favor for the rows in `other`.
 
@@ -1290,7 +1332,7 @@ class Table(
 
     @trace_user_frame
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def _update_rows(self, other: Table[TSchema]) -> Table[TSchema]:
         union_ids = (self._id_column, other._id_column)
         context = clmn.UpdateRowsContext(
@@ -1334,7 +1376,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     def with_id(self, new_index: expr.ColumnReference) -> Table:
         """Set new ids based on another column containing id-typed values.
 
@@ -1375,7 +1417,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     def with_id_from(
         self,
         *args: expr.ColumnExpression | Value,
@@ -1425,7 +1467,7 @@ class Table(
 
     @trace_user_frame
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def _with_new_index(
         self,
         new_index: expr.ColumnExpression,
@@ -1446,7 +1488,7 @@ class Table(
     @trace_user_frame
     @desugar
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def rename_columns(self, **kwargs: str | expr.ColumnReference) -> Table:
         """Rename columns according to kwargs.
 
@@ -1499,7 +1541,7 @@ class Table(
         }
         return self._with_same_universe(*columns_wrapped.items())
 
-    @runtime_type_check
+    @check_arg_types
     def rename_by_dict(
         self, names_mapping: dict[str | expr.ColumnReference, str]
     ) -> Table:
@@ -1533,7 +1575,7 @@ class Table(
             **{new_name: self[old_name] for old_name, new_name in names_mapping.items()}
         )
 
-    @runtime_type_check
+    @check_arg_types
     def with_prefix(self, prefix: str) -> Table:
         """Rename columns by adding prefix to each name of column.
 
@@ -1555,7 +1597,7 @@ class Table(
         """
         return self.rename_by_dict({name: prefix + name for name in self.keys()})
 
-    @runtime_type_check
+    @check_arg_types
     def with_suffix(self, suffix: str) -> Table:
         """Rename columns by adding suffix to each name of column.
 
@@ -1578,7 +1620,7 @@ class Table(
         return self.rename_by_dict({name: name + suffix for name in self.keys()})
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def rename(
         self,
         names_mapping: dict[str | expr.ColumnReference, str] | None = None,
@@ -1604,7 +1646,7 @@ class Table(
     @trace_user_frame
     @desugar
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def without(self, *columns: str | expr.ColumnReference) -> Table:
         """Selects all columns without named column references.
 
@@ -1645,7 +1687,7 @@ class Table(
 
     @trace_user_frame
     @desugar
-    @runtime_type_check
+    @check_arg_types
     def having(self, *indexers: expr.ColumnReference) -> Table[TSchema]:
         """Removes rows so that indexed.ix(indexer) is possible when some rows are missing,
         for each indexer in indexers"""
@@ -1661,7 +1703,7 @@ class Table(
             return rets[0].intersect(*rets[1:])
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def update_types(self, **kwargs: Any) -> Table:
         """Updates types in schema. Has no effect on the runtime."""
 
@@ -1676,7 +1718,7 @@ class Table(
             **{key: declare_type(val, self[key]) for key, val in kwargs.items()}
         )
 
-    @runtime_type_check
+    @check_arg_types
     def cast_to_types(self, **kwargs: Any) -> Table:
         """Casts columns to types."""
 
@@ -1692,7 +1734,7 @@ class Table(
         )
 
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def _having(self, indexer: expr.ColumnReference) -> Table[TSchema]:
         context = clmn.HavingContext(
             orig_id_column=self._id_column, key_column=indexer._column
@@ -1700,7 +1742,7 @@ class Table(
         return self._table_with_context(context)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def with_universe_of(self, other: TableLike) -> Table:
         """Returns a copy of self with exactly the same universe as others.
 
@@ -1735,10 +1777,10 @@ class Table(
         return self._unsafe_promise_universe(other)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def flatten(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
         """Performs a flatmap operation on a column or expression given as a first
-        argument. Datatype of this column or expression has to be iterable.
+        argument. Datatype of this column or expression has to be iterable or Json array.
         Other columns specified in the method arguments are duplicated
         as many times as the length of the iterable.
 
@@ -1812,7 +1854,7 @@ class Table(
     @trace_user_frame
     @desugar
     @contextualized_operator
-    @runtime_type_check
+    @check_arg_types
     def sort(
         self,
         key: expr.ColumnExpression,

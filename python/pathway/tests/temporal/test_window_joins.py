@@ -237,13 +237,16 @@ def test_window_join_sharded_with_smart_cols(join_type: pw.JoinMode) -> None:
 
     w = pw.temporal.tumbling(2)
 
-    res = {
+    join_function = {
         pw.JoinMode.INNER: t1.window_join_inner,
         pw.JoinMode.LEFT: t1.window_join_left,
         pw.JoinMode.RIGHT: t1.window_join_right,
         pw.JoinMode.OUTER: t1.window_join_outer,
-    }[join_type](t2, pw.left.t, pw.right.t, w, t1.k == pw.right.k).select(
-        pw.left.a, pw.right.b, k=pw.declare_type(int, pw.this.k)
+    }[join_type]
+    res = (
+        join_function(t2, pw.left.t, pw.right.t, w, t1.k == pw.right.k)
+        .select(pw.left.a, pw.right.b, pw.this.k)
+        .update_types(k=int)
     )
 
     assert_table_equality_wo_index(res, expected)
@@ -929,22 +932,9 @@ def test_window_join_float(w: pw.temporal.Window) -> None:
     ],
 )
 def test_incorrect_args(join_mode, left_type, right_type, window, error_str):
-    t1 = T(
-        """
-      | a | t
-    0 | 1 | -1
-    """
-    )
+    t1 = pw.Table.empty(a=int, t=left_type)
 
-    t2 = T(
-        """
-      | b | t
-    0 | 1 | 2
-    """
-    )
-
-    t1 = t1.with_columns(t=pw.declare_type(left_type, pw.this.t))
-    t2 = t2.with_columns(t=pw.declare_type(right_type, pw.this.t))
+    t2 = pw.Table.empty(b=int, t=right_type)
 
     with pytest.raises(
         TypeError,

@@ -3,20 +3,18 @@ import pathlib
 import threading
 import time
 
-import pytest
 import requests
 
 import pathway as pw
 from pathway.tests.utils import (
     CsvLinesNumberChecker,
     expect_csv_checker,
+    needs_multiprocessing_fork,
     wait_result_with_checker,
-    xfail_on_darwin,
 )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@needs_multiprocessing_fork
 def test_server(tmp_path: pathlib.Path):
     port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10000
     output_path = tmp_path / "output.csv"
@@ -54,11 +52,10 @@ def test_server(tmp_path: pathlib.Path):
 
     t = threading.Thread(target=target, daemon=True)
     t.start()
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@needs_multiprocessing_fork
 def test_server_customization(tmp_path: pathlib.Path):
     port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10001
     output_path = tmp_path / "output.csv"
@@ -96,11 +93,10 @@ def test_server_customization(tmp_path: pathlib.Path):
 
     t = threading.Thread(target=target, daemon=True)
     t.start()
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@needs_multiprocessing_fork
 def test_server_schema_customization(tmp_path: pathlib.Path):
     port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10002
     output_path = tmp_path / "output.csv"
@@ -134,11 +130,10 @@ def test_server_schema_customization(tmp_path: pathlib.Path):
 
     t = threading.Thread(target=target, daemon=True)
     t.start()
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@needs_multiprocessing_fork
 def test_server_keep_queries(tmp_path: pathlib.Path):
     port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10003
     output_path = tmp_path / "output.csv"
@@ -172,7 +167,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path):
     t = threading.Thread(target=target, daemon=True)
     t.start()
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         expect_csv_checker(
             """
             key | sum    | diff

@@ -15,7 +15,7 @@ from sqlglot.optimizer import qualify_columns
 from pathway.internals import expression as expr, if_else, reducers, table, thisclass
 from pathway.internals.desugaring import TableSubstitutionDesugaring
 from pathway.internals.expression_visitor import IdentityTransform
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.shadows import operator
 
 _tmp_table_cnt = itertools.count()
@@ -618,7 +618,7 @@ def _select(
     return result, orig_context
 
 
-@runtime_type_check
+@check_arg_types
 def sql(query: str, **kwargs: table.Table) -> table.Table:
     r'''
     Run a SQL query on Pathway tables.

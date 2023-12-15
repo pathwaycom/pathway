@@ -152,16 +152,34 @@ _binary_operators_mapping: BinaryOperatorMapping = {
     (operator.gt, dt.DURATION, dt.DURATION): dt.BOOL,
     (operator.ge, dt.DURATION, dt.DURATION): dt.BOOL,
     (operator.add, dt.DURATION, dt.DURATION): dt.DURATION,
-    (operator.add, dt.DURATION, dt.DATE_TIME_NAIVE): dt.DATE_TIME_NAIVE,
-    (operator.add, dt.DURATION, dt.DATE_TIME_UTC): dt.DATE_TIME_UTC,
     (operator.sub, dt.DURATION, dt.DURATION): dt.DURATION,
-    (operator.mul, dt.DURATION, dt.INT): dt.DURATION,
-    (operator.mul, dt.INT, dt.DURATION): dt.DURATION,
-    (operator.floordiv, dt.DURATION, dt.INT): dt.DURATION,
     (operator.floordiv, dt.DURATION, dt.DURATION): dt.INT,
     (operator.truediv, dt.DURATION, dt.DURATION): dt.FLOAT,
     (operator.mod, dt.DURATION, dt.DURATION): dt.DURATION,
-    (operator.matmul, dt.ARRAY, dt.ARRAY): dt.ARRAY,
+    (operator.add, dt.DURATION, dt.DATE_TIME_NAIVE): dt.DATE_TIME_NAIVE,
+    (operator.add, dt.DURATION, dt.DATE_TIME_UTC): dt.DATE_TIME_UTC,
+    (operator.mul, dt.DURATION, dt.INT): dt.DURATION,
+    (operator.mul, dt.INT, dt.DURATION): dt.DURATION,
+    (operator.floordiv, dt.DURATION, dt.INT): dt.DURATION,
+    (operator.truediv, dt.DURATION, dt.INT): dt.DURATION,
+    (operator.mul, dt.DURATION, dt.FLOAT): dt.DURATION,
+    (operator.mul, dt.FLOAT, dt.DURATION): dt.DURATION,
+    (operator.truediv, dt.DURATION, dt.FLOAT): dt.DURATION,
+    (operator.matmul, dt.ANY_ARRAY_2D, dt.ANY_ARRAY_2D): dt.ANY_ARRAY_2D,
+    (operator.matmul, dt.INT_ARRAY_2D, dt.INT_ARRAY_2D): dt.INT_ARRAY_2D,
+    (operator.matmul, dt.FLOAT_ARRAY_2D, dt.FLOAT_ARRAY_2D): dt.FLOAT_ARRAY_2D,
+    (operator.matmul, dt.ANY_ARRAY_2D, dt.ANY_ARRAY_1D): dt.ANY_ARRAY_1D,
+    (operator.matmul, dt.INT_ARRAY_2D, dt.INT_ARRAY_1D): dt.INT_ARRAY_1D,
+    (operator.matmul, dt.FLOAT_ARRAY_2D, dt.FLOAT_ARRAY_1D): dt.FLOAT_ARRAY_1D,
+    (operator.matmul, dt.ANY_ARRAY_1D, dt.ANY_ARRAY_2D): dt.ANY_ARRAY_1D,
+    (operator.matmul, dt.INT_ARRAY_1D, dt.INT_ARRAY_2D): dt.INT_ARRAY_1D,
+    (operator.matmul, dt.FLOAT_ARRAY_1D, dt.FLOAT_ARRAY_2D): dt.FLOAT_ARRAY_1D,
+    (operator.matmul, dt.ANY_ARRAY_1D, dt.ANY_ARRAY_1D): dt.ANY,
+    (operator.matmul, dt.INT_ARRAY_1D, dt.INT_ARRAY_1D): dt.INT,
+    (operator.matmul, dt.FLOAT_ARRAY_1D, dt.FLOAT_ARRAY_1D): dt.FLOAT,
+    (operator.matmul, dt.ANY_ARRAY, dt.ANY_ARRAY): dt.ANY_ARRAY,
+    (operator.matmul, dt.INT_ARRAY, dt.INT_ARRAY): dt.INT_ARRAY,
+    (operator.matmul, dt.FLOAT_ARRAY, dt.FLOAT_ARRAY): dt.FLOAT_ARRAY,
 }
 
 tuple_handling_operators = {
@@ -175,6 +193,8 @@ tuple_handling_operators = {
 
 
 def get_binary_operators_mapping(op, left, right, default=None):
+    if isinstance(left, dt.Array) and isinstance(right, dt.Array):
+        left, right = dt.coerce_arrays_pair(left, right)
     return _binary_operators_mapping.get(
         (op, dt.normalize_dtype(left), dt.normalize_dtype(right)), default
     )

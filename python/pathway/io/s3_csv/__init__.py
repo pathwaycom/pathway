@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pathway.internals.api import PathwayType
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -13,7 +13,7 @@ from pathway.io._utils import CsvParserSettings, construct_schema_and_data_forma
 from pathway.io.s3 import AwsS3Settings, read as s3_read
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     path: str,

@@ -7,7 +7,7 @@ from typing import Any
 from pathway.internals import api, datasource
 from pathway.internals._io_helpers import AwsS3Settings
 from pathway.internals.decorators import table_from_datasource
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -77,7 +77,7 @@ class WasabiS3Settings:
         )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     path: str,
@@ -168,11 +168,6 @@ def read(
     ... )
     """
     internal_mode = internal_connector_mode(mode)
-    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
-        raise NotImplementedError(
-            "Snapshot mode is currently unsupported in S3-like connectors"
-        )
-
     if aws_s3_settings:
         prepared_aws_settings = aws_s3_settings
     else:
@@ -207,7 +202,7 @@ def read(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read_from_digital_ocean(
     path: str,
@@ -281,11 +276,6 @@ def read_from_digital_ocean(
     ... )
     """
     internal_mode = internal_connector_mode(mode)
-    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
-        raise NotImplementedError(
-            "Snapshot mode is currently unsupported in S3-like connectors"
-        )
-
     data_storage = construct_s3_data_storage(
         path=path,
         rust_engine_s3_settings=do_s3_settings.settings,
@@ -315,7 +305,7 @@ def read_from_digital_ocean(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read_from_wasabi(
     path: str,
@@ -388,11 +378,6 @@ def read_from_wasabi(
     ... )
     """
     internal_mode = internal_connector_mode(mode)
-    if internal_mode == api.ConnectorMode.STREAMING_WITH_DELETIONS:
-        raise NotImplementedError(
-            "Snapshot mode is currently unsupported in S3-like connectors"
-        )
-
     data_storage = construct_s3_data_storage(
         path=path,
         rust_engine_s3_settings=wasabi_s3_settings.settings,

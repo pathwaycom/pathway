@@ -6,7 +6,7 @@ import math
 
 import pathway.internals as pw
 from pathway.internals.fingerprints import fingerprint
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 from pathway.stdlib.graphs.common import Clustering, Edge, Weight
 from pathway.stdlib.graphs.graph import WeightedGraph
@@ -218,7 +218,7 @@ def _one_step(
     return clustering.update_rows(delta).with_universe_of(clustering)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def _louvain_level(G: WeightedGraph) -> pw.Table[Clustering]:
     r"""
@@ -377,7 +377,5 @@ def exact_modularity(
     )
 
     return score.reduce(
-        modularity=pw.declare_type(
-            float, pw.apply(round, pw.reducers.sum(score.modularity), round_digits)
-        )
+        modularity=pw.reducers.sum(score.modularity).num.round(round_digits)
     )

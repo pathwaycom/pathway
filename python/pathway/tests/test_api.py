@@ -69,13 +69,7 @@ def static_table_from_pandas(scope, df, ptr_columns=(), legacy=True):
 
 def convert_table(scope, table):
     if isinstance(table, api.LegacyTable):
-        new_table = scope.columns_to_table(
-            table.universe,
-            [
-                (column, column_path.ColumnPath((i,)))
-                for (i, column) in enumerate(table.columns)
-            ],
-        )
+        new_table = scope.columns_to_table(table.universe, table.columns)
         return (
             new_table,
             [column_path.ColumnPath((i,)) for i in range(len(table.columns))],

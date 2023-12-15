@@ -63,10 +63,9 @@ use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
 use pyo3::PyObject;
 use serde::{Deserialize, Serialize};
-use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::ToStream as _;
-use timely::dataflow::operators::{Exchange, Filter, Inspect, Operator, Probe};
+use timely::dataflow::operators::{Filter, Inspect, Probe};
 use timely::dataflow::scopes::Child;
 use timely::order::{Product, TotalOrder};
 use timely::progress::timestamp::Refines;
@@ -76,16 +75,16 @@ use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::complex_columns::complex_columns;
 use self::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp, NotTotal, Total};
+use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
-use self::operators::time_column::TimeColumnBuffer;
+use self::operators::time_column::{MaxTimestamp, SelfCompactionTime, TimeColumnBuffer};
 use self::operators::{ArrangeWithTypes, MapWrapped};
-use self::operators::{ConsolidateForOutput, Reshard};
-use self::operators::{ConsolidateForOutputMap, MaybeTotal};
+use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
-use super::graph::DataRow;
+use super::graph::{DataRow, SubscribeCallbacks};
 use super::http_server::maybe_run_http_server_thread;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
@@ -1140,63 +1139,29 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
     fn columns_to_table_properties(
         &mut self,
-        columns: Vec<(ColumnHandle, ColumnPath)>,
+        columns: Vec<ColumnHandle>,
     ) -> Result<TableProperties> {
         let properties: Result<Vec<_>> = columns
             .into_iter()
-            .map(|(column_handle, path)| {
+            .map(|column_handle| {
                 let properties = self
                     .columns
                     .get(column_handle)
                     .ok_or(Error::InvalidColumnHandle)?
                     .properties
                     .clone();
-                Ok((path, properties.as_ref().clone()))
+                Ok(properties.as_ref().clone())
             })
             .collect();
 
-        TableProperties::from_paths(properties?)
+        Ok(TableProperties::Table(properties?.as_slice().into()))
     }
 
     fn columns_to_table(
         &mut self,
         universe_handle: UniverseHandle,
-        columns: Vec<(ColumnHandle, ColumnPath)>,
+        column_handles: Vec<ColumnHandle>,
     ) -> Result<TableHandle> {
-        fn produce_nested_tuple(
-            paths: &[(usize, Vec<usize>)],
-            depth: usize,
-            data: &Arc<[Value]>,
-        ) -> Value {
-            if !paths.is_empty() && paths.first().unwrap().1.len() == depth {
-                let id = paths.first().unwrap().0;
-                for (next_id, _path) in &paths[1..] {
-                    assert_eq!(data[id], data[*next_id]);
-                }
-                return data[id].clone();
-            }
-            let mut path_prefix = 0;
-            let mut i = 0;
-            let mut j = 0;
-            let mut result = Vec::new();
-            while i < paths.len() {
-                while i < paths.len() && path_prefix == paths[i].1[depth] {
-                    i += 1;
-                }
-                path_prefix += 1;
-                if i == j {
-                    // XXX: remove after iterate is properly implemented
-                    // emulate unused cols
-                    result.push(Value::Tuple(Arc::from([])));
-                    continue;
-                }
-                assert!(j < i); //there is at least one entry
-                result.push(produce_nested_tuple(&paths[j..i], depth + 1, data));
-                j = i;
-            }
-            Value::from(result.as_slice())
-        }
-        let column_handles: Vec<ColumnHandle> = columns.iter().map(|(handle, _)| *handle).collect();
         let tuples_collection = self.tuples(universe_handle, &column_handles)?;
         let tuples: Collection<S, (Key, Arc<[Value]>)> = match tuples_collection {
             TupleCollection::Zero(c) => {
@@ -1210,23 +1175,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }),
             TupleCollection::More(c) => c,
         };
-        let properties = self.columns_to_table_properties(columns.clone())?;
-
-        let mut paths: Vec<(usize, Vec<usize>)> = columns
-            .into_iter()
-            .enumerate()
-            .map(|(i, (_, path))| match path {
-                ColumnPath::ValuePath(path) => Ok((i, path)),
-                ColumnPath::Key => Err(Error::ValueError(
-                    "It is not allowed to use ids in column to table".into(),
-                )),
-            })
-            .collect::<Result<_>>()?;
-
-        paths.sort_by(|(_, path_i), (_, path_j)| path_i.partial_cmp(path_j).unwrap());
+        let properties = self.columns_to_table_properties(column_handles)?;
 
         let table_values = tuples.map_named("columns_to_table:pack", move |(key, values)| {
-            (key, produce_nested_tuple(&paths, 0, &values))
+            (key, Value::from(values.as_ref()))
         });
 
         Ok(self
@@ -1406,21 +1358,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         //TODO: report errors
         let _error_reporter = self.error_reporter.clone();
-        let gathered = table.values().inner.exchange(|_| 0).as_collection();
-        #[allow(clippy::disallowed_methods)]
-        let consolidated =
-            <Collection<S, (Key, Value)> as differential_dataflow::operators::arrange::Arrange<
-                S,
-                Key,
-                Value,
-                isize,
-            >>::arrange_core::<
-                Pipeline,
-                OrdValSpine<Key, Value, <S as MaybeTotalScope>::MaybeTotalTimestamp, isize>,
-            >(&gathered, Pipeline, "consolidate_without_shard")
-            .consolidate_for_output_map(|k, v| (*k, v.clone()));
 
-        let (on_time, _late) = consolidated.freeze(
+        let (on_time, _late) = table.values().freeze(
             move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
             move |val| current_time_column_path.extract_from_value(val).unwrap(),
         );
@@ -1440,7 +1379,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
     where
         <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
             + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + Epsilon,
+            + Epsilon
+            + MaxTimestamp<<S as MaybeTotalScope>::MaybeTotalTimestamp>,
+        SelfCompactionTime<<S as MaybeTotalScope>::MaybeTotalTimestamp>:
+            MaxTimestamp<SelfCompactionTime<<S as MaybeTotalScope>::MaybeTotalTimestamp>>,
     {
         let table = self
             .tables
@@ -1450,10 +1392,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         //TODO: report errors
         let _error_reporter = self.error_reporter.clone();
 
-        let new_table = table.values().consolidate_for_output().postpone(
+        let new_table = table.values().postpone(
             table.values().scope(),
             move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
             move |val| current_time_column_path.extract_from_value(val).unwrap(),
+            true,
         );
 
         Ok(self
@@ -1688,6 +1631,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     .chars()
                     .map(|c| Value::from(ArcStr::from(c.to_string())))
                     .collect()),
+                Value::Json(json) => {
+                    if let serde_json::Value::Array(array) = (*json).clone() {
+                        Ok(array.into_iter().map(Value::from).collect())
+                    } else {
+                        let repr = json.to_string();
+                        Err(Error::ValueError(format!(
+                            "Pathway can't flatten this Json: {repr}"
+                        )))
+                    }
+                }
                 value => Err(Error::ValueError(format!(
                     "Pathway can't flatten this value {value:?}"
                 ))),
@@ -2491,7 +2444,7 @@ where
 #[derive(Debug, Clone)]
 enum OutputEvent {
     Commit(Option<u64>),
-    Batch(Vec<((Key, Tuple), u64, isize)>),
+    Batch(OutputBatch<u64, (Key, Tuple), isize>),
 }
 
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
@@ -2681,7 +2634,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let error_reporter_1 = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
 
-        let new_table = table.values().consolidate_for_output().forget(
+        let new_table = table.values().forget(
             move |val| {
                 threshold_time_column_path
                     .extract_from_value(val)
@@ -2749,13 +2702,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
     fn output_batch(
         stats: &mut OutputConnectorStats,
-        batch: Vec<((Key, Tuple), u64, isize)>,
+        batch: OutputBatch<u64, (Key, Tuple), isize>,
         data_sink: &mut Box<dyn Writer>,
         data_formatter: &mut Box<dyn Formatter>,
         global_persistent_storage: &GlobalPersistentStorage,
     ) -> Result<(), DynError> {
         stats.on_batch_started();
-        for ((key, values), time, diff) in batch {
+        let time = batch.time;
+        for ((key, values), diff) in batch.data {
             if time == ARTIFICIAL_TIME_ON_REWIND_START && global_persistent_storage.is_some() {
                 // Ignore entries, which had been written before
                 continue;
@@ -2804,14 +2758,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             .as_collection();
         let single_threaded = data_sink.single_threaded();
 
-        let output = output_columns.consolidate_for_output().inner;
-        let inspect_output = {
-            if single_threaded {
-                output.exchange(|_| 0)
-            } else {
-                output
-            }
-        };
+        let output = output_columns.consolidate_for_output(single_threaded);
 
         let worker_index = self.scope.index();
         let sender = if !single_threaded || worker_index == 0 {
@@ -2873,7 +2820,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             None
         };
 
-        inspect_output
+        output
             .inspect_core(move |event| match sender {
                 None => {
                     // There is no connector thread for this worker.
@@ -2885,16 +2832,21 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                     }
                 }
                 Some(ref sender) => {
-                    let event = match event {
-                        Ok((_time, data)) => OutputEvent::Batch(data.to_vec()),
+                    match event {
+                        Ok((_time, batches)) => {
+                            for batch in batches {
+                                sender
+                                    .send(OutputEvent::Batch(batch.clone()))
+                                    .expect("sending output batch should not fail");
+                            }
+                        }
                         Err(frontier) => {
                             assert!(frontier.len() <= 1);
-                            OutputEvent::Commit(frontier.first().copied())
+                            sender
+                                .send(OutputEvent::Commit(frontier.first().copied()))
+                                .expect("sending output commit should not fail");
                         }
                     };
-                    sender
-                        .send(event)
-                        .expect("sending output event should not fail");
                 }
             })
             .probe_with(&mut self.output_probe);
@@ -2904,16 +2856,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
     fn subscribe_table(
         &mut self,
-        wrapper: BatchWrapper,
-        mut callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
-        mut on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
     ) -> Result<()> {
-        let mut vector = Vec::new();
-
-        let error_reporter = self.error_reporter.clone();
         let worker_index = self.scope.index();
 
         let sink_id = self
@@ -2922,25 +2869,54 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             .map(|m| m.lock().unwrap().register_sink());
         let global_persistent_storage = self.global_persistent_storage.clone();
         let skip_initial_time = skip_persisted_batch && global_persistent_storage.is_some();
+
+        let error_reporter = self.error_reporter.clone();
+        let error_reporter_2 = self.error_reporter.clone();
+
+        let SubscribeCallbacks {
+            wrapper,
+            mut on_data,
+            mut on_time_end,
+            mut on_end,
+        } = callbacks;
+        let wrapper_2 = wrapper.clone();
+
         self.extract_columns(table_handle, column_paths)?
             .as_collection()
-            .consolidate_for_output()
-            .inner
-            .probe_with(&mut self.output_probe)
-            .sink(Pipeline, "SubscribeColumn", move |input| {
-                wrapper.run(|| {
-                    while let Some((_time, data)) = input.next() {
-                        data.swap(&mut vector);
-                        for ((key, values), time, diff) in vector.drain(..) {
-                            if time == ARTIFICIAL_TIME_ON_REWIND_START && skip_initial_time {
-                                continue;
+            .consolidate_for_output(true)
+            .inspect(move |batch| {
+                if batch.time == ARTIFICIAL_TIME_ON_REWIND_START && skip_initial_time {
+                    return;
+                }
+                wrapper
+                    .run(|| -> DynResult<()> {
+                        if let Some(on_data) = on_data.as_mut() {
+                            for ((key, values), diff) in &batch.data {
+                                on_data(*key, values, batch.time, *diff)?;
                             }
-                            callback(key, &values, time, diff)
-                                .unwrap_with_reporter(&error_reporter);
+                        }
+                        if let Some(on_time_end) = on_time_end.as_mut() {
+                            on_time_end(batch.time)?;
+                        }
+                        Ok(())
+                    })
+                    .unwrap_with_reporter(&error_reporter);
+            })
+            .inspect_core(move |event| {
+                // Another inspect, so we are looking at the first inspect's output fronitier,
+                // i.e., we are called after every worker has finished processing callbacks from
+                // the first inspect for this frontier.
+                if let Err(frontier) = event {
+                    if worker_index == 0 && frontier.is_empty() {
+                        if let Some(on_end) = on_end.as_mut() {
+                            wrapper_2
+                                .run(on_end)
+                                .unwrap_with_reporter(&error_reporter_2);
                         }
                     }
 
-                    let time_processed = input.frontier().frontier().first().copied();
+                    assert!(frontier.len() <= 1);
+                    let time_processed = frontier.first().copied();
                     if let Some(global_persistent_storage) = &global_persistent_storage {
                         global_persistent_storage
                             .lock()
@@ -2951,12 +2927,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                                 time_processed,
                             );
                     }
-
-                    if time_processed.is_none() {
-                        on_end().unwrap_with_reporter(&error_reporter);
-                    }
-                });
-            });
+                }
+            })
+            .probe_with(&mut self.output_probe);
 
         Ok(())
     }
@@ -3599,7 +3572,7 @@ where
     fn columns_to_table(
         &self,
         universe_handle: UniverseHandle,
-        columns: Vec<(ColumnHandle, ColumnPath)>,
+        columns: Vec<ColumnHandle>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
@@ -3946,11 +3919,9 @@ where
 
     fn subscribe_table(
         &self,
-        _wrapper: BatchWrapper,
-        _callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
-        _on_end: Box<dyn FnMut() -> DynResult<()>>,
         _table_handle: TableHandle,
         _column_paths: Vec<ColumnPath>,
+        _callbacks: SubscribeCallbacks,
         _skip_persisted_batch: bool,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
@@ -4088,7 +4059,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
     fn columns_to_table(
         &self,
         universe_handle: UniverseHandle,
-        columns: Vec<(ColumnHandle, ColumnPath)>,
+        columns: Vec<ColumnHandle>,
     ) -> Result<TableHandle> {
         self.0
             .borrow_mut()
@@ -4143,19 +4114,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
 
     fn subscribe_table(
         &self,
-        wrapper: BatchWrapper,
-        callback: Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>,
-        on_end: Box<dyn FnMut() -> DynResult<()>>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
     ) -> Result<()> {
         self.0.borrow_mut().subscribe_table(
-            wrapper,
-            callback,
-            on_end,
             table_handle,
             column_paths,
+            callbacks,
             skip_persisted_batch,
         )
     }

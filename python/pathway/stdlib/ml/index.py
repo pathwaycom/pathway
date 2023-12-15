@@ -24,6 +24,7 @@ class KNNIndex:
         n_and (int): number of ANDs
         bucket_length (float): bucket length (after projecting on a line)
         distance_type (str): euclidean metric is supported.
+        metadata (pw.ColumnExpression): optional column expression representing dict of the metadata.
     """
 
     def __init__(
@@ -35,11 +36,12 @@ class KNNIndex:
         n_and: int = 10,
         bucket_length: float = 10.0,
         distance_type: str = "euclidean",
+        metadata: pw.ColumnExpression | None = None,
     ):
         self.data = data
         self.packed_data = data.select(row=pw.make_tuple(*self.data))
 
-        embeddings = data.select(data=data_embedding)
+        embeddings = data.select(data=data_embedding, metadata=metadata)
         self._query = knn_lsh_classifier_train(
             embeddings,
             L=n_or,
@@ -54,6 +56,7 @@ class KNNIndex:
         query_embedding: pw.ColumnReference,
         k: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
+        metadata_filter: pw.ColumnExpression | None = None,
     ):
         """
         This method queries the index with given queries and returns 'k' most relevant documents
@@ -71,6 +74,9 @@ class KNNIndex:
                 multiple rows corresponding to a single query will be collapsed into a single row,
                 with each column containing a tuple of values from the original rows. If set to False,
                 the output will retain the multi-row format for each query. Defaults to True.
+            metadata_filter (pw.ColumnExpression): optional column expression containing evaluating to the text
+                representing the metadata filtering query in the JMESPath format. The search will happen
+                only for documents satisfying this filtering. Can be constant for all queries or set per query.
 
         Returns:
             pw.Table
@@ -104,12 +110,17 @@ class KNNIndex:
         >>> import pathway as pw
         >>> from pathway.stdlib.ml.index import KNNIndex
         >>> import pandas as pd
+        >>> class InputSchema(pw.Schema):
+        ...     document: str
+        ...     embeddings: list[float]
+        ...     metadata: dict
         >>> documents = pw.debug.table_from_pandas(
         ...     pd.DataFrame.from_records([
-        ...         {"document": "document 1", "embeddings":[1,-1, 0]},
-        ...         {"document": "document 2", "embeddings":[1, 1, 0]},
-        ...         {"document": "document 3", "embeddings":[0, 0, 1]},
-        ...     ])
+        ...         {"document": "document 1", "embeddings":[1,-1, 0], "metadata":{"foo": 1}},
+        ...         {"document": "document 2", "embeddings":[1, 1, 0], "metadata":{"foo": 2}},
+        ...         {"document": "document 3", "embeddings":[0, 0, 1], "metadata":{"foo": 3}},
+        ...     ]),
+        ...     schema=InputSchema
         ... )
         >>> index = KNNIndex(documents.embeddings, documents, n_dimensions=3)
         >>> queries = pw.debug.table_from_pandas(
@@ -118,11 +129,17 @@ class KNNIndex:
         ...         {"query": "What is doc -5 about?", "embeddings":[-1, 10, -10]},
         ...     ])
         ... )
-        >>> relevant_docs = index.get_nearest_items(queries.embeddings, k=2)
+        >>> relevant_docs = index.get_nearest_items(queries.embeddings, k=2).without(pw.this.metadata)
         >>> pw.debug.compute_and_print(relevant_docs)
                     | document                     | embeddings
         ^YYY4HAB... | ()                           | ()
         ^X1MXHYY... | ('document 2', 'document 3') | ((1, 1, 0), (0, 0, 1))
+        >>> index = KNNIndex(documents.embeddings, documents, n_dimensions=3, metadata=documents.metadata)
+        >>> relevant_docs_meta = index.get_nearest_items(queries.embeddings, k=2, metadata_filter="foo >= `3`")
+        >>> pw.debug.compute_and_print(relevant_docs_meta)
+                    | document        | embeddings   | metadata
+        ^YYY4HAB... | ()              | ()           | ()
+        ^X1MXHYY... | ('document 3',) | ((0, 0, 1),) | (pw.Json({'foo': 3}),)
         >>> data = pw.debug.table_from_markdown(
         ...     '''
         ...      x | y | __time__
@@ -152,8 +169,9 @@ class KNNIndex:
         (-3, 1) | ((0, 0), (2, 2))  | 10       | -1
         (-3, 1) | ((-3, 3), (0, 0)) | 10       | 1
         """
-
-        queries = query_embedding.table.select(data=query_embedding, k=k)
+        queries = query_embedding.table.select(
+            data=query_embedding, k=k, metadata_filter=metadata_filter
+        )
         knns_ids = (
             self._query(queries)
             .flatten(pw.this.knns_ids, pw.this.query_id)
@@ -169,6 +187,7 @@ class KNNIndex:
         query_embedding: pw.ColumnReference,
         k: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
+        metadata_filter: pw.ColumnExpression | None = None,
     ):
         """
         This method queries the index with given queries and returns 'k' most relevant documents
@@ -184,6 +203,9 @@ class KNNIndex:
                 multiple rows corresponding to a single query will be collapsed into a single row,
                 with each column containing a tuple of values from the original rows. If set to False,
                 the output will retain the multi-row format for each query. Defaults to True.
+            metadata_filter (pw.ColumnExpression): optional column expression containing evaluating to the text
+                representing the metadata filtering query in the JMESPath format. The search will happen
+                only for documents satisfying this filtering. Can be constant for all queries or set per query.
 
         Example:
 
@@ -216,11 +238,14 @@ class KNNIndex:
         """
 
         return _predict_asof_now(
-            lambda query, k: self.get_nearest_items(
-                query, k=k, collapse_rows=collapse_rows
+            lambda query, k, metadata_filter: self.get_nearest_items(
+                query, k=k, collapse_rows=collapse_rows, metadata_filter=metadata_filter
             ),
             query_embedding,
             query_embedding.table.select(k=k).k,
+            query_embedding.table.select(
+                metadata_filter=metadata_filter
+            ).metadata_filter,
             with_queries_universe=collapse_rows,
         )
 

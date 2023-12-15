@@ -1109,22 +1109,9 @@ def test_with_timestamps() -> None:
     ],
 )
 def test_incorrect_args(join_mode, left_type, right_type, lower_bound, upper_bound):
-    t1 = T(
-        """
-      | a | t
-    0 | 1 | -1
-    """
-    )
+    t1 = pw.Table.empty(a=int, t=left_type)
 
-    t2 = T(
-        """
-      | b | t
-    0 | 1 | 2
-    """
-    )
-
-    t1 = t1.with_columns(t=pw.declare_type(left_type, pw.this.t))
-    t2 = t2.with_columns(t=pw.declare_type(right_type, pw.this.t))
+    t2 = pw.Table.empty(b=int, t=right_type)
 
     with pytest.raises(
         TypeError,
@@ -1144,22 +1131,9 @@ def test_incorrect_args(join_mode, left_type, right_type, lower_bound, upper_bou
 
 
 def test_incorrect_args_specific():
-    t1 = T(
-        """
-      | a | t
-    0 | 1 | -1
-    """
-    )
+    t1 = pw.Table.empty(a=int, t=DATE_TIME_NAIVE)
 
-    t2 = T(
-        """
-      | b | t
-    0 | 1 | 2
-    """
-    )
-
-    t1 = t1.with_columns(t=pw.declare_type(DATE_TIME_NAIVE, pw.this.t))
-    t2 = t2.with_columns(t=pw.declare_type(int, pw.this.t))
+    t2 = pw.Table.empty(b=int, t=int)
 
     expected_error_message = """Arguments (self_time_expression, other_time_expression,
  lower_bound, upper_bound) have to be of types (INT, INT, INT, INT) or (FLOAT, FLOAT,
@@ -1199,3 +1173,31 @@ def test_errors_on_equal_tables():
         match=r"Cannot join table with itself. Use <table>.copy\(\) as one of the arguments of the join.",  # noqa
     ):
         t1.interval_join(t1, t1.t, t1.t, pw.temporal.interval(-2, 0))
+
+
+def test_consolidate_for_cutoff():
+    t = T(
+        """
+    a | t
+    1 | 2
+    2 | 2
+    3 | 2
+    4 | 2
+    5 | 10
+    6 | 2
+    7 | 2
+    8 | 2
+    9 | 2
+    """
+    )
+    t = t._freeze(threshold_column=pw.this.t + 1, time_column=pw.this.t)
+
+    assert_table_equality_wo_index(
+        t,
+        T(
+            """
+            a | t
+            5 | 10
+            """
+        ),
+    )

@@ -6,7 +6,6 @@ import pathlib
 import random
 import time
 
-import pytest
 from utils import KafkaTestContext
 
 import pathway as pw
@@ -31,7 +30,10 @@ class WordcountChecker:
         self.n_word_repetitions = n_word_repetitions
 
     def __call__(self):
-        return self.topic_stats()["completed_words"] == self.n_words
+        try:
+            return self.topic_stats()["completed_words"] == self.n_words
+        except Exception:
+            return False
 
     def expected_word_counts(self):
         # workaround for some messages being lost in kafka
@@ -116,7 +118,7 @@ def run_backfilling_program(
             checker = WordcountChecker(
                 kafka_context, output_file_path, 1000, 50 * (run_seq_id + 1)
             )
-            assert wait_result_with_checker(
+            wait_result_with_checker(
                 checker=checker,
                 timeout_sec=60,
                 target=WordcountProgram(
@@ -134,7 +136,6 @@ def run_backfilling_program(
         del os.environ["PATHWAY_THREADS"]
 
 
-@pytest.mark.xdist_group(name="backfilling_tests")
 def test_backfilling_fs_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -145,7 +146,6 @@ def test_backfilling_fs_storage(
     run_backfilling_program(fs_persistence_config, tmp_path, kafka_context)
 
 
-@pytest.mark.xdist_group(name="backfilling_tests")
 def test_backfilling_s3_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):

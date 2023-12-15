@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, overload
 
 from pathway.internals.expression import ColumnReference
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.thisclass import ThisMetaclass, this
 from pathway.internals.trace import trace_user_frame
 
@@ -79,7 +79,7 @@ class TableSlice:
         return self._mapping[name]
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def without(self, *cols: str | ColumnReference) -> TableSlice:
         mapping = self._mapping.copy()
         for col in cols:
@@ -90,7 +90,7 @@ class TableSlice:
         return TableSlice(mapping, self._table)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def rename(
         self,
         rename_dict: dict[str | ColumnReference, str | ColumnReference],
@@ -109,12 +109,12 @@ class TableSlice:
         return TableSlice(mapping, self._table)
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def with_prefix(self, prefix: str) -> TableSlice:
         return self.rename({name: prefix + name for name in self.keys()})
 
     @trace_user_frame
-    @runtime_type_check
+    @check_arg_types
     def with_suffix(self, suffix: str) -> TableSlice:
         return self.rename({name: name + suffix for name in self.keys()})
 

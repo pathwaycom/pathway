@@ -1,6 +1,7 @@
 # Copyright © 2023 Pathway
 
 from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 import panel as pn
@@ -10,7 +11,7 @@ import pathway as pw
 from pathway.internals import api, parse_graph
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table_subscription import subscribe as internal_subscribe
 from pathway.internals.trace import trace_user_frame
 
@@ -29,7 +30,7 @@ def _in_notebook():
     return True
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def plot(
     self: pw.Table,
@@ -43,7 +44,8 @@ def plot(
 
     Args:
         self (pw.Table): a table serving as a source of data
-        plotting_function (Callable[[ColumnDataSource], Plot]): _description_
+        plotting_function (Callable[[ColumnDataSource], Plot]): function for creating plot
+            from ColumnDataSource
 
     Returns:
         pn.Column: visualization which can be displayed immediately or passed as a dashboard widget
@@ -94,15 +96,11 @@ def plot(
         }
         source.stream(dict_data, rollover=len(output_data))  # type: ignore
     else:
-        integrated = {}
+        integrated: dict[api.Pointer, Any] = {}
 
         in_notebook = _in_notebook()
 
-        def _update(key, row, time, is_addition):
-            if is_addition:
-                integrated[key] = row
-            else:
-                del integrated[key]
+        def stream_updates():
             df = pd.DataFrame.from_dict(integrated, orient="index", columns=col_names)
             if sorting_col:
                 df = df.sort_values(sorting_col)
@@ -110,20 +108,26 @@ def plot(
                 df = df.sort_index()
             df = df.reset_index(drop=True)
 
+            source.stream(
+                df.to_dict("list"), rollover=len(df)  # type:ignore[arg-type]
+            )
+
             if in_notebook:
-                source.stream(
-                    df.to_dict("list"), rollover=len(df)  # type:ignore[arg-type]
-                )
                 pn.io.push_notebook(viz)
+
+        def _update(key, row, time, is_addition):
+            if is_addition:
+                integrated[key] = row
             else:
-                if plot.document is not None:
-                    plot.document.add_next_tick_callback(
-                        lambda: source.stream(
-                            df.to_dict("list"),  # type:ignore[arg-type]
-                            rollover=len(df),
-                        )
-                    )
+                del integrated[key]
+
+            if plot.document is not None:
+                if plot.document.session_context:
+                    plot.document.add_next_tick_callback(stream_updates)
+                else:
+                    stream_updates()
 
         internal_subscribe(self, on_change=_update, skip_persisted_batch=True)
+        pn.state.on_session_created(lambda _: stream_updates())
 
     return viz

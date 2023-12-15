@@ -6,6 +6,7 @@ import pathway._engine_finder  # noqa: F401  # isort: split
 
 import os
 
+from pathway.internals.custom_reducers import BaseCustomAccumulator
 from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, DURATION
 
 # flake8: noqa: E402
@@ -21,7 +22,6 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
 import pathway.reducers as reducers
 from pathway import debug, demo, io
 from pathway.internals import (
-    BaseCustomAccumulator,
     ClassArg,
     ColumnExpression,
     ColumnReference,

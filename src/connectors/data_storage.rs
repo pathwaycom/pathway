@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyValueError;
 use rand::Rng;
 use rdkafka::util::Timeout;
 use s3::error::S3Error;
@@ -1122,34 +1123,21 @@ impl FilesystemScanner {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectorMode {
     Static,
-    SimpleStreaming,
-    StreamingWithDeletions,
+    Streaming,
 }
 
 impl ConnectorMode {
-    pub fn new_from_flags(poll_new_objects: bool, allow_deletions: bool) -> Self {
-        if poll_new_objects {
-            if allow_deletions {
-                ConnectorMode::StreamingWithDeletions
-            } else {
-                ConnectorMode::SimpleStreaming
-            }
-        } else {
-            ConnectorMode::Static
-        }
-    }
-
     pub fn is_polling_enabled(&self) -> bool {
         match self {
             ConnectorMode::Static => false,
-            ConnectorMode::SimpleStreaming | ConnectorMode::StreamingWithDeletions => true,
+            ConnectorMode::Streaming => true,
         }
     }
 
     pub fn are_deletions_enabled(&self) -> bool {
         match self {
-            ConnectorMode::Static | ConnectorMode::SimpleStreaming => false,
-            ConnectorMode::StreamingWithDeletions => true,
+            ConnectorMode::Static => false,
+            ConnectorMode::Streaming => true,
         }
     }
 }
@@ -1339,6 +1327,7 @@ pub struct PythonReader {
     persistent_id: Option<PersistentId>,
     total_entries_read: u64,
     is_initialized: bool,
+    is_finished: bool,
 
     #[allow(unused)]
     python_thread_state: PythonThreadState,
@@ -1367,6 +1356,7 @@ impl ReaderBuilder for PythonReaderBuilder {
             python_thread_state,
             total_entries_read: 0,
             is_initialized: false,
+            is_finished: false,
         }))
     }
 
@@ -1407,6 +1397,9 @@ impl Reader for PythonReader {
             with_gil_and_pool(|py| self.subject.borrow(py).start.call0(py))?;
             self.is_initialized = true;
         }
+        if self.is_finished {
+            return Ok(ReadResult::Finished);
+        }
 
         with_gil_and_pool(|py| {
             let (event, key, values, metadata): (
@@ -1422,7 +1415,15 @@ impl Reader for PythonReader {
                 .extract(py)
                 .map_err(ReadError::Py)?;
 
+            if event != DataEventType::Insert && !self.subject.borrow(py).deletions_enabled {
+                return Err(ReadError::Py(PyValueError::new_err(
+                    "Trying to delete a row in the Python connector but deletions_enabled is set to False.",
+                )));
+            }
+
             if values == "*FINISH*".as_bytes() {
+                self.is_finished = true;
+                self.subject.borrow(py).end.call0(py)?;
                 Ok(ReadResult::Finished)
             } else {
                 // We use simple sequential offset because Python connector is single threaded, as

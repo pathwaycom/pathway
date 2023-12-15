@@ -9,7 +9,7 @@ import pathway as pw
 from pathway.internals import api, parse_graph
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table_subscription import subscribe as internal_subscribe
 from pathway.internals.trace import trace_user_frame
 
@@ -21,7 +21,7 @@ def _repr_mimebundle_(self: pw.Table, include, exclude):
     return self.show(snapshot=True)._repr_mimebundle_(include, exclude)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def show(
     self: pw.Table, *, snapshot=True, include_id=True, short_pointers=True, sorters=None
@@ -33,7 +33,8 @@ def show(
 
     Args:
         self (pw.Table): a table to be displayed
-        snapshot (bool, optional): _description_. Defaults to True.
+        snapshot (bool, optional): whether only current snapshot or all changes to the table should be displayed.
+            Defaults to True.
         include_id (bool, optional): whether to show ids of rows. Defaults to True.
         short_pointers (bool, optional): whether to shorten printed ids. Defaults to True.
 
@@ -56,11 +57,16 @@ def show(
         col_names.append("time")
         col_names.append("diff")
 
-    def _format_ptr(x):
+    def _format_types(x):
         if isinstance(x, api.Pointer):
             s = str(x)
             if len(s) > 8 and short_pointers:
                 s = s[:8] + "..."
+            return s
+        if isinstance(x, pw.Json):
+            s = str(x)
+            if len(s) > 64:
+                s = s[:64] + " ..."
             return s
         return x
 
@@ -102,7 +108,7 @@ def show(
         output_data = api.squash_updates(captured)
         keys = list(output_data.keys())
         dict_data = {
-            name: [_format_ptr(output_data[key][index]) for key in keys]
+            name: [_format_types(output_data[key][index]) for key in keys]
             for index, name in enumerate(self._columns.keys())
         }
         dynamic_table.value = pd.DataFrame(dict_data)
@@ -114,7 +120,7 @@ def show(
             if not snapshot:
                 row["time"] = time
                 row["diff"] = is_addition * 2 - 1
-                row = {k: _format_ptr(v) for k, v in row.items()}
+                row = {k: _format_types(v) for k, v in row.items()}
                 dynamic_table.stream(row, follow=False)
             else:
                 if is_addition:
@@ -129,7 +135,7 @@ def show(
                     .reset_index(drop=True)
                 )
                 df = df[col_names]
-                df = df.applymap(_format_ptr)
+                df = df.applymap(_format_types)  # TODO Replace with df.map for Pandas 2
                 dynamic_table.value = df
                 # todo: use async transformer to throttle updates
                 # dynamic_table.stream(

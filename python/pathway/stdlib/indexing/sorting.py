@@ -9,7 +9,7 @@ from typing import Optional, TypedDict
 import pathway.internals as pw
 from pathway.internals.arg_tuple import wrap_arg_tuple
 from pathway.internals.fingerprints import fingerprint
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 
 
@@ -142,7 +142,7 @@ def build_sorted_index(nodes: pw.Table[Key | Instance]) -> SortedIndex:
     return dict(index=result, oracle=root)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def sort_from_index(
     index: pw.Table[LeftRight | Parent], oracle=None
@@ -208,7 +208,7 @@ class ComparisonRet(pw.Schema):
     comparison_ret: int
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def filter_cmp_helper(filter_val, index, oracle=None) -> pw.Table[ComparisonRet]:
     return _filter_cmp_helper(filter_val=filter_val, index=index).index  # type: ignore
@@ -258,7 +258,7 @@ class PrefixSumOracle(pw.Schema):
     prefix_sum_upperbound_key: Callable[..., float]
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def prefix_sum_oracle(oracle, index) -> pw.Table[PrefixSumOracle]:
     return _prefix_sum_oracle(oracle=oracle, index=index).oracle  # type: ignore
@@ -340,7 +340,7 @@ class BinsearchOracle(pw.Schema):
     upperbound: Callable[..., pw.Pointer | None]
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def binsearch_oracle(oracle, index) -> pw.Table[BinsearchOracle]:
     return _binsearch_oracle(oracle=oracle, index=index).oracle  # type: ignore
@@ -398,7 +398,7 @@ class _binsearch_oracle:
 
 
 # This has O(k) complexity. TODO: write version that has O(log n) complexity.
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def filter_smallest_k(
     column: pw.ColumnReference, instance: pw.ColumnReference, ks: pw.Table
@@ -413,7 +413,7 @@ def filter_smallest_k(
     oracle_restricted = oracle.restrict(ks)
     # root is pked with instance, ks also
     res = ks.select(res=oracle_restricted.prefix_sum_upperbound(ks.k))
-    validres = res.filter(res.res.is_not_none()).update_types(res=pw.Pointer)
+    validres = res.filter(res.res.is_not_none())
     validres = validres.select(res=getattr(table.ix(validres.res), colname))
     res <<= res.filter(res.res.is_none()).select(res=math.inf)
     res <<= validres
@@ -451,7 +451,7 @@ class _retrieving_prev_next_value:
             return self.transformer.ordered_table[self.next].next_value
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def retrieve_prev_next_values(
     ordered_table: pw.Table, value: pw.ColumnReference | None = None

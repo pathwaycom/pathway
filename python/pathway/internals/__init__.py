@@ -22,6 +22,7 @@ from pathway.internals.common import (
     udf_async,
     unwrap,
 )
+from pathway.internals.custom_reducers import BaseCustomAccumulator
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.decorators import (
     attribute,
@@ -42,7 +43,6 @@ from pathway.internals.join_mode import JoinMode
 from pathway.internals.json import Json
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.operator import iterate_universe
-from pathway.internals.reducers import BaseCustomAccumulator
 from pathway.internals.row_transformer import ClassArg
 from pathway.internals.run import run, run_all
 from pathway.internals.schema import (

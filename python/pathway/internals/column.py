@@ -779,7 +779,7 @@ class FlattenContext(Context):
         if isinstance(dtype, dt.List):
             return dtype.wrapped
         if isinstance(dtype, dt.Tuple):
-            if dtype == dt.ANY_TUPLE:
+            if dtype in (dt.ANY_TUPLE, dt.Tuple()):
                 return dt.ANY
             assert not isinstance(dtype.args, EllipsisType)
             return_dtype = dtype.args[0]
@@ -788,8 +788,12 @@ class FlattenContext(Context):
             return return_dtype
         elif dtype == dt.STR:
             return dt.STR
-        elif dtype in {dt.ARRAY, dt.ANY}:
+        elif dtype == dt.ANY:
             return dt.ANY
+        elif isinstance(dtype, dt.Array):
+            return dtype.strip_dimension()
+        elif dtype == dt.JSON:
+            return dt.JSON
         else:
             raise TypeError(
                 f"Cannot flatten column {self.flatten_column.expression!r} of type {dtype}."

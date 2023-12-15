@@ -15,7 +15,7 @@ from pathway.internals.desugaring import (
     TableSubstitutionDesugaring,
     desugar,
 )
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
 from pathway.stdlib import temporal
@@ -151,7 +151,7 @@ class WindowJoinResult(DesugaringContext):
 
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=True, allow_id=False))
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def window_join(
     self: pw.Table,
@@ -355,7 +355,7 @@ def window_join(
 
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=False))
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def window_join_inner(
     self: pw.Table,
@@ -556,7 +556,7 @@ def window_join_inner(
 
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=False))
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def window_join_left(
     self: pw.Table,
@@ -776,7 +776,7 @@ def window_join_left(
 
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=False))
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def window_join_right(
     self: pw.Table,
@@ -991,7 +991,7 @@ def window_join_right(
 
 @desugar(substitution={pw.left: "self", pw.right: "other"})
 @arg_handler(handler=join_kwargs_handler(allow_how=False, allow_id=False))
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def window_join_outer(
     self: pw.Table,

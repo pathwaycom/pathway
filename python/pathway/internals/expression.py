@@ -252,8 +252,16 @@ class ColumnExpression(OperatorInput, ABC):
     def __neg__(self) -> ColumnUnaryOpExpression:
         return ColumnUnaryOpExpression(self, operator.neg)
 
-    def __invert__(self) -> ColumnUnaryOpExpression:
-        return ColumnUnaryOpExpression(self, operator.inv)
+    def __invert__(self) -> ColumnExpression:
+        match self:
+            case ColumnUnaryOpExpression(_operator=operator.inv, _expr=e):
+                return e
+            case IsNoneExpression(_expr=e):
+                return IsNotNoneExpression(e)
+            case IsNotNoneExpression(_expr=e):
+                return IsNoneExpression(e)
+            case _:
+                return ColumnUnaryOpExpression(self, operator.inv)
 
     def __hash__(self):
         return object.__hash__(self)

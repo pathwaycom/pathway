@@ -6,7 +6,7 @@ from typing import TypeVar
 
 from pathway.internals import column as clmn, universes
 from pathway.internals.deprecation_meta import DeprecationSuperclass
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.universe import Universe
 
 SelfTableLike = TypeVar("SelfTableLike", bound="TableLike")
@@ -45,7 +45,7 @@ class TableLike(DeprecationSuperclass):
         self._universe = context.universe
         self._id_column = context.id_column
 
-    @runtime_type_check
+    @check_arg_types
     def promise_universes_are_disjoint(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
@@ -85,7 +85,7 @@ class TableLike(DeprecationSuperclass):
         universes.promise_are_pairwise_disjoint(self, other)
         return self
 
-    @runtime_type_check
+    @check_arg_types
     def promise_universe_is_subset_of(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
@@ -122,7 +122,7 @@ class TableLike(DeprecationSuperclass):
         universes.promise_is_subset_of(self, other)
         return self
 
-    @runtime_type_check
+    @check_arg_types
     def promise_universe_is_equal_to(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:

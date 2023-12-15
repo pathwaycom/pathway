@@ -1,5 +1,10 @@
 # Copyright © 2023 Pathway
 
+from pathway.internals.custom_reducers import (
+    stateful_many,
+    stateful_single,
+    udf_reducer,
+)
 from pathway.internals.reducers import (
     any,
     argmax,
@@ -12,11 +17,8 @@ from pathway.internals.reducers import (
     ndarray,
     npsum,
     sorted_tuple,
-    stateful_many,
-    stateful_single,
     sum,
     tuple_reducer as tuple,
-    udf_reducer,
     unique,
 )
 

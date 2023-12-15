@@ -1008,10 +1008,7 @@ def test_flatten(dtype: Any):
             "other": [-1, -1, -3, -3, -4, -4, -4, -5, -5, -5, -5, -5],
         }
     )
-    new_dtype = list[int] if dtype == np.int64 else list[float]
-    t1 = table_from_pandas(df).with_columns(
-        array=pw.declare_type(new_dtype, pw.this.array)
-    )
+    t1 = table_from_pandas(df)
     t1 = t1.flatten(t1.array, t1.other)
     expected = table_from_pandas(expected_df)
     assert_table_equality_wo_index(t1, expected)
@@ -1079,11 +1076,7 @@ def test_flatten_explode(mul: int, dtype: Any):
         },
         dtype=dtype,
     )
-    t1 = table_from_pandas(df).with_columns(
-        array=pw.declare_type(
-            {np.int64: list[int], np.float64: list[float]}[dtype], pw.this.array
-        )
-    )
+    t1 = table_from_pandas(df)
     t1 = t1.flatten(
         t1.array,
         other=mul * pw.cast({np.int64: int, np.float64: float}[dtype], t1.other),
@@ -1625,6 +1618,33 @@ def test_iterate_with_same_universe_outside():
          8 |  9
         12 | 12
         16 |  6
+        """
+        ),
+    )
+
+
+def test_iterate_with_diverging_columns():
+    t = T(
+        """
+        a
+        1
+        """
+    )
+
+    t = t.select(pw.this.a, b=pw.this.a)
+
+    def f(t: pw.Table):
+        t = t.select(pw.this.a, b=pw.this.b * 2)
+        return dict(t=t)
+
+    t = pw.iterate(f, iteration_limit=2, t=t).t
+
+    assert_table_equality(
+        t,
+        T(
+            """
+         a | b
+         1 | 4
         """
         ),
     )
@@ -4586,7 +4606,7 @@ def test_lazy_coalesce():
     3
     """
     )
-    ret = tab.select(col=pw.declare_type(int, pw.coalesce(tab.col, tab.col / 0)))
+    ret = tab.select(col=pw.coalesce(tab.col, tab.col // 0))
     assert_table_equality(ret, tab)
 
 
@@ -5219,10 +5239,10 @@ def test_sequence_get_unchecked_variable_length_untyped():
     """
     )
 
-    t2 = t1.select(tup=pw.declare_type(Any, pw.apply(_create_tuple, pw.this.a)))
+    t2 = t1.select(tup=pw.apply(_create_tuple, pw.this.a))
     t3 = t2.select(x=pw.this.tup[2], y=pw.this.tup[-3])
 
-    assert_table_equality_wo_types(t3, expected)
+    assert_table_equality(t3, expected)
 
 
 def test_sequence_get_checked_variable_length():
@@ -5241,10 +5261,10 @@ def test_sequence_get_checked_variable_length():
     1 | 1
     2 | 1
     """
-    )
+    ).update_types(y=int | None)
 
     t2 = t1.select(tup=pw.apply(_create_tuple, pw.this.a))
-    t3 = t2.select(x=pw.this.tup.get(1), y=pw.declare_type(int, pw.this.tup.get(-1)))
+    t3 = t2.select(x=pw.this.tup.get(1), y=pw.this.tup.get(-1))
 
     assert_table_equality(t3, expected)
 
@@ -5338,7 +5358,7 @@ def test_sequence_get_from_1d_ndarray(dtype, index, checked):
                 "index_neg": [-2, -1, -1],
             }
         )
-    ).update_columns(a=pw.declare_type(np.ndarray, pw.this.a))
+    )
     expected = T(
         """
         a
@@ -5346,12 +5366,12 @@ def test_sequence_get_from_1d_ndarray(dtype, index, checked):
         5
         0
     """
-    )
+    ).update_types(a=dtype)
     if checked:
         result = t.select(a=pw.this.a.get(index))
     else:
         result = t.select(a=pw.this.a[index])
-    assert_table_equality_wo_index_types(result, expected)
+    assert_table_equality_wo_index(result, expected)
 
 
 @pytest.mark.parametrize("dtype", [int, float])
@@ -5368,7 +5388,7 @@ def test_sequence_get_from_2d_ndarray(dtype, index, checked):
                 ]
             }
         )
-    ).select(a=pw.declare_type(np.ndarray, pw.this.a))
+    )
     expected = pw.debug.table_from_pandas(
         pd.DataFrame(
             {
@@ -5379,14 +5399,12 @@ def test_sequence_get_from_2d_ndarray(dtype, index, checked):
                 ]
             }
         )
-    ).select(a=pw.declare_type(np.ndarray, pw.this.a))
+    )
 
     if checked:
         result = t.select(a=pw.this.a.get(index))
     else:
         result = t.select(a=pw.this.a[index])
-
-    result = result.select(a=pw.declare_type(np.ndarray, pw.this.a))
 
     assert_table_equality_wo_index(result, expected)
 
@@ -5407,10 +5425,14 @@ def test_sequence_get_from_1d_ndarray_default(dtype, index, expected):
                 "index": index,
             }
         )
-    ).update_columns(a=pw.declare_type(np.ndarray, pw.this.a))
-    expected = pw.debug.table_from_pandas(pd.DataFrame({"a": expected}))
+    )
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame({"a": expected}).astype(
+            dtype={"a": {int: "int", float: "float"}[dtype]}
+        )
+    )
     result = t.select(a=pw.this.a.get(pw.this.index, default=-1))
-    assert_table_equality_wo_index_types(result, expected)
+    assert_table_equality_wo_index(result, expected)
 
 
 @pytest.mark.parametrize("dtype", [int, float])
@@ -5427,7 +5449,7 @@ def test_sequence_get_from_1d_ndarray_out_of_bounds(dtype, index):
                 "index": index,
             }
         )
-    ).update_columns(a=pw.declare_type(np.ndarray, pw.this.a))
+    )
     t.select(a=pw.this.a[pw.this.index])
     with pytest.raises(IndexError):
         run_all()

@@ -4,11 +4,11 @@
 from pathway.internals import parse_graph
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.monitoring import MonitoringLevel
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.persistence import Config as PersistenceConfig
 
 
-@runtime_type_check
+@check_arg_types
 def run(
     debug: bool = False,
     monitoring_level: MonitoringLevel = MonitoringLevel.AUTO,
@@ -41,12 +41,13 @@ def run(
     ).run_outputs()
 
 
-@runtime_type_check
+@check_arg_types
 def run_all(
     debug: bool = False,
     monitoring_level: MonitoringLevel = MonitoringLevel.AUTO,
     with_http_server: bool = False,
     default_logging: bool = True,
+    runtime_typechecking: bool | None = None,
 ):
     GraphRunner(
         parse_graph.G,
@@ -54,4 +55,5 @@ def run_all(
         monitoring_level=monitoring_level,
         with_http_server=with_http_server,
         default_logging=default_logging,
+        runtime_typechecking=runtime_typechecking,
     ).run_all()

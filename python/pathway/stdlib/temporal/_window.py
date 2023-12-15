@@ -17,7 +17,7 @@ from pathway.internals.arg_handlers import (
 )
 from pathway.internals.desugaring import desugar
 from pathway.internals.join import validate_join_condition
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 from pathway.internals.type_interpreter import eval_type
 
@@ -112,7 +112,7 @@ class _SessionWindow(Window):
 
         return pw.iterate(merge_ccs, data=target).data
 
-    @runtime_type_check
+    @check_arg_types
     def _apply(
         self,
         table: pw.Table,
@@ -148,7 +148,7 @@ class _SessionWindow(Window):
 
         return gb
 
-    @runtime_type_check
+    @check_arg_types
     def _join(
         self,
         left: pw.Table,
@@ -326,7 +326,7 @@ class _SlidingWindow(Window):
             and (self.offset is None or start >= self.offset)
         ]
 
-    @runtime_type_check
+    @check_arg_types
     def _apply(
         self,
         table: pw.Table,
@@ -425,7 +425,7 @@ class _SlidingWindow(Window):
 
         return target
 
-    @runtime_type_check
+    @check_arg_types
     def _join(
         self,
         left: pw.Table,
@@ -518,7 +518,7 @@ class _IntervalsOverWindow(Window):
     upper_bound: int | float | datetime.timedelta
     is_outer: bool
 
-    @runtime_type_check
+    @check_arg_types
     def _apply(
         self,
         table: pw.Table,
@@ -567,7 +567,7 @@ class _IntervalsOverWindow(Window):
             )
         )
 
-    @runtime_type_check
+    @check_arg_types
     def _join(
         self,
         left: pw.Table,
@@ -584,7 +584,7 @@ class _IntervalsOverWindow(Window):
         )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def session(
     *,
@@ -648,7 +648,7 @@ def session(
     return _SessionWindow(predicate=predicate, max_gap=max_gap)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def sliding(
     hop: int | float | datetime.timedelta,
@@ -724,7 +724,7 @@ def sliding(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def tumbling(
     duration: int | float | datetime.timedelta,
@@ -782,7 +782,7 @@ def tumbling(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def intervals_over(
     *,
@@ -853,7 +853,7 @@ def intervals_over(
 @desugar
 @arg_handler(handler=shard_deprecation)
 @arg_handler(handler=windowby_handler)
-@runtime_type_check
+@check_arg_types
 def windowby(
     self: pw.Table,
     time_expr: pw.ColumnExpression,

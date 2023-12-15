@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 
 from pathway.internals import api, column, table, universe
-from pathway.internals.column_path import ColumnPath
 from pathway.internals.graph_runner.path_storage import Storage
 
 
@@ -55,13 +54,11 @@ class ScopeState:
         return engine_column
 
     def create_table(self, universe: universe.Universe, storage: Storage) -> None:
-        columns_with_paths: list[tuple[api.Column, ColumnPath]] = []
+        columns: list[api.Column] = []
         for col in storage.get_columns():
             if not isinstance(col, column.ExternalMaterializedColumn):
-                columns_with_paths.append((self.get_column(col), storage.get_path(col)))
-        engine_table = self.scope.columns_to_table(
-            self.get_universe(universe), columns_with_paths
-        )
+                columns.append(self.get_column(col))
+        engine_table = self.scope.columns_to_table(self.get_universe(universe), columns)
         self.set_table(storage, engine_table)
 
     def set_column(self, key: column.Column, value: api.Column):

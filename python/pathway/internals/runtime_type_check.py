@@ -6,7 +6,7 @@ import functools
 import beartype
 
 
-def runtime_type_check(f):
+def check_arg_types(f):
     """Decorator allowing validating types in runtime."""
 
     @functools.wraps(f)

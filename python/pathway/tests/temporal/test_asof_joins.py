@@ -353,10 +353,9 @@ def test_with_timestamps():
     """
     ).with_columns(
         lt=pw.this.lt.dt.strptime(fmt),
-        rt=pw.if_else(
-            pw.this.rt.is_not_none(),
-            pw.declare_type(str, pw.this.rt).dt.strptime(fmt),
-            None,
+        rt=pw.require(
+            pw.this.rt.dt.strptime(fmt),
+            pw.this.rt,
         ),
     )
 
@@ -374,19 +373,9 @@ def test_with_timestamps():
     ],
 )
 def test_incorrect_args(left_type, right_type):
-    t1 = T(
-        """
-            |  t
-        1   |  1
-    """
-    ).select(t=pw.declare_type(left_type, pw.this.t))
+    t1 = pw.Table.empty(t=left_type)
 
-    t2 = T(
-        """
-            | t
-        23  | -15
-        """
-    ).select(t=pw.declare_type(right_type, pw.this.t))
+    t2 = pw.Table.empty(t=right_type)
     with pytest.raises(
         TypeError,
         match=r"Arguments \(t_left, t_right\) have to be of types .* but are of types .*",

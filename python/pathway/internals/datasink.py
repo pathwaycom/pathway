@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from pathway.internals.api import Pointer
+
 
 class DataSink(ABC):
     pass
@@ -20,6 +22,7 @@ class GenericDataSink(DataSink):
 
 @dataclass(frozen=True)
 class CallbackDataSink(DataSink):
-    on_change: Callable[[str, list[Any], int, int], Any]
-    on_end: Callable[[], Any]
+    on_change: Callable[[Pointer, list[Any], int, int], None]
+    on_time_end: Callable[[int], None]
+    on_end: Callable[[], None]
     skip_persisted_batch: bool

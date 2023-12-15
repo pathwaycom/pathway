@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
@@ -47,7 +47,7 @@ class ElasticSearchAuth:
         return self._engine_es_auth
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> None:
     """Write a table to a given index in ElasticSearch.

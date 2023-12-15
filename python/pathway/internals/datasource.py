@@ -40,8 +40,17 @@ class DataSource(ABC):
             column_properties=columns,
         )
 
+    def get_effective_schema(self) -> type[Schema]:
+        if self.is_append_only():
+            return self.schema.update_properties(append_only=True)
+        return self.schema
+
     @abstractmethod
     def is_bounded(self) -> bool:
+        ...
+
+    @abstractmethod
+    def is_append_only(self) -> bool:
         ...
 
 
@@ -56,6 +65,11 @@ class StaticDataSource(DataSource, ABC):
 class PandasDataSource(StaticDataSource):
     data: pd.DataFrame
 
+    def is_append_only(self) -> bool:
+        return api.DIFF_PSEUDOCOLUMN not in self.data.columns or all(
+            self.data[api.DIFF_PSEUDOCOLUMN] == 1
+        )
+
 
 @dataclass(frozen=True)
 class GenericDataSource(DataSource):
@@ -65,10 +79,16 @@ class GenericDataSource(DataSource):
     def is_bounded(self) -> bool:
         return self.datastorage.mode == api.ConnectorMode.STATIC
 
+    def is_append_only(self) -> bool:
+        return self.datastorage.mode != api.ConnectorMode.STREAMING
+
 
 @dataclass(frozen=True)
 class EmptyDataSource(DataSource):
     def is_bounded(self) -> bool:
+        return True
+
+    def is_append_only(self) -> bool:
         return True
 
 

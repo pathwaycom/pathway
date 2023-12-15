@@ -15,10 +15,10 @@ from typing import ClassVar
 import diskcache
 
 from pathway.internals import trace
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 
 
-@runtime_type_check
+@check_arg_types
 def with_capacity(func: Callable, capacity: int):
     """
     Limits the number of simultaneous calls of the specified function.
@@ -41,7 +41,7 @@ def with_capacity(func: Callable, capacity: int):
     return wrapper
 
 
-@runtime_type_check
+@check_arg_types
 def with_retry_strategy(func: Callable, retry_strategy: AsyncRetryStrategy) -> Callable:
     """
     Returns an asynchronous function with applied retry strategy.
@@ -61,7 +61,7 @@ def with_retry_strategy(func: Callable, retry_strategy: AsyncRetryStrategy) -> C
     return wrapper
 
 
-@runtime_type_check
+@check_arg_types
 def with_cache_strategy(func, cache_strategy: CacheStrategy) -> Callable:
     func = coerce_async(func)
 
@@ -90,7 +90,7 @@ def async_options(
     return decorator
 
 
-@runtime_type_check
+@check_arg_types
 def coerce_async(func: Callable) -> Callable:
     if asyncio.iscoroutinefunction(func):
         return func
@@ -212,3 +212,6 @@ class DiskCache(CacheStrategy):
             cache_dir = Path(storage_root) / "runtime_calls"
             self._cache = diskcache.Cache(cache_dir / self._name)
         return self._cache
+
+
+DefaultCache = DiskCache

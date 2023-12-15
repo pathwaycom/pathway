@@ -11,6 +11,7 @@ from functools import cached_property
 from types import EllipsisType, NoneType, UnionType
 
 import numpy as np
+import numpy.typing as npt
 
 from pathway.internals import api, datetime_types, json as js
 
@@ -35,8 +36,7 @@ class DType(ABC):
     def _set_args(self, *args):
         ...
 
-    @classmethod
-    def _cached_new(cls, *args):
+    def __new__(cls, *args):
         key = (cls, args)
         if key not in DType._cache:
             ret = super().__new__(cls)
@@ -48,7 +48,7 @@ class DType(ABC):
         if isinstance(args, tuple):
             return cls(*args)
         else:
-            return cls(args)  # type: ignore[call-arg]
+            return cls(args)
 
     def equivalent_to(self, other: DType) -> bool:
         return dtype_equivalence(self, other)
@@ -77,12 +77,17 @@ class _SimpleDType(DType):
         self.wrapped = wrapped
 
     def __new__(cls, wrapped: type) -> _SimpleDType:
-        return cls._cached_new(wrapped)
+        return super().__new__(cls, wrapped)
 
     def is_value_compatible(self, arg):
-        if isinstance(arg, int) and self.wrapped == float:
-            return True
-        return isinstance(arg, self.wrapped)
+        if self.wrapped == float:
+            return np.issubdtype(type(arg), np.floating) or np.issubdtype(
+                type(arg), np.integer
+            )
+        elif self.wrapped == int:
+            return np.issubdtype(type(arg), np.integer)
+        else:
+            return isinstance(arg, self.wrapped)
 
     def to_engine(self) -> api.PathwayType:
         return {
@@ -111,7 +116,7 @@ class _NoneDType(DType):
         pass
 
     def __new__(cls) -> _NoneDType:
-        return cls._cached_new()
+        return super().__new__(cls)
 
     def is_value_compatible(self, arg):
         return arg is None
@@ -135,7 +140,7 @@ class _AnyDType(DType):
         return api.PathwayType.ANY
 
     def __new__(cls) -> _AnyDType:
-        return cls._cached_new()
+        return super().__new__(cls)
 
     def is_value_compatible(self, arg):
         return True
@@ -159,18 +164,18 @@ class Callable(DType):
             return f"Callable({self.arg_types}, {self.return_type})"
 
     def _set_args(self, arg_types, return_type):
-        if isinstance(arg_types, EllipsisType):
-            self.arg_types = ...
-        else:
-            self.arg_types = tuple(wrap(dtype) for dtype in arg_types)
-        self.return_type = wrap(return_type)
+        self.arg_types = arg_types
+        self.return_type = return_type
 
     def __new__(
         cls,
         arg_types: EllipsisType | tuple[DType | EllipsisType, ...],
         return_type: DType,
     ) -> Callable:
-        return cls._cached_new(arg_types, return_type)
+        if not isinstance(arg_types, EllipsisType):
+            arg_types = tuple(wrap(dtype) for dtype in arg_types)
+        return_type = wrap(return_type)
+        return super().__new__(cls, arg_types, return_type)
 
     def is_value_compatible(self, arg):
         return callable(arg)
@@ -187,27 +192,52 @@ class Callable(DType):
 
 
 class Array(DType):
-    def __repr__(self):
-        return "Array"
+    n_dim: int | None
+    wrapped: DType
 
-    def _set_args(self):
-        pass
+    def __repr__(self):
+        return f"Array({self.n_dim}, {self.wrapped})"
+
+    def _set_args(self, n_dim, wrapped):
+        self.wrapped = wrapped
+        self.n_dim = n_dim
 
     def to_engine(self) -> api.PathwayType:
         return api.PathwayType.ARRAY
 
-    def __new__(cls) -> Array:
-        return cls._cached_new()
+    def __new__(cls, n_dim, wrapped) -> Array:
+        dtype = wrap(wrapped)
+        if isinstance(dtype, Array) and dtype.n_dim is not None:
+            return Array(n_dim=dtype.n_dim + n_dim, wrapped=dtype.wrapped)
+        else:
+            return super().__new__(cls, n_dim, dtype)
 
     def is_value_compatible(self, arg):
-        return isinstance(arg, np.ndarray)
+        if isinstance(arg, np.ndarray):
+            if self.n_dim is not None and self.n_dim != len(arg.shape):
+                return False
+            x: np.ndarray
+            for x in np.nditer(arg, flags=["zerosize_ok"]):  # type: ignore[assignment]
+                if not self.wrapped.is_value_compatible(x[()]):
+                    return False
+            return True
+        else:
+            if self.n_dim is not None:
+                return False
+            return self.wrapped.is_value_compatible(arg)
 
     @property
     def typehint(self) -> type[np.ndarray]:
-        return np.ndarray
+        return npt.NDArray[self.wrapped.typehint]  # type: ignore[name-defined]
 
+    def strip_dimension(self) -> DType:
+        if self.n_dim is None:
+            return Array(n_dim=None, wrapped=self.wrapped)
+        elif self.n_dim > 1:
+            return Array(n_dim=self.n_dim - 1, wrapped=self.wrapped)
+        else:
+            return self.wrapped
 
-ARRAY: DType = Array()
 
 T = typing.TypeVar("T")
 
@@ -228,7 +258,7 @@ class Pointer(DType, typing.Generic[T]):
         return api.PathwayType.POINTER
 
     def __new__(cls, wrapped: type[Schema] | None = None) -> Pointer:
-        return cls._cached_new(wrapped)
+        return super().__new__(cls, wrapped)
 
     def is_value_compatible(self, arg):
         return isinstance(arg, api.Pointer)
@@ -260,7 +290,7 @@ class Optional(DType):
         arg = wrap(arg)
         if arg == NONE or isinstance(arg, Optional) or arg == ANY:
             return arg
-        return cls._cached_new(arg)
+        return super().__new__(cls, arg)
 
     def is_value_compatible(self, arg):
         if arg is None:
@@ -291,7 +321,7 @@ class Tuple(DType):
             assert isinstance(arg, DType)
             return List(arg)
         else:
-            return cls._cached_new(tuple(wrap(arg) for arg in args))
+            return super().__new__(cls, tuple(wrap(arg) for arg in args))
 
     def is_value_compatible(self, arg):
         if not isinstance(arg, (tuple, list)):
@@ -311,7 +341,7 @@ class Tuple(DType):
 
 class Json(DType):
     def __new__(cls) -> Json:
-        return cls._cached_new()
+        return super().__new__(cls)
 
     def _set_args(self):
         pass
@@ -340,7 +370,7 @@ class List(DType):
         return f"List({self.wrapped})"
 
     def __new__(cls, wrapped: DType) -> List:
-        return cls._cached_new(wrap(wrapped))
+        return super().__new__(cls, wrap(wrapped))
 
     def _set_args(self, wrapped):
         self.wrapped = wrapped
@@ -355,11 +385,6 @@ class List(DType):
         return list[self.wrapped.typehint]  # type: ignore[name-defined]
 
 
-ANY_TUPLE: DType = List._cached_new(
-    ANY
-)  # List(ANY) but this requires `wrap()` to exist
-
-
 class _DateTimeNaive(DType):
     def __repr__(self):
         return "DATE_TIME_NAIVE"
@@ -368,7 +393,7 @@ class _DateTimeNaive(DType):
         pass
 
     def __new__(cls) -> _DateTimeNaive:
-        return cls._cached_new()
+        return super().__new__(cls)
 
     def to_engine(self) -> api.PathwayType:
         return api.PathwayType.DATE_TIME_NAIVE
@@ -392,7 +417,7 @@ class _DateTimeUtc(DType):
         pass
 
     def __new__(cls) -> _DateTimeUtc:
-        return cls._cached_new()
+        return super().__new__(cls)
 
     def to_engine(self) -> api.PathwayType:
         return api.PathwayType.DATE_TIME_UTC
@@ -416,7 +441,7 @@ class _Duration(DType):
         pass
 
     def __new__(cls) -> _Duration:
-        return cls._cached_new()
+        return super().__new__(cls)
 
     def to_engine(self) -> api.PathwayType:
         return api.PathwayType.DURATION
@@ -443,6 +468,8 @@ def wrap(input_type) -> DType:
     assert input_type != Json
     if isinstance(input_type, DType):
         return input_type
+    if typing.get_origin(input_type) == np.dtype:
+        (input_type,) = typing.get_args(input_type)
     if input_type in (NoneType, None):
         return NONE
     elif input_type == typing.Any:
@@ -500,7 +527,12 @@ def wrap(input_type) -> DType:
         else:
             return Tuple(*[wrap(arg) for arg in args])
     elif input_type == np.ndarray:
-        return ARRAY
+        return ANY_ARRAY
+    elif typing.get_origin(input_type) == np.ndarray:
+        dims, wrapped = get_args(input_type)
+        if dims == typing.Any:
+            return Array(n_dim=None, wrapped=wrapped)
+        return Array(n_dim=len(typing.get_args(dims)), wrapped=wrapped)
     elif issubclass(input_type, Enum):
         return ANY
     elif input_type == datetime.datetime:
@@ -518,10 +550,26 @@ def wrap(input_type) -> DType:
             datetime_types.Duration: DURATION,
             datetime_types.DateTimeNaive: DATE_TIME_NAIVE,
             datetime_types.DateTimeUtc: DATE_TIME_UTC,
+            np.int32: INT,
+            np.int64: INT,
+            np.float32: FLOAT,
+            np.float64: FLOAT,
         }.get(input_type, None)
         if dtype is None:
             raise TypeError(f"Unsupported type {input_type}.")
         return dtype
+
+
+ANY_TUPLE: DType = List(ANY)
+ANY_ARRAY: DType = Array(n_dim=None, wrapped=ANY)
+ANY_ARRAY_1D: DType = Array(n_dim=1, wrapped=ANY)
+ANY_ARRAY_2D: DType = Array(n_dim=2, wrapped=ANY)
+INT_ARRAY: DType = Array(n_dim=None, wrapped=INT)
+INT_ARRAY_1D: DType = Array(n_dim=1, wrapped=INT)
+INT_ARRAY_2D: DType = Array(n_dim=2, wrapped=INT)
+FLOAT_ARRAY: DType = Array(n_dim=None, wrapped=FLOAT)
+FLOAT_ARRAY_1D: DType = Array(n_dim=1, wrapped=FLOAT)
+FLOAT_ARRAY_2D: DType = Array(n_dim=2, wrapped=FLOAT)
 
 
 def dtype_equivalence(left: DType, right: DType) -> bool:
@@ -555,6 +603,16 @@ def dtype_tuple_equivalence(left: Tuple | List, right: Tuple | List) -> bool:
     return all(dtype_equivalence(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
 
 
+def dtype_array_equivalence(left: Array, right: Array) -> bool:
+    dim_compatible = (
+        left.n_dim is None or right.n_dim is None or left.n_dim == right.n_dim
+    )
+    wrapped_compatible = (
+        left.wrapped == ANY or right.wrapped == ANY or left.wrapped == right.wrapped
+    )
+    return dim_compatible and wrapped_compatible
+
+
 def dtype_issubclass(left: DType, right: DType) -> bool:
     if right == ANY:  # catch the case, when left=Optional[T] and right=Any
         return True
@@ -569,6 +627,8 @@ def dtype_issubclass(left: DType, right: DType) -> bool:
         return dtype_issubclass(left, unoptionalize(right))
     elif isinstance(left, (Tuple, List)) and isinstance(right, (Tuple, List)):
         return dtype_tuple_equivalence(left, right)
+    elif isinstance(left, Array) and isinstance(right, Array):
+        return dtype_array_equivalence(left, right)
     elif isinstance(left, Pointer) and isinstance(right, Pointer):
         return True  # TODO
     elif isinstance(left, _SimpleDType) and isinstance(right, _SimpleDType):
@@ -594,6 +654,20 @@ def types_lca(left: DType, right: DType) -> DType:
             return left
         else:
             return ANY_TUPLE
+    elif isinstance(left, Array) and isinstance(right, Array):
+        if left.n_dim is None or right.n_dim is None:
+            n_dim = None
+        elif left.n_dim == right.n_dim:
+            n_dim = left.n_dim
+        else:
+            n_dim = None
+        if left.wrapped == ANY or right.wrapped == ANY:
+            wrapped = ANY
+        elif left.wrapped == right.wrapped:
+            wrapped = left.wrapped
+        else:
+            wrapped = ANY
+        return Array(n_dim=n_dim, wrapped=wrapped)
     elif isinstance(left, Pointer) and isinstance(right, Pointer):
         l_schema = left.wrapped
         r_schema = right.wrapped
@@ -626,11 +700,23 @@ def normalize_dtype(dtype: DType) -> DType:
     if isinstance(dtype, Pointer):
         return POINTER
     if isinstance(dtype, Array):
-        return ARRAY
+        return ANY_ARRAY
     return dtype
 
 
-def unoptionalize_pair(left_dtype: DType, right_dtype) -> tuple[DType, DType]:
+def coerce_arrays_pair(left: Array, right: Array) -> tuple[Array, Array]:
+    if left.wrapped == ANY and right.wrapped != ANY:
+        left = Array(n_dim=left.n_dim, wrapped=right.wrapped)
+    if right.wrapped == ANY and left.wrapped != ANY:
+        right = Array(n_dim=right.n_dim, wrapped=left.wrapped)
+    if left.n_dim is None and right.n_dim is not None:
+        right = Array(n_dim=None, wrapped=right.wrapped)
+    if right.n_dim is None and left.n_dim is not None:
+        left = Array(n_dim=None, wrapped=left.wrapped)
+    return left, right
+
+
+def unoptionalize_pair(left_dtype: DType, right_dtype: DType) -> tuple[DType, DType]:
     """
     Unpacks type out of typing.Optional and matches
     a second type with it if it is an EmptyType.

@@ -29,18 +29,19 @@ from pathway.internals.api import Value
 from pathway.internals.asynchronous import (
     AsyncRetryStrategy,
     CacheStrategy,
+    DefaultCache,
     async_options,
 )
 from pathway.internals.helpers import function_spec
 from pathway.internals.parse_graph import G
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 
 T = TypeVar("T")
 P = ParamSpec("P")
 
 
-@runtime_type_check
+@check_arg_types
 def iterate(
     func,
     iteration_limit: int | None = None,
@@ -58,7 +59,7 @@ def iterate(
     ...         if x == 1:
     ...             return 1
     ...         elif x % 2 == 0:
-    ...             return x / 2
+    ...             return x // 2
     ...         else:
     ...             return 3 * x + 1
     ...     new_iterated = iterated.select(val=pw.apply(collatz_step, iterated.val))
@@ -93,7 +94,7 @@ def iterate(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def apply(
     fun: Callable,
@@ -212,6 +213,9 @@ def udf_async(
     Bobdog
     """
 
+    if cache_strategy is None:
+        cache_strategy = DefaultCache()
+
     def apply_wrapper(fun, *args, **kwargs):
         fun = async_options(
             capacity=capacity,
@@ -232,7 +236,7 @@ def udf_async(
         return decorator(fun)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def numba_apply(
     fun: Callable,
@@ -315,7 +319,7 @@ def apply_with_type(
     return expr.ApplyExpression(fun, ret_type, *args, **kwargs)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def apply_async(
     fun: Callable,
@@ -379,7 +383,6 @@ def declare_type(
     >>> t3.schema
     <pathway.Schema types={'val': <class 'int'>}>
     """
-
     return expr.DeclareTypeExpression(target_type, col)
 
 
@@ -416,7 +419,7 @@ def cast(target_type: Any, col: expr.ColumnExpression | Value) -> expr.CastExpre
     return expr.CastExpression(target_type, col)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def coalesce(*args: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """For arguments list arg_1, arg_2, ..., arg_n returns first not-None value.
@@ -441,7 +444,7 @@ def coalesce(*args: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     return expr.CoalesceExpression(*args)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def require(val, *deps: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """Returns val iff every dep in deps is not-None.
@@ -467,7 +470,7 @@ def require(val, *deps: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     return expr.RequireExpression(val, *deps)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def if_else(
     if_clause: expr.ColumnExpression | Value,
@@ -500,7 +503,7 @@ def if_else(
     return expr.IfElseExpression(if_clause, then_clause, else_clause)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def make_tuple(*args: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     """

@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import random
+import re
 import sqlite3
 import sys
 import threading
@@ -29,11 +30,13 @@ from pathway.tests.utils import (
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
     assert_table_equality_wo_types,
+    needs_multiprocessing_fork,
+    run,
     run_all,
     wait_result_with_checker,
     write_csv,
     write_lines,
-    xfail_on_darwin,
+    xfail_on_multiple_threads,
 )
 
 
@@ -238,6 +241,159 @@ def test_python_connector_commits(tmp_path: pathlib.Path):
     result = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
     expected = pd.DataFrame(data).set_index("k")
     assert result.equals(expected)
+
+
+def test_python_connector_remove():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self._add(
+                api.ref_scalar(1),
+                json.dumps({"key": 1, "genus": "upupa", "epithet": "epops"}).encode(),
+            )
+            self._remove(
+                api.ref_scalar(1),
+                json.dumps({"key": 1, "genus": "upupa", "epithet": "epops"}).encode(),
+            )
+            self._add(
+                api.ref_scalar(3),
+                json.dumps(
+                    {"key": 3, "genus": "bubo", "epithet": "scandiacus"}
+                ).encode(),
+            )
+
+    class InputSchema(pw.Schema):
+        key: int
+        genus: str
+        epithet: str
+
+    table = pw.io.python.read(
+        TestSubject(),
+        schema=InputSchema,
+    )
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+                key | genus      | epithet
+                3   | bubo       | scandiacus
+            """,
+        ),
+    )
+
+
+def test_python_connector_deletions_disabled():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self._add(
+                api.ref_scalar(1),
+                json.dumps({"key": 1, "genus": "upupa", "epithet": "epops"}).encode(),
+            )
+            self._add(
+                api.ref_scalar(3),
+                json.dumps(
+                    {"key": 3, "genus": "bubo", "epithet": "scandiacus"}
+                ).encode(),
+            )
+
+        @property
+        def _deletions_enabled(self) -> bool:
+            return False
+
+    class InputSchema(pw.Schema):
+        key: int
+        genus: str
+        epithet: str
+
+    table = pw.io.python.read(
+        TestSubject(),
+        schema=InputSchema,
+    )
+
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+                key | genus      | epithet
+                1   | upupa      | epops
+                3   | bubo       | scandiacus
+            """,
+        ),
+    )
+
+
+def test_python_connector_deletions_disabled_logs_error_on_delete(caplog):
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self._add(
+                api.ref_scalar(1),
+                json.dumps({"key": 1, "genus": "upupa", "epithet": "epops"}).encode(),
+            )
+            self._remove(
+                api.ref_scalar(1),
+                json.dumps({"key": 1, "genus": "upupa", "epithet": "epops"}).encode(),
+            )
+            self._add(
+                api.ref_scalar(3),
+                json.dumps(
+                    {"key": 3, "genus": "bubo", "epithet": "scandiacus"}
+                ).encode(),
+            )
+
+        @property
+        def _deletions_enabled(self) -> bool:
+            return False
+
+    class InputSchema(pw.Schema):
+        key: int
+        genus: str
+        epithet: str
+
+    pw.io.python.read(
+        TestSubject(),
+        schema=InputSchema,
+    )
+
+    run_all()
+
+    assert re.search(
+        r"Trying to delete a row in .* but deletions_enabled is set to False",
+        caplog.text,
+    )
+
+
+def test_python_connector_deletions_disabled_logs_error_on_upsert(caplog):
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self._add(
+                api.ref_scalar(1),
+                json.dumps({"key": 1, "genus": "upupa", "epithet": "epops"}).encode(),
+            )
+
+        @property
+        def _deletions_enabled(self) -> bool:
+            return False
+
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+    class InputSchema(pw.Schema):
+        key: int
+        genus: str
+        epithet: str
+
+    pw.io.python.read(
+        TestSubject(),
+        schema=InputSchema,
+    )
+
+    run_all()
+
+    assert re.search(
+        r"Trying to upsert a row in .* but deletions_enabled is set to False",
+        caplog.text,
+    )
 
 
 def test_csv_static_read_write(tmp_path: pathlib.Path):
@@ -501,13 +657,12 @@ def test_subscribe():
 
     run_all()
 
-    threads_num = int(os.environ.get("PATHWAY_THREADS", "1"))
     root.assert_has_calls(
         [
             mock.call.on_change(
                 key=mock.ANY, row={"data": "foo"}, time=mock.ANY, is_addition=True
             ),
-            *[mock.call.on_end()] * threads_num,
+            mock.call.on_end(),
         ]
     )
 
@@ -585,16 +740,16 @@ def test_async_transformer_file_io(monkeypatch, tmp_path: pathlib.Path):
         persistence_mode=api.PersistenceMode.UDF_CACHING,
     )
 
-    pw.run(
-        monitoring_level=pw.MonitoringLevel.NONE,
+    run(
         persistence_config=persistence_config,
     )
 
 
-@pytest.mark.xfail(reason="stil fails randomly")
+@pytest.mark.flaky(reruns=2)
+@xfail_on_multiple_threads
+@needs_multiprocessing_fork
 def test_async_transformer_idempotency(monkeypatch):
-    if os.environ.get("PATHWAY_PERSISTENT_STORAGE"):
-        monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE")
+    monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE", raising=False)
 
     class OutputSchema(pw.Schema):
         ret: int
@@ -768,8 +923,8 @@ def test_fs_raw(tmp_path: pathlib.Path):
     pw.debug.compute_and_print(table)
 
 
-@pytest.mark.xfail(reason="randomly fails for yet unknown reason")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_csv_directory(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     os.mkdir(inputs_path)
@@ -800,11 +955,11 @@ def test_csv_directory(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, output_path)
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_csv_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "csv")
@@ -823,11 +978,11 @@ def test_csv_streaming(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_json_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "json")
@@ -846,11 +1001,11 @@ def test_json_streaming(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_plaintext_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "plaintext")
@@ -864,11 +1019,11 @@ def test_plaintext_streaming(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_csv_streaming_fs_alias(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "csv")
@@ -888,11 +1043,11 @@ def test_csv_streaming_fs_alias(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_json_streaming_fs_alias(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "json")
@@ -912,11 +1067,11 @@ def test_json_streaming_fs_alias(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
-@pytest.mark.xdist_group(name="streaming_tests")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs/"
     start_streaming_inputs(inputs_path, 5, 1.0, "plaintext")
@@ -931,7 +1086,7 @@ def test_plaintext_streaming_fs_alias(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
     pw.io.csv.write(table, str(output_path))
 
-    assert wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 5), 30)
 
 
 def test_pathway_type_mapping():
@@ -1099,7 +1254,7 @@ def test_python_connector_persistence(tmp_path: pathlib.Path):
             table_py.data
         )
         pw.io.csv.write(table_joined, output_path)
-        pw.run(
+        run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(persistent_storage_path),
             )
@@ -1147,7 +1302,7 @@ def test_no_pstorage(tmp_path: pathlib.Path):
         api.EngineError,
         match="persistent metadata backend failed: target object should be a directory",
     ):
-        pw.run(
+        run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(path),
             )
@@ -1163,7 +1318,7 @@ def test_persistent_id_not_assigned_autogenerate(tmp_path: pathlib.Path):
 
     table = pw.io.plaintext.read(input_path, mode="static")
     pw.io.csv.write(table, tmp_path / "output.txt")
-    pw.run(
+    run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pstorage_path)
         )
@@ -1180,7 +1335,7 @@ def test_no_persistent_storage(tmp_path: pathlib.Path):
         ValueError,
         match="persistent id 1 is assigned, but no persistent storage is configured",
     ):
-        pw.run()
+        run()
 
 
 def test_duplicated_persistent_id(tmp_path: pathlib.Path):
@@ -1202,7 +1357,7 @@ def test_duplicated_persistent_id(tmp_path: pathlib.Path):
         ValueError,
         match="Persistent ID 'one' used more than once",
     ):
-        pw.run(
+        run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(pstorage_path)
             )
@@ -1256,7 +1411,7 @@ def run_replacement_test(
         inputs_path,
         format=input_format,
         schema=InputSchema,
-        mode="streaming_with_deletions",
+        mode="streaming",
         autocommit_duration_ms=1,
         with_metadata=True,
     )
@@ -1267,7 +1422,7 @@ def run_replacement_test(
     inputs_thread = threading.Thread(target=streaming_target, daemon=True)
     inputs_thread.start()
 
-    assert wait_result_with_checker(
+    wait_result_with_checker(
         FileLinesNumberChecker(output_path, expected_output_lines), 30
     )
 
@@ -1301,7 +1456,8 @@ def run_replacement_test(
             time_removed[file_name] = timestamp
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_simple_replacement_with_removal(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1322,7 +1478,8 @@ def test_simple_replacement_with_removal(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_simple_insert_consolidation(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1345,7 +1502,8 @@ def test_simple_insert_consolidation(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_simple_replacement_on_file(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1370,7 +1528,8 @@ def test_simple_replacement_on_file(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_simple_replacement(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1393,7 +1552,8 @@ def test_simple_replacement(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_last_file_replacement_json(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1416,7 +1576,8 @@ def test_last_file_replacement_json(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_last_file_replacement_csv(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1448,7 +1609,8 @@ def test_last_file_replacement_csv(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_file_removal_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1469,7 +1631,8 @@ def test_file_removal_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
     )
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_simple_replacement_autogenerated_key(tmp_path: pathlib.Path, monkeypatch):
     def stream_inputs():
         time.sleep(1)
@@ -1505,7 +1668,7 @@ def test_bytes_read(tmp_path: pathlib.Path):
         autocommit_duration_ms=1000,
     )
     pw.io.jsonlines.write(table, output_path)
-    pw.run()
+    run()
 
     with open(output_path) as f:
         result = json.load(f)
@@ -1533,7 +1696,7 @@ def test_binary_data_in_subscribe(tmp_path: pathlib.Path):
         pass
 
     pw.io.subscribe(table, on_change=on_change, on_end=on_end)
-    pw.run()
+    run()
 
     assert rows == [
         {
@@ -1570,7 +1733,7 @@ def test_bool_values_parsing_in_csv(tmp_path: pathlib.Path):
         schema=InputSchema,
     )
     pw.io.csv.write(table, output_path)
-    pw.run()
+    run()
     result = pd.read_csv(
         output_path, usecols=["key", "value"], index_col=["key"]
     ).sort_index()
@@ -1590,7 +1753,7 @@ def test_text_file_read_in_full(tmp_path: pathlib.Path):
         autocommit_duration_ms=1000,
     )
     pw.io.jsonlines.write(table, output_path)
-    pw.run()
+    run()
 
     with open(output_path) as f:
         result = json.load(f)
@@ -1616,7 +1779,7 @@ def test_text_files_directory_read_in_full(tmp_path: pathlib.Path):
         autocommit_duration_ms=1000,
     )
     pw.io.jsonlines.write(table, output_path)
-    pw.run()
+    run()
 
     output_lines = []
     with open(output_path, "r") as f:
@@ -1649,16 +1812,13 @@ def test_persistent_subscribe(tmp_path):
     )
 
     root = mock.Mock()
-    on_change, on_end = mock.Mock(), mock.Mock()
-    root.on_change, root.on_end = on_change, on_end
-    pw.io.subscribe(table, on_change=on_change, on_end=on_end)
+    pw.io.subscribe(table, on_change=root.on_change, on_end=root.on_end)
     pw.run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pstorage_dir),
         ),
     )
 
-    threads_num = int(os.environ.get("PATHWAY_THREADS", "1"))
     root.assert_has_calls(
         [
             mock.call.on_change(
@@ -1667,10 +1827,11 @@ def test_persistent_subscribe(tmp_path):
                 time=mock.ANY,
                 is_addition=True,
             ),
-            *[mock.call.on_end()] * threads_num,
+            mock.call.on_end(),
         ]
     )
-    assert on_change.call_count == 1
+    assert root.on_change.call_count == 1
+    assert root.on_end.call_count == 1
 
     G.clear()
 
@@ -1691,7 +1852,7 @@ def test_persistent_subscribe(tmp_path):
 
     root = mock.Mock()
     pw.io.subscribe(table, on_change=root.on_change, on_end=root.on_end)
-    pw.run(
+    run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pstorage_dir),
         ),
@@ -1704,10 +1865,11 @@ def test_persistent_subscribe(tmp_path):
                 time=mock.ANY,
                 is_addition=True,
             ),
-            *[mock.call.on_end()] * threads_num,
+            mock.call.on_end(),
         ]
     )
-    assert on_change.call_count == 1
+    assert root.on_change.call_count == 1
+    assert root.on_end.call_count == 1
 
 
 def test_objects_pattern(tmp_path: pathlib.Path):
@@ -1727,7 +1889,7 @@ def test_objects_pattern(tmp_path: pathlib.Path):
         object_pattern="*.txt",
     )
     pw.io.csv.write(table, output_path)
-    pw.run()
+    run()
     result = pd.read_csv(output_path).sort_index()
     assert set(result["data"]) == {"a", "b", "c"}
 
@@ -1739,7 +1901,7 @@ def test_objects_pattern(tmp_path: pathlib.Path):
         object_pattern="*.dat",
     )
     pw.io.csv.write(table, output_path)
-    pw.run()
+    run()
     result = pd.read_csv(output_path).sort_index()
     assert set(result["data"]) == {"d", "e", "f", "g"}
 
@@ -1792,7 +1954,7 @@ def test_replay(tmp_path: pathlib.Path):
 
         pw.io.subscribe(t, callback, callback.on_end)
 
-        pw.run(
+        run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(replay_dir),
                 persistence_mode=persistence_mode,
@@ -1890,7 +2052,7 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
 
         pw.io.subscribe(t, callback, callback.on_end)
 
-        pw.run(
+        run(
             persistence_config=pw.persistence.Config.simple_config(
                 pw.persistence.Backend.filesystem(replay_dir),
                 persistence_mode=persistence_mode,
@@ -1938,7 +2100,7 @@ def test_metadata_column_identity(tmp_path: pathlib.Path):
         autocommit_duration_ms=1000,
     )
     pw.io.jsonlines.write(table, output_path)
-    pw.run()
+    run()
 
     metadata_file_names = []
     with open(output_path, "r") as f:
@@ -1975,7 +2137,7 @@ def test_metadata_column_regular_parser(tmp_path: pathlib.Path):
         autocommit_duration_ms=1000,
     )
     pw.io.jsonlines.write(table, output_path)
-    pw.run()
+    run()
 
     metadata_file_names = []
     with open(output_path, "r") as f:
@@ -2016,7 +2178,7 @@ def test_mock_snapshot_reader():
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run(
+    run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.mock(events),
             persistence_mode=api.PersistenceMode.SPEEDRUN_REPLAY,
@@ -2071,7 +2233,7 @@ def test_stream_generator_from_list():
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run(persistence_config=stream_generator.persistence_config())
+    run(persistence_config=stream_generator.persistence_config())
 
     timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
     assert len(timestamps) == 2
@@ -2130,7 +2292,7 @@ def test_stream_generator_from_list_multiple_workers(monkeypatch: pytest.MonkeyP
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run(persistence_config=stream_generator.persistence_config())
+    run(persistence_config=stream_generator.persistence_config())
 
     timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
     assert len(timestamps) == 2
@@ -2187,7 +2349,7 @@ def test_stream_generator_from_markdown():
     on_change = mock.Mock()
     pw.io.subscribe(t, on_change=on_change)
 
-    pw.run(persistence_config=stream_generator.persistence_config())
+    run(persistence_config=stream_generator.persistence_config())
 
     on_change.assert_has_calls(
         [
@@ -2279,7 +2441,7 @@ def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.Monkey
     on_change = mock.Mock()
     pw.io.subscribe(t3, on_change=on_change)
 
-    pw.run(persistence_config=stream_generator.persistence_config())
+    run(persistence_config=stream_generator.persistence_config())
 
     on_change.assert_has_calls(
         [
@@ -2323,7 +2485,7 @@ def test_python_connector_upsert_raw(tmp_path: pathlib.Path):
 
     table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
     pw.io.csv.write(table, tmp_path / "output.csv")
-    pw.run()
+    run()
 
     result = pd.read_csv(tmp_path / "output.csv")
     return len(result) == 5
@@ -2343,7 +2505,7 @@ def test_python_connector_removal_by_key(tmp_path: pathlib.Path):
 
     table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
     pw.io.csv.write(table, tmp_path / "output.csv")
-    pw.run()
+    run()
 
     result = pd.read_csv(tmp_path / "output.csv")
     return len(result) == 2
@@ -2380,7 +2542,7 @@ def test_python_connector_upsert_json(tmp_path: pathlib.Path):
         TestSubject(), format="json", schema=InputSchema, autocommit_duration_ms=10
     )
     pw.io.csv.write(table, tmp_path / "output.csv")
-    pw.run()
+    run()
 
     result = pd.read_csv(tmp_path / "output.csv")
     return len(result) == 5
@@ -2441,7 +2603,8 @@ def test_parse_to_table_deprecation():
     assert_table_equality(t, expected)
 
 
-@xfail_on_darwin(reason="running pw.run from separate process not supported")
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
 def test_sqlite(tmp_path: pathlib.Path):
     database_name = tmp_path / "test.db"
     output_path = tmp_path / "output.csv"
@@ -2462,9 +2625,7 @@ def test_sqlite(tmp_path: pathlib.Path):
     connection.commit()
 
     def stream_target():
-        assert wait_result_with_checker(
-            FileLinesNumberChecker(output_path, 2), 5, 0.1, target=None
-        )
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 5, target=None)
         connection = sqlite3.connect(database_name)
         cursor = connection.cursor()
         cursor.execute(
@@ -2473,16 +2634,12 @@ def test_sqlite(tmp_path: pathlib.Path):
         )
         connection.commit()
 
-        assert wait_result_with_checker(
-            FileLinesNumberChecker(output_path, 3), 2, 0.1, target=None
-        )
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 3), 2, target=None)
         cursor = connection.cursor()
         cursor.execute("UPDATE users SET name = 'Bob Smith' WHERE id = 2")
         connection.commit()
 
-        assert wait_result_with_checker(
-            FileLinesNumberChecker(output_path, 5), 2, 0.1, target=None
-        )
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 5), 2, target=None)
         cursor = connection.cursor()
         cursor.execute("DELETE FROM users WHERE id = 3")
         connection.commit()
@@ -2500,7 +2657,7 @@ def test_sqlite(tmp_path: pathlib.Path):
     inputs_thread = threading.Thread(target=stream_target, daemon=True)
     inputs_thread.start()
 
-    assert wait_result_with_checker(FileLinesNumberChecker(output_path, 6), 30)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 6), 30)
 
     events = []
     with open(output_path, "r") as f:

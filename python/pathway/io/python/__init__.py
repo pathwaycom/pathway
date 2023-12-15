@@ -14,7 +14,7 @@ from IPython.display import display
 from pathway.internals import Table, api, datasource
 from pathway.internals.api import DataEventType, PathwayType, Pointer, SessionType
 from pathway.internals.decorators import table_from_datasource
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
@@ -42,12 +42,50 @@ class ConnectorSubject(ABC):
 
     In order to send a message one of the methods
     :py:meth:`next_json`, :py:meth:`next_str`, :py:meth:`next_bytes` can be used.
+
+    If the subject won't delete records, set the class property ``deletions_enabled``
+    to ``False`` as it may help to improve the performance.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.io.python import ConnectorSubject
+    >>>
+    >>> class MySchema(pw.Schema):
+    ...     a: int
+    ...     b: str
+    ...
+    >>>
+    >>> class MySubject(ConnectorSubject):
+    ...     def run(self) -> None:
+    ...         for i in range(4):
+    ...             self.next_json({"a": i, "b": f"x{i}"})
+    ...     @property
+    ...     def _deletions_enabled(self) -> bool:
+    ...         return False
+    ...
+    >>>
+    >>> s = MySubject()
+    >>>
+    >>> table = pw.io.python.read(s, schema=MySchema)
+    >>> pw.debug.compute_and_print(table, include_id=False)
+    a | b
+    0 | x0
+    1 | x1
+    2 | x2
+    3 | x3
     """
 
     _buffer: Queue
+    _thread: threading.Thread | None
+    _exception: BaseException | None
+    _already_used: bool
 
     def __init__(self) -> None:
         self._buffer = Queue()
+        self._thread = None
+        self._exception = None
+        self._already_used = False
 
     @abstractmethod
     def run(self) -> None:
@@ -83,14 +121,14 @@ class ConnectorSubject(ABC):
 
     def commit(self) -> None:
         """Sends a commit message."""
-        self.next_bytes(b"*COMMIT*")
+        self._buffer.put((DataEventType.INSERT, None, b"*COMMIT*", None))
 
     def close(self) -> None:
         """Sends a sentinel message.
 
         Should be called to indicate that no new messages will be sent.
         """
-        self.next_bytes(b"*FINISH*")
+        self._buffer.put((DataEventType.INSERT, None, b"*FINISH*", None))
 
     def start(self) -> None:
         """Runs a separate thread with function feeding data into buffer.
@@ -101,11 +139,24 @@ class ConnectorSubject(ABC):
         def target():
             try:
                 self.run()
+            except BaseException as e:
+                self._exception = e
             finally:
                 self.on_stop()
                 self.close()
 
-        threading.Thread(target=target).start()
+        self._thread = threading.Thread(target=target)
+        self._thread.start()
+
+    def end(self) -> None:
+        """Joins a thread running :py:meth:`run`.
+
+        Should not be called directly.
+        """
+        assert self._thread is not None
+        self._thread.join()
+        if self._exception is not None:
+            raise self._exception
 
     def _add(
         self, key: Pointer | None, message: bytes, metadata: bytes | None = None
@@ -113,6 +164,10 @@ class ConnectorSubject(ABC):
         if self._session_type == SessionType.NATIVE:
             self._buffer.put((DataEventType.INSERT, key, message, metadata))
         elif self._session_type == SessionType.UPSERT:
+            if not self._deletions_enabled:
+                raise ValueError(
+                    f"Trying to upsert a row in {type(self)} but deletions_enabled is set to False."
+                )
             self._buffer.put((DataEventType.UPSERT, key, message, metadata))
         else:
             raise NotImplementedError(f"session type {self._session_type} not handled")
@@ -120,6 +175,10 @@ class ConnectorSubject(ABC):
     def _remove(
         self, key: Pointer, message: bytes, metadata: bytes | None = None
     ) -> None:
+        if not self._deletions_enabled:
+            raise ValueError(
+                f"Trying to delete a row in {type(self)} but deletions_enabled is set to False."
+            )
         self._buffer.put((DataEventType.DELETE, key, message, metadata))
 
     def _read(self) -> Any:
@@ -149,15 +208,19 @@ class ConnectorSubject(ABC):
     def _session_type(self) -> SessionType:
         return SessionType.NATIVE
 
+    @property
+    def _deletions_enabled(self) -> bool:
+        return True
 
-@runtime_type_check
+
+@check_arg_types
 @trace_user_frame
 def read(
     subject: ConnectorSubject,
     *,
     schema: type[Schema] | None = None,
     format: str = "json",
-    autocommit_duration_ms: int = 1500,
+    autocommit_duration_ms: int | None = 1500,
     debug_data=None,
     value_columns: list[str] | None = None,
     primary_key: list[str] | None = None,
@@ -196,6 +259,13 @@ computations from the moment they were terminated last time.
         Table: The table read.
     """
 
+    if subject._already_used:
+        raise ValueError(
+            "You can't use the same ConnectorSubject object in more than one Python connector."
+            + "If you want to use the same ConnectorSubject twice, create two separate objects of this class."
+        )
+    subject._already_used = True
+
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
     if data_format_type == "identity":
@@ -221,13 +291,23 @@ computations from the moment they were terminated last time.
         session_type=subject._session_type,
         parse_utf8=(format != "binary"),
     )
+    mode = (
+        api.ConnectorMode.STREAMING
+        if subject._deletions_enabled
+        else api.ConnectorMode.STATIC
+    )
     data_storage = api.DataStorage(
         storage_type="python",
         python_subject=api.PythonSubject(
-            start=subject.start, read=subject._read, is_internal=subject._is_internal()
+            start=subject.start,
+            read=subject._read,
+            end=subject.end,
+            is_internal=subject._is_internal(),
+            deletions_enabled=subject._deletions_enabled,
         ),
         read_method=internal_read_method(format),
         persistent_id=persistent_id,
+        mode=mode,
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms

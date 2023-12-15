@@ -230,6 +230,9 @@ class DebugOperator(Operator):
     def label(self):
         return f"debug: {self.name}"
 
+    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+        return self.input_tables
+
 
 class InputOperator(Operator):
     """Holds a definition of external datasource."""
@@ -247,8 +250,8 @@ class InputOperator(Operator):
         self.datasource = datasource
         self.debug_datasource = debug_datasource
 
-    def __call__(self):
-        result = pw.Table._from_schema(self.datasource.schema)
+    def __call__(self) -> pw.Table:
+        result = pw.Table._from_schema(self.datasource.get_effective_schema())
         self._prepare_outputs(as_arg_tuple(result))
         return result
 
@@ -267,6 +270,9 @@ class OutputOperator(Operator):
         self._prepare_inputs(as_arg_tuple(table))
         self.table = table
         return self
+
+    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+        return self.input_tables
 
 
 @dataclass

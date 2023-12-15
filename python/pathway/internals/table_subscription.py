@@ -13,7 +13,7 @@ class OnFinishCallback(Protocol):
     on each engine worker separately.
     """
 
-    def __call__(self) -> Any:
+    def __call__(self) -> None:
         """
         The callable part of the callback. It will be called without arguments and its
         return result won't be used by the engine.
@@ -30,8 +30,12 @@ class OnChangeCallback(Protocol):
     """
 
     def __call__(
-        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
-    ) -> Any:
+        self,
+        key: Pointer,
+        row: dict[str, Any],
+        time: int,
+        is_addition: bool,
+    ) -> None:
         """
         The callable part of the callback.
 
@@ -47,8 +51,24 @@ transaction;
 
         Returns:
             None
+        """
+        ...
 
-        The return result of this method will be ignored by the engine.
+
+class OnTimeEndCallback(Protocol):
+    """
+    The callback to be called on every time finished. It is required
+    to accept one parameter: time.
+    """
+
+    def __call__(self, time: int) -> None:
+        """
+        The callable part of the callback.
+
+        Args:
+            time: the time finished
+        Returns:
+            None
         """
         ...
 
@@ -58,6 +78,7 @@ def subscribe(
     *,
     skip_persisted_batch: bool,
     on_change: OnChangeCallback,
+    on_time_end: OnTimeEndCallback = lambda time: None,
     on_end: OnFinishCallback = lambda: None,
 ):
     """
@@ -76,13 +97,15 @@ def subscribe(
           of the change in milliseconds and the flag stating if the change had been an
           addition of the row. These parameters of the callback are expected to have
           names row, time and is_addition respectively.
+        on_time_end: the callback function to be called on each closed time of computation.
         on_end: the callback function to be called when the stream of changes ends.
-          It will be called on each engine worker separately.
     Returns:
         None
     """
 
-    def wrapper(key, values, time, diff):
+    def on_change_wrapper(
+        key: Pointer, values: list[Any], time: int, diff: int
+    ) -> None:
         """
         Wraps a change event from Pathway in a more human-friendly format.
 
@@ -107,5 +130,8 @@ def subscribe(
         return on_change(key=key, row=row, time=time, is_addition=(diff == 1))
 
     return table_to_datasink(
-        table, datasink.CallbackDataSink(wrapper, on_end, skip_persisted_batch)
+        table,
+        datasink.CallbackDataSink(
+            on_change_wrapper, on_time_end, on_end, skip_persisted_batch
+        ),
     )

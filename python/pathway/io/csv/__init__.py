@@ -7,13 +7,13 @@ from typing import Any
 
 import pathway as pw
 from pathway.internals.api import PathwayType
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import CsvParserSettings, check_deprecated_kwargs
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def read(
     path: str | PathLike,
@@ -47,14 +47,13 @@ def read(
             a subset of its columns, the set of columns should be specified in this field.
             Otherwise, the primary key will be generated randomly. [will be deprecated soon]
         csv_settings: Settings for the CSV parser.
-        mode: denotes how the engine polls the new data from the source. Currently \
-"streaming", "static", and "streaming_with_deletions" are supported. If set to \
-"streaming" the engine will wait for the new input files in the directory. On the other \
-hand, "streaming_with_deletions" mode also tracks file deletions and modifications and \
-reflects them in the state. For example, if a file was deleted, "streaming_with_deletions"\
-mode will also remove rows obtained by reading this file from the table. Finally, the \
-"static" mode will only consider the available data and ingest all of it in one commit. \
-The default value is "streaming".
+        mode: Denotes how the engine polls the new data from the source. Currently \
+"streaming" and "static" are supported. If set to "streaming" the engine will wait for \
+the updates in the specified directory. It will track file additions, deletions, and \
+modifications and reflect these events in the state. For example, if a file was deleted,\
+"streaming" mode will also remove rows obtained by reading this file from the table. On \
+the other hand, the "static" mode will only consider the available data and ingest all \
+of it in one commit. The default value is "streaming".
         object_pattern: Unix shell style pattern for filtering only certain files in the \
 directory. Ignored in case a path to a single file is specified.
         with_metadata: When set to true, the connector will add an additional column \
@@ -179,7 +178,7 @@ named ``path`` that will show the full path to the file from where a row was fil
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def write(table: Table, filename: str | PathLike) -> None:
     """Writes `table`'s stream of updates to a file in delimiter-separated values format.

@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.tests.utils import (
     T,
     assert_table_equality,
@@ -203,7 +203,7 @@ def test_session_simple():
 
 
 def test_runtime_type_check_decorator():
-    @runtime_type_check
+    @check_arg_types
     def foo(x: int):
         pass
 
@@ -252,13 +252,12 @@ def test_traceback_rust_expression():
         2   | b
         3   | c
         """
-    )
+    ).update_types(bar=int)
 
-    input = input.with_columns(bar=pw.declare_type(int, pw.this.bar))
     input.select(r=pw.this.foo + pw.this.bar)  # cause
 
     with _assert_error_trace(TypeError):
-        run_all()
+        run_all(runtime_typechecking=False)
 
 
 @pytest.mark.xfail
@@ -296,12 +295,12 @@ def test_traceback_iterate():
         foo
         bar
         """
-    ).with_columns(val=pw.declare_type(int, pw.this.val))
+    ).update_types(val=int)
 
     pw.iterate(iterate, iterated=input)
 
     with _assert_error_trace(TypeError):
-        run_all()
+        run_all(runtime_typechecking=False)
 
 
 def test_traceback_transformers_1():

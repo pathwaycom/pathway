@@ -3,10 +3,8 @@ use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::cursor::Cursor;
 use differential_dataflow::trace::implementations::ord::{OrdValBatch, OrdValBuilder};
 use differential_dataflow::trace::{BatchReader, Builder};
-use differential_dataflow::ExchangeData;
 use std::cmp::Ord;
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use timely::progress::{Antichain, Timestamp};
 /// This struct allows to sort entries by key, val, time, before building a batch
 /// it is essentially a buffer than later calls the DD batch builder
@@ -78,16 +76,15 @@ where
 
 /// Reorganizes a set of batches into set of vectors, each vector corresponding
 /// to updates from a specific time
-pub(crate) fn batch_by_time<K, V, T, R>(
-    input: &Vec<Rc<OrdValBatch<K, V, T, R>>>,
-) -> BTreeMap<T, Vec<(K, V, T, R)>>
+pub(crate) fn batch_by_time<B, O>(
+    input: &[B],
+    mut logic: impl FnMut(&B::Key, &B::Val, &B::Time, &B::R) -> O,
+) -> BTreeMap<B::Time, Vec<O>>
 where
-    K: ExchangeData,
-    V: ExchangeData,
-    T: Timestamp + Lattice,
-    R: ExchangeData + Abelian,
+    B: BatchReader,
+    B::Time: Timestamp,
 {
-    let mut ret: BTreeMap<T, Vec<(K, V, T, R)>> = BTreeMap::new();
+    let mut ret = BTreeMap::new();
     for batch in input {
         let mut cursor = batch.cursor();
         while let Some(key) = cursor.get_key(batch) {
@@ -97,7 +94,7 @@ where
                         ret.insert(time.clone(), Vec::new());
                     }
                     let state = ret.get_mut(time).unwrap();
-                    state.push((key.clone(), val.clone(), time.clone(), diff.clone()));
+                    state.push(logic(key, val, time, diff));
                 });
                 cursor.step_val(batch);
             }

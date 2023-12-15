@@ -9,27 +9,14 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from pathway.internals import api
-from pathway.internals.column import (
-    Column,
-    ExternalMaterializedColumn,
-    IdColumn,
-    MaterializedColumn,
-)
+from pathway.internals.column import Column, IdColumn, MaterializedColumn
 from pathway.internals.column_path import ColumnPath
-from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.graph_runner import path_evaluator
 from pathway.internals.graph_runner.path_storage import Storage
 from pathway.internals.graph_runner.scope_context import ScopeContext
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.helpers import StableSet
-from pathway.internals.operator import (
-    DebugOperator,
-    InputOperator,
-    IterateOperator,
-    Operator,
-    OutputOperator,
-    RowTransformerOperator,
-)
+from pathway.internals.operator import InputOperator, IterateOperator, Operator
 from pathway.internals.table import Table
 from pathway.internals.universe import Universe
 
@@ -40,20 +27,25 @@ if TYPE_CHECKING:
 @dataclass
 class OperatorStorageGraph:
     scope_context: ScopeContext
-    column_deps_changes: dict[Operator, dict[Table, StableSet[Column]]]
-    column_deps_at_output: dict[Operator, dict[Table, StableSet[Column]]]
-    column_deps_at_end: dict[Universe, StableSet[Column]]  # for inner graph in iterate
-    initial_storages: dict[Universe, Storage]  # for inner graph in iterate
-    output_storages: dict[Operator, dict[Table, Storage]]
     iterate_subgraphs: dict[Operator, OperatorStorageGraph]
     is_outer_graph: bool
-    iterate_subgraphs_external_column_mapping: dict[
-        Operator, dict[Column, Column]
-    ] = field(default_factory=lambda: defaultdict(dict))
+    column_deps_at_output: dict[Operator, dict[Table, StableSet[Column]]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+    initial_storages: dict[Universe, Storage] = field(
+        default_factory=dict
+    )  # for inner graph in iterate
+    output_storages: dict[Operator, dict[Table, Storage]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
     final_storages: dict[Universe, Storage] | None = None
+    table_to_storage: dict[Table, Storage] = field(default_factory=dict)
 
     def get_iterate_subgraph(self, operator: Operator) -> OperatorStorageGraph:
         return self.iterate_subgraphs[operator]
+
+    def has_column(self, table: Table, column: Column) -> bool:
+        return self.table_to_storage[table].has_column(column)
 
     @classmethod
     def from_scope_context(
@@ -62,10 +54,11 @@ class OperatorStorageGraph:
         graph_builder: GraphRunner,
         output_tables: Iterable[Table],
     ) -> OperatorStorageGraph:
-        graph = cls._create_storage_graph(
-            scope_context, graph_builder, output_tables=output_tables
-        )
-        graph._compute_relevant_columns()
+        graph = cls._create_storage_graph(scope_context, graph_builder)
+        column_dependencies: dict[Universe, StableSet[Column]] = defaultdict(StableSet)
+        for table in output_tables:
+            column_dependencies[table._universe].update(table._columns.values())
+        graph._compute_relevant_columns(column_dependencies)
         graph._compute_storage_paths()
 
         return graph
@@ -75,108 +68,57 @@ class OperatorStorageGraph:
         cls,
         scope_context: ScopeContext,
         graph_builder: GraphRunner,
-        initial_deps: dict[Universe, StableSet[Column]] = {},
-        output_tables: Iterable[Table] = [],
         is_outer_graph: bool = True,
     ) -> OperatorStorageGraph:
-        deps: dict[Universe, StableSet[Column]] = initial_deps.copy()
-        deps_changes: dict[Operator, dict[Table, StableSet[Column]]] = defaultdict(dict)
-        column_deps_at_output: dict[
-            Operator, dict[Table, StableSet[Column]]
-        ] = defaultdict(dict)
-        output_storages: dict[Operator, dict[Table, Storage]] = defaultdict(dict)
-        initial_storages: dict[Universe, Storage] = {}
         iterate_subgraphs: dict[Operator, OperatorStorageGraph] = {}
-
         for operator in scope_context.nodes:
-            for table in operator.intermediate_and_output_tables:
-                if table._universe in deps:
-                    deps_changes[operator][table] = deps[table._universe]
-                deps[table._universe] = StableSet()
-                column_deps_at_output[operator][table] = deps[table._universe]
-
             if isinstance(operator, IterateOperator):
-                inner_tables = (
-                    operator.iterated_copy
-                    + operator.iterated_with_universe_copy
-                    + operator.extra_copy
-                )
-                inner_deps: dict[Universe, StableSet[Column]] = {}
-                for inner_table in inner_tables.values():
-                    assert isinstance(inner_table, Table)
-                    if inner_table._universe not in inner_deps:
-                        inner_deps[inner_table._universe] = StableSet()
                 iterate_context = scope_context.iterate_subscope(
                     operator, graph_builder
                 )
                 iterate_subgraphs[operator] = cls._create_storage_graph(
                     iterate_context,
                     graph_builder,
-                    initial_deps=inner_deps,
                     is_outer_graph=False,
                 )
-        for table in output_tables:
-            deps[table._universe].update(table._columns.values())
 
         graph = cls(
             scope_context=scope_context,
-            column_deps_changes=deps_changes,
-            column_deps_at_output=column_deps_at_output,
-            column_deps_at_end=deps,
-            initial_storages=initial_storages,
-            output_storages=output_storages,
             iterate_subgraphs=iterate_subgraphs,
             is_outer_graph=is_outer_graph,
         )
         return graph
 
     def _compute_relevant_columns(
-        self, input_universes: StableSet[Universe] = StableSet()
+        self,
+        column_dependencies: dict[Universe, StableSet[Column]],
+        input_universes: StableSet[Universe] | None = None,
     ) -> None:
-        global_column_deps = self.column_deps_at_end.copy()
         operators_reversed = reversed(list(self.scope_context.nodes))
+
         for operator in operators_reversed:
-            if isinstance(operator, OutputOperator) or isinstance(
-                operator, DebugOperator
-            ):
-                column_dependencies = self._compute_column_dependencies_output(operator)
-            elif isinstance(operator, RowTransformerOperator):
-                column_dependencies = self._compute_column_dependencies_row_transformer(
-                    operator, self.scope_context
-                )
-            elif isinstance(operator, IterateOperator):
-                column_dependencies = self._compute_column_dependencies_iterate(
-                    operator, self.scope_context
-                )
-            else:
-                column_dependencies = self._compute_column_dependencies_ordinary(
-                    operator, self.scope_context
-                )
+            self._compute_column_dependencies_ordinary(
+                operator, self.scope_context, column_dependencies
+            )
 
-            for table in reversed(list(operator.intermediate_and_output_tables)):
-                if table in self.column_deps_changes[operator]:
-                    previous_deps = self.column_deps_changes[operator][table]
-                    global_column_deps[table._universe] = previous_deps
-                else:
-                    del global_column_deps[table._universe]
+            if isinstance(operator, IterateOperator):
+                self._compute_column_dependencies_iterate(operator)
 
-            for universe, columns in column_dependencies.items():
-                if len(columns) > 0:
-                    if universe in global_column_deps:
-                        global_column_deps[universe].update(columns)
-                    elif not self._can_skip_universe_with_cols(
-                        universe, columns, input_universes
-                    ):
-                        raise RuntimeError(
-                            f"Can't determine the source of columns {columns} from "
-                            + f"universe: {universe} in operator: {operator}"
-                        )
+        for universe, columns in column_dependencies.items():
+            if len(columns) > 0:
+                if not self._can_skip_universe_with_cols(
+                    universe, columns, input_universes
+                ):
+                    raise RuntimeError(
+                        f"Can't determine the source of columns {columns} from "
+                        + f"universe: {universe} in operator: {operator}"
+                    )
 
     def _can_skip_universe_with_cols(
         self,
         universe: Universe,
         columns: Iterable[Column],
-        input_universes: StableSet[Universe],
+        input_universes: StableSet[Universe] | None,
     ) -> bool:
         all_materialized_or_id = all(
             isinstance(column, MaterializedColumn) or isinstance(column, IdColumn)
@@ -187,6 +129,7 @@ class OperatorStorageGraph:
         # Operator in the inner graph. So they have to be skipped.
         return (
             not self.is_outer_graph
+            and input_universes is not None
             and universe in input_universes
             and all_materialized_or_id
         )
@@ -195,8 +138,8 @@ class OperatorStorageGraph:
         self,
         operator: Operator,
         scope_context: ScopeContext,
-    ) -> dict[Universe, StableSet[Column]]:
-        column_dependencies: dict[Universe, StableSet[Column]] = defaultdict(StableSet)
+        column_dependencies: dict[Universe, StableSet[Column]],
+    ) -> None:
         # reverse because we traverse the operators list backward
         # and want to process output tables before intermediate tables
         # because we want to propagate dependencies from output tables
@@ -206,24 +149,18 @@ class OperatorStorageGraph:
         )
 
         for table in intermediate_and_output_tables_rev:
-            # add dependencies of downstream tables
-            column_dependencies[table._universe].update(
-                self.column_deps_at_output[operator][table]
-            )
-            output_deps = self.column_deps_at_output[operator][table]
-            # output columns (not skipped) have to be in the storage
-            output_deps.update(
-                column
-                for column in table._columns.values()
-                if not scope_context.skip_column(column)
-            )
-            # columns with a given universe must be in all intermediate storages
-            # in this universe (from creation to last use)
+            output_deps: StableSet[Column] = StableSet()
+            # set columns that have to be produced
             output_deps.update(column_dependencies.get(table._universe, []))
+            # columns tree shaking if set to False
+            if scope_context.run_all:
+                output_deps.update(table._columns.values())
+            self.column_deps_at_output[operator][table] = output_deps
 
             # add column dependencies
             for column in chain(table._columns.values(), [table._id_column]):
-                if not scope_context.skip_column(column):
+                # if the first condition is not met, the column is not needed (tree shaking)
+                if column in output_deps or isinstance(column, IdColumn):
                     for dependency in column.column_dependencies():
                         if not isinstance(dependency, IdColumn):
                             column_dependencies[dependency.universe].add(dependency)
@@ -231,43 +168,13 @@ class OperatorStorageGraph:
             # remove current columns (they are created in this operator)
             column_dependencies[table._universe] -= StableSet(table._columns.values())
 
-        return column_dependencies
+        for table in operator.hard_table_dependencies():
+            column_dependencies[table._universe].update(table._columns.values())
 
-    def _compute_column_dependencies_output(
-        self,
-        operator: OutputOperator | DebugOperator,
-    ) -> dict[Universe, StableSet[Column]]:
-        column_dependencies: dict[Universe, StableSet[Column]] = defaultdict(StableSet)
-        # get columns needed in the output operators
-        for table_ in operator.input_tables:
-            column_dependencies[table_._universe].update(table_._columns.values())
-        return column_dependencies
-
-    def _compute_column_dependencies_row_transformer(
-        self,
-        operator: RowTransformerOperator,
-        scope_context: ScopeContext,
-    ) -> dict[Universe, StableSet[Column]]:
-        column_dependencies = self._compute_column_dependencies_ordinary(
-            operator, scope_context
+    def _compute_column_dependencies_iterate(self, operator: IterateOperator) -> None:
+        inner_column_dependencies: dict[Universe, StableSet[Column]] = defaultdict(
+            StableSet
         )
-        # propagate input tables columns as depndencies (they are hard deps)
-        for table_ in operator.input_tables:
-            column_dependencies[table_._universe].update(table_._columns.values())
-
-        return column_dependencies
-
-    def _compute_column_dependencies_iterate(
-        self,
-        operator: IterateOperator,
-        scope_context: ScopeContext,
-    ) -> dict[Universe, StableSet[Column]]:
-        column_dependencies = self._compute_column_dependencies_ordinary(
-            operator, scope_context
-        )
-        # FIXME: remove it up when iterate inputs are not hard dependencies
-
-        inner_graph = self.iterate_subgraphs[operator]
         all_columns: dict[Universe, StableSet[Column]] = defaultdict(StableSet)
         output_tables_columns: dict[Universe, StableSet[Column]] = defaultdict(
             StableSet
@@ -275,33 +182,21 @@ class OperatorStorageGraph:
         # propagate columns existing in iterate
         for name, outer_handle in operator._outputs.items():
             outer_table = outer_handle.value
-            if name not in operator.result_iterated:
-                continue
-            inner_table = operator.result_iterated[name]
+            if name in operator.result_iterated:
+                inner_table = operator.result_iterated[name]
+            else:
+                inner_table = operator.result_iterated_with_universe[name]
             assert isinstance(inner_table, Table)
-            inner_deps = inner_graph.column_deps_at_end[inner_table._universe]
+            inner_deps = inner_column_dependencies[inner_table._universe]
             for column_name, outer_column in outer_table._columns.items():
                 output_tables_columns[outer_table._universe].add(outer_column)
                 inner_column = inner_table._columns[column_name]
                 inner_deps.update([inner_column])
 
-            all_columns[outer_table._universe].update(
-                self.column_deps_at_output[operator][outer_table]
-            )
-
-        columns_mapping = self.iterate_subgraphs_external_column_mapping[operator]
-        # propagate columns not existing in iterate but created before iterate and
-        # used after iterate and having the same universe as one of iterate outputs
-        for universe, columns in all_columns.items():
-            columns -= output_tables_columns[universe]
-            inner_universe = operator._universe_mapping[universe]
-            inner_deps = inner_graph.column_deps_at_end[inner_universe]
-            for column in columns:
-                inner_column = ExternalMaterializedColumn(
-                    inner_universe, ColumnProperties(dtype=column.dtype)
+            if name in operator.result_iterated:
+                all_columns[outer_table._universe].update(
+                    self.column_deps_at_output[operator][outer_table]
                 )
-                inner_deps.update([inner_column])
-                columns_mapping[column] = inner_column
 
         inner_tables = (
             operator.iterated_copy
@@ -315,13 +210,9 @@ class OperatorStorageGraph:
             assert isinstance(table, Table)
             input_universes.add(table._universe)
 
-        inner_graph._compute_relevant_columns(input_universes)
-
-        # propagate input tables columns as depndencies (they are hard deps)
-        for table_ in operator.input_tables:
-            column_dependencies[table_._universe].update(table_._columns.values())
-
-        return column_dependencies
+        self.iterate_subgraphs[operator]._compute_relevant_columns(
+            inner_column_dependencies, input_universes
+        )
 
     def _compute_storage_paths(self):
         storages: dict[Universe, Storage] = self.initial_storages.copy()
@@ -332,6 +223,8 @@ class OperatorStorageGraph:
                 self._compute_storage_paths_iterate(operator, storages)
             else:
                 self._compute_storage_paths_ordinary(operator, storages)
+            for table in operator.intermediate_and_output_tables:
+                self.table_to_storage[table] = self.output_storages[operator][table]
         self.final_storages = storages
 
     def _compute_storage_paths_ordinary(
@@ -397,15 +290,9 @@ class OperatorStorageGraph:
                 path = storage.get_path(outer_column)
                 inner_column_paths[inner_table._universe][inner_column] = path
 
-        # push paths for external columns that have to be propagated through iterate
-        columns_mapping = self.iterate_subgraphs_external_column_mapping[operator]
-        for outer_column, inner_column in columns_mapping.items():
-            path = storages[outer_column.universe].get_path(outer_column)
-            inner_column_paths[inner_column.universe][inner_column] = path
-
         for universe, paths in inner_column_paths.items():
-            self.iterate_subgraphs[operator].initial_storages[universe] = Storage(
-                universe, paths
+            self.iterate_subgraphs[operator].initial_storages[universe] = Storage.flat(
+                universe, paths.keys()
             )
 
         self.iterate_subgraphs[operator]._compute_storage_paths()
@@ -416,12 +303,7 @@ class OperatorStorageGraph:
             output_columns = self.column_deps_at_output[operator][table]
             input_table = operator.get_input(name).value
             assert isinstance(input_table, Table)
-            path_storage = path_evaluator.iterate(
-                output_columns,
-                storages[input_table._universe],
-                table,
-                input_table,
-            )
+            path_storage = Storage.flat(table._universe, output_columns)
             self.output_storages[operator][table] = path_storage
             storages[table._universe] = path_storage
 
@@ -448,7 +330,6 @@ class OperatorStorageGraph:
     def get_output_tables(
         self,
         output_tables: Iterable[Table],
-        scope_context: ScopeContext,
         state: ScopeState,
     ) -> list[tuple[api.Table, list[ColumnPath]]]:
         tables = []
@@ -456,10 +337,6 @@ class OperatorStorageGraph:
             assert self.final_storages is not None
             storage = self.final_storages[table._universe]
             engine_table = state.get_table(storage)
-            paths = [
-                storage.get_path(column)
-                for column in table._columns.values()
-                if not scope_context.skip_column(column)
-            ]
+            paths = [storage.get_path(column) for column in table._columns.values()]
             tables.append((engine_table, paths))
         return tables

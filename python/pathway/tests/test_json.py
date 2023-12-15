@@ -409,6 +409,43 @@ def test_json_apply():
     )
 
 
+def test_json_flatten():
+    input = _json_table(
+        data=[[1, 2], [3], [4, 5]],
+    )
+
+    result = input.flatten(pw.this.data).select(data=pw.this.data.as_int())
+
+    assert_table_equality_wo_index(
+        T(
+            """
+                | data
+            1   | 1
+            2   | 2
+            3   | 3
+            4   | 4
+            5   | 5
+            """
+        ).update_types(data=Optional[int]),
+        result,
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1, 0, 1.6, "1", "0", "true", {"value": [1]}, None],
+)
+def test_json_flatten_wrong_values(value):
+    input = _json_table(
+        data=[value],
+    )
+
+    input.flatten(pw.this.data)
+
+    with pytest.raises(ValueError, match=r"Pathway can't flatten this Json.*"):
+        run_all()
+
+
 def test_json_type():
     table = _json_table(
         a=[{"value": 1}], b=[2], c=[1.5], d=[True], e="foo", f=[[1, 2, 3]]

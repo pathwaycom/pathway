@@ -12,9 +12,7 @@ from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
 def test_flatten_simple():
-    tab = T(
-        pd.DataFrame.from_dict({"col": [[1, 2, 3, 4]]}), format="pandas"
-    ).with_columns(col=pw.declare_type(list[int], pw.this.col))
+    tab = T(pd.DataFrame.from_dict({"col": [[1, 2, 3, 4]]}), format="pandas")
 
     assert_table_equality_wo_index(
         tab.flatten(this.col, origin_id=this.id),
@@ -31,9 +29,7 @@ def test_flatten_simple():
 
 
 def test_flatten_no_origin():
-    tab = T(
-        pd.DataFrame.from_dict({"col": [[1, 2, 3, 4]]}), format="pandas"
-    ).with_columns(col=pw.declare_type(list[int], pw.this.col))
+    tab = T(pd.DataFrame.from_dict({"col": [[1, 2, 3, 4]]}), format="pandas")
 
     assert_table_equality_wo_index(
         tab.flatten(this.col),
@@ -50,9 +46,7 @@ def test_flatten_no_origin():
 
 
 def test_flatten_inner_repeats():
-    tab = T(
-        pd.DataFrame.from_dict({"col": [[1, 1, 1, 3]]}), format="pandas"
-    ).with_columns(col=pw.declare_type(list[int], pw.this.col))
+    tab = T(pd.DataFrame.from_dict({"col": [[1, 1, 1, 3]]}), format="pandas")
 
     assert_table_equality_wo_index(
         tab.flatten(this.col, origin_id=this.id),
@@ -69,9 +63,7 @@ def test_flatten_inner_repeats():
 
 
 def test_flatten_more_repeats():
-    tab = T(
-        pd.DataFrame.from_dict({"col": [[1, 1, 1, 3], [1]]}), format="pandas"
-    ).with_columns(col=pw.declare_type(list[int], pw.this.col))
+    tab = T(pd.DataFrame.from_dict({"col": [[1, 1, 1, 3], [1]]}), format="pandas")
 
     assert_table_equality_wo_index(
         tab.flatten(this.col, origin_id=this.id),

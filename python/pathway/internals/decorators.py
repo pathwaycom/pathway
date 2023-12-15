@@ -228,7 +228,7 @@ def method(func, **kwargs):
 def table_from_datasource(
     datasource,
     debug_datasource: StaticDataSource | None = None,
-):
+) -> Table:
     return G.add_operator(
         lambda id: op.InputOperator(datasource, id, debug_datasource),
         lambda operator: operator(),

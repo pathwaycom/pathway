@@ -7,11 +7,11 @@ from collections.abc import Callable, Sequence
 from typing import Type, overload
 
 import pathway.internals as pw
-from pathway.internals.runtime_type_check import runtime_type_check
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def flatten_column(
     column: pw.ColumnReference,
@@ -75,7 +75,7 @@ def unpack_col(
     ...
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def unpack_col(
     column: pw.ColumnReference,
@@ -144,7 +144,7 @@ def unpack_col(
 
 
 # TODO: generalize to apply on groupby: https://github.com/navalgo/IoT-Pathway/issues/1919
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def multiapply_all_rows(
     *cols: pw.ColumnReference,
@@ -209,7 +209,7 @@ def multiapply_all_rows(
     return result.with_universe_of(table)
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def apply_all_rows(
     *cols: pw.ColumnReference,
@@ -259,7 +259,7 @@ def apply_all_rows(
     )
 
 
-@runtime_type_check
+@check_arg_types
 @trace_user_frame
 def groupby_reduce_majority(
     column_group: pw.ColumnReference, column_val: pw.ColumnReference

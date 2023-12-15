@@ -5,8 +5,8 @@ use differential_dataflow::operators::arrange::ArrangeByKey;
 use operator_test_utils::run_test;
 
 use pathway_engine::engine::dataflow::operators::time_column::{
-    postpone_core, SelfCompactionTime, TimeColumnBuffer, TimeColumnForget, TimeColumnFreeze,
-    TimeKey,
+    postpone_core, MaxTimestamp, SelfCompactionTime, TimeColumnBuffer, TimeColumnForget,
+    TimeColumnFreeze, TimeKey,
 };
 
 #[test]
@@ -60,7 +60,74 @@ fn test_core_basic() {
         ],
     ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
+    });
+}
+
+#[test]
+fn test_core_basic_flush() {
+    let input = vec![
+        vec![
+            (
+                (TimeKey { time: 100, key: 1 }, (100, 11)),
+                SelfCompactionTime::original(0),
+                1,
+            ),
+            (
+                (TimeKey { time: 100, key: 2 }, (100, 22)),
+                SelfCompactionTime::original(0),
+                1,
+            ),
+        ],
+        vec![
+            (
+                (TimeKey { time: 200, key: 3 }, (200, 33)),
+                SelfCompactionTime::original(1),
+                1,
+            ),
+            (
+                (TimeKey { time: 200, key: 4 }, (200, 44)),
+                SelfCompactionTime::original(1),
+                1,
+            ),
+        ],
+        vec![
+            (
+                (TimeKey { time: 300, key: 5 }, (300, 55)),
+                SelfCompactionTime::original(2),
+                1,
+            ),
+            (
+                (TimeKey { time: 300, key: 6 }, (300, 66)),
+                SelfCompactionTime::original(2),
+                1,
+            ),
+        ],
+    ];
+    let expected = vec![
+        vec![
+            ((1, (100, 11)), SelfCompactionTime::original(1), 1),
+            ((2, (100, 22)), SelfCompactionTime::original(1), 1),
+        ],
+        vec![
+            ((3, (200, 33)), SelfCompactionTime::original(2), 1),
+            ((4, (200, 44)), SelfCompactionTime::original(2), 1),
+        ],
+        vec![
+            (
+                (5, (300, 55)),
+                <SelfCompactionTime::<i32> as MaxTimestamp<SelfCompactionTime<i32>>>::get_max_timestamp(),
+                1,
+            ),
+            (
+                (6, (300, 66)),
+                <SelfCompactionTime::<i32> as MaxTimestamp<SelfCompactionTime<i32>>>::get_max_timestamp(),
+                1,
+            ),
+        ],
+    ];
+    run_test(input, expected, |coll| {
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, true).arrange_by_key()
     });
 }
 
@@ -116,7 +183,7 @@ fn test_core_late_forwarding() {
         ],
     ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
     });
 }
 
@@ -177,7 +244,7 @@ fn test_core_late_forwarding_ignore_retraction() {
         ],
     ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
     });
 }
 
@@ -226,7 +293,7 @@ fn test_core_aggregate_to_zero() {
         ((3, (200, 33)), SelfCompactionTime::original(2), 1),
     ]];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
     });
 }
 
@@ -277,7 +344,7 @@ fn test_core_aggregate_replace() {
     ]];
 
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
     });
 }
 
@@ -294,7 +361,37 @@ fn test_wrapper_basic() {
     ];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1)
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
+            .arrange_by_key()
+    });
+}
+
+#[test]
+fn test_wrapper_basic_flush() {
+    let input = vec![
+        vec![((1, (100, 11)), 0, 1), ((2, (100, 22)), 0, 1)],
+        vec![((3, (200, 33)), 1, 1), ((4, (200, 44)), 1, 1)],
+        vec![((5, (300, 55)), 2, 1), ((6, (300, 66)), 2, 1)],
+    ];
+    let expected = vec![
+        vec![((1, (100, 11)), 1, 1), ((2, (100, 22)), 1, 1)],
+        vec![((3, (200, 33)), 2, 1), ((4, (200, 44)), 2, 1)],
+        vec![
+            (
+                (5, (300, 55)),
+                <i32 as MaxTimestamp<i32>>::get_max_timestamp(),
+                1,
+            ),
+            (
+                (6, (300, 66)),
+                <i32 as MaxTimestamp<i32>>::get_max_timestamp(),
+                1,
+            ),
+        ],
+    ];
+
+    run_test(input, expected, |coll| {
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, true)
             .arrange_by_key()
     });
 }
@@ -315,7 +412,7 @@ fn test_wrapper_split_batch_by_time() {
     ];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1)
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
             .arrange_by_key()
     });
 }
@@ -337,7 +434,7 @@ fn test_wrapper_late_forwarding() {
     ];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1)
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
             .arrange_by_key()
     });
 }
@@ -352,7 +449,7 @@ fn test_wrapper_aggregate_to_zero() {
     let expected = vec![vec![((2, (200, 22)), 2, 1), ((3, (200, 33)), 2, 1)]];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1)
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
             .arrange_by_key()
     });
 }
@@ -370,7 +467,7 @@ fn test_wrapper_aggregate_replace() {
         ((3, (200, 33)), 2, 1),
     ]];
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1)
+        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
             .arrange_by_key()
     });
 }
@@ -390,8 +487,13 @@ fn test_wrapper_two_times() {
         ((5, (200, 200, 55)), 2, 1),
     ]];
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t1, _t2, _d)| *t1, |(_t1, t2, _d)| *t2)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t1, _t2, _d)| *t1,
+            |(_t1, t2, _d)| *t2,
+            false,
+        )
+        .arrange_by_key()
     });
 }
 
@@ -408,8 +510,13 @@ fn test_wrapper_two_times_replace_aggregate() {
         ((3, (200, 100, 33)), 2, 1),
     ]];
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t1, _t2, _d)| *t1, |(_t1, t2, _d)| *t2)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t1, _t2, _d)| *t1,
+            |(_t1, t2, _d)| *t2,
+            false,
+        )
+        .arrange_by_key()
     });
 }
 
@@ -426,8 +533,13 @@ fn test_wrapper_two_times_forward_late() {
         vec![((5, (100, 200, 55)), 2, 1)],
     ];
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t1, _t2, _d)| *t1, |(_t1, t2, _d)| *t2)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t1, _t2, _d)| *t1,
+            |(_t1, t2, _d)| *t2,
+            false,
+        )
+        .arrange_by_key()
     });
 }
 

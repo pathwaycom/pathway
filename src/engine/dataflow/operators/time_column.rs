@@ -1,9 +1,9 @@
 use super::utils::batch_by_time;
-use super::ArrangeWithTypes;
+use super::{ArrangeWithTypes, ArrangeWithTypesSharded};
 use crate::engine::dataflow::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp, NotTotal};
 use crate::engine::dataflow::operators::utils::{key_val_total_weight, CursorStorageWrapper};
 use crate::engine::dataflow::operators::MapWrapped;
-use crate::engine::dataflow::Shard;
+use crate::engine::dataflow::{ArrangedBySelf, Shard};
 use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
@@ -20,17 +20,14 @@ use timely::communication::Push;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 use timely::dataflow::operators::generic::OutputHandle;
-use timely::dataflow::operators::Capability;
-use timely::dataflow::operators::Inspect;
-use timely::dataflow::operators::Operator;
+use timely::dataflow::operators::{Capability, Inspect, Operator};
 use timely::dataflow::scopes::{Scope, ScopeParent};
-use timely::order::PartialOrder;
 use timely::order::TotalOrder;
 use timely::progress::frontier::AntichainRef;
 use timely::progress::timestamp::Refines;
 use timely::progress::Antichain;
 use timely::progress::{PathSummary, Timestamp};
-
+use timely::PartialOrder;
 type KeyValArr<G, K, V, R> =
     Arranged<G, TraceAgent<Spine<Rc<OrdValBatch<K, V, <G as ScopeParent>::Timestamp, R>>>>>;
 
@@ -127,8 +124,6 @@ impl Refines<()> for SelfCompactionTime<i32> {
     fn summarize(_path: SelfCompactionTime<i32>) {}
 }
 
-// Implement differential dataflow's `Lattice` trait.
-// This extends the `PartialOrder` implementation with additional structure.
 impl<T: Lattice> Lattice for SelfCompactionTime<T> {
     fn join(&self, other: &Self) -> Self {
         let time = self.time.join(&other.time);
@@ -221,6 +216,40 @@ where
     }
 }
 
+pub trait MaxTimestamp<T> {
+    fn get_max_timestamp() -> T;
+}
+
+impl MaxTimestamp<u64> for u64 {
+    fn get_max_timestamp() -> u64 {
+        u64::MAX / 2 * 2
+    }
+}
+
+impl MaxTimestamp<i32> for i32 {
+    fn get_max_timestamp() -> i32 {
+        i32::MAX / 2 * 2
+    }
+}
+
+impl MaxTimestamp<SelfCompactionTime<u64>> for SelfCompactionTime<u64> {
+    fn get_max_timestamp() -> SelfCompactionTime<u64> {
+        SelfCompactionTime {
+            time: u64::get_max_timestamp(),
+            retraction: false,
+        }
+    }
+}
+
+impl MaxTimestamp<SelfCompactionTime<i32>> for SelfCompactionTime<i32> {
+    fn get_max_timestamp() -> SelfCompactionTime<i32> {
+        SelfCompactionTime {
+            time: i32::get_max_timestamp(),
+            retraction: false,
+        }
+    }
+}
+
 pub trait TimeColumnBuffer<
     G: Scope,
     K: ExchangeData + Shard,
@@ -236,10 +265,15 @@ pub trait TimeColumnBuffer<
         scope: G,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        flush_on_end: bool,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+        G: MaybeTotalScope,
+        G::Timestamp: Timestamp<Summary = G::Timestamp>
+            + Default
+            + PathSummary<G::Timestamp>
+            + Epsilon
+            + MaxTimestamp<G::Timestamp>,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static;
 }
@@ -249,6 +283,8 @@ impl<G, K, V, R, CT, TTE, CTE> TimeColumnBuffer<G, K, V, R, CT, TTE, CTE>
 where
     G: Scope + MaybeTotalScope,
     G::Timestamp: Lattice,
+    SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>:
+        MaxTimestamp<SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>>,
     K: ExchangeData + Shard,
     V: ExchangeData,
     CT: ExchangeData,
@@ -260,10 +296,14 @@ where
         mut scope: G,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        flush_on_end: bool,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp:
-            Timestamp<Summary = G::Timestamp> + Default + PathSummary<G::Timestamp> + Epsilon,
+        G::Timestamp: Timestamp<Summary = G::Timestamp>
+            + Default
+            + PathSummary<G::Timestamp>
+            + Epsilon
+            + MaxTimestamp<G::Timestamp>,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
     {
@@ -272,13 +312,16 @@ where
                 inner,
                 SelfCompactionTime::retraction(<G::Timestamp as Epsilon>::epsilon()),
             );
+
             let ret_in_buffer_timespace_col = postpone_core(
                 self.enter(inner)
                     .concat(&retractions.negate())
                     .prepend_time_to_key(threshold_time_extractor)
                     .arrange(),
                 current_time_extractor,
+                flush_on_end,
             );
+
             retractions.set(&ret_in_buffer_timespace_col);
             ret_in_buffer_timespace_col.leave()
         })
@@ -327,6 +370,26 @@ fn push_key_values_to_output<K, C: Cursor, P>(
     }
 }
 
+fn move_cursor_to_key<
+    C: Cursor<Key = TimeKey<CT, K>>,
+    CT: ExchangeData,
+    K: ExchangeData + Shard,
+>(
+    input_wrapper: &mut CursorStorageWrapper<C>,
+    key: &Option<TimeKey<CT, K>>,
+) {
+    input_wrapper.cursor.rewind_keys(input_wrapper.storage);
+    if key.is_some() {
+        input_wrapper
+            .cursor
+            .seek_key(input_wrapper.storage, key.as_ref().unwrap());
+        let found = input_wrapper.cursor.get_key(input_wrapper.storage);
+        if found.is_some() && found.as_ref().unwrap() == &key.as_ref().unwrap() {
+            input_wrapper.cursor.step_key(input_wrapper.storage);
+        }
+    }
+}
+
 //TODO: maybe we can separate out some blocks to remove the allow(clippy::too_many_lines)
 // perhaps could be done while implementing support for complex times
 #[allow(clippy::too_many_lines)]
@@ -341,25 +404,28 @@ pub fn postpone_core<
 >(
     mut input_arrangement: KeyValArr<G, TimeKey<CT, K>, V, R>,
     current_time_extractor: CTE,
+    flush_on_end: bool,
 ) -> Collection<G, (K, V), R>
 where
     G: Scope,
     OT: Timestamp + Lattice + Ord,
-    G::Timestamp: Lattice + Ord,
+    G::Timestamp: Lattice + Ord + MaxTimestamp<G::Timestamp>,
     CT: ExchangeData,
     K: ExchangeData,
     V: ExchangeData,
     CTE: Fn(&V) -> CT + 'static,
 {
     let stream = {
-        input_arrangement
-            .stream
-            .unary(Pipeline, "buffer", move |_capability, _operator_info| {
+        input_arrangement.stream.unary_frontier(
+            Pipeline,
+            "buffer",
+            move |outer_cap, _operator_info| {
                 let mut input_buffer: Vec<
                     Rc<OrdValBatch<TimeKey<CT, K>, V, SelfCompactionTime<OT>, R>>,
                 > = Vec::new();
                 let mut max_column_time: Option<CT> = None;
                 let mut last_arrangement_key: Option<TimeKey<CT, K>> = None;
+                let mut maybe_cap = Some(outer_cap.delayed(&G::Timestamp::get_max_timestamp()));
                 move |input, output| {
                     input.for_each(|capability, batches| {
                         batches.swap(&mut input_buffer);
@@ -368,109 +434,138 @@ where
                             upper_limit.advance_by(AntichainRef::new(&[batch.upper().clone()]));
                         }
 
-                        let grouped = batch_by_time(&input_buffer);
+                        let grouped = batch_by_time(&input_buffer, |key, val, time, diff| {
+                            (key.clone(), val.clone(), time.clone(), diff.clone())
+                        });
 
                         for (time, entries) in grouped {
+                            if time.retraction {
+                                continue;
+                            }
                             let mut local_max_column_time = max_column_time.clone();
                             let mut local_last_arrangement_key = last_arrangement_key.clone();
-                            if !time.retraction {
-                                for (_key, val, _, _diff) in &entries {
-                                    let current_column_time = current_time_extractor(val);
-                                    local_max_column_time =
-                                        [&local_max_column_time, &Some(current_column_time)]
+
+                            for (_key, val, _, _diff) in &entries {
+                                let current_column_time = current_time_extractor(val);
+                                local_max_column_time =
+                                    [&local_max_column_time, &Some(current_column_time)]
+                                        .into_iter()
+                                        .flatten()
+                                        .max()
+                                        .cloned();
+                            }
+
+                            for (key, val, _, diff) in entries {
+                                let (t, k) = (&key.time, &key.key);
+                                //pass entries that are late for buffering
+                                if max_column_time.is_some()
+                                    && max_column_time.as_ref().unwrap() >= t
+                                {
+                                    output.session(&capability.delayed(&time)).give((
+                                        (k.clone(), val.clone()),
+                                        time.clone(),
+                                        diff.clone(),
+                                    ));
+
+                                    local_last_arrangement_key =
+                                        [&local_last_arrangement_key, &Some(key)]
                                             .into_iter()
                                             .flatten()
                                             .max()
                                             .cloned();
                                 }
-
-                                for (key, val, _, diff) in entries {
-                                    let (t, k) = (&key.time, &key.key);
-                                    //pass entries that are late for buffering
-                                    if max_column_time.is_some()
-                                        && max_column_time.as_ref().unwrap() >= t
-                                    {
-                                        output.session(&capability.delayed(&time)).give((
-                                            (k.clone(), val.clone()),
-                                            time.clone(),
-                                            diff.clone(),
-                                        ));
-
-                                        local_last_arrangement_key =
-                                            [&local_last_arrangement_key, &Some(key)]
-                                                .into_iter()
-                                                .flatten()
-                                                .max()
-                                                .cloned();
-                                    }
-                                }
-
-                                let (mut cursor, storage) = input_arrangement.trace.cursor();
-                                let mut input_wrapper = CursorStorageWrapper {
-                                    cursor: &mut cursor,
-                                    storage: &storage,
-                                };
-                                // going over input arrangement has three parts
-                                // 1. entries already emitted (skipped by seek_key)
-                                // 2. entries to keep for later
-                                // 3. entries to emit while processing this batch
-
-                                if local_max_column_time.is_some() {
-                                    input_wrapper.cursor.rewind_keys(input_wrapper.storage);
-                                    if local_last_arrangement_key.is_some() {
-                                        input_wrapper.cursor.seek_key(
-                                            input_wrapper.storage,
-                                            local_last_arrangement_key.as_ref().unwrap(),
-                                        );
-                                        let found =
-                                            input_wrapper.cursor.get_key(input_wrapper.storage);
-                                        if found.is_some()
-                                            && found.as_ref().unwrap()
-                                                == &local_last_arrangement_key.as_ref().unwrap()
-                                        {
-                                            input_wrapper.cursor.step_key(input_wrapper.storage);
-                                        }
-                                    }
-
-                                    while input_wrapper.cursor.key_valid(input_wrapper.storage) {
-                                        let tk = input_wrapper.cursor.key(input_wrapper.storage);
-                                        let (t, k) = (&tk.time, &tk.key);
-
-                                        //if threshold is larger than current batch 'now', all subsequent entries
-                                        //will have too large threshold to be emitted
-                                        if t > local_max_column_time.as_ref().unwrap() {
-                                            break;
-                                        }
-                                        local_last_arrangement_key = Some(tk.clone());
-                                        push_key_values_to_output(
-                                            &mut input_wrapper,
-                                            output,
-                                            &capability.delayed(&time),
-                                            k,
-                                            &Some(time.clone()),
-                                        );
-                                        input_wrapper.cursor.step_key(input_wrapper.storage);
-                                    }
-                                    max_column_time = [&max_column_time, &local_max_column_time]
-                                        .into_iter()
-                                        .flatten()
-                                        .max()
-                                        .cloned();
-                                }
                             }
+
+                            let (mut cursor, storage) = input_arrangement.trace.cursor();
+                            let mut input_wrapper = CursorStorageWrapper {
+                                cursor: &mut cursor,
+                                storage: &storage,
+                            };
+                            // going over input arrangement has three parts
+                            // 1. entries already emitted (skipped by seek_key)
+                            // 2. entries to keep for later
+                            // 3. entries to emit while processing this batch
+
+                            if local_max_column_time.is_some() {
+                                move_cursor_to_key(&mut input_wrapper, &local_last_arrangement_key);
+
+                                while input_wrapper.cursor.key_valid(input_wrapper.storage) {
+                                    let tk = input_wrapper.cursor.key(input_wrapper.storage);
+
+                                    //if threshold is larger than current batch 'now', all subsequent entries
+                                    //will have too large threshold to be emitted
+                                    if &tk.time > local_max_column_time.as_ref().unwrap() {
+                                        break;
+                                    }
+                                    local_last_arrangement_key = Some(tk.clone());
+                                    push_key_values_to_output(
+                                        &mut input_wrapper,
+                                        output,
+                                        &capability.delayed(&time),
+                                        &tk.key,
+                                        &Some(time.clone()),
+                                    );
+                                    input_wrapper.cursor.step_key(input_wrapper.storage);
+                                }
+                                max_column_time = [&max_column_time, &local_max_column_time]
+                                    .into_iter()
+                                    .flatten()
+                                    .max()
+                                    .cloned();
+                            }
+
                             last_arrangement_key = local_last_arrangement_key;
                         }
-                        input_arrangement
-                            .trace
-                            .set_logical_compaction(upper_limit.borrow());
-                        input_arrangement
-                            .trace
-                            .set_physical_compaction(upper_limit.borrow());
+
+                        if !upper_limit.is_empty() {
+                            input_arrangement
+                                .trace
+                                .set_logical_compaction(upper_limit.borrow());
+                            input_arrangement
+                                .trace
+                                .set_physical_compaction(upper_limit.borrow());
+                        }
                     });
+
+                    let frontier = input.frontier.frontier();
+                    if !frontier.less_equal(&G::Timestamp::get_max_timestamp()) {
+                        if flush_on_end && maybe_cap.is_some() {
+                            let (mut cursor, storage) = input_arrangement.trace.cursor();
+                            let mut input_wrapper = CursorStorageWrapper {
+                                cursor: &mut cursor,
+                                storage: &storage,
+                            };
+
+                            move_cursor_to_key(&mut input_wrapper, &last_arrangement_key);
+
+                            while input_wrapper.cursor.key_valid(input_wrapper.storage) {
+                                let tk = input_wrapper.cursor.key(input_wrapper.storage);
+                                push_key_values_to_output(
+                                    &mut input_wrapper,
+                                    output,
+                                    maybe_cap.as_ref().unwrap(),
+                                    &tk.key,
+                                    &Some(maybe_cap.as_ref().unwrap().time().clone()),
+                                );
+
+                                input_wrapper.cursor.step_key(input_wrapper.storage);
+                            }
+                        }
+
+                        input_arrangement
+                            .trace
+                            .set_logical_compaction(Antichain::from_iter(vec![]).borrow());
+                        input_arrangement
+                            .trace
+                            .set_physical_compaction(Antichain::from_iter(vec![]).borrow());
+
+                        maybe_cap = None;
+                    }
                 }
-            })
+            },
+        )
     };
-    Collection { inner: stream }
+    stream.as_collection()
 }
 
 pub trait TimeColumnForget<
@@ -490,7 +585,12 @@ pub trait TimeColumnForget<
         mark_forgetting_records: bool,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        G: MaybeTotalScope,
+        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp>,
+        SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>:
+            MaxTimestamp<SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>>,
+        <G as MaybeTotalScope>::MaybeTotalTimestamp:
+            MaxTimestamp<<G as MaybeTotalScope>::MaybeTotalTimestamp>,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static;
 }
@@ -513,6 +613,10 @@ where
     ) -> Collection<G, (K, V), R>
     where
         G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>:
+            MaxTimestamp<SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>>,
+        <G as MaybeTotalScope>::MaybeTotalTimestamp:
+            MaxTimestamp<<G as MaybeTotalScope>::MaybeTotalTimestamp>,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
     {
@@ -520,6 +624,7 @@ where
             self.scope(),
             threshold_time_extractor,
             current_time_extractor,
+            false,
         );
         let forgetting_stream = if mark_forgetting_records {
             forgetting_stream
@@ -592,7 +697,6 @@ where
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn ignore_late<
     G: ScopeParent,
     CT: ExchangeData,
@@ -607,7 +711,7 @@ pub fn ignore_late<
     current_time_extractor: CTE,
 ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
 where
-    G: Scope,
+    G: MaybeTotalScope,
     G::Timestamp: Lattice + Ord,
     CT: ExchangeData,
     K: ExchangeData,
@@ -615,10 +719,11 @@ where
     TTE: Fn(&V) -> CT + 'static,
     CTE: Fn(&V) -> CT + 'static,
 {
+    let input_arrangement: ArrangedBySelf<G, (K, V), R> = input_collection.arrange_sharded(|_| 0);
     let mut builder =
         OperatorBuilder::new("ignore_late".to_owned(), input_collection.inner.scope());
 
-    let mut input = builder.new_input(&input_collection.inner, Pipeline);
+    let mut input = builder.new_input(&input_arrangement.stream, Pipeline);
     let (mut output, stream) = builder.new_output();
     let (mut late_output, late_stream) = builder.new_output();
 
@@ -630,39 +735,33 @@ where
             let mut late_output_handle = late_output.activate();
             input.for_each(|capability, batch| {
                 batch.swap(&mut input_buffer);
-                let mut max_curr_time = None;
-                for ((_key, val), time, _weight) in &input_buffer {
-                    let candidate_column_time = current_time_extractor(val);
+                let grouped = batch_by_time(&input_buffer, |key_val, (), time, diff| {
+                    (key_val.clone(), time.clone(), diff.clone())
+                });
+                for data in grouped.into_values() {
+                    for ((_key, val), _time, _weight) in &data {
+                        let candidate_column_time = current_time_extractor(val);
 
-                    max_column_time = [&max_column_time, &Some(candidate_column_time)]
-                        .into_iter()
-                        .flatten()
-                        .max()
-                        .cloned();
+                        max_column_time = [&max_column_time, &Some(candidate_column_time)]
+                            .into_iter()
+                            .flatten()
+                            .max()
+                            .cloned();
+                    }
 
-                    //for complex handling this will need some changes, to accommodate antichains
-                    max_curr_time = [&max_curr_time, &Some(time.clone())]
-                        .into_iter()
-                        .flatten()
-                        .max()
-                        .cloned();
-                }
-
-                for entry in input_buffer.drain(..) {
-                    let ((_key, val), _time, _weight) = &entry;
-                    let threshold = threshold_time_extractor(val);
-                    if max_column_time.as_ref().unwrap() < &threshold {
-                        output_handle.session(&capability).give(entry);
-                    } else {
-                        late_output_handle.session(&capability).give(entry);
+                    for entry in data {
+                        let ((_key, val), _time, _weight) = &entry;
+                        let threshold = threshold_time_extractor(val);
+                        if max_column_time.as_ref().unwrap() < &threshold {
+                            output_handle.session(&capability).give(entry);
+                        } else {
+                            late_output_handle.session(&capability).give(entry);
+                        }
                     }
                 }
             });
         }
     });
 
-    (
-        Collection { inner: stream },
-        Collection { inner: late_stream },
-    )
+    (stream.as_collection(), late_stream.as_collection())
 }

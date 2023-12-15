@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
 import pytest
 
@@ -69,9 +67,8 @@ def test_unpack_col():
         }
     )
     data = T(data, format="pandas")
-    data = data.select(data=pw.declare_type(Any, pw.this.data))
     result = unpack_col(data.data, "coord1", "coord2", "coord3")
-    assert_table_equality_wo_types(
+    assert_table_equality(
         result,
         T(
             """
@@ -581,3 +578,51 @@ def test_argmax_rows_02():
     assert_table_equality_wo_index(
         argmax_rows(input, *[input.foo], what=input.bar), expected
     )
+
+
+def test_table_from_rows_stream():
+    class TestSchema(pw.Schema):
+        foo: int = pw.column_definition(primary_key=True)
+        bar: int
+
+    rows = [
+        (1, 2, 1, 1),
+        (1, 2, 2, -1),
+        (1, 3, 2, 1),
+        (4, 2, 2, 1),
+    ]
+    expected = T(
+        """
+        foo   | bar
+         1    | 3
+         4    | 2
+    """
+    ).with_id_from(pw.this.foo)
+
+    table = pw.debug.table_from_rows(schema=TestSchema, rows=rows, is_stream=True)
+    assert_table_equality(table, expected)
+
+
+def test_table_from_rows():
+    class TestSchema(pw.Schema):
+        foo: int = pw.column_definition(primary_key=True)
+        bar: int
+
+    rows = [
+        (1, 2),
+        (2, 2),
+        (3, 3),
+        (4, 2),
+    ]
+    expected = T(
+        """
+        foo   | bar
+         1    | 2
+         2    | 2
+         3    | 3
+         4    | 2
+    """
+    ).with_id_from(pw.this.foo)
+
+    table = pw.debug.table_from_rows(schema=TestSchema, rows=rows, is_stream=False)
+    assert_table_equality(table, expected)

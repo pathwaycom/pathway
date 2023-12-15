@@ -12,14 +12,14 @@ from pathway.internals.schema import ColumnDefinition, Schema
 
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
-SNAPSHOT_MODE_NAME = "streaming_with_deletions"
+SNAPSHOT_MODE_NAME = "streaming_with_deletions"  # deprecated
 
 METADATA_COLUMN_NAME = "_metadata"
 
 _INPUT_MODES_MAPPING = {
     STATIC_MODE_NAME: ConnectorMode.STATIC,
-    STREAMING_MODE_NAME: ConnectorMode.SIMPLE_STREAMING,
-    SNAPSHOT_MODE_NAME: ConnectorMode.STREAMING_WITH_DELETIONS,
+    STREAMING_MODE_NAME: ConnectorMode.STREAMING,
+    SNAPSHOT_MODE_NAME: ConnectorMode.STREAMING,
 }
 
 _DATA_FORMAT_MAPPING = {
@@ -41,7 +41,7 @@ _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
     PathwayType.DATE_TIME_NAIVE: dt.DATE_TIME_NAIVE,
     PathwayType.DATE_TIME_UTC: dt.DATE_TIME_UTC,
     PathwayType.DURATION: dt.DURATION,
-    PathwayType.ARRAY: dt.ARRAY,
+    PathwayType.ARRAY: dt.ANY_ARRAY,
     PathwayType.JSON: dt.JSON,
 }
 

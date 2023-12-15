@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from pathway.tests import utils
+import pytest
 
-__all__ = ["utils"]
+pytest.register_assert_rewrite("pathway.tests.utils")

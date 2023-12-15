@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from statistics import mode
 
+import jmespath
 import numpy as np
 
 # TODO change to `import pathway as pw` when it is not imported as part of stdlib, OR move the whole file to stdlib
@@ -44,7 +45,16 @@ def _euclidean_distance(data_table: np.ndarray, query_table: np.ndarray):
     return np.sum((data_table - query_table) ** 2, axis=1)
 
 
-def knn_lsh_classifier_train(data: pw.Table[DataPoint], L, type="euclidean", **kwargs):
+class MetaDataSchema:
+    metadata: dict
+
+
+def knn_lsh_classifier_train(
+    data: pw.Table[DataPoint],
+    L,
+    type="euclidean",
+    **kwargs,
+):
     """
     Build the LSH index over data.
     L the number of repetitions of the LSH scheme.
@@ -83,6 +93,9 @@ def knn_lsh_generic_classifier_train(
     buckets_list = data.select(buckets=pw.apply(list, data.buckets))
     data += unpack_col(buckets_list.buckets, *band_col_names)
 
+    if "metadata" not in data._columns:
+        data += data.select(metadata=None)
+
     def lsh_perform_query(queries: pw.Table, k: int | None = None) -> pw.Table:
         queries += queries.select(buckets=pw.apply(lsh_projection, queries.data))
         if k is not None:
@@ -114,24 +127,30 @@ def knn_lsh_generic_classifier_train(
         def merge_buckets(*tuples: list[tuple]) -> tuple:
             return tuple(StableSet(sum(tuples, ())))
 
+        if "metadata_filter" not in result._columns:
+            result += result.select(metadata_filter=None)
+
         flattened = result.select(
             result.data,
             query_id=result.id,
             ids=pw.apply(merge_buckets, *[result[f"items_{i}"] for i in range(L)]),
             k=result.k,
-        ).filter(pw.apply_with_type(lambda x: x != (), bool, pw.this.ids))
+            metadata_filter=result.metadata_filter,
+        ).filter(pw.this.ids != ())
 
         # step 3: find knns in unioned buckets
         @pw.transformer
         class compute_knns_transformer:
             class training_data(pw.ClassArg):
                 data = pw.input_attribute()
+                metadata = pw.input_attribute()
 
             class flattened(pw.ClassArg):
                 data = pw.input_attribute()
                 query_id = pw.input_attribute()
                 ids = pw.input_attribute()
                 k = pw.input_attribute()
+                metadata_filter = pw.input_attribute()
 
                 @pw.output_attribute
                 def knns_ids(self) -> np.ndarray:
@@ -139,22 +158,34 @@ def knn_lsh_generic_classifier_train(
                     for id_candidate in self.ids:
                         try:
                             self.transformer.training_data[id_candidate].data
+                            self.transformer.training_data[id_candidate].metadata
                         except BaseException:
                             pass
-                    data_candidates = np.array(
-                        [
-                            self.transformer.training_data[id_candidate].data
-                            for id_candidate in self.ids
-                        ]
-                    )
-
+                    candidates = [
+                        (
+                            id_candidate,
+                            self.transformer.training_data[id_candidate].data,
+                        )
+                        for id_candidate in self.ids
+                        if self.metadata_filter is None
+                        or jmespath.search(
+                            self.metadata_filter,
+                            self.transformer.training_data[id_candidate].metadata.value,
+                        )
+                        is True
+                    ]
+                    if len(candidates) == 0:
+                        return np.array([])
+                    ids_filtered, data_candidates_filtered = zip(*candidates)
+                    data_candidates = np.array(data_candidates_filtered)
                     neighs = min(self.k, len(data_candidates))
                     knn_ids = np.argpartition(
-                        distance_function(data_candidates, querypoint), neighs - 1
+                        distance_function(data_candidates, querypoint),
+                        neighs - 1,
                     )[
                         :neighs
                     ]  # neighs - 1 in argpartition, because of 0-based indexing
-                    ret = np.array(self.ids)[knn_ids]
+                    ret = np.array(ids_filtered)[knn_ids]
                     return ret
 
         knn_result: pw.Table = compute_knns_transformer(  # type: ignore
@@ -169,7 +200,7 @@ def knn_lsh_generic_classifier_train(
 
         knn_result_with_empty_results = knn_result_with_empty_results.with_columns(
             knns_ids=pw.coalesce(pw.this.knns_ids, np.array(()))
-        ).update_types(knns_ids=knn_result.typehints()["knns_ids"])
+        )
         # return knn_result
         return knn_result_with_empty_results
 
