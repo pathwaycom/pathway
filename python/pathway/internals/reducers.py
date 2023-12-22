@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from abc import ABC, abstractmethod
 from warnings import warn
 
@@ -31,7 +32,7 @@ class Reducer(ABC):
 
     def additional_args_from_context(
         self, context: GroupedContext
-    ) -> tuple[ColumnExpression, ...]:
+    ) -> builtins.tuple[ColumnExpression, ...]:
         return ()
 
 
@@ -156,7 +157,7 @@ class TupleWrappingReducer(Reducer):
 
     def additional_args_from_context(
         self, context: GroupedContext
-    ) -> tuple[ColumnExpression, ...]:
+    ) -> builtins.tuple[ColumnExpression, ...]:
         if context.sort_by is not None:
             return (context.sort_by.to_column_expression(),)
         else:
@@ -212,31 +213,290 @@ _unique = TypePreservingUnaryReducer(name="unique", engine_reducer=api.Reducer.U
 _any = TypePreservingUnaryReducer(name="any", engine_reducer=api.Reducer.ANY)
 
 
-def _generate_unary_reducer(reducer: UnaryReducer, **kwargs):
-    def wrapper(arg: expr.ColumnExpression) -> expr.ReducerExpression:
-        return expr.ReducerExpression(reducer, arg, **kwargs)
-
-    return wrapper
-
-
-min = _generate_unary_reducer(_min)
-max = _generate_unary_reducer(_max)
-sum = _generate_unary_reducer(_sum)
-argmin = _generate_unary_reducer(_argmin)
-argmax = _generate_unary_reducer(_argmax)
-unique = _generate_unary_reducer(_unique)
-any = _generate_unary_reducer(_any)
+def _apply_unary_reducer(
+    reducer: UnaryReducer, arg: expr.ColumnExpression, **kwargs
+) -> expr.ReducerExpression:
+    return expr.ReducerExpression(reducer, arg, **kwargs)
 
 
-def sorted_tuple(arg: expr.ColumnExpression, *, skip_nones: bool = False):
-    return _generate_unary_reducer(_sorted_tuple(skip_nones), skip_nones=skip_nones)(
-        arg
-    )
+def min(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns the minimum of the aggregated values.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(min=pw.reducers.min(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    min
+    -1
+    4
+    """
+    return _apply_unary_reducer(_min, arg)
 
 
-# Exported as `tuple` by `pathway.reducers` to avoid shadowing the builtin here
-def tuple_reducer(arg: expr.ColumnExpression, *, skip_nones: bool = False):
-    return _generate_unary_reducer(_tuple(skip_nones), skip_nones=skip_nones)(arg)
+def max(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns the maximum of the aggregated values.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(max=pw.reducers.max(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    max
+    2
+    7
+    """
+    return _apply_unary_reducer(_max, arg)
+
+
+def sum(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns the sum of the aggregated values. Can handle int, float, and array values.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(sum=pw.reducers.sum(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    sum
+    2
+    15
+
+
+    >>> import pandas as pd
+    >>> np_table = pw.debug.table_from_pandas(
+    ...     pd.DataFrame(
+    ...         {
+    ...             "data": [
+    ...                 np.array([1, 2, 3]),
+    ...                 np.array([4, 5, 6]),
+    ...                 np.array([7, 8, 9]),
+    ...             ]
+    ...         }
+    ...     )
+    ... )
+    >>> result = np_table.reduce(data_sum=pw.reducers.sum(np_table.data))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    data_sum
+    [12 15 18]
+    """
+    return _apply_unary_reducer(_sum, arg)
+
+
+def argmin(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns the index of the minimum aggregated value.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> pw.debug.compute_and_print(t)
+                | colA | colB
+    ^X1MXHYY... | valA | -1
+    ^YYY4HAB... | valA | 1
+    ^Z3QWT29... | valA | 2
+    ^3CZ78B4... | valB | 4
+    ^3HN31E1... | valB | 4
+    ^3S2X6B2... | valB | 7
+    >>> result = t.groupby(t.colA).reduce(argmin=pw.reducers.argmin(t.colB), min=pw.reducers.min(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    argmin      | min
+    ^X1MXHYY... | -1
+    ^3CZ78B4... | 4
+    """
+    return _apply_unary_reducer(_argmin, arg)
+
+
+def argmax(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns the index of the maximum aggregated value.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> pw.debug.compute_and_print(t)
+                | colA | colB
+    ^X1MXHYY... | valA | -1
+    ^YYY4HAB... | valA | 1
+    ^Z3QWT29... | valA | 2
+    ^3CZ78B4... | valB | 4
+    ^3HN31E1... | valB | 4
+    ^3S2X6B2... | valB | 7
+    >>> result = t.groupby(t.colA).reduce(argmax=pw.reducers.argmax(t.colB), max=pw.reducers.max(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    argmax      | max
+    ^Z3QWT29... | 2
+    ^3S2X6B2... | 7
+    """
+    return _apply_unary_reducer(_argmax, arg)
+
+
+def unique(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns aggregated value, if all values are identical. If values are not identical, exception is raised.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ...    | colA | colB | colD
+    ... 1  | valA |  1   |  3
+    ... 2  | valA |  1   |  3
+    ... 3  | valA |  1   |  3
+    ... 4  | valB |  2   |  4
+    ... 5  | valB |  2   |  5
+    ... 6  | valB |  2   |  6
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(unique_B=pw.reducers.unique(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    unique_B
+    1
+    2
+    >>> result = t.groupby(t.colA).reduce(unique_D=pw.reducers.unique(t.colD))
+    >>> try:
+    ...   pw.debug.compute_and_print(result, include_id=False)
+    ... except Exception as e:
+    ...   print(type(e))
+    <class 'pathway.engine.EngineError'>
+    """
+    return _apply_unary_reducer(_unique, arg)
+
+
+def any(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+    """
+    Returns any of the aggregated values. Values are consistent across application to many columns.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ...    | colA | colB | colD
+    ... 1  | valA | -1   |  4
+    ... 2  | valA |  1   |  7
+    ... 3  | valA |  2   | -3
+    ... 4  | valB |  4   |  2
+    ... 5  | valB |  5   |  6
+    ... 6  | valB |  7   |  1
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(
+    ...     any_B=pw.reducers.any(t.colB),
+    ...     any_D=pw.reducers.any(t.colD),
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    any_B | any_D
+    2     | -3
+    7     | 1
+    """
+    return _apply_unary_reducer(_any, arg)
+
+
+def sorted_tuple(
+    arg: expr.ColumnExpression, *, skip_nones: bool = False
+) -> expr.ReducerExpression:
+    """
+    Return a sorted tuple containing all the aggregated values. If optional argument skip_nones is
+    set to True, any Nones in aggregated values are omitted from the result.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ...    | colA | colB | colD
+    ... 1  | valA | -1   |  4
+    ... 2  | valA |  1   |  7
+    ... 3  | valA |  2   | -3
+    ... 4  | valB |  4   |
+    ... 5  | valB |  4   |  6
+    ... 6  | valB |  7   |  1
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(
+    ...     tuple_B=pw.reducers.sorted_tuple(t.colB),
+    ...     tuple_D=pw.reducers.sorted_tuple(t.colD, skip_nones=True),
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    tuple_B    | tuple_D
+    (-1, 1, 2) | (-3, 4, 7)
+    (4, 4, 7)  | (1, 6)
+    """
+    return _apply_unary_reducer(_sorted_tuple(skip_nones), arg, skip_nones=skip_nones)
+
+
+def tuple(arg: expr.ColumnExpression, *, skip_nones: bool = False):
+    """
+    Return a tuple containing all the aggregated values. Order of values inside a tuple
+    is consistent across application to many columns. If optional argument skip_nones is
+    set to True, any Nones in aggregated values are omitted from the result.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ...    | colA | colB | colC | colD
+    ... 1  | valA | -1   |   5  |  4
+    ... 2  | valA |  1   |   5  |  7
+    ... 3  | valA |  2   |   5  | -3
+    ... 4  | valB |  4   |  10  |  2
+    ... 5  | valB |  4   |  10  |  6
+    ... 6  | valB |  7   |  10  |  1
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(
+    ...     tuple_B=pw.reducers.tuple(t.colB),
+    ...     tuple_C=pw.reducers.tuple(t.colC),
+    ...     tuple_D=pw.reducers.tuple(t.colD),
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    tuple_B    | tuple_C      | tuple_D
+    (-1, 1, 2) | (5, 5, 5)    | (4, 7, -3)
+    (4, 4, 7)  | (10, 10, 10) | (2, 6, 1)
+    """
+    return _apply_unary_reducer(_tuple(skip_nones), arg, skip_nones=skip_nones)
 
 
 def npsum(arg):
@@ -245,6 +505,27 @@ def npsum(arg):
 
 
 def count(*args):
+    """
+    Returns the number of aggregated elements.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(count=pw.reducers.count())
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    count
+    3
+    3
+    """
     if args:
         warn(
             "Passing argument to pathway.reducers.count() is deprecated, use pathway.reducers.count() "
@@ -253,7 +534,28 @@ def count(*args):
     return expr.CountExpression()
 
 
-def avg(expression: expr.ColumnExpression):
+def avg(expression: expr.ColumnExpression) -> expr.ColumnExpression:
+    """
+    Returns the average of the aggregated values.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ... colA | colB
+    ... valA | -1
+    ... valA |  1
+    ... valA |  2
+    ... valB |  4
+    ... valB |  4
+    ... valB |  7
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(avg=pw.reducers.avg(t.colB))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    avg
+    0.6666666666666666
+    5.0
+    """
     return sum(expression) / count()
 
 
@@ -265,6 +567,32 @@ def int_sum(expression: expr.ColumnExpression):
 
 
 def ndarray(expression: expr.ColumnExpression, *, skip_nones: bool = False):
+    """
+    Returns an array containing all the aggregated values. Order of values inside an array
+    is consistent across application to many columns. If optional argument skip_nones is
+    set to True, any Nones in aggregated values are omitted from the result.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown('''
+    ...    | colA | colB | colD
+    ... 1  | valA | -1   |  4
+    ... 2  | valA |  1   |  7
+    ... 3  | valA |  2   | -3
+    ... 4  | valB |  4   |
+    ... 5  | valB |  4   |  6
+    ... 6  | valB |  7   |  1
+    ... ''')
+    >>> result = t.groupby(t.colA).reduce(
+    ...     array_B=pw.reducers.ndarray(t.colB),
+    ...     array_D=pw.reducers.ndarray(t.colD, skip_nones=True),
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    array_B    | array_D
+    [4 4 7]    | [6 1]
+    [-1  1  2] | [ 4  7 -3]
+    """
     return apply_with_type(
-        np.array, np.ndarray, tuple_reducer(expression, skip_nones=skip_nones)
+        np.array, np.ndarray, tuple(expression, skip_nones=skip_nones)
     )

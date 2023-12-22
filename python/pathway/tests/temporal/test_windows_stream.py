@@ -63,12 +63,14 @@ def generate_buffer_output(
                 buffer[key] = entry
 
         bufkeys = list(buffer.keys())
+
         for window, value in bufkeys:
             entry = buffer[(window, value)]
             threshold = window[1] + delay
             if last_time != now and threshold <= now and threshold > last_time:
                 to_process.append((window, entry))
                 buffer.pop((window, value))
+
         output.extend(to_process)
 
     # flush buffer
@@ -76,6 +78,7 @@ def generate_buffer_output(
     for window, value in bufkeys:
         entry = buffer.pop((window, value))
         output.append((window, entry))
+
     return output
 
 
@@ -311,8 +314,14 @@ def test_non_zero_delay_non_zero_buffer_remove_results():
     parametrized_test(5, 3, 1, 1, False)
 
 
-def create_expected_for_exactly_once(result, duration):
+# method below creates expected output for exactly once tests(also below)
+# it's pretty much hardcoded output, wrapped in a method to avoid code duplication
+# adjusting general simulator aboveseemed pointless, given that rework of tests (that
+# will also properly cover generating expected for exactly once scenarios) is
+# already work in progress
+def _create_expected_for_exactly_once(result):
     expected = []
+    duration = 5
     for i, window_end in enumerate([2, 5, 8, 11, 14]):
         pk_row: dict = {
             "_pw_window": (None, window_end - duration, window_end),
@@ -336,8 +345,8 @@ def create_expected_for_exactly_once(result, duration):
         "max_value": 67,
     }
     pk_row: dict = {
-        "_pw_window": (None, 12, 17),
-        "_pw_window_start": 12,
+        "_pw_window": (None, 17 - duration, 17),
+        "_pw_window_start": 17 - duration,
         "_pw_window_end": 17,
         "_pw_instance": None,
     }
@@ -349,8 +358,8 @@ def create_expected_for_exactly_once(result, duration):
         "max_value": 67,
     }
     pk_row: dict = {
-        "_pw_window": (None, 15, 20),
-        "_pw_window_start": 15,
+        "_pw_window": (None, 20 - duration, 20),
+        "_pw_window_start": 20 - duration,
         "_pw_window_end": 20,
         "_pw_instance": None,
     }
@@ -365,16 +374,17 @@ def test_exactly_once():
     cutoff = 1
     keep_results = True
     result = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
-    expected = create_expected_for_exactly_once(result, duration)
+    expected = _create_expected_for_exactly_once(result)
     assert_stream_equal(expected, result)
     run()
 
 
 def test_exactly_once_from_behavior():
+    p = 17
     duration = 5
     hop = 3
     value_functions = {
-        "time": lambda x: (x // 2) % 17,
+        "time": lambda x: (x // 2) % p,
         "value": lambda x: x,
     }
 
@@ -385,14 +395,14 @@ def test_exactly_once_from_behavior():
     t = pw.demo.generate_custom_stream(
         value_functions,
         schema=TimeColumnInputSchema,
-        nb_rows=68,
+        nb_rows=4 * p,
         autocommit_duration_ms=5,
         input_rate=25,
     )
     gb = t.windowby(
         t.time,
         window=pw.temporal.sliding(duration=duration, hop=hop),
-        behavior=pw.temporal.temporal_behavior.exactly_once_behavior(),
+        behavior=pw.temporal.exactly_once_behavior(),
     )
 
     result = gb.reduce(
@@ -400,18 +410,6 @@ def test_exactly_once_from_behavior():
         max_time=pw.reducers.max(pw.this.time),
         max_value=pw.reducers.max(pw.this.value),
     )
-    expected = create_expected_for_exactly_once(result, duration)
-    assert_stream_equal(expected, result)
-    run()
-
-
-def test_exactly_once_empty():
-    duration = 5
-    hop = 3
-    delay = 6
-    cutoff = 1
-    keep_results = False
-    result = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
-    expected: list[DiffEntry] = []
+    expected = _create_expected_for_exactly_once(result)
     assert_stream_equal(expected, result)
     run()

@@ -908,8 +908,8 @@ def test_window_join_float(w: pw.temporal.Window) -> None:
         (
             int,
             DATE_TIME_NAIVE,
-            pw.temporal.tumbling(duration=2, offset=1.1),
-            ", window.hop, window.offset",
+            pw.temporal.tumbling(duration=2, origin=1.1),
+            ", window.hop, window.origin",
         ),
         (
             int,

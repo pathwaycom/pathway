@@ -134,6 +134,68 @@ def test_date_time(method_name: str, is_naive: bool) -> None:
 
 
 @pytest.mark.parametrize("is_naive", [True, False])
+def test_timestamp(is_naive: bool) -> None:
+    data = [
+        "1960-02-03 08:00:00.000000000",
+        "1960-02-03 08:00:00.123456789",
+        "2008-02-29 08:00:00.000000000",
+        "2023-03-25 12:00:00.000000000",
+        "2023-03-25 12:00:00.000000001",
+        "2023-03-25 12:00:00.123456789",
+        "2023-03-25 16:43:21.000123000",
+        "2023-03-25 17:00:01.987000000",
+        "2023-03-25 22:59:59.999999999",
+        "2023-03-25 23:00:00.000000001",
+        "2023-03-25 23:59:59.999999999",
+        "2023-03-26 00:00:00.000000001",
+        "2023-03-26 12:00:00.000000001",
+        "2123-03-26 12:00:00.000000001",
+        "2123-03-31 23:00:00.000000001",
+    ]
+    fmt = "%Y-%m-%d %H:%M:%S.%f"
+    if not is_naive:
+        data = [entry + "-02:00" for entry in data[:-2]]
+        fmt += "%z"
+    series = pd.to_datetime(pd.Series(data), format=fmt)
+    if not is_naive:
+        series = series.dt.tz_convert(tz.UTC)
+    df = pd.DataFrame({"ns": series.values.astype(np.int64)})
+    table_pd = table_from_pandas(df).select(
+        nounit=pw.this.ns,
+        ns=pw.this.ns / 1,
+        us=pw.this.ns / 1000,
+        ms=pw.this.ns / 1e6,
+        s=pw.this.ns / 1e9,
+    )
+
+    table = table_from_pandas(pd.DataFrame({"a": pd.to_datetime(data, format=fmt)}))
+    table_pw = table.select(
+        nounit=pw.this.a.dt.timestamp(),
+        ns=pw.this.a.dt.timestamp(unit="ns"),
+        us=pw.this.a.dt.timestamp(unit="us"),
+        ms=pw.this.a.dt.timestamp(unit="ms"),
+        s=pw.this.a.dt.timestamp(unit="s"),
+    )
+    assert_table_equality(table_pw, table_pd)
+
+
+def test_timestamp_without_unit_deprecated() -> None:
+    table = table_from_markdown(
+        """
+        time
+          2
+    """
+    ).select(ts=pw.this.time.dt.from_timestamp(unit="s"))
+
+    with pytest.warns(
+        DeprecationWarning,
+        match="Not specyfying the `unit` argument of the `timestamp\(\)` method is deprecated."  # noqa
+        + " Please specify its value. Without specifying, it will default to 'ns'.",
+    ):
+        table.select(time=pw.this.ts.dt.timestamp())
+
+
+@pytest.mark.parametrize("is_naive", [True, False])
 @pytest.mark.parametrize(
     "fmt_out",
     [
@@ -890,6 +952,27 @@ def test_from_timestamp_s() -> None:
     """
     ).with_columns(date=pw.this.date.dt.strptime(fmt))
     table = table.select(date=pw.this.timestamp.dt.from_timestamp(unit="s"))
+
+    assert_table_equality(table, expected)
+
+
+def test_from_timestamp_s_utc() -> None:
+    fmt = "%Y-%m-%dT%H:%M:%S%z"
+    table = table_from_markdown(
+        """
+      | timestamp
+    1 |    10
+    2 | 1685969950
+    """
+    )
+    expected = table_from_markdown(
+        """
+      | date
+    1 | 1970-01-01T00:00:10+00:00
+    2 | 2023-06-05T12:59:10+00:00
+    """
+    ).with_columns(date=pw.this.date.dt.strptime(fmt))
+    table = table.select(date=pw.this.timestamp.dt.utc_from_timestamp(unit="s"))
 
     assert_table_equality(table, expected)
 

@@ -350,21 +350,13 @@ fn push_key_values_to_output<K, C: Cursor, P>(
 {
     while wrapper.cursor.val_valid(wrapper.storage) {
         let weight = key_val_total_weight(wrapper);
-
-        //rust can't do if let Some(weight) = weight && !weight.is_zero()
-        //while we can do if let ... { if !weight.is_zero()} that introduces if-s
-        //that can be collapsed, which is bad as well
-        #[allow(clippy::unnecessary_unwrap)]
         let curr_val = wrapper.cursor.val(wrapper.storage);
-        if weight.is_some() && !weight.clone().unwrap().is_zero() {
+        if let Some(weight) = weight.filter(|w| !w.is_zero()) {
             let time = time.as_ref().unwrap();
             assert!(time >= capability.time());
-
-            output.session(&capability).give((
-                (k.clone(), curr_val.clone()),
-                time.clone(),
-                weight.clone().unwrap(),
-            ));
+            output
+                .session(&capability)
+                .give(((k.clone(), curr_val.clone()), time.clone(), weight));
         }
         wrapper.cursor.step_val(wrapper.storage);
     }
@@ -423,12 +415,14 @@ where
                 let mut input_buffer: Vec<
                     Rc<OrdValBatch<TimeKey<CT, K>, V, SelfCompactionTime<OT>, R>>,
                 > = Vec::new();
-                let mut max_column_time: Option<CT> = None;
+                let mut already_released_column_time: Option<CT> = None;
+                let mut release_threshold_column_time: Option<CT> = None;
                 let mut last_arrangement_key: Option<TimeKey<CT, K>> = None;
                 let mut maybe_cap = Some(outer_cap.delayed(&G::Timestamp::get_max_timestamp()));
                 move |input, output| {
                     input.for_each(|capability, batches| {
                         batches.swap(&mut input_buffer);
+
                         let mut upper_limit = Antichain::from_elem(G::Timestamp::minimum());
                         for batch in &input_buffer {
                             upper_limit.advance_by(AntichainRef::new(&[batch.upper().clone()]));
@@ -442,88 +436,94 @@ where
                             if time.retraction {
                                 continue;
                             }
-                            let mut local_max_column_time = max_column_time.clone();
+                            let mut future_release_threshold_column_time: Option<CT> = None;
                             let mut local_last_arrangement_key = last_arrangement_key.clone();
+                            for (key, val, _, diff) in &entries {
+                                future_release_threshold_column_time = [
+                                    &future_release_threshold_column_time,
+                                    &Some(current_time_extractor(val)),
+                                ]
+                                .into_iter()
+                                .flatten()
+                                .max()
+                                .cloned();
 
-                            for (_key, val, _, _diff) in &entries {
-                                let current_column_time = current_time_extractor(val);
-                                local_max_column_time =
-                                    [&local_max_column_time, &Some(current_column_time)]
-                                        .into_iter()
-                                        .flatten()
-                                        .max()
-                                        .cloned();
-                            }
-
-                            for (key, val, _, diff) in entries {
-                                let (t, k) = (&key.time, &key.key);
                                 //pass entries that are late for buffering
-                                if max_column_time.is_some()
-                                    && max_column_time.as_ref().unwrap() >= t
+                                if already_released_column_time.is_some()
+                                    && already_released_column_time.as_ref().unwrap() >= &key.time
                                 {
                                     output.session(&capability.delayed(&time)).give((
-                                        (k.clone(), val.clone()),
+                                        (key.key.clone(), val.clone()),
                                         time.clone(),
                                         diff.clone(),
                                     ));
 
                                     local_last_arrangement_key =
-                                        [&local_last_arrangement_key, &Some(key)]
+                                        [&local_last_arrangement_key, &Some(key.clone())]
                                             .into_iter()
                                             .flatten()
                                             .max()
                                             .cloned();
                                 }
-                            }
 
-                            let (mut cursor, storage) = input_arrangement.trace.cursor();
-                            let mut input_wrapper = CursorStorageWrapper {
-                                cursor: &mut cursor,
-                                storage: &storage,
-                            };
-                            // going over input arrangement has three parts
-                            // 1. entries already emitted (skipped by seek_key)
-                            // 2. entries to keep for later
-                            // 3. entries to emit while processing this batch
+                                let (mut cursor, storage) = input_arrangement.trace.cursor();
+                                let mut input_wrapper = CursorStorageWrapper {
+                                    cursor: &mut cursor,
+                                    storage: &storage,
+                                };
+                                // going over input arrangement has three parts
+                                // 1. entries already emitted (skipped by seek_key)
+                                // 2. entries to keep for later
+                                // 3. entries to emit while processing this batch
 
-                            if local_max_column_time.is_some() {
-                                move_cursor_to_key(&mut input_wrapper, &local_last_arrangement_key);
-
-                                while input_wrapper.cursor.key_valid(input_wrapper.storage) {
-                                    let tk = input_wrapper.cursor.key(input_wrapper.storage);
-
-                                    //if threshold is larger than current batch 'now', all subsequent entries
-                                    //will have too large threshold to be emitted
-                                    if &tk.time > local_max_column_time.as_ref().unwrap() {
-                                        break;
-                                    }
-                                    local_last_arrangement_key = Some(tk.clone());
-                                    push_key_values_to_output(
+                                if release_threshold_column_time.is_some() {
+                                    move_cursor_to_key(
                                         &mut input_wrapper,
-                                        output,
-                                        &capability.delayed(&time),
-                                        &tk.key,
-                                        &Some(time.clone()),
+                                        &local_last_arrangement_key,
                                     );
-                                    input_wrapper.cursor.step_key(input_wrapper.storage);
+                                    while input_wrapper.cursor.key_valid(input_wrapper.storage) {
+                                        let tk = input_wrapper.cursor.key(input_wrapper.storage);
+
+                                        //if threshold is larger than current 'now', all subsequent entries
+                                        //will have too large threshold to be emitted
+                                        if &tk.time
+                                            > release_threshold_column_time.as_ref().unwrap()
+                                        {
+                                            break;
+                                        }
+                                        local_last_arrangement_key = Some(tk.clone());
+                                        push_key_values_to_output(
+                                            &mut input_wrapper,
+                                            output,
+                                            &capability.delayed(&time),
+                                            &tk.key,
+                                            &Some(time.clone()),
+                                        );
+                                        input_wrapper.cursor.step_key(input_wrapper.storage);
+                                    }
                                 }
-                                max_column_time = [&max_column_time, &local_max_column_time]
-                                    .into_iter()
-                                    .flatten()
-                                    .max()
-                                    .cloned();
                             }
-
                             last_arrangement_key = local_last_arrangement_key;
-                        }
 
-                        if !upper_limit.is_empty() {
-                            input_arrangement
-                                .trace
-                                .set_logical_compaction(upper_limit.borrow());
-                            input_arrangement
-                                .trace
-                                .set_physical_compaction(upper_limit.borrow());
+                            already_released_column_time = release_threshold_column_time.clone();
+
+                            release_threshold_column_time = [
+                                &release_threshold_column_time,
+                                &future_release_threshold_column_time,
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .max()
+                            .cloned();
+
+                            if !upper_limit.is_empty() {
+                                input_arrangement
+                                    .trace
+                                    .set_logical_compaction(upper_limit.borrow());
+                                input_arrangement
+                                    .trace
+                                    .set_physical_compaction(upper_limit.borrow());
+                            }
                         }
                     });
 
@@ -554,10 +554,10 @@ where
 
                         input_arrangement
                             .trace
-                            .set_logical_compaction(Antichain::from_iter(vec![]).borrow());
+                            .set_logical_compaction(AntichainRef::new(&[]));
                         input_arrangement
                             .trace
-                            .set_physical_compaction(Antichain::from_iter(vec![]).borrow());
+                            .set_physical_compaction(AntichainRef::new(&[]));
 
                         maybe_cap = None;
                     }
@@ -730,6 +730,7 @@ where
     builder.build(move |_| {
         let mut input_buffer = Vec::new();
         let mut max_column_time: Option<CT> = None;
+
         move |_frontiers| {
             let mut output_handle = output.activate();
             let mut late_output_handle = late_output.activate();
@@ -739,25 +740,37 @@ where
                     (key_val.clone(), time.clone(), diff.clone())
                 });
                 for data in grouped.into_values() {
-                    for ((_key, val), _time, _weight) in &data {
-                        let candidate_column_time = current_time_extractor(val);
+                    let mut future_max_column_time: Option<CT> = None;
+                    for ((key, val), time, weight) in &data {
+                        future_max_column_time =
+                            [&future_max_column_time, &Some(current_time_extractor(val))]
+                                .into_iter()
+                                .flatten()
+                                .max()
+                                .cloned();
 
-                        max_column_time = [&max_column_time, &Some(candidate_column_time)]
-                            .into_iter()
-                            .flatten()
-                            .max()
-                            .cloned();
-                    }
-
-                    for entry in data {
-                        let ((_key, val), _time, _weight) = &entry;
                         let threshold = threshold_time_extractor(val);
-                        if max_column_time.as_ref().unwrap() < &threshold {
-                            output_handle.session(&capability).give(entry);
+                        if max_column_time.is_none()
+                            || max_column_time.as_ref().unwrap() < &threshold
+                        {
+                            output_handle.session(&capability).give((
+                                (key.clone(), val.clone()),
+                                time.clone(),
+                                weight.clone(),
+                            ));
                         } else {
-                            late_output_handle.session(&capability).give(entry);
+                            late_output_handle.session(&capability).give((
+                                (key.clone(), val.clone()),
+                                time.clone(),
+                                weight.clone(),
+                            ));
                         }
                     }
+                    max_column_time = [&max_column_time, &future_max_column_time]
+                        .into_iter()
+                        .flatten()
+                        .max()
+                        .cloned();
                 }
             });
         }

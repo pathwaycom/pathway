@@ -586,11 +586,11 @@ class ColumnReference(ColumnExpression):
     _table: Table
     _name: str
 
-    def __init__(self, column: Column, table: Table, name: str):
+    def __init__(self, _column: Column, _table: Table, _name: str):
         super().__init__()
-        self._column = column
-        self._table = table
-        self._name = name
+        self._column = _column
+        self._table = _table
+        self._name = _name
 
     @property
     def _deps(self) -> tuple[ColumnExpression, ...]:

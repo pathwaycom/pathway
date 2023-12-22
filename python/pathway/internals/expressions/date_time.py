@@ -1,6 +1,8 @@
 # Copyright © 2023 Pathway
 
 
+from warnings import warn
+
 import pandas as pd
 
 import pathway.internals.expression as expr
@@ -379,12 +381,16 @@ class DateTimeNamespace:
             self._expression,
         )
 
-    def timestamp(self) -> expr.ColumnExpression:
-        """Returns a number of nanoseconds from 1970-01-01 for naive DateTime
+    def timestamp(self, unit: str | None = None) -> expr.ColumnExpression:
+        """Returns a number of (nano,micro,milli)seconds from 1970-01-01 for naive DateTime
         and from 1970-01-01 UTC for timezone-aware datetime.
 
+        Args:
+            unit: unit of a timestamp. It has to be one of 's', 'ms', 'us', 'ns'.
+                It can also be `None` and then it'll default to 'ns' but this is deprecated.
+
         Returns:
-            Timestamp as int.
+            Timestamp as float. Timestamp as int if ``unit=None`` (deprecated).
 
         Examples:
 
@@ -402,16 +408,17 @@ class DateTimeNamespace:
         ... )
         >>> table_with_datetime = table.select(t1=table.t1.dt.strptime("%Y-%m-%dT%H:%M:%S.%f"))
         >>> table_with_timestamp = table_with_datetime.select(
-        ...     timestamp=table_with_datetime.t1.dt.timestamp()
+        ...     timestamp_ns=table_with_datetime.t1.dt.timestamp(unit="ns"),
+        ...     timestamp_s=table_with_datetime.t1.dt.timestamp(unit="s"),
         ... )
         >>> pw.debug.compute_and_print(table_with_timestamp, include_id=False)
-        timestamp
-        -31536000000000000
-        0
-        1672531200000000000
-        1679702400000000000
-        1679751926000000000
-        1679751926987654321
+        timestamp_ns           | timestamp_s
+        -3.1536e+16            | -31536000.0
+        0.0                    | 0.0
+        1.6725312e+18          | 1672531200.0
+        1.6797024e+18          | 1679702400.0
+        1.679751926e+18        | 1679751926.0
+        1.6797519269876544e+18 | 1679751926.9876544
         >>>
         >>> table = pw.debug.table_from_markdown(
         ...     '''
@@ -428,28 +435,64 @@ class DateTimeNamespace:
         ... )
         >>> table_with_datetime = table.select(t1=table.t1.dt.strptime("%Y-%m-%dT%H:%M:%S.%f%z"))
         >>> table_with_timestamp = table_with_datetime.select(
-        ...     timestamp=table_with_datetime.t1.dt.timestamp()
+        ...     timestamp_ns=table_with_datetime.t1.dt.timestamp(unit="ns"),
+        ...     timestamp_s=table_with_datetime.t1.dt.timestamp(unit="s"),
         ... )
         >>> pw.debug.compute_and_print(table_with_timestamp, include_id=False)
-        timestamp
-        -31536000000000000
-        -7200000000000
-        0
-        10800000000000
-        1672527600000000000
-        1679698800000000000
-        1679748326000000000
-        1679748326987654321
+        timestamp_ns           | timestamp_s
+        -3.1536e+16            | -31536000.0
+        -7200000000000.0       | -7200.0
+        0.0                    | 0.0
+        10800000000000.0       | 10800.0
+        1.6725276e+18          | 1672527600.0
+        1.6796988e+18          | 1679698800.0
+        1.679748326e+18        | 1679748326.0
+        1.6797483269876544e+18 | 1679748326.9876544
         """
 
-        return expr.MethodCallExpression(
-            (
-                (dt.DATE_TIME_NAIVE, dt.INT, api.Expression.date_time_naive_timestamp),
-                (dt.DATE_TIME_UTC, dt.INT, api.Expression.date_time_utc_timestamp),
-            ),
-            "dt.timestamp",
-            self._expression,
-        )
+        if unit is None:
+            warn(
+                "Not specyfying the `unit` argument of the `timestamp()` method is deprecated."
+                + " Please specify its value. Without specifying, it will default to 'ns'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return expr.MethodCallExpression(
+                (
+                    (
+                        dt.DATE_TIME_NAIVE,
+                        dt.INT,
+                        api.Expression.date_time_naive_timestamp_ns,
+                    ),
+                    (
+                        dt.DATE_TIME_UTC,
+                        dt.INT,
+                        api.Expression.date_time_utc_timestamp_ns,
+                    ),
+                ),
+                "dt.timestamp",
+                self._expression,
+            )
+        else:
+            if unit not in ("s", "ms", "us", "ns"):
+                raise ValueError(f"unit has to be one of s, ms, us, ns but is {unit}.")
+            return expr.MethodCallExpression(
+                (
+                    (
+                        (dt.DATE_TIME_NAIVE, dt.STR),
+                        dt.FLOAT,
+                        api.Expression.date_time_naive_timestamp,
+                    ),
+                    (
+                        (dt.DATE_TIME_UTC, dt.STR),
+                        dt.FLOAT,
+                        api.Expression.date_time_utc_timestamp,
+                    ),
+                ),
+                "dt.timestamp",
+                self._expression,
+                unit,
+            )
 
     def strftime(self, fmt: expr.ColumnExpression | str) -> expr.ColumnExpression:
         """Converts a DateTime to a string.
@@ -531,7 +574,7 @@ class DateTimeNamespace:
             or `DateTimeUtc` (`contains_timezone = True`).
 
         Returns:
-            DateTime
+            DateTimeNaive or DateTimeUtc
 
         Example:
 
@@ -799,15 +842,14 @@ class DateTimeNamespace:
         duration: expr.ColumnExpression | pd.Timedelta,
         timezone: expr.ColumnExpression | str,
     ) -> expr.ColumnExpression:
-        """Adds Duration to DateTime taking into account time zone.
+        """Adds Duration to DateTimeNaive taking into account the time zone.
 
         Args:
             duration: Duration to be added to DateTime.
             timezone: The time zone to perform addition in.
 
         Returns:
-            DateTimeNaive or DateTimeUtc depending on the type of an object \
-                the method was called on
+            DateTimeNaive
 
         Example:
 
@@ -844,15 +886,14 @@ class DateTimeNamespace:
         duration: expr.ColumnExpression | pd.Timedelta,
         timezone: expr.ColumnExpression | str,
     ) -> expr.ColumnExpression:
-        """Subtracts Duration from DateTime taking into account time zone.
+        """Subtracts Duration from DateTimeNaive taking into account the time zone.
 
         Args:
             duration: Duration to be subtracted from DateTime.
             timezone: The time zone to perform subtraction in.
 
         Returns:
-            DateTimeNaive or DateTimeUtc depending on the type of an object \
-                the method was called on
+            DateTimeNaive
 
         Example:
 
@@ -889,7 +930,7 @@ class DateTimeNamespace:
         date_time: expr.ColumnExpression | pd.Timestamp,
         timezone: expr.ColumnExpression | str,
     ) -> expr.ColumnBinaryOpExpression:
-        """Subtracts two DateTimeNaives taking into account time zone.
+        """Subtracts two DateTimeNaives taking into account the time zone.
 
         Args:
             date_time: DateTimeNaive to be subtracted from `self`.
@@ -1424,31 +1465,42 @@ class DateTimeNamespace:
 
     def from_timestamp(self, unit: str) -> expr.ColumnExpression:
         """
-        Converts timestamp represented as an int to DateTime.
+        Converts timestamp represented as an int or float to DateTimeNaive.
 
         Args:
-            timestamp: value to be converted to DateTime
-            unit: unit of a timestamp. It has to be one of 's', 'ms', 'us', 'ns'
+            unit: unit of a timestamp. It has to be one of 's', 'ms', 'us', 'ns'.
 
         Returns:
-            DateTime
+            DateTimeNaive
 
         Example:
 
         >>> import pathway as pw
-        >>> fmt = "%Y-%m-%dT%H:%M:%S"
-        >>> t1 = pw.debug.table_from_markdown(
+        >>> timestamps_1 = pw.debug.table_from_markdown(
         ...     '''
         ...   | timestamp
         ... 1 |    10
         ... 2 | 1685969950
         ... '''
         ... )
-        >>> t2 = t1.select(date=pw.this.timestamp.dt.from_timestamp(unit="s"))
-        >>> pw.debug.compute_and_print(t2, include_id=False)
+        >>> datetimes_1 = timestamps_1.select(date=pw.this.timestamp.dt.from_timestamp(unit="s"))
+        >>> pw.debug.compute_and_print(datetimes_1, include_id=False)
         date
         1970-01-01 00:00:10
         2023-06-05 12:59:10
+        >>>
+        >>> timestamps_2 = pw.debug.table_from_markdown(
+        ...     '''
+        ...   |   timestamp
+        ... 1 |    10.123
+        ... 2 | 1685969950.4567
+        ... '''
+        ... )
+        >>> datetimes_2 = timestamps_2.select(date=pw.this.timestamp.dt.from_timestamp(unit="s"))
+        >>> pw.debug.compute_and_print(datetimes_2, include_id=False)
+        date
+        1970-01-01 00:00:10.123000
+        2023-06-05 12:59:10.456700160
         """
         if unit not in ("s", "ms", "us", "ns"):
             raise ValueError(f"unit has to be one of s, ms, us, ns but is {unit}.")
@@ -1459,11 +1511,58 @@ class DateTimeNamespace:
                     dt.DATE_TIME_NAIVE,
                     api.Expression.date_time_naive_from_timestamp,
                 ),
+                (
+                    (dt.FLOAT, dt.STR),
+                    dt.DATE_TIME_NAIVE,
+                    api.Expression.date_time_naive_from_float_timestamp,
+                ),
             ),
-            "datetime_from_timestamp",
+            "dt.from_timestamp",
             self._expression,
             unit,
         )
+
+    def utc_from_timestamp(self, unit: str) -> expr.ColumnExpression:
+        """
+        Converts timestamp represented as an int or float to DateTimeUtc.
+
+        Args:
+            timestamp: value to be converted to DateTime
+            unit: unit of a timestamp. It has to be one of 's', 'ms', 'us', 'ns'
+
+        Returns:
+            DateTimeUtc
+
+        Example:
+
+        >>> import pathway as pw
+        >>> timestamps_1 = pw.debug.table_from_markdown(
+        ...     '''
+        ...   | timestamp
+        ... 1 |    10
+        ... 2 | 1685969950
+        ... '''
+        ... )
+        >>> datetimes_1 = timestamps_1.select(date=pw.this.timestamp.dt.utc_from_timestamp(unit="s"))
+        >>> pw.debug.compute_and_print(datetimes_1, include_id=False)
+        date
+        1970-01-01 00:00:10+00:00
+        2023-06-05 12:59:10+00:00
+        >>>
+        >>> timestamps_2 = pw.debug.table_from_markdown(
+        ...     '''
+        ...   |   timestamp
+        ... 1 |    10.123
+        ... 2 | 1685969950.4567
+        ... '''
+        ... )
+        >>> datetimes_2 = timestamps_2.select(date=pw.this.timestamp.dt.utc_from_timestamp(unit="s"))
+        >>> pw.debug.compute_and_print(datetimes_2, include_id=False)
+        date
+        1970-01-01 00:00:10.123000+00:00
+        2023-06-05 12:59:10.456700160+00:00
+        """
+        return self.from_timestamp(unit).dt.to_utc("UTC")
 
     def weekday(self) -> expr.ColumnExpression:
         """

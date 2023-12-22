@@ -19,9 +19,7 @@ from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 MIME_TYPE_FOLDER = "application/vnd.google-apps.folder"
-FILE_FIELDS = (
-    "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser"
-)
+FILE_FIELDS = "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser, trashed"
 
 DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
     "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -68,7 +66,7 @@ class _GDriveClient:
         elif root["mimeType"] != MIME_TYPE_FOLDER:
             return [root]
         else:
-            subitems = self._query(f"'{id}' in parents")
+            subitems = self._query(f"'{id}' in parents and trashed=false")
             files = [i for i in subitems if i["mimeType"] != MIME_TYPE_FOLDER]
             subdirs = [i for i in subitems if i["mimeType"] == MIME_TYPE_FOLDER]
             for subdir in subdirs:
@@ -77,8 +75,22 @@ class _GDriveClient:
 
     def _get(self, file_id: str) -> GDriveFile | None:
         try:
-            file = self.drive.files().get(fileId=file_id, fields=FILE_FIELDS).execute()
-            return file
+            file = (
+                self.drive.files()
+                .get(
+                    fileId=file_id,
+                    fields=FILE_FIELDS,
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            if file.get("trashed") is True:
+                warnings.warn(
+                    f"cannot fetch metadata of file with id {file_id}, reason: moved to trash"
+                )
+                return None
+            else:
+                return file
         except HttpError as e:
             reason: str = e.reason
             warnings.warn(

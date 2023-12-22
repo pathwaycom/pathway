@@ -107,16 +107,16 @@ class Table(
 
     def __init__(
         self,
-        columns: Mapping[str, clmn.Column],
-        context: clmn.Context,
-        schema: type[Schema] | None = None,
+        _columns: Mapping[str, clmn.Column],
+        _context: clmn.Context,
+        _schema: type[Schema] | None = None,
     ):
-        if schema is None:
-            schema = schema_from_columns(columns)
-        super().__init__(context)
-        self._columns = dict(columns)
-        self._schema = schema
-        self._id_column = context.id_column
+        if _schema is None:
+            _schema = schema_from_columns(_columns)
+        super().__init__(_context)
+        self._columns = dict(_columns)
+        self._schema = _schema
+        self._id_column = _context.id_column
         self._substitution = {thisclass.this: self}
         self._rowwise_context = clmn.RowwiseContext(self._id_column)
 
@@ -144,7 +144,7 @@ class Table(
         True
         True
         """
-        return expr.ColumnReference(table=self, column=self._id_column, name="id")
+        return expr.ColumnReference(_table=self, _column=self._id_column, _name="id")
 
     def column_names(self):
         return self.keys()
@@ -193,7 +193,7 @@ class Table(
         if name not in self.keys():
             raise exception_type(f"Table has no column with name {name}.")
         return expr.ColumnReference(
-            table=self, column=self._get_column(name), name=name
+            _table=self, _column=self._get_column(name), _name=name
         )
 
     @overload
@@ -598,7 +598,7 @@ class Table(
             threshold_table._eval(upper_column),
         )
 
-        return Table(columns={"apx_value": context.apx_value_column}, context=context)
+        return Table(_columns={"apx_value": context.apx_value_column}, _context=context)
 
     @trace_user_frame
     @desugar
@@ -813,8 +813,8 @@ class Table(
         }
 
         return Table(
-            columns=columns,
-            context=context,
+            _columns=columns,
+            _context=context,
         )
 
     @contextualized_operator
@@ -848,7 +848,7 @@ class Table(
             for name, column in self._columns.items()
         }
 
-        return Table(columns=columns, context=self._rowwise_context)
+        return Table(_columns=columns, _context=self._rowwise_context)
 
     @trace_user_frame
     @desugar
@@ -1844,11 +1844,11 @@ class Table(
         }
 
         return Table(
-            columns={
+            _columns={
                 flatten_name: context.flatten_result_column,
                 **columns,
             },
-            context=context,
+            _context=context,
         )
 
     @trace_user_frame
@@ -1916,11 +1916,11 @@ class Table(
             self._eval(instance),
         )
         return Table(
-            columns={
+            _columns={
                 "prev": context.prev_column,
                 "next": context.next_column,
             },
-            context=context,
+            _context=context,
         )
 
     def _set_source(self, source: OutputHandle):
@@ -1958,7 +1958,7 @@ class Table(
         lineage: clmn.Lineage | None = None,
     ) -> clmn.Column:
         """Contextualize column by wrapping it in expression."""
-        expression = expr.ColumnReference(table=self, column=column, name=name)
+        expression = expr.ColumnReference(_table=self, _column=column, _name=name)
         return expression._column_with_expression_cls(
             context=context,
             universe=context.universe,
@@ -1973,8 +1973,8 @@ class Table(
         }
 
         return Table(
-            columns=columns,
-            context=context,
+            _columns=columns,
+            _context=context,
         )
 
     @functools.cached_property
@@ -2005,7 +2005,7 @@ class Table(
             )
             for name in schema.column_names()
         }
-        return cls(columns=columns, schema=schema, context=context)
+        return cls(_columns=columns, _schema=schema, _context=context)
 
     def __repr__(self) -> str:
         return f"<pathway.Table schema={dict(self.typehints())}>"
@@ -2016,9 +2016,9 @@ class Table(
         schema: type[Schema] | None = None,
     ) -> Table:
         return Table(
-            columns=dict(columns),
-            schema=schema,
-            context=self._rowwise_context,
+            _columns=dict(columns),
+            _schema=schema,
+            _context=self._rowwise_context,
         )
 
     def _sort_columns_by_other(self, other: Table):
@@ -2045,9 +2045,9 @@ class Table(
             for (name, column) in self._columns.items()
         }
         return Table(
-            columns=columns,
-            schema=self.schema,
-            context=context,
+            _columns=columns,
+            _schema=self.schema,
+            _context=context,
         )
 
     @trace_user_frame

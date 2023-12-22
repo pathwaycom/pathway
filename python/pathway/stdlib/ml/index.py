@@ -1,7 +1,7 @@
 # Copyright © 2023 Pathway
 
 import pathway.internals as pw
-from pathway.stdlib.ml.classifiers import knn_lsh_classifier_train
+from pathway.stdlib.ml.classifiers import DistanceTypes, knn_lsh_classifier_train
 from pathway.stdlib.ml.utils import _predict_asof_now
 from pathway.stdlib.utils.col import unpack_col
 
@@ -23,7 +23,7 @@ class KNNIndex:
         n_or (int): number of ORs
         n_and (int): number of ANDs
         bucket_length (float): bucket length (after projecting on a line)
-        distance_type (str): euclidean metric is supported.
+        distance_type (str): "euclidean" and "cosine" metrics are supported.
         metadata (pw.ColumnExpression): optional column expression representing dict of the metadata.
     """
 
@@ -35,7 +35,7 @@ class KNNIndex:
         n_or: int = 20,
         n_and: int = 10,
         bucket_length: float = 10.0,
-        distance_type: str = "euclidean",
+        distance_type: DistanceTypes = "euclidean",
         metadata: pw.ColumnExpression | None = None,
     ):
         self.data = data
@@ -56,6 +56,7 @@ class KNNIndex:
         query_embedding: pw.ColumnReference,
         k: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
+        with_distances: bool = False,
         metadata_filter: pw.ColumnExpression | None = None,
     ):
         """
@@ -74,6 +75,7 @@ class KNNIndex:
                 multiple rows corresponding to a single query will be collapsed into a single row,
                 with each column containing a tuple of values from the original rows. If set to False,
                 the output will retain the multi-row format for each query. Defaults to True.
+            with_distances (bool): whether to output distances
             metadata_filter (pw.ColumnExpression): optional column expression containing evaluating to the text
                 representing the metadata filtering query in the JMESPath format. The search will happen
                 only for documents satisfying this filtering. Can be constant for all queries or set per query.
@@ -133,7 +135,7 @@ class KNNIndex:
         >>> pw.debug.compute_and_print(relevant_docs)
                     | document                     | embeddings
         ^YYY4HAB... | ()                           | ()
-        ^X1MXHYY... | ('document 2', 'document 3') | ((1, 1, 0), (0, 0, 1))
+        ^X1MXHYY... | ('document 3', 'document 2') | ((0, 0, 1), (1, 1, 0))
         >>> index = KNNIndex(documents.embeddings, documents, n_dimensions=3, metadata=documents.metadata)
         >>> relevant_docs_meta = index.get_nearest_items(queries.embeddings, k=2, metadata_filter="foo >= `3`")
         >>> pw.debug.compute_and_print(relevant_docs_meta)
@@ -164,7 +166,7 @@ class KNNIndex:
         coords  | nn                | __time__ | __diff__
         (1, 1)  | ((0, 0), (2, 3))  | 4        | 1
         (1, 1)  | ((0, 0), (2, 3))  | 6        | -1
-        (1, 1)  | ((0, 0), (2, 2))  | 6        | 1
+        (1, 1)  | ((2, 2), (0, 0))  | 6        | 1
         (-3, 1) | ((0, 0), (2, 2))  | 8        | 1
         (-3, 1) | ((0, 0), (2, 2))  | 10       | -1
         (-3, 1) | ((-3, 3), (0, 0)) | 10       | 1
@@ -173,20 +175,28 @@ class KNNIndex:
             data=query_embedding, k=k, metadata_filter=metadata_filter
         )
         knns_ids = (
-            self._query(queries)
-            .flatten(pw.this.knns_ids, pw.this.query_id)
-            .update_types(knns_ids=pw.Pointer)
+            self._query(queries, with_distances=True)
+            .flatten(pw.this.knns_ids_with_dists, pw.this.query_id)
+            .select(
+                pw.this.query_id,
+                knn_id=pw.this.knns_ids_with_dists[0],
+                knn_dist=pw.this.knns_ids_with_dists[1],
+            )
+            .update_types(knn_id=pw.Pointer, knn_dist=float)
         )
 
         if collapse_rows:
-            return self._extract_data_collapsed_rows(knns_ids, queries)
-        return self._extract_data_flat(knns_ids, queries)
+            return self._extract_data_collapsed_rows(
+                knns_ids, queries, with_distances=with_distances
+            )
+        return self._extract_data_flat(knns_ids, queries, with_distances=with_distances)
 
     def get_nearest_items_asof_now(
         self,
         query_embedding: pw.ColumnReference,
         k: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
+        with_distances: bool = False,
         metadata_filter: pw.ColumnExpression | None = None,
     ):
         """
@@ -239,7 +249,11 @@ class KNNIndex:
 
         return _predict_asof_now(
             lambda query, k, metadata_filter: self.get_nearest_items(
-                query, k=k, collapse_rows=collapse_rows, metadata_filter=metadata_filter
+                query,
+                k=k,
+                collapse_rows=collapse_rows,
+                with_distances=with_distances,
+                metadata_filter=metadata_filter,
             ),
             query_embedding,
             query_embedding.table.select(k=k).k,
@@ -249,28 +263,43 @@ class KNNIndex:
             with_queries_universe=collapse_rows,
         )
 
-    def _extract_data_collapsed_rows(self, knns_ids, queries):
+    def _extract_data_collapsed_rows(self, knns_ids, queries, with_distances=False):
         selected_data = (
-            knns_ids.join_inner(self.packed_data, pw.left.knns_ids == pw.right.id)
-            .select(pw.left.query_id, pw.right.row)
+            knns_ids.join_inner(self.packed_data, pw.left.knn_id == pw.right.id)
+            .select(pw.left.query_id, pw.left.knn_dist, pw.right.row)
             .groupby(id=pw.this.query_id)
-            .reduce(topk=pw.reducers.sorted_tuple(pw.this.row))
+            .reduce(
+                topk=pw.reducers.tuple(pw.this.row),
+                dist=pw.reducers.tuple(pw.this.knn_dist),
+            )
+        )
+        selected_data_rows = selected_data.select(
+            transposed=pw.apply(lambda x: tuple(zip(*x)), pw.this.topk),
+        )
+        selected_data_rows = unpack_col(
+            selected_data_rows.transposed, *self.data.keys()
         )
 
-        selected_data = selected_data.select(
-            transposed=pw.apply(lambda x: tuple(zip(*x)), pw.this.topk)
-        )
-        selected_data = unpack_col(selected_data.transposed, *self.data.keys())
+        if with_distances:
+            selected_data_rows += selected_data.select(pw.this.dist)
 
         # Keep queries that didn't match with anything.
-        result = queries.select(**{key: () for key in self.data.keys()})
-        result = result.update_rows(selected_data).with_universe_of(queries)
+        colnames = list(self.data.keys())
+        if with_distances:
+            colnames.append("dist")
+        result = queries.select(**{key: () for key in colnames})
+        result = result.update_rows(selected_data_rows).with_universe_of(queries)
         return result
 
-    def _extract_data_flat(self, knns_ids, queries):
-        selected_data = knns_ids.join_inner(
-            self.data, pw.left.knns_ids == pw.right.id
-        ).select(pw.left.query_id, *pw.right)
+    def _extract_data_flat(self, knns_ids, queries, with_distances=False):
+        joined = knns_ids.join_inner(self.data, pw.left.knn_id == pw.right.id)
+        if with_distances:
+            selected_data = joined.select(
+                pw.left.query_id, dist=pw.left.knn_dist, *pw.right
+            )
+        else:
+            selected_data = joined.select(pw.left.query_id, *pw.right)
+
         selected_data = queries.join_left(
             selected_data, pw.left.id == pw.right.query_id
         ).select(*pw.right.without(selected_data.query_id), query_id=pw.left.id)

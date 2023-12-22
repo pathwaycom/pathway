@@ -208,6 +208,8 @@ def test_method_call():
             "txt": [date_str],
             "ts": [pd.to_datetime(date_str, format=fmt)],
             "td": pd.Timedelta(days=1),
+            "i": [42],
+            "f": [42.3],
         }
     )
     t = pw.debug.table_from_pandas(df)
@@ -235,6 +237,8 @@ def test_method_call():
     assert repr(t.ts.dt.floor("D")) == "(<table1>.ts).dt.floor('D')"
     assert repr(t.ts.dt.floor(t.td)) == "(<table1>.ts).dt.floor(<table1>.td)"
     assert repr(t.ts.dt.weekday()) == "(<table1>.ts).dt.weekday()"
+    assert repr(t.i.dt.from_timestamp("s")) == "(<table1>.i).dt.from_timestamp('s')"
+    assert repr(t.f.dt.from_timestamp("s")) == "(<table1>.f).dt.from_timestamp('s')"
 
 
 def test_3_args_with_info():

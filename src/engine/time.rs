@@ -59,6 +59,12 @@ pub trait DateTime {
         self.as_chrono_datetime().year().into()
     }
 
+    #[allow(clippy::cast_precision_loss)]
+    fn timestamp_in_unit(&self, unit: &str) -> Result<f64, Error> {
+        let mult = get_unit_multiplier(unit)?;
+        Ok(self.timestamp() as f64 / mult as f64)
+    }
+
     fn strftime(&self, format: &str) -> String;
 
     fn get_rounded_timestamp(&self, duration: Duration) -> i64 {
@@ -93,6 +99,18 @@ pub trait DateTime {
             .weekday()
             .num_days_from_monday()
             .into()
+    }
+}
+
+fn get_unit_multiplier(unit: &str) -> Result<i64, Error> {
+    match unit {
+        "s" => Ok(1_000_000_000),
+        "ms" => Ok(1_000_000),
+        "us" => Ok(1_000),
+        "ns" => Ok(1),
+        _ => Err(Error::ValueError(format!(
+            "unit has to be one of s, ms, us, ns but is {unit}."
+        ))),
     }
 }
 
@@ -164,16 +182,15 @@ impl DateTimeNaive {
     }
 
     pub fn from_timestamp(timestamp: i64, unit: &str) -> Result<Self> {
-        let mult = match unit {
-            "s" => Ok(1_000_000_000),
-            "ms" => Ok(1_000_000),
-            "us" => Ok(1_000),
-            "ns" => Ok(1),
-            _ => Err(Error::ValueError(format!(
-                "unit has to be one of s, ms, us, ns but is {unit}."
-            ))),
-        }?;
+        let mult = get_unit_multiplier(unit)?;
         Ok(Self::new(mult * timestamp))
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn from_timestamp_f64(timestamp: f64, unit: &str) -> Result<Self> {
+        let mult = get_unit_multiplier(unit)? as f64;
+        Ok(Self::new((mult * timestamp) as i64))
     }
 }
 

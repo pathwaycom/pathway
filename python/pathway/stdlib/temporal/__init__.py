@@ -16,6 +16,7 @@ from ._asof_now_join import (
     asof_now_join_left,
 )
 from ._interval_join import (
+    Interval,
     IntervalJoinResult,
     interval,
     interval_join,
@@ -33,7 +34,12 @@ from ._window_join import (
     window_join_outer,
     window_join_right,
 )
-from .temporal_behavior import CommonBehavior, common_behavior
+from .temporal_behavior import (
+    CommonBehavior,
+    ExactlyOnceBehavior,
+    common_behavior,
+    exactly_once_behavior,
+)
 
 __all__ = [
     "AsofJoinResult",
@@ -60,6 +66,7 @@ __all__ = [
     "window_join_outer",
     "Direction",
     "interval",
+    "Interval",
     "windowby",
     "Window",
     "tumbling",
@@ -67,4 +74,6 @@ __all__ = [
     "session",
     "common_behavior",
     "CommonBehavior",
+    "ExactlyOnceBehavior",
+    "exactly_once_behavior",
 ]

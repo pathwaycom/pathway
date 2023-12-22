@@ -30,21 +30,21 @@ def flatten_column(
 
     Example:
 
-        >>> import pathway as pw
-        >>> t1 = pw.debug.table_from_markdown('''
-        ...   | pet  |  age
-        ... 1 | Dog  |   2
-        ... 7 | Cat  |   5
-        ... ''')
-        >>> t2 = pw.utils.col.flatten_column(t1.pet)
-        >>> pw.debug.compute_and_print(t2.without(pw.this.origin_id), include_id=False)
-        pet
-        C
-        D
-        a
-        g
-        o
-        t
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown('''
+    ...   | pet  |  age
+    ... 1 | Dog  |   2
+    ... 7 | Cat  |   5
+    ... ''')
+    >>> t2 = pw.utils.col.flatten_column(t1.pet)
+    >>> pw.debug.compute_and_print(t2.without(pw.this.origin_id), include_id=False)
+    pet
+    C
+    D
+    a
+    g
+    o
+    t
     """
 
     warnings.warn(

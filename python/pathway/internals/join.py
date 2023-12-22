@@ -795,9 +795,9 @@ class JoinResult(Joinable, OperatorInput):
         from pathway.internals.groupby import GroupedJoinResult
 
         return GroupedJoinResult(
-            join_result=self,
-            args=args,
-            id=id,
+            _join_result=self,
+            _args=args,
+            _id=id,
         )
 
     @trace_user_frame
@@ -877,8 +877,8 @@ class JoinResult(Joinable, OperatorInput):
         from pathway.internals.table import Table
 
         return Table(
-            columns=columns,
-            context=context,
+            _columns=columns,
+            _context=context,
         )
 
     @staticmethod

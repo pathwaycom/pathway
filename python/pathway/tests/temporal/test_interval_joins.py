@@ -1032,8 +1032,15 @@ def test_interval_join_with_time_expressions() -> None:
     assert_table_equality_wo_index(res, expected)
 
 
-def test_with_timestamps() -> None:
+@pytest.mark.parametrize("with_timezone", [True, False])
+def test_with_timestamps(with_timezone: bool) -> None:
     fmt = "%Y-%m-%dT%H:%M:%S"
+    if with_timezone:
+        fmt += "%z"
+        tz = "+02:00"
+    else:
+        tz = ""
+
     t1 = T(
         """
       | a | t
@@ -1044,7 +1051,7 @@ def test_with_timestamps() -> None:
     4 | 5 | 2023-05-22T10:07:00
     5 | 6 | 2023-05-22T10:13:00
     """
-    ).with_columns(t=pw.this.t.dt.strptime(fmt))
+    ).with_columns(t=(pw.this.t + tz).dt.strptime(fmt))
 
     t2 = T(
         """
@@ -1055,7 +1062,7 @@ def test_with_timestamps() -> None:
     3 | 4 | 2023-05-22T10:10:00
     4 | 5 | 2023-05-22T10:15:00
     """
-    ).with_columns(t=pw.this.t.dt.strptime(fmt))
+    ).with_columns(t=(pw.this.t + tz).dt.strptime(fmt))
 
     res = t1.interval_join_outer(
         t2,
@@ -1178,16 +1185,19 @@ def test_errors_on_equal_tables():
 def test_consolidate_for_cutoff():
     t = T(
         """
-    a | t
-    1 | 2
-    2 | 2
-    3 | 2
-    4 | 2
-    5 | 10
-    6 | 2
-    7 | 2
-    8 | 2
-    9 | 2
+    a | t  | __time__ | __diff__
+    1 | 2  | 1        | 1
+    2 | 2  | 1        | 1
+    3 | 10 | 1        | 1
+    4 | 2  | 1        | 1
+    5 | 2  | 2        | 1
+    6 | 2  | 2        | 1
+    7 | 2  | 2        | 1
+    8 | 2  | 2        | 1
+    9 | 2  | 2        | 1
+    10| 2  | 2        | 1
+    11| 2  | 2        | 1
+    12| 2  | 2        | 1
     """
     )
     t = t._freeze(threshold_column=pw.this.t + 1, time_column=pw.this.t)
@@ -1197,7 +1207,31 @@ def test_consolidate_for_cutoff():
         T(
             """
             a | t
-            5 | 10
+            1 | 2
+            2 | 2
+            3 | 10
+            4 | 2
             """
         ),
     )
+
+
+def test_no_columns_added():
+    t1 = T(
+        """
+      | a | t
+    0 | 1 | 2
+    """
+    )
+    expected = T(
+        """
+        a | t | b | s
+        1 | 2 | 1 | 2
+    """
+    )
+    t2 = t1.rename({"a": "b", "t": "s"})
+    res = t1.interval_join(
+        t2, pw.left.t, pw.right.s, interval=pw.temporal.interval(-1, 1)
+    ).select(*pw.left, *pw.right)
+
+    assert_table_equality_wo_index(res, expected)

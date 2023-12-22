@@ -233,7 +233,7 @@ def _create_internal_table(columns: Iterable[Column], context: Context) -> Table
     from pathway.internals.table import Table
 
     columns_dict = {f"{i}": column for i, column in enumerate(columns)}
-    return Table(columns_dict, context=context)
+    return Table(columns_dict, _context=context)
 
 
 @dataclass(eq=False, frozen=True)

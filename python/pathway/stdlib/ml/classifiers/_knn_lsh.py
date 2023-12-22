@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 from statistics import mode
+from typing import Literal
 
 import jmespath
 import numpy as np
@@ -34,15 +35,23 @@ import pathway.internals as pw
 from pathway.internals.helpers import StableSet
 from pathway.stdlib.utils.col import groupby_reduce_majority, unpack_col
 
-from ._lsh import generate_euclidean_lsh_bucketer
+from ._lsh import generate_cosine_lsh_bucketer, generate_euclidean_lsh_bucketer
+
+DistanceTypes = Literal["euclidean", "cosine"]
 
 
 class DataPoint(pw.Schema):
     data: np.ndarray
 
 
-def _euclidean_distance(data_table: np.ndarray, query_table: np.ndarray):
+def _euclidean_distance(data_table: np.ndarray, query_table: np.ndarray) -> np.ndarray:
     return np.sum((data_table - query_table) ** 2, axis=1)
+
+
+def compute_cosine_dist(data_table: np.ndarray, query_point: np.ndarray) -> np.ndarray:
+    return 1 - np.dot(data_table, query_point) / (
+        np.linalg.norm(data_table, axis=1) * np.linalg.norm(query_point)
+    )
 
 
 class MetaDataSchema:
@@ -51,8 +60,8 @@ class MetaDataSchema:
 
 def knn_lsh_classifier_train(
     data: pw.Table[DataPoint],
-    L,
-    type="euclidean",
+    L: int,
+    type: DistanceTypes = "euclidean",
     **kwargs,
 ):
     """
@@ -70,11 +79,23 @@ def knn_lsh_classifier_train(
             _euclidean_distance,
             L,
         )
-    raise Exception("Classifier train failure: missing/wrong arguments.")
+    elif type == "cosine":
+        lsh_projection = generate_cosine_lsh_bucketer(kwargs["d"], kwargs["M"], L)
+        return knn_lsh_generic_classifier_train(
+            data,
+            lsh_projection,
+            compute_cosine_dist,
+            L,
+        )
+    else:
+        raise ValueError(
+            f"Not supported `type` {type} in knn_lsh_classifier_train. "
+            "The allowed values are 'euclidean' and 'cosine'."
+        )
 
 
 def knn_lsh_generic_classifier_train(
-    data: pw.Table, lsh_projection, distance_function, L
+    data: pw.Table, lsh_projection, distance_function, L: int
 ):
     """
     Build the LSH index over data using the a generic lsh_projector and its associated distance.
@@ -96,7 +117,9 @@ def knn_lsh_generic_classifier_train(
     if "metadata" not in data._columns:
         data += data.select(metadata=None)
 
-    def lsh_perform_query(queries: pw.Table, k: int | None = None) -> pw.Table:
+    def lsh_perform_query(
+        queries: pw.Table, k: int | None = None, with_distances=False
+    ) -> pw.Table:
         queries += queries.select(buckets=pw.apply(lsh_projection, queries.data))
         if k is not None:
             queries += queries.select(k=k)
@@ -153,7 +176,7 @@ def knn_lsh_generic_classifier_train(
                 metadata_filter = pw.input_attribute()
 
                 @pw.output_attribute
-                def knns_ids(self) -> np.ndarray:
+                def knns(self) -> list[tuple[pw.Pointer, float]]:
                     querypoint = self.data
                     for id_candidate in self.ids:
                         try:
@@ -175,34 +198,42 @@ def knn_lsh_generic_classifier_train(
                         is True
                     ]
                     if len(candidates) == 0:
-                        return np.array([])
+                        return []
                     ids_filtered, data_candidates_filtered = zip(*candidates)
                     data_candidates = np.array(data_candidates_filtered)
                     neighs = min(self.k, len(data_candidates))
+                    distances = distance_function(data_candidates, querypoint)
                     knn_ids = np.argpartition(
-                        distance_function(data_candidates, querypoint),
+                        distances,
                         neighs - 1,
                     )[
                         :neighs
                     ]  # neighs - 1 in argpartition, because of 0-based indexing
+                    k_distances = distances[knn_ids]
                     ret = np.array(ids_filtered)[knn_ids]
-                    return ret
+                    return list(zip(ret, k_distances))
 
         knn_result: pw.Table = compute_knns_transformer(  # type: ignore
             training_data=data, flattened=flattened
-        ).flattened.select(pw.this.knns_ids, flattened.query_id)
-
-        # return knn_result
+        ).flattened.select(flattened.query_id, knns_ids_with_dists=pw.this.knns)
 
         knn_result_with_empty_results = queries.join_left(
             knn_result, queries.id == knn_result.query_id
-        ).select(knn_result.knns_ids, query_id=queries.id)
+        ).select(knn_result.knns_ids_with_dists, query_id=queries.id)
 
-        knn_result_with_empty_results = knn_result_with_empty_results.with_columns(
-            knns_ids=pw.coalesce(pw.this.knns_ids, np.array(()))
+        result = knn_result_with_empty_results.with_columns(
+            knns_ids_with_dists=pw.coalesce(pw.this.knns_ids_with_dists, ()),
         )
-        # return knn_result
-        return knn_result_with_empty_results
+
+        if not with_distances:
+            result = result.select(
+                pw.this.query_id,
+                knns_ids=pw.apply(
+                    lambda x: tuple(zip(*x))[0] if len(x) > 0 else (),
+                    pw.this.knns_ids_with_dists,
+                ),
+            )
+        return result
 
     return lsh_perform_query
 

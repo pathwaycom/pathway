@@ -135,7 +135,10 @@ def show(
                     .reset_index(drop=True)
                 )
                 df = df[col_names]
-                df = df.applymap(_format_types)  # TODO Replace with df.map for Pandas 2
+
+                # TODO Replace with df.map for Pandas 2
+                df = df.applymap(_format_types)  # type: ignore
+
                 dynamic_table.value = df
                 # todo: use async transformer to throttle updates
                 # dynamic_table.stream(

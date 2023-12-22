@@ -194,7 +194,7 @@ pub enum IntExpression {
     DateTimeNaiveDay(Arc<Expression>),
     DateTimeNaiveMonth(Arc<Expression>),
     DateTimeNaiveYear(Arc<Expression>),
-    DateTimeNaiveTimestamp(Arc<Expression>),
+    DateTimeNaiveTimestampNs(Arc<Expression>),
     DateTimeNaiveWeekday(Arc<Expression>),
     DateTimeUtcNanosecond(Arc<Expression>),
     DateTimeUtcMicrosecond(Arc<Expression>),
@@ -205,7 +205,7 @@ pub enum IntExpression {
     DateTimeUtcDay(Arc<Expression>),
     DateTimeUtcMonth(Arc<Expression>),
     DateTimeUtcYear(Arc<Expression>),
-    DateTimeUtcTimestamp(Arc<Expression>),
+    DateTimeUtcTimestampNs(Arc<Expression>),
     DateTimeUtcWeekday(Arc<Expression>),
     DurationFloorDiv(Arc<Expression>, Arc<Expression>),
     DurationNanoseconds(Arc<Expression>),
@@ -234,6 +234,8 @@ pub enum FloatExpression {
     Mod(Arc<Expression>, Arc<Expression>),
     Pow(Arc<Expression>, Arc<Expression>),
     DurationTrueDiv(Arc<Expression>, Arc<Expression>),
+    DateTimeNaiveTimestamp(Arc<Expression>, Arc<Expression>),
+    DateTimeUtcTimestamp(Arc<Expression>, Arc<Expression>),
     CastFromBool(Arc<Expression>),
     CastFromInt(Arc<Expression>),
     CastFromString(Arc<Expression>),
@@ -265,6 +267,7 @@ pub enum DateTimeNaiveExpression {
     Round(Arc<Expression>, Arc<Expression>),
     Floor(Arc<Expression>, Arc<Expression>),
     FromTimestamp(Arc<Expression>, Arc<Expression>),
+    FromFloatTimestamp(Arc<Expression>, Arc<Expression>),
 }
 
 #[derive(Debug)]
@@ -732,7 +735,7 @@ impl IntExpression {
             Self::DateTimeNaiveDay(e) => Ok(e.eval_as_date_time_naive(values)?.day()),
             Self::DateTimeNaiveMonth(e) => Ok(e.eval_as_date_time_naive(values)?.month()),
             Self::DateTimeNaiveYear(e) => Ok(e.eval_as_date_time_naive(values)?.year()),
-            Self::DateTimeNaiveTimestamp(e) => Ok(e.eval_as_date_time_naive(values)?.timestamp()),
+            Self::DateTimeNaiveTimestampNs(e) => Ok(e.eval_as_date_time_naive(values)?.timestamp()),
             Self::DateTimeNaiveWeekday(e) => Ok(e.eval_as_date_time_naive(values)?.weekday()),
             Self::DateTimeUtcNanosecond(e) => Ok(e.eval_as_date_time_utc(values)?.nanosecond()),
             Self::DateTimeUtcMicrosecond(e) => Ok(e.eval_as_date_time_utc(values)?.microsecond()),
@@ -743,13 +746,10 @@ impl IntExpression {
             Self::DateTimeUtcDay(e) => Ok(e.eval_as_date_time_utc(values)?.day()),
             Self::DateTimeUtcMonth(e) => Ok(e.eval_as_date_time_utc(values)?.month()),
             Self::DateTimeUtcYear(e) => Ok(e.eval_as_date_time_utc(values)?.year()),
-            Self::DateTimeUtcTimestamp(e) => Ok(e.eval_as_date_time_utc(values)?.timestamp()),
+            Self::DateTimeUtcTimestampNs(e) => Ok(e.eval_as_date_time_utc(values)?.timestamp()),
             Self::DateTimeUtcWeekday(e) => Ok(e.eval_as_date_time_utc(values)?.weekday()),
             Self::DurationFloorDiv(lhs, rhs) => {
-                match lhs.eval_as_duration(values)? / rhs.eval_as_duration(values)? {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
+                Ok((lhs.eval_as_duration(values)? / rhs.eval_as_duration(values)?)?)
             }
             Self::DurationNanoseconds(e) => Ok(e.eval_as_duration(values)?.nanoseconds()),
             Self::DurationMicroseconds(e) => Ok(e.eval_as_duration(values)?.microseconds()),
@@ -833,13 +833,15 @@ impl FloatExpression {
                     Ok(lhs.eval_as_int(values)? as f64 / rhs_val as f64)
                 }
             }
-            Self::DurationTrueDiv(lhs, rhs) => match lhs
+            Self::DateTimeNaiveTimestamp(e, unit) => Ok(e
+                .eval_as_date_time_naive(values)?
+                .timestamp_in_unit(&unit.eval_as_string(values)?)?),
+            Self::DateTimeUtcTimestamp(e, unit) => Ok(e
+                .eval_as_date_time_utc(values)?
+                .timestamp_in_unit(&unit.eval_as_string(values)?)?),
+            Self::DurationTrueDiv(lhs, rhs) => Ok(lhs
                 .eval_as_duration(values)?
-                .true_div(rhs.eval_as_duration(values)?)
-            {
-                Ok(result) => Ok(result),
-                Err(err) => Err(DynError::from(err)),
-            },
+                .true_div(rhs.eval_as_duration(values)?)?),
             Self::CastFromBool(e) => Ok(if e.eval_as_bool(values)? { 1.0 } else { 0.0 }),
             #[allow(clippy::cast_precision_loss)]
             Self::CastFromInt(e) => Ok(e.eval_as_int(values)? as f64),
@@ -923,39 +925,27 @@ impl DateTimeNaiveExpression {
             Self::SubDuration(lhs, rhs) => {
                 Ok(lhs.eval_as_date_time_naive(values)? - rhs.eval_as_duration(values)?)
             }
-            Self::Strptime(e, fmt) => {
-                match DateTimeNaive::strptime(
-                    &e.eval_as_string(values)?,
-                    &fmt.eval_as_string(values)?,
-                ) {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
-            }
-            Self::FromUtc(expr, timezone) => {
-                match expr
-                    .eval_as_date_time_utc(values)?
-                    .to_naive_in_timezone(&timezone.eval_as_string(values)?)
-                {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
-            }
+            Self::Strptime(e, fmt) => Ok(DateTimeNaive::strptime(
+                &e.eval_as_string(values)?,
+                &fmt.eval_as_string(values)?,
+            )?),
+            Self::FromUtc(expr, timezone) => Ok(expr
+                .eval_as_date_time_utc(values)?
+                .to_naive_in_timezone(&timezone.eval_as_string(values)?)?),
             Self::Round(expr, duration) => Ok(expr
                 .eval_as_date_time_naive(values)?
                 .round(duration.eval_as_duration(values)?)),
             Self::Floor(expr, duration) => Ok(expr
                 .eval_as_date_time_naive(values)?
                 .truncate(duration.eval_as_duration(values)?)),
-            Self::FromTimestamp(expr, unit) => {
-                match DateTimeNaive::from_timestamp(
-                    expr.eval_as_int(values)?,
-                    &unit.eval_as_string(values)?,
-                ) {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
-            }
+            Self::FromTimestamp(expr, unit) => Ok(DateTimeNaive::from_timestamp(
+                expr.eval_as_int(values)?,
+                &unit.eval_as_string(values)?,
+            )?),
+            Self::FromFloatTimestamp(expr, unit) => Ok(DateTimeNaive::from_timestamp_f64(
+                expr.eval_as_float(values)?,
+                &unit.eval_as_string(values)?,
+            )?),
         }
     }
 }
@@ -969,24 +959,13 @@ impl DateTimeUtcExpression {
             Self::SubDuration(lhs, rhs) => {
                 Ok(lhs.eval_as_date_time_utc(values)? - rhs.eval_as_duration(values)?)
             }
-            Self::Strptime(e, fmt) => {
-                match DateTimeUtc::strptime(
-                    &e.eval_as_string(values)?,
-                    &fmt.eval_as_string(values)?,
-                ) {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
-            }
-            Self::FromNaive(expr, from_timezone) => {
-                match expr
-                    .eval_as_date_time_naive(values)?
-                    .to_utc_from_timezone(&from_timezone.eval_as_string(values)?)
-                {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
-            }
+            Self::Strptime(e, fmt) => Ok(DateTimeUtc::strptime(
+                &e.eval_as_string(values)?,
+                &fmt.eval_as_string(values)?,
+            )?),
+            Self::FromNaive(expr, from_timezone) => Ok(expr
+                .eval_as_date_time_naive(values)?
+                .to_utc_from_timezone(&from_timezone.eval_as_string(values)?)?),
             Self::Round(expr, duration) => Ok(expr
                 .eval_as_date_time_utc(values)?
                 .round(duration.eval_as_duration(values)?)),
@@ -1011,26 +990,19 @@ impl DurationExpression {
                 Ok(lhs.eval_as_duration(values)? * rhs.eval_as_int(values)?)
             }
             Self::DivByInt(lhs, rhs) => {
-                match lhs.eval_as_duration(values)? / rhs.eval_as_int(values)? {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
+                Ok((lhs.eval_as_duration(values)? / rhs.eval_as_int(values)?)?)
             }
-            Self::TrueDivByInt(lhs, rhs) => lhs
+            Self::TrueDivByInt(lhs, rhs) => Ok(lhs
                 .eval_as_duration(values)?
-                .true_div_by_i64(rhs.eval_as_int(values)?)
-                .map_err(DynError::from),
+                .true_div_by_i64(rhs.eval_as_int(values)?)?),
             Self::MulByFloat(lhs, rhs) => {
                 Ok(lhs.eval_as_duration(values)? * rhs.eval_as_float(values)?)
             }
             Self::DivByFloat(lhs, rhs) => {
-                (lhs.eval_as_duration(values)? / rhs.eval_as_float(values)?).map_err(DynError::from)
+                Ok((lhs.eval_as_duration(values)? / rhs.eval_as_float(values)?)?)
             }
             Self::Mod(lhs, rhs) => {
-                match lhs.eval_as_duration(values)? % rhs.eval_as_duration(values)? {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(DynError::from(err)),
-                }
+                Ok((lhs.eval_as_duration(values)? % rhs.eval_as_duration(values)?)?)
             }
             Self::DateTimeNaiveSub(lhs, rhs) => {
                 Ok(lhs.eval_as_date_time_naive(values)? - rhs.eval_as_date_time_naive(values)?)

@@ -84,7 +84,7 @@ class Graph:
     def contracted_to_unweighted_simple_graph(
         self,
         clustering: pw.Table[Clustering],
-        **reducer_expressions: dict[str, pw.ReducerExpression],
+        **reducer_expressions: pw.ReducerExpression,
     ) -> Graph:
         contracted_graph = self.contracted_to_multi_graph(clustering)
         contracted_graph.E = contracted_graph.E.groupby(
@@ -96,7 +96,7 @@ class Graph:
     def contracted_to_weighted_simple_graph(
         self,
         clustering: pw.Table[Clustering],
-        **reducer_expressions: dict[str, pw.ReducerExpression],
+        **reducer_expressions: pw.ReducerExpression,
     ) -> WeightedGraph:
         contracted_graph = self.contracted_to_multi_graph(clustering)
         WE = contracted_graph.E.groupby(
@@ -130,7 +130,7 @@ class WeightedGraph(Graph):
     def contracted_to_weighted_simple_graph(
         self,
         clustering: pw.Table[Clustering],
-        **reducer_expressions: dict[str, pw.ReducerExpression],
+        **reducer_expressions: pw.ReducerExpression,
     ) -> WeightedGraph:
         contracted_graph = self.contracted_to_multi_graph(clustering)
         contracted_graph.WE = contracted_graph.WE.groupby(

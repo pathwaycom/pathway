@@ -41,7 +41,7 @@ class ThisMetaclass(type):
         return self._get_colref_by_name(name, AttributeError)
 
     def _get_colref_by_name(self, name: str, exception_type) -> expr.ColumnReference:
-        return expr.ColumnReference(table=self, column=None, name=name)  # type: ignore
+        return expr.ColumnReference(_table=self, _column=None, _name=name)  # type: ignore
 
     # TODO:
     # create an abstract base class for Table and ThisMetaclass (AbstractTable?)
@@ -117,7 +117,7 @@ class ThisMetaclass(type):
         return [f"{KEY_GUARD}_{next(_key_guard_counter)}"]
 
     @trace_user_frame
-    def __call__(self, *args, **kwargs):
+    def __call__(self):
         raise TypeError("You cannot instantiate `this` class.")
 
     def pointer_from(self, *args: Any, optional=False):

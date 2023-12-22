@@ -52,7 +52,7 @@ def test_asof_left():
         how=pw.JoinMode.LEFT,
         defaults={t2.val: -1},
     ).select(
-        pw.this.shard_key,
+        pw.this.instance,
         pw.this.t,
         val_right=t2.val,
         val_left_times_2_plus_val_right=t1.val * 2 + t2.val,
@@ -61,16 +61,16 @@ def test_asof_left():
         res,
         T(
             """
- shard_key | t  | val_right | val_left_times_2_plus_val_right
- 0         | 1  | -1        | 1
- 0         | 4  | 6         | 10
- 0         | 5  | 6         | 12
- 0         | 6  | 6         | 14
- 0         | 7  | 6         | 16
- 0         | 11 | 9         | 21
- 0         | 12 | 9         | 23
- 1         | 5  | 7         | 23
- 1         | 7  | 7         | 25
+ instance | t  | val_right | val_left_times_2_plus_val_right
+ 0        |  2 | -1        | 1
+ 0        |  8 | 6         | 10
+ 0        | 10 | 6         | 12
+ 0        | 12 | 6         | 14
+ 0        | 14 | 2         | 12
+ 0        | 22 | 9         | 21
+ 0        | 24 | 9         | 23
+ 1        | 10 | 7         | 23
+ 1        | 14 | 7         | 25
           """
         ),
     )
@@ -94,7 +94,7 @@ def test_asof_full():
 
     t2 = T(
         """
-            | K | val | t
+             | K | val | t
         21   | 1 | 7  | 2
         22   | 1 | 3  | 8
         23   | 0 | 0  | 2
@@ -114,7 +114,7 @@ def test_asof_full():
         how=pw.JoinMode.OUTER,
         defaults={t1.val: 0, t2.val: 0},
     ).select(
-        pw.this.shard_key,
+        pw.this.instance,
         pw.this.side,
         pw.this.t,
         val_v1=t1.val,
@@ -126,25 +126,25 @@ def test_asof_full():
         res,
         T(
             """
-shard_key | side  | t  | val_v1 | val_v2 | sum
-0         | False | 1  | 1      | 0      | 1
-0         | False | 4  | 2      | 6      | 8
-0         | False | 5  | 3      | 6      | 9
-0         | False | 6  | 4      | 6      | 10
-0         | False | 7  | 5      | 6      | 11
-0         | False | 11 | 6      | 9      | 15
-0         | False | 12 | 7      | 9      | 16
-0         | True  | 2  | 1      | 0      | 1
-0         | True  | 3  | 1      | 6      | 7
-0         | True  | 7  | 5      | 2      | 7
-0         | True  | 8  | 5      | 3      | 8
-0         | True  | 9  | 5      | 9      | 14
-0         | True  | 13 | 7      | 7      | 14
-0         | True  | 14 | 7      | 4      | 11
-1         | False | 5  | 8      | 7      | 15
-1         | False | 7  | 9      | 7      | 16
-1         | True  | 2  | 0      | 7      | 7
-1         | True  | 8  | 9      | 3      | 12
+instance | side  | t  | val_v1 | val_v2 | sum
+0        | False | 1  | 1      | 0      | 1
+0        | False | 4  | 2      | 6      | 8
+0        | False | 5  | 3      | 6      | 9
+0        | False | 6  | 4      | 6      | 10
+0        | False | 7  | 5      | 6      | 11
+0        | False | 11 | 6      | 9      | 15
+0        | False | 12 | 7      | 9      | 16
+0        | True  | 2  | 1      | 0      | 1
+0        | True  | 3  | 1      | 6      | 7
+0        | True  | 7  | 5      | 2      | 7
+0        | True  | 8  | 5      | 3      | 8
+0        | True  | 9  | 5      | 9      | 14
+0        | True  | 13 | 7      | 7      | 14
+0        | True  | 14 | 7      | 4      | 11
+1        | False | 5  | 8      | 7      | 15
+1        | False | 7  | 9      | 7      | 16
+1        | True  | 2  | 0      | 7      | 7
+1        | True  | 8  | 9      | 3      | 12
 """
         ),
     )
@@ -190,7 +190,7 @@ def test_asof_left_forward():
         direction=pw.temporal._asof_join.Direction.FORWARD,
         defaults={t2.val: 100},
     ).select(
-        pw.this.shard_key,
+        pw.this.instance,
         pw.this.t,
         val_right=t2.val,
         val_left_times_2_plus_val_right=t1.val * 2 + t2.val,
@@ -199,17 +199,17 @@ def test_asof_left_forward():
         res,
         T(
             """
-shard_key | t  | val_right | val_left_times_2_plus_val_right
-0         | 1  | 0         | 2
-0         | 4  | 2         | 6
-0         | 5  | 2         | 8
-0         | 6  | 2         | 10
-0         | 7  | 2         | 12
-0         | 11 | 7         | 19
-0         | 12 | 7         | 21
-1         | 5  | 3         | 19
-1         | 7  | 3         | 21
-1         | 20 | 100       | 120
+instance | t  | val_right | val_left_times_2_plus_val_right
+0        |  2 | 0         | 2
+0        |  8 | 2         | 6
+0        | 10 | 2         | 8
+0        | 12 | 2         | 10
+0        | 14 | 2         | 12
+0        | 22 | 7         | 19
+0        | 24 | 7         | 21
+1        | 10 | 3         | 19
+1        | 14 | 3         | 21
+1        | 40 | 100       | 120
           """
         ),
     )
@@ -244,7 +244,7 @@ def test_asof_left_nearest():
         how=pw.JoinMode.LEFT,
         direction=pw.temporal._asof_join.Direction.NEAREST,
     ).select(
-        pw.this.shard_key,
+        pw.this.instance,
         pw.this.t,
         t_right=t2.t,
     )
@@ -252,12 +252,12 @@ def test_asof_left_nearest():
         res,
         T(
             """
- shard_key | t  | t_right
-           | 1  | 10
-           | 20 | 10
-           | 40 | 45
-           | 60 | 50
-           | 80 | 50
+ instance |   t | t_right
+          |   2 | 10
+          |  40 | 10
+          |  80 | 45
+          | 120 | 50
+          | 160 | 50
           """
         ),
     )
@@ -558,3 +558,184 @@ def test_asof_joins_typing_on():
             right_table.timestamp,
             left_table.col == right_table.col,
         )
+
+
+def test_asof_join_left():
+    t1 = T(
+        """
+        val
+          0
+         10
+         20
+         29
+         30
+    """
+    )
+
+    t2 = T(
+        """
+        val
+          0
+         10
+         20
+         30
+    """
+    )
+
+    expected = T(
+        """
+          l |  r
+          0 |  0
+         10 | 10
+         20 | 20
+         29 | 20
+         30 | 30
+    """
+    ).update_types(r=int | None)
+
+    table = t1.asof_join(
+        t2,
+        t1.val,
+        t2.val,
+        how=pw.JoinMode.LEFT,
+        direction=pw.temporal.Direction.BACKWARD,
+    ).select(l=pw.left.val, r=pw.right.val)
+
+    assert_table_equality_wo_index(table, expected)
+
+
+@pytest.mark.parametrize("mode", [pw.JoinMode.LEFT, pw.JoinMode.RIGHT])
+@pytest.mark.parametrize(
+    "dir",
+    [
+        pw.temporal.Direction.BACKWARD,
+        pw.temporal.Direction.FORWARD,
+        pw.temporal.Direction.NEAREST,
+    ],
+)
+def test_asof_join_eq(mode, dir):
+    t1 = T(
+        """
+        val
+          0
+         10
+         20
+         30
+    """
+    )
+
+    t2 = T(
+        """
+        val
+          0
+         10
+         20
+         30
+    """
+    )
+
+    col_name = "r" if mode == pw.JoinMode.LEFT else "l"
+    expected = T(
+        """
+          l |  r
+          0 |  0
+         10 | 10
+         20 | 20
+         30 | 30
+    """
+    ).update_types(**{col_name: int | None})
+
+    table = t1.asof_join(t2, t1.val, t2.val, how=mode, direction=dir).select(
+        l=pw.left.val, r=pw.right.val
+    )
+
+    assert_table_equality_wo_index(table, expected)
+
+
+def test_asof_join_instance():
+    t1 = T(
+        """
+        val | i
+          0 | 0
+         10 | 1
+         20 | 1
+         25 | 1
+         30 | 0
+    """
+    )
+
+    t2 = T(
+        """
+        val | i
+          0 | 1
+         10 | 0
+         20 | 1
+         30 | 1
+    """
+    )
+
+    expected = T(
+        """
+          l |  r
+          0 |
+         10 |  0
+         20 | 20
+         25 | 20
+         30 | 10
+    """
+    ).update_types(r=int | None)
+
+    table = t1.asof_join(
+        t2,
+        t1.val,
+        t2.val,
+        how=pw.JoinMode.LEFT,
+        direction=pw.temporal.Direction.BACKWARD,
+        left_instance=t1.i,
+        right_instance=t2.i,
+    ).select(l=pw.left.val, r=pw.right.val)
+
+    assert_table_equality_wo_index(table, expected)
+
+
+def test_preserves_column_names():
+    table_l = T(
+        """
+         a | x
+         0 | 1
+         2 | 1
+         4 | 1
+         6 | 1
+         8 | 1
+        10 | 1
+        12 | 1
+    """
+    )
+
+    table_r = T(
+        """
+         b | y
+         1 | 2
+         5 | 2
+        11 | 2
+    """
+    )
+
+    expected = T(
+        """
+         a | x |  b | y
+         0 | 1 |    |
+         2 | 1 |  1 | 2
+         4 | 1 |  1 | 2
+         6 | 1 |  5 | 2
+         8 | 1 |  5 | 2
+        10 | 1 |  5 | 2
+        12 | 1 | 11 | 2
+    """
+    )
+
+    res = table_l.asof_join(table_r, table_l.a, table_r.b, how=pw.JoinMode.LEFT).select(
+        **pw.left, **pw.right
+    )
+
+    assert_table_equality_wo_index(res, expected)

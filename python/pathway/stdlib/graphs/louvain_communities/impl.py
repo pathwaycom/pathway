@@ -326,7 +326,7 @@ class louvain_communities_fixed_iterations:
                 ).with_id_from(pw.this.v, pw.this.level)
             )
             G_ = G_.contracted_to_weighted_simple_graph(
-                clustering, **{"weight": pw.reducers.sum(G_.WE.weight)}
+                clustering, weight=pw.reducers.sum(G_.WE.weight)
             )
             G_.V = G_.V._gradual_broadcast(
                 total_weight, total_weight.lower, total_weight.value, total_weight.upper

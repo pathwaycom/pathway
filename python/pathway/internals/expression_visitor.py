@@ -154,7 +154,7 @@ class IdentityTransform(ExpressionVisitor):
         self, expression: expr.ColumnReference, **kwargs
     ) -> expr.ColumnReference:
         return expr.ColumnReference(
-            column=expression._column, table=expression._table, name=expression._name
+            _column=expression._column, _table=expression._table, _name=expression._name
         )
 
     def eval_unary_op(

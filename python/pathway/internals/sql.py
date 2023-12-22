@@ -118,7 +118,7 @@ def _sum(node: sql_expr.Sum, context: ContextType) -> expr.ReducerExpression:
 
 
 @register(nodetype=sql_expr.Avg)
-def _avg(node: sql_expr.Avg, context: ContextType) -> expr.ReducerExpression:
+def _avg(node: sql_expr.Avg, context: ContextType) -> expr.ColumnExpression:
     return reducers.avg(_run(node.this, context))
 
 

@@ -110,13 +110,17 @@ def _compute_and_print_internal(
     if squash_updates:
 
         def _key(row: tuple[api.Pointer, tuple[api.Value, ...]]):
-            return tuple(_NoneAwareComparisonWrapper(value) for value in row[1])
+            return tuple(_NoneAwareComparisonWrapper(value) for value in row[1]) + (
+                row[0],
+            )
 
     else:
         # sort by time and diff first if there is no squashing
         def _key(row: tuple[api.Pointer, tuple[api.Value, ...]]):
-            return row[1][-2:] + tuple(
-                _NoneAwareComparisonWrapper(value) for value in row[1]
+            return (
+                row[1][-2:]
+                + tuple(_NoneAwareComparisonWrapper(value) for value in row[1])
+                + (row[0],)
             )
 
     try:
@@ -154,8 +158,8 @@ def compute_and_print(
     short_pointers=True,
     n_rows: int | None = None,
 ) -> None:
-    """
-    A function running the computations and printing the table.
+    """A function running the computations and printing the table.
+
     Args:
         table: a table to be computed and printed
         include_id: whether to show ids of rows
@@ -180,8 +184,8 @@ def compute_and_print_update_stream(
     short_pointers=True,
     n_rows: int | None = None,
 ) -> None:
-    """
-    A function running the computations and printing the update stream of the table.
+    """A function running the computations and printing the update stream of the table.
+
     Args:
         table: a table for which the update stream is to be computed and printed
         include_id: whether to show ids of rows
@@ -239,14 +243,12 @@ def table_from_rows(
     unsafe_trusted_ids: bool = False,
     is_stream=False,
 ) -> Table:
-    """
-    A function for creating a table from a list of tuples. Each tuple should describe
+    """A function for creating a table from a list of tuples. Each tuple should describe
     one row of the input data (or stream), matching provided schema.
 
     If ``is_stream`` is set to ``True``, each tuple representing a row should contain
     two additional columns, the first indicating the time of arrival of particular row
     and the second indicating whether the row should be inserted (1) or deleted (-1).
-
     """
 
     kwargs: dict[str, list] = {}
@@ -270,8 +272,7 @@ def table_from_pandas(
     unsafe_trusted_ids: bool = False,
     schema: type[Schema] | None = None,
 ) -> Table:
-    """
-    A function for creating a table from a pandas DataFrame. If it contains a special
+    """A function for creating a table from a pandas DataFrame. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
     A special column ``__diff__`` can be used to set an event type - with ``1`` treated
     as inserting the row and ``-1`` as removing it.
@@ -353,8 +354,7 @@ def table_from_markdown(
     unsafe_trusted_ids=False,
     schema: type[Schema] | None = None,
 ) -> Table:
-    """
-    A function for creating a table from its definition in markdown. If it contains a special
+    """A function for creating a table from its definition in markdown. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
     A special column ``__diff__`` can be used to set an event type - with ``1`` treated
     as inserting the row and ``-1`` as removing it.
@@ -424,8 +424,7 @@ class StreamGenerator:
         batches: dict[int, dict[int, list[tuple[int, api.Pointer, list[api.Value]]]]],
         schema: type[Schema],
     ) -> Table:
-        """
-        A function that creates a table from a mapping of timestamps to batches. Each batch
+        """A function that creates a table from a mapping of timestamps to batches. Each batch
         is a mapping from worker id to list of rows processed in this batch by this worker,
         and each row is tuple (diff, key, values).
 
@@ -477,8 +476,7 @@ class StreamGenerator:
         batches: list[dict[int, list[dict[str, api.Value]]]],
         schema: type[Schema],
     ) -> Table:
-        """
-        A function that creates a table from a list of batches, where each batch is a mapping
+        """A function that creates a table from a list of batches, where each batch is a mapping
         from worker id to a list of rows processed by this worker in this batch.
         Each row is a mapping from column name to a value.
 
@@ -516,8 +514,7 @@ class StreamGenerator:
         batches: list[list[dict[str, api.Value]]],
         schema: type[Schema],
     ) -> Table:
-        """
-        A function that creates a table from a list of batches, where each batch is a list of
+        """A function that creates a table from a list of batches, where each batch is a list of
         rows in this batch. Each row is a mapping from column name to a value.
 
         Args:
@@ -534,8 +531,7 @@ class StreamGenerator:
         unsafe_trusted_ids: bool = False,
         schema: type[Schema] | None = None,
     ) -> Table:
-        """
-        A function for creating a table from a pandas DataFrame. If the DataFrame
+        """A function for creating a table from a pandas DataFrame. If the DataFrame
         contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
         Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
         ``_diff`` column as an event type with ``1`` treated as inserting row and ``-1`` as removing.
@@ -592,8 +588,7 @@ class StreamGenerator:
         unsafe_trusted_ids: bool = False,
         schema: type[Schema] | None = None,
     ) -> Table:
-        """
-        A function for creating a table from its definition in markdown. If it
+        """A function for creating a table from its definition in markdown. If it
         contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
         Then ``_worker`` column will be interpreted as the id of a worker which will process the row and
         ``_diff`` column as an event type - with ``1`` treated as inserting row and ``-1`` as removing.
@@ -602,8 +597,7 @@ class StreamGenerator:
         return self.table_from_pandas(df, id_from, unsafe_trusted_ids, schema)
 
     def persistence_config(self) -> persistence.Config | None:
-        """
-        Returns a persistece config to be used during run. Needs to be passed to ``pw.run``
+        """Returns a persistece config to be used during run. Needs to be passed to ``pw.run``
         so that tables created using StreamGenerator are filled with data.
         """
 

@@ -847,7 +847,7 @@ impl FilesystemScanner {
 
     fn seek_to_file(&mut self, seek_file_path: &Path) -> io::Result<()> {
         if self.streaming_mode.are_deletions_enabled() {
-            todo!("seek for snapshot mode");
+            warn!("seek for snapshot mode may not work correctly in case deletions take place");
         }
 
         self.known_files.clear();

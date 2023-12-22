@@ -83,6 +83,23 @@ def shard_deprecation(self, *args, shard=None, instance=None, **kwargs):
     return (self, *args), {"instance": instance, **kwargs}
 
 
+def offset_deprecation(*args, offset=None, origin=None, **kwargs):
+    if offset is not None:
+        if origin is None:
+            origin = offset
+            warn(
+                "The `offset` argument is deprecated. Please use `origin` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        else:
+            raise ValueError(
+                "The arguments `offset` and `instance` cannot be set at the same moment.\n"
+                + "Please use `origin` only, as `origin` is deprecated."
+            )
+    return args, {"origin": origin, **kwargs}
+
+
 def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
     def handler(self, other, *on, **kwargs):
         processed_kwargs = {}
@@ -164,6 +181,15 @@ def join_kwargs_handler(*, allow_how: bool, allow_id: bool):
             if not isinstance(behavior, CommonBehavior):
                 raise ValueError(
                     "The behavior argument of join should be of type pathway.temporal.CommonBehavior."
+                )
+
+        if "interval" in kwargs:
+            from pathway.stdlib.temporal import Interval
+
+            interval = processed_kwargs["interval"] = kwargs.pop("interval")
+            if not isinstance(interval, Interval):
+                raise ValueError(
+                    "The interval argument of a join should be of a type pathway.temporal.Interval."
                 )
 
         if kwargs:

@@ -1195,8 +1195,12 @@ unary_expr!(date_time_naive_day, IntExpression::DateTimeNaiveDay);
 unary_expr!(date_time_naive_month, IntExpression::DateTimeNaiveMonth);
 unary_expr!(date_time_naive_year, IntExpression::DateTimeNaiveYear);
 unary_expr!(
+    date_time_naive_timestamp_ns,
+    IntExpression::DateTimeNaiveTimestampNs
+);
+binary_expr!(
     date_time_naive_timestamp,
-    IntExpression::DateTimeNaiveTimestamp
+    FloatExpression::DateTimeNaiveTimestamp
 );
 unary_expr!(date_time_naive_weekday, IntExpression::DateTimeNaiveWeekday);
 binary_expr!(date_time_naive_strptime, DateTimeNaiveExpression::Strptime);
@@ -1207,6 +1211,10 @@ binary_expr!(
 binary_expr!(
     date_time_naive_from_timestamp,
     DateTimeNaiveExpression::FromTimestamp
+);
+binary_expr!(
+    date_time_naive_from_float_timestamp,
+    DateTimeNaiveExpression::FromFloatTimestamp
 );
 binary_expr!(date_time_naive_to_utc, DateTimeUtcExpression::FromNaive);
 binary_expr!(date_time_naive_round, DateTimeNaiveExpression::Round);
@@ -1229,7 +1237,14 @@ unary_expr!(date_time_utc_hour, IntExpression::DateTimeUtcHour);
 unary_expr!(date_time_utc_day, IntExpression::DateTimeUtcDay);
 unary_expr!(date_time_utc_month, IntExpression::DateTimeUtcMonth);
 unary_expr!(date_time_utc_year, IntExpression::DateTimeUtcYear);
-unary_expr!(date_time_utc_timestamp, IntExpression::DateTimeUtcTimestamp);
+unary_expr!(
+    date_time_utc_timestamp_ns,
+    IntExpression::DateTimeUtcTimestampNs
+);
+binary_expr!(
+    date_time_utc_timestamp,
+    FloatExpression::DateTimeUtcTimestamp
+);
 unary_expr!(date_time_utc_weekday, IntExpression::DateTimeUtcWeekday);
 binary_expr!(date_time_utc_strptime, DateTimeUtcExpression::Strptime);
 binary_expr!(

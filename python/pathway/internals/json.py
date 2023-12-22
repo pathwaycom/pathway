@@ -5,7 +5,7 @@ from __future__ import annotations
 import json as _json  # otherwise its easy to mistake `json` and `Json`
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Type, TypeVar
 
 
 class _JsonEncoder(_json.JSONEncoder):
@@ -45,6 +45,11 @@ class Json:
     def __repr__(self) -> str:
         return f"pw.Json({self.value!r})"
 
+    def __getitem__(self, key: int | str) -> Json:
+        return Json(self.value[key])  # type:ignore[index]
+
+    __iter__ = None
+
     @cached_property
     def value(self) -> JsonValue:
         if isinstance(self._value, Json):
@@ -60,11 +65,155 @@ class Json:
     def dumps(obj: Any) -> str:
         return _json.dumps(obj, cls=_JsonEncoder)
 
+    def as_int(self) -> int:
+        """Returns Json value as an int if possible.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import sys; sys.modules[__name__].pw = pw # NODOCS
+        >>> class InputSchema(pw.Schema):
+        ...     data: pw.Json
+        ...
+        >>> @pw.udf
+        ... def extract(data: pw.Json) -> int:
+        ...     return data["value"].as_int()
+        ...
+        >>> table = pw.debug.table_from_rows(schema=InputSchema, rows=[({"value": 42},)])
+        >>> result = table.select(result=extract(pw.this.data))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        42
+        """
+
+        return self._as_type(int)
+
+    def as_str(self) -> str:
+        """Returns Json value as a string if possible.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import sys; sys.modules[__name__].pw = pw # NODOCS
+        >>> class InputSchema(pw.Schema):
+        ...     data: pw.Json
+        ...
+        >>> @pw.udf
+        ... def extract(data: pw.Json) -> str:
+        ...     return data["value"].as_str()
+        ...
+        >>> table = pw.debug.table_from_rows(schema=InputSchema, rows=[({"value": "foo"},)])
+        >>> result = table.select(result=extract(pw.this.data))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        foo
+        """
+
+        return self._as_type(str)
+
+    def as_float(self) -> float:
+        """Returns Json value as a float if possible.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import sys; sys.modules[__name__].pw = pw # NODOCS
+        >>> class InputSchema(pw.Schema):
+        ...     data: pw.Json
+        ...
+        >>> @pw.udf
+        ... def extract(data: pw.Json) -> float:
+        ...     return data["value"].as_float()
+        ...
+        >>> table = pw.debug.table_from_rows(schema=InputSchema, rows=[({"value": 3.14},)])
+        >>> result = table.select(result=extract(pw.this.data))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        3.14
+        """
+
+        return self._as_type(float)
+
+    def as_bool(self) -> bool:
+        """Returns Json value as a float if possible.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import sys; sys.modules[__name__].pw = pw # NODOCS
+        >>> class InputSchema(pw.Schema):
+        ...     data: pw.Json
+        ...
+        >>> @pw.udf
+        ... def extract(data: pw.Json) -> bool:
+        ...     return data["value"].as_bool()
+        ...
+        >>> table = pw.debug.table_from_rows(schema=InputSchema, rows=[({"value": True},)])
+        >>> result = table.select(result=extract(pw.this.data))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        True
+        """
+
+        return self._as_type(bool)
+
+    def as_list(self) -> list:
+        """Returns Json value as a list if possible.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import sys; sys.modules[__name__].pw = pw # NODOCS
+        >>> class InputSchema(pw.Schema):
+        ...     data: pw.Json
+        ...
+        >>> @pw.udf
+        ... def extract(data: pw.Json) -> int:
+        ...     return data["value"].as_list()[-1]
+        ...
+        >>> table = pw.debug.table_from_rows(schema=InputSchema, rows=[({"value": [1,2,3]},)])
+        >>> result = table.select(result=extract(pw.this.data))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        3
+        """
+
+        return self._as_type(list)
+
+    def as_dict(self) -> dict:
+        """Returns Json value as a dict if possible.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import sys; sys.modules[__name__].pw = pw # NODOCS
+        >>> class InputSchema(pw.Schema):
+        ...     data: pw.Json
+        ...
+        >>> @pw.udf
+        ... def extract(data: pw.Json) -> tuple:
+        ...     return tuple(data["value"].as_dict().values())
+        ...
+        >>> table = pw.debug.table_from_rows(schema=InputSchema, rows=[({"value": {"inner": 42}},)])
+        >>> result = table.select(result=extract(pw.this.data))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        result
+        (42,)
+        """
+        return self._as_type(dict)
+
+    def _as_type(self, type: Type[J]) -> Any:
+        if isinstance(self.value, type):
+            return self.value
+        else:
+            raise ValueError(f"Cannot convert Json {self.value} to {type}")
+
 
 JsonValue = (
     int | float | str | bool | list["JsonValue"] | dict[str, "JsonValue"] | None | Json
 )
 
+J = TypeVar("J", bound=JsonValue)
 
 Json.NULL = Json(None)
 

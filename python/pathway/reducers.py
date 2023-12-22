@@ -18,7 +18,7 @@ from pathway.internals.reducers import (
     npsum,
     sorted_tuple,
     sum,
-    tuple_reducer as tuple,
+    tuple,
     unique,
 )
 

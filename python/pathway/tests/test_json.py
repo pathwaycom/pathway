@@ -446,6 +446,133 @@ def test_json_flatten_wrong_values(value):
         run_all()
 
 
+def test_json_udf_array_getitem():
+    table = _json_table(a=[{"value": [1]}, {"value": [2]}, {"value": [3]}])
+
+    @pw.udf
+    def map(a: pw.Json) -> int:
+        value = a["value"][0].as_int()
+        assert isinstance(value, int)
+        return value + 1
+
+    result = table.select(ret=map(**table))
+
+    assert_table_equality(
+        T(
+            """
+                | ret
+            1   | 2
+            2   | 3
+            3   | 4
+            """
+        ),
+        result,
+    )
+
+
+def test_json_udf_str_getitem():
+    table = _json_table(a=[{"value": "foo"}, {"value": "bar"}, {"value": "baz"}])
+
+    @pw.udf
+    def map(a: pw.Json) -> str:
+        value = a["value"][0].as_str()
+        assert isinstance(value, str)
+        return value
+
+    result = table.select(ret=map(**table))
+
+    assert_table_equality(
+        T(
+            """
+                | ret
+            1   | f
+            2   | b
+            3   | b
+            """
+        ),
+        result,
+    )
+
+
+def test_json_udf_number_getitem():
+    table = _json_table(a=[1, 2, 3])
+
+    @pw.udf
+    def map(a: pw.Json) -> int:
+        a["value"]
+        return 42
+
+    table.select(ret=map(**table))
+
+    with pytest.raises(TypeError):
+        run_all()
+
+
+@pytest.mark.parametrize(
+    "values,method",
+    [
+        ([0, 1, -1], pw.Json.as_int),
+        ([1.0, 3.14, -1.2], pw.Json.as_float),
+        (["foo", "bar", "baz"], pw.Json.as_str),
+        ([True, False], pw.Json.as_bool),
+        ([[1, 2, 3], [3, 4, 5]], pw.Json.as_list),
+        ([{"a": "foo"}, {"b": "bar"}], pw.Json.as_dict),
+    ],
+)
+def test_json_udf_as_type(values, method):
+    to_dtype = type(values[0])
+    table = _json_table(data=values)
+
+    @pw.udf
+    def map(value: pw.Json):
+        return method(value)
+
+    result = table.select(ret=map(pw.this.data)).update_types(ret=to_dtype)
+
+    expected = table_from_pandas(
+        pd.DataFrame({"key": list(range(1, len(values) + 1)), "ret": values}),
+        schema=pw.schema_builder(
+            columns={
+                "key": pw.column_definition(primary_key=True, dtype=int),
+                "ret": pw.column_definition(dtype=to_dtype),
+            }
+        ),
+    ).without(pw.this.key)
+
+    assert_table_equality(result, expected)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, 1, 42, "42", 3.14, True, [1, 2, 3], {"a": "foo"}],
+)
+@pytest.mark.parametrize(
+    "_type,method",
+    [
+        (int, pw.Json.as_int),
+        (float, pw.Json.as_float),
+        (str, pw.Json.as_str),
+        (bool, pw.Json.as_bool),
+        (list, pw.Json.as_list),
+        (dict, pw.Json.as_dict),
+    ],
+)
+def test_json_udf_as_type_wrong_values(value, _type, method):
+    if isinstance(value, _type):
+        return
+
+    table = _json_table(a=[{"value": value}])
+
+    @pw.udf
+    def map(a: pw.Json) -> Any:
+        return method(a["value"])
+
+    table.select(ret=map(**table))
+
+    with pytest.raises(ValueError, match="Cannot convert Json.*"):
+        run_all()
+
+
 def test_json_type():
     table = _json_table(
         a=[{"value": 1}], b=[2], c=[1.5], d=[True], e="foo", f=[[1, 2, 3]]
@@ -503,30 +630,30 @@ def test_json_nested():
     table = T(
         """
             | value
-        1   | 1
-        2   | 2
-        3   | 3
+        1   | foo
+        2   | bar
+        3   | baz
         """
     )
 
     @pw.udf
     def wrap(value: int) -> pw.Json:
-        j = pw.Json([pw.Json(value)])
-        assert isinstance(j.value[0].value, int)  # type:ignore
+        j = pw.Json(pw.Json([pw.Json(value)]))
+        assert isinstance(j[0].as_str(), str)
         return j
 
-    result = table.select(ret=wrap(pw.this.value).get(0).as_int())
+    result = table.select(ret=wrap(pw.this.value).get(0).as_str())
 
     assert_table_equality(
+        result,
         T(
             """
                 | ret
-            1   | 1
-            2   | 2
-            3   | 3
+            1   | foo
+            2   | bar
+            3   | baz
             """
-        ).update_types(ret=Optional[int]),
-        result,
+        ).update_types(ret=Optional[str]),
     )
 
 

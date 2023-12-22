@@ -119,6 +119,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         knn_index = index.KNNIndex(
             chunked_docs.embedding,
             chunked_docs,
+            distance_type="cosine",
             n_dimensions=self.embedding_dimension,
             metadata=chunked_docs.data["metadata"],
         )
@@ -164,9 +165,19 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             k=pw.this.k,
             collapse_rows=True,
             metadata_filter=query.metadata_filter,
-        ).select(result=pw.this.data)
+            with_distances=True,
+        ).select(
+            result=pw.this.data,
+            dist=pw.this.dist,
+        )
 
-        query_results = query_results.select(pw.this.result)
+        query_results = query_results.select(
+            result=pw.apply(
+                lambda x, y: [{**res.value, "dist": dist} for res, dist in zip(x, y)],
+                pw.this.result,
+                pw.this.dist,
+            )
+        )
 
         results = query_results.concat(stats_results)
         response_writer(results)
@@ -213,7 +224,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                 persistence_config = None
 
             pw.run(
-                monitoring_level=pw.internals.monitoring.MonitoringLevel.NONE,
+                monitoring_level=pw.MonitoringLevel.NONE,
                 persistence_config=persistence_config,
             )
 
@@ -238,7 +249,10 @@ class VectorStoreClient:
             data["metadata_filter"] = metadata_filter
         url = f"http://{self.host}:{self.port}"
         response = requests.post(
-            url, data=json.dumps(data), headers={"Content-Type": "application/json"}
+            url,
+            data=json.dumps(data),
+            headers={"Content-Type": "application/json"},
+            timeout=3,
         )
         responses = response.json()
         return responses

@@ -3,6 +3,9 @@
 import datetime
 from typing import Any, Type, Union
 
+import pandas as pd
+from dateutil import tz
+
 from pathway.internals import dtype as dt
 from pathway.internals.type_interpreter import eval_type
 
@@ -10,13 +13,15 @@ TimeEventType = Union[int, float, datetime.datetime]
 IntervalType = Union[int, float, datetime.timedelta]
 
 
-def get_default_shift(interval: IntervalType) -> TimeEventType:
-    if isinstance(interval, datetime.timedelta):
-        return datetime.datetime(1970, 1, 1)
-    elif isinstance(interval, int):
-        return 0
-    else:
-        return 0.0
+def get_default_origin(time_event_type: dt.DType) -> TimeEventType:
+    mapping: dict[Any, TimeEventType] = {
+        dt.INT: 0,
+        dt.FLOAT: 0.0,
+        dt.DATE_TIME_NAIVE: pd.Timestamp(year=1973, month=1, day=1, tz=None),
+        dt.DATE_TIME_UTC: pd.Timestamp(year=1973, month=1, day=1, tz=tz.UTC),
+        # 1973 because it started on Monady and then by default all week-wide windows start on Monday
+    }
+    return mapping[time_event_type]
 
 
 def zero_length_interval(interval_type: Type[IntervalType]) -> IntervalType:

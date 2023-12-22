@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Generic, TypeVar, overload
 
 import pathway.internals as pw
 from pathway.internals.arg_handlers import (
@@ -23,21 +23,48 @@ from pathway.internals.desugaring import (
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
+from pathway.internals.type_interpreter import eval_type
 
 from .temporal_behavior import CommonBehavior
-from .utils import IntervalType, TimeEventType, check_joint_types, get_default_shift
+from .utils import IntervalType, TimeEventType, check_joint_types, get_default_origin
+
+T = TypeVar("T")
 
 
 @dataclass
-class Interval:
-    lower_bound: int | float | datetime.timedelta
-    upper_bound: int | float | datetime.timedelta
+class Interval(Generic[T]):
+    lower_bound: T
+    upper_bound: T
+
+
+@overload
+def interval(
+    lower_bound: int,
+    upper_bound: int,
+) -> Interval[int]:
+    ...
+
+
+@overload
+def interval(
+    lower_bound: float,
+    upper_bound: float,
+) -> Interval[float]:
+    ...
+
+
+@overload
+def interval(
+    lower_bound: datetime.timedelta,
+    upper_bound: datetime.timedelta,
+) -> Interval[datetime.timedelta]:
+    ...
 
 
 def interval(
     lower_bound: int | float | datetime.timedelta,
     upper_bound: int | float | datetime.timedelta,
-):
+) -> Interval:
     """Allows testing whether two times are within a certain distance.
 
     Note:
@@ -177,7 +204,7 @@ class IntervalJoinResult(DesugaringContext):
         right: pw.Table,
         left_time_expression: pw.ColumnExpression,
         right_time_expression: pw.ColumnExpression,
-        interval: Interval,
+        interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
         *on: pw.ColumnExpression,
         behavior: CommonBehavior | None = None,
         mode: pw.JoinMode,
@@ -214,7 +241,7 @@ class IntervalJoinResult(DesugaringContext):
                 "lower_bound has to be less than upper_bound in the Table.interval_join()."
             )
 
-        shift = get_default_shift(interval.lower_bound)
+        shift = get_default_origin(eval_type(left_time_expression))
         left_with_time = left.with_columns(_pw_time=left_time_expression)
         right_with_time = right.with_columns(_pw_time=right_time_expression)
         left_with_time = IntervalJoinResult._apply_temporal_behavior(
@@ -354,7 +381,9 @@ class IntervalJoinResult(DesugaringContext):
                     raise ValueError(
                         "In IntervalJoinResult.select() all positional arguments have to be a ColumnReference."
                     )
-        all_args = combine_args_kwargs(args, kwargs)
+        exclude_columns = {"_pw_time", "_pw_bucket", "_pw_bucket_plus_one"}
+        # remove internal columns that can appear if using *pw.left, *pw.right
+        all_args = combine_args_kwargs(args, kwargs, exclude_columns=exclude_columns)
 
         earlier_part_selected = self._earlier_part_filtered.select(
             _pw_left_id=pw.left.id,
@@ -432,7 +461,7 @@ def interval_join(
     other: pw.Table,
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
-    interval: Interval,
+    interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
     how: pw.JoinMode = pw.JoinMode.INNER,
@@ -635,7 +664,7 @@ def interval_join_inner(
     other: pw.Table,
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
-    interval: Interval,
+    interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
     left_instance: pw.ColumnReference | None = None,
@@ -834,7 +863,7 @@ def interval_join_left(
     other: pw.Table,
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
-    interval: Interval,
+    interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
     left_instance: pw.ColumnReference | None = None,
@@ -1051,7 +1080,7 @@ def interval_join_right(
     other: pw.Table,
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
-    interval: Interval,
+    interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
     left_instance: pw.ColumnReference | None = None,
@@ -1257,7 +1286,7 @@ def interval_join_outer(
     other: pw.Table,
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
-    interval: Interval,
+    interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
     *on: pw.ColumnExpression,
     behavior: CommonBehavior | None = None,
     left_instance: pw.ColumnReference | None = None,

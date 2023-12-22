@@ -213,9 +213,9 @@ class RestrictUniverseDesugaring(DesugaringTransform):
                     self.table_like
                 )
             return expr.ColumnReference(
-                column=expression._column,
-                table=self.cache[expression.table],
-                name=expression.name,
+                _column=expression._column,
+                _table=self.cache[expression.table],
+                _name=expression.name,
             )
         else:
             return super().eval_column_val(expression, **kwargs)
@@ -273,10 +273,13 @@ def _desugar_this_kwargs(
 def combine_args_kwargs(
     args: Iterable[expr.ColumnReference],
     kwargs: Mapping[str, Any],
+    exclude_columns: set[str] | None = None,
 ) -> dict[str, expr.ColumnExpression]:
     all_args = {}
 
     def add(name, expression):
+        if exclude_columns is not None and name in exclude_columns:
+            return
         if name in all_args:
             raise ValueError(f"Duplicate expression value given for {name}")
         if name == "id":

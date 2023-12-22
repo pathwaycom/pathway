@@ -9,6 +9,7 @@ from typing import Any
 
 import pathway.internals as pw
 import pathway.internals.expression as expr
+import pathway.stdlib.indexing
 from pathway.internals.arg_handlers import (
     arg_handler,
     join_kwargs_handler,
@@ -17,6 +18,7 @@ from pathway.internals.arg_handlers import (
 from pathway.internals.desugaring import (
     DesugaringContext,
     SubstitutionDesugaring,
+    combine_args_kwargs,
     desugar,
 )
 from pathway.internals.join import validate_join_condition
@@ -114,10 +116,10 @@ class _SideData:
     conds: list[pw.ColumnExpression]
     t: pw.ColumnExpression
 
-    def make_sort_key(self):
-        return pw.make_tuple(self.t, self.side)
+    def make_sort_key(self, right_first: bool):
+        return pw.make_tuple(self.t, self.side ^ right_first)
 
-    def make_shard_key(self):
+    def make_instance(self):
         if len(self.conds) == 0:
             return None
         if len(self.conds) == 1:
@@ -169,23 +171,23 @@ class AsofJoinResult(DesugaringContext):
     ...     how=pw.JoinMode.LEFT,
     ...     defaults={t2.val: -1},
     ... ).select(
-    ...     pw.this.shard_key,
+    ...     pw.this.instance,
     ...     pw.this.t,
     ...     val_left=t1.val,
     ...     val_right=t2.val,
     ...     sum=t1.val + t2.val,
     ... )
     >>> pw.debug.compute_and_print(res, include_id=False)
-    shard_key | t  | val_left | val_right | sum
-    0         | 1  | 1        | -1        | 0
-    0         | 4  | 2        | 6         | 8
-    0         | 5  | 3        | 6         | 9
-    0         | 6  | 4        | 6         | 10
-    0         | 7  | 5        | 6         | 11
-    0         | 11 | 6        | 9         | 15
-    0         | 12 | 7        | 9         | 16
-    1         | 5  | 8        | 7         | 15
-    1         | 7  | 9        | 7         | 16
+    instance | t  | val_left | val_right | sum
+    0        | 1  | 1        | -1        | 0
+    0        | 4  | 2        | 6         | 8
+    0        | 5  | 3        | 6         | 9
+    0        | 6  | 4        | 6         | 10
+    0        | 7  | 5        | 2         | 7
+    0        | 11 | 6        | 9         | 15
+    0        | 12 | 7        | 9         | 16
+    1        | 5  | 8        | 7         | 15
+    1        | 7  | 9        | 7         | 16
     """
 
     _side_data: dict[bool, _SideData]
@@ -239,16 +241,19 @@ class AsofJoinResult(DesugaringContext):
 
     @property
     def _desugaring(self) -> SubstitutionDesugaring:
-        return self._sub_desugaring
+        return SubstitutionDesugaring({})
 
     def _merge(self) -> pw.Table:
+        right_first = (
+            self._direction == Direction.BACKWARD and self._mode == pw.JoinMode.LEFT
+        ) or (self._direction == Direction.FORWARD and self._mode == pw.JoinMode.RIGHT)
         orig_data = {
             k: data.table.select(
                 side=data.side,
-                shard_key=data.make_shard_key(),
+                instance=data.make_instance(),
                 orig_id=data.table.id,
-                key=data.make_sort_key(),
-                t=data.table.t,
+                key=data.make_sort_key(right_first),
+                t=data.t,
                 **{
                     req_col.internal_name: req_col.source_column
                     if data.side == req_col.side
@@ -259,13 +264,10 @@ class AsofJoinResult(DesugaringContext):
             for k, data in self._side_data.items()
         }
         target = pw.Table.concat_reindex(*orig_data.values())
-        target += target.select(instance=target.shard_key)
-        import pathway.stdlib.indexing
 
         target += pathway.stdlib.indexing.sort_from_index(
             **pathway.stdlib.indexing.build_sorted_index(target)
         )
-        target = target.without(target.instance)
 
         next_table = _build_groups(target, dir_next=True)
         prev_table = _build_groups(target, dir_next=False)
@@ -358,7 +360,7 @@ class AsofJoinResult(DesugaringContext):
 
         if self._mode == pw.JoinMode.LEFT:
             res = m0.select(
-                pw.this.shard_key,
+                pw.this.instance,
                 pw.this.t,
                 pw.this.key,
                 pw.this.side,
@@ -369,7 +371,7 @@ class AsofJoinResult(DesugaringContext):
 
         if self._mode == pw.JoinMode.RIGHT:
             res = m1.select(
-                pw.this.shard_key,
+                pw.this.instance,
                 pw.this.t,
                 pw.this.key,
                 pw.this.side,
@@ -380,7 +382,7 @@ class AsofJoinResult(DesugaringContext):
 
         if self._mode == pw.JoinMode.OUTER:
             res = m.select(
-                m.shard_key,
+                m.instance,
                 m.t,
                 m.key,
                 m.side,
@@ -398,7 +400,13 @@ class AsofJoinResult(DesugaringContext):
         if self._mode not in [pw.JoinMode.LEFT, pw.JoinMode.RIGHT, pw.JoinMode.OUTER]:
             raise ValueError(f"Unsupported asof join mode: {self._mode}")
 
-        return self._merge_result.select(*args, **kwargs)
+        expressions: dict[str, expr.ColumnExpression] = {}
+
+        all_args = combine_args_kwargs(args, kwargs)
+
+        for new_name, expression in all_args.items():
+            expressions[new_name] = self._sub_desugaring.eval_expression(expression)
+        return self._merge_result.select(**expressions)
 
 
 def _asof_join(
@@ -410,6 +418,8 @@ def _asof_join(
     how: pw.JoinMode,
     defaults: dict[pw.ColumnReference, Any],
     direction: Direction,
+    left_instance: expr.ColumnReference | None,
+    right_instance: expr.ColumnReference | None,
 ):
     check_joint_types(
         {"t_left": (t_left, TimeEventType), "t_right": (t_right, TimeEventType)}
@@ -418,6 +428,11 @@ def _asof_join(
         False: _SideData(side=False, table=self, conds=[], t=t_left),
         True: _SideData(side=True, table=other, conds=[], t=t_right),
     }
+
+    if left_instance is not None and right_instance is not None:
+        on = (*on, left_instance == right_instance)
+    else:
+        assert left_instance is None and right_instance is None
 
     for cond in on:
         cond_left, cond_right, _ = validate_join_condition(cond, self, other)
@@ -445,6 +460,8 @@ def asof_join(
     how: pw.JoinMode,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
 ):
     """Perform an ASOF join of two tables.
 
@@ -457,6 +474,10 @@ def asof_join(
         defaults: dictionary column-> default value. Entries in the resulting table that
             not have a predecessor in the join will be set to this default value. If no
             default is provided, None will be used.
+        direction: direction of the join, accepted values: Direction.BACKWARD,
+            Direction.FORWARD, Direction.NEAREST
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+              separate instances
 
 
     Example:
@@ -498,23 +519,23 @@ def asof_join(
     ...     how=pw.JoinMode.LEFT,
     ...     defaults={t2.val: -1},
     ... ).select(
-    ...     pw.this.shard_key,
+    ...     pw.this.instance,
     ...     pw.this.t,
     ...     val_left=t1.val,
     ...     val_right=t2.val,
     ...     sum=t1.val + t2.val,
     ... )
     >>> pw.debug.compute_and_print(res, include_id=False)
-    shard_key | t  | val_left | val_right | sum
-    0         | 1  | 1        | -1        | 0
-    0         | 4  | 2        | 6         | 8
-    0         | 5  | 3        | 6         | 9
-    0         | 6  | 4        | 6         | 10
-    0         | 7  | 5        | 6         | 11
-    0         | 11 | 6        | 9         | 15
-    0         | 12 | 7        | 9         | 16
-    1         | 5  | 8        | 7         | 15
-    1         | 7  | 9        | 7         | 16
+    instance | t  | val_left | val_right | sum
+    0        | 1  | 1        | -1        | 0
+    0        | 4  | 2        | 6         | 8
+    0        | 5  | 3        | 6         | 9
+    0        | 6  | 4        | 6         | 10
+    0        | 7  | 5        | 2         | 7
+    0        | 11 | 6        | 9         | 15
+    0        | 12 | 7        | 9         | 16
+    1        | 5  | 8        | 7         | 15
+    1        | 7  | 9        | 7         | 16
     """
     return _asof_join(
         self,
@@ -525,6 +546,8 @@ def asof_join(
         how=how,
         defaults=defaults,
         direction=direction,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -540,6 +563,8 @@ def asof_join_left(
     *on: pw.ColumnExpression,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
 ):
     """Perform a left ASOF join of two tables.
 
@@ -553,6 +578,8 @@ def asof_join_left(
             default is provided, None will be used.
         direction: direction of the join, accepted values: Direction.BACKWARD,
             Direction.FORWARD, Direction.NEAREST
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+              separate instances
 
 
     Example:
@@ -593,23 +620,23 @@ def asof_join_left(
     ...     t1.K == t2.K,
     ...     defaults={t2.val: -1},
     ... ).select(
-    ...     pw.this.shard_key,
+    ...     pw.this.instance,
     ...     pw.this.t,
     ...     val_left=t1.val,
     ...     val_right=t2.val,
     ...     sum=t1.val + t2.val,
     ... )
     >>> pw.debug.compute_and_print(res, include_id=False)
-    shard_key | t  | val_left | val_right | sum
-    0         | 1  | 1        | -1        | 0
-    0         | 4  | 2        | 6         | 8
-    0         | 5  | 3        | 6         | 9
-    0         | 6  | 4        | 6         | 10
-    0         | 7  | 5        | 6         | 11
-    0         | 11 | 6        | 9         | 15
-    0         | 12 | 7        | 9         | 16
-    1         | 5  | 8        | 7         | 15
-    1         | 7  | 9        | 7         | 16
+    instance | t  | val_left | val_right | sum
+    0        | 1  | 1        | -1        | 0
+    0        | 4  | 2        | 6         | 8
+    0        | 5  | 3        | 6         | 9
+    0        | 6  | 4        | 6         | 10
+    0        | 7  | 5        | 2         | 7
+    0        | 11 | 6        | 9         | 15
+    0        | 12 | 7        | 9         | 16
+    1        | 5  | 8        | 7         | 15
+    1        | 7  | 9        | 7         | 16
     """
     return _asof_join(
         self,
@@ -620,6 +647,8 @@ def asof_join_left(
         how=pw.JoinMode.LEFT,
         defaults=defaults,
         direction=direction,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -635,6 +664,8 @@ def asof_join_right(
     *on: pw.ColumnExpression,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
 ):
     """Perform a right ASOF join of two tables.
 
@@ -648,6 +679,8 @@ def asof_join_right(
             default is provided, None will be used.
         direction: direction of the join, accepted values: Direction.BACKWARD,
             Direction.FORWARD, Direction.NEAREST
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+              separate instances
 
 
     Example:
@@ -688,23 +721,23 @@ def asof_join_right(
     ...     t1.K == t2.K,
     ...     defaults={t1.val: -1},
     ... ).select(
-    ...     pw.this.shard_key,
+    ...     pw.this.instance,
     ...     pw.this.t,
     ...     val_left=t1.val,
     ...     val_right=t2.val,
     ...     sum=t1.val + t2.val,
     ... )
     >>> pw.debug.compute_and_print(res, include_id=False)
-    shard_key | t  | val_left | val_right | sum
-    0         | 2  | 1        | 0         | 1
-    0         | 3  | 1        | 6         | 7
-    0         | 7  | 5        | 2         | 7
-    0         | 8  | 5        | 3         | 8
-    0         | 9  | 5        | 9         | 14
-    0         | 13 | 7        | 7         | 14
-    0         | 14 | 7        | 4         | 11
-    1         | 2  | -1       | 7         | 6
-    1         | 8  | 9        | 3         | 12
+    instance | t  | val_left | val_right | sum
+    0        | 2  | 1        | 0         | 1
+    0        | 3  | 1        | 6         | 7
+    0        | 7  | 5        | 2         | 7
+    0        | 8  | 5        | 3         | 8
+    0        | 9  | 5        | 9         | 14
+    0        | 13 | 7        | 7         | 14
+    0        | 14 | 7        | 4         | 11
+    1        | 2  | -1       | 7         | 6
+    1        | 8  | 9        | 3         | 12
     """
     return _asof_join(
         self,
@@ -715,6 +748,8 @@ def asof_join_right(
         how=pw.JoinMode.RIGHT,
         defaults=defaults,
         direction=direction,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )
 
 
@@ -730,6 +765,8 @@ def asof_join_outer(
     *on: pw.ColumnExpression,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
 ):
     """Perform an outer ASOF join of two tables.
 
@@ -743,6 +780,8 @@ def asof_join_outer(
             default is provided, None will be used.
         direction: direction of the join, accepted values: Direction.BACKWARD,
             Direction.FORWARD, Direction.NEAREST
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+              separate instances
 
 
     Example:
@@ -783,32 +822,32 @@ def asof_join_outer(
     ...     t1.K == t2.K,
     ...     defaults={t1.val: -1, t2.val: -1},
     ... ).select(
-    ...     pw.this.shard_key,
+    ...     pw.this.instance,
     ...     pw.this.t,
     ...     val_left=t1.val,
     ...     val_right=t2.val,
     ...     sum=t1.val + t2.val,
     ... )
     >>> pw.debug.compute_and_print(res, include_id=False)
-    shard_key | t  | val_left | val_right | sum
-    0         | 1  | 1        | -1        | 0
-    0         | 2  | 1        | 0         | 1
-    0         | 3  | 1        | 6         | 7
-    0         | 4  | 2        | 6         | 8
-    0         | 5  | 3        | 6         | 9
-    0         | 6  | 4        | 6         | 10
-    0         | 7  | 5        | 2         | 7
-    0         | 7  | 5        | 6         | 11
-    0         | 8  | 5        | 3         | 8
-    0         | 9  | 5        | 9         | 14
-    0         | 11 | 6        | 9         | 15
-    0         | 12 | 7        | 9         | 16
-    0         | 13 | 7        | 7         | 14
-    0         | 14 | 7        | 4         | 11
-    1         | 2  | -1       | 7         | 6
-    1         | 5  | 8        | 7         | 15
-    1         | 7  | 9        | 7         | 16
-    1         | 8  | 9        | 3         | 12
+    instance | t  | val_left | val_right | sum
+    0        | 1  | 1        | -1        | 0
+    0        | 2  | 1        | 0         | 1
+    0        | 3  | 1        | 6         | 7
+    0        | 4  | 2        | 6         | 8
+    0        | 5  | 3        | 6         | 9
+    0        | 6  | 4        | 6         | 10
+    0        | 7  | 5        | 2         | 7
+    0        | 7  | 5        | 6         | 11
+    0        | 8  | 5        | 3         | 8
+    0        | 9  | 5        | 9         | 14
+    0        | 11 | 6        | 9         | 15
+    0        | 12 | 7        | 9         | 16
+    0        | 13 | 7        | 7         | 14
+    0        | 14 | 7        | 4         | 11
+    1        | 2  | -1       | 7         | 6
+    1        | 5  | 8        | 7         | 15
+    1        | 7  | 9        | 7         | 16
+    1        | 8  | 9        | 3         | 12
     """
     return _asof_join(
         self,
@@ -819,4 +858,6 @@ def asof_join_outer(
         how=pw.JoinMode.OUTER,
         defaults=defaults,
         direction=direction,
+        left_instance=left_instance,
+        right_instance=right_instance,
     )

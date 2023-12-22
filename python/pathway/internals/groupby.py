@@ -96,16 +96,16 @@ class GroupedTable(GroupedJoinable, OperatorInput):
 
     def __init__(
         self,
-        table: table.Table,
-        grouping_columns: tuple[expr.InternalColRef, ...],
-        set_id: bool = False,
-        sort_by: expr.InternalColRef | None = None,
+        _table: table.Table,
+        _grouping_columns: tuple[expr.InternalColRef, ...],
+        _set_id: bool = False,
+        _sort_by: expr.InternalColRef | None = None,
         _filter_out_results_of_forgetting: bool = False,
     ):
-        super().__init__(Universe(), {thisclass.this: self}, table)
-        self._grouping_columns = StableSet(grouping_columns)
-        self._set_id = set_id
-        self._sort_by = sort_by
+        super().__init__(Universe(), {thisclass.this: self}, _table)
+        self._grouping_columns = StableSet(_grouping_columns)
+        self._set_id = _set_id
+        self._sort_by = _sort_by
         self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
 
     @classmethod
@@ -124,10 +124,10 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         key = (cls.__name__, table._universe, cols, set_id, col_sort_by)
         if key not in G.cache:
             result = GroupedTable(
-                table=table,
-                grouping_columns=cols,
-                set_id=set_id,
-                sort_by=col_sort_by,
+                _table=table,
+                _grouping_columns=cols,
+                _set_id=set_id,
+                _sort_by=col_sort_by,
                 _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
             )
             G.cache[key] = result
@@ -175,8 +175,8 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         kwargs = combine_args_kwargs(args, kwargs)
 
         output_expressions = {}
-        state = ReducerExpressionState()
-        splitter = ReducerExpressionSplitter()
+        state = _ReducerExpressionState()
+        splitter = _ReducerExpressionSplitter()
         for name, expression in kwargs.items():
             self._validate_expression(expression)
             output_expressions[name] = splitter.eval_expression(
@@ -211,8 +211,8 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             reduced_columns[column_name] = column
 
         result: table.Table = table.Table(
-            columns=reduced_columns,
-            context=context,
+            _columns=reduced_columns,
+            _context=context,
         )
         G.universe_solver.register_as_equal(self._universe, result._universe)
         return result
@@ -255,26 +255,25 @@ class GroupedJoinResult(GroupedJoinable):
 
     def __init__(
         self,
-        *,
-        join_result: JoinResult,
-        args: Iterable[expr.ColumnExpression],
-        id: expr.ColumnReference | None,
+        _join_result: JoinResult,
+        _args: Iterable[expr.ColumnExpression],
+        _id: expr.ColumnReference | None,
     ):
         super().__init__(
-            join_result._universe,
+            _join_result._universe,
             {
-                **join_result._substitution,
-                thisclass.this: join_result,
+                **_join_result._substitution,
+                thisclass.this: _join_result,
             },
-            join_result,
+            _join_result,
         )
-        tab, subs = join_result._substitutions()
+        tab, subs = _join_result._substitutions()
         self._substitution_desugaring = SubstitutionDesugaring(subs)
-        args = [self._substitution_desugaring.eval_expression(arg) for arg in args]
-        if id is not None:
-            id = self._substitution_desugaring.eval_expression(id)
+        _args = [self._substitution_desugaring.eval_expression(arg) for arg in _args]
+        if _id is not None:
+            _id = self._substitution_desugaring.eval_expression(_id)
 
-        self._groupby = tab.groupby(*args, id=id)
+        self._groupby = tab.groupby(*_args, id=_id)
 
     @desugar
     @arg_handler(handler=reduce_args_handler)
@@ -326,7 +325,7 @@ class GroupedJoinResult(GroupedJoinable):
         return self._groupby._operator_dependencies()
 
 
-class ReducerExpressionState:
+class _ReducerExpressionState:
     below_reducer_expressions: dict[str, expr.ColumnExpression]
     reducers: dict[str, expr.ColumnExpression]
 
@@ -347,11 +346,11 @@ class ReducerExpressionState:
         return thisclass.this[name]
 
 
-class ReducerExpressionSplitter(IdentityTransform):
+class _ReducerExpressionSplitter(IdentityTransform):
     def eval_column_val(
         self,
         expression: expr.ColumnReference,
-        eval_state: ReducerExpressionState | None = None,
+        eval_state: _ReducerExpressionState | None = None,
         **kwargs,
     ) -> expr.ColumnReference:
         if (
@@ -374,7 +373,7 @@ class ReducerExpressionSplitter(IdentityTransform):
     def eval_count(  # type: ignore
         self,
         expression: expr.CountExpression,
-        eval_state: ReducerExpressionState | None = None,
+        eval_state: _ReducerExpressionState | None = None,
         **kwargs,
     ) -> expr.ColumnReference:
         assert eval_state is not None
@@ -383,7 +382,7 @@ class ReducerExpressionSplitter(IdentityTransform):
     def eval_reducer(  # type: ignore
         self,
         expression: expr.ReducerExpression,
-        eval_state: ReducerExpressionState | None = None,
+        eval_state: _ReducerExpressionState | None = None,
         **kwargs,
     ) -> expr.ColumnReference:
         assert eval_state is not None

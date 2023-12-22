@@ -325,60 +325,17 @@ def test_sliding_compacting():
     res = T(
         """
         _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
-            0        |     9            |     19         | 12    | 17    | 6
-            0        |     12           |     22         | 12    | 17    | 6
-            0        |     15           |     25         | 15    | 17    | 3
-            1        |     9            |     19         | 10    | 11    | 2
-            """
-    )
-    assert_table_equality_wo_index(result, res)
-
-
-# in the batch mode, we can test close to nothing;
-# basically checks whether syntax is not broken
-# for more tests see test_windows_stream.py
-def test_sliding_compacting_2():
-    t = T(
-        """
-            | instance | t
-        1   | 0        |  12
-        2   | 0        |  13
-        3   | 0        |  14
-        4   | 0        |  15
-        5   | 0        |  16
-        6   | 0        |  17
-        7   | 1        |  10
-        8   | 1        |  11
-    """
-    )
-
-    gb = t.windowby(
-        t.t,
-        window=pw.temporal.sliding(duration=10, hop=3),
-        behavior=pw.temporal.common_behavior(delay=0, cutoff=2, keep_results=False),
-        instance=t.instance,
-    )
-
-    result = gb.reduce(
-        pw.this._pw_instance,
-        pw.this._pw_window_start,
-        pw.this._pw_window_end,
-        min_t=pw.reducers.min(pw.this.t),
-        max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(),
-    )
-
-    res = T(
-        """
-        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
+            0        |     3            |     13         | 12    | 12    | 1
             0        |     6            |     16         | 12    | 15    | 4
             0        |     9            |     19         | 12    | 17    | 6
             0        |     12           |     22         | 12    | 17    | 6
             0        |     15           |     25         | 15    | 17    | 3
+            1        |     3            |     13         | 10    | 11    | 2
             1        |     6            |     16         | 10    | 11    | 2
             1        |     9            |     19         | 10    | 11    | 2
             """
     )
+
     assert_table_equality_wo_index(result, res)
 
 
@@ -414,7 +371,7 @@ def test_flush_buffer_long_chain_of_operators():
     for i in range(5):
         gb = t.windowby(
             t.t,
-            window=pw.temporal.sliding(duration=2, hop=2, offset=1),
+            window=pw.temporal.sliding(duration=2, hop=2, origin=1),
             behavior=pw.temporal.common_behavior(
                 delay=8, cutoff=100, keep_results=False
             ),
@@ -426,52 +383,7 @@ def test_flush_buffer_long_chain_of_operators():
     assert_table_equality_wo_index(t, expected)
 
 
-def test_sliding_compacting_flush_buffer():
-    t = T(
-        """
-            | instance | t
-        1   | 0     |  12
-        2   | 0     |  13
-        3   | 0     |  14
-        4   | 0     |  15
-        5   | 0     |  16
-        6   | 0     |  17
-        7   | 1     |  10
-        8   | 1     |  11
-    """
-    )
-
-    gb = t.windowby(
-        t.t,
-        window=pw.temporal.sliding(duration=10, hop=3),
-        behavior=pw.temporal.common_behavior(delay=8, cutoff=10, keep_results=False),
-        instance=t.instance,
-    )
-
-    result = gb.reduce(
-        pw.this._pw_shard,
-        pw.this._pw_window_start,
-        pw.this._pw_window_end,
-        min_t=pw.reducers.min(pw.this.t),
-        max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(),
-    )
-
-    res = T(
-        """
-        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
-            0     |     6            |     16         | 12    | 15    | 4
-            0     |     9            |     19         | 12    | 17    | 6
-            0     |     12           |     22         | 12    | 17    | 6
-            0     |     15           |     25         | 15    | 17    | 3
-            1     |     6            |     16         | 10    | 11    | 2
-            1     |     9            |     19         | 10    | 11    | 2
-            """
-    )
-    assert_table_equality_wo_index(result, res)
-
-
-def test_sliding_offset():
+def test_sliding_deprecate_offset():
     t = T(
         """
             | t
@@ -483,8 +395,43 @@ def test_sliding_offset():
         6   |  17
     """
     )
+    with pytest.warns(
+        DeprecationWarning,
+        match="The `offset` argument is deprecated. Please use `origin` instead.",
+    ):
+        gb = t.windowby(t.t, window=pw.temporal.sliding(duration=10, hop=3, offset=13))
+    result = gb.reduce(
+        pw.this._pw_instance,
+        pw.this._pw_window_start,
+        pw.this._pw_window_end,
+        min_t=pw.reducers.min(pw.this.t),
+        max_t=pw.reducers.max(pw.this.t),
+        count=pw.reducers.count(),
+    )
 
-    gb = t.windowby(t.t, window=pw.temporal.sliding(duration=10, hop=3, offset=13))
+    res = T(
+        """
+        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
+                     |     13           |     23         | 13    | 17    | 5
+                     |     16           |     26         | 16    | 17    | 2
+    """
+    )
+    assert_table_equality_wo_index(result, res)
+
+
+def test_sliding_origin():
+    t = T(
+        """
+            | t
+        1   |  12
+        2   |  13
+        3   |  14
+        4   |  15
+        5   |  16
+        6   |  17
+    """
+    )
+    gb = t.windowby(t.t, window=pw.temporal.sliding(duration=10, hop=3, origin=13))
     result = gb.reduce(
         pw.this._pw_instance,
         pw.this._pw_window_start,
@@ -606,7 +553,60 @@ def test_tumbling():
     assert_table_equality_wo_index(result, res)
 
 
-def test_tumbling_offset():
+def test_tumbling_deprecate_offset():
+    t = T(
+        """
+            | t
+        0   |  3
+        1   |  12
+        2   |  13
+        3   |  14
+        4   |  15
+        5   |  16
+        6   |  17
+    """
+    )
+    with pytest.warns(
+        DeprecationWarning,
+        match="The `offset` argument is deprecated. Please use `origin` instead.",
+    ):
+        gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=3, offset=7))
+    result = gb.reduce(
+        pw.this._pw_instance,
+        pw.this._pw_window_start,
+        pw.this._pw_window_end,
+        min_t=pw.reducers.min(pw.this.t),
+        max_t=pw.reducers.max(pw.this.t),
+        count=pw.reducers.count(),
+    )
+
+    res = T(
+        """
+    _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
+                 |     10           |     13         | 12    | 12    | 1
+                 |     13           |     16         | 13    | 15    | 3
+                 |     16           |     19         | 16    | 17    | 2
+    """
+    )
+    assert_table_equality_wo_index(result, res)
+
+
+def test_tumbling_setting_both_offset_and_origin_errors():
+    t = T(
+        """
+        t
+        3
+        """
+    )
+    with pytest.raises(
+        ValueError,
+        match="The arguments `offset` and `instance` cannot be set at the same moment.\n"
+        + "Please use `origin` only, as `origin` is deprecated.",
+    ):
+        t.windowby(t.t, window=pw.temporal.tumbling(duration=3, offset=7, origin=6))
+
+
+def test_tumbling_origin():
     t = T(
         """
             | t
@@ -620,7 +620,7 @@ def test_tumbling_offset():
     """
     )
 
-    gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=3, offset=7))
+    gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=3, origin=7))
     result = gb.reduce(
         pw.this._pw_instance,
         pw.this._pw_window_start,
@@ -648,7 +648,7 @@ def test_tumbling_floats():
     )
 
     hop = 0.1
-    gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=hop, offset=-hop))
+    gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=hop, origin=-hop))
     result = gb.reduce(
         pw.this._pw_instance,
         pw.this._pw_window_start,
@@ -666,7 +666,7 @@ def test_sliding_floats():
     )
 
     hop = 0.1
-    gb = t.windowby(t.t, window=pw.temporal.sliding(hop=hop, ratio=3, offset=-hop))
+    gb = t.windowby(t.t, window=pw.temporal.sliding(hop=hop, ratio=3, origin=-hop))
     result = gb.reduce(
         pw.this._pw_instance,
         pw.this._pw_window_start,
@@ -787,6 +787,70 @@ def test_windows_smart_cols(w):
         ),
     ],
 )
+def test_windows_with_utc_datetimes(w):
+    table = pw.debug.table_from_markdown(
+        """
+      |             t             | a
+    1 | 2023-05-15T10:13:00+02:00 | 1
+    2 | 2023-05-15T10:14:00+02:00 | 2
+    3 | 2023-05-15T10:14:00+02:00 | 3
+    4 | 2023-05-15T10:26:00+02:00 | 4
+    5 | 2023-05-15T10:31:23+02:00 | 5
+    6 | 2023-05-15T11:00:20+02:00 | 6
+    """
+    )
+    if w == pw.temporal.session(max_gap=datetime.timedelta(minutes=10)):
+        expected = T(
+            """
+         | min_a | max_a
+       1 |   1   |   2
+       2 |   3   |   3
+       3 |   4   |   5
+       4 |   6   |   6
+        """
+        )  # FIXME merge rows 1, 2 when sorting is fixed
+
+    elif w == pw.temporal.tumbling(duration=datetime.timedelta(minutes=30)):
+        expected = T(
+            """
+         | min_a | max_a
+       1 |   1   |   4
+       2 |   5   |   5
+       3 |   6   |   6
+        """
+        )
+    else:
+        expected = T(
+            """
+         | min_a | max_a
+       1 |   1   |   3
+       2 |   1   |   4
+       3 |   4   |   5
+       4 |   5   |   5
+       5 |   6   |   6
+       6 |   6   |   6
+        """
+        )
+
+    table = table.with_columns(t=pw.this.t.dt.strptime("%Y-%m-%dT%H:%M:%S%z"))
+    res = table.windowby(
+        pw.this.t,
+        window=w,
+    ).reduce(min_a=pw.reducers.min(pw.this.a), max_a=pw.reducers.max(pw.this.a))
+
+    assert_table_equality_wo_index(res, expected)
+
+
+@pytest.mark.parametrize(
+    "w",
+    [
+        pw.temporal.session(max_gap=datetime.timedelta(minutes=10)),
+        pw.temporal.tumbling(duration=datetime.timedelta(minutes=30)),
+        pw.temporal.sliding(
+            hop=datetime.timedelta(minutes=15), duration=datetime.timedelta(minutes=30)
+        ),
+    ],
+)
 def test_windows_with_datetimes(w):
     table = pw.debug.table_from_markdown(
         """
@@ -853,9 +917,9 @@ def test_windows_with_datetimes(w):
             int,
             pw.temporal.tumbling(
                 duration=datetime.timedelta(days=1),
-                offset=datetime.datetime(year=1970, month=1, day=1),
+                origin=datetime.datetime(year=1970, month=1, day=1),
             ),
-            ", window.hop, window.offset",
+            ", window.hop, window.origin",
         ),
         (
             DATE_TIME_UTC,

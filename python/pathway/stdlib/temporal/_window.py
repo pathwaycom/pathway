@@ -12,6 +12,7 @@ import pathway.internals as pw
 from pathway.internals import dtype as dt
 from pathway.internals.arg_handlers import (
     arg_handler,
+    offset_deprecation,
     shard_deprecation,
     windowby_handler,
 )
@@ -33,7 +34,7 @@ from .utils import (
     IntervalType,
     TimeEventType,
     check_joint_types,
-    get_default_shift,
+    get_default_origin,
     zero_length_interval,
 )
 
@@ -264,67 +265,71 @@ class _SlidingWindow(Window):
     hop: IntervalType
     duration: IntervalType | None
     ratio: int | None
-    offset: TimeEventType | None
-    shift: TimeEventType
+    origin: TimeEventType | None
 
     def __init__(
         self,
         hop: IntervalType,
         duration: IntervalType | None,
-        offset: TimeEventType | None,
+        origin: TimeEventType | None,
         ratio: int | None,
     ) -> None:
-        if offset is None:
-            self.shift = get_default_shift(hop)
-        else:
-            self.shift = offset
-
         self.hop = hop
         self.duration = duration
         self.ratio = ratio
-        self.offset = offset
+        self.origin = origin
 
-    def _kth_stable_window(self, k):
-        """Numerically stable k-th window."""
-        start = k * self.hop + self.shift
-
-        if self.ratio is not None:
-            end = (k + self.ratio) * self.hop + self.shift
+    def _window_assignment_function(
+        self, key_dtype: dt.DType
+    ) -> Callable[[Any, TimeEventType], list[tuple[Any, TimeEventType, TimeEventType]]]:
+        if self.origin is None:
+            origin = get_default_origin(key_dtype)
         else:
-            end = k * self.hop + self.shift + self.duration
+            origin = self.origin
 
-        return (start, end)
+        def kth_stable_window(k):
+            """Numerically stable k-th window."""
+            start = k * self.hop + origin
 
-    def _assign_windows(
-        self, instance: Any, key: TimeEventType
-    ) -> list[tuple[Any, TimeEventType, TimeEventType]]:
-        """Returns the list of all the windows the given key belongs to.
+            if self.ratio is not None:
+                end = (k + self.ratio) * self.hop + origin
+            else:
+                end = k * self.hop + origin + self.duration
 
-        Each window is a tuple (window_start, window_end) describing the range
-        of the window (window_start inclusive, window_end exclusive).
-        """
-        # compute lower and upper bound for multipliers (first_k and last_k) of hop
-        # for which corresponding windows could contain key.
-        last_k = int((key - self.shift) // self.hop) + 1  # type: ignore[operator, arg-type]
-        if self.ratio is not None:
-            first_k = last_k - self.ratio - 1
-        else:
-            assert self.duration is not None
-            first_k = last_k - int(self.duration // self.hop) - 1  # type: ignore[operator, arg-type]
-        first_k -= 1  # safety to avoid off-by one
+            return (start, end)
 
-        candidate_windows = [
-            self._kth_stable_window(k) for k in range(first_k, last_k + 1)
-        ]
+        def assign_windows(
+            instance: Any, key: TimeEventType
+        ) -> list[tuple[Any, TimeEventType, TimeEventType]]:
+            """Returns the list of all the windows the given key belongs to.
 
-        # filtering below is needed to handle case when hop > duration
-        return [
-            (instance, start, end)
-            for (start, end) in candidate_windows
-            if start <= key
-            and key < end
-            and (self.offset is None or start >= self.offset)
-        ]
+            Each window is a tuple (window_start, window_end) describing the range
+            of the window (window_start inclusive, window_end exclusive).
+            """
+            # compute lower and upper bound for multipliers (first_k and last_k) of hop
+            # for which corresponding windows could contain key.
+            last_k = int((key - origin) // self.hop) + 1  # type: ignore[operator, arg-type]
+            if self.ratio is not None:
+                first_k = last_k - self.ratio - 1
+            else:
+                assert self.duration is not None
+                first_k = last_k - int(self.duration // self.hop) - 1  # type: ignore[operator, arg-type]
+            first_k -= 1  # safety to avoid off-by one
+
+            candidate_windows = [
+                kth_stable_window(k) for k in range(first_k, last_k + 1)
+            ]
+
+            # filtering below is needed to handle case when hop > duration
+            return [
+                (instance, start, end)
+                for (start, end) in candidate_windows
+                if start <= key
+                and key < end
+                and (self.origin is None or start >= self.origin)
+            ]
+
+        return assign_windows
 
     @check_arg_types
     def _apply(
@@ -339,18 +344,21 @@ class _SlidingWindow(Window):
                 "time_expr": (key, TimeEventType),
                 "window.hop": (self.hop, IntervalType),
                 "window.duration": (self.duration, IntervalType),
-                "window.offset": (self.offset, TimeEventType),
+                "window.origin": (self.origin, TimeEventType),
             }
         )
 
+        key_dtype = eval_type(key)
+        assign_windows = self._window_assignment_function(key_dtype)
+
         target = table.select(
             _pw_window=pw.apply_with_type(
-                self._assign_windows,
+                assign_windows,
                 dt.List(
                     dt.Tuple(
                         eval_type(instance),  # type: ignore
-                        eval_type(key),
-                        eval_type(key),
+                        key_dtype,
+                        key_dtype,
                     )
                 ),
                 instance,
@@ -376,8 +384,8 @@ class _SlidingWindow(Window):
                 elif self.ratio is not None:
                     duration = self.ratio * self.hop
                 shift = (
-                    self.shift
-                    if self.shift is not None
+                    behavior.shift
+                    if behavior.shift is not None
                     else zero_length_interval(type(duration))
                 )
                 behavior = common_behavior(
@@ -437,30 +445,33 @@ class _SlidingWindow(Window):
         left_instance: pw.ColumnReference | None = None,
         right_instance: pw.ColumnReference | None = None,
     ) -> WindowJoinResult:
-        from pathway.internals.type_interpreter import eval_type
-
         check_joint_types(
             {
                 "left_time_expression": (left_time_expression, TimeEventType),
                 "right_time_expression": (right_time_expression, TimeEventType),
                 "window.hop": (self.hop, IntervalType),
                 "window.duration": (self.duration, IntervalType),
-                "window.offset": (self.offset, TimeEventType),
+                "window.origin": (self.origin, TimeEventType),
             }
         )
 
+        time_expression_dtype = eval_type(left_time_expression)
+        assert time_expression_dtype == eval_type(
+            right_time_expression
+        )  # checked in check_joint_types
+        _pw_window_dtype = dt.List(
+            dt.Tuple(
+                dt.NONE,
+                time_expression_dtype,
+                time_expression_dtype,
+            )
+        )
+
+        assign_windows = self._window_assignment_function(time_expression_dtype)
+
         left_window = left.select(
             _pw_window=pw.apply_with_type(
-                self._assign_windows,
-                dt.List(
-                    dt.Tuple(
-                        dt.NONE,
-                        eval_type(left_time_expression),
-                        eval_type(left_time_expression),
-                    )
-                ),
-                None,
-                left_time_expression,
+                assign_windows, _pw_window_dtype, None, left_time_expression
             )
         )
         left_window = left_window.flatten(left_window._pw_window, *left)
@@ -472,16 +483,7 @@ class _SlidingWindow(Window):
 
         right_window = right.select(
             _pw_window=pw.apply_with_type(
-                self._assign_windows,
-                dt.List(
-                    dt.Tuple(
-                        dt.NONE,
-                        eval_type(right_time_expression),
-                        eval_type(right_time_expression),
-                    )
-                ),
-                None,
-                right_time_expression,
+                assign_windows, _pw_window_dtype, None, right_time_expression
             )
         )
         right_window = right_window.flatten(right_window._pw_window, *right)
@@ -547,7 +549,7 @@ class _IntervalsOverWindow(Window):
                 table,
                 at,
                 key,
-                interval(self.lower_bound, self.upper_bound),
+                interval(self.lower_bound, self.upper_bound),  # type: ignore[arg-type]
                 how=pw.JoinMode.LEFT if self.is_outer else pw.JoinMode.INNER,
             )
             .select(
@@ -650,15 +652,16 @@ def session(
 
 @check_arg_types
 @trace_user_frame
+@arg_handler(handler=offset_deprecation)
 def sliding(
     hop: int | float | datetime.timedelta,
     duration: int | float | datetime.timedelta | None = None,
     ratio: int | None = None,
-    offset: int | float | datetime.datetime | None = None,
+    origin: int | float | datetime.datetime | None = None,
 ) -> Window:
     """Allows grouping together elements within a window of a given length sliding
     across ordered time-like data column according to a specified interval (hop)
-    starting from a given offset.
+    starting from a given origin.
 
     Note:
         Usually used as an argument of `.windowby()`.
@@ -668,7 +671,7 @@ def sliding(
         hop: frequency of a window
         duration: length of the window
         ratio: used as an alternative way to specify duration as hop * ratio
-        offset: beginning of the first window
+        origin: a point in time at which the first window begins
 
     Returns:
         Window: object to pass as an argument to `.windowby()`
@@ -720,25 +723,26 @@ def sliding(
         duration=duration,
         hop=hop,
         ratio=ratio,
-        offset=offset,
+        origin=origin,
     )
 
 
 @check_arg_types
 @trace_user_frame
+@arg_handler(handler=offset_deprecation)
 def tumbling(
     duration: int | float | datetime.timedelta,
-    offset: int | float | datetime.datetime | None = None,
+    origin: int | float | datetime.datetime | None = None,
 ) -> Window:
     """Allows grouping together elements within a window of a given length tumbling
-    across ordered time-like data column starting from a given offset.
+    across ordered time-like data column starting from a given origin.
 
     Note:
         Usually used as an argument of `.windowby()`.
 
     Args:
         duration: length of the window
-        offset: beginning of the first window
+        origin: a point in time at which the first window begins
 
     Returns:
         Window: object to pass as an argument to `.windowby()`
@@ -778,7 +782,7 @@ def tumbling(
         duration=None,
         hop=duration,
         ratio=1,
-        offset=offset,
+        origin=origin,
     )
 
 

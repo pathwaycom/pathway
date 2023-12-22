@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.6] - 2023-12-22
+
+## New Features
+
+### Conversion Methods in `pw.Json`
+- Introducing new methods for strict conversion of `pw.Json` to desired types within a UDF body:
+  - `as_int()`
+  - `as_float()`
+  - `as_str()`
+  - `as_bool()`
+  - `as_list()`
+  - `as_dict()`
+
+### DateTime Functionality
+- Added `table.col.dt.utc_from_timestamp` method: Creates `DateTimeUtc` from timestamps represented as `int`s or `float`s.
+- Enhanced the `table.col.dt.timestamp` method with a new `unit` argument to specify the unit of the returned timestamp.
+
+### Experimental Features
+- Introduced an experimental xpack with a Microsoft SharePoint input connector.
+
+## Enhancements
+
+### Improved JSON Handling
+- Index operator (`[]`) can now be directly applied to `pw.Json` within UDFs to access elements of JSON objects, arrays, and strings.
+
+### Expanded Timestamp Functionality
+- Enhanced the `table.col.dt.from_timestamp` method to create `DateTimeNaive` from timestamps represented as `int`s or `float`s.
+- Deprecated not specifying the `unit` argument of the `table.col.dt.timestamp` method.
+
+### KNNIndex Enhancements
+- `KNNIndex` now supports returning computed distances.
+- Added support for cosine similarity in `KNNIndex`.
+
+### Deprecated Features
+- The `offset` argument of `pw.stdlib.temporal.sliding` and `pw.stdlib.temporal.tumbling` is deprecated. Use `origin` instead, as it represents a point in time, not a duration.
+
+## Bug Fixes
+
+### DateTime Fixes
+- Sliding window now works correctly with UTC Datetimes.
+
+### `asof_join` Improvements
+- Temporal column in `asof_join` no longer has to be named `t`.
+- `asof_join` includes rows with equal times for all values of the `direction` parameter.
+
+### Fixed Issues
+
+- Fixed an issue with `pw.io.gdrive.read`: Shared folders support is now working seamlessly.
+
 ## [0.7.5] - 2023-12-15
 
 ### Added

@@ -7,7 +7,9 @@ from .utils import IntervalType
 
 class Behavior:
     """
-    A superclass of all classes defining temporal behavior.
+    A superclass of all classes defining temporal behavior: its subclasses allow
+    to configure several temporal operators to delay outputs, ignore late entries,
+    and clean the memory.
     """
 
     pass
@@ -27,11 +29,25 @@ def common_behavior(
     cutoff: IntervalType | None = None,
     keep_results: bool = True,
 ) -> CommonBehavior:
-    """Creates CommonBehavior
+    """Creates an instance of ``CommonBehavior``, which contains a basic configuration of
+    a behavior of temporal operators (like ``windowby`` or ``asof_join``).
+    Each temporal operator tracks its own time (defined as a maximum time that arrived to
+    the operator) and this configuration tells it that some of its inputs or outputs may
+    be delayed or ignored.
+    The decisions are based on the current time of the operator and the time associated
+    with an input/output entry. Additionally, it allows the operator to free up memory by
+    removing parts of internal state that cannot interact with any future input entries.
+
+    Remark: for the sake of temporal behavior, the current time of each operator is
+    updated only after it processes all the data that arrived on input. In other words,
+    if several new input entries arrived to the system simultaneously, each of those
+    entries will be processed using last recorded time, and the recorded time is upda
 
     Args:
         delay:
-            Optional; for windows, delays initial output by ``delay`` with respect to the
+            Optional.
+
+            For windows, delays initial output by ``delay`` with respect to the
             beginning of the window. Setting it to ``None`` does not enable
             delaying mechanism.
 
@@ -39,7 +55,9 @@ def common_behavior(
 
             Using `delay` is useful when updates are too frequent.
         cutoff:
-            Optional; for windows, stops updating windows which end earlier than maximal
+            Optional.
+
+            For windows, stops updating windows which end earlier than maximal
             seen time minus ``cutoff``. Setting cutoff to ``None`` does not enable
             cutoff mechanism.
 
