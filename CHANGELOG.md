@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.7] - 2023-12-27
+
+### Added
+- pathway.xpacks.llm.splitter.TokenCountSplitter.
+
 ## [0.7.6] - 2023-12-22
 
 ## New Features
