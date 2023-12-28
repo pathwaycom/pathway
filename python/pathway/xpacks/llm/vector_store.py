@@ -255,7 +255,7 @@ class VectorStoreClient:
             timeout=3,
         )
         responses = response.json()
-        return responses
+        return sorted(responses, key=lambda x: x["dist"])
 
     def get_vectorstore_statistics(self):
         """Fetch basic statistics about the vector store."""
