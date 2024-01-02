@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -30,7 +29,6 @@ from pathway.internals.operator_mapping import (
     get_cast_operators_mapping,
     get_convert_operators_mapping,
     get_unary_expression,
-    tuple_handling_operators,
 )
 
 if TYPE_CHECKING:
@@ -379,33 +377,14 @@ class RowwiseEvaluator(
         ) is not None:
             return dtype_and_handler[1](left, right)
 
-        operator_symbol = getattr(
-            expression._operator, "_symbol", expression._operator.__name__
-        )
-
         expression_info = get_expression_info(expression)
-        if (
-            isinstance(left_dtype, dt.Tuple)
-            and isinstance(right_dtype, dt.Tuple)
-            and expression._operator in tuple_handling_operators
-        ):
-            warnings.warn(
-                f"Pathway does not natively support operator {operator_symbol} "
-                + "on Tuple types. "
-                + "It refers to the following expression:\n"
-                + expression_info
-                + "The evaluation will be performed in Python, which may slow down your computations. "
-                + "Try specifying the types or expressing the computation differently.",
-            )
-            return api.Expression.apply(operator_fun, left, right)
-        else:
-            # this path should be covered by TypeInterpreter
-            raise TypeError(
-                f"Pathway does not support using binary operator {expression._operator.__name__}"
-                + f" on columns of types {left_dtype}, {right_dtype}."
-                + "It refers to the following expression:\n"
-                + expression_info
-            )
+        # this path should be covered by TypeInterpreter
+        raise TypeError(
+            f"Pathway does not support using binary operator {expression._operator.__name__}"
+            + f" on columns of types {left_dtype}, {right_dtype}."
+            + "It refers to the following expression:\n"
+            + expression_info
+        )
 
     def eval_const(
         self,

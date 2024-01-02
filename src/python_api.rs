@@ -1025,6 +1025,12 @@ impl PyExpression {
             }
             (Op::Mod, Tp::Duration, Tp::Duration) => Some(binary_op!(DurationE::Mod, lhs, rhs)),
             (Op::MatMul, Tp::Array, Tp::Array) => Some(binary_op!(AnyE::MatMul, lhs, rhs)),
+            (Op::Eq, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleEq, lhs, rhs)),
+            (Op::Ne, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleNe, lhs, rhs)),
+            (Op::Lt, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleLt, lhs, rhs)),
+            (Op::Le, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleLe, lhs, rhs)),
+            (Op::Gt, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleGt, lhs, rhs)),
+            (Op::Ge, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleGe, lhs, rhs)),
             _ => None,
         }
     }
@@ -1301,6 +1307,8 @@ impl PathwayType {
     pub const ARRAY: Type = Type::Array;
     #[classattr]
     pub const JSON: Type = Type::Json;
+    #[classattr]
+    pub const TUPLE: Type = Type::Tuple;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]

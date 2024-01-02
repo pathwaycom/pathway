@@ -35,6 +35,7 @@ class PathwayType(Enum):
     DURATION: PathwayType
     ARRAY: PathwayType
     JSON: PathwayType
+    TUPLE: PathwayType
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode

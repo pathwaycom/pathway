@@ -1228,3 +1228,218 @@ def test_optional_int_addition():
     """
     )
     assert_table_equality(result, expected)
+
+
+def test_tuples():
+    table = T(
+        """
+    a | b
+    1 | 1
+    2 | 3
+    4 | 3
+    """
+    ).with_columns(
+        x=pw.make_tuple(pw.this.a, pw.this.b), y=pw.make_tuple(pw.this.b, pw.this.a)
+    )
+
+    result = table.select(
+        pw.this.a,
+        pw.this.b,
+        eq=pw.this.x == pw.this.y,
+        ne=pw.this.x != pw.this.y,
+        lt=pw.this.x < pw.this.y,
+        le=pw.this.x <= pw.this.y,
+        gt=pw.this.x > pw.this.y,
+        ge=pw.this.x >= pw.this.y,
+    )
+    expected = T(
+        """
+    a | b |  eq   |   ne  |   lt  |   le  |   gt  |   ge
+    1 | 1 |  True | False | False |  True | False |  True
+    2 | 3 | False |  True |  True |  True | False | False
+    4 | 3 | False |  True | False | False |  True |  True
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+def test_nested_tuples():
+    table = T(
+        """
+    a | b
+    1 | 1
+    2 | 3
+    4 | 3
+    """
+    ).with_columns(
+        x=pw.make_tuple("a", pw.make_tuple(pw.this.a, pw.this.b)),
+        y=pw.make_tuple("a", pw.make_tuple(pw.this.b, pw.this.a)),
+    )
+
+    result = table.select(
+        pw.this.a,
+        pw.this.b,
+        eq=pw.this.x == pw.this.y,
+        ne=pw.this.x != pw.this.y,
+        lt=pw.this.x < pw.this.y,
+        le=pw.this.x <= pw.this.y,
+        gt=pw.this.x > pw.this.y,
+        ge=pw.this.x >= pw.this.y,
+    )
+    expected = T(
+        """
+    a | b |  eq   |   ne  |   lt  |   le  |   gt  |   ge
+    1 | 1 |  True | False | False |  True | False |  True
+    2 | 3 | False |  True |  True |  True | False | False
+    4 | 3 | False |  True | False | False |  True |  True
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+@pytest.mark.parametrize(
+    "op", [operator.eq, operator.ne, operator.lt, operator.le, operator.gt, operator.ge]
+)
+def test_tuples_error_on_incorrect_types(op):
+    table = T(
+        """
+    a | b
+    1 | a
+    2 | b
+    4 | c
+    """
+    ).with_columns(
+        x=pw.make_tuple(pw.this.a, pw.this.a),
+        y=pw.make_tuple(pw.this.a, pw.this.b),
+    )
+    with pytest.raises(
+        TypeError,
+        match=f"Pathway does not support using binary operator {op.__name__} on columns of types"
+        + " tuple\[int, int\], tuple\[int, str\].",  # noqa
+    ):
+        table.select(z=op(pw.this.x, pw.this.y))
+
+
+def test_lists_lexicographical():
+    def make_list(n) -> list[int]:
+        return list(range(n))
+
+    table = T(
+        """
+    a | b
+    5 | 5
+    2 | 3
+    4 | 3
+    """
+    ).with_columns(
+        x=pw.apply(make_list, pw.this.a),
+        y=pw.apply(make_list, pw.this.b),
+    )
+
+    result = table.select(
+        pw.this.a,
+        pw.this.b,
+        eq=pw.this.x == pw.this.y,
+        ne=pw.this.x != pw.this.y,
+        lt=pw.this.x < pw.this.y,
+        le=pw.this.x <= pw.this.y,
+        gt=pw.this.x > pw.this.y,
+        ge=pw.this.x >= pw.this.y,
+    )
+    expected = T(
+        """
+    a | b |  eq   |   ne  |   lt  |   le  |   gt  |   ge
+    5 | 5 |  True | False | False |  True | False |  True
+    2 | 3 | False |  True |  True |  True | False | False
+    4 | 3 | False |  True | False | False |  True |  True
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+@pytest.mark.parametrize("cast", ["a", "b"])
+def test_tuples_int_float(cast: str):
+    table = (
+        T(
+            """
+    a | b
+    1 | 1
+    2 | 3
+    4 | 3
+    """
+        )
+        .with_columns(**{cast: pw.cast(float, pw.this[cast])})
+        .with_columns(
+            x=pw.make_tuple(pw.this.a, pw.this.b), y=pw.make_tuple(pw.this.b, pw.this.a)
+        )
+    )
+
+    result = table.select(
+        pw.this.a,
+        pw.this.b,
+        eq=pw.this.x == pw.this.y,
+        ne=pw.this.x != pw.this.y,
+        lt=pw.this.x < pw.this.y,
+        le=pw.this.x <= pw.this.y,
+        gt=pw.this.x > pw.this.y,
+        ge=pw.this.x >= pw.this.y,
+    )
+    expected = T(
+        """
+    a | b |  eq   |   ne  |   lt  |   le  |   gt  |   ge
+    1 | 1 |  True | False | False |  True | False |  True
+    2 | 3 | False |  True |  True |  True | False | False
+    4 | 3 | False |  True | False | False |  True |  True
+    """
+    ).with_columns(**{cast: pw.cast(float, pw.this[cast])})
+    assert_table_equality(result, expected)
+
+
+def test_tuples_none():
+    table = T(
+        """
+    a | b
+    1 |
+      |
+    1 | 1
+    """
+    ).with_columns(
+        x=pw.make_tuple(pw.this.a, pw.this.b), y=pw.make_tuple(pw.this.b, pw.this.a)
+    )
+
+    result = table.select(
+        pw.this.a,
+        pw.this.b,
+        eq=pw.this.x == pw.this.y,
+        ne=pw.this.x != pw.this.y,
+    )
+    expected = T(
+        """
+    a | b |  eq   |   ne
+    1 |   | False |  True
+      |   |  True | False
+    1 | 1 |  True | False
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+@pytest.mark.parametrize("op", [operator.lt, operator.le, operator.gt, operator.ge])
+def test_tuples_none_cmp(op):
+    table = T(
+        """
+    a | b
+    1 |
+      |
+    1 | 1
+    """
+    ).with_columns(
+        x=pw.make_tuple(pw.this.a, pw.this.b), y=pw.make_tuple(pw.this.b, pw.this.a)
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=f"Pathway does not support using binary operator {op.__name__} on columns of types"
+        + " tuple\[int | None, int | None\], tuple\[int | None, int | None\].",  # noqa
+    ):
+        table.select(z=op(pw.this.x, pw.this.y))

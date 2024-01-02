@@ -43,6 +43,7 @@ _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
     PathwayType.DURATION: dt.DURATION,
     PathwayType.ARRAY: dt.ANY_ARRAY,
     PathwayType.JSON: dt.JSON,
+    PathwayType.TUPLE: dt.ANY_TUPLE,
 }
 
 SUPPORTED_INPUT_FORMATS: set[str] = {

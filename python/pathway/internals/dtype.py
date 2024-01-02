@@ -13,6 +13,7 @@ from types import EllipsisType, NoneType, UnionType
 import numpy as np
 import numpy.typing as npt
 
+from pathway.engine import PathwayType
 from pathway.internals import api, datetime_types, json as js
 
 if typing.TYPE_CHECKING:
@@ -314,6 +315,9 @@ class Tuple(DType):
     def _set_args(self, args):
         self.args = args
 
+    def to_engine(self) -> PathwayType:
+        return api.PathwayType.TUPLE
+
     def __new__(cls, *args: DType | EllipsisType) -> Tuple | List:  # type: ignore[misc]
         if any(isinstance(arg, EllipsisType) for arg in args):
             arg, placeholder = args
@@ -374,6 +378,9 @@ class List(DType):
 
     def _set_args(self, wrapped):
         self.wrapped = wrapped
+
+    def to_engine(self) -> PathwayType:
+        return api.PathwayType.TUPLE
 
     def is_value_compatible(self, arg):
         return isinstance(arg, (tuple, list)) and all(
@@ -576,12 +583,15 @@ def dtype_equivalence(left: DType, right: DType) -> bool:
     return dtype_issubclass(left, right) and dtype_issubclass(right, left)
 
 
-def dtype_tuple_equivalence(left: Tuple | List, right: Tuple | List) -> bool:
-    if left == ANY_TUPLE or right == ANY_TUPLE:
-        return True
+def broadcast_tuples(
+    left: Tuple | List, right: Tuple | List
+) -> tuple[tuple[DType, ...], tuple[DType, ...]]:
+    largs: tuple[DType, ...]
+    rargs: tuple[DType, ...]
     if isinstance(left, List) and isinstance(right, List):
-        return left.wrapped == right.wrapped
-    if isinstance(left, List):
+        largs = (left.wrapped,)
+        rargs = (right.wrapped,)
+    elif isinstance(left, List):
         assert isinstance(right, Tuple)
         assert not isinstance(right.args, EllipsisType)
         rargs = right.args
@@ -598,6 +608,13 @@ def dtype_tuple_equivalence(left: Tuple | List, right: Tuple | List) -> bool:
         assert not isinstance(right.args, EllipsisType)
         largs = left.args
         rargs = right.args
+    return (largs, rargs)
+
+
+def dtype_tuple_equivalence(left: Tuple | List, right: Tuple | List) -> bool:
+    if left == ANY_TUPLE or right == ANY_TUPLE:
+        return True
+    largs, rargs = broadcast_tuples(left, right)
     if len(largs) != len(rargs):
         return False
     return all(dtype_equivalence(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))

@@ -5,6 +5,7 @@ use log::warn;
 use ndarray::{ArrayD, Axis, LinalgScalar};
 use num_integer::Integer;
 use ordered_float::OrderedFloat;
+use std::cmp::Ordering;
 use std::ops::{Deref, Range};
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use smallvec::SmallVec;
 
 use super::error::{DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
+use super::value::SimpleType;
 use super::{Error, Key, Type, Value};
 use crate::mat_mul::mat_mul;
 
@@ -165,6 +167,12 @@ pub enum BoolExpression {
     DurationGe(Arc<Expression>, Arc<Expression>),
     Eq(Arc<Expression>, Arc<Expression>),
     Ne(Arc<Expression>, Arc<Expression>),
+    TupleEq(Arc<Expression>, Arc<Expression>),
+    TupleNe(Arc<Expression>, Arc<Expression>),
+    TupleLe(Arc<Expression>, Arc<Expression>),
+    TupleLt(Arc<Expression>, Arc<Expression>),
+    TupleGe(Arc<Expression>, Arc<Expression>),
+    TupleGt(Arc<Expression>, Arc<Expression>),
     CastFromFloat(Arc<Expression>),
     CastFromInt(Arc<Expression>),
     CastFromString(Arc<Expression>),
@@ -393,6 +401,73 @@ where
             rhs.shape()
         );
         Err(DynError::from(Error::ValueError(msg)))
+    }
+}
+
+fn are_tuples_equal(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<bool> {
+    let mut result = lhs.len() == rhs.len();
+    for (val_l, val_r) in lhs.iter().zip(rhs.iter()) {
+        let result_single = match (val_l, val_r) {
+            (Value::Tuple(val_l), Value::Tuple(val_r)) => Ok(are_tuples_equal(val_l, val_r)?),
+            #[allow(clippy::cast_precision_loss)]
+            (Value::Float(val_l), Value::Int(val_r)) => Ok(val_l.eq(&(*val_r as f64))),
+            #[allow(clippy::cast_precision_loss)]
+            (Value::Int(val_l), Value::Float(val_r)) => Ok(OrderedFloat(*val_l as f64).eq(val_r)),
+            (val, Value::None) | (Value::None, val) => Ok(val == &Value::None),
+            (val_l, val_r) => {
+                let type_l = val_l.simple_type();
+                let type_r = val_r.simple_type();
+                if type_l == type_r {
+                    Ok(val_l.eq(val_r))
+                } else {
+                    let msg = format!(
+                        "equality not supported between instances of '{type_l:?}' and '{type_r:?}'",
+                    );
+                    Err(DynError::from(Error::ValueError(msg)))
+                }
+            }
+        }?;
+        result &= result_single;
+    }
+    Ok(result)
+}
+
+fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering> {
+    let mut result = Ordering::Equal;
+    for (val_l, val_r) in lhs.iter().zip(rhs.iter()) {
+        let cmp = match (val_l, val_r) {
+            (Value::Tuple(val_l), Value::Tuple(val_r)) => Ok(compare_tuples(val_l, val_r)?),
+            #[allow(clippy::cast_precision_loss)]
+            (Value::Float(val_l), Value::Int(val_r)) => Ok(val_l.cmp(&(*val_r as f64).into())),
+            #[allow(clippy::cast_precision_loss)]
+            (Value::Int(val_l), Value::Float(val_r)) => Ok(OrderedFloat(*val_l as f64).cmp(val_r)),
+            (val_l, val_r) => {
+                let type_l = val_l.simple_type();
+                let type_r = val_r.simple_type();
+                let is_incomparable_type = [
+                    SimpleType::Json,
+                    SimpleType::IntArray,
+                    SimpleType::FloatArray,
+                ]
+                .contains(&type_l);
+                if type_l != type_r || is_incomparable_type {
+                    let msg = format!(
+                        "comparison not supported between instances of '{type_l:?}' and '{type_r:?}'",
+                    );
+                    Err(DynError::from(Error::ValueError(msg)))
+                } else {
+                    Ok(val_l.cmp(val_r))
+                }
+            }
+        }?;
+        if result == Ordering::Equal {
+            result = cmp;
+        }
+    }
+    if result == Ordering::Equal {
+        Ok(lhs.len().cmp(&rhs.len()))
+    } else {
+        Ok(result)
     }
 }
 
@@ -680,6 +755,34 @@ impl BoolExpression {
             }
             Self::Eq(lhs, rhs) => Ok(lhs.eval(values)? == rhs.eval(values)?),
             Self::Ne(lhs, rhs) => Ok(lhs.eval(values)? != rhs.eval(values)?),
+            Self::TupleEq(lhs, rhs) => Ok(are_tuples_equal(
+                &lhs.eval_as_tuple(values)?,
+                &rhs.eval_as_tuple(values)?,
+            )?),
+            Self::TupleNe(lhs, rhs) => Ok(!are_tuples_equal(
+                &lhs.eval_as_tuple(values)?,
+                &rhs.eval_as_tuple(values)?,
+            )?),
+            Self::TupleLe(lhs, rhs) => Ok(compare_tuples(
+                &lhs.eval_as_tuple(values)?,
+                &rhs.eval_as_tuple(values)?,
+            )?
+            .is_le()),
+            Self::TupleLt(lhs, rhs) => Ok(compare_tuples(
+                &lhs.eval_as_tuple(values)?,
+                &rhs.eval_as_tuple(values)?,
+            )?
+            .is_lt()),
+            Self::TupleGe(lhs, rhs) => Ok(compare_tuples(
+                &lhs.eval_as_tuple(values)?,
+                &rhs.eval_as_tuple(values)?,
+            )?
+            .is_ge()),
+            Self::TupleGt(lhs, rhs) => Ok(compare_tuples(
+                &lhs.eval_as_tuple(values)?,
+                &rhs.eval_as_tuple(values)?,
+            )?
+            .is_gt()),
             Self::CastFromInt(e) => Ok(e.eval_as_int(values)? != 0),
             Self::CastFromFloat(e) => Ok(e.eval_as_float(values)? != 0.0),
             Self::CastFromString(e) => Ok(!e.eval_as_string(values)?.is_empty()),
@@ -1107,6 +1210,13 @@ impl Expression {
             Self::Duration(expr) => expr.eval(values),
             Self::Any(expr) => expr.eval(values)?.as_duration(),
             _ => Err(self.type_error("Duration")),
+        }
+    }
+
+    pub fn eval_as_tuple(&self, values: &[Value]) -> DynResult<Arc<[Value]>> {
+        match self {
+            Self::Any(expr) => expr.eval(values)?.as_tuple().cloned(),
+            _ => Err(self.type_error("Tuple")),
         }
     }
 

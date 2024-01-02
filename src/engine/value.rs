@@ -434,7 +434,7 @@ impl From<JsonValue> for Value {
 // Please only append to this list, as the values here are used in hashing,
 // so changing them will result in changed IDs
 #[repr(u8)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SimpleType {
     None,
     Bool,
@@ -467,6 +467,7 @@ pub enum Type {
     Duration,
     Array,
     Json,
+    Tuple,
 }
 
 impl Value {
