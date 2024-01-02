@@ -36,6 +36,7 @@ class PathwayType(Enum):
     ARRAY: PathwayType
     JSON: PathwayType
     TUPLE: PathwayType
+    BYTES: PathwayType
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode

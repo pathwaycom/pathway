@@ -72,6 +72,7 @@ class _SimpleDType(DType):
             BOOL: "BOOL",
             STR: "STR",
             FLOAT: "FLOAT",
+            BYTES: "BYTES",
         }[self]
 
     def _set_args(self, wrapped):
@@ -96,6 +97,7 @@ class _SimpleDType(DType):
             BOOL: api.PathwayType.BOOL,
             STR: api.PathwayType.STRING,
             FLOAT: api.PathwayType.FLOAT,
+            BYTES: api.PathwayType.BYTES,
         }[self]
 
     @property
@@ -106,6 +108,7 @@ class _SimpleDType(DType):
 INT: DType = _SimpleDType(int)
 BOOL: DType = _SimpleDType(bool)
 STR: DType = _SimpleDType(str)
+BYTES: DType = _SimpleDType(bytes)
 FLOAT: DType = _SimpleDType(float)
 
 
@@ -561,6 +564,7 @@ def wrap(input_type) -> DType:
             np.int64: INT,
             np.float32: FLOAT,
             np.float64: FLOAT,
+            bytes: BYTES,
         }.get(input_type, None)
         if dtype is None:
             raise TypeError(f"Unsupported type {input_type}.")

@@ -1309,6 +1309,8 @@ impl PathwayType {
     pub const JSON: Type = Type::Json;
     #[classattr]
     pub const TUPLE: Type = Type::Tuple;
+    #[classattr]
+    pub const BYTES: Type = Type::Bytes;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]

@@ -44,6 +44,7 @@ _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
     PathwayType.ARRAY: dt.ANY_ARRAY,
     PathwayType.JSON: dt.JSON,
     PathwayType.TUPLE: dt.ANY_TUPLE,
+    PathwayType.BYTES: dt.BYTES,
 }
 
 SUPPORTED_INPUT_FORMATS: set[str] = {

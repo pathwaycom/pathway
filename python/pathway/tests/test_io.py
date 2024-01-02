@@ -2677,3 +2677,27 @@ def test_sqlite(tmp_path: pathlib.Path):
         ["Bob Smith", 1],
         ["Charlie", -1],
     ]
+
+
+def test_apply_bytes_full_cycle(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    input_full_contents = "abc\n\ndef\nghi"
+    output_path = tmp_path / "output.json"
+    write_lines(input_path, input_full_contents)
+
+    def duplicate(b):
+        return b + b
+
+    table = pw.io.fs.read(
+        input_path,
+        format="binary",
+        mode="static",
+        autocommit_duration_ms=1000,
+    )
+    table = table.select(data=pw.apply(duplicate, pw.this.data))
+    pw.io.jsonlines.write(table, output_path)
+    run()
+
+    with open(output_path) as f:
+        result = json.load(f)
+        assert result["data"] == [ord(c) for c in (input_full_contents + "\n")] * 2
