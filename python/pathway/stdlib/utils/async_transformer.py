@@ -200,8 +200,8 @@ class AsyncTransformer(ABC):
 
         # TODO: when AsyncTransformer uses persistence backend for cache
         # just take the settings for persistence config
-        # Use DiskCache for now as the only available option
-        self._connector.set_options(cache_strategy=pw.asynchronous.DiskCache())
+        # Use DefaultCache for now as the only available option
+        self._connector.set_options(cache_strategy=pw.asynchronous.DefaultCache())
 
         self._input_table = input_table
 

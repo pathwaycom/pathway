@@ -22,6 +22,7 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
 import pathway.reducers as reducers
 from pathway import debug, demo, io
 from pathway.internals import (
+    UDF,
     ClassArg,
     ColumnExpression,
     ColumnReference,
@@ -41,6 +42,8 @@ from pathway.internals import (
     Table,
     TableLike,
     TableSlice,
+    UDFAsync,
+    UDFSync,
     __version__,
     apply,
     apply_async,
@@ -105,6 +108,9 @@ __all__ = [
     "apply",
     "udf",
     "udf_async",
+    "UDF",
+    "UDFAsync",
+    "UDFSync",
     "apply_async",
     "apply_with_type",
     "attribute",

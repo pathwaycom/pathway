@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 from collections import defaultdict
 from collections.abc import Callable
@@ -26,12 +25,6 @@ from pathway.internals import (
     table,
 )
 from pathway.internals.api import Value
-from pathway.internals.asynchronous import (
-    AsyncRetryStrategy,
-    CacheStrategy,
-    DefaultCache,
-    async_options,
-)
 from pathway.internals.helpers import function_spec
 from pathway.internals.parse_graph import G
 from pathway.internals.runtime_type_check import check_arg_types
@@ -124,116 +117,6 @@ def apply(
     Bobdog
     """
     return expr.ApplyExpression(fun, None, *args, **kwargs)
-
-
-def udf(fun: Callable):
-    """Create a Python UDF (universal data function) out of a callable.
-
-    The output type of the UDF is determined based on its type annotation.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.udf
-    ... def concat(left: str, right: str) -> str:
-    ...     return left+right
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age  owner  pet
-    ...     10  Alice  dog
-    ...     9    Bob  dog
-    ...     8  Alice  cat
-    ...     7    Bob  dog''')
-    >>> t2 = t1.select(col = concat(t1.owner, t1.pet))
-    >>> pw.debug.compute_and_print(t2, include_id=False)
-    col
-    Alicecat
-    Alicedog
-    Bobdog
-    Bobdog
-    """
-
-    @functools.wraps(fun)
-    def udf_fun(
-        *args: expr.ColumnExpression | Value,
-        **kwargs: expr.ColumnExpression | Value,
-    ):
-        return apply(fun, *args, **kwargs)
-
-    return udf_fun
-
-
-@overload
-def udf_async(fun: Callable) -> Callable:
-    ...
-
-
-@overload
-def udf_async(
-    *,
-    capacity: int | None = None,
-    retry_strategy: AsyncRetryStrategy | None = None,
-    cache_strategy: CacheStrategy | None = None,
-) -> Callable[[Callable], Callable]:
-    ...
-
-
-def udf_async(
-    fun: Callable | None = None,
-    *,
-    capacity: int | None = None,
-    retry_strategy: AsyncRetryStrategy | None = None,
-    cache_strategy: CacheStrategy | None = None,
-):
-    r"""Create a Python asynchronous UDF (universal data function) out of a callable.
-
-    Output column type deduced from type-annotations of a function.
-    Can be applied to a regular or asynchronous function.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> import asyncio
-    >>> @pw.udf_async
-    ... async def concat(left: str, right: str) -> str:
-    ...   await asyncio.sleep(0.1)
-    ...   return left+right
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age  owner  pet
-    ...  10  Alice  dog
-    ...   9    Bob  dog
-    ...   8  Alice  cat
-    ...   7    Bob  dog''')
-    >>> t2 = t1.select(col = concat(t1.owner, t1.pet))
-    >>> pw.debug.compute_and_print(t2, include_id=False)
-    col
-    Alicecat
-    Alicedog
-    Bobdog
-    Bobdog
-    """
-
-    if cache_strategy is None:
-        cache_strategy = DefaultCache()
-
-    def apply_wrapper(fun, *args, **kwargs):
-        fun = async_options(
-            capacity=capacity,
-            retry_strategy=retry_strategy,
-            cache_strategy=cache_strategy,
-        )(fun)
-        return apply_async(fun, *args, **kwargs)
-
-    def decorator(fun: Callable) -> Callable:
-        return functools.wraps(fun)(functools.partial(apply_wrapper, fun))
-
-    if fun is None:
-        return decorator
-    else:
-        if not callable(fun):
-            raise TypeError("udf_async should be used with keyword arguments only")
-
-        return decorator(fun)
 
 
 @check_arg_types

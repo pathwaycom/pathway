@@ -204,14 +204,20 @@ class DiskCache(CacheStrategy):
     def _get_cache(self, func):
         if self._cache is None:
             if self._name is None:
-                func = inspect.unwrap(self._get_cache)
+                func = inspect.unwrap(func)
                 self._name = f"{func.__module__}_{func.__qualname__}"
             storage_root = os.environ.get("PATHWAY_PERSISTENT_STORAGE")
             if storage_root is None:
-                return None
+                raise RuntimeError(
+                    "no persistent storage configured for the disk cache"
+                )
             cache_dir = Path(storage_root) / "runtime_calls"
             self._cache = diskcache.Cache(cache_dir / self._name)
         return self._cache
 
 
-DefaultCache = DiskCache
+class DefaultCache(DiskCache):
+    def _get_cache(self, func):
+        if "PATHWAY_PERSISTENT_STORAGE" not in os.environ:
+            return None
+        return super()._get_cache(func)

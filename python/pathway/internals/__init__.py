@@ -18,8 +18,6 @@ from pathway.internals.common import (
     numba_apply,
     require,
     table_transformer,
-    udf,
-    udf_async,
     unwrap,
 )
 from pathway.internals.custom_reducers import BaseCustomAccumulator
@@ -59,6 +57,7 @@ from pathway.internals.table import Table
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
 from pathway.internals.thisclass import left, right, this
+from pathway.internals.udf import UDF, UDFAsync, UDFSync, udf, udf_async
 from pathway.internals.version import __version__
 
 __all__ = [
@@ -70,6 +69,9 @@ __all__ = [
     "apply",
     "udf",
     "udf_async",
+    "UDF",
+    "UDFAsync",
+    "UDFSync",
     "apply_async",
     "apply_with_type",
     "attribute",
