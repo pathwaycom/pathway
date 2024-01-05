@@ -144,8 +144,145 @@ def test_interval_join_time_only(
     "join_type",
     [pw.JoinMode.INNER, pw.JoinMode.LEFT, pw.JoinMode.RIGHT, pw.JoinMode.OUTER],
 )
-@pytest.mark.parametrize("bounds", [(0, 0), (1, 1), (1, 0), (15, -10)])
-def test_interval_join_non_positive_time_errors(
+def test_interval_join_time_only_empty_interval(join_type: pw.JoinMode) -> None:
+    t1 = T(
+        """
+    a | t
+    1 | -1
+    2 | 0
+    3 | 2
+    4 | 3
+    5 | 4
+    6 | 10
+    """
+    )
+
+    t2 = T(
+        """
+    b | t
+    1 | 0
+    2 | 2
+    3 | 3
+    4 | 5
+    5 | 11
+    """
+    )
+
+    interval = pw.temporal.interval(0, 0)
+    expected = T(
+        """
+    a | b
+    2 | 1
+    3 | 2
+    4 | 3
+    """
+    )
+    left = T(
+        """
+    a | b
+    1 |
+    5 |
+    6 |
+    """
+    )
+    right = T(
+        """
+    a | b
+      | 4
+      | 5
+    """
+    )
+
+    if join_type in [pw.JoinMode.LEFT, pw.JoinMode.OUTER]:
+        expected = expected.concat_reindex(left)
+    if join_type in [pw.JoinMode.RIGHT, pw.JoinMode.OUTER]:
+        expected = expected.concat_reindex(right)
+
+    res = t1.interval_join(
+        t2,
+        t1.t,
+        t2.t,
+        interval,
+        how=join_type,
+    ).select(t1.a, t2.b)
+
+    assert_table_equality_wo_index(res, expected)
+
+
+@pytest.mark.parametrize(
+    "join_type",
+    [pw.JoinMode.INNER, pw.JoinMode.LEFT, pw.JoinMode.RIGHT, pw.JoinMode.OUTER],
+)
+def test_interval_join_time_only_empty_interval_shifted(join_type: pw.JoinMode) -> None:
+    t1 = T(
+        """
+    a | t
+    1 | -1
+    2 | 0
+    3 | 2
+    4 | 3
+    5 | 4
+    6 | 10
+    """
+    )
+
+    t2 = T(
+        """
+    b | t
+    1 | 0
+    2 | 2
+    3 | 3
+    4 | 5
+    5 | 11
+    """
+    )
+
+    interval = pw.temporal.interval(1, 1)
+    expected = T(
+        """
+    a | b
+    1 | 1
+    3 | 3
+    5 | 4
+    6 | 5
+    """
+    )
+    left = T(
+        """
+    a | b
+    2 |
+    4 |
+    """
+    )
+    right = T(
+        """
+    a | b
+      | 2
+    """
+    )
+
+    if join_type in [pw.JoinMode.LEFT, pw.JoinMode.OUTER]:
+        expected = expected.concat_reindex(left)
+    if join_type in [pw.JoinMode.RIGHT, pw.JoinMode.OUTER]:
+        expected = expected.concat_reindex(right)
+
+    res = t1.interval_join(
+        t2,
+        t1.t,
+        t2.t,
+        interval,
+        how=join_type,
+    ).select(t1.a, t2.b)
+
+    assert_table_equality_wo_index(res, expected)
+
+
+@pytest.mark.parametrize(
+    "join_type",
+    [pw.JoinMode.INNER, pw.JoinMode.LEFT, pw.JoinMode.RIGHT, pw.JoinMode.OUTER],
+)
+@pytest.mark.parametrize("bounds", [(1, 0), (15, -10)])
+def test_interval_join_negative_time_errors(
     join_type: pw.JoinMode, bounds: tuple[int, int]
 ) -> None:
     t1 = T(

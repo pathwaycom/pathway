@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, overload
 
@@ -21,7 +22,6 @@ from pathway.internals.desugaring import (
     desugar,
 )
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
 from pathway.internals.type_interpreter import eval_type
 
@@ -149,36 +149,22 @@ class IntervalJoinResult(DesugaringContext):
     5      | 4
     """
 
-    _left_bucketed: pw.Table
-    _right_bucketed: pw.Table
-    _earlier_part_filtered: pw.JoinResult
-    _later_part_filtered: pw.JoinResult
     _table_substitution: dict[pw.TableLike, pw.Table]
-    _mode: pw.JoinMode
-    _substitution: dict[ThisMetaclass, pw.Joinable]
     _filter_out_results_of_forgetting: bool
 
     def __init__(
         self,
-        left_bucketed: pw.Table,
-        right_bucketed: pw.Table,
-        earlier_part_filtered: pw.JoinResult,
-        later_part_filtered: pw.JoinResult,
+        left: pw.Table,
+        right: pw.Table,
         table_substitution: dict[pw.TableLike, pw.Table],
-        mode: pw.JoinMode,
         _filter_out_results_of_forgetting: bool,
     ):
-        self._left_bucketed = left_bucketed
-        self._right_bucketed = right_bucketed
-        self._earlier_part_filtered = earlier_part_filtered
-        self._later_part_filtered = later_part_filtered
-        self._table_substitution = table_substitution
-        self._mode = mode
         self._substitution = {
-            pw.left: self._left_bucketed,
-            pw.right: self._right_bucketed,
+            pw.left: left,
+            pw.right: right,
             pw.this: pw.this,  # type: ignore[dict-item]
         }
+        self._table_substitution = table_substitution
         self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
 
     @staticmethod
@@ -199,6 +185,16 @@ class IntervalJoinResult(DesugaringContext):
         return table
 
     @staticmethod
+    def _should_filter_out_results_of_forgetting(
+        behavior: CommonBehavior | None,
+    ) -> bool:
+        return (
+            behavior is not None
+            and behavior.cutoff is not None
+            and behavior.keep_results
+        )
+
+    @staticmethod
     def _interval_join(
         left: pw.Table,
         right: pw.Table,
@@ -210,7 +206,7 @@ class IntervalJoinResult(DesugaringContext):
         mode: pw.JoinMode,
         left_instance: pw.ColumnReference | None = None,
         right_instance: pw.ColumnReference | None = None,
-    ):
+    ) -> IntervalJoinResult:
         """Creates an IntervalJoinResult. To perform an interval join uses it uses two
         tumbling windows of size `lower_bound` + `upper_bound` and then filters the result.
         """
@@ -222,24 +218,139 @@ class IntervalJoinResult(DesugaringContext):
                 "upper_bound": (interval.upper_bound, IntervalType),
             }
         )
-        if left_instance is not None and right_instance is not None:
-            on = (*on, left_instance == right_instance)
-        else:
-            assert left_instance is None and right_instance is None
         if left == right:
             raise ValueError(
                 "Cannot join table with itself. Use <table>.copy() as one of the arguments of the join."
             )
-        if interval.lower_bound == interval.upper_bound:
-            raise ValueError(
-                "The difference between lower_bound and upper_bound has to be positive in the Table.interval_join().\n"
-                + " For lower_bound == upper_bound, use a regular join with"
-                + " left_time_column+lower_bound == right_time_column."
-            )
         if interval.lower_bound > interval.upper_bound:  # type: ignore[operator]
             raise ValueError(
-                "lower_bound has to be less than upper_bound in the Table.interval_join()."
+                "lower_bound has to be less than or equal to the upper_bound in the Table.interval_join()."
             )
+
+        if interval.lower_bound == interval.upper_bound:
+            cls: type[IntervalJoinResult] = _ZeroDifferenceIntervalJoinResult
+        else:
+            cls = _NonZeroDifferenceIntervalJoinResult
+        return cls._interval_join(
+            left,
+            right,
+            left_time_expression,
+            right_time_expression,
+            interval,
+            *on,
+            behavior=behavior,
+            mode=mode,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
+
+    @property
+    def _desugaring(self) -> TableSubstitutionDesugaring:
+        return TableSubstitutionDesugaring(self._table_substitution)
+
+    @abstractmethod
+    def select(self, *args: pw.ColumnReference, **kwargs: Any) -> pw.Table:
+        """
+        Computes a result of an interval join.
+
+        Args:
+            args: Column references.
+            kwargs: Column expressions with their new assigned names.
+
+        Returns:
+            Table: Created table.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown(
+        ...     '''
+        ...     | a | t
+        ...   1 | 1 | 3
+        ...   2 | 1 | 4
+        ...   3 | 1 | 5
+        ...   4 | 1 | 11
+        ...   5 | 2 | 2
+        ...   6 | 2 | 3
+        ...   7 | 3 | 4
+        ... '''
+        ... )
+        >>> t2 = pw.debug.table_from_markdown(
+        ...     '''
+        ...     | b | t
+        ...   1 | 1 | 0
+        ...   2 | 1 | 1
+        ...   3 | 1 | 4
+        ...   4 | 1 | 7
+        ...   5 | 2 | 0
+        ...   6 | 2 | 2
+        ...   7 | 4 | 2
+        ... '''
+        ... )
+        >>> t3 = t1.interval_join_inner(
+        ...     t2, t1.t, t2.t, pw.temporal.interval(-2, 1), t1.a == t2.b
+        ... ).select(t1.a, left_t=t1.t, right_t=t2.t)
+        >>> pw.debug.compute_and_print(t3, include_id=False)
+        a | left_t | right_t
+        1 | 3      | 1
+        1 | 3      | 4
+        1 | 4      | 4
+        1 | 5      | 4
+        2 | 2      | 0
+        2 | 2      | 2
+        2 | 3      | 2
+        """
+        ...
+
+
+class _NonZeroDifferenceIntervalJoinResult(IntervalJoinResult):
+    _left_bucketed: pw.Table
+    _right_bucketed: pw.Table
+    _earlier_part_filtered: pw.JoinResult
+    _later_part_filtered: pw.JoinResult
+    _mode: pw.JoinMode
+
+    def __init__(
+        self,
+        left_bucketed: pw.Table,
+        right_bucketed: pw.Table,
+        earlier_part_filtered: pw.JoinResult,
+        later_part_filtered: pw.JoinResult,
+        table_substitution: dict[pw.TableLike, pw.Table],
+        mode: pw.JoinMode,
+        _filter_out_results_of_forgetting: bool,
+    ):
+        super().__init__(
+            left_bucketed,
+            right_bucketed,
+            table_substitution=table_substitution,
+            _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
+        )
+        self._left_bucketed = left_bucketed
+        self._right_bucketed = right_bucketed
+        self._earlier_part_filtered = earlier_part_filtered
+        self._later_part_filtered = later_part_filtered
+        self._mode = mode
+
+    @staticmethod
+    def _interval_join(
+        left: pw.Table,
+        right: pw.Table,
+        left_time_expression: pw.ColumnExpression,
+        right_time_expression: pw.ColumnExpression,
+        interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
+        *on: pw.ColumnExpression,
+        behavior: CommonBehavior | None = None,
+        mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
+    ) -> IntervalJoinResult:
+        if left_instance is not None and right_instance is not None:
+            on = (*on, left_instance == right_instance)
+        else:
+            assert left_instance is None and right_instance is None
+        assert left != right
+        assert interval.lower_bound < interval.upper_bound  # type: ignore[operator]
 
         shift = get_default_origin(eval_type(left_time_expression))
         left_with_time = left.with_columns(_pw_time=left_time_expression)
@@ -298,12 +409,10 @@ class IntervalJoinResult(DesugaringContext):
         }
 
         filter_out_results_of_forgetting = (
-            behavior is not None
-            and behavior.cutoff is not None
-            and behavior.keep_results
+            IntervalJoinResult._should_filter_out_results_of_forgetting(behavior)
         )
 
-        return IntervalJoinResult(
+        return _NonZeroDifferenceIntervalJoinResult(
             left_bucketed,
             right_bucketed,
             earlier_part_filtered,
@@ -313,74 +422,10 @@ class IntervalJoinResult(DesugaringContext):
             _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
         )
 
-    @property
-    def _desugaring(self) -> TableSubstitutionDesugaring:
-        return TableSubstitutionDesugaring(self._table_substitution)
-
     @desugar
     @arg_handler(handler=select_args_handler)
     @trace_user_frame
     def select(self, *args: pw.ColumnReference, **kwargs: Any) -> pw.Table:
-        """
-        Computes a result of an interval join.
-
-        Args:
-            args: Column references.
-            kwargs: Column expressions with their new assigned names.
-
-        Returns:
-            Table: Created table.
-
-        Example:
-
-        >>> import pathway as pw
-        >>> t1 = pw.debug.table_from_markdown(
-        ...     '''
-        ...     | a | t
-        ...   1 | 1 | 3
-        ...   2 | 1 | 4
-        ...   3 | 1 | 5
-        ...   4 | 1 | 11
-        ...   5 | 2 | 2
-        ...   6 | 2 | 3
-        ...   7 | 3 | 4
-        ... '''
-        ... )
-        >>> t2 = pw.debug.table_from_markdown(
-        ...     '''
-        ...     | b | t
-        ...   1 | 1 | 0
-        ...   2 | 1 | 1
-        ...   3 | 1 | 4
-        ...   4 | 1 | 7
-        ...   5 | 2 | 0
-        ...   6 | 2 | 2
-        ...   7 | 4 | 2
-        ... '''
-        ... )
-        >>> t3 = t1.interval_join_inner(
-        ...     t2, t1.t, t2.t, pw.temporal.interval(-2, 1), t1.a == t2.b
-        ... ).select(t1.a, left_t=t1.t, right_t=t2.t)
-        >>> pw.debug.compute_and_print(t3, include_id=False)
-        a | left_t | right_t
-        1 | 3      | 1
-        1 | 3      | 4
-        1 | 4      | 4
-        1 | 5      | 4
-        2 | 2      | 0
-        2 | 2      | 2
-        2 | 3      | 2
-        """
-        for arg in args:
-            if not isinstance(arg, pw.ColumnReference):
-                if isinstance(arg, str):
-                    raise ValueError(
-                        f"Expected a ColumnReference, found a string. Did you mean this.{arg} instead of {repr(arg)}?"
-                    )
-                else:
-                    raise ValueError(
-                        "In IntervalJoinResult.select() all positional arguments have to be a ColumnReference."
-                    )
         exclude_columns = {"_pw_time", "_pw_bucket", "_pw_bucket_plus_one"}
         # remove internal columns that can appear if using *pw.left, *pw.right
         all_args = combine_args_kwargs(args, kwargs, exclude_columns=exclude_columns)
@@ -450,6 +495,106 @@ class IntervalJoinResult(DesugaringContext):
                 expression = expression_replacer_2.eval_expression(expression)
                 cols_new[column_name] = expression
         return unmatched.select(**cols_new)
+
+
+class _ZeroDifferenceIntervalJoinResult(IntervalJoinResult):
+    _join_result: pw.JoinResult
+
+    def __init__(
+        self,
+        left: pw.Table,
+        right: pw.Table,
+        join_result: pw.JoinResult,
+        table_substitution: dict[pw.TableLike, pw.Table],
+        _filter_out_results_of_forgetting: bool,
+    ) -> None:
+        super().__init__(
+            left,
+            right,
+            table_substitution=table_substitution,
+            _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
+        )
+        self._join_result = join_result
+
+    @staticmethod
+    def _interval_join(
+        left: pw.Table,
+        right: pw.Table,
+        left_time_expression: pw.ColumnExpression,
+        right_time_expression: pw.ColumnExpression,
+        interval: Interval[int] | Interval[float] | Interval[datetime.timedelta],
+        *on: pw.ColumnExpression,
+        behavior: CommonBehavior | None = None,
+        mode: pw.JoinMode,
+        left_instance: pw.ColumnReference | None = None,
+        right_instance: pw.ColumnReference | None = None,
+    ) -> IntervalJoinResult:
+        assert left != right
+        assert interval.lower_bound == interval.upper_bound
+
+        left_with_time = left.with_columns(_pw_time=left_time_expression)
+        right_with_time = right.with_columns(_pw_time=right_time_expression)
+        left_with_time = IntervalJoinResult._apply_temporal_behavior(
+            left_with_time, behavior
+        )
+        left_with_time = left_with_time.with_columns(
+            _pw_time=pw.this._pw_time + interval.lower_bound
+        )
+        right_with_time = IntervalJoinResult._apply_temporal_behavior(
+            right_with_time, behavior
+        )
+
+        from pathway.internals.join import validate_join_condition
+
+        for cond in on:
+            cond_left, cond_right, cond = validate_join_condition(cond, left, right)
+            cond._left = left_with_time[cond_left._name]
+            cond._right = right_with_time[cond_right._name]
+
+        if left_instance is not None and right_instance is not None:
+            left_instance = left_with_time[left_instance._name]
+            right_instance = right_with_time[right_instance._name]
+        else:
+            assert left_instance is None and right_instance is None
+
+        join_result = left_with_time.join(
+            right_with_time,
+            left_with_time._pw_time == right_with_time._pw_time,
+            *on,
+            how=mode,
+            left_instance=left_instance,
+            right_instance=right_instance,
+        )
+
+        filter_out_results_of_forgetting = (
+            IntervalJoinResult._should_filter_out_results_of_forgetting(behavior)
+        )
+
+        table_substitution: dict[pw.TableLike, pw.Table] = {
+            left: left_with_time,
+            right: right_with_time,
+        }
+
+        return _ZeroDifferenceIntervalJoinResult(
+            left_with_time,
+            right_with_time,
+            join_result,
+            table_substitution=table_substitution,
+            _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
+        )
+
+    @desugar
+    @arg_handler(handler=select_args_handler)
+    @trace_user_frame
+    def select(self, *args: pw.ColumnReference, **kwargs: Any) -> pw.Table:
+        exclude_columns = {"_pw_time"}
+        # remove internal columns that can appear if using *pw.left, *pw.right
+        all_args = combine_args_kwargs(args, kwargs, exclude_columns=exclude_columns)
+        result = self._join_result.select(**all_args)
+
+        if self._filter_out_results_of_forgetting:
+            result = result._filter_out_results_of_forgetting()
+        return result
 
 
 @desugar(substitution={pw.left: "self", pw.right: "other"})

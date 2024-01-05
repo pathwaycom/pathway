@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## Added
 - Comparisons support for tuples.
 
+### Changed
+- `interval_join` can now also work with intervals of zero length.
+
 ## [0.7.7] - 2023-12-27
 
 ### Added

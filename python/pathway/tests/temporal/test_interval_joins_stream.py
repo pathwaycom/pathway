@@ -11,32 +11,47 @@ class TimeInputSchema(pw.Schema):
 
 
 @pytest.mark.parametrize("keep_results", [True, False])
-def test_forgetting(keep_results: bool):
-    if keep_results:
-        pytest.xfail(reason="Records merged non-deterministically into batches")
-    value_functions = {"t": lambda x: x % 5}
-
-    t1 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeInputSchema,
-        nb_rows=10,
-        autocommit_duration_ms=20,
-        input_rate=20,
+@pytest.mark.parametrize(
+    "interval", [pw.temporal.interval(0, 0), pw.temporal.interval(-0.1, 0.1)]
+)
+def test_forgetting(keep_results: bool, interval: pw.temporal.Interval):
+    t1 = pw.debug.table_from_markdown(
+        """
+        t | __time__
+        0 |     1
+        1 |     2
+        2 |     3
+        3 |     4
+        4 |     5
+        0 |     6
+        1 |     7
+        2 |     8
+        3 |     9
+        4 |    10
+        """
     )
 
-    t2 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeInputSchema,
-        nb_rows=10,
-        autocommit_duration_ms=20,
-        input_rate=20,
+    t2 = pw.debug.table_from_markdown(
+        """
+        t | __time__
+        0 |     1
+        1 |     2
+        2 |     3
+        3 |     4
+        4 |     5
+        0 |     6
+        1 |     7
+        2 |     8
+        3 |     9
+        4 |    10
+        """
     )
 
     result = t1.interval_join(
         t2,
         t1.t,
         t2.t,
-        pw.temporal.interval(-0.1, 0.1),
+        interval,
         behavior=pw.temporal.common_behavior(0, 2, keep_results=keep_results),
     ).select(left_t=pw.left.t, right_t=pw.right.t)
     if keep_results:
@@ -79,32 +94,43 @@ class TimeValueInputSchema(pw.Schema):
 
 
 @pytest.mark.parametrize("keep_results", [True, False])
-def test_forgetting_sharded(keep_results: bool):
-    if keep_results:
-        pytest.xfail(reason="Records merged non-deterministically into batches")
-    value_functions = {"t": lambda x: (x // 2) % 5, "v": lambda x: x % 2}
-
-    t1 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeValueInputSchema,
-        nb_rows=20,
-        autocommit_duration_ms=20,
-        input_rate=20,
+@pytest.mark.parametrize(
+    "interval", [pw.temporal.interval(0, 0), pw.temporal.interval(-0.1, 0.1)]
+)
+def test_forgetting_with_instance(keep_results: bool, interval: pw.temporal.Interval):
+    t1 = pw.debug.table_from_markdown(
+        """
+        t | v | __time__
+        0 | 0 |     1
+        0 | 1 |     1
+        1 | 0 |     2
+        1 | 1 |     2
+        2 | 0 |     3
+        2 | 1 |     3
+        3 | 0 |     4
+        3 | 1 |     4
+        4 | 0 |     5
+        4 | 1 |     5
+        0 | 0 |     6
+        0 | 1 |     6
+        1 | 0 |     7
+        1 | 1 |     7
+        2 | 0 |     8
+        2 | 1 |     8
+        3 | 0 |     9
+        3 | 1 |     9
+        4 | 0 |    10
+        4 | 1 |    10
+        """
     )
 
-    t2 = pw.demo.generate_custom_stream(
-        value_functions,
-        schema=TimeValueInputSchema,
-        nb_rows=20,
-        autocommit_duration_ms=20,
-        input_rate=20,
-    )
+    t2 = t1.copy()
 
     result = t1.interval_join(
         t2,
         t1.t,
         t2.t,
-        pw.temporal.interval(-0.1, 0.1),
+        interval,
         t1.v == t2.v,
         behavior=pw.temporal.common_behavior(0, 2, keep_results=keep_results),
     ).select(v=pw.this.v, left_t=pw.left.t, right_t=pw.right.t)
