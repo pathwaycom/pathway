@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import uuid
 from typing import NoReturn
 
 import click
@@ -20,6 +21,7 @@ def spawn_program(threads, processes, first_port, program, arguments, env_base):
     processes_str = plural(processes, "process", "processes")
     workers_str = plural(processes * threads, "total worker", "total workers")
     click.echo(f"Preparing {processes_str} ({workers_str})", err=True)
+    run_id = uuid.uuid4()
     process_handles = []
     try:
         for process_id in range(processes):
@@ -28,6 +30,7 @@ def spawn_program(threads, processes, first_port, program, arguments, env_base):
             env["PATHWAY_PROCESSES"] = str(processes)
             env["PATHWAY_FIRST_PORT"] = str(first_port)
             env["PATHWAY_PROCESS_ID"] = str(process_id)
+            env["PATHWAY_RUN_ID"] = str(run_id)
             handle = subprocess.Popen([program] + list(arguments), env=env)
             process_handles.append(handle)
         for handle in process_handles:
