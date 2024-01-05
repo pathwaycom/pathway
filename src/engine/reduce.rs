@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use ndarray::prelude::*;
 
 use cfg_if::cfg_if;

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::upsert::arrange_from_upsert;

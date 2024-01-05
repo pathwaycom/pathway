@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use log::{error, warn};
 
 use std::path::{Path, PathBuf};

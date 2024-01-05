@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 #![allow(clippy::non_canonical_partial_ord_impl)] // False positive with Derivative
 
 use std::fmt::{self, Debug, Display};

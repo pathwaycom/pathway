@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::str::from_utf8;
 
 use pathway_engine::connectors::data_format::{Formatter, JsonLinesFormatter};

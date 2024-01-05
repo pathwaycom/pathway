@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 mod helpers;
 use helpers::{data_parsing_fails, read_data_from_reader};
 

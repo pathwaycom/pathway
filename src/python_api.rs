@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 // pyo3 macros seem to trigger this
 #![allow(clippy::used_underscore_binding)]
 // `PyRef`s need to be passed by value

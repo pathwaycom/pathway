@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 mod helpers;
 use helpers::get_entries_in_receiver;
 

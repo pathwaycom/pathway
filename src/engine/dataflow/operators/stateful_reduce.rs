@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::panic::Location;

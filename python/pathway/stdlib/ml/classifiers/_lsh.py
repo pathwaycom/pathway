@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 """Implementation of LSH bucketers
 They map input data through bucketers, which group similar items together.

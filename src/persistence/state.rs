@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use log::{error, info, warn};
 use std::cmp::max;
 use std::collections::HashMap;

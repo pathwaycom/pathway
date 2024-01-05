@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 from .plotting import plot
 from .table_viz import _repr_mimebundle_, show

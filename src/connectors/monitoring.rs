@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 

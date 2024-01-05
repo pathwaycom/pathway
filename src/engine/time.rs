@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 
 use chrono::{self, DurationRound, LocalResult, TimeZone};

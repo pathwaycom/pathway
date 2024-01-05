@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use pathway_engine::connectors::data_format::{Formatter, FormatterError, PsqlUpdatesFormatter};
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Value};
 

@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 import os
 from dataclasses import KW_ONLY, dataclass
 

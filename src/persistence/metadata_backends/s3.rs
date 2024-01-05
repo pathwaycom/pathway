@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use s3::bucket::Bucket as S3Bucket;
 
 use crate::persistence::metadata_backends::{Error, MetadataBackend};

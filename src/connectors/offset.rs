@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;

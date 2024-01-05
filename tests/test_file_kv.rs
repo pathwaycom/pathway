@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use tempfile::tempdir;
 
 use pathway_engine::persistence::metadata_backends::file::FilesystemKVStorage;

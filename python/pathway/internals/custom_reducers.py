@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 import pickle
 from abc import ABC, abstractmethod
 from collections import Counter

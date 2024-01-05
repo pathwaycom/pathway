@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::cursor::Cursor;

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::any::type_name;
 use std::borrow::Cow;
 use std::clone::Clone;

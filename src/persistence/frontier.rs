@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

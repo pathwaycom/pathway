@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::thread;

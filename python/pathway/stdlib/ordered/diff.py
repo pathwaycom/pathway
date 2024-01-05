@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 import pathway as pw
 from pathway.internals.runtime_type_check import check_arg_types

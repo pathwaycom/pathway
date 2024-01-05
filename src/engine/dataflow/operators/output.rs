@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::panic::Location;
 
 use differential_dataflow::difference::{Monoid, Semigroup};

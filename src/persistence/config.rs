@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 #![allow(clippy::module_name_repetitions)]
 
 use log::{error, info, warn};

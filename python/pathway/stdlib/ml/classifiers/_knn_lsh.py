@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 """k-approximate nearest neighbor search (and classification) via LSH.
 

@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 """Pathway demo module
 
 Typical use:
@@ -8,7 +10,6 @@ Typical use:
 >>> pw.demo.replay_csv("./input_stream.csv", schema=InputSchema)
 <pathway.Table schema={'name': <class 'str'>, 'age': <class 'int'>}>
 """
-# Copyright © 2023 Pathway
 
 from __future__ import annotations
 

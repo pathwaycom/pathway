@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 #![allow(clippy::disallowed_methods)]
 mod operator_test_utils;
 use operator_test_utils::run_test;

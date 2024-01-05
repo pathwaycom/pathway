@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 from datetime import datetime, timedelta
 from typing import Any

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 

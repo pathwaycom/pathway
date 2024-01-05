@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::Arranged;

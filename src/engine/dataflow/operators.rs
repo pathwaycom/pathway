@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 pub mod gradual_broadcast;
 pub mod output;
 pub mod prev_next;

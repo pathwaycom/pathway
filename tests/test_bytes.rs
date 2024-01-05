@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::path::PathBuf;
 
 use pathway_engine::connectors::data_format::{IdentityParser, ParseResult, ParsedEvent, Parser};

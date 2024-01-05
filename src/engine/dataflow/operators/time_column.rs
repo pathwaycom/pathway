@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use super::utils::batch_by_time;
 use super::{ArrangeWithTypes, ArrangeWithTypesSharded};
 use crate::engine::dataflow::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp, NotTotal};

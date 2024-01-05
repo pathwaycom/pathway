@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use log::error;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};

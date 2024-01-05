@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 mod helpers;
 use helpers::create_metadata_storage;
 use helpers::create_persistence_manager;

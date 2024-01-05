@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 import pytest
 
 import pathway as pw

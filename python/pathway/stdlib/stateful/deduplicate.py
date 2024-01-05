@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 from typing import Any, Callable, TypeVar
 
 import pathway as pw

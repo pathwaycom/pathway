@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 

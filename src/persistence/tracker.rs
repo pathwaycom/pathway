@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use itertools::Itertools;
 use log::{error, info};
 use std::collections::HashMap;

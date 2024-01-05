@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 

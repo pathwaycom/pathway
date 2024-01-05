@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 from pathway.internals.custom_reducers import (
     stateful_many,

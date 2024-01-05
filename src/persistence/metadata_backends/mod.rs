@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::fmt::Debug;
 use std::io::Error as IoError;
 use std::str::Utf8Error;

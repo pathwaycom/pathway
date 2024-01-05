@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 from collections.abc import Callable, Mapping
 from typing import Any
 

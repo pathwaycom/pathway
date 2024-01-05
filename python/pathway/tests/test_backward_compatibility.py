@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 from pathway import Table
 from pathway.tests.utils import T, assert_table_equality, run_all

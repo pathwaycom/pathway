@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use bytes::BytesMut;
 use postgres::types::{IsNull, ToSql, Type};
 

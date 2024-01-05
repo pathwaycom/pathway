@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 """
 Pathway vector search server and client.
 

@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 """
 A library for document parsers: functions that take raw bytes and return a list of text
 chunks along with their metadata.

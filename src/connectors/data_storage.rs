@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use pyo3::exceptions::PyValueError;
 use rand::Rng;
 use rdkafka::util::Timeout;

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::any::Any;
 use std::error;
 use std::fmt;

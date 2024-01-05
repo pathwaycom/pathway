@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 #![allow(clippy::match_wildcard_for_single_variants)] // too many false positives
 
 use std::cell::RefCell;

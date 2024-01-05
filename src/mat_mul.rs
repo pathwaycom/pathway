@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use ndarray::{arr0, ArrayD, ArrayViewD, Ix1, Ix2, LinalgScalar};
 
 pub fn mat_mul<T>(a: &ArrayViewD<T>, b: &ArrayViewD<T>) -> Option<ArrayD<T>>

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use pyo3::ffi::{
     PyEval_RestoreThread, PyEval_SaveThread, PyGILState_Ensure, PyGILState_GetThisThreadState,
     PyGILState_Release, PyGILState_STATE, PyThreadState,

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use crate::engine::dataflow::operators::utils::{
     key_val_total_weight, CursorStorageWrapper, SortingBatchBuilder,
 };

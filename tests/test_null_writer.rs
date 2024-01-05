@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use pathway_engine::engine::Key;
 
 use pathway_engine::connectors::data_format::{Formatter, FormatterContext, NullFormatter};

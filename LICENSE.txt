@@ -11,7 +11,7 @@ Licensed Work:
     as their license file, and are made available by the Licensor at
     pathway.com, github.com/pathwaycom/, and by way of other distribution
     channels.
-    The Licensed Work is © 2023 NavAlgo SAS
+    The Licensed Work is © 2024 NavAlgo SAS
     
 Additional Use Grant:
     The Licensor grants you (the licensee) additional rights to the Licensed

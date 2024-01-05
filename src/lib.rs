@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 #![warn(clippy::pedantic)]
 #![warn(clippy::cargo)]
 #![allow(clippy::must_use_candidate)] // too noisy

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::str::from_utf8;
 
 use assert_matches::assert_matches;

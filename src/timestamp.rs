@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn current_unix_timestamp_ms() -> u128 {

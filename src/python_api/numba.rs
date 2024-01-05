@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::mem::transmute;

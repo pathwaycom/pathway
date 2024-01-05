@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::{

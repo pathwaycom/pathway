@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use log::{error, info, warn};
 use std::fs;
 use std::fs::File;

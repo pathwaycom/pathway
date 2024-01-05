@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::sync::{Arc, Mutex};
 
 use xxhash_rust::xxh3::Xxh3 as Hasher;

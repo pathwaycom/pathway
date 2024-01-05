@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::env;
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};

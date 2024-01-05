@@ -1,4 +1,4 @@
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 import pathway.internals as pw
 from pathway.stdlib.ml.classifiers import DistanceTypes, knn_lsh_classifier_train

@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use crate::persistence::metadata_backends::{Error, MetadataBackend};
 
 #[derive(Debug)]

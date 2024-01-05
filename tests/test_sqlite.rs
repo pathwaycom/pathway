@@ -1,3 +1,5 @@
+// Copyright © 2024 Pathway
+
 use std::sync::Arc;
 
 use rusqlite::Connection as SqliteConnection;

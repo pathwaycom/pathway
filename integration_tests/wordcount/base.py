@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright © 2023 Pathway
+# Copyright © 2024 Pathway
 
 import json
 import os
