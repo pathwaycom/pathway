@@ -287,7 +287,7 @@ def test_traceback_iterate():
 
         result = iterated.select(val=pw.apply(func, iterated.val))  # cause
 
-        return dict(iterated=result)
+        return result
 
     input = T(
         """

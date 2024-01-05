@@ -59,14 +59,10 @@ class PrevNext(pw.Schema):
     next: pw.Pointer[Node] | None
 
 
-class _TreeInPreparation(TypedDict):
-    result: pw.Table[Key | LeftRight | Candidate | Hash | Instance]
-
-
 @wrap_arg_tuple
 def _build_tree_step(
     result: pw.Table[Key | LeftRight | Candidate | Hash | Instance],
-) -> _TreeInPreparation:
+) -> pw.Table[Key | LeftRight | Candidate | Hash | Instance]:
     """Helper transformer that performs single step of treap building.
     Each node has 'candidate' for its parent.
     Each candidate accepts a single node as its left child (smaller key, maximal hash)
@@ -93,7 +89,7 @@ def _build_tree_step(
         candidate=right_side_by_candidate.ix(right_side.candidate).right
     )
 
-    return dict(result=result)
+    return result
 
 
 class SortedIndex(TypedDict):
@@ -116,7 +112,7 @@ def build_sorted_index(nodes: pw.Table[Key | Instance]) -> SortedIndex:
         right=pw.declare_type(Optional[pw.Pointer], None),
     )
 
-    result = pw.iterate(_build_tree_step, result=result).result
+    result = pw.iterate(_build_tree_step, result=result)
     result = result.select(
         result.key,
         result.left,

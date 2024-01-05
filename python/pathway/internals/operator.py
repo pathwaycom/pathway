@@ -337,9 +337,9 @@ class IterateOperator(OperatorFromDef):
         assert all(isinstance(table, pw.Table) for table in input)
 
         # call iteration logic with copied input and sort result by input order
-        result = as_arg_tuple(
-            self.func_spec.func(**input_copy, **iterated_with_universe_copy)
-        ).with_same_order(input)
+        raw_result = self.func_spec.func(**input_copy, **iterated_with_universe_copy)
+        arg_tuple = as_arg_tuple(raw_result)
+        result = arg_tuple.process_input(input)
         if not iterated_with_universe_copy.is_key_subset_of(result):
             raise ValueError(
                 "not all arguments marked as iterated returned from iteration"
@@ -376,7 +376,7 @@ class IterateOperator(OperatorFromDef):
         self.result_iterated = result.subtract_keys(iterated_with_universe_copy)
 
         # materialize output
-        output = ArgTuple.empty()
+        output = type(arg_tuple).empty()
         for name, table in result.items():
             if name in self.iterated_with_universe_copy:
                 universe = Universe()
@@ -393,7 +393,7 @@ class IterateOperator(OperatorFromDef):
 
         self._prepare_inputs(input)
         self._prepare_outputs(output)
-        return output
+        return output.to_output()
 
     def _copy_input_table(self, name: str, table: pw.Table, unique: bool):
         if unique:

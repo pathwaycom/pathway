@@ -77,9 +77,9 @@ def _build_groups(t: pw.Table, dir_next: bool) -> pw.Table:
 
     def merge_ccs(data):
         data <<= data.select(data.ix(data.group_repr).group_repr)
-        return dict(data=data)
+        return data
 
-    group_table = pw.iterate(merge_ccs, data=succ_table).data
+    group_table = pw.iterate(merge_ccs, data=succ_table)
     # At the end of the iterative merge_ccs, we have:
     # group_repr = last element of each consecutive group with the same `key`
     # We want to compute two things:

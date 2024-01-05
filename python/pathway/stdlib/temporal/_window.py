@@ -109,9 +109,9 @@ class _SessionWindow(Window):
 
         def merge_ccs(data):
             data <<= data.select(_pw_window=data.ix(data._pw_window)._pw_window)
-            return dict(data=data)
+            return data
 
-        return pw.iterate(merge_ccs, data=target).data
+        return pw.iterate(merge_ccs, data=target)
 
     @check_arg_types
     def _apply(

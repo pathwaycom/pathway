@@ -1442,15 +1442,14 @@ def test_column_fixpoint():
             else:
                 return 3 * x + 1
 
-        new_iterated = iterated.select(val=pw.apply(collatz_step, iterated.val))
-        return dict(iterated=new_iterated)
+        return iterated.select(val=pw.apply(collatz_step, iterated.val))
 
     ret = pw.iterate(
         collatz_transformer,
         iterated=table_from_pandas(
             pd.DataFrame(index=range(1, 101), data={"val": np.arange(1.0, 101.0)})
         ),
-    ).iterated
+    )
     expected_ret = table_from_pandas(
         pd.DataFrame(index=range(1, 101), data={"val": 1.0})
     )
@@ -1461,8 +1460,7 @@ def test_column_fixpoint():
 def test_rows_fixpoint():
     def min_id_remove(iterated: pw.Table):
         min_id_table = iterated.reduce(min_id=pw.reducers.min(iterated.id))
-        iterated = iterated.filter(iterated.id != min_id_table.ix_ref().min_id)
-        return dict(iterated=iterated)
+        return iterated.filter(iterated.id != min_id_table.ix_ref().min_id)
 
     ret = pw.iterate(
         min_id_remove,
@@ -1478,7 +1476,7 @@ def test_rows_fixpoint():
             """
             )
         ),
-    ).iterated
+    )
 
     expected_ret = T(
         """
@@ -1495,7 +1493,7 @@ def test_rows_fixpoint_needs_iterate_universe():
         iterated = iterated.filter(
             iterated.id != min_id_table.ix(min_id_table.pointer_from()).min_id
         )
-        return dict(iterated=iterated)
+        return iterated
 
     with pytest.raises(ValueError):
         pw.iterate(
@@ -1510,13 +1508,13 @@ def test_rows_fixpoint_needs_iterate_universe():
                 5   | 5
                 """
             ),
-        ).iterated
+        )
 
 
 def test_iteration_column_order():
     def iteration_step(iterated):
         iterated = iterated.select(bar=iterated.bar, foo=iterated.foo - iterated.foo)
-        return dict(iterated=iterated)
+        return iterated
 
     ret = pw.iterate(
         iteration_step,
@@ -1528,7 +1526,7 @@ def test_iteration_column_order():
             3   | 3     | None
             """
         ),
-    ).iterated
+    )
 
     expected_ret = T(
         """
@@ -1546,7 +1544,7 @@ def test_iteration_column_order():
 def test_iterate_with_wrong_limit(limit):
     def iteration_step(iterated):
         iterated = iterated.select(foo=iterated.foo + 1)
-        return dict(iterated=iterated)
+        return iterated
 
     with pytest.raises(ValueError):
         pw.iterate(
@@ -1558,14 +1556,14 @@ def test_iterate_with_wrong_limit(limit):
                 1   | 0
                 """
             ),
-        ).iterated
+        )
 
 
 @pytest.mark.parametrize("limit", [1, 2, 10])
 def test_iterate_with_limit(limit):
     def iteration_step(iterated):
         iterated = iterated.select(foo=iterated.foo + 1)
-        return dict(iterated=iterated)
+        return iterated
 
     ret = pw.iterate(
         iteration_step,
@@ -1576,7 +1574,7 @@ def test_iterate_with_limit(limit):
             1   | 0
             """
         ),
-    ).iterated
+    )
 
     expected_ret = T(
         f"""
@@ -1603,9 +1601,9 @@ def test_iterate_with_same_universe_outside():
 
     def f(t: pw.Table):
         t = t.select(pw.this.b, a=pw.this.a * 2, c=pw.this.c * 2)
-        return dict(t=t)
+        return t
 
-    t = pw.iterate(f, iteration_limit=2, t=t).t
+    t = pw.iterate(f, iteration_limit=2, t=t)
 
     t = t.select(pw.this.a, u.x)
 
@@ -1635,9 +1633,9 @@ def test_iterate_with_diverging_columns():
 
     def f(t: pw.Table):
         t = t.select(pw.this.a, b=pw.this.b * 2)
-        return dict(t=t)
+        return t
 
-    t = pw.iterate(f, iteration_limit=2, t=t).t
+    t = pw.iterate(f, iteration_limit=2, t=t)
 
     assert_table_equality(
         t,

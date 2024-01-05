@@ -82,13 +82,10 @@ def compute_shortcuts(
     # named args of transformer should match named args of iterate
     # and should match named tuple of returned args.
     return pw.iterate(
-        lambda shortcuts, nodes, agg_fun: dict(
-            # TODO input-only tables needed (then we do not need to filter out agg_fun)
-            shortcuts=shortcut_transformer(
-                shortcuts=shortcuts + nodes, agg_fun=agg_fun
-            ).shortcuts
-        ),
+        lambda shortcuts, nodes, agg_fun:
+        # TODO input-only tables needed (then we do not need to filter out agg_fun)
+        shortcut_transformer(shortcuts=shortcuts + nodes, agg_fun=agg_fun).shortcuts,
         shortcuts=shortcuts_init,
         nodes=nodes,
         agg_fun=shortcuts_init.reduce(agg_fun=agg_fun),
-    ).shortcuts
+    )

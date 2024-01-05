@@ -45,9 +45,7 @@ def bellman_ford(vertices: pw.Table[Vertex], edges: pw.Table[Edge | Dist]):
     )
 
     return pw.iterate(
-        lambda iterated, edges: dict(
-            iterated=_bellman_ford_step(vertices_dist=iterated, edges=edges)
-        ),
-        iterated=pw.iterate_universe(vertices_dist),
+        _bellman_ford_step,
+        vertices_dist=pw.iterate_universe(vertices_dist),
         edges=edges,
-    ).iterated
+    )

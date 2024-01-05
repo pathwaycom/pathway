@@ -41,7 +41,10 @@ def iterate(
     **kwargs: table.Table | op.iterate_universe,
 ):
     """Iterate function until fixed point.
-    Function has to take only named arguments, Tables, and return a dict of Tables.
+    Function has to take only Table arguments.
+    Function has to return a single Table, a tuple of Tables, or a dict of Tables.
+    Iterate returns the same shape of arguments as the ``func`` function:
+    either a single Table, a tuple of Tables, or a dict of Tables, respectively.
     Initial arguments to function are passed through kwargs.
 
     Example:
@@ -55,8 +58,7 @@ def iterate(
     ...             return x // 2
     ...         else:
     ...             return 3 * x + 1
-    ...     new_iterated = iterated.select(val=pw.apply(collatz_step, iterated.val))
-    ...     return dict(iterated=new_iterated)
+    ...     return iterated.select(val=pw.apply(collatz_step, iterated.val))
     >>> tab = pw.debug.table_from_markdown('''
     ... val
     ...   1
@@ -67,7 +69,7 @@ def iterate(
     ...   6
     ...   7
     ...   8''')
-    >>> ret = pw.iterate(collatz_transformer, iterated=tab).iterated
+    >>> ret = pw.iterate(collatz_transformer, iterated=tab)
     >>> pw.debug.compute_and_print(ret, include_id=False)
     val
     1

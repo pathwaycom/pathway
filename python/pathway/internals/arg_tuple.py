@@ -21,9 +21,9 @@ def as_arg_tuple(obj) -> ArgTuple:
         return MappingArgTuple(obj)
     elif isinstance(obj, Sequence):
         result = {f"{i}": v for i, v in enumerate(obj)}
-        return ArgTuple(result)
+        return TupleArgTuple(result)
     else:
-        return ArgTuple({"0": obj})
+        return ScalarArgTuple({"0": obj})
 
 
 class ArgTuple:
@@ -32,9 +32,9 @@ class ArgTuple:
     def __init__(self, args: MutableMapping[str, Any]):
         self._content = args
 
-    @staticmethod
-    def empty() -> ArgTuple:
-        return ArgTuple({})
+    @classmethod
+    def empty(cls) -> ArgTuple:
+        return cls({})
 
     def __iter__(self):
         return iter(self._content.values())
@@ -61,7 +61,7 @@ class ArgTuple:
         return len(self._content)
 
     def __add__(self, other: ArgTuple) -> ArgTuple:
-        return ArgTuple({**self._content, **other._content})
+        return type(self)({**self._content, **other._content})
 
     def single(self) -> bool:
         return len(self._content) == 1
@@ -86,23 +86,47 @@ class ArgTuple:
 
     def map_values(self, mapfn: Callable) -> ArgTuple:
         mapped_values = {k: mapfn(v) for k, v in self._content.items()}
-        return ArgTuple(mapped_values)
+        return type(self)(mapped_values)
 
     def intersect_keys(self, other: ArgTuple) -> ArgTuple:
-        return ArgTuple({k: v for k, v in self.items() if k in other})
+        return type(self)({k: v for k, v in self.items() if k in other})
 
     def subtract_keys(self, other: ArgTuple) -> ArgTuple:
-        return ArgTuple({k: v for k, v in self.items() if k not in other})
+        return type(self)({k: v for k, v in self.items() if k not in other})
 
     def with_same_order(self, other: ArgTuple) -> ArgTuple:
         assert self.is_key_subset_of(other)
         ordered_content = {k: self[k] for k in other.keys() if k in self}
-        return ArgTuple(ordered_content)
+        return type(self)(ordered_content)
+
+    def with_keys_of(self, other: ArgTuple) -> ArgTuple:
+        assert len(self) <= len(other)
+        ordered_content = dict(zip(other.keys(), self.values(), strict=False))
+        return type(self)(ordered_content)
 
     def is_key_subset_of(self, other: ArgTuple) -> bool:
         return self.keys() <= other.keys()
+
+    def to_output(self):
+        return self
+
+    def process_input(self, other):
+        return self.with_keys_of(other)
 
 
 class MappingArgTuple(ArgTuple):
     def scalar_or_tuple(self):
         return self
+
+    def process_input(self, other):
+        return self.with_same_order(other)
+
+
+class TupleArgTuple(ArgTuple):
+    def to_output(self):
+        return tuple(self.values())
+
+
+class ScalarArgTuple(ArgTuple):
+    def to_output(self):
+        return self.first()
