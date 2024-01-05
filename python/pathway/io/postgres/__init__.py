@@ -112,6 +112,7 @@ single transaction.
     )
 
 
+@check_arg_types
 def write_snapshot(
     table: Table,
     postgres_settings: dict,

@@ -485,6 +485,7 @@ impl From<EngineError> for PyErr {
                 | EngineError::NoPersistentStorage(_)
                 | EngineError::ParseError(_) => PyValueError::type_object(py),
                 EngineError::IndexOutOfBounds => PyIndexError::type_object(py),
+                EngineError::ReaderFailed(_) => PyRuntimeError::type_object(py),
                 _ => ENGINE_ERROR_TYPE.as_ref(py),
             };
             let message = error.to_string();

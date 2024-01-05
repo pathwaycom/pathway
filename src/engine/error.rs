@@ -8,7 +8,7 @@ use std::result;
 use super::{Key, Value};
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 
-use crate::connectors::data_storage::WriteError;
+use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::persistence::ExternalPersistentId;
 
 #[allow(clippy::module_name_repetitions)]
@@ -153,6 +153,9 @@ pub enum Error {
 
     #[error("snapshot writer failed: {0}")]
     SnapshotWriterError(#[source] WriteError),
+
+    #[error("exception in Python subject: {0}")]
+    ReaderFailed(#[source] ReadError),
 }
 
 impl Error {

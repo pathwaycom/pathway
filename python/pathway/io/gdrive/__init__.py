@@ -17,6 +17,7 @@ from googleapiclient.http import MediaIoBaseDownload
 import pathway as pw
 from pathway.internals import api
 from pathway.internals.api import SessionType
+from pathway.internals.runtime_type_check import check_arg_types
 from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -211,6 +212,7 @@ class _GDriveSubject(ConnectorSubject):
         self._remove(api.ref_scalar(file["id"]), b"")
 
 
+@check_arg_types
 def read(
     object_id: str,
     *,

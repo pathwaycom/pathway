@@ -238,6 +238,7 @@ where
         reader: &mut dyn Reader,
         sender: &Sender<Entry>,
         main_thread: &Thread,
+        error_reporter: &(impl ReportError + 'static),
     ) {
         let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
         let mut amt_send = 0;
@@ -254,6 +255,7 @@ where
                 }
                 Err(error) => {
                     error!("There had been an error processing the row read result {error}");
+                    error_reporter.report(EngineError::ReaderFailed(error));
                 }
             };
 
@@ -377,7 +379,7 @@ where
 
         let input_thread_handle = thread::Builder::new()
             .name(thread_name)
-            .spawn_with_reporter(error_reporter, move |_reporter| {
+            .spawn_with_reporter(error_reporter, move |reporter| {
                 let sender = guard(sender, |sender| {
                     // ensure that we always unpark the main thread after dropping the sender, so it
                     // notices we are done sending
@@ -394,7 +396,7 @@ where
                     snapshot_access,
                 );
                 if realtime_reader_needed {
-                    Self::read_realtime_updates(&mut *reader, &sender, &main_thread);
+                    Self::read_realtime_updates(&mut *reader, &sender, &main_thread, reporter);
                 }
 
                 Ok(())

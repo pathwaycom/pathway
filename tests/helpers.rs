@@ -7,6 +7,7 @@ use std::sync::{mpsc, mpsc::Receiver, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use pathway_engine::engine::{report_error::ReportError, Error};
 use pathway_engine::persistence::config::{
     MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
 };
@@ -31,6 +32,15 @@ pub struct FullReadResult {
     pub raw_entries: Vec<Entry>,
     pub snapshot_entries: Vec<SnapshotEvent>,
     pub new_parsed_entries: Vec<ParsedEvent>,
+}
+
+#[derive(Debug, Default)]
+pub struct PanicErrorReporter {}
+
+impl ReportError for PanicErrorReporter {
+    fn report(&self, error: Error) {
+        panic!("Error: {error:?}");
+    }
 }
 
 pub fn full_cycle_read(
@@ -69,7 +79,9 @@ pub fn full_cycle_read(
         PersistenceMode::Batch,
         SnapshotAccess::Full,
     );
-    Connector::<u64>::read_realtime_updates(&mut *reader, &sender, &main_thread);
+
+    let reporter = PanicErrorReporter::default();
+    Connector::<u64>::read_realtime_updates(&mut *reader, &sender, &main_thread, &reporter);
     let result = get_entries_in_receiver(receiver);
 
     let has_persistent_storage = persistent_storage.is_some();

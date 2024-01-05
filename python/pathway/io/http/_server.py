@@ -13,6 +13,7 @@ from aiohttp import web
 import pathway.internals as pw
 import pathway.io as io
 from pathway.internals.api import Pointer, unsafe_make_pointer
+from pathway.internals.runtime_type_check import check_arg_types
 
 
 class RestServerSubject(io.python.ConnectorSubject):
@@ -96,6 +97,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         return self._delete_completed_queries
 
 
+@check_arg_types
 def rest_connector(
     host: str,
     port: int,

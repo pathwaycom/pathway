@@ -5,7 +5,6 @@ import json
 import os
 import pathlib
 import random
-import re
 import sqlite3
 import sys
 import threading
@@ -322,7 +321,7 @@ def test_python_connector_deletions_disabled():
     )
 
 
-def test_python_connector_deletions_disabled_logs_error_on_delete(caplog):
+def test_python_connector_deletions_disabled_logs_error_on_delete():
     class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
             self._add(
@@ -354,15 +353,14 @@ def test_python_connector_deletions_disabled_logs_error_on_delete(caplog):
         schema=InputSchema,
     )
 
-    run_all()
+    with pytest.raises(
+        RuntimeError,
+        match="Trying to delete a row in .* but deletions_enabled is set to False",
+    ):
+        run_all()
 
-    assert re.search(
-        r"Trying to delete a row in .* but deletions_enabled is set to False",
-        caplog.text,
-    )
 
-
-def test_python_connector_deletions_disabled_logs_error_on_upsert(caplog):
+def test_python_connector_deletions_disabled_logs_error_on_upsert():
     class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
             self._add(
@@ -388,12 +386,11 @@ def test_python_connector_deletions_disabled_logs_error_on_upsert(caplog):
         schema=InputSchema,
     )
 
-    run_all()
-
-    assert re.search(
-        r"Trying to upsert a row in .* but deletions_enabled is set to False",
-        caplog.text,
-    )
+    with pytest.raises(
+        RuntimeError,
+        match=r"Trying to upsert a row in .* but deletions_enabled is set to False",
+    ):
+        run_all()
 
 
 def test_csv_static_read_write(tmp_path: pathlib.Path):
@@ -2701,3 +2698,83 @@ def test_apply_bytes_full_cycle(tmp_path: pathlib.Path):
     with open(output_path) as f:
         result = json.load(f)
         assert result["data"] == [ord(c) for c in (input_full_contents + "\n")] * 2
+
+
+def test_server_fail_on_port_wrong_range():
+    class InputSchema(pw.Schema):
+        k: int
+        v: int
+
+    queries, response_writer = pw.io.http.rest_connector(
+        host="127.0.0.1",
+        port=-1,
+        schema=InputSchema,
+        delete_completed_queries=False,
+    )
+    response_writer(queries.select(query_id=queries.id, result=pw.this.v))
+
+    with pytest.raises(RuntimeError, match="port must be 0-65535."):
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_server_fail_on_incorrect_port_type():
+    class InputSchema(pw.Schema):
+        k: int
+        v: int
+
+    with pytest.raises(TypeError):
+        pw.io.http.rest_connector(
+            host="127.0.0.1",
+            port="8080",
+            schema=InputSchema,
+            delete_completed_queries=False,
+        )
+
+
+def test_server_fail_on_incorrect_host():
+    class InputSchema(pw.Schema):
+        k: int
+        v: int
+
+    queries, response_writer = pw.io.http.rest_connector(
+        host="127.0.0.1xx",
+        port=23213,
+        schema=InputSchema,
+        delete_completed_queries=False,
+    )
+    response_writer(queries.select(query_id=queries.id, result=pw.this.v))
+
+    with pytest.raises(RuntimeError):
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+
+def test_kafka_incorrect_host(tmp_path: pathlib.Path):
+    table = pw.io.kafka.read(
+        rdkafka_settings={"bootstrap.servers": "kafka:9092"},
+        topic="test_0",
+        format="raw",
+        autocommit_duration_ms=100,
+    )
+    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+
+    with pytest.raises(
+        OSError,
+        match="Subscription error: Local: Unknown group",
+    ):
+        pw.run()
+
+
+def test_kafka_incorrect_rdkafka_param(tmp_path: pathlib.Path):
+    table = pw.io.kafka.read(
+        rdkafka_settings={"bootstrap_servers": "kafka:9092"},  # "_" instead of "."
+        topic="test_0",
+        format="raw",
+        autocommit_duration_ms=100,
+    )
+    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+
+    with pytest.raises(
+        ValueError,
+        match="No such configuration property",
+    ):
+        pw.run()
