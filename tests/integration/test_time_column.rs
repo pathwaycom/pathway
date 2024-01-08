@@ -1,10 +1,10 @@
 // Copyright © 2024 Pathway
 
 #![allow(clippy::disallowed_methods)]
-mod operator_test_utils;
+
+use super::operator_test_utils::run_test;
 
 use differential_dataflow::operators::arrange::ArrangeByKey;
-use operator_test_utils::run_test;
 
 use pathway_engine::engine::dataflow::operators::time_column::{
     postpone_core, MaxTimestamp, SelfCompactionTime, TimeColumnBuffer, TimeColumnForget,

@@ -1,9 +1,8 @@
 // Copyright © 2024 Pathway
 
-mod helpers;
-use helpers::create_metadata_storage;
-use helpers::create_persistence_manager;
-use helpers::get_entries_in_receiver;
+use super::helpers::create_metadata_storage;
+use super::helpers::create_persistence_manager;
+use super::helpers::get_entries_in_receiver;
 
 use std::collections::HashMap;
 use std::sync::mpsc;

@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
-mod helpers;
-use helpers::assert_error_shown_for_reader_context;
+use super::helpers::assert_error_shown_for_reader_context;
 
 use pathway_engine::connectors::data_format::{DebeziumDBType, DebeziumMessageParser};
 use pathway_engine::connectors::data_storage::{DataEventType, ReaderContext};

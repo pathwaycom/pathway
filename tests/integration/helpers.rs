@@ -1,6 +1,5 @@
 // Copyright © 2024 Pathway
 
-#![allow(dead_code)]
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{mpsc, mpsc::Receiver, Arc, Mutex};

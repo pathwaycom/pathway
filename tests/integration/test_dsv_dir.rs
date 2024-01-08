@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
-mod helpers;
-use helpers::read_data_from_reader;
+use super::helpers::read_data_from_reader;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

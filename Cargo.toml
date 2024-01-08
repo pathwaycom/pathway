@@ -9,6 +9,8 @@ license = "BUSL-1.1"
 [lib]
 name = "pathway_engine"
 crate-type = ["cdylib", "lib"]
+test = false
+doctest = false
 
 [dev-dependencies]
 assert_matches = "1.5.0"

@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
-mod helpers;
-use helpers::{create_persistence_manager, full_cycle_read, FullReadResult};
+use super::helpers::{create_persistence_manager, full_cycle_read, FullReadResult};
 
 use std::collections::HashMap;
 use std::path::Path;

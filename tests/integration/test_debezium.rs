@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
-mod helpers;
-use helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
+use super::helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
 
 use std::path::PathBuf;
 

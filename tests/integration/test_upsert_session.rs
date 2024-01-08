@@ -1,7 +1,6 @@
 // Copyright © 2024 Pathway
 
-mod helpers;
-use helpers::get_entries_in_receiver;
+use super::helpers::get_entries_in_receiver;
 
 use std::sync::{mpsc, Arc, Mutex};
 
