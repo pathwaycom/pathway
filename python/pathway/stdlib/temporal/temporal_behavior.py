@@ -84,8 +84,8 @@ def exactly_once_behavior(shift: IntervalType | None = None):
 
     Args:
         shift: optional, defines the moment in time (``window end + shift``) in which
-        the window stops accepting the data and sends the results to the output.
-        Setting it to ``None`` is interpreted as ``shift=0``.
+            the window stops accepting the data and sends the results to the output.
+            Setting it to ``None`` is interpreted as ``shift=0``.
 
     Remark:
         note that setting a non-zero shift and demanding exactly one output results in
