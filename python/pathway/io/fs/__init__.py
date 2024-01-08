@@ -207,11 +207,7 @@ named ``path`` that will show the full path to the file from where a row was fil
     >>> t = pw.io.fs.read("logs/", format="json", schema=InputSchema, mode="streaming")
 
     With this method, you obtain a table updated dynamically. The changes in the logs would incur
-    changes in the Business-Intelligence 'BI'-ready data, namely, in the tables you would like to output. To see
-    how these changes are reported by Pathway, have a look at the
-    `"Streams of Updates and Snapshots" </developers/user-guide/concepts/stream-of-updates/>`_
-    article.
-
+    changes in the Business-Intelligence 'BI'-ready data, namely, in the tables you would like to output.
     Finally, a simple example for the plaintext format would look as follows:
 
     >>> t = pw.io.fs.read("raw_dataset/lines.txt", format="plaintext")

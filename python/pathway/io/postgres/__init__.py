@@ -24,9 +24,7 @@ def write(
     """Writes ``table``'s stream of updates to a postgres table.
 
     In order for write to be successful, it is required that the table contains ``time``
-    and ``diff`` columns of the integer type - you can refer to the article
-    `"Streams of Updates and Snapshots" </developers/user-guide/concepts/stream-of-updates/>`_
-    to learn more about the reasoning behind it.
+    and ``diff`` columns of the integer type.
 
     Args:
         postgres_settings: Components for the connection string for Postgres.
@@ -123,9 +121,7 @@ def write_snapshot(
     """Maintains a snapshot of a table within a Postgres table.
 
     In order for write to be successful, it is required that the table contains ``time``
-    and ``diff`` columns of the integer type - you can refer to the article
-    `"Streams of Updates and Snapshots" </developers/user-guide/concepts/stream-of-updates/>`_
-    to understand the reasoning behind it.
+    and ``diff`` columns of the integer type.
 
     Args:
         postgres_settings: Components of the connection string for Postgres.
