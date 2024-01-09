@@ -86,6 +86,9 @@ class UDFAsync(UDF):
     """
 
     __wrapped__: Callable
+    capacity: int | None
+    retry_strategy: asynchronous.AsyncRetryStrategy | None
+    cache_strategy: asynchronous.CacheStrategy | None
 
     def __init__(
         self,
@@ -94,6 +97,18 @@ class UDFAsync(UDF):
         retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
         cache_strategy: asynchronous.CacheStrategy | None = None,
     ) -> None:
+        """Init UDFAsync.
+
+        Args:
+            capacity: Maximum number of concurrent operations allowed.
+                Defaults to None, indicating no specific limit.
+            retry_strategy: Strategy for handling retries in case of failures.
+                Defaults to None.
+            cache_strategy: Defines the caching mechanism. If set to None and a persistency
+                is enabled, operations will be cached using the persistence layer.
+                Defaults to None.
+        """
+
         super().__init__()
         if cache_strategy is None:
             cache_strategy = asynchronous.DefaultCache()
@@ -150,6 +165,14 @@ def udf_async(
     Output column type deduced from type-annotations of a function.
     Can be applied to a regular or asynchronous function.
 
+    Args:
+        capacity: Maximum number of concurrent operations allowed.
+            Defaults to None, indicating no specific limit.
+        retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to None.
+        cache_strategy: Defines the caching mechanism. If set to None and a persistency
+            is enabled, operations will be cached using the persistence layer.
+            Defaults to None.
     Example:
 
     >>> import pathway as pw

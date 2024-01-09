@@ -22,9 +22,10 @@ from pathway.internals.runtime_type_check import check_arg_types
 def with_capacity(func: Callable, capacity: int):
     """
     Limits the number of simultaneous calls of the specified function.
+    Regular function will be wrapper to run in async executor.
 
     Args:
-        capacity: maximum number of concurrent operations.
+        capacity: Maximum number of concurrent operations.
     Returns:
         Coroutine
     """
@@ -45,9 +46,10 @@ def with_capacity(func: Callable, capacity: int):
 def with_retry_strategy(func: Callable, retry_strategy: AsyncRetryStrategy) -> Callable:
     """
     Returns an asynchronous function with applied retry strategy.
+    Regular function will be wrapper to run in async executor.
 
     Args:
-        retry_strategy: defines how failures will be handled.
+        retry_strategy: Defines how failures will be handled.
     Returns:
         Coroutine
     """
@@ -63,6 +65,15 @@ def with_retry_strategy(func: Callable, retry_strategy: AsyncRetryStrategy) -> C
 
 @check_arg_types
 def with_cache_strategy(func, cache_strategy: CacheStrategy) -> Callable:
+    """
+    Returns an asynchronous function with applied cache strategy.
+    Regular function will be wrapper to run in async executor.
+
+    Args:
+        cache_strategy: Defines the caching mechanism.
+    Returns:
+        Coroutine
+    """
     func = coerce_async(func)
 
     @functools.wraps(func)
@@ -76,7 +87,23 @@ def async_options(
     capacity: int | None = None,
     retry_strategy: AsyncRetryStrategy | None = None,
     cache_strategy: CacheStrategy | None = None,
-):
+) -> Callable:
+    """
+    Decorator applying async options to a provided function.
+    Regular function will be wrapper to run in async executor.
+
+    Args:
+        capacity: Maximum number of concurrent operations.
+            Defaults to None, indicating no specific limit.
+        retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to None.
+        cache_strategy: Defines the caching mechanism. If set to None
+            and a persistency is enabled, operations will be cached using the
+            persistence layer. Defaults to None.
+    Returns:
+        Coroutine
+    """
+
     def decorator(func):
         if retry_strategy is not None:
             func = with_retry_strategy(func, retry_strategy)
@@ -92,6 +119,11 @@ def async_options(
 
 @check_arg_types
 def coerce_async(func: Callable) -> Callable:
+    """
+    Wraps a regular function to be executed in async executor.
+    It acts as a noop if the provided function is already a coroutine.
+    """
+
     if asyncio.iscoroutinefunction(func):
         return func
     else:
@@ -170,6 +202,8 @@ class FixedDelayRetryStrategy(ExponentialBackoffRetryStrategy):
 
 
 class CacheStrategy(ABC):
+    """Base class used to represent caching strategy."""
+
     @abstractmethod
     async def invoke(self, func: Callable, /, *args, **kwargs):
         ...
@@ -217,7 +251,27 @@ class DiskCache(CacheStrategy):
 
 
 class DefaultCache(DiskCache):
+    """
+    The default caching strategy.
+    Persistence layer will be used if enabled. Otherwise, cache will be disabled.
+    """
+
     def _get_cache(self, func):
         if "PATHWAY_PERSISTENT_STORAGE" not in os.environ:
             return None
         return super()._get_cache(func)
+
+
+__all__ = [
+    "with_capacity",
+    "with_retry_strategy",
+    "with_cache_strategy",
+    "async_options",
+    "coerce_async",
+    "AsyncRetryStrategy",
+    "NoRetryStrategy",
+    "ExponentialBackoffRetryStrategy",
+    "FixedDelayRetryStrategy",
+    "CacheStrategy",
+    "DefaultCache",
+]

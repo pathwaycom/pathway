@@ -241,8 +241,13 @@ class AsyncTransformer(ABC):
         Sets async options.
 
         Args:
-            capacity: maximum number of concurrent operations.
-            retry_strategy: defines how failures will be handled.
+            capacity: Maximum number of concurrent operations.
+                Defaults to None, indicating no specific limit.
+            retry_strategy: Strategy for handling retries in case of failures.
+                Defaults to None.
+            cache_strategy: Defines the caching mechanism. If set to None
+                and a persistency is enabled, operations will be cached using the
+                persistence layer. Defaults to None.
         Returns:
             self
         """
