@@ -205,7 +205,7 @@ def multiapply_all_rows(
     result = unpack_col(flatted.ids_and_res, "idd", *result_col_names).update_types(
         idd=pw.Pointer
     )
-    result = result.with_id(result.idd).without(result.idd)
+    result = result.with_id(result.idd).without(pw.this.idd)
     return result.with_universe_of(table)
 
 

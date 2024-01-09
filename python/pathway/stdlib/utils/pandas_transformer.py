@@ -110,7 +110,7 @@ def _pandas_transformer(
         output = unpack_col(
             flattened.all_cols, pw.this._id, *output_schema.column_names()
         ).update_types(_id=pw.Pointer)
-        output = output.with_id(output._id).without(output._id)
+        output = output.with_id(output._id).without(pw.this._id)
 
     if output_universe_arg_index is not None:
         output = output.with_universe_of(inputs[output_universe_arg_index])

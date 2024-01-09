@@ -91,7 +91,7 @@ def _propose_clusters(
     # compute edges vertex-cluster out of the set of input edges
     vertex_cluster_edges = pw.Table.concat_reindex(
         placeholder_edges,
-        edges.with_columns(vc=clustering.ix(edges.v).c).without(edges.v),
+        edges.with_columns(vc=clustering.ix(edges.v).c).without(pw.this.v),
     ).select(*(pw.this))
 
     # aggregate the gains for adjacent clusters, adjust for the self loops
@@ -242,7 +242,7 @@ def _louvain_level(G: WeightedGraph) -> pw.Table[Clustering]:
         V=G.V,
         WE=G.WE,
         clustering=clustering,
-    ).clustering.without(clustering.total_weight)
+    ).clustering.without(pw.this.total_weight)
 
 
 def _louvain_level_fixed_iterations(G: WeightedGraph, number_of_iterations):
