@@ -219,9 +219,8 @@ def replay_csv(
     Returns:
         Table: The table read.
 
-    Notes:
-        The CSV files should follow a standard CSV settings: the separator is ',', the
-        quotechar is '"', and there is no escape.
+    Note: the CSV files should follow a standard CSV settings. The separator is ',', the
+    quotechar is '"', and there is no escape.
 
     """
 
@@ -272,9 +271,8 @@ def replay_csv_with_time(
     Returns:
         Table: The table read.
 
-    Notes:
-        The CSV files should follow a standard CSV settings: the separator is ',', the
-        quotechar is '"', and there is no escape.
+    Note: the CSV files should follow a standard CSV settings. The separator is ',', the
+    quotechar is '"', and there is no escape.
 
     """
 
