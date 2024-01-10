@@ -259,3 +259,45 @@ def test_get_distances():
     )
 
     assert_table_equality_wo_index_types(result, expected)
+
+
+def test_incorrect_metadata_filter():
+    data = get_points()
+
+    class InputSchema(pw.Schema):
+        coords: tuple[int, int]
+        is_query: bool
+        metadata: pw.Json
+
+    df = pd.DataFrame(
+        {
+            "coords": [point[0] for point in data],
+            "is_query": [point[1] for point in data],
+            "metadata": [{"foo": i} for i, _ in enumerate(data)],
+        }
+    )
+    table = pw.debug.table_from_pandas(df, schema=InputSchema)
+    points = table.filter(~pw.this.is_query).without(pw.this.is_query)
+    queries = table.filter(pw.this.is_query).without(pw.this.is_query, pw.this.metadata)
+    index = KNNIndex(
+        points.coords,
+        points,
+        n_dimensions=2,
+        n_and=5,
+        metadata=points.metadata,
+    )
+    queries += queries.select(metadata_filter="contains(foo)")
+    result = queries.without(pw.this.metadata_filter) + index.get_nearest_items(
+        queries.coords, k=2, metadata_filter=queries.metadata_filter
+    ).select(
+        nn=pw.apply(sort_arrays, pw.this.coords),
+    )
+    expected = nn_as_table(
+        [
+            ((0, 0), ()),
+            ((2, -2), ()),
+            ((-1, 1), ()),
+            ((-2, -3), ()),
+        ]
+    )
+    assert_table_equality_wo_index(result, expected)

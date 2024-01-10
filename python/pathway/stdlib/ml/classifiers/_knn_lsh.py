@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import logging
 from statistics import mode
 from typing import Literal
 
@@ -182,21 +183,34 @@ def knn_lsh_generic_classifier_train(
                         try:
                             self.transformer.training_data[id_candidate].data
                             self.transformer.training_data[id_candidate].metadata
+                        except Exception:
+                            raise
                         except BaseException:
+                            # Used to prefetch values
                             pass
-                    candidates = [
-                        (
-                            id_candidate,
-                            self.transformer.training_data[id_candidate].data,
+
+                    try:
+                        candidates = [
+                            (
+                                id_candidate,
+                                self.transformer.training_data[id_candidate].data,
+                            )
+                            for id_candidate in self.ids
+                            if self.metadata_filter is None
+                            or jmespath.search(
+                                self.metadata_filter,
+                                self.transformer.training_data[
+                                    id_candidate
+                                ].metadata.value,
+                            )
+                            is True
+                        ]
+                    except jmespath.exceptions.JMESPathError:
+                        logging.exception(
+                            "Incorrect JMESPath expression for metadata filter"
                         )
-                        for id_candidate in self.ids
-                        if self.metadata_filter is None
-                        or jmespath.search(
-                            self.metadata_filter,
-                            self.transformer.training_data[id_candidate].metadata.value,
-                        )
-                        is True
-                    ]
+                        candidates = []
+
                     if len(candidates) == 0:
                         return []
                     ids_filtered, data_candidates_filtered = zip(*candidates)
@@ -283,7 +297,10 @@ class take_majority_label:
             try:
                 for x in self.knns_ids:
                     self.transformer.labels[x].label
+            except Exception:
+                raise
             except BaseException:
+                # Used to prefetch values
                 pass
             if self.knns_ids != ():
                 return mode(self.transformer.labels[x].label for x in self.knns_ids)
