@@ -21,7 +21,7 @@ from pathway.internals.desugaring import (
     combine_args_kwargs,
     desugar,
 )
-from pathway.internals.join import validate_join_condition
+from pathway.internals.joins import validate_join_condition
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 

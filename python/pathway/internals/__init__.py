@@ -35,9 +35,17 @@ from pathway.internals.expression import (
     ColumnReference,
     ReducerExpression,
 )
-from pathway.internals.groupby import GroupedJoinResult, GroupedTable
-from pathway.internals.join import Joinable, JoinResult
+from pathway.internals.groupbys import GroupedJoinResult, GroupedTable
 from pathway.internals.join_mode import JoinMode
+from pathway.internals.joins import (
+    Joinable,
+    JoinResult,
+    join,
+    join_inner,
+    join_left,
+    join_outer,
+    join_right,
+)
 from pathway.internals.json import Json
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.operator import iterate_universe
@@ -53,7 +61,7 @@ from pathway.internals.schema import (
     schema_from_types,
 )
 from pathway.internals.sql import sql
-from pathway.internals.table import Table
+from pathway.internals.table import Table, groupby
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
 from pathway.internals.thisclass import left, right, this
@@ -129,4 +137,10 @@ __all__ = [
     "Json",
     "table_transformer",
     "BaseCustomAccumulator",
+    "join",
+    "join_inner",
+    "join_left",
+    "join_right",
+    "join_outer",
+    "groupby",
 ]

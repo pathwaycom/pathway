@@ -1308,7 +1308,7 @@ def test_outer_join_chaining_no_cond_leftsided():
             tmp.join_left(t3),
             tmp.join_right(t3),
         ]:
-            from pathway.internals.join import JoinMode
+            from pathway.internals.joins import JoinMode
 
             if tmp._join_mode == JoinMode.INNER and tmp2._join_mode == JoinMode.INNER:
                 assert_table_equality_wo_index(tmp2.select(*pw.this), expected)
@@ -1401,7 +1401,7 @@ def test_outer_join_chaining_no_cond_rightsided():
             t1.join_left(tmp),
             t1.join_right(tmp),
         ]:
-            from pathway.internals.join import JoinMode
+            from pathway.internals.joins import JoinMode
 
             if tmp._join_mode == JoinMode.INNER and tmp2._join_mode == JoinMode.INNER:
                 assert_table_equality_wo_index(tmp2.select(*pw.this), expected)

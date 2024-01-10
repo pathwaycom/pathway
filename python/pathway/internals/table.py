@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import dtype as dt, groupby, thisclass, universes
+from pathway.internals import dtype as dt, groupbys, thisclass, universes
 from pathway.internals.api import Value
 from pathway.internals.arg_handlers import (
     arg_handler,
@@ -29,7 +29,7 @@ from pathway.internals.desugaring import (
 )
 from pathway.internals.expression_visitor import collect_tables
 from pathway.internals.helpers import SetOnceProperty, StableSet
-from pathway.internals.join import Joinable
+from pathway.internals.joins import Joinable, JoinResult
 from pathway.internals.operator import DebugOperator, OutputHandle
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.parse_graph import G
@@ -861,7 +861,7 @@ class Table(
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
         instance: expr.ColumnReference | None = None,
-    ) -> groupby.GroupedTable:
+    ) -> groupbys.GroupedTable:
         """Groups table by columns from args.
 
         Note:
@@ -870,6 +870,7 @@ class Table(
         Args:
             args: columns to group by.
             id: if provided, is the column used to set id's of the rows of the result
+            sort_by: if provided, column values are used as sorting keys for particular reducers
             instance: optional argument describing partitioning of the data into separate instances
 
         Returns:
@@ -920,7 +921,7 @@ class Table(
                         "All Table.groupby() arguments have to be a ColumnReference."
                     )
 
-        return groupby.GroupedTable.create(
+        return groupbys.GroupedTable.create(
             table=self,
             grouping_columns=args,
             set_id=id is not None,
@@ -1019,7 +1020,7 @@ class Table(
             context = all_tables[0]
             for tab in all_tables:
                 assert context._universe.is_equal_to(tab._universe)
-        if isinstance(context, groupby.GroupedJoinable):
+        if isinstance(context, groupbys.GroupedJoinable):
             context = thisclass.this
         if isinstance(context, thisclass.ThisMetaclass):
             return context._delayed_op(
@@ -2196,3 +2197,83 @@ class Table(
             .eval_expression(expression, state=TypeInterpreterState())
             ._dtype
         )
+
+
+@overload
+def groupby(
+    grouped: Table,
+    *args: expr.ColumnReference,
+    id: expr.ColumnReference | None = None,
+    sort_by: expr.ColumnReference | None = None,
+    _filter_out_results_of_forgetting: bool = False,
+    instance: expr.ColumnReference | None = None,
+) -> groupbys.GroupedTable:
+    ...
+
+
+@overload
+def groupby(
+    grouped: JoinResult,
+    *args: expr.ColumnReference,
+    id: expr.ColumnReference | None = None,
+) -> groupbys.GroupedJoinResult:
+    ...
+
+
+def groupby(
+    grouped: Table | JoinResult, *args, id: expr.ColumnReference | None = None, **kwargs
+):
+    """Groups join result by columns from args.
+
+    Note:
+        Usually followed by `.reduce()` that aggregates the result and returns a table.
+
+    Args:
+        grouped: ``JoinResult`` to group by.
+        args: columns to group by.
+        id: if provided, is the column used to set id's of the rows of the result
+        **kwargs: extra arguments, see respective documentation for ``Table.groupby`` and ``JoinResult.groupby``
+
+    Returns:
+        Groupby object of ``GroupedJoinResult`` or ``GroupedTable`` type.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown('''
+    ... age | owner | pet
+    ... 10  | Alice | dog
+    ... 9   | Bob   | dog
+    ... 8   | Alice | cat
+    ... 7   | Bob   | dog
+    ... ''')
+    >>> t2 = pw.groupby(t1, t1.pet, t1.owner).reduce(
+    ...     t1.owner, t1.pet, ageagg=pw.reducers.sum(t1.age)
+    ... )
+    >>> pw.debug.compute_and_print(t2, include_id=False)
+    owner | pet | ageagg
+    Alice | cat | 8
+    Alice | dog | 10
+    Bob   | dog | 16
+    >>> t3 = pw.debug.table_from_markdown('''
+    ...    cost  owner  pet
+    ... 1   100  Alice    1
+    ... 2    90    Bob    1
+    ... 3    80  Alice    2
+    ... ''')
+    >>> t4 = pw.debug.table_from_markdown('''
+    ...     cost  owner  pet size
+    ... 11   100  Alice    3    M
+    ... 12    90    Bob    1    L
+    ... 13    80    Tom    1   XL
+    ... ''')
+    >>> join_result = t3.join(t4, t3.owner==t4.owner)
+    >>> result = pw.groupby(join_result, pw.this.owner).reduce(
+    ...     pw.this.owner, pairs=pw.reducers.count()
+    ... )
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    owner | pairs
+    Alice | 2
+    Bob   | 1
+    """
+    return grouped.groupby(*args, id=id, **kwargs)

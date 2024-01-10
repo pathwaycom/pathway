@@ -377,7 +377,7 @@ class _NonZeroDifferenceIntervalJoinResult(IntervalJoinResult):
             _pw_bucket_plus_one=right_bucketed._pw_bucket + 1
         )
 
-        from pathway.internals.join import validate_join_condition
+        from pathway.internals.joins import validate_join_condition
 
         for cond in on:
             cond_left, cond_right, cond = validate_join_condition(cond, left, right)
@@ -544,7 +544,7 @@ class _ZeroDifferenceIntervalJoinResult(IntervalJoinResult):
             right_with_time, behavior
         )
 
-        from pathway.internals.join import validate_join_condition
+        from pathway.internals.joins import validate_join_condition
 
         for cond in on:
             cond_left, cond_right, cond = validate_join_condition(cond, left, right)

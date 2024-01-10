@@ -12,7 +12,7 @@ from pathway.internals.expression_visitor import IdentityTransform
 from pathway.internals.trace import trace_user_frame
 
 if TYPE_CHECKING:
-    from pathway.internals.join import JoinResult
+    from pathway.internals.joins import JoinResult
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr

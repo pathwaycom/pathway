@@ -13,7 +13,7 @@ from pathway.internals.helpers import function_spec, with_optional_kwargs
 from pathway.internals.row_transformer import RowTransformer
 
 if TYPE_CHECKING:
-    from pathway.internals import groupby, table, thisclass
+    from pathway.internals import groupbys, table, thisclass
 
 
 class DesugaringTransform(IdentityTransform):
@@ -131,9 +131,9 @@ class TableReplacementWithNoneDesugaring(IdentityTransform):
 
 
 class TableCallbackDesugaring(DesugaringTransform):
-    table_like: table.TableLike | groupby.GroupedJoinable
+    table_like: table.TableLike | groupbys.GroupedJoinable
 
-    def __init__(self, table_like: table.TableLike | groupby.GroupedJoinable):
+    def __init__(self, table_like: table.TableLike | groupbys.GroupedJoinable):
         self.table_like = table_like
 
     @abstractmethod
@@ -173,12 +173,12 @@ class TableSelectDesugaring(TableCallbackDesugaring):
 
 
 class TableReduceDesugaring(TableCallbackDesugaring):
-    table_like: groupby.GroupedJoinable
+    table_like: groupbys.GroupedJoinable
 
-    def __init__(self, table_like: groupby.GroupedJoinable):
-        from pathway.internals import groupby
+    def __init__(self, table_like: groupbys.GroupedJoinable):
+        from pathway.internals import groupbys
 
-        assert isinstance(table_like, groupby.GroupedJoinable)
+        assert isinstance(table_like, groupbys.GroupedJoinable)
         super().__init__(table_like)
 
     def callback(self, *args, **kwargs):

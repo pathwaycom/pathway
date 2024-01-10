@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pathway.internals.trace import trace_user_frame
 
 if TYPE_CHECKING:
-    from pathway.internals.groupby import GroupedJoinResult
+    from pathway.internals.groupbys import GroupedJoinResult
     from pathway.internals.table import Table
 
 from abc import abstractmethod
@@ -151,7 +151,7 @@ class Joinable(TableLike, DesugaringContext):
         """Join self with other using the given join expression.
 
         Args:
-            other:  the right side of the join.
+            other:  the right side of the join, ``Table`` or ``JoinResult``.
             on:  a list of column expressions. Each must have == as the top level operation
                 and be of the form LHS: ColumnReference == RHS: ColumnReference.
             id: optional argument for id of result, can be only self.id or other.id
@@ -186,9 +186,7 @@ class Joinable(TableLike, DesugaringContext):
         age | owner_name | size
         9   | Bob        | L
         """
-        from pathway.internals import join
-
-        return join.JoinResult._table_join(
+        return JoinResult._table_join(
             self,
             other,
             *on,
@@ -212,11 +210,12 @@ class Joinable(TableLike, DesugaringContext):
         """Inner-joins two tables or join results.
 
         Args:
-            other:  the right side of the join.
+            other:  the right side of the join, ``Table`` or ``JoinResult``.
             on:  a list of column expressions. Each must have == as the top level operation
                 and be of the form LHS: ColumnReference == RHS: ColumnReference.
             id: optional argument for id of result, can be only self.id or other.id
-            left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
+            left_instance/right_instance: optional arguments describing partitioning of the data
+                into separate instances
 
         Returns:
             JoinResult: an object on which `.select()` may be called to extract relevant
@@ -237,14 +236,14 @@ class Joinable(TableLike, DesugaringContext):
         ...  9   | Bob    | 1   | L
         ...  8   | Tom    | 1   | XL
         ... ''')
-        >>> t3 = t1.join(t2, t1.pet == t2.pet, t1.owner == t2.owner, how=pw.JoinMode.INNER).select(age=t1.age, owner_name=t2.owner, size=t2.size)  # noqa: E501
+        >>> t3 = t1.join_inner(t2, t1.pet == t2.pet, t1.owner == t2.owner).select(
+        ...     age=t1.age, owner_name=t2.owner, size=t2.size
+        ... )
         >>> pw.debug.compute_and_print(t3, include_id = False)
         age | owner_name | size
         9   | Bob        | L
         """
-        from pathway.internals import join
-
-        return join.JoinResult._table_join(
+        return JoinResult._table_join(
             self,
             other,
             *on,
@@ -269,7 +268,7 @@ class Joinable(TableLike, DesugaringContext):
         Left-joins two tables or join results.
 
         Args:
-            other: Table or join result.
+            other:  the right side of the join, ``Table`` or ``JoinResult``.
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
             left_instance/right_instance: optional arguments describing partitioning of the data into
@@ -321,9 +320,7 @@ class Joinable(TableLike, DesugaringContext):
         13 |      |
         13 |      |
         """
-        from pathway.internals import join
-
-        return join.JoinResult._table_join(
+        return JoinResult._table_join(
             self,
             other,
             *on,
@@ -348,7 +345,7 @@ class Joinable(TableLike, DesugaringContext):
         Outer-joins two tables or join results.
 
         Args:
-            other: Table or join result.
+            other:  the right side of the join, ``Table`` or ``JoinResult``.
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
             left_instance/right_instance: optional arguments describing partitioning of the data into separate
@@ -403,9 +400,7 @@ class Joinable(TableLike, DesugaringContext):
             OuterJoinResult object
 
         """
-        from pathway.internals import join
-
-        return join.JoinResult._table_join(
+        return JoinResult._table_join(
             self,
             other,
             *on,
@@ -429,7 +424,7 @@ class Joinable(TableLike, DesugaringContext):
         """Outer-joins two tables or join results.
 
         Args:
-            other: Table or join result.
+            other:  the right side of the join, ``Table`` or ``JoinResult``.
             *on: Columns to join, syntax `self.col1 == other.col2`
             id: optional id column of the result
             instance: optional argument describing partitioning of the data into separate instances
@@ -482,9 +477,7 @@ class Joinable(TableLike, DesugaringContext):
         13 |      |
         13 |      |
         """
-        from pathway.internals import join
-
-        return join.JoinResult._table_join(
+        return JoinResult._table_join(
             self,
             other,
             *on,
@@ -792,7 +785,7 @@ class JoinResult(Joinable, OperatorInput):
                     raise ValueError(
                         "In JoinResult.groupby() all arguments have to be a ColumnReference."
                     )
-        from pathway.internals.groupby import GroupedJoinResult
+        from pathway.internals.groupbys import GroupedJoinResult
 
         return GroupedJoinResult(
             _join_result=self,
@@ -1083,3 +1076,323 @@ def validate_join_condition(
             + "on the right side of a join"
         )
     return cond_left, cond_right, cond
+
+
+def join(
+    left: Joinable,
+    right: Joinable,
+    *on: expr.ColumnExpression,
+    id: expr.ColumnReference | None = None,
+    how: JoinMode = JoinMode.INNER,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
+) -> JoinResult:
+    """Join self with other using the given join expression.
+
+    Args:
+        left:  the left side of the join, ``Table`` or ``JoinResult``.
+        right:  the right side of the join, ``Table`` or ``JoinResult``.
+        on:  a list of column expressions. Each must have == as the top level operation
+            and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        id: optional argument for id of result, can be only self.id or other.id
+        how: by default, inner join is performed. Possible values are JoinMode.{INNER,LEFT,RIGHT,OUTER}
+            correspond to inner, left, right and outer join respectively.
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+            separate instances
+
+    Returns:
+        JoinResult: an object on which `.select()` may be called to extract relevant
+        columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown('''
+    ... age  | owner  | pet
+    ...  10  | Alice  | 1
+    ...   9  | Bob    | 1
+    ...   8  | Alice  | 2
+    ... ''')
+    >>> t2 = pw.debug.table_from_markdown('''
+    ... age  | owner  | pet | size
+    ...  10  | Alice  | 3   | M
+    ...  9   | Bob    | 1   | L
+    ...  8   | Tom    | 1   | XL
+    ... ''')
+    >>> t3 = pw.join(
+    ...     t1, t2, t1.pet == t2.pet, t1.owner == t2.owner, how=pw.JoinMode.INNER
+    ... ).select(age=t1.age, owner_name=t2.owner, size=t2.size)
+    >>> pw.debug.compute_and_print(t3, include_id = False)
+    age | owner_name | size
+    9   | Bob        | L
+    """
+    return left.join(
+        right,
+        *on,
+        id=id,
+        how=how,
+        left_instance=left_instance,
+        right_instance=right_instance,
+    )
+
+
+def join_inner(
+    left: Joinable,
+    right: Joinable,
+    *on: expr.ColumnExpression,
+    id: expr.ColumnReference | None = None,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
+) -> JoinResult:
+    """Inner-joins two tables or join results.
+
+    Args:
+        left:  the left side of the join, ``Table`` or ``JoinResult``.
+        right:  the right side of the join, ``Table`` or ``JoinResult``.
+        on:  a list of column expressions. Each must have == as the top level operation
+            and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        id: optional argument for id of result, can be only self.id or other.id
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
+
+    Returns:
+        JoinResult: an object on which `.select()` may be called to extract relevant
+        columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown('''
+    ... age  | owner  | pet
+    ...  10  | Alice  | 1
+    ...   9  | Bob    | 1
+    ...   8  | Alice  | 2
+    ... ''')
+    >>> t2 = pw.debug.table_from_markdown('''
+    ... age  | owner  | pet | size
+    ...  10  | Alice  | 3   | M
+    ...  9   | Bob    | 1   | L
+    ...  8   | Tom    | 1   | XL
+    ... ''')
+    >>> t3 = pw.join_inner(t1, t2, t1.pet == t2.pet, t1.owner == t2.owner).select(
+    ...     age=t1.age, owner_name=t2.owner, size=t2.size
+    ... )
+    >>> pw.debug.compute_and_print(t3, include_id = False)
+    age | owner_name | size
+    9   | Bob        | L
+    """
+    return left.join_inner(
+        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+    )
+
+
+def join_left(
+    left: Joinable,
+    right: Joinable,
+    *on: expr.ColumnExpression,
+    id: expr.ColumnReference | None = None,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
+) -> JoinResult:
+    """
+    Left-joins two tables or join results.
+
+    Args:
+        self:  the left side of the join, ``Table`` or ``JoinResult``.
+        other:  the right side of the join, ``Table`` or ``JoinResult``.
+        *on: Columns to join, syntax `self.col1 == other.col2`
+        id: optional id column of the result
+        left_instance/right_instance: optional arguments describing partitioning of the data into
+            separate instances
+
+    Remarks:
+    args cannot contain id column from either of tables, \
+    as the result table has id column with auto-generated ids; \
+    it can be selected by assigning it to a column with defined \
+    name (passed in kwargs)
+
+    Behavior:
+    - for rows from the left side that were not matched with the right side,
+    missing values on the right are replaced with `None`
+    - rows from the right side that were not matched with the left side are skipped
+    - for rows that were matched the behavior is the same as that of an inner join.
+
+    Returns:
+        JoinResult: an object on which `.select()` may be called to extract relevant
+        columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...         | a  | b
+    ...       1 | 11 | 111
+    ...       2 | 12 | 112
+    ...       3 | 13 | 113
+    ...       4 | 13 | 114
+    ...     '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...         | c  | d
+    ...       1 | 11 | 211
+    ...       2 | 12 | 212
+    ...       3 | 14 | 213
+    ...       4 | 14 | 214
+    ...     '''
+    ... )
+    >>> pw.debug.compute_and_print(pw.join_left(t1, t2, t1.a == t2.c
+    ... ).select(t1.a, t2_c=t2.c, s=pw.require(t1.b + t2.d, t2.id)),
+    ... include_id=False)
+    a  | t2_c | s
+    11 | 11   | 322
+    12 | 12   | 324
+    13 |      |
+    13 |      |
+    """
+    return left.join_left(
+        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+    )
+
+
+def join_right(
+    left: Joinable,
+    right: Joinable,
+    *on: expr.ColumnExpression,
+    id: expr.ColumnReference | None = None,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
+) -> JoinResult:
+    """
+    Outer-joins two tables or join results.
+
+    Args:
+        self:  the left side of the join, ``Table`` or ``JoinResult``.
+        other:  the right side of the join, ``Table`` or ``JoinResult``.
+        *on: Columns to join, syntax `self.col1 == other.col2`
+        id: optional id column of the result
+        left_instance/right_instance: optional arguments describing partitioning of the data into separate
+            instances
+
+    Remarks: args cannot contain id column from either of tables, \
+    as the result table has id column with auto-generated ids; \
+    it can be selected by assigning it to a column with defined \
+    name (passed in kwargs)
+
+    Behavior:
+    - rows from the left side that were not matched with the right side are skipped
+    - for rows from the right side that were not matched with the left side,
+    missing values on the left are replaced with `None`
+    - for rows that were matched the behavior is the same as that of an inner join.
+
+    Returns:
+        JoinResult: an object on which `.select()` may be called to extract relevant
+        columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...         | a  | b
+    ...       1 | 11 | 111
+    ...       2 | 12 | 112
+    ...       3 | 13 | 113
+    ...       4 | 13 | 114
+    ...     '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...         | c  | d
+    ...       1 | 11 | 211
+    ...       2 | 12 | 212
+    ...       3 | 14 | 213
+    ...       4 | 14 | 214
+    ...     '''
+    ... )
+    >>> pw.debug.compute_and_print(pw.join_right(t1, t2, t1.a == t2.c
+    ... ).select(t1.a, t2_c=t2.c, s=pw.require(pw.coalesce(t1.b,0) + t2.d,t1.id)),
+    ... include_id=False)
+    a  | t2_c | s
+       | 14   |
+       | 14   |
+    11 | 11   | 322
+    12 | 12   | 324
+
+    Returns:
+        OuterJoinResult object
+
+    """
+    return left.join_right(
+        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+    )
+
+
+def join_outer(
+    left: Joinable,
+    right: Joinable,
+    *on: expr.ColumnExpression,
+    id: expr.ColumnReference | None = None,
+    left_instance: expr.ColumnReference | None = None,
+    right_instance: expr.ColumnReference | None = None,
+) -> JoinResult:
+    """Outer-joins two tables or join results.
+
+    Args:
+        self:  the left side of the join, ``Table`` or ``JoinResult``.
+        other:  the right side of the join, ``Table`` or ``JoinResult``.
+        *on: Columns to join, syntax `self.col1 == other.col2`
+        id: optional id column of the result
+        instance: optional argument describing partitioning of the data into separate instances
+
+    Remarks: args cannot contain id column from either of tables, \
+        as the result table has id column with auto-generated ids; \
+        it can be selected by assigning it to a column with defined \
+        name (passed in kwargs)
+
+    Behavior:
+    - for rows from the left side that were not matched with the right side,
+    missing values on the right are replaced with `None`
+    - for rows from the right side that were not matched with the left side,
+    missing values on the left are replaced with `None`
+    - for rows that were matched the behavior is the same as that of an inner join.
+
+    Returns:
+        JoinResult: an object on which `.select()` may be called to extract relevant
+        columns from the result of the join.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...         | a  | b
+    ...       1 | 11 | 111
+    ...       2 | 12 | 112
+    ...       3 | 13 | 113
+    ...       4 | 13 | 114
+    ...     '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...         | c  | d
+    ...       1 | 11 | 211
+    ...       2 | 12 | 212
+    ...       3 | 14 | 213
+    ...       4 | 14 | 214
+    ...     '''
+    ... )
+    >>> pw.debug.compute_and_print(pw.join_outer(t1, t2, t1.a == t2.c
+    ... ).select(t1.a, t2_c=t2.c, s=pw.require(t1.b + t2.d, t1.id, t2.id)),
+    ... include_id=False)
+    a  | t2_c | s
+       | 14   |
+       | 14   |
+    11 | 11   | 322
+    12 | 12   | 324
+    13 |      |
+    13 |      |
+    """
+    return left.join_outer(
+        right, *on, id=id, left_instance=left_instance, right_instance=right_instance
+    )

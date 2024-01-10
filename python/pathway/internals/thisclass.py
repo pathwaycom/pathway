@@ -8,7 +8,7 @@ from pathway.internals import expression as expr
 from pathway.internals.trace import trace_user_frame
 
 if TYPE_CHECKING:
-    from pathway.internals.join import Joinable
+    from pathway.internals.joins import Joinable
 
 import itertools
 

@@ -17,7 +17,7 @@ from pathway.internals.arg_handlers import (
     windowby_handler,
 )
 from pathway.internals.desugaring import desugar
-from pathway.internals.join import validate_join_condition
+from pathway.internals.joins import validate_join_condition
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 from pathway.internals.type_interpreter import eval_type
