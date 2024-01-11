@@ -117,6 +117,8 @@ pw.run()
 
 Run this example [in Google Colab](https://colab.research.google.com/drive/1kLx5-vKKg0IeQ88ydS-ehtrxSujEZrXK?usp=sharing)!
 
+You can find more examples [here](https://github.com/pathwaycom/pathway/tree/main/examples).
+
 ## Deployment<a id="deployment"></a>
 
 Do you feel limited by a local run?
