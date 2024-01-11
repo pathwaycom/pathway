@@ -2778,3 +2778,29 @@ def test_kafka_incorrect_rdkafka_param(tmp_path: pathlib.Path):
         match="No such configuration property",
     ):
         pw.run()
+
+
+def test_server_fail_on_duplicate_route():
+    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10005
+
+    class InputSchema(pw.Schema):
+        k: int
+        v: int
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+
+    queries, response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        route="/uppercase",
+        schema=InputSchema,
+        delete_completed_queries=False,
+    )
+    response_writer(queries.select(query_id=queries.id, result=pw.this.v))
+
+    with pytest.raises(RuntimeError, match="Added route will never be executed"):
+        _ = pw.io.http.rest_connector(
+            webserver=webserver,
+            route="/uppercase",
+            schema=InputSchema,
+            delete_completed_queries=False,
+        )

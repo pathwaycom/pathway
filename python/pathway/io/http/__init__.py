@@ -14,7 +14,7 @@ from pathway.io import python
 
 from .._subscribe import subscribe
 from ._common import RetryPolicy, Sender, prepare_request_payload, unescape
-from ._server import rest_connector
+from ._server import PathwayWebserver, rest_connector
 from ._streaming import HttpStreamingSubject
 
 
@@ -285,4 +285,4 @@ def write(
     subscribe(table, callback)
 
 
-__all__ = ["read", "write", "RetryPolicy", "rest_connector"]
+__all__ = ["read", "write", "RetryPolicy", "rest_connector", "PathwayWebserver"]

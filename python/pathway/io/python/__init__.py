@@ -95,6 +95,13 @@ class ConnectorSubject(ABC):
         """Called after the end of the :py:meth:`run` function."""
         pass
 
+    def _is_finite(self) -> bool:
+        """
+        Denotes if the connector teminates after the code inside run() routine
+        is completed.
+        """
+        return True
+
     def next_json(self, message: dict) -> None:
         """Sends a message.
 
@@ -142,8 +149,9 @@ class ConnectorSubject(ABC):
             except BaseException as e:
                 self._exception = e
             finally:
-                self.on_stop()
-                self.close()
+                if self._is_finite() or self._exception is not None:
+                    self.on_stop()
+                    self.close()
 
         self._thread = threading.Thread(target=target)
         self._thread.start()
