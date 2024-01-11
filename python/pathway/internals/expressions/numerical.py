@@ -56,8 +56,8 @@ class NumericalNamespace:
 
         return expr.MethodCallExpression(
             (
-                (dt.INT, dt.INT, lambda x: api.Expression.apply(abs, x)),
-                (dt.FLOAT, dt.FLOAT, lambda x: api.Expression.apply(abs, x)),
+                (dt.INT, dt.INT, api.Expression.int_abs),
+                (dt.FLOAT, dt.FLOAT, api.Expression.float_abs),
             ),
             "num.abs",
             self._expression,

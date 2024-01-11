@@ -1181,6 +1181,8 @@ impl PyExpression {
 unary_expr!(is_none, BoolExpression::IsNone);
 binary_expr!(eq, BoolExpression::Eq);
 binary_expr!(ne, BoolExpression::Ne);
+unary_expr!(int_abs, IntExpression::Abs);
+unary_expr!(float_abs, FloatExpression::Abs);
 binary_expr!(
     sequence_get_item_unchecked,
     AnyExpression::TupleGetItemUnchecked

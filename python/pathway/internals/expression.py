@@ -263,6 +263,9 @@ class ColumnExpression(OperatorInput, ABC):
             case _:
                 return ColumnUnaryOpExpression(self, operator.inv)
 
+    def __abs__(self) -> ColumnExpression:
+        return self.num.abs()
+
     def __hash__(self):
         return object.__hash__(self)
 

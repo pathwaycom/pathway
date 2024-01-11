@@ -2,12 +2,44 @@
 
 from typing import Optional
 
+import pytest
+
 import pathway as pw
 from pathway.debug import table_from_markdown
 from pathway.tests.utils import assert_table_equality
 
 
-def test_abs_float():
+@pytest.mark.parametrize("use_namespace", [True, False])
+def test_abs_int(use_namespace: bool) -> None:
+    table = table_from_markdown(
+        """
+        v
+        -110
+        -3
+        7
+        -1
+        12
+        """
+    )
+    if use_namespace:
+        results = table.select(v_abs=table.v.num.abs())
+    else:
+        results = table.select(v_abs=abs(table.v))
+    expected = table_from_markdown(
+        """
+        v_abs
+        110
+        3
+        7
+        1
+        12
+        """
+    )
+    assert_table_equality(results, expected)
+
+
+@pytest.mark.parametrize("use_namespace", [True, False])
+def test_abs_float(use_namespace: bool) -> None:
     table = table_from_markdown(
         """
         v
@@ -18,7 +50,10 @@ def test_abs_float():
         12.9
         """
     )
-    results = table.select(v_abs=table.v.num.abs())
+    if use_namespace:
+        results = table.select(v_abs=table.v.num.abs())
+    else:
+        results = table.select(v_abs=abs(table.v))
     expected = table_from_markdown(
         """
         v_abs

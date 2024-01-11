@@ -184,6 +184,7 @@ pub enum BoolExpression {
 pub enum IntExpression {
     Const(i64),
     Neg(Arc<Expression>),
+    Abs(Arc<Expression>),
     Add(Arc<Expression>, Arc<Expression>),
     Sub(Arc<Expression>, Arc<Expression>),
     Mul(Arc<Expression>, Arc<Expression>),
@@ -235,6 +236,7 @@ pub enum IntExpression {
 pub enum FloatExpression {
     Const(f64),
     Neg(Arc<Expression>),
+    Abs(Arc<Expression>),
     Add(Arc<Expression>, Arc<Expression>),
     Sub(Arc<Expression>, Arc<Expression>),
     Mul(Arc<Expression>, Arc<Expression>),
@@ -797,6 +799,7 @@ impl IntExpression {
         match self {
             Self::Const(c) => Ok(*c),
             Self::Neg(e) => Ok(-e.eval_as_int(values)?),
+            Self::Abs(e) => Ok(e.eval_as_int(values)?.abs()),
             Self::Add(lhs, rhs) => Ok(lhs.eval_as_int(values)? + rhs.eval_as_int(values)?),
             Self::Sub(lhs, rhs) => Ok(lhs.eval_as_int(values)? - rhs.eval_as_int(values)?),
             Self::Mul(lhs, rhs) => Ok(lhs.eval_as_int(values)? * rhs.eval_as_int(values)?),
@@ -885,6 +888,7 @@ impl FloatExpression {
         match self {
             Self::Const(c) => Ok(*c),
             Self::Neg(e) => Ok(-e.eval_as_float(values)?),
+            Self::Abs(e) => Ok(e.eval_as_float(values)?.abs()),
             Self::Add(lhs, rhs) => Ok(lhs.eval_as_float(values)? + rhs.eval_as_float(values)?),
             Self::Sub(lhs, rhs) => Ok(lhs.eval_as_float(values)? - rhs.eval_as_float(values)?),
             Self::Mul(lhs, rhs) => Ok(lhs.eval_as_float(values)? * rhs.eval_as_float(values)?),

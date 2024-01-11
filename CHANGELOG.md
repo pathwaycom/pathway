@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## Added
 - Comparisons support for tuples.
 - Standalone versions of methods: `pw.groupby`, `pw.join`, `pw.join_inner`, `pw.join_left`, `pw.join_right` and `pw.join_outer`.
+- The ability to use python's `abs` function on Pathway expressions.
 
 ### Changed
 - `interval_join` can now also work with intervals of zero length.
