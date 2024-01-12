@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+import pathway.internals as pw
+
 from .utils import IntervalType
 
 
@@ -51,7 +53,7 @@ def common_behavior(
             beginning of the window. Setting it to ``None`` does not enable
             delaying mechanism.
 
-            For interval joins, it delays the time the record is joined by ``delay``.
+            For interval joins and asof joins, it delays the time the record is joined by ``delay``.
 
             Using `delay` is useful when updates are too frequent.
         cutoff:
@@ -61,7 +63,7 @@ def common_behavior(
             seen time minus ``cutoff``. Setting cutoff to ``None`` does not enable
             cutoff mechanism.
 
-            For interval joins, it ignores entries that are older
+            For interval joins and asof joins, it ignores entries that are older
             than maximal seen time minus ``cutoff``. This parameter is also used to clear
             memory. It allows to release memory used by entries that won't change.
 
@@ -94,3 +96,18 @@ def exactly_once_behavior(shift: IntervalType | None = None):
 
     """
     return ExactlyOnceBehavior(shift)
+
+
+def apply_temporal_behavior(
+    table: pw.Table, behavior: CommonBehavior | None
+) -> pw.Table:
+    if behavior is not None:
+        if behavior.delay is not None:
+            table = table._buffer(pw.this._pw_time + behavior.delay, pw.this._pw_time)
+        if behavior.cutoff is not None:
+            cutoff_threshold = pw.this._pw_time + behavior.cutoff
+            table = table._freeze(cutoff_threshold, pw.this._pw_time)
+            table = table._forget(
+                cutoff_threshold, pw.this._pw_time, behavior.keep_results
+            )
+    return table

@@ -24,6 +24,10 @@ from pathway.internals.desugaring import (
 from pathway.internals.joins import validate_join_condition
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
+from pathway.stdlib.temporal.temporal_behavior import (
+    CommonBehavior,
+    apply_temporal_behavior,
+)
 
 from .utils import TimeEventType, check_joint_types
 
@@ -52,7 +56,7 @@ def _build_groups(t: pw.Table, dir_next: bool) -> pw.Table:
     def proc(cur_id, cur, peer_id, peer) -> pw.Pointer:
         if peer is None:
             return cur_id
-        if cur[-1] != peer[-1]:  # check if the same side of a join
+        if cur[1] != peer[1]:  # check if the same side of a join
             return cur_id
         return peer_id
 
@@ -102,6 +106,7 @@ def _build_groups(t: pw.Table, dir_next: bool) -> pw.Table:
 
 @dataclasses.dataclass
 class _SelectColumn:
+    column: pw.ColumnReference
     source_column: pw.ColumnReference
     internal_name: str
     output_name: str
@@ -112,12 +117,13 @@ class _SelectColumn:
 @dataclasses.dataclass
 class _SideData:
     side: bool
+    original_table: pw.Table
     table: pw.Table
     conds: list[pw.ColumnExpression]
     t: pw.ColumnExpression
 
     def make_sort_key(self, right_first: bool):
-        return pw.make_tuple(self.t, self.side ^ right_first)
+        return pw.make_tuple(self.t, self.side ^ right_first, self.table.id)
 
     def make_instance(self):
         if len(self.conds) == 0:
@@ -203,6 +209,7 @@ class AsofJoinResult(DesugaringContext):
         mode: pw.JoinMode,
         defaults: dict[expr.InternalColRef, Any],
         direction: Direction,
+        _filter_out_results_of_forgetting: bool,
     ):
         super().__init__()
         self._side_data = side_data
@@ -211,21 +218,26 @@ class AsofJoinResult(DesugaringContext):
         self._direction = direction
         all_cols: list[_SelectColumn] = []
         for sd in self._side_data.values():
-            for k in sd.table.column_names():
+            for k in sd.original_table.column_names():
                 col = sd.table[k]
+                source_column = sd.original_table[k]
                 name = f"_c{int(sd.side)}_{col.name}"
                 all_cols.append(
                     _SelectColumn(
                         internal_name=name,
-                        source_column=col,
+                        column=col,
+                        source_column=source_column,
                         output_name=name,
                         side=sd.side,
-                        default=defaults.get(col._to_internal()),
+                        default=defaults.get(source_column._to_internal()),
                     )
                 )
 
         self._all_cols = all_cols
-        self._merge_result = self._merge()
+        merge_result = self._merge()
+        if _filter_out_results_of_forgetting:
+            merge_result = merge_result._filter_out_results_of_forgetting()
+        self._merge_result = merge_result
 
         self._sub_desugaring = SubstitutionDesugaring(
             {
@@ -235,8 +247,8 @@ class AsofJoinResult(DesugaringContext):
         )
         self._substitution = {
             pw.this: self._merge_result,
-            pw.left: self._side_data[False].table,
-            pw.right: self._side_data[True].table,
+            pw.left: self._side_data[False].original_table,
+            pw.right: self._side_data[True].original_table,
         }
 
     @property
@@ -255,7 +267,7 @@ class AsofJoinResult(DesugaringContext):
                 key=data.make_sort_key(right_first),
                 t=data.t,
                 **{
-                    req_col.internal_name: req_col.source_column
+                    req_col.internal_name: req_col.column
                     if data.side == req_col.side
                     else req_col.default
                     for req_col in self._all_cols
@@ -415,6 +427,7 @@ def _asof_join(
     t_left: pw.ColumnExpression,
     t_right: pw.ColumnExpression,
     *on: pw.ColumnExpression,
+    behavior: CommonBehavior | None,
     how: pw.JoinMode,
     defaults: dict[pw.ColumnReference, Any],
     direction: Direction,
@@ -424,9 +437,25 @@ def _asof_join(
     check_joint_types(
         {"t_left": (t_left, TimeEventType), "t_right": (t_right, TimeEventType)}
     )
+    self_with_time = self.with_columns(_pw_time=t_left)
+    other_with_time = other.with_columns(_pw_time=t_right)
+    self_with_time = apply_temporal_behavior(self_with_time, behavior)
+    other_with_time = apply_temporal_behavior(other_with_time, behavior)
     side_data = {
-        False: _SideData(side=False, table=self, conds=[], t=t_left),
-        True: _SideData(side=True, table=other, conds=[], t=t_right),
+        False: _SideData(
+            side=False,
+            original_table=self,
+            table=self_with_time,
+            conds=[],
+            t=self_with_time._pw_time,
+        ),
+        True: _SideData(
+            side=True,
+            original_table=other,
+            table=other_with_time,
+            conds=[],
+            t=other_with_time._pw_time,
+        ),
     }
 
     if left_instance is not None and right_instance is not None:
@@ -436,14 +465,15 @@ def _asof_join(
 
     for cond in on:
         cond_left, cond_right, _ = validate_join_condition(cond, self, other)
-        side_data[False].conds.append(cond_left)
-        side_data[True].conds.append(cond_right)
+        side_data[False].conds.append(self_with_time[cond_left.name])
+        side_data[True].conds.append(other_with_time[cond_right.name])
 
     return AsofJoinResult(
         side_data=side_data,
         mode=how,
         defaults={c._to_internal(): v for c, v in defaults.items()},
         direction=direction,
+        _filter_out_results_of_forgetting=behavior is None or behavior.keep_results,
     )
 
 
@@ -458,6 +488,7 @@ def asof_join(
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
     how: pw.JoinMode,
+    behavior: CommonBehavior | None = None,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
     left_instance: expr.ColumnReference | None = None,
@@ -470,6 +501,8 @@ def asof_join(
         self_time, other_time: time-like column expression to do the join against
         on:  a list of column expressions. Each must have == as the top level operation
             and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines the temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
         how: mode of the join (LEFT, RIGHT, FULL)
         defaults: dictionary column-> default value. Entries in the resulting table that
             not have a predecessor in the join will be set to this default value. If no
@@ -536,6 +569,76 @@ def asof_join(
     0        | 12 | 7        | 9         | 16
     1        | 5  | 8        | 7         | 15
     1        | 7  | 9        | 7         | 16
+
+    Setting `behavior` allows to control temporal behavior of an asof join. Then, each side of
+    the asof join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    In the context of `asof_join` the arguments of `behavior` are defined as follows:
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, the asof join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Examples without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | event_time | __time__
+    ...       2   |      2     |     4
+    ...       3   |      5     |     6
+    ...       4   |      1     |     8
+    ...       5   |      7     |    14
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | event_time | __time__
+    ...       42  |      1     |     2
+    ...        8  |      4     |    10
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.asof_join(
+    ...     t2, t1.event_time, t2.event_time, how=pw.JoinMode.LEFT
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | left_time | right_time | __time__ | __diff__
+    2          | 42          | 2         | 1          | 4        | 1
+    3          | 42          | 5         | 1          | 6        | 1
+    4          | 42          | 1         | 1          | 8        | 1
+    3          | 42          | 5         | 1          | 10       | -1
+    3          | 8           | 5         | 4          | 10       | 1
+    5          | 8           | 7         | 4          | 14       | 1
+    >>>
+    >>> result_without_cutoff = t1.asof_join(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     how=pw.JoinMode.LEFT,
+    ...     behavior=pw.temporal.common_behavior(cutoff=2),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | left_time | right_time | __time__ | __diff__
+    2          | 42          | 2         | 1          | 4        | 1
+    3          | 42          | 5         | 1          | 6        | 1
+    3          | 42          | 5         | 1          | 10       | -1
+    3          | 8           | 5         | 4          | 10       | 1
+    5          | 8           | 7         | 4          | 14       | 1
+
+    The record with ``value=4`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``1 <= 5-2``).
     """
     return _asof_join(
         self,
@@ -543,6 +646,7 @@ def asof_join(
         self_time,
         other_time,
         *on,
+        behavior=behavior,
         how=how,
         defaults=defaults,
         direction=direction,
@@ -561,6 +665,7 @@ def asof_join_left(
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
+    behavior: CommonBehavior | None = None,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
     left_instance: expr.ColumnReference | None = None,
@@ -573,6 +678,8 @@ def asof_join_left(
         self_time, other_time: time-like column expression to do the join against
         on:  a list of column expressions. Each must have == as the top level operation
             and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines the temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
         defaults: dictionary column-> default value. Entries in the resulting table that
             not have a predecessor in the join will be set to this default value. If no
             default is provided, None will be used.
@@ -637,6 +744,73 @@ def asof_join_left(
     0        | 12 | 7        | 9         | 16
     1        | 5  | 8        | 7         | 15
     1        | 7  | 9        | 7         | 16
+
+    Setting `behavior` allows to control temporal behavior of an asof join. Then, each side of
+    the asof join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    In the context of `asof_join` the arguments of `behavior` are defined as follows:
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, the asof join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Examples without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | event_time | __time__
+    ...       2   |      2     |     4
+    ...       3   |      5     |     6
+    ...       4   |      1     |     8
+    ...       5   |      7     |    14
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | event_time | __time__
+    ...       42  |      1     |     2
+    ...        8  |      4     |    10
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.asof_join_left(t2, t1.event_time, t2.event_time).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | left_time | right_time | __time__ | __diff__
+    2          | 42          | 2         | 1          | 4        | 1
+    3          | 42          | 5         | 1          | 6        | 1
+    4          | 42          | 1         | 1          | 8        | 1
+    3          | 42          | 5         | 1          | 10       | -1
+    3          | 8           | 5         | 4          | 10       | 1
+    5          | 8           | 7         | 4          | 14       | 1
+    >>>
+    >>> result_without_cutoff = t1.asof_join_left(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     behavior=pw.temporal.common_behavior(cutoff=2),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | left_time | right_time | __time__ | __diff__
+    2          | 42          | 2         | 1          | 4        | 1
+    3          | 42          | 5         | 1          | 6        | 1
+    3          | 42          | 5         | 1          | 10       | -1
+    3          | 8           | 5         | 4          | 10       | 1
+    5          | 8           | 7         | 4          | 14       | 1
+
+    The record with ``value=4`` from table ``t1`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``1 <= 5-2``).
     """
     return _asof_join(
         self,
@@ -644,6 +818,7 @@ def asof_join_left(
         self_time,
         other_time,
         *on,
+        behavior=behavior,
         how=pw.JoinMode.LEFT,
         defaults=defaults,
         direction=direction,
@@ -662,6 +837,7 @@ def asof_join_right(
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
+    behavior: CommonBehavior | None = None,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
     left_instance: expr.ColumnReference | None = None,
@@ -674,6 +850,8 @@ def asof_join_right(
         self_time, other_time: time-like column expression to do the join against
         on:  a list of column expressions. Each must have == as the top level operation
             and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines the temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
         defaults: dictionary column-> default value. Entries in the resulting table that
             not have a predecessor in the join will be set to this default value. If no
             default is provided, None will be used.
@@ -738,6 +916,72 @@ def asof_join_right(
     0        | 14 | 7        | 4         | 11
     1        | 2  | -1       | 7         | 6
     1        | 8  | 9        | 3         | 12
+
+    Setting `behavior` allows to control temporal behavior of an asof join. Then, each side of
+    the asof join keeps track of the maximal already seen time (`self_time` and `other_time`).
+    In the context of `asof_join` the arguments of `behavior` are defined as follows:
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
+    - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
+        it is also used to garbage collect records that have times lower or equal to the above threshold. \
+        When `cutoff` is not set, the asof join will remember all records from both sides.
+    - **keep_results** - if set to `True`, keeps all results of the operator. If set to `False`, \
+        keeps only results that are newer than the maximal seen time minus `cutoff`.
+
+    Examples without and with forgetting:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | event_time | __time__
+    ...       42  |      1     |     2
+    ...        8  |      4     |    10
+    ... '''
+    ... )
+    >>> t2 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     value | event_time | __time__
+    ...       2   |      2     |     4
+    ...       3   |      5     |     6
+    ...       4   |      1     |     8
+    ...       5   |      7     |    14
+    ... '''
+    ... )
+    >>> result_without_cutoff = t1.asof_join_right(t2, t1.event_time, t2.event_time).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | left_time | right_time | __time__ | __diff__
+    42         | 2           | 1         | 2          | 4        | 1
+    42         | 3           | 1         | 5          | 6        | 1
+    42         | 4           | 1         | 1          | 8        | 1
+    42         | 3           | 1         | 5          | 10       | -1
+    8          | 3           | 4         | 5          | 10       | 1
+    8          | 5           | 4         | 7          | 14       | 1
+    >>> result_without_cutoff = t1.asof_join_right(
+    ...     t2,
+    ...     t1.event_time,
+    ...     t2.event_time,
+    ...     behavior=pw.temporal.common_behavior(cutoff=2),
+    ... ).select(
+    ...     left_value=t1.value,
+    ...     right_value=t2.value,
+    ...     left_time=t1.event_time,
+    ...     right_time=t2.event_time,
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(result_without_cutoff, include_id=False)
+    left_value | right_value | left_time | right_time | __time__ | __diff__
+    42         | 2           | 1         | 2          | 4        | 1
+    42         | 3           | 1         | 5          | 6        | 1
+    42         | 3           | 1         | 5          | 10       | -1
+    8          | 3           | 4         | 5          | 10       | 1
+    8          | 5           | 4         | 7          | 14       | 1
+
+    The record with ``value=4`` from table ``t2`` was not joined because its ``event_time``
+    was less than the maximal already seen time minus ``cutoff`` (``1 <= 5-2``).
     """
     return _asof_join(
         self,
@@ -745,6 +989,7 @@ def asof_join_right(
         self_time,
         other_time,
         *on,
+        behavior=behavior,
         how=pw.JoinMode.RIGHT,
         defaults=defaults,
         direction=direction,
@@ -763,6 +1008,7 @@ def asof_join_outer(
     self_time: pw.ColumnExpression,
     other_time: pw.ColumnExpression,
     *on: pw.ColumnExpression,
+    behavior: CommonBehavior | None = None,
     defaults: dict[pw.ColumnReference, Any] = {},
     direction: Direction = Direction.BACKWARD,
     left_instance: expr.ColumnReference | None = None,
@@ -775,6 +1021,8 @@ def asof_join_outer(
         self_time, other_time: time-like column expression to do the join against
         on:  a list of column expressions. Each must have == as the top level operation
             and be of the form LHS: ColumnReference == RHS: ColumnReference.
+        behavior: defines the temporal behavior of a join - features like delaying entries
+            or ignoring late entries.
         defaults: dictionary column-> default value. Entries in the resulting table that
             not have a predecessor in the join will be set to this default value. If no
             default is provided, None will be used.
@@ -855,6 +1103,7 @@ def asof_join_outer(
         self_time,
         other_time,
         *on,
+        behavior=behavior,
         how=pw.JoinMode.OUTER,
         defaults=defaults,
         direction=direction,

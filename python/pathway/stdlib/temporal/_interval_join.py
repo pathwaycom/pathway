@@ -25,7 +25,7 @@ from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 from pathway.internals.type_interpreter import eval_type
 
-from .temporal_behavior import CommonBehavior
+from .temporal_behavior import CommonBehavior, apply_temporal_behavior
 from .utils import IntervalType, TimeEventType, check_joint_types, get_default_origin
 
 T = TypeVar("T")
@@ -168,22 +168,6 @@ class IntervalJoinResult(DesugaringContext):
         self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
 
     @staticmethod
-    def _apply_temporal_behavior(
-        table: pw.Table, behavior: CommonBehavior | None
-    ) -> pw.Table:
-        if behavior is not None:
-            if behavior.delay is not None:
-                table = table._buffer(
-                    pw.this._pw_time + behavior.delay, pw.this._pw_time
-                )
-            if behavior.cutoff is not None:
-                cutoff_threshold = pw.this._pw_time + behavior.cutoff
-                table = table._freeze(cutoff_threshold, pw.this._pw_time)
-                table = table._forget(
-                    cutoff_threshold, pw.this._pw_time, behavior.keep_results
-                )
-        return table
-
     @staticmethod
     def _should_filter_out_results_of_forgetting(
         behavior: CommonBehavior | None,
@@ -355,12 +339,8 @@ class _NonZeroDifferenceIntervalJoinResult(IntervalJoinResult):
         shift = get_default_origin(eval_type(left_time_expression))
         left_with_time = left.with_columns(_pw_time=left_time_expression)
         right_with_time = right.with_columns(_pw_time=right_time_expression)
-        left_with_time = IntervalJoinResult._apply_temporal_behavior(
-            left_with_time, behavior
-        )
-        right_with_time = IntervalJoinResult._apply_temporal_behavior(
-            right_with_time, behavior
-        )
+        left_with_time = apply_temporal_behavior(left_with_time, behavior)
+        right_with_time = apply_temporal_behavior(right_with_time, behavior)
         bounds_difference = interval.upper_bound - interval.lower_bound  # type: ignore[operator]
 
         left_bucketed = left_with_time.with_columns(
@@ -534,15 +514,11 @@ class _ZeroDifferenceIntervalJoinResult(IntervalJoinResult):
 
         left_with_time = left.with_columns(_pw_time=left_time_expression)
         right_with_time = right.with_columns(_pw_time=right_time_expression)
-        left_with_time = IntervalJoinResult._apply_temporal_behavior(
-            left_with_time, behavior
-        )
+        left_with_time = apply_temporal_behavior(left_with_time, behavior)
         left_with_time = left_with_time.with_columns(
             _pw_time=pw.this._pw_time + interval.lower_bound
         )
-        right_with_time = IntervalJoinResult._apply_temporal_behavior(
-            right_with_time, behavior
-        )
+        right_with_time = apply_temporal_behavior(right_with_time, behavior)
 
         from pathway.internals.joins import validate_join_condition
 
@@ -709,8 +685,8 @@ def interval_join(
     Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
     the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
     The arguments of `behavior` mean in the context of an interval join what follows:
-    - **delay** - buffers results until their time is greater or equal to the maximal already \
-        seen time minus `delay`.
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
     - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
         it is also used to garbage collect records that have times lower or equal to the above threshold. \
         When `cutoff` is not set, interval join will remember all records from both sides.
@@ -908,8 +884,8 @@ def interval_join_inner(
     Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
     the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
     The arguments of `behavior` mean in the context of an interval join what follows:
-    - **delay** - buffers results until their time is greater or equal to the maximal already \
-        seen time minus `delay`.
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
     - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
         it is also used to garbage collect records that have times lower or equal to the above threshold. \
         When `cutoff` is not set, interval join will remember all records from both sides.
@@ -1112,8 +1088,8 @@ def interval_join_left(
     Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
     the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
     The arguments of `behavior` mean in the context of an interval join what follows:
-    - **delay** - buffers results until their time is greater or equal to the maximal already \
-        seen time minus `delay`.
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
     - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
         it is also used to garbage collect records that have times lower or equal to the above threshold. \
         When `cutoff` is not set, interval join will remember all records from both sides.
@@ -1331,8 +1307,8 @@ def interval_join_right(
     Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
     the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
     The arguments of `behavior` mean in the context of an interval join what follows:
-    - **delay** - buffers results until their time is greater or equal to the maximal already \
-        seen time minus `delay`.
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
     - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
         it is also used to garbage collect records that have times lower or equal to the above threshold. \
         When `cutoff` is not set, interval join will remember all records from both sides.
@@ -1540,8 +1516,8 @@ def interval_join_outer(
     Setting `behavior` allows to control temporal behavior of an interval join. Then, each side of
     the interval join keeps track of the maximal already seen time (`self_time` and `other_time`).
     The arguments of `behavior` mean in the context of an interval join what follows:
-    - **delay** - buffers results until their time is greater or equal to the maximal already \
-        seen time minus `delay`.
+    - **delay** - buffers results until the maximal already seen time is greater than \
+        or equal to their time plus `delay`.
     - **cutoff** - ignores records with times less or equal to the maximal already seen time minus `cutoff`; \
         it is also used to garbage collect records that have times lower or equal to the above threshold. \
         When `cutoff` is not set, interval join will remember all records from both sides.
