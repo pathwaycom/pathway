@@ -20,6 +20,7 @@ if "PYTEST_CURRENT_TEST" not in os.environ:
 
 
 import pathway.reducers as reducers
+import pathway.universes as universes
 from pathway import debug, demo, io
 from pathway.internals import (
     UDF,
@@ -85,7 +86,6 @@ from pathway.internals import (
     transformer,
     udf,
     udf_async,
-    universes,
     unwrap,
 )
 from pathway.internals.api import PathwayType as Type, PersistenceMode
