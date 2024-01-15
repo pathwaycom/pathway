@@ -272,9 +272,6 @@ class Context(ABC):
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet()
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return []
-
     def _get_type_interpreter(self):
         from pathway.internals.type_interpreter import TypeInterpreter
 
@@ -332,9 +329,6 @@ class RowwiseContext(
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self._id_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe]
-
     @property
     def universe(self) -> Universe:
         return self._id_column.universe
@@ -344,9 +338,6 @@ class RowwiseContext(
 class MaterializedContext(Context):
     _universe: Universe
     _universe_properties: cp.ColumnProperties = cp.ColumnProperties(dtype=dt.POINTER)
-
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe]
 
     @property
     def id_column(self) -> MaterializedIdColumn:
@@ -367,8 +358,8 @@ class GradualBroadcastContext(Context):
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.lower_column, self.value_column, self.upper_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe, self.value_column.universe]
+    def input_universe(self) -> Universe:
+        return self.universe
 
     @cached_property
     def apx_value_column(self):
@@ -405,9 +396,6 @@ class GroupedContext(Context):
             sort_by = []
         return sort_by + [int_colref._column for int_colref in self.grouping_columns]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.inner_context.universe]
-
     @cached_property
     def universe(self) -> Universe:
         return Universe()
@@ -428,8 +416,8 @@ class FilterContext(
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.id_column_to_filter]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.id_column_to_filter.universe]
+    def input_universe(self) -> Universe:
+        return self.id_column_to_filter.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -450,8 +438,8 @@ class TimeColumnContext(Context):
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_id_column.universe]
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -474,8 +462,8 @@ class ForgetImmediatelyContext(Context):
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_id_column.universe]
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -491,8 +479,8 @@ class FilterOutForgettingContext(Context):
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_id_column.universe]
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -518,8 +506,8 @@ class ReindexContext(Context):
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.reindex_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.reindex_column.universe]
+    def input_universe(self) -> Universe:
+        return self.reindex_column.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -537,9 +525,6 @@ class IxContext(Context):
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column, self.key_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe, self.orig_id_column.universe]
-
     @cached_property
     def universe(self) -> Universe:
         return self.key_column.universe
@@ -553,6 +538,9 @@ class IntersectContext(Context):
 
     def __post_init__(self):
         assert len(self.intersecting_ids) > 0
+
+    def input_universe(self) -> Universe:
+        return self.intersecting_ids[0].universe
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.intersecting_ids]
@@ -574,9 +562,6 @@ class RestrictContext(Context):
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_id_column.universe, self.universe]
-
     @cached_property
     def universe(self) -> Universe:
         return self._universe
@@ -589,8 +574,8 @@ class DifferenceContext(Context):
     left: IdColumn
     right: IdColumn
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.left.universe, self.right.universe]
+    def input_universe(self) -> Universe:
+        return self.left.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -605,8 +590,8 @@ class HavingContext(Context):
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.key_column]
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_id_column.universe, self.key_column.universe]
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
 
     @cached_property
     def universe(self) -> Universe:
@@ -625,6 +610,9 @@ class UpdateRowsContext(Context):
 
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([self.updates[ref.name]])
+
+    def input_universe(self) -> Universe:
+        return self.union_ids[0].universe
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.union_ids]
@@ -645,9 +633,6 @@ class UpdateCellsContext(Context):
             return StableSet([self.updates[ref.name]])
         return StableSet()
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.left.universe, self.right.universe]
-
     @property
     def universe(self) -> Universe:
         return self.left.universe
@@ -666,6 +651,9 @@ class ConcatUnsafeContext(Context):
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([update[ref.name] for update in self.updates])
 
+    def input_universe(self) -> Universe:
+        return self.union_ids[0].universe
+
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.union_ids]
 
@@ -682,9 +670,6 @@ class PromiseSameUniverseContext(
 
     orig_id_column: IdColumn
     _id_column: IdColumn
-
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_id_column.universe, self.universe]
 
     @cached_property
     def universe(self) -> Universe:
@@ -715,9 +700,6 @@ class JoinContext(Context):
         return JoinTypeInterpreter(
             self.left_table, self.right_table, self.right_ear, self.left_ear
         )
-
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.left_table._universe, self.right_table._universe]
 
     def intermediate_tables(self) -> Iterable[Table]:
         return [
@@ -799,9 +781,6 @@ class FlattenContext(Context):
                 f"Cannot flatten column {self.flatten_column.expression!r} of type {dtype}."
             )
 
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.orig_universe]
-
     @cached_property
     def universe(self) -> Universe:
         return Universe()
@@ -825,9 +804,6 @@ class SortingContext(Context):
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return [self.key_column, self.instance_column]
-
-    def universe_dependencies(self) -> Iterable[Universe]:
-        return [self.universe]
 
     @cached_property
     def universe(self) -> Universe:

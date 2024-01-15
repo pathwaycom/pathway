@@ -81,7 +81,7 @@ class ExpressionEvaluator(ABC):
         return self.context.expression_type(expression)
 
     @abstractmethod
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
+    def run(self, output_storage: Storage) -> api.Table:
         raise NotImplementedError()
 
     def _flatten_table_storage(
@@ -94,7 +94,7 @@ class ExpressionEvaluator(ABC):
         ]
 
         engine_flattened_table = self.scope.flatten_table_storage(
-            self.state.get_table(input_storage), paths
+            self.state.get_table(input_storage._universe), paths
         )
         return engine_flattened_table
 
@@ -120,7 +120,7 @@ class ExpressionEvaluator(ABC):
                 engine_input_tables.append(flattened_engine_storage)
         else:
             engine_input_tables = [
-                self.state.get_table(storage) for storage in input_storages
+                self.state.get_table(storage._universe) for storage in input_storages
             ]
         return tuple(engine_input_tables)
 
@@ -205,12 +205,11 @@ class RowwiseEvaluator(
     def run(
         self,
         output_storage: Storage,
-        *input_storages: Storage,
         old_path: ColumnPath | None = ColumnPath.EMPTY,
         disable_runtime_typechecking: bool = False,
     ) -> api.Table:
-        [input_storage] = input_storages
-        engine_input_table = self.state.get_table(input_storage)
+        input_storage = self.state.get_storage(self.context.universe)
+        engine_input_table = self.state.get_table(input_storage._universe)
         if output_storage.has_only_references:
             return engine_input_table
 
@@ -285,8 +284,7 @@ class RowwiseEvaluator(
             output_columns.append(output_column)
 
         output_storage = Storage.flat(self.context.universe, output_columns)
-        input_storage = self.state.get_storage(self.context.universe)
-        engine_output_table = self.run(output_storage, input_storage, old_path=None)
+        engine_output_table = self.run(output_storage, old_path=None)
         return (output_columns, output_storage, engine_output_table)
 
     def eval_expression(
@@ -729,26 +727,28 @@ class TableRestrictedRowwiseEvaluator(
 class FilterEvaluator(ExpressionEvaluator, context_type=clmn.FilterContext):
     context: clmn.FilterContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
         filtering_column_path = input_storage.get_path(self.context.filtering_column)
         properties = self._table_properties(output_storage)
         return self.scope.filter_table(
-            self.state.get_table(input_storage), filtering_column_path, properties
+            self.state.get_table(input_storage._universe),
+            filtering_column_path,
+            properties,
         )
 
 
 class ForgetEvaluator(ExpressionEvaluator, context_type=clmn.ForgetContext):
     context: clmn.ForgetContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
         threshold_column_path = input_storage.get_path(self.context.threshold_column)
         time_column_path = input_storage.get_path(self.context.time_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.forget(
-            self.state.get_table(input_storage),
+            self.state.get_table(input_storage._universe),
             threshold_column_path,
             time_column_path,
             self.context.mark_forgetting_records,
@@ -761,16 +761,16 @@ class GradualBroadcastEvaluator(
 ):
     context: clmn.GradualBroadcastContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage, threshold_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        threshold_storage = self.state.get_storage(self.context.value_column.universe)
         lower_path = threshold_storage.get_path(self.context.lower_column)
         value_path = threshold_storage.get_path(self.context.value_column)
         upper_path = threshold_storage.get_path(self.context.upper_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.gradual_broadcast(
-            self.state.get_table(input_storage),
-            self.state.get_table(threshold_storage),
+            self.state.get_table(self.context.input_universe()),
+            self.state.get_table(threshold_storage._universe),
             lower_path,
             value_path,
             upper_path,
@@ -783,12 +783,11 @@ class ForgetImmediatelyEvaluator(
 ):
     context: clmn.ForgetImmediatelyContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
 
         return self.scope.forget_immediately(
-            self.state.get_table(input_storage),
+            self.state.get_table(self.context.input_universe()),
             properties,
         )
 
@@ -798,26 +797,25 @@ class FilterOutForgettingContext(
 ):
     context: clmn.FilterOutForgettingContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
 
         return self.scope.filter_out_results_of_forgetting(
-            self.state.get_table(input_storage), properties
+            self.state.get_table(self.context.input_universe()), properties
         )
 
 
 class FreezeEvaluator(ExpressionEvaluator, context_type=clmn.FreezeContext):
     context: clmn.FreezeContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
         threshold_column_path = input_storage.get_path(self.context.threshold_column)
         time_column_path = input_storage.get_path(self.context.time_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.freeze(
-            self.state.get_table(input_storage),
+            self.state.get_table(input_storage._universe),
             threshold_column_path,
             time_column_path,
             properties,
@@ -827,14 +825,14 @@ class FreezeEvaluator(ExpressionEvaluator, context_type=clmn.FreezeContext):
 class BufferEvaluator(ExpressionEvaluator, context_type=clmn.BufferContext):
     context: clmn.BufferContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
         threshold_column_path = input_storage.get_path(self.context.threshold_column)
         time_column_path = input_storage.get_path(self.context.time_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.buffer(
-            self.state.get_table(input_storage),
+            self.state.get_table(input_storage._universe),
             threshold_column_path,
             time_column_path,
             properties,
@@ -844,8 +842,8 @@ class BufferEvaluator(ExpressionEvaluator, context_type=clmn.BufferContext):
 class IntersectEvaluator(ExpressionEvaluator, context_type=clmn.IntersectContext):
     context: clmn.IntersectContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        engine_tables = [self.state.get_table(storage) for storage in input_storages]
+    def run(self, output_storage: Storage) -> api.Table:
+        engine_tables = self.state.get_tables(self.context.universe_dependencies())
         properties = self._table_properties(output_storage)
         return self.scope.intersect_tables(
             engine_tables[0], engine_tables[1:], properties
@@ -855,24 +853,23 @@ class IntersectEvaluator(ExpressionEvaluator, context_type=clmn.IntersectContext
 class RestrictEvaluator(ExpressionEvaluator, context_type=clmn.RestrictContext):
     context: clmn.RestrictContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        engine_tables = [self.state.get_table(storage) for storage in input_storages]
-        [orig_universe_storage, new_universe_storage] = engine_tables
+    def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
         return self.scope.restrict_table(
-            orig_universe_storage, new_universe_storage, properties
+            self.state.get_table(self.context.orig_id_column.universe),
+            self.state.get_table(self.context.universe),
+            properties,
         )
 
 
 class DifferenceEvaluator(ExpressionEvaluator, context_type=clmn.DifferenceContext):
     context: clmn.DifferenceContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [left_storage, right_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
         return self.scope.subtract_table(
-            self.state.get_table(left_storage),
-            self.state.get_table(right_storage),
+            self.state.get_table(self.context.left.universe),
+            self.state.get_table(self.context.right.universe),
             properties,
         )
 
@@ -880,25 +877,27 @@ class DifferenceEvaluator(ExpressionEvaluator, context_type=clmn.DifferenceConte
 class ReindexEvaluator(ExpressionEvaluator, context_type=clmn.ReindexContext):
     context: clmn.ReindexContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
         reindexing_column_path = input_storage.get_path(self.context.reindex_column)
         properties = self._table_properties(output_storage)
         return self.scope.reindex_table(
-            self.state.get_table(input_storage), reindexing_column_path, properties
+            self.state.get_table(input_storage._universe),
+            reindexing_column_path,
+            properties,
         )
 
 
 class IxEvaluator(ExpressionEvaluator, context_type=clmn.IxContext):
     context: clmn.IxContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [key_storage, to_ix_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        key_storage = self.state.get_storage(self.context.universe)
         key_column_path = key_storage.get_path(self.context.key_column)
         properties = self._table_properties(output_storage)
         return self.scope.ix_table(
-            self.state.get_table(to_ix_storage),
-            self.state.get_table(key_storage),
+            self.state.get_table(self.context.orig_id_column.universe),
+            self.state.get_table(self.context.universe),
             key_column_path,
             optional=self.context.optional,
             strict=True,
@@ -909,25 +908,27 @@ class IxEvaluator(ExpressionEvaluator, context_type=clmn.IxContext):
 class PromiseSameUniverseEvaluator(
     ExpressionEvaluator, context_type=clmn.PromiseSameUniverseContext
 ):
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        engine_tables = [self.state.get_table(storage) for storage in input_storages]
-        [orig_universe_storage, new_universe_storage] = engine_tables
+    context: clmn.PromiseSameUniverseContext
+
+    def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
         return self.scope.override_table_universe(
-            orig_universe_storage, new_universe_storage, properties
+            self.state.get_table(self.context.orig_id_column.universe),
+            self.state.get_table(self.context.universe),
+            properties,
         )
 
 
 class HavingEvaluator(ExpressionEvaluator, context_type=clmn.HavingContext):
     context: clmn.HavingContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [to_ix_storage, key_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        key_storage = self.state.get_storage(self.context.key_column.universe)
         key_column_path = key_storage.get_path(self.context.key_column)
         properties = self._table_properties(output_storage)
         return self.scope.ix_table(
-            self.state.get_table(to_ix_storage),
-            self.state.get_table(key_storage),
+            self.state.get_table(self.context.orig_id_column.universe),
+            self.state.get_table(key_storage._universe),
             key_column_path,
             optional=False,
             strict=False,
@@ -964,8 +965,9 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             right_input_storage.restrict_to_table(self.context.right_table),
         )
 
-    def run_join(self, universe: univ.Universe, *input_storages: Storage) -> Storage:
-        [left_input_storage, right_input_storage] = input_storages
+    def run_join(self, universe: univ.Universe) -> None:
+        left_input_storage = self.state.get_storage(self.context.left_table._universe)
+        right_input_storage = self.state.get_storage(self.context.right_table._universe)
         output_storage = self.get_join_storage(
             universe, left_input_storage, right_input_storage
         )
@@ -979,8 +981,8 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
         ]
         properties = self._table_properties(output_storage)
         output_engine_table = self.scope.join_tables(
-            self.state.get_table(left_input_storage),
-            self.state.get_table(right_input_storage),
+            self.state.get_table(left_input_storage._universe),
+            self.state.get_table(right_input_storage._universe),
             left_paths,
             right_paths,
             properties,
@@ -990,10 +992,8 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
         )
         self.state.set_table(output_storage, output_engine_table)
 
-        return output_storage
-
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        joined_storage = self.run_join(self.context.universe, *input_storages)
+    def run(self, output_storage: Storage) -> api.Table:
+        self.run_join(self.context.universe)
         rowwise_evaluator = RowwiseEvaluator(
             clmn.RowwiseContext(self.context.id_column),
             self.scope,
@@ -1006,7 +1006,6 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             old_path = None
         return rowwise_evaluator.run(
             output_storage,
-            joined_storage,
             old_path=old_path,
             disable_runtime_typechecking=True,
         )
@@ -1028,9 +1027,8 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
     def run(
         self,
         output_storage: Storage,
-        *input_storages: Storage,
     ) -> api.Table:
-        [input_storage] = input_storages
+        input_storage = self.state.get_storage(self.context.inner_context.universe)
         reducers = []
         for column in output_storage.get_columns():
             assert isinstance(column, clmn.ColumnWithExpression)
@@ -1051,7 +1049,7 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
         properties = self._table_properties(output_storage)
 
         reduced_engine_table = self.scope.group_by_table(
-            self.state.get_table(input_storage),
+            self.state.get_table(input_storage._universe),
             groupby_columns_paths,
             reducers,
             self.context.set_id,
@@ -1109,7 +1107,8 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
 class UpdateRowsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateRowsContext):
     context: clmn.UpdateRowsContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storages = self.state.get_storages(self.context.universe_dependencies())
         engine_input_tables = self.flatten_tables(output_storage, *input_storages)
         [input_table, update_input_table] = engine_input_tables
         properties = self._table_properties(output_storage)
@@ -1119,11 +1118,9 @@ class UpdateRowsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateRowsConte
 class UpdateCellsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateCellsContext):
     context: clmn.UpdateCellsContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        if len(input_storages) == 1:
-            input_storage, update_input_storage = input_storages[0], input_storages[0]
-        else:
-            [input_storage, update_input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.left.universe)
+        update_input_storage = self.state.get_storage(self.context.right.universe)
         paths = []
         update_paths = []
 
@@ -1142,8 +1139,8 @@ class UpdateCellsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateCellsCon
         properties = self._table_properties(output_storage)
 
         return self.scope.update_cells_table(
-            self.state.get_table(input_storage),
-            self.state.get_table(update_input_storage),
+            self.state.get_table(input_storage._universe),
+            self.state.get_table(update_input_storage._universe),
             paths,
             update_paths,
             properties,
@@ -1153,7 +1150,8 @@ class UpdateCellsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateCellsCon
 class ConcatUnsafeEvaluator(ExpressionEvaluator, context_type=clmn.ConcatUnsafeContext):
     context: clmn.ConcatUnsafeContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storages = self.state.get_storages(self.context.universe_dependencies())
         engine_input_tables = self.flatten_tables(output_storage, *input_storages)
         properties = self._table_properties(output_storage)
         engine_table = self.scope.concat_tables(engine_input_tables, properties)
@@ -1163,25 +1161,27 @@ class ConcatUnsafeEvaluator(ExpressionEvaluator, context_type=clmn.ConcatUnsafeC
 class FlattenEvaluator(ExpressionEvaluator, context_type=clmn.FlattenContext):
     context: clmn.FlattenContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.orig_universe)
         flatten_column_path = input_storage.get_path(self.context.flatten_column)
         properties = self._table_properties(output_storage)
         return self.scope.flatten_table(
-            self.state.get_table(input_storage), flatten_column_path, properties
+            self.state.get_table(input_storage._universe),
+            flatten_column_path,
+            properties,
         )
 
 
 class SortingEvaluator(ExpressionEvaluator, context_type=clmn.SortingContext):
     context: clmn.SortingContext
 
-    def run(self, output_storage: Storage, *input_storages: Storage) -> api.Table:
-        [input_storage] = input_storages
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.universe)
         key_column_path = input_storage.get_path(self.context.key_column)
         instance_column_path = input_storage.get_path(self.context.instance_column)
         properties = self._table_properties(output_storage)
         return self.scope.sort_table(
-            self.state.get_table(input_storage),
+            self.state.get_table(input_storage._universe),
             key_column_path,
             instance_column_path,
             properties,

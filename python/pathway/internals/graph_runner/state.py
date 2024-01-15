@@ -30,8 +30,7 @@ class ScopeState:
         self.storages = {}
 
     def extract_universe(self, univ: universe.Universe) -> api.Universe:
-        storage = self.get_storage(univ)
-        engine_table = self.get_table(storage)
+        engine_table = self.get_table(univ)
         engine_universe = self.scope.table_universe(engine_table)
         self.set_universe(univ, engine_universe)
         return engine_universe
@@ -41,7 +40,7 @@ class ScopeState:
         storage = self.get_storage(univ)
         if not storage.has_column(column):
             raise OutOfScopeError("column out of scope")
-        engine_table = self.get_table(storage)
+        engine_table = self.get_table(univ)
         if not self.has_universe(univ):
             engine_universe = self.extract_universe(univ)
         else:
@@ -136,8 +135,13 @@ class ScopeState:
     def get_computer_logic(self, id: int) -> Callable:
         return self.computers[id]
 
-    def get_table(self, key: Storage) -> api.Table:
-        return self.tables[key._universe]
+    def get_table(self, key: universe.Universe) -> api.Table:
+        if key not in self.tables:
+            raise OutOfScopeError("table out of scope")
+        return self.tables[key]
+
+    def get_tables(self, keys: Iterable[universe.Universe]) -> list[api.Table]:
+        return [self.get_table(key) for key in keys]
 
     def set_table(self, storage: Storage, table: api.Table) -> None:
         self.tables[storage._universe] = table
@@ -147,3 +151,6 @@ class ScopeState:
         if key not in self.storages:
             raise OutOfScopeError("path storage out of scope")
         return self.storages[key]
+
+    def get_storages(self, keys: Iterable[universe.Universe]) -> list[Storage]:
+        return [self.get_storage(key) for key in keys]

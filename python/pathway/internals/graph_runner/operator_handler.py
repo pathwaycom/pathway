@@ -157,7 +157,7 @@ class OutputOperatorHandler(
         datasink = operator.datasink
         table = operator.table
         input_storage = self.state.get_storage(table._universe)
-        engine_table = self.state.get_table(input_storage)
+        engine_table = self.state.get_table(table._universe)
         column_paths = [
             input_storage.get_path(column) for column in table._columns.values()
         ]
@@ -198,12 +198,8 @@ class ContextualizedIntermediateOperatorHandler(
             evaluator = evaluator_cls(
                 context, self.scope, self.state, self.scope_context
             )
-            storages = []
-            for univ in context.universe_dependencies():
-                storage = self.state.get_storage(univ)
-                storages.append(storage)
 
-            engine_table = evaluator.run(output_storage, *storages)
+            engine_table = evaluator.run(output_storage)
             self.state.set_table(output_storage, engine_table)
             self.scope.probe_table(engine_table, self.operator_id)
             evaluator.flatten_table_storage_if_needed(output_storage)
@@ -233,7 +229,7 @@ class DebugOperatorHandler(
     ):
         table = operator.table
         input_storage = self.state.get_storage(table._universe)
-        engine_table = self.state.get_table(input_storage)
+        engine_table = self.state.get_table(table._universe)
         for name, column in table._columns.items():
             self.scope.debug_column(
                 f"{operator.name}.{name}", engine_table, input_storage.get_path(column)

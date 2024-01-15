@@ -173,8 +173,12 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
                 source_columns.append([columns[name] for name in names])
 
             flattened_inputs = []
-            assert len(input_storages) == len(source_columns)
-            for universe, cols in zip(input_storages.keys(), source_columns):
+            assert len(list(self.context.universe_dependencies())) == len(
+                source_columns
+            )
+            for universe, cols in zip(
+                self.context.universe_dependencies(), source_columns
+            ):
                 flattened_storage = Storage.flat(universe, cols)
                 flattened_inputs.append(flattened_storage)
         else:
@@ -194,6 +198,22 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
         return storage.with_flattened_inputs(flattened_inputs)
 
 
+NoNewColumnsContext = (
+    clmn.FilterContext
+    | clmn.ReindexContext
+    | clmn.IntersectContext
+    | clmn.DifferenceContext
+    | clmn.HavingContext
+    | clmn.ForgetContext
+    | clmn.ForgetImmediatelyContext
+    | clmn.FilterOutForgettingContext
+    | clmn.FreezeContext
+    | clmn.BufferContext
+    | clmn.ConcatUnsafeContext
+    | clmn.UpdateRowsContext
+)
+
+
 class NoNewColumnsPathEvaluator(
     PathEvaluator,
     context_types=[
@@ -207,17 +227,16 @@ class NoNewColumnsPathEvaluator(
         clmn.FilterOutForgettingContext,
         clmn.FreezeContext,
         clmn.BufferContext,
-        clmn.HavingContext,
     ],
 ):
+    context: NoNewColumnsContext
+
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
-        input_storage = next(iter(input_storages.values()))
-        # for contexts using _no_new_columns universe_dependencies[0]
-        # has to contain columns to transfer to new storage
+        input_storage = input_storages[self.context.input_universe()]
         paths: dict[clmn.Column, ColumnPath] = {}
         for column in output_columns:
             assert isinstance(column, clmn.ColumnWithReference)

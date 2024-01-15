@@ -232,11 +232,9 @@ class OperatorStorageGraph:
     ) -> None:
         for table in operator.intermediate_and_output_tables:
             output_columns = self.column_deps_at_output[operator][table]
-            universes = table._id_column.context.universe_dependencies()
-            input_storages = {universe: storages[universe] for universe in universes}
             path_storage = path_evaluator.compute_paths(
                 output_columns,
-                input_storages,
+                storages,
                 operator,
                 table._id_column.context,
             )
@@ -336,7 +334,7 @@ class OperatorStorageGraph:
         for table in output_tables:
             assert self.final_storages is not None
             storage = self.final_storages[table._universe]
-            engine_table = state.get_table(storage)
+            engine_table = state.get_table(table._universe)
             paths = [storage.get_path(column) for column in table._columns.values()]
             tables.append((engine_table, paths))
         return tables
