@@ -81,6 +81,7 @@ jobs:
           manylinux: auto
           rustup-components: rust-std
           working-directory: .
+          sccache: true
           before-script-linux: yum install -y perl-core
 
       - name: Build package macOS Apple silicon
@@ -110,6 +111,7 @@ jobs:
           manylinux: auto
           rustup-components: rust-std
           working-directory: .
+          sccache: true
 
       - name: Upload artifact
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
@@ -173,6 +175,7 @@ jobs:
           WHEEL=(./wheels/pathway-*.whl)
           pip install --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
+          export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
 
   Verify_ARM_ARCH:
@@ -217,6 +220,10 @@ jobs:
           PATHWAY_MONITORING_HTTP_PORT=20099
           pip install --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
+          if [[ "$RUNNER_NAME" == *mac* ]]; then
+            export PYTEST_XDIST_AUTO_NUM_WORKERS=4
+          fi
+          export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
