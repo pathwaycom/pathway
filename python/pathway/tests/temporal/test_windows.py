@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 import typing
 
 import pandas as pd
@@ -11,7 +12,7 @@ import pytest
 import pathway as pw
 from pathway.internals import dtype as dt
 from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
-from pathway.tests.utils import T, assert_table_equality_wo_index
+from pathway.tests.utils import T, assert_table_equality_wo_index, deprecated_call_here
 
 
 def test_session_simple():
@@ -76,7 +77,7 @@ def test_session_simple_deprecated():
     gb = t.windowby(
         t.t, window=pw.temporal.session(predicate=should_merge), instance=t.instance
     )
-    with pytest.warns():
+    with pytest.deprecated_call():
         result = gb.reduce(
             pw.this._pw_shard,
         )
@@ -110,9 +111,10 @@ def test_deprecation():
     def should_merge(a, b):
         return abs(a - b) <= 1
 
-    with pytest.warns(
-        DeprecationWarning,
-        match="The `shard` argument is deprecated. Please use `instance` instead.",
+    with deprecated_call_here(
+        match=re.escape(
+            "The `shard` argument is deprecated. Please use `instance` instead."
+        )
     ):
         gb = t.windowby(
             t.t, window=pw.temporal.session(predicate=should_merge), shard=t.instance
@@ -395,9 +397,10 @@ def test_sliding_deprecate_offset():
         6   |  17
     """
     )
-    with pytest.warns(
-        DeprecationWarning,
-        match="The `offset` argument is deprecated. Please use `origin` instead.",
+    with deprecated_call_here(
+        match=re.escape(
+            "The `offset` argument is deprecated. Please use `origin` instead."
+        )
     ):
         gb = t.windowby(t.t, window=pw.temporal.sliding(duration=10, hop=3, offset=13))
     result = gb.reduce(
@@ -566,9 +569,10 @@ def test_tumbling_deprecate_offset():
         6   |  17
     """
     )
-    with pytest.warns(
-        DeprecationWarning,
-        match="The `offset` argument is deprecated. Please use `origin` instead.",
+    with deprecated_call_here(
+        match=re.escape(
+            "The `offset` argument is deprecated. Please use `origin` instead."
+        ),
     ):
         gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=3, offset=7))
     result = gb.reduce(

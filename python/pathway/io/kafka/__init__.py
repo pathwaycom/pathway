@@ -40,6 +40,7 @@ def read(
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    _stacklevel: int = 1,
     **kwargs,
 ) -> Table:
     """Generalized method to read the data from the given topic in Kafka.
@@ -228,11 +229,11 @@ def read(
         warnings.warn(
             "'topic' should be a str, not list. First element will be used.",
             SyntaxWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel + 4,
         )
         topic = topic[0]
 
-    check_deprecated_kwargs(kwargs, ["topic_names"])
+    check_deprecated_kwargs(kwargs, ["topic_names"], stacklevel=_stacklevel + 4)
 
     data_storage = api.DataStorage(
         storage_type="kafka",
@@ -251,6 +252,7 @@ def read(
         primary_key=primary_key,
         types=types,
         default_values=default_values,
+        _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms

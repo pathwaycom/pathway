@@ -54,7 +54,7 @@ def clustering_via_lsh(
     def clustering(data: list[np.ndarray], weights: list[float]) -> list[float]:
         from sklearn.cluster import KMeans
 
-        kmeans = KMeans(n_clusters=3, init="k-means++", random_state=0)
+        kmeans = KMeans(n_clusters=3, init="k-means++", random_state=0, n_init=10)
         kmeans.fit(data, sample_weight=weights)
 
         return kmeans.labels_

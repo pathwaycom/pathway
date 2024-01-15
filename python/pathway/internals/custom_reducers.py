@@ -84,7 +84,7 @@ class BaseCustomAccumulator(ABC):
     ...     return self.sum / self.cnt
     >>> import sys; sys.modules[__name__].CustomAvgAccumulator = CustomAvgAccumulator # NODOCS
     >>> custom_avg = pw.reducers.udf_reducer(CustomAvgAccumulator)
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet | price
     ... 10  | Alice | dog | 100
     ... 9   | Bob   | cat | 80
@@ -170,7 +170,7 @@ def udf_reducer(
     ...     return self.sum / self.cnt
     >>> import sys; sys.modules[__name__].CustomAvgAccumulator = CustomAvgAccumulator # NODOCS
     >>> custom_avg = pw.reducers.udf_reducer(CustomAvgAccumulator)
-    >>> t1 = pw.debug.parse_to_table('''
+    >>> t1 = pw.debug.table_from_markdown('''
     ... age | owner | pet | price
     ... 10  | Alice | dog | 100
     ... 9   | Bob   | cat | 80

@@ -5,8 +5,9 @@ A library for document parsers: functions that take raw bytes and return a list 
 chunks along with their metadata.
 """
 
+from collections.abc import Callable
 from io import BytesIO
-from typing import Any, Callable, Optional
+from typing import Any
 
 
 class ParseUtf8:
@@ -38,7 +39,7 @@ class ParseUnstructured:
     def __init__(
         self,
         mode: str = "single",
-        post_processors: Optional[list[Callable]] = None,
+        post_processors: list[Callable] | None = None,
         **unstructured_kwargs: Any,
     ):
         # lazy load to prevent unstructured from being a dependency on whole pathway

@@ -140,21 +140,21 @@ def stream_points(with_k: bool = False) -> tuple[pw.Table, pw.Table]:
     points = T(
         """
          x |  y | __time__
-         2 |  2 |     1
-         3 | -2 |     2
-        -1 |  0 |     4
-         1 |  2 |     6
-        -3 |  1 |     8
-         1 | -4 |    10
+         2 |  2 |     2
+         3 | -2 |     4
+        -1 |  0 |     8
+         1 |  2 |    12
+        -3 |  1 |    16
+         1 | -4 |    20
     """
     ).select(coords=pw.make_tuple(pw.this.x, pw.this.y))
     queries = T(
         """
          x |  y | k | __time__
-         0 |  0 | 1 |     3
-         2 | -2 | 2 |     5
-        -1 |  1 | 3 |     7
-        -2 | -3 | 0 |     9
+         0 |  0 | 1 |     6
+         2 | -2 | 2 |    10
+        -1 |  1 | 3 |    14
+        -2 | -3 | 0 |    18
     """
     ).select(coords=pw.make_tuple(pw.this.x, pw.this.y), k=pw.this.k)
     if not with_k:

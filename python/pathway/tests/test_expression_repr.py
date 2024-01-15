@@ -4,7 +4,7 @@ import pandas as pd
 
 import pathway as pw
 from pathway.internals.expression_printer import ExpressionFormatter
-from pathway.tests.utils import T
+from pathway.tests.utils import T, deprecated_call_here
 
 
 def test_column_reference():
@@ -222,7 +222,9 @@ def test_method_call():
     assert repr(t.ts.dt.day()) == "(<table1>.ts).dt.day()"
     assert repr(t.ts.dt.month()) == "(<table1>.ts).dt.month()"
     assert repr(t.ts.dt.year()) == "(<table1>.ts).dt.year()"
-    assert repr(t.ts.dt.timestamp()) == "(<table1>.ts).dt.timestamp()"
+    with deprecated_call_here(match="unit"):
+        assert repr(t.ts.dt.timestamp()) == "(<table1>.ts).dt.timestamp()"
+    assert repr(t.ts.dt.timestamp("s")) == "(<table1>.ts).dt.timestamp('s')"
     assert repr(t.ts.dt.strftime("%m")) == "(<table1>.ts).dt.strftime('%m')"
     assert repr(t.td.dt.nanoseconds()) == "(<table1>.td).dt.nanoseconds()"
     assert repr(t.td.dt.microseconds()) == "(<table1>.td).dt.microseconds()"

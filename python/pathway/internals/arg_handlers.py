@@ -73,7 +73,7 @@ def shard_deprecation(self, *args, shard=None, instance=None, **kwargs):
             warn(
                 "The `shard` argument is deprecated. Please use `instance` instead.",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=6,
             )
         else:
             raise ValueError(
@@ -90,7 +90,7 @@ def offset_deprecation(*args, offset=None, origin=None, **kwargs):
             warn(
                 "The `offset` argument is deprecated. Please use `origin` instead.",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=7,
             )
         else:
             raise ValueError(

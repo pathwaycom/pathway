@@ -214,7 +214,7 @@ def table_to_pandas(table: Table, *, include_id: bool = True):
     return res
 
 
-def _validate_dataframe(df: pd.DataFrame) -> None:
+def _validate_dataframe(df: pd.DataFrame, stacklevel: int = 1) -> None:
     for pseudocolumn in api.PANDAS_PSEUDOCOLUMNS:
         if pseudocolumn in df.columns:
             if not pd.api.types.is_integer_dtype(df[pseudocolumn].dtype):
@@ -225,7 +225,10 @@ def _validate_dataframe(df: pd.DataFrame) -> None:
                 f"Column {api.TIME_PSEUDOCOLUMN} cannot contain negative times."
             )
         if any(df[api.TIME_PSEUDOCOLUMN] % 2 == 1):
-            warn("timestamps are required to be even; all timestamps will be doubled")
+            warn(
+                "timestamps are required to be even; all timestamps will be doubled",
+                stacklevel=stacklevel + 1,
+            )
             df[api.TIME_PSEUDOCOLUMN] = 2 * df[api.TIME_PSEUDOCOLUMN]
 
     if api.DIFF_PSEUDOCOLUMN in df.columns:
@@ -261,7 +264,9 @@ def table_from_rows(
         for colname, entry in zip(colnames, list(row)):
             kwargs[colname].append(entry)
     df = pd.DataFrame.from_dict(kwargs)
-    return table_from_pandas(df, unsafe_trusted_ids=unsafe_trusted_ids, schema=schema)
+    return table_from_pandas(
+        df, unsafe_trusted_ids=unsafe_trusted_ids, schema=schema, _stacklevel=5
+    )
 
 
 @check_arg_types
@@ -271,6 +276,7 @@ def table_from_pandas(
     id_from: list[str] | None = None,
     unsafe_trusted_ids: bool = False,
     schema: type[Schema] | None = None,
+    _stacklevel: int = 1,
 ) -> Table:
     """A function for creating a table from a pandas DataFrame. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
@@ -290,7 +296,7 @@ def table_from_pandas(
     elif ordinary_columns_names != schema.column_names():
         raise ValueError("schema does not match given dataframe")
 
-    _validate_dataframe(df)
+    _validate_dataframe(df, stacklevel=_stacklevel + 4)
 
     if id_from is None and schema is not None:
         id_from = schema.primary_key_columns()
@@ -353,6 +359,7 @@ def table_from_markdown(
     id_from=None,
     unsafe_trusted_ids=False,
     schema: type[Schema] | None = None,
+    _stacklevel: int = 1,
 ) -> Table:
     """A function for creating a table from its definition in markdown. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
@@ -361,7 +368,11 @@ def table_from_markdown(
     """
     df = _markdown_to_pandas(table_def)
     return table_from_pandas(
-        df, id_from=id_from, unsafe_trusted_ids=unsafe_trusted_ids, schema=schema
+        df,
+        id_from=id_from,
+        unsafe_trusted_ids=unsafe_trusted_ids,
+        schema=schema,
+        _stacklevel=_stacklevel + 1,
     )
 
 
@@ -371,6 +382,7 @@ def parse_to_table(*args, **kwargs) -> Table:
         DeprecationWarning,
         stacklevel=2,
     )
+    kwargs["_stacklevel"] = 2
     return table_from_markdown(*args, **kwargs)
 
 
@@ -379,13 +391,16 @@ def table_from_parquet(
     path: str | PathLike,
     id_from=None,
     unsafe_trusted_ids=False,
+    _stacklevel: int = 1,
 ) -> Table:
     """
     Reads a Parquet file into a pandas DataFrame and then converts that into a Pathway table.
     """
 
     df = pd.read_parquet(path)
-    return table_from_pandas(df, id_from=None, unsafe_trusted_ids=False)
+    return table_from_pandas(
+        df, id_from=None, unsafe_trusted_ids=False, _stacklevel=_stacklevel + 3
+    )
 
 
 @check_arg_types
@@ -423,6 +438,7 @@ class StreamGenerator:
         self,
         batches: dict[int, dict[int, list[tuple[int, api.Pointer, list[api.Value]]]]],
         schema: type[Schema],
+        _stacklevel: int = 1,
     ) -> Table:
         """A function that creates a table from a mapping of timestamps to batches. Each batch
         is a mapping from worker id to list of rows processed in this batch by this worker,
@@ -436,7 +452,7 @@ class StreamGenerator:
             schema: schema of the table
         """
         persistent_id = self._get_next_persistent_id()
-        workers = set([worker for batch in batches.values() for worker in batch])
+        workers = {worker for batch in batches.values() for worker in batch}
         for worker in workers:
             self.events[(persistent_id, worker)] = []
 
@@ -450,7 +466,10 @@ class StreamGenerator:
             )
 
         if any(timestamp for timestamp in timestamps if timestamp % 2 == 1):
-            warn("timestamps are required to be even; all timestamps will be doubled")
+            warn(
+                "timestamps are required to be even; all timestamps will be doubled",
+                stacklevel=_stacklevel + 1,
+            )
             batches = {2 * timestamp: batches[timestamp] for timestamp in batches}
 
         for timestamp in sorted(batches):
@@ -475,6 +494,7 @@ class StreamGenerator:
         self,
         batches: list[dict[int, list[dict[str, api.Value]]]],
         schema: type[Schema],
+        _stacklevel: int = 1,
     ) -> Table:
         """A function that creates a table from a list of batches, where each batch is a mapping
         from worker id to a list of rows processed by this worker in this batch.
@@ -485,7 +505,7 @@ class StreamGenerator:
             schema: schema of the table
         """
         key = itertools.count()
-        schema, api_schema = read_schema(schema=schema)
+        schema, api_schema = read_schema(schema=schema, _stacklevel=_stacklevel + 1)
         value_fields: list[api.ValueField] = api_schema["value_fields"]
 
         def next_key() -> api.Pointer:
@@ -507,12 +527,15 @@ class StreamGenerator:
             changes = {worker: add_diffs_and_keys(batch[worker]) for worker in batch}
             formatted_batches[next(timestamp)] = changes
 
-        return self._table_from_dict(formatted_batches, schema)
+        return self._table_from_dict(
+            formatted_batches, schema, _stacklevel=_stacklevel + 1
+        )
 
     def table_from_list_of_batches(
         self,
         batches: list[list[dict[str, api.Value]]],
         schema: type[Schema],
+        _stacklevel: int = 1,
     ) -> Table:
         """A function that creates a table from a list of batches, where each batch is a list of
         rows in this batch. Each row is a mapping from column name to a value.
@@ -522,7 +545,9 @@ class StreamGenerator:
             schema: schema of the table
         """
         batches_by_worker = [{0: batch} for batch in batches]
-        return self.table_from_list_of_batches_by_workers(batches_by_worker, schema)
+        return self.table_from_list_of_batches_by_workers(
+            batches_by_worker, schema, _stacklevel=_stacklevel + 1
+        )
 
     def table_from_pandas(
         self,
@@ -530,6 +555,7 @@ class StreamGenerator:
         id_from: list[str] | None = None,
         unsafe_trusted_ids: bool = False,
         schema: type[Schema] | None = None,
+        _stacklevel: int = 1,
     ) -> Table:
         """A function for creating a table from a pandas DataFrame. If the DataFrame
         contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
@@ -540,7 +566,7 @@ class StreamGenerator:
             schema = schema_from_pandas(
                 df, exclude_columns={"_time", "_diff", "_worker"}
             )
-        schema, api_schema = read_schema(schema=schema)
+        schema, api_schema = read_schema(schema=schema, _stacklevel=_stacklevel + 1)
         value_fields: list[api.ValueField] = api_schema["value_fields"]
 
         if "_time" not in df:
@@ -579,7 +605,7 @@ class StreamGenerator:
 
             batches[time][worker].append((diff, key, values))
 
-        return self._table_from_dict(batches, schema)
+        return self._table_from_dict(batches, schema, _stacklevel=_stacklevel + 1)
 
     def table_from_markdown(
         self,
@@ -587,6 +613,7 @@ class StreamGenerator:
         id_from: list[str] | None = None,
         unsafe_trusted_ids: bool = False,
         schema: type[Schema] | None = None,
+        _stacklevel: int = 1,
     ) -> Table:
         """A function for creating a table from its definition in markdown. If it
         contains a column ``_time``, rows will be split into batches with timestamps from ``_time`` column.
@@ -594,7 +621,9 @@ class StreamGenerator:
         ``_diff`` column as an event type - with ``1`` treated as inserting row and ``-1`` as removing.
         """
         df = _markdown_to_pandas(table)
-        return self.table_from_pandas(df, id_from, unsafe_trusted_ids, schema)
+        return self.table_from_pandas(
+            df, id_from, unsafe_trusted_ids, schema, _stacklevel=_stacklevel + 1
+        )
 
     def persistence_config(self) -> persistence.Config | None:
         """Returns a persistece config to be used during run. Needs to be passed to ``pw.run``

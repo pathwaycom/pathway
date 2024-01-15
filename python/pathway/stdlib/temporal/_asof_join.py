@@ -80,7 +80,7 @@ def _build_groups(t: pw.Table, dir_next: bool) -> pw.Table:
     )
 
     def merge_ccs(data):
-        data <<= data.select(data.ix(data.group_repr).group_repr)
+        data = data.with_columns(data.ix(data.group_repr).group_repr)
         return data
 
     group_table = pw.iterate(merge_ccs, data=succ_table)
@@ -378,8 +378,7 @@ class AsofJoinResult(DesugaringContext):
                 pw.this.side,
                 **{sel_col.output_name: sel_col.default for sel_col in self._all_cols},
             )
-            res = res.with_columns(**fill_self(m0, False))
-            res <<= m0.select(**fill_peer(m0, False))
+            res = res.with_columns(**fill_self(m0, False), **fill_peer(m0, False))
 
         if self._mode == pw.JoinMode.RIGHT:
             res = m1.select(
@@ -389,8 +388,7 @@ class AsofJoinResult(DesugaringContext):
                 pw.this.side,
                 **{sel_col.output_name: sel_col.default for sel_col in self._all_cols},
             )
-            res = res.with_columns(**fill_self(m1, True))
-            res <<= m1.select(**fill_peer(m1, True))
+            res = res.with_columns(**fill_self(m1, True), **fill_peer(m1, True))
 
         if self._mode == pw.JoinMode.OUTER:
             res = m.select(

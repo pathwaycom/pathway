@@ -66,7 +66,7 @@ class AwsS3Settings:
         starts_with_prefix = s3_path.startswith(S3_PATH_PREFIX)
         has_extra_chars = len(s3_path) > len(S3_PATH_PREFIX)
         if not starts_with_prefix or not has_extra_chars:
-            raise ValueError("Incorrect S3 path: {}".format(s3_path))
+            raise ValueError(f"Incorrect S3 path: {s3_path}")
         bucket = s3_path[len(S3_PATH_PREFIX) :].split("/")[0]
 
         # the crate we use on the Rust-engine side can't detect the location

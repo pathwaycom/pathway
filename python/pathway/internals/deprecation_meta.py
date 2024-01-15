@@ -36,7 +36,11 @@ class DeprecationMetaclass(type):
             if issubclass(cls, base_cls):
                 from warnings import warn
 
-                warn(f"DEPRECATED: {name} is deprecated, use {new_name}")
+                warn(
+                    f"{name!r} is deprecated, use {new_name!r}",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
                 return new_fun
 
         return super().__getattr__(name)  # type: ignore
@@ -52,7 +56,11 @@ class DeprecationSuperclass(metaclass=DeprecationMetaclass):
             if isinstance(self, base_cls):
                 from warnings import warn
 
-                warn(f"DEPRECATED: {name} is deprecated, use {new_name}")
+                warn(
+                    f"{name!r} is deprecated, use {new_name!r}",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
                 return new_name
         else:
             return name
@@ -109,6 +117,10 @@ class DeprecationSuperclass(metaclass=DeprecationMetaclass):
             if isinstance(self, base_cls):
                 from warnings import warn
 
-                warn(f"DEPRECATED: {name} is deprecated, use {new_name}")
+                warn(
+                    f"{name!r} is deprecated, use {new_name!r}",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
                 return new_fun_delayed
         raise AttributeError

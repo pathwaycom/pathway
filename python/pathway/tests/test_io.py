@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import random
+import re
 import sqlite3
 import sys
 import threading
@@ -29,6 +30,7 @@ from pathway.tests.utils import (
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
     assert_table_equality_wo_types,
+    deprecated_call_here,
     needs_multiprocessing_fork,
     run,
     run_all,
@@ -158,32 +160,34 @@ def test_python_connector_no_primary_key():
         x: int
         y: int
 
-    class TestSubject(pw.python.ConnectorSubject):
+    class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
             self.next_json({"x": 1, "y": 1})
             self.next_json({"x": 2, "y": 2})
 
     variants = []
 
-    variants.append(pw.python.read(TestSubject(), schema=InputSchema, format="json"))
-    variants.append(
-        pw.python.read(
-            TestSubject(),
-            primary_key=[],
-            value_columns=["x", "y"],
-            types={"x": pw.Type.INT, "y": pw.Type.INT},
-            format="json",
+    variants.append(pw.io.python.read(TestSubject(), schema=InputSchema, format="json"))
+    with deprecated_call_here():
+        variants.append(
+            pw.io.python.read(
+                TestSubject(),
+                primary_key=[],
+                value_columns=["x", "y"],
+                types={"x": pw.Type.INT, "y": pw.Type.INT},
+                format="json",
+            )
         )
-    )
-    variants.append(
-        pw.python.read(
-            TestSubject(),
-            primary_key=None,
-            value_columns=["x", "y"],
-            types={"x": pw.Type.INT, "y": pw.Type.INT},
-            format="json",
+    with deprecated_call_here():
+        variants.append(
+            pw.io.python.read(
+                TestSubject(),
+                primary_key=None,
+                value_columns=["x", "y"],
+                types={"x": pw.Type.INT, "y": pw.Type.INT},
+                format="json",
+            )
         )
-    )
 
     for table in variants:
         assert_table_equality_wo_index(
@@ -199,12 +203,12 @@ def test_python_connector_no_primary_key():
 
 
 def test_python_connector_raw():
-    class TestSubject(pw.python.ConnectorSubject):
+    class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
             self.next_str("lorem")
             self.next_str("ipsum")
 
-    table = pw.python.read(TestSubject(), format="raw")
+    table = pw.io.python.read(TestSubject(), format="raw")
 
     assert_table_equality_wo_index_types(
         table,
@@ -534,25 +538,23 @@ def test_id_hashing_across_connectors(tmp_path: pathlib.Path):
             self.next_json({"key": 2, "value": "bar"})
             self.next_json({"key": 3, "value": "baz"})
 
+    class TestSchema(pw.Schema):
+        key: int = pw.column_definition(primary_key=True)
+        value: str
+
     table_csv = pw.io.csv.read(
         tmp_path / "input.csv",
-        id_columns=["key"],
-        value_columns=["value"],
-        types={"key": pw.Type.INT, "value": pw.Type.STRING},
+        schema=TestSchema,
         mode="static",
     )
     table_json = pw.io.jsonlines.read(
         tmp_path / "input.json",
-        primary_key=["key"],
-        value_columns=["value"],
-        types={"key": pw.Type.INT, "value": pw.Type.STRING},
+        schema=TestSchema,
         mode="static",
     )
     table_py = pw.io.python.read(
         subject=TestSubject(),
-        primary_key=["key"],
-        value_columns=["value"],
-        types={"key": pw.Type.INT, "value": pw.Type.STRING},
+        schema=TestSchema,
     )
     table_static = T(csv_data, id_from=["key"])
 
@@ -616,24 +618,25 @@ def test_deprecated_schema_compatiblity(tmp_path: pathlib.Path):
         schema=InputSchema,
         mode="static",
     )
-    table2 = pw.io.csv.read(
-        str(input_path),
-        id_columns=["a", "b"],
-        value_columns=[
-            "a",
-            "c",
-            "d",
-            "e",
-        ],
-        types={
-            "a": pw.Type.STRING,
-            "b": pw.Type.INT,
-            "c": pw.Type.INT,
-            "d": pw.Type.ANY,
-        },
-        default_values={"c": 0},
-        mode="static",
-    )
+    with deprecated_call_here():
+        table2 = pw.io.csv.read(
+            str(input_path),
+            id_columns=["a", "b"],
+            value_columns=[
+                "a",
+                "c",
+                "d",
+                "e",
+            ],
+            types={
+                "a": pw.Type.STRING,
+                "b": pw.Type.INT,
+                "c": pw.Type.INT,
+                "d": pw.Type.ANY,
+            },
+            default_values={"c": 0},
+            mode="static",
+        )
 
     assert table1.schema == table2.schema
     assert_table_equality(table1, table2)
@@ -1231,7 +1234,7 @@ def test_python_connector_persistence(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
 
-    class TestSubject(pw.python.ConnectorSubject):
+    class TestSubject(pw.io.python.ConnectorSubject):
         def __init__(self, items):
             super().__init__()
             self.items = items
@@ -1243,7 +1246,7 @@ def test_python_connector_persistence(tmp_path: pathlib.Path):
     def run_computation(py_connector_input, fs_connector_input):
         G.clear()
         write_lines(input_path, "\n".join(fs_connector_input))
-        table_py = pw.python.read(
+        table_py = pw.io.python.read(
             TestSubject(py_connector_input), format="raw", persistent_id="1"
         )
         table_csv = pw.io.plaintext.read(input_path, persistent_id="2", mode="static")
@@ -1379,7 +1382,7 @@ def test_immediate_connector_errors():
 
     subject = TestSubject()
     table = pw.io.python.read(subject, format="raw", autocommit_duration_ms=10)
-    pw.csv.write(table, "/dev/full")
+    pw.io.csv.write(table, "/dev/full")
     with pytest.raises(api.EngineError, match="No space left on device"):
         run_all()
     subject.finish.set()
@@ -1424,7 +1427,7 @@ def run_replacement_test(
     )
 
     parsed_rows = []
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         for row in f:
             parsed_row = json.loads(row)
             parsed_rows.append(parsed_row)
@@ -1779,7 +1782,7 @@ def test_text_files_directory_read_in_full(tmp_path: pathlib.Path):
     run()
 
     output_lines = []
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         for line in f.readlines():
             output_lines.append(json.loads(line)["data"])
 
@@ -1794,6 +1797,10 @@ def test_persistent_subscribe(tmp_path):
     pstorage_dir = tmp_path / "PStorage"
     input_path = tmp_path / "input.csv"
 
+    class TestSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
     data = """
         k | v
         1 | foo
@@ -1802,8 +1809,7 @@ def test_persistent_subscribe(tmp_path):
     write_csv(input_path, data)
     table = pw.io.csv.read(
         str(input_path),
-        id_columns=["k"],
-        value_columns=["v"],
+        schema=TestSchema,
         persistent_id="1",
         mode="static",
     )
@@ -1820,7 +1826,7 @@ def test_persistent_subscribe(tmp_path):
         [
             mock.call.on_change(
                 key=mock.ANY,
-                row={"k": "1", "v": "foo"},
+                row={"k": 1, "v": "foo"},
                 time=mock.ANY,
                 is_addition=True,
             ),
@@ -1841,8 +1847,7 @@ def test_persistent_subscribe(tmp_path):
     write_csv(input_path, data)
     table = pw.io.csv.read(
         str(input_path),
-        id_columns=["k"],
-        value_columns=["v"],
+        schema=TestSchema,
         persistent_id="1",
         mode="static",
     )
@@ -1858,7 +1863,7 @@ def test_persistent_subscribe(tmp_path):
         [
             mock.call.on_change(
                 key=mock.ANY,
-                row={"k": "2", "v": "bar"},
+                row={"k": 2, "v": "bar"},
                 time=mock.ANY,
                 is_addition=True,
             ),
@@ -2100,7 +2105,7 @@ def test_metadata_column_identity(tmp_path: pathlib.Path):
     run()
 
     metadata_file_names = []
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         for line in f.readlines():
             metadata_file_names.append(json.loads(line)["_metadata"]["path"])
 
@@ -2137,7 +2142,7 @@ def test_metadata_column_regular_parser(tmp_path: pathlib.Path):
     run()
 
     metadata_file_names = []
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         for line in f.readlines():
             metadata_file_names.append(json.loads(line)["_metadata"]["path"])
 
@@ -2232,7 +2237,7 @@ def test_stream_generator_from_list():
 
     run(persistence_config=stream_generator.persistence_config())
 
-    timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
+    timestamps = {call.kwargs["time"] for call in on_change.mock_calls}
     assert len(timestamps) == 2
 
     on_change.assert_has_calls(
@@ -2291,7 +2296,7 @@ def test_stream_generator_from_list_multiple_workers(monkeypatch: pytest.MonkeyP
 
     run(persistence_config=stream_generator.persistence_config())
 
-    timestamps = set([call.kwargs["time"] for call in on_change.mock_calls])
+    timestamps = {call.kwargs["time"] for call in on_change.mock_calls}
     assert len(timestamps) == 2
 
     on_change.assert_has_calls(
@@ -2485,7 +2490,7 @@ def test_python_connector_upsert_raw(tmp_path: pathlib.Path):
     run()
 
     result = pd.read_csv(tmp_path / "output.csv")
-    return len(result) == 5
+    assert len(result) == 5
 
 
 def test_python_connector_removal_by_key(tmp_path: pathlib.Path):
@@ -2505,7 +2510,7 @@ def test_python_connector_removal_by_key(tmp_path: pathlib.Path):
     run()
 
     result = pd.read_csv(tmp_path / "output.csv")
-    return len(result) == 2
+    assert len(result) == 2
 
 
 def test_python_connector_upsert_json(tmp_path: pathlib.Path):
@@ -2542,7 +2547,7 @@ def test_python_connector_upsert_json(tmp_path: pathlib.Path):
     run()
 
     result = pd.read_csv(tmp_path / "output.csv")
-    return len(result) == 5
+    assert len(result) == 5
 
 
 def test_python_connector_metadata():
@@ -2591,9 +2596,10 @@ def test_parse_to_table_deprecation():
         1 | 2
         3 | 4
         """
-    with pytest.warns(
-        DeprecationWarning,
-        match="pw.debug.parse_to_table is deprecated, use pw.debug.table_from_markdown instead",
+    with deprecated_call_here(
+        match=re.escape(
+            "pw.debug.parse_to_table is deprecated, use pw.debug.table_from_markdown instead"
+        )
     ):
         t = pw.debug.parse_to_table(table_def)
     expected = pw.debug.table_from_markdown(table_def)
@@ -2657,7 +2663,7 @@ def test_sqlite(tmp_path: pathlib.Path):
     wait_result_with_checker(FileLinesNumberChecker(output_path, 6), 30)
 
     events = []
-    with open(output_path, "r") as f:
+    with open(output_path) as f:
         for row in f:
             events.append(json.loads(row))
 

@@ -187,6 +187,7 @@ def read(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
+        _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms
@@ -290,6 +291,7 @@ def read_from_digital_ocean(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
+        _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms
@@ -391,6 +393,7 @@ def read_from_wasabi(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
+        _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms

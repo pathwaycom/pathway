@@ -93,15 +93,15 @@ def test_groupby_extrakwargs():
 def test_windowby_extraargs():
     t = T(
         """
-        shard |  t | tt |  v
-        0     |  1 |  1 |  10
-        0     |  2 |  2 |  1
-        0     |  4 |  4 |  3
-        0     |  8 |  8 |  2
-        0     |  9 |  9 |  4
-        0     |  10|  10|  8
-        1     |  1 |  1 |  9
-        1     |  2 |  2 |  16
+        instance | t  | tt |  v
+        0        | 1  | 1  |  10
+        0        | 2  | 2  |  1
+        0        | 4  | 4  |  3
+        0        | 8  | 8  |  2
+        0        | 9  | 9  |  4
+        0        | 10 | 10 |  8
+        1        | 1  | 1  |  9
+        1        | 2  | 2  |  16
     """
     )
 
@@ -115,7 +115,7 @@ def test_windowby_extraargs():
             t.t,
             t.tt,
             window=pw.temporal.session(predicate=lambda a, b: abs(a - b) <= 1),
-            shard=t.shard,
+            instance=t.instance,
         )
 
 
@@ -174,15 +174,15 @@ def test_join_args():
 def test_session_simple():
     t = T(
         """
-        shard |  t |  v
-        0     |  1 |  10
-        0     |  2 |  1
-        0     |  4 |  3
-        0     |  8 |  2
-        0     |  9 |  4
-        0     |  10|  8
-        1     |  1 |  9
-        1     |  2 |  16
+        instance | t  |  v
+        0        | 1  |  10
+        0        | 2  |  1
+        0        | 4  |  3
+        0        | 8  |  2
+        0        | 9  |  4
+        0        | 10 |  8
+        1        | 1  |  9
+        1        | 2  |  16
     """
     )
 
@@ -196,7 +196,7 @@ def test_session_simple():
         t.windowby(  # cause
             t.t,
             window=pw.temporal.session(predicate=lambda a, b: abs(a - b) <= 1),
-            shard=t.shard,
+            instance=t.instance,
             min_t=pw.reducers.min(pw.this.t),
             max_v=pw.reducers.max(pw.this.v),
         )

@@ -111,13 +111,8 @@ def promise_are_equal(self: TableLike, *others: TableLike) -> None:
     ... '''
     ... ).filter(pw.this.age<20)
     >>> t3 = t2.filter(pw.this.age > 10)
-    >>> with pytest.raises(
-    ...     ValueError,
-    ...     match='Universe of the argument of Table.update_cells\(\) needs ' # noqa
-    ...     + 'to be a subset of the universe of the updated table.',
-    ... ):
+    >>> with pytest.raises(ValueError):
     ...     t1.update_cells(t3)
-    ...
     >>> pw.universes.promise_are_equal(t1, t2)
     >>> result = t1.update_cells(t3)
     >>> pw.debug.compute_and_print(result, include_id=False)

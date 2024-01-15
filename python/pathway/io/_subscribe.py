@@ -40,9 +40,9 @@ def subscribe(
     >>> table = pw.debug.table_from_markdown('''
     ...      | pet  | owner   | age | __time__ | __diff__
     ...    1 | dog  | Alice   | 10  | 0        | 1
-    ...    2 | cat  | Alice   | 8   | 1        | 1
-    ...    3 | dog  | Bob     | 7   | 2        | 1
-    ...    2 | cat  | Alice   | 8   | 3        | -1
+    ...    2 | cat  | Alice   | 8   | 2        | 1
+    ...    3 | dog  | Bob     | 7   | 4        | 1
+    ...    2 | cat  | Alice   | 8   | 6        | -1
     ... ''')
     ...
     >>> def on_change(key: pw.Pointer, row: dict, time: int, is_addition: bool):

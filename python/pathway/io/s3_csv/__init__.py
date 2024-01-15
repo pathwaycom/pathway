@@ -149,6 +149,7 @@ def read(
             primary_key=id_columns,
             types=types,
             default_values=default_values,
+            _stacklevel=5,
         )
 
     return s3_read(

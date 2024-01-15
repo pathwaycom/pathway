@@ -10,6 +10,7 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 from pathway.io import kafka
+from pathway.io._utils import check_deprecated_kwargs
 
 
 @check_arg_types
@@ -29,7 +30,7 @@ def read(
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
-    topic_names: list[str] | None = None,
+    **kwargs,
 ) -> Table:
     """Reads table from a set of topics in Redpanda.
     There are three formats currently supported: "raw", "csv", and "json".
@@ -202,6 +203,8 @@ def read(
     ... )
     """
 
+    check_deprecated_kwargs(kwargs, ["topic_names"], stacklevel=5)
+
     return kafka.read(
         rdkafka_settings=rdkafka_settings,
         topic=topic,
@@ -215,8 +218,8 @@ def read(
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=json_field_paths,
         parallel_readers=parallel_readers,
-        topic_names=topic_names,
         persistent_id=persistent_id,
+        _stacklevel=5,
     )
 
 

@@ -71,13 +71,15 @@ def get_data_format_type(format: str, supported_formats: set[str]):
     return _DATA_FORMAT_MAPPING[format]
 
 
-def check_deprecated_kwargs(kwargs: dict[str, Any], deprecated_kwarg_names: list[str]):
+def check_deprecated_kwargs(
+    kwargs: dict[str, Any], deprecated_kwarg_names: list[str], stacklevel: int = 2
+):
     for kwarg_name in deprecated_kwarg_names:
         if kwarg_name in kwargs:
             warnings.warn(
                 f"'{kwarg_name}' is deprecated and will be ignored",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=stacklevel + 1,
             )
             kwargs.pop(kwarg_name)
     if kwargs:
@@ -176,6 +178,7 @@ def _read_schema(
     primary_key: list[str] | None,
     types: dict[str, api.PathwayType] | None,
     default_values: dict[str, Any] | None,
+    _stacklevel: int = 1,
 ) -> type[Schema]:
     kwargs = locals()
     deprecated_kwargs = ["value_columns", "primary_key", "types", "default_values"]
@@ -188,7 +191,7 @@ def _read_schema(
                         name
                     ),
                     DeprecationWarning,
-                    stacklevel=2,
+                    stacklevel=_stacklevel + 1,
                 )
         schema = _compat_schema(
             primary_key=primary_key,
@@ -211,6 +214,7 @@ def read_schema(
     primary_key: list[str] | None = None,
     types: dict[str, api.PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    _stacklevel: int = 1,
 ) -> tuple[type[Schema], dict[str, Any]]:
     schema = _read_schema(
         schema=schema,
@@ -218,6 +222,7 @@ def read_schema(
         primary_key=primary_key,
         types=types,
         default_values=default_values,
+        _stacklevel=_stacklevel + 1,
     )
     value_fields = _form_value_fields(schema)
     return schema, dict(
@@ -255,6 +260,7 @@ def construct_schema_and_data_format(
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    _stacklevel: int = 1,
 ) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
@@ -305,6 +311,7 @@ def construct_schema_and_data_format(
         primary_key=primary_key,
         types=types,
         default_values=default_values,
+        _stacklevel=_stacklevel + 1,
     )
     if data_format_type == "dsv":
         if json_field_paths is not None:

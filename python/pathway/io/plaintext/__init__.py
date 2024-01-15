@@ -76,4 +76,5 @@ computations from the moment they were terminated last time.
         persistent_id=persistent_id,
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,
+        _stacklevel=5,
     )

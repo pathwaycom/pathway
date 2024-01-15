@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import pathway as pw
 from pathway.internals import api

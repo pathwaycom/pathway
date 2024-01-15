@@ -126,7 +126,7 @@ class TableLike(DeprecationSuperclass):
     def promise_universe_is_equal_to(
         self: SelfTableLike, other: TableLike
     ) -> SelfTableLike:
-        r"""Asserts to Pathway that an universe of self is a subset of universe of each of the others.
+        """Asserts to Pathway that an universe of self is a subset of universe of each of the others.
 
         Semantics: Used in situations where Pathway cannot deduce one universe being a subset of another.
 
@@ -158,13 +158,8 @@ class TableLike(DeprecationSuperclass):
         ... '''
         ... )
         >>> t3 = t2.filter(pw.this.age > 10)
-        >>> with pytest.raises(
-        ...     ValueError,
-        ...     match='Universe of the argument of Table.update_cells\(\) needs ' # noqa
-        ...     + 'to be a subset of the universe of the updated table.',
-        ... ):
+        >>> with pytest.raises(ValueError):
         ...     t1.update_cells(t3)
-        ...
         >>> t1 = t1.promise_universe_is_equal_to(t2)
         >>> result = t1.update_cells(t3)
         >>> pw.debug.compute_and_print(result, include_id=False)

@@ -292,6 +292,7 @@ computations from the moment they were terminated last time.
         primary_key=primary_key,
         types=types,
         default_values=default_values,
+        _stacklevel=5,
     )
     data_format = api.DataFormat(
         **api_schema,

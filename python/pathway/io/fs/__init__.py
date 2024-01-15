@@ -44,6 +44,7 @@ def read(
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    _stacklevel: int = 1,
 ) -> Table:
     """Reads a table from one or several files with the specified format.
 
@@ -242,6 +243,7 @@ named ``path`` that will show the full path to the file from where a row was fil
         primary_key=primary_key,
         types=types,
         default_values=default_values,
+        _stacklevel=_stacklevel + 4,
     )
 
     data_source_options = datasource.DataSourceOptions(

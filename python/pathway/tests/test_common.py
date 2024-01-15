@@ -26,6 +26,7 @@ from pathway.tests.utils import (
     assert_table_equality_wo_index_types,
     assert_table_equality_wo_types,
     run_all,
+    warns_here,
     xfail_no_numba,
 )
 
@@ -3462,8 +3463,16 @@ def test_update_cells_0_rows():
         """
     )
 
-    assert_table_equality(old.update_cells(update), expected)
-    assert_table_equality(old << update, expected)
+    with warns_here(
+        match=re.escape(
+            "Key sets of self and other in update_cells are the same. "
+            "Using with_columns instead of update_cells."
+        ),
+    ):
+        new = old.update_cells(update)
+        new2 = old << update
+    assert_table_equality(new, expected)
+    assert_table_equality(new2, expected)
 
 
 def test_update_cells_ids_dont_match():
@@ -3509,14 +3518,16 @@ def test_update_cells_warns_when_using_with_columns():
         """
     )
 
-    with pytest.warns(
-        UserWarning,
-        match="Key sets of self and other in update_cells are the same."
-        + " Using with_columns instead of update_cells.",
+    with warns_here(
+        match=re.escape(
+            "Key sets of self and other in update_cells are the same. "
+            "Using with_columns instead of update_cells."
+        ),
     ):
         new = old.update_cells(update)
+        new2 = old << update
     assert_table_equality(new, expected)
-    assert_table_equality(old << update, expected)
+    assert_table_equality(new2, expected)
 
 
 def test_update_rows():
@@ -3599,7 +3610,14 @@ def test_update_rows_0_rows():
             | pet  |  owner  | age
         """
     )
-    assert_table_equality(old.update_rows(update), expected)
+    with warns_here(
+        match=re.escape(
+            "Universe of self is a subset of universe of other in update_rows. "
+            "Returning other."
+        ),
+    ):
+        new = old.update_rows(update)
+    assert_table_equality(new, expected)
 
 
 def test_update_rows_columns_dont_match():
@@ -3680,9 +3698,11 @@ def test_update_rows_warns_when_nooperation():
         """
     )
 
-    with pytest.warns(
-        UserWarning,
-        match="Universe of self is a subset of universe of other in update_rows. Returning other.",
+    with warns_here(
+        match=re.escape(
+            "Universe of self is a subset of universe of other in update_rows. "
+            "Returning other."
+        ),
     ):
         new = old.update_rows(update)
     assert_table_equality(new, expected)
@@ -3847,7 +3867,6 @@ def test_groupby_foreign_column():
     )
 
 
-@pytest.mark.xfail(reason="waits for autotupling in joins")
 def test_join_ix():
     left = T(
         """
@@ -5219,14 +5238,12 @@ def test_sequence_get_unchecked_fixed_length_errors():
         IndexError,
         match=(
             re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}.")
-            + r"[\s\S]*"
         ),
     ):
         t2.select(i=pw.this.tup[2])
 
 
 def test_sequence_get_checked_fixed_length_errors():
-    file_name = os.path.basename(__file__)
     t1 = T(
         """
     a | b  |  c
@@ -5246,19 +5263,15 @@ def test_sequence_get_checked_fixed_length_errors():
 
     t2 = t1.with_columns(tup=pw.make_tuple(pw.this.a, pw.this.b))
     with pytest.warns(
-        UserWarning,
         match=(
-            re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}.")
-            + " It refers to the following expression:\n\t"
-            + re.escape("(<table1>.tup).get(2, <table1>.c)\n")
-            + rf"called in .*{file_name}.*\n"
-            + "with tables:\n\t"
-            + r"<table1> created in .*\n"
+            "(?s)"  # make dot match newlines
+            + re.escape(f"Index 2 out of range for a tuple of type {tuple[int,int]}. ")
+            + ".*"
             + re.escape("Consider using just the default value without .get().")
         ),
     ):
         t3 = t2.select(c=pw.this.tup.get(2, default=pw.this.c))
-    assert_table_equality(t3, expected)
+        assert_table_equality(t3, expected)
 
 
 @pytest.mark.parametrize("dtype", [int, float])

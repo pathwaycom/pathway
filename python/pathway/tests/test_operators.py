@@ -4,6 +4,7 @@ import copy
 import datetime
 import itertools
 import operator
+import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -1314,8 +1315,10 @@ def test_tuples_error_on_incorrect_types(op):
     )
     with pytest.raises(
         TypeError,
-        match=f"Pathway does not support using binary operator {op.__name__} on columns of types"
-        + " tuple\[int, int\], tuple\[int, str\].",  # noqa
+        match=re.escape(
+            f"Pathway does not support using binary operator {op.__name__} on columns "
+            "of types tuple[int, int], tuple[int, str]."
+        ),
     ):
         table.select(z=op(pw.this.x, pw.this.y))
 
@@ -1439,7 +1442,9 @@ def test_tuples_none_cmp(op):
 
     with pytest.raises(
         TypeError,
-        match=f"Pathway does not support using binary operator {op.__name__} on columns of types"
-        + " tuple\[int | None, int | None\], tuple\[int | None, int | None\].",  # noqa
+        match=re.escape(
+            f"Pathway does not support using binary operator {op.__name__} on columns "
+            "of types tuple[int | None, int | None], tuple[int | None, int | None].",
+        ),
     ):
         table.select(z=op(pw.this.x, pw.this.y))

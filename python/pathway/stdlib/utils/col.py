@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable, Sequence
-from typing import Type, overload
+from typing import overload
 
 import pathway.internals as pw
 from pathway.internals.runtime_type_check import check_arg_types
@@ -48,7 +48,9 @@ def flatten_column(
     """
 
     warnings.warn(
-        "pw.stdlib.utils.col.flatten() is deprecated, use pw.Table.flatten() instead"
+        "pw.stdlib.utils.col.flatten_column() is deprecated, use pw.Table.flatten() instead",
+        DeprecationWarning,
+        stacklevel=5,
     )
     input_table = column.table
     kwargs = {column.name: column}
@@ -70,7 +72,7 @@ def unpack_col(
 def unpack_col(
     column: pw.ColumnReference,
     *,
-    schema: Type[pw.Schema],
+    schema: type[pw.Schema],
 ) -> pw.Table:
     ...
 
@@ -80,7 +82,7 @@ def unpack_col(
 def unpack_col(
     column: pw.ColumnReference,
     *unpacked_columns: pw.ColumnReference | str,
-    schema: Type[pw.Schema] | None = None,
+    schema: type[pw.Schema] | None = None,
 ) -> pw.Table:
     """Unpacks multiple columns from a single column.
 

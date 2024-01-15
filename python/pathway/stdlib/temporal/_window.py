@@ -108,7 +108,7 @@ class _SessionWindow(Window):
         ).update_types(_pw_window=pw.Pointer)
 
         def merge_ccs(data):
-            data <<= data.select(_pw_window=data.ix(data._pw_window)._pw_window)
+            data = data.with_columns(_pw_window=data.ix(data._pw_window)._pw_window)
             return data
 
         return pw.iterate(merge_ccs, data=target)

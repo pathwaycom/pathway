@@ -4,21 +4,6 @@ from __future__ import annotations
 
 import pathway._engine_finder  # noqa: F401  # isort: split
 
-import os
-
-from pathway.internals.custom_reducers import BaseCustomAccumulator
-from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, DURATION
-
-# flake8: noqa: E402
-
-if "PYTEST_CURRENT_TEST" not in os.environ:
-    from warnings import filterwarnings
-
-    from beartype.roar import BeartypeDecorHintPep585DeprecationWarning
-
-    filterwarnings("ignore", category=BeartypeDecorHintPep585DeprecationWarning)
-
-
 import pathway.reducers as reducers
 import pathway.universes as universes
 from pathway import debug, demo, io
@@ -89,6 +74,8 @@ from pathway.internals import (
     unwrap,
 )
 from pathway.internals.api import PathwayType as Type, PersistenceMode
+from pathway.internals.custom_reducers import BaseCustomAccumulator
+from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, DURATION
 from pathway.stdlib import (
     graphs,
     indexing,
@@ -232,7 +219,11 @@ def __getattr__(name: str):
     if name in old_io_names:
         old_name = f"{__name__}.{name}"
         new_name = f"{__name__}.io.{name}"
-        warn(f"{old_name} has been moved to {new_name}", stacklevel=3)
+        warn(
+            f"{old_name!r} has been moved to {new_name!r}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return getattr(io, name)
 
     error = f"module {__name__!r} has no attribute {name!r}"
@@ -241,7 +232,7 @@ def __getattr__(name: str):
     if name in legacy_names:
         warning = "For help with legacy packages, reach out to the team at pathway.com."
         error += "\n" + warning
-        warn(warning, stacklevel=3)
+        warn(warning, stacklevel=2)
 
     raise AttributeError(error)
 

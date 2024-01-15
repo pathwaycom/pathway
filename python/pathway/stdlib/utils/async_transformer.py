@@ -16,6 +16,7 @@ from pathway.internals import asynchronous, operator, parse_graph
 from pathway.internals.api import Pointer
 from pathway.internals.helpers import StableSet
 from pathway.internals.operator import Operator
+from pathway.internals.schema import schema_from_types
 from pathway.internals.table_subscription import subscribe
 
 
@@ -26,6 +27,7 @@ class _AsyncStatus(Enum):
 
 
 _ASYNC_STATUS_COLUMN = "_async_status"
+_AsyncStatusSchema = schema_from_types(**{_ASYNC_STATUS_COLUMN: str})
 
 
 class _AsyncConnector(io.python.ConnectorSubject):
@@ -259,12 +261,9 @@ class AsyncTransformer(ABC):
         """
         Resulting table.
         """
-        return (
-            self._output_table.update_types(**{_ASYNC_STATUS_COLUMN: str})
-            .filter(pw.this[_ASYNC_STATUS_COLUMN] == _AsyncStatus.SUCCESS.value)
-            .without(pw.this[_ASYNC_STATUS_COLUMN])
-            .update_types(**self.output_schema.typehints())
-        )
+        return self._output_table.filter(
+            pw.this[_ASYNC_STATUS_COLUMN] == _AsyncStatus.SUCCESS.value
+        ).without(pw.this[_ASYNC_STATUS_COLUMN])
 
     @functools.cached_property
     def _output_table(self) -> pw.Table:
@@ -278,7 +277,7 @@ class AsyncTransformer(ABC):
 
         table: pw.Table = io.python.read(
             self._connector,
-            value_columns=[*self.output_schema.column_names(), _ASYNC_STATUS_COLUMN],
+            schema=self.output_schema | _AsyncStatusSchema,
             autocommit_duration_ms=100,
         )
         input_node = table._source.operator

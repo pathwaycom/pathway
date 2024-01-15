@@ -2,6 +2,7 @@
 
 import datetime
 import operator
+import re
 from typing import Any
 
 import numpy as np
@@ -15,6 +16,7 @@ from pathway.internals import dtype as dt
 from pathway.tests.utils import (
     assert_table_equality,
     assert_table_equality_wo_index,
+    deprecated_call_here,
     run_all,
 )
 
@@ -89,7 +91,6 @@ def test_duration(method_name: str, unit: int) -> None:
         "day",
         "month",
         "year",
-        "timestamp",
     ],
 )
 def test_date_time(method_name: str, is_naive: bool) -> None:
@@ -124,12 +125,12 @@ def test_date_time(method_name: str, is_naive: bool) -> None:
     elif method_name == "timestamp":
         series_new = df.a.values.astype(np.int64)
     else:
-        series_new = df.a.dt.__getattribute__(method_name)
+        series_new = getattr(df.a.dt, method_name)
     df_new = pd.DataFrame({"a": series_new})
     table_pd = table_from_pandas(df_new)
 
     table = table_from_pandas(pd.DataFrame({"a": pd.to_datetime(data, format=fmt)}))
-    table_pw = table.select(a=table.a.dt.__getattribute__(method_name)())
+    table_pw = table.select(a=getattr(table.a.dt, method_name)())
     assert_table_equality(table_pw, table_pd)
 
 
@@ -169,8 +170,12 @@ def test_timestamp(is_naive: bool) -> None:
     )
 
     table = table_from_pandas(pd.DataFrame({"a": pd.to_datetime(data, format=fmt)}))
+
+    with deprecated_call_here():
+        nounit = table.a.dt.timestamp()
+
     table_pw = table.select(
-        nounit=pw.this.a.dt.timestamp(),
+        nounit=nounit,
         ns=pw.this.a.dt.timestamp(unit="ns"),
         us=pw.this.a.dt.timestamp(unit="us"),
         ms=pw.this.a.dt.timestamp(unit="ms"),
@@ -187,10 +192,11 @@ def test_timestamp_without_unit_deprecated() -> None:
     """
     ).select(ts=pw.this.time.dt.from_timestamp(unit="s"))
 
-    with pytest.warns(
-        DeprecationWarning,
-        match="Not specyfying the `unit` argument of the `timestamp\(\)` method is deprecated."  # noqa
-        + " Please specify its value. Without specifying, it will default to 'ns'.",
+    with deprecated_call_here(
+        match=re.escape(
+            "Not specyfying the `unit` argument of the `timestamp()` method is deprecated. "
+            "Please specify its value. Without specifying, it will default to 'ns'."
+        ),
     ):
         table.select(time=pw.this.ts.dt.timestamp())
 

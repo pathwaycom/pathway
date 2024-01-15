@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
 import datetime
+import re
 from typing import Optional
 
 import numpy as np
@@ -1279,16 +1280,17 @@ def test_incorrect_args_specific():
 
     t2 = pw.Table.empty(b=int, t=int)
 
-    expected_error_message = """Arguments (self_time_expression, other_time_expression,
- lower_bound, upper_bound) have to be of types (INT, INT, INT, INT) or (FLOAT, FLOAT,
- FLOAT, FLOAT) or (DATE_TIME_NAIVE, DATE_TIME_NAIVE, DURATION, DURATION) or (DATE_TIME_UTC,
- DATE_TIME_UTC, DURATION, DURATION) but are of types (DATE_TIME_NAIVE, INT, INT, INT).""".replace(
-        "\n", ""
-    )
-    with pytest.raises(TypeError) as error:
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Arguments (self_time_expression, other_time_expression, lower_bound, upper_bound) "
+            "have to be of types (INT, INT, INT, INT) or (FLOAT, FLOAT, FLOAT, FLOAT) or "
+            "(DATE_TIME_NAIVE, DATE_TIME_NAIVE, DURATION, DURATION) or "
+            "(DATE_TIME_UTC, DATE_TIME_UTC, DURATION, DURATION) but are of types "
+            "(DATE_TIME_NAIVE, INT, INT, INT)."
+        ),
+    ):
         t1.interval_join(t2, t1.t, t2.t, pw.temporal.interval(-1, 2))
-
-    assert str(error.value)[: len(expected_error_message)] == expected_error_message
 
 
 def test_interval_joins_typing_on():
@@ -1314,7 +1316,9 @@ def test_errors_on_equal_tables():
 
     with pytest.raises(
         ValueError,
-        match=r"Cannot join table with itself. Use <table>.copy\(\) as one of the arguments of the join.",  # noqa
+        match=re.escape(
+            "Cannot join table with itself. Use <table>.copy() as one of the arguments of the join."
+        ),
     ):
         t1.interval_join(t1, t1.t, t1.t, pw.temporal.interval(-2, 0))
 
@@ -1323,18 +1327,18 @@ def test_consolidate_for_cutoff():
     t = T(
         """
     a | t  | __time__ | __diff__
-    1 | 2  | 1        | 1
-    2 | 2  | 1        | 1
-    3 | 10 | 1        | 1
-    4 | 2  | 1        | 1
-    5 | 2  | 2        | 1
-    6 | 2  | 2        | 1
-    7 | 2  | 2        | 1
-    8 | 2  | 2        | 1
-    9 | 2  | 2        | 1
-    10| 2  | 2        | 1
-    11| 2  | 2        | 1
-    12| 2  | 2        | 1
+    1 | 2  | 2        | 1
+    2 | 2  | 2        | 1
+    3 | 10 | 2        | 1
+    4 | 2  | 2        | 1
+    5 | 2  | 4        | 1
+    6 | 2  | 4        | 1
+    7 | 2  | 4        | 1
+    8 | 2  | 4        | 1
+    9 | 2  | 4        | 1
+    10| 2  | 4        | 1
+    11| 2  | 4        | 1
+    12| 2  | 4        | 1
     """
     )
     t = t._freeze(threshold_column=pw.this.t + 1, time_column=pw.this.t)

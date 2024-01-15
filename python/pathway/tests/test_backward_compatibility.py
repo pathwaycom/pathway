@@ -1,5 +1,7 @@
 # Copyright © 2024 Pathway
 
+import pytest
+
 from pathway import Table
 from pathway.tests.utils import T, assert_table_equality, run_all
 
@@ -21,8 +23,10 @@ def test_unsafe_promise_same_universe_as():
         26  | 26
         """
     )
-    t_num = t_num.unsafe_promise_same_universe_as(t_latin)
-    Table.unsafe_promise_same_universe_as(t_num, t_latin)
+    with pytest.deprecated_call():
+        t_num = t_num.unsafe_promise_same_universe_as(t_latin)
+    with pytest.deprecated_call():
+        Table.unsafe_promise_same_universe_as(t_num, t_latin)
     run_all()
 
 
@@ -41,8 +45,11 @@ def test_unsafe_promise_universe_is_subset_of():
     2  | 1
     3  | 1
     """
-    ).unsafe_promise_universe_is_subset_of(t1)
-    Table.unsafe_promise_universe_is_subset_of(t2, t1)
+    )
+    with pytest.deprecated_call():
+        t2 = t2.unsafe_promise_universe_is_subset_of(t1)
+    with pytest.deprecated_call():
+        Table.unsafe_promise_universe_is_subset_of(t2, t1)
     run_all()
 
 
@@ -59,8 +66,11 @@ def test_unsafe_promise_universes_are_pairwise_disjoint():
        | lower | upper
     3  | c     | C
     """
-    ).unsafe_promise_universes_are_pairwise_disjoint(t1)
-    Table.unsafe_promise_universes_are_pairwise_disjoint(t2, t1)
+    )
+    with pytest.deprecated_call():
+        t2 = t2.unsafe_promise_universes_are_pairwise_disjoint(t1)
+    with pytest.deprecated_call():
+        Table.unsafe_promise_universes_are_pairwise_disjoint(t2, t1)
     run_all()
 
 
@@ -80,10 +90,11 @@ def test_left_join():
     4  | d     | D
     """
     )
-    assert_table_equality(
-        t1.left_join(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
-        t1.join_left(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
-    )
+    with pytest.deprecated_call():
+        assert_table_equality(
+            t1.left_join(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
+            t1.join_left(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
+        )
 
 
 def test_right_join():
@@ -102,10 +113,11 @@ def test_right_join():
     4  | d     | D
     """
     )
-    assert_table_equality(
-        t1.right_join(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
-        t1.join_right(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
-    )
+    with pytest.deprecated_call():
+        assert_table_equality(
+            t1.right_join(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
+            t1.join_right(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
+        )
 
 
 def test_outer_join():
@@ -124,7 +136,8 @@ def test_outer_join():
     4  | d     | D
     """
     )
-    assert_table_equality(
-        t1.outer_join(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
-        t1.join_outer(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
-    )
+    with pytest.deprecated_call():
+        assert_table_equality(
+            t1.outer_join(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
+            t1.join_outer(t2, t1.lower == t2.lower).select(t1.lower, t2.upper),
+        )

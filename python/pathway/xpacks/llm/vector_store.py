@@ -12,7 +12,7 @@ The client queries the server and returns matching documents.
 
 import json
 import threading
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import numpy as np
 import requests
@@ -45,8 +45,8 @@ class VectorStoreServer:
         self,
         *docs: pw.Table,
         embedder: Callable[[str], list[float]],
-        parser: Optional[Callable[[bytes], list[tuple[str, dict]]]] = None,
-        splitter: Optional[Callable[[str], list[tuple[str, dict]]]] = None,
+        parser: Callable[[bytes], list[tuple[str, dict]]] | None = None,
+        splitter: Callable[[str], list[tuple[str, dict]]] | None = None,
     ):
         self.docs = docs
         self.parser: Callable[[bytes], list[tuple[str, dict]]] = (

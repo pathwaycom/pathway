@@ -5,7 +5,7 @@ from __future__ import annotations
 import json as _json  # otherwise its easy to mistake `json` and `Json`
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, ClassVar, Type, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 
 class _JsonEncoder(_json.JSONEncoder):
@@ -202,7 +202,7 @@ class Json:
         """
         return self._as_type(dict)
 
-    def _as_type(self, type: Type[J]) -> Any:
+    def _as_type(self, type: type[J]) -> Any:
         if isinstance(self.value, type):
             return self.value
         else:

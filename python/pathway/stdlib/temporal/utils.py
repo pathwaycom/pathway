@@ -1,7 +1,7 @@
 # Copyright © 2024 Pathway
 
 import datetime
-from typing import Any, Type, Union
+from typing import Any, Union
 
 import pandas as pd
 from dateutil import tz
@@ -24,7 +24,7 @@ def get_default_origin(time_event_type: dt.DType) -> TimeEventType:
     return mapping[time_event_type]
 
 
-def zero_length_interval(interval_type: Type[IntervalType]) -> IntervalType:
+def zero_length_interval(interval_type: type[IntervalType]) -> IntervalType:
     if issubclass(interval_type, datetime.timedelta):
         return datetime.timedelta(0)
     elif issubclass(interval_type, int):

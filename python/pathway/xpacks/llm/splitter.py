@@ -5,10 +5,9 @@ A library of text spliiters - routines which slit a long text into smaller chunk
 """
 
 import unicodedata
-from typing import Dict, List, Tuple
 
 
-def null_splitter(txt: str) -> List[Tuple[str, Dict]]:
+def null_splitter(txt: str) -> list[tuple[str, dict]]:
     """A splitter which returns its argument as one long text ith null metadata.
 
     Args:
@@ -72,13 +71,13 @@ class TokenCountSplitter:
         self.max_tokens = max_tokens
         self.encoding_name = encoding_name
 
-    def __call__(self, txt: str) -> List[Tuple[str, Dict]]:
+    def __call__(self, txt: str) -> list[tuple[str, dict]]:
         import tiktoken
 
         tokenizer = tiktoken.get_encoding(self.encoding_name)
         text = _normalize_unicode(txt)
         tokens = tokenizer.encode_ordinary(text)
-        output: List[Tuple[str, Dict]] = []
+        output: list[tuple[str, dict]] = []
         i = 0
         while i < len(tokens):
             chunk_tokens = tokens[i : i + self.max_tokens]

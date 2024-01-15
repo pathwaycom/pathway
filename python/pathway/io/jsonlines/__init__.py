@@ -176,6 +176,7 @@ named ``path`` that will show the full path to the file from where a row was fil
         primary_key=primary_key,
         types=types,
         default_values=default_values,
+        _stacklevel=5,
     )
 
 

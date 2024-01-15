@@ -1101,7 +1101,7 @@ class Table(
         9   | Bob   | 1
         10  | Alice | 30
         """
-        return self.update_cells(other)
+        return self.update_cells(other, _stacklevel=2)
 
     @trace_user_frame
     @check_arg_types
@@ -1189,7 +1189,7 @@ class Table(
 
     @trace_user_frame
     @check_arg_types
-    def update_cells(self, other: Table) -> Table:
+    def update_cells(self, other: Table, _stacklevel: int = 1) -> Table:
         """Updates cells of `self`, breaking ties in favor of the values in `other`.
 
         Semantics:
@@ -1236,7 +1236,8 @@ class Table(
         if self._universe == other._universe:
             warnings.warn(
                 "Key sets of self and other in update_cells are the same."
-                + " Using with_columns instead of update_cells."
+                + " Using with_columns instead of update_cells.",
+                stacklevel=_stacklevel + 4,
             )
             return self.with_columns(*(other[name] for name in other))
 
@@ -1312,7 +1313,8 @@ class Table(
             )
         if self._universe.is_subset_of(other._universe):
             warnings.warn(
-                "Universe of self is a subset of universe of other in update_rows. Returning other."
+                "Universe of self is a subset of universe of other in update_rows. Returning other.",
+                stacklevel=5,
             )
             return other
 

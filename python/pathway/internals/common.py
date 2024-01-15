@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import inspect
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import wraps
 from typing import (
     Any,
-    Mapping,
     ParamSpec,
     TypeVar,
     get_args,

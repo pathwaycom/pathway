@@ -74,12 +74,13 @@ def _pandas_transformer(
                 "resulting universe does not match the universe of the indicated argument"
             )
         else:
+            if not result.index.is_unique:
+                raise ValueError("index of resulting DataFrame must be unique")
             index_as_series = result.index.to_series()
             if not index_as_series.map(lambda x: isinstance(x, Pointer)).all():
                 new_index = index_as_series.map(lambda x: ref_scalar(x))
                 result.reindex(new_index)
-            if not result.index.is_unique:
-                raise ValueError("index of resulting DataFrame must be unique")
+            assert result.index.is_unique
 
         return result
 

@@ -10,9 +10,10 @@ import re
 import sys
 import time
 from abc import abstractmethod
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -241,7 +242,7 @@ class CsvLinesNumberChecker:
     def provide_information_on_failure(self):
         if not self.path.exists():
             return f"{self.path} does not exist"
-        with open(self.path, "r") as f:
+        with open(self.path) as f:
             return f"Final output contents:\n{f.read()}"
 
 
@@ -254,7 +255,7 @@ class FileLinesNumberChecker:
         if not self.path.exists():
             return False
         n_lines_actual = 0
-        with open(self.path, "r") as f:
+        with open(self.path) as f:
             for row in f:
                 n_lines_actual += 1
         print(
@@ -266,7 +267,7 @@ class FileLinesNumberChecker:
     def provide_information_on_failure(self):
         if not self.path.exists():
             return f"{self.path} does not exist"
-        with open(self.path, "r") as f:
+        with open(self.path) as f:
             return f"Final output contents:\n{f.read()}"
 
 
@@ -350,9 +351,9 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
 
 def T(*args, format="markdown", **kwargs):
     if format == "pandas":
-        return table_from_pandas(*args, **kwargs)
+        return table_from_pandas(*args, **kwargs, _stacklevel=2)
     assert format == "markdown"
-    return table_from_markdown(*args, **kwargs)
+    return table_from_markdown(*args, **kwargs, _stacklevel=2)
 
 
 def remove_ansi_escape_codes(msg: str) -> str:
@@ -484,3 +485,37 @@ class CountDifferentTimestampsCallback(pw.io.OnChangeCallback):
     def on_end(self):
         if self.expected is not None:
             assert len(self.timestamps) == self.expected
+
+
+C = TypeVar("C", bound=Callable)
+
+
+@contextmanager
+def warns_here(
+    expected_warning: type[Warning] | tuple[type[Warning], ...] = Warning,
+    *,
+    match: str | re.Pattern[str] | None = None,
+) -> Generator[pytest.WarningsRecorder, None, None]:
+    frame = sys._getframe(2)
+    code = frame.f_code
+    first_line = frame.f_lineno
+    del frame
+    file_name = code.co_filename
+    function_lines = set(
+        line for (_start, _end, line) in code.co_lines() if line is not None
+    )
+    del code
+
+    with pytest.warns(expected_warning, match=match) as context:
+        yield context
+
+    for warning in context:
+        assert warning.filename == file_name
+        assert warning.lineno >= first_line
+        assert warning.lineno in function_lines
+
+
+def deprecated_call_here(
+    *, match: str | re.Pattern[str] | None = None
+) -> AbstractContextManager[pytest.WarningsRecorder]:
+    return warns_here((DeprecationWarning, PendingDeprecationWarning), match=match)

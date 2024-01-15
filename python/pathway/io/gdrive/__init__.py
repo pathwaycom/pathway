@@ -6,8 +6,9 @@ import io
 import json
 import time
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, NewType
+from typing import Any, NewType
 
 from google.oauth2.service_account import Credentials as ServiceCredentials
 from googleapiclient.discovery import build

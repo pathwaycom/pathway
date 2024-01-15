@@ -570,7 +570,7 @@ def test_fuzzy_match_with_hint():
       a  |    BB |    1.0
 
     """,
-    ).update_columns(weight=pw.cast(float, pw.this.weight))
+    ).with_columns(weight=pw.cast(float, pw.this.weight))
     assert_table_equality_wo_index(
         fuzzy_match_with_hint(
             node_feature_left, node_feature_right, features, by_hand_match

@@ -1294,9 +1294,7 @@ def test_clustering_quality():
     mod_from_external_lib_as_number = community.modularity(tmp, modified_graph)
 
     def compare_mod(mod):
-        return "{:.14f}".format(mod) == "{:.14f}".format(
-            mod_from_external_lib_as_number
-        )
+        return f"{mod:.14f}" == "{:.14f}".format(mod_from_external_lib_as_number)
 
     external_mod = exact_modularity(
         WeightedGraph.from_vertices_and_weighted_edges(vertices, doubled_edges), vc
