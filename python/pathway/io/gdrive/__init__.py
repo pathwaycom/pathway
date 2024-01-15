@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import time
 import warnings
 from collections.abc import Callable
@@ -23,7 +24,7 @@ from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
 MIME_TYPE_FOLDER = "application/vnd.google-apps.folder"
-FILE_FIELDS = "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser, trashed"
+FILE_FIELDS = "id, name, mimeType, parents, modifiedTime, thumbnailLink, lastModifyingUser, trashed, size"
 
 DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
     "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -35,9 +36,12 @@ GDriveFile = NewType("GDriveFile", dict)
 
 
 class _GDriveClient:
-    def __init__(self, credentials: ServiceCredentials) -> None:
+    def __init__(
+        self, credentials: ServiceCredentials, object_size_limit: int | None = None
+    ) -> None:
         self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
+        self.object_size_limit = object_size_limit
 
     def _query(self, q: str = "") -> list:
         items = []
@@ -72,10 +76,27 @@ class _GDriveClient:
         else:
             subitems = self._query(f"'{id}' in parents and trashed=false")
             files = [i for i in subitems if i["mimeType"] != MIME_TYPE_FOLDER]
+            files = self._filter_by_size(files)
             subdirs = [i for i in subitems if i["mimeType"] == MIME_TYPE_FOLDER]
             for subdir in subdirs:
                 files.extend(self._ls(subdir["id"]))
             return files
+
+    def _filter_by_size(self, files: list[GDriveFile]) -> list[GDriveFile]:
+        if self.object_size_limit is None:
+            return files
+        result = []
+        for file in files:
+            size = int(file["size"])
+            if size > self.object_size_limit:
+                name = file["name"]
+                logging.info(
+                    f"Skipping object {name} because its size "
+                    f"{size} exceeds the limit {self.object_size_limit}"
+                )
+                continue
+            result.append(file)
+        return result
 
     def _get(self, file_id: str) -> GDriveFile | None:
         try:
@@ -161,6 +182,7 @@ class _GDriveSubject(ConnectorSubject):
     _refresh_interval: int
     _mode: str
     _append_metadata: bool
+    _object_size_limit: int | None
 
     def __init__(
         self,
@@ -170,6 +192,7 @@ class _GDriveSubject(ConnectorSubject):
         refresh_interval: int,
         mode: str,
         with_metadata: bool,
+        object_size_limit: int | None,
     ) -> None:
         super().__init__()
         self._credentials_factory = credentials_factory
@@ -177,6 +200,7 @@ class _GDriveSubject(ConnectorSubject):
         self._root = root
         self._mode = mode
         self._append_metadata = with_metadata
+        self._object_size_limit = object_size_limit
         assert mode in ["streaming", "static"]
 
     @property
@@ -188,7 +212,7 @@ class _GDriveSubject(ConnectorSubject):
         return self._append_metadata
 
     def run(self) -> None:
-        client = _GDriveClient(self._credentials_factory())
+        client = _GDriveClient(self._credentials_factory(), self._object_size_limit)
         prev = _GDriveTree({})
 
         while True:
@@ -218,6 +242,7 @@ def read(
     object_id: str,
     *,
     mode: str = "streaming",
+    object_size_limit: int | None = None,
     refresh_interval: int = 30,
     service_user_credentials_file: str,
     with_metadata: bool = False,
@@ -233,6 +258,8 @@ def read(
             and new files every `refresh_interval` seconds. "static" mode will only consider
             the available data and ingest all of it in one commit.
             The default value is "streaming".
+        object_size_limit: Maximum size (in bytes) of a file that will be processed by \
+this connector or `None` if no filtering by size should be made;
         refresh_interval: time in seconds between scans. Applicable if mode is set to 'streaming'.
         service_user_credentials_file: Google API service user json file.
         with_metadata: when set to True, the connector will add an additional column named
@@ -265,6 +292,7 @@ def read(
         refresh_interval=refresh_interval,
         mode=mode,
         with_metadata=with_metadata,
+        object_size_limit=object_size_limit,
     )
 
     return pw.io.python.read(

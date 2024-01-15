@@ -14,7 +14,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `interval_join` can now also work with intervals of zero length.
 - `pw.io.http.rest_connector` now accepts host and port configuration as an instance of the `pw.io.http.PathwayWebserver` class and can now have multiple endpoints running on a single port.
-- `pw.xpacks.connectors.sharepoint.read` now supports the size limit for a single object. If set, it will exclude too large files and won't read them.
+- `pw.xpacks.connectors.sharepoint.read` and `pw.io.gdrive.read` now support the size limit for a single object. If set, it will exclude too large files and won't read them.
 
 ## [0.7.7] - 2023-12-27
 
