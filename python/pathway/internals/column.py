@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
 from types import EllipsisType
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 import pathway.internals as pw
 from pathway.internals import column_properties as cp, dtype as dt, trace
@@ -399,6 +399,28 @@ class GroupedContext(Context):
     @cached_property
     def universe(self) -> Universe:
         return Universe()
+
+
+@dataclass(eq=False, frozen=True)
+class DeduplicateContext(Context):
+    value: ColumnWithExpression
+    instance: tuple[ColumnWithExpression, ...]
+    acceptor: Callable[[Any, Any], bool]
+    orig_id_column: IdColumn
+    persistent_id: str | None
+
+    def column_dependencies_internal(self) -> Iterable[Column]:
+        return (self.value,) + self.instance
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
+
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.orig_id_column.universe.subset()
 
 
 @dataclass(eq=False, frozen=True)

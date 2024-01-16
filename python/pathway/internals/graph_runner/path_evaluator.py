@@ -65,9 +65,7 @@ class PathEvaluator(ABC):
 
 class FlatStoragePathEvaluator(
     PathEvaluator,
-    context_types=[
-        clmn.GroupedContext,
-    ],
+    context_types=[clmn.GroupedContext],
 ):
     def compute(
         self,
@@ -75,6 +73,18 @@ class FlatStoragePathEvaluator(
         input_storages: dict[Universe, Storage],
     ) -> Storage:
         return Storage.flat(self.context.universe, output_columns)
+
+
+class DeduplicatePathEvaluator(
+    PathEvaluator,
+    context_types=[clmn.DeduplicateContext],
+):
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        return Storage.flat(self.context.universe, output_columns, shift=1)
 
 
 class AddNewColumnsPathEvaluator(

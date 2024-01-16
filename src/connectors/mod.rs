@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
 
+use differential_dataflow::input::InputSession;
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -740,5 +741,55 @@ where
                 }
             };
         }
+    }
+}
+
+pub struct SnapshotReaderState {
+    pub poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
+    pub input_thread_handle: std::thread::JoinHandle<()>,
+}
+
+pub fn read_persisted_state(
+    mut input_session: InputSession<u64, (Key, Vec<Value>), isize>,
+    persistent_storage: Arc<Mutex<SingleWorkerPersistentStorage>>,
+    external_persistent_id: &ExternalPersistentId,
+    persistent_id: PersistentId,
+) -> SnapshotReaderState {
+    let (sender, receiver) = mpsc::channel();
+    let thread_name = format!("pathway:{external_persistent_id}");
+
+    let input_thread_handle = thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            Connector::<u64>::rewind_from_disk_snapshot(
+                persistent_id,
+                &persistent_storage,
+                &sender,
+                PersistenceMode::Persisting,
+            );
+            let send_res = sender.send(Entry::RewindFinishSentinel);
+            if let Err(e) = send_res {
+                panic!("Failed to read the state of deduplicate operator: {e}");
+            }
+        })
+        .expect("deduplication thread creation failed");
+
+    let poller = Box::new(move || loop {
+        match receiver.recv() {
+            Ok(Entry::Snapshot(entry)) => match entry {
+                SnapshotEvent::Insert(key, values) => input_session.insert((key, values)),
+                SnapshotEvent::Delete(key, values) => input_session.remove((key, values)),
+                SnapshotEvent::Upsert(_, _)
+                | SnapshotEvent::AdvanceTime(_)
+                | SnapshotEvent::Finished => unreachable!(),
+            },
+            Ok(Entry::Realtime(_)) => unreachable!(),
+            Ok(Entry::RewindFinishSentinel) | Err(_) => return ControlFlow::Break(()),
+        }
+    });
+
+    SnapshotReaderState {
+        poller,
+        input_thread_handle,
     }
 }

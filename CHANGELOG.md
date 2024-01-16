@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Standalone versions of methods: `pw.groupby`, `pw.join`, `pw.join_inner`, `pw.join_left`, `pw.join_right` and `pw.join_outer`.
 - The ability to use python's `abs` function on Pathway expressions.
 - `asof_join` now has configurable temporal behavior (delaying outputs, ignoring late entries and cleaning unused memory). The configuration can be passed using the `behavior` parameter of `asof_join` method.
+- It is possible to persist the state of the `deduplicate` operator.
 
 ### Changed
 - `interval_join` can now also work with intervals of zero length.

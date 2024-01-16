@@ -12,7 +12,8 @@ use crate::connectors::adaptors::{GenericValues, ValuesSessionAdaptor};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
-use crate::connectors::ARTIFICIAL_TIME_ON_REWIND_START;
+use crate::connectors::snapshot::Event as SnapshotEvent;
+use crate::connectors::{read_persisted_state, ARTIFICIAL_TIME_ON_REWIND_START};
 use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
@@ -49,6 +50,7 @@ use arcstr::ArcStr;
 use crossbeam_channel::{bounded, never, select, Receiver, RecvError, Sender};
 use derivative::Derivative;
 use differential_dataflow::collection::concatenate;
+use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::operators::iterate::Variable;
@@ -92,7 +94,7 @@ use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
     AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, FloatSumReducer,
     IntSumReducer, MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer,
-    StatefulReducer, TupleReducer, UniqueReducer,
+    StatefulCombineFn, StatefulReducer, TupleReducer, UniqueReducer,
 };
 use super::report_error::{ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithReporter};
 use super::{
@@ -653,6 +655,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     persistence_config: Option<PersistenceManagerConfig>,
     worker_persistent_storage: WorkerPersistentStorage,
     global_persistent_storage: GlobalPersistentStorage,
+    persisted_states_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -827,6 +830,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             persistence_config,
             worker_persistent_storage,
             global_persistent_storage,
+            persisted_states_count: 0,
         })
     }
 
@@ -2443,6 +2447,143 @@ where
     }
 }
 
+impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S>
+where
+    S::MaybeTotalTimestamp: TotalOrder,
+{
+    #[allow(clippy::too_many_lines)]
+    fn deduplicate(
+        &mut self,
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reduced_column_paths: Vec<ColumnPath>,
+        combine_fn: StatefulCombineFn,
+        external_persistent_id: Option<&ExternalPersistentId>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter = self.error_reporter.clone();
+
+        let table_persistence_enabled =
+            if let Some(worker_persistent_storage) = self.worker_persistent_storage.as_ref() {
+                worker_persistent_storage
+                    .lock()
+                    .unwrap()
+                    .table_persistence_enabled()
+            } else {
+                false
+            };
+
+        self.persisted_states_count += 1;
+        let external_persistent_id = external_persistent_id
+            .cloned()
+            .unwrap_or_else(|| format!("deduplicate-{}", self.persisted_states_count));
+
+        let persistent_id = external_persistent_id.clone().into_persistent_id();
+
+        let with_new_keys = table
+            .values()
+            .map_named("deduplicate::new_key", move |(key, values)| {
+                let new_key_parts: Vec<_> = grouping_columns_paths
+                    .iter()
+                    .map(|path| path.extract(&key, &values))
+                    .collect::<Result<_>>()
+                    .unwrap_with_reporter(&error_reporter);
+
+                let new_values: Vec<_> = reduced_column_paths
+                    .iter()
+                    .map(|path| path.extract(&key, &values))
+                    .collect::<Result<_>>()
+                    .unwrap_with_reporter(&error_reporter);
+
+                let new_key = Key::for_values(&new_key_parts);
+                (new_key, new_values)
+            })
+            .inner // skip artificial time created by a normal persistence
+            .filter(|((_key, _values), time, _diff)| *time != ARTIFICIAL_TIME_ON_REWIND_START)
+            .as_collection();
+
+        let with_persisted_state = if table_persistence_enabled {
+            let mut input_session = InputSession::new();
+            let state = input_session.to_collection(&mut self.scope);
+            let snapshot_reader_state = read_persisted_state(
+                input_session,
+                self.worker_persistent_storage.as_ref().unwrap().clone(),
+                &external_persistent_id,
+                persistent_id,
+            );
+            self.pollers.push(snapshot_reader_state.poller);
+            self.connector_threads
+                .push(snapshot_reader_state.input_thread_handle);
+            with_new_keys.concat(&state).consolidate()
+        } else {
+            with_new_keys
+        };
+        let new_values = with_persisted_state
+            .stateful_reduce_named("deduplicate::reduce", move |state, values| {
+                (combine_fn)(state, values)
+            });
+
+        let new_values_persisted = if table_persistence_enabled {
+            let error_reporter = self.error_reporter.clone();
+            let snapshot_writer = self
+                .worker_persistent_storage
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .create_snapshot_writer(persistent_id)
+                .expect("Failed to create a snapshot writer in deduplicate");
+            new_values
+                .consolidate()
+                .inner
+                .inspect_core(move |event| match event {
+                    Ok((_time, data)) => {
+                        for ((key, values), time, diff) in data {
+                            if *time == ARTIFICIAL_TIME_ON_REWIND_START {
+                                continue;
+                            }
+                            assert!(*diff == 1 || *diff == -1);
+                            let values_vec: Vec<Value> =
+                                (**values.as_tuple().unwrap_with_reporter(&error_reporter)).into();
+                            let event = if *diff == 1 {
+                                SnapshotEvent::Insert(*key, values_vec)
+                            } else {
+                                SnapshotEvent::Delete(*key, values_vec)
+                            };
+                            snapshot_writer
+                                .lock()
+                                .unwrap()
+                                .write(&event)
+                                .expect("Failed to save row in persistent buffer.");
+                        }
+                    }
+                    Err(frontier) => {
+                        assert!(frontier.len() <= 1);
+                        if let Some(time) = frontier.first() {
+                            snapshot_writer
+                                .lock()
+                                .unwrap()
+                                .write(&SnapshotEvent::AdvanceTime(*time))
+                                .expect("Failed to save time advancement in persistent buffer.");
+                        }
+                    }
+                })
+                .as_collection()
+        } else {
+            new_values
+        };
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values_persisted).with_properties(table_properties)))
+    }
+}
+
 #[derive(Debug, Clone)]
 enum OutputEvent {
     Commit(Option<u64>),
@@ -3824,6 +3965,18 @@ where
         )
     }
 
+    fn deduplicate(
+        &self,
+        _table_handle: TableHandle,
+        _grouping_columns_paths: Vec<ColumnPath>,
+        _reduced_column_paths: Vec<ColumnPath>,
+        _combine_fn: StatefulCombineFn,
+        _external_persistent_id: Option<&ExternalPersistentId>,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        Err(Error::NotSupportedInIteration)
+    }
+
     fn gradual_broadcast(
         &self,
         input_table_handle: TableHandle,
@@ -4342,6 +4495,25 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             grouping_columns_paths,
             reducers,
             set_id,
+            table_properties,
+        )
+    }
+
+    fn deduplicate(
+        &self,
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reduced_column_paths: Vec<ColumnPath>,
+        combine_fn: StatefulCombineFn,
+        external_persistent_id: Option<&ExternalPersistentId>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().deduplicate(
+            table_handle,
+            grouping_columns_paths,
+            reduced_column_paths,
+            combine_fn,
+            external_persistent_id,
             table_properties,
         )
     }

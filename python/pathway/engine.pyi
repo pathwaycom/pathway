@@ -526,6 +526,15 @@ class Scope:
         by_id: bool,
         table_properties: TableProperties,
     ) -> Table: ...
+    def deduplicate(
+        self,
+        table: Table,
+        grouping_columns: list[ColumnPath],
+        reduced_columns: list[ColumnPath],
+        combine: Callable[[Any, Any], Any],
+        persistent_id: str | None,
+        table_properties: TableProperties,
+    ) -> Table: ...
     def ix_table(
         self,
         to_ix_table: Table,

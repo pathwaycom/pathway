@@ -5,11 +5,11 @@ from __future__ import annotations
 import functools
 import warnings
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast, overload
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
-from pathway.internals import dtype as dt, groupbys, thisclass, universes
+from pathway.internals import api, dtype as dt, groupbys, thisclass, universes
 from pathway.internals.api import Value
 from pathway.internals.arg_handlers import (
     arg_handler,
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 
 TSchema = TypeVar("TSchema", bound=Schema)
+T = TypeVar("T", bound=api.Value)
 
 
 class Table(
@@ -966,6 +967,105 @@ class Table(
         7   | dog
         """
         return self.groupby().reduce(*args, **kwargs)
+
+    @trace_user_frame
+    @desugar
+    @check_arg_types
+    @contextualized_operator
+    def deduplicate(
+        self,
+        *,
+        value: expr.ColumnExpression,
+        instance: expr.ColumnExpression | None = None,
+        acceptor: Callable[[T, T], bool],
+        persistent_id: str | None = None,
+    ) -> Table:
+        """Deduplicates rows in `self` on `value` column using acceptor function.
+
+        It keeps rows which where accepted by the acceptor function.
+        Acceptor operates on two arguments - current value and the previously accepted value.
+
+        Args:
+            value: column expression used for deduplication.
+            instance: Grouping column. For rows with different
+                values in this column, deduplication will be performed separately.
+                Defaults to None.
+            acceptor: callback telling whether two values are different.
+            persistent_id: (unstable) An identifier, under which the state of the table
+            will be persisted or ``None``, if there is no need to persist the state of this table.
+            When a program restarts, it restores the state for all input tables according to what
+            was saved for their ``persistent_id``. This way it's possible to configure the start of
+            computations from the moment they were terminated last time.
+
+        Returns:
+            Table: the result of deduplication.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> table = pw.debug.table_from_markdown(
+        ...     '''
+        ...     val | __time__
+        ...      1  |     2
+        ...      2  |     4
+        ...      3  |     6
+        ...      4  |     8
+        ... '''
+        ... )
+        >>>
+        >>> def acceptor(new_value, old_value) -> bool:
+        ...     return new_value >= old_value + 2
+        ...
+        >>>
+        >>> result = table.deduplicate(value=pw.this.val, acceptor=acceptor)
+        >>> pw.debug.compute_and_print_update_stream(result, include_id=False)
+        val | __time__ | __diff__
+        1   | 2        | 1
+        1   | 6        | -1
+        3   | 6        | 1
+        >>>
+        >>> table = pw.debug.table_from_markdown(
+        ...     '''
+        ...     val | instance | __time__
+        ...      1  |     1    |     2
+        ...      2  |     1    |     4
+        ...      3  |     2    |     6
+        ...      4  |     1    |     8
+        ...      4  |     2    |     8
+        ...      5  |     1    |    10
+        ... '''
+        ... )
+        >>>
+        >>> def acceptor(new_value, old_value) -> bool:
+        ...     return new_value >= old_value + 2
+        ...
+        >>>
+        >>> result = table.deduplicate(
+        ...     value=pw.this.val, instance=pw.this.instance, acceptor=acceptor
+        ... )
+        >>> pw.debug.compute_and_print_update_stream(result, include_id=False)
+        val | instance | __time__ | __diff__
+        1   | 1        | 2        | 1
+        3   | 2        | 6        | 1
+        1   | 1        | 8        | -1
+        4   | 1        | 8        | 1
+        """
+        if instance is None:
+            instance = expr.ColumnConstExpression(None)
+        self._validate_expression(value)
+        self._validate_expression(instance)
+        value_col = self._eval(value)
+        instance_col = self._eval(instance)
+
+        context = clmn.DeduplicateContext(
+            value_col,
+            (instance_col,),
+            acceptor,
+            self._id_column,
+            persistent_id,
+        )
+
+        return self._table_with_context(context)
 
     @trace_user_frame
     def ix(

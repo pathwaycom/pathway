@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pathway.internals import (
     api,
@@ -1102,6 +1102,46 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
             [arg._dtype for arg in expression._args]
         )
         return self._reducer_data(engine_reducer, args)
+
+
+class DeduplicateEvaluator(ExpressionEvaluator, context_type=clmn.DeduplicateContext):
+    context: clmn.DeduplicateContext
+
+    def run(
+        self,
+        output_storage: Storage,
+    ) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
+        instance_paths = [
+            input_storage.get_path(column) for column in self.context.instance
+        ]
+        reduced_columns_paths = [input_storage.get_path(self.context.value)]
+        for column in output_storage.get_columns():
+            assert isinstance(column, clmn.ColumnWithReference)
+            path = input_storage.get_path(column.expression._column)
+            reduced_columns_paths.append(path)
+
+        properties = self._table_properties(output_storage)
+
+        def is_different_with_state(
+            state: tuple[Any, ...] | None, rows: Iterable[tuple[list[api.Value], int]]
+        ) -> tuple[api.Value, ...] | None:
+            for [col, *cols], difference in rows:
+                if difference <= 0:
+                    continue
+                state_val = state[0] if state is not None else None
+                if state_val is None or self.context.acceptor(col, state_val):
+                    state = (col, *cols)
+            return state
+
+        return self.scope.deduplicate(
+            self.state.get_table(input_storage._universe),
+            instance_paths,
+            reduced_columns_paths,
+            is_different_with_state,
+            self.context.persistent_id,
+            properties,
+        )
 
 
 class UpdateRowsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateRowsContext):

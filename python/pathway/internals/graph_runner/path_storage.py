@@ -73,8 +73,10 @@ class Storage:
         return cls(universe, column_paths)
 
     @classmethod
-    def flat(cls, universe: Universe, columns: Iterable[Column]) -> Storage:
+    def flat(
+        cls, universe: Universe, columns: Iterable[Column], shift: int = 0
+    ) -> Storage:
         paths = {}
         for i, column in enumerate(columns):
-            paths[column] = ColumnPath((i,))
+            paths[column] = ColumnPath((i + shift,))
         return cls(universe, paths)

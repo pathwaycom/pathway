@@ -159,7 +159,10 @@ def noisy_linear_stream(nb_rows: int = 10, input_rate: float = 1.0) -> pw.Table:
 
 
 def range_stream(
-    nb_rows: int = 30, offset: int = 0, input_rate: float = 1.0
+    nb_rows: int = 30,
+    offset: int = 0,
+    input_rate: float = 1.0,
+    autocommit_duration_ms: int = 1000,
 ) -> pw.Table:
     """
     Generates a simple artificial data stream, used to compute the sum in our examples.
@@ -168,6 +171,9 @@ def range_stream(
         nb_rows (int, optional): The number of rows to generate in the data stream. Defaults to 30.
         offset (int, optional): The offset value added to the generated 'value' column. Defaults to 0.
         input_rate (float, optional): The rate at which rows are generated per second. Defaults to 1.0.
+        autocommit_duration_ms: the maximum time between two commits. Every
+          autocommit_duration_ms milliseconds, the updates received by the connector are
+          committed and pushed into Pathway's computation graph.
 
     Returns:
         pw.Table: a table containing the generated data stream.
@@ -190,7 +196,6 @@ def range_stream(
     value_generators = {
         "value": (lambda x: float(x + offset)),
     }
-    autocommit_duration_ms = 1000
     return generate_custom_stream(
         value_generators=value_generators,
         schema=InputSchema,

@@ -28,9 +28,9 @@ from pathway.io.python import ConnectorSubject, read
 
 
 @check_arg_types
-def _compute_table(table: Table) -> api.CapturedStream:
+def _compute_table(table: Table, **kwargs) -> api.CapturedStream:
     [captured] = GraphRunner(
-        parse_graph.G, debug=True, monitoring_level=MonitoringLevel.NONE
+        parse_graph.G, debug=True, monitoring_level=MonitoringLevel.NONE, **kwargs
     ).run_tables(table)
     return captured
 
@@ -78,8 +78,9 @@ def _compute_and_print_internal(
     include_id: bool,
     short_pointers: bool,
     n_rows: int | None,
+    **kwargs,
 ) -> None:
-    captured = _compute_table(table)
+    captured = _compute_table(table, **kwargs)
     columns = list(table._columns.keys())
     if squash_updates:
         output_data = list(api.squash_updates(captured).items())
@@ -157,6 +158,7 @@ def compute_and_print(
     include_id=True,
     short_pointers=True,
     n_rows: int | None = None,
+    **kwargs,
 ) -> None:
     """A function running the computations and printing the table.
 
@@ -172,6 +174,7 @@ def compute_and_print(
         include_id=include_id,
         short_pointers=short_pointers,
         n_rows=n_rows,
+        **kwargs,
     )
 
 
@@ -183,6 +186,7 @@ def compute_and_print_update_stream(
     include_id=True,
     short_pointers=True,
     n_rows: int | None = None,
+    **kwargs,
 ) -> None:
     """A function running the computations and printing the update stream of the table.
 
@@ -198,6 +202,7 @@ def compute_and_print_update_stream(
         include_id=include_id,
         short_pointers=short_pointers,
         n_rows=n_rows,
+        **kwargs,
     )
 
 

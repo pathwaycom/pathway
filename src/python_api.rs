@@ -614,26 +614,31 @@ impl PyReducer {
 
     #[staticmethod]
     fn stateful_many(combine: Py<PyAny>) -> Reducer {
-        let combine_fn: StatefulCombineFn = Arc::new(move |state, values| {
-            with_gil_and_pool(|py| {
-                let combine = combine.as_ref(py);
-                let state = state.to_object(py);
-                let values = values.to_object(py);
-                combine
-                    .call1((state, values))
-                    .unwrap_or_else(|e| {
-                        Python::with_gil(|py| e.print(py));
-                        panic!("python error");
-                    })
-                    .extract()
-                    .unwrap_or_else(|e| {
-                        Python::with_gil(|py| e.print(py));
-                        panic!("python error");
-                    })
-            })
-        });
-        Reducer::Stateful { combine_fn }
+        Reducer::Stateful {
+            combine_fn: wrap_stateful_combine(combine),
+        }
     }
+}
+
+fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {
+    Arc::new(move |state, values| {
+        with_gil_and_pool(|py| {
+            let combine = combine.as_ref(py);
+            let state = state.to_object(py);
+            let values = values.to_object(py);
+            combine
+                .call1((state, values))
+                .unwrap_or_else(|e| {
+                    Python::with_gil(|py| e.print(py));
+                    panic!("python error");
+                })
+                .extract()
+                .unwrap_or_else(|e| {
+                    Python::with_gil(|py| e.print(py));
+                    panic!("python error");
+                })
+        })
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2434,6 +2439,27 @@ impl Scope {
             grouping_columns_paths,
             reducers,
             set_id,
+            table_properties.0,
+        )?;
+        Table::new(self_, table_handle)
+    }
+
+    #[pyo3(signature = (table, grouping_columns_paths, reduced_column_paths, combine, persistent_id, table_properties))]
+    pub fn deduplicate(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
+        #[pyo3(from_py_with = "from_py_iterable")] reduced_column_paths: Vec<ColumnPath>,
+        combine: Py<PyAny>,
+        persistent_id: Option<ExternalPersistentId>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let table_handle = self_.borrow().graph.deduplicate(
+            table.handle,
+            grouping_columns_paths,
+            reduced_column_paths,
+            wrap_stateful_combine(combine),
+            persistent_id.as_ref(),
             table_properties.0,
         )?;
         Table::new(self_, table_handle)

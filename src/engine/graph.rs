@@ -19,6 +19,7 @@ use crate::connectors::monitoring::ConnectorStats;
 use crate::persistence::ExternalPersistentId;
 
 use super::error::{DynResult, Trace};
+use super::reduce::StatefulCombineFn;
 use super::{Error, Expression, Key, Reducer, Result, Type, Value};
 
 macro_rules! define_handle {
@@ -765,6 +766,16 @@ pub trait Graph {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
+    fn deduplicate(
+        &self,
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reduced_column_paths: Vec<ColumnPath>,
+        combine_fn: StatefulCombineFn,
+        external_persistent_id: Option<&ExternalPersistentId>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
     fn gradual_broadcast(
         &self,
         input_table_handle: TableHandle,
@@ -1252,6 +1263,27 @@ impl Graph for ScopedGraph {
                 grouping_columns_paths,
                 reducers,
                 set_id,
+                table_properties,
+            )
+        })
+    }
+
+    fn deduplicate(
+        &self,
+        table_handle: TableHandle,
+        grouping_columns_paths: Vec<ColumnPath>,
+        reduced_column_paths: Vec<ColumnPath>,
+        combine_fn: StatefulCombineFn,
+        external_persistent_id: Option<&ExternalPersistentId>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.deduplicate(
+                table_handle,
+                grouping_columns_paths,
+                reduced_column_paths,
+                combine_fn,
+                external_persistent_id,
                 table_properties,
             )
         })
