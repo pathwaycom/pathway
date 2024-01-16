@@ -164,15 +164,15 @@ See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webp
 ### Tutorials<a id="tutorials"></a>
 - [Linear regression on a Kafka Stream](https://pathway.com/developers/tutorials/linear_regression_with_kafka/) ([video](https://vimeo.com/805069039)) 
 - Joins:
-  - [Interval joins](https://pathway.com/developers/tutorials/fleet_eta_interval_join/)
-  - [Window joins](https://pathway.com/developers/tutorials/clickstream-window-join/)
-  - [ASOF joins](https://pathway.com/developers/tutorials/finance_ts_asof_join/)
+  - [Interval joins](https://pathway.com/developers/user-guide/temporal-data/interval-join)
+  - [Window joins](https://pathway.com/developers/user-guide/temporal-data/window-join)
+  - [ASOF joins](https://pathway.com/developers/user-guide/temporal-data/asof-join)
 - Connectors:
-  - [CSV connectors](https://pathway.com/developers/tutorials/connectors/csv_connectors/)
-  - [Database connectors](https://pathway.com/developers/tutorials/connectors/database-connectors/)
-  - [Kafka connectors](https://pathway.com/developers/tutorials/connectors/kafka_connectors/)
-  - [Custom Python connector](https://pathway.com/developers/tutorials/connectors/custom-python-connectors/)
-  - [Switching from Kafka to Redpanda](https://pathway.com/developers/tutorials/connectors/switching-to-redpanda/)
+  - [CSV connectors](https://pathway.com/developers/user-guide/connectors/csv_connectors/)
+  - [Database connectors](https://pathway.com/developers/user-guide/connectors/database-connectors/)
+  - [Kafka connectors](https://pathway.com/developers/user-guide/connectors/kafka_connectors/)
+  - [Custom Python connector](https://pathway.com/developers/user-guide/connectors/custom-python-connectors/)
+  - [Switching from Kafka to Redpanda](https://pathway.com/developers/user-guide/connectors/switching-to-redpanda/)
 - [Monitoring Pathway with Prometheus](https://pathway.com/developers/tutorials/prometheus-monitoring/)
 - [Time between events in a multi-topic event stream](https://pathway.com/developers/tutorials/event_stream_processing_time_between_occurrences/)
 
