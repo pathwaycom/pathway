@@ -1,6 +1,8 @@
 # Copyright © 2024 Pathway
 """Methods and classes for testing and declaring relations between keysets (universes).
+
 Typical use:
+
 >>> import pathway as pw
 >>> import pytest
 >>> t1 = pw.debug.table_from_markdown(

@@ -2,6 +2,9 @@
 
 """Pathway demo module
 
+This module allows you to create custom data streams from scratch or by utilizing a CSV file.
+This feature empowers you to effectively test and debug your Pathway implementation using realtime data.
+
 Typical use:
 
 >>> class InputSchema(pw.Schema):

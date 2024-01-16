@@ -79,7 +79,7 @@ def test_udf_async_options(tmp_path: pathlib.Path):
 
     counter = mock.Mock()
 
-    @pw.udf_async(cache_strategy=pw.asynchronous.DiskCache())
+    @pw.udf_async(cache_strategy=pw.internals.asynchronous.DiskCache())
     async def inc(x: int) -> int:
         counter()
         return x + 5

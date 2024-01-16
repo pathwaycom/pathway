@@ -2082,7 +2082,7 @@ def test_apply_async_disk_cache(tmp_path: pathlib.Path):
     cache_dir = tmp_path / "test_cache"
     counter = mock.Mock()
 
-    @pw.asynchronous.async_options(cache_strategy=pw.asynchronous.DiskCache())
+    @pw.asynchronous.async_options(cache_strategy=pw.internals.asynchronous.DiskCache())
     def inc(x: int) -> int:
         counter()
         return x + 1

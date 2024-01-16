@@ -1,5 +1,20 @@
 # Copyright © 2024 Pathway
+"""Methods and classes for debugging Pathway computation.
 
+Typical use:
+
+>>> import pathway as pw
+>>> t1 = pw.debug.table_from_markdown('''
+... pet
+... Dog
+... Cat
+... ''')
+>>> t2 = t1.select(animal=t1.pet, desc="fluffy")
+>>> pw.debug.compute_and_print(t2, include_id=False)
+animal | desc
+Cat    | fluffy
+Dog    | fluffy
+"""
 from __future__ import annotations
 
 import functools
