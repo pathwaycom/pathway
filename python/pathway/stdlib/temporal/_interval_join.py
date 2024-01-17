@@ -606,7 +606,7 @@ def interval_join(
             operation and be of the form LHS: ColumnReference == RHS: ColumnReference.
         behavior: defines a temporal behavior of a join - features like delaying entries
             or ignoring late entries. You can see examples below or read more in the
-            `temporal behavior of interval join tutorial </developers/tutorials/temporal_behavior>`_ .
+            `temporal behavior of interval join tutorial </developers/user-guide/temporal-data/temporal_behavior>`_ .
         how: decides whether to run `interval_join_inner`, `interval_join_left`, `interval_join_right`
             or `interval_join_outer`. Default is INNER.
         left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
