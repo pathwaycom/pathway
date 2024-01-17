@@ -138,7 +138,7 @@ This dashboard is enabled by default; you can disable it by passing `monitoring_
 
 <img src="https://d14l3brkh44201.cloudfront.net/pathway-dashboard.png" width="1326" alt="Pathway dashboard"/>
 
-In addition to Pathway's built-in dashboard, you can [use Prometheus](https://pathway.com/developers/tutorials/prometheus-monitoring) to monitor your Pathway application.
+In addition to Pathway's built-in dashboard, you can [use Prometheus](https://pathway.com/developers/user-guide/deployment/prometheus-monitoring) to monitor your Pathway application.
 
 ## Resources<a id="resources"></a>
 
@@ -173,7 +173,7 @@ See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webp
   - [Kafka connectors](https://pathway.com/developers/user-guide/connectors/kafka_connectors/)
   - [Custom Python connector](https://pathway.com/developers/user-guide/connectors/custom-python-connectors/)
   - [Switching from Kafka to Redpanda](https://pathway.com/developers/user-guide/connectors/switching-to-redpanda/)
-- [Monitoring Pathway with Prometheus](https://pathway.com/developers/tutorials/prometheus-monitoring/)
+- [Monitoring Pathway with Prometheus](https://pathway.com/developers/user-guide/deployment/prometheus-monitoring/)
 - [Time between events in a multi-topic event stream](https://pathway.com/developers/tutorials/event_stream_processing_time_between_occurrences/)
 
 ### Showcases<a id="showcases"></a>

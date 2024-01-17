@@ -25,7 +25,7 @@ def run(
             pathway.MonitoringLevel.ALL. If unset, pathway will choose between
             NONE and IN_OUT based on output interactivity.
         with_http_server: whether to start a http server with runtime metrics. Learn
-            more in a `tutorial </developers/tutorials/prometheus-monitoring/>`_ .
+            more in a `tutorial </developers/user-guide/deployment/prometheus-monitoring/>`_ .
         default_logging: whether to allow pathway to set its own logging handler. Set
             it to False if you want to set your own logging handler.
         persistence_config: the config for persisting the state in case this
