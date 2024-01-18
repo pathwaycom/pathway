@@ -221,7 +221,7 @@ jobs:
           pip install --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           if [[ "$RUNNER_NAME" == *mac* ]]; then
-            export PYTEST_XDIST_AUTO_NUM_WORKERS=4
+            export PYTEST_XDIST_AUTO_NUM_WORKERS=2
           fi
           export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
