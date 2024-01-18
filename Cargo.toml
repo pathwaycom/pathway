@@ -1,6 +1,6 @@
 [package]
 name = "pathway"
-version = "0.7.8"
+version = "0.7.9"
 edition = "2021"
 publish = false
 rust-version = "1.72.0"

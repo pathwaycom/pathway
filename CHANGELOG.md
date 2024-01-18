@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.9] - 2024-01-18
+
 ### Changed
-
 - `pw.io.http.rest_connector` now also accepts port as a string for backwards compatibility.
-
 
 ## [0.7.8] - 2024-01-18
 
