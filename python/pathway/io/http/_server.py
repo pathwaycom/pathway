@@ -144,7 +144,7 @@ class RestServerSubject(io.python.ConnectorSubject):
 @check_arg_types
 def rest_connector(
     host: str | None = None,
-    port: int | None = None,
+    port: int | str | None = None,
     *,
     webserver: PathwayWebserver | None = None,
     route: str = "/",
@@ -252,12 +252,14 @@ with:
             raise ValueError(
                 "If webserver object isn't specified, host and port must be present"
             )
-        warn(
-            "The `host` and `port` arguments are deprecated. Please use `webserver` "
-            "instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        if isinstance(port, str):
+            port = int(port)
+        # warn(
+        #    "The `host` and `port` arguments are deprecated. Please use `webserver` "
+        #    "instead.",
+        #    DeprecationWarning,
+        #    stacklevel=2,
+        # )
         webserver = PathwayWebserver(host, port)
     else:
         if host is not None or port is not None:

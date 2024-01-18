@@ -16,8 +16,42 @@ from pathway.tests.utils import (
 )
 
 
-def test_server(tmp_path: pathlib.Path):
-    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10000
+class UniquePortDispenser:
+    """
+    Tests are run simultaneously by several workers.
+    Since they involve running a web server, they shouldn't interfere, so they
+    should occupy distinct ports.
+    This class automates unique port assignments for different tests.
+    """
+
+    def __init__(self, range_start: int = 12345, worker_range_size: int = 1000):
+        pytest_worker_id = os.environ["PYTEST_XDIST_WORKER"]
+        if pytest_worker_id == "master":
+            worker_id = 0
+        elif pytest_worker_id.startswith("gw"):
+            worker_id = int(pytest_worker_id[2:])
+        else:
+            raise ValueError(f"Unknown xdist worker id: {pytest_worker_id}")
+
+        self._next_available_port = range_start + worker_id * worker_range_size
+        self._lock = threading.Lock()
+
+    def get_unique_port(self) -> int:
+        self._lock.acquire()
+        result = self._next_available_port
+        self._next_available_port += 1
+        self._lock.release()
+
+        return result
+
+
+PORT_DISPENSER = UniquePortDispenser()
+
+
+def _test_server_basic(tmp_path: pathlib.Path, port_is_str: bool = False):
+    port = PORT_DISPENSER.get_unique_port()
+    if port_is_str:
+        port = str(port)
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -56,8 +90,16 @@ def test_server(tmp_path: pathlib.Path):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
+def test_server(tmp_path: pathlib.Path):
+    _test_server_basic(tmp_path)
+
+
+def test_server_str_port_compatibility(tmp_path: pathlib.Path):
+    _test_server_basic(tmp_path, port_is_str=True)
+
+
 def test_server_customization(tmp_path: pathlib.Path):
-    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10001
+    port = PORT_DISPENSER.get_unique_port()
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -97,7 +139,7 @@ def test_server_customization(tmp_path: pathlib.Path):
 
 
 def test_server_schema_customization(tmp_path: pathlib.Path):
-    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10002
+    port = PORT_DISPENSER.get_unique_port()
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -133,7 +175,7 @@ def test_server_schema_customization(tmp_path: pathlib.Path):
 
 
 def test_server_keep_queries(tmp_path: pathlib.Path):
-    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10003
+    port = PORT_DISPENSER.get_unique_port()
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -182,7 +224,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path):
 
 
 def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path):
-    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10003
+    port = PORT_DISPENSER.get_unique_port()
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -214,7 +256,7 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path):
 
 
 def test_server_two_endpoints(tmp_path: pathlib.Path):
-    port = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 10004
+    port = PORT_DISPENSER.get_unique_port()
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):

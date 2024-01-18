@@ -2731,7 +2731,21 @@ def test_server_fail_on_incorrect_port_type():
     with pytest.raises(TypeError):
         pw.io.http.rest_connector(
             host="127.0.0.1",
-            port="8080",
+            port=("8080",),
+            schema=InputSchema,
+            delete_completed_queries=False,
+        )
+
+
+def test_server_fail_on_unparsable_port():
+    class InputSchema(pw.Schema):
+        k: int
+        v: int
+
+    with pytest.raises(ValueError):
+        pw.io.http.rest_connector(
+            host="127.0.0.1",
+            port="abc",
             schema=InputSchema,
             delete_completed_queries=False,
         )
