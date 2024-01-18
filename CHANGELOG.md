@@ -5,17 +5,19 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-## Added
-- Comparisons support for tuples.
-- Standalone versions of methods: `pw.groupby`, `pw.join`, `pw.join_inner`, `pw.join_left`, `pw.join_right` and `pw.join_outer`.
-- The ability to use python's `abs` function on Pathway expressions.
-- `asof_join` now has configurable temporal behavior (delaying outputs, ignoring late entries and cleaning unused memory). The configuration can be passed using the `behavior` parameter of `asof_join` method.
-- It is possible to persist the state of the `deduplicate` operator.
+## [0.7.8] - 2024-01-18
+
+### Added
+- Support for comparisons of tuples has been added.
+- Standalone versions of methods such as `pw.groupby`, `pw.join`, `pw.join_inner`, `pw.join_left`, `pw.join_right`, and `pw.join_outer` are now available.
+- The `abs` function from Python can now be used on Pathway expressions.
+- The `asof_join` method now has configurable temporal behavior. The `behavior` parameter can be used to pass the configuration.
+- The state of the `deduplicate` operator can now be persisted.
 
 ### Changed
-- `interval_join` can now also work with intervals of zero length.
-- `pw.io.http.rest_connector` now accepts host and port configuration as an instance of the `pw.io.http.PathwayWebserver` class and can now have multiple endpoints running on a single port.
-- `pw.xpacks.connectors.sharepoint.read` and `pw.io.gdrive.read` now support the size limit for a single object. If set, it will exclude too large files and won't read them.
+- `interval_join` can now work with intervals of zero length.
+- The `pw.io.http.rest_connector` can now open multiple endpoints on the same port using a new `pw.io.http.PathwayWebserver` class.
+- The `pw.xpacks.connectors.sharepoint.read` and `pw.io.gdrive.read` methods now support the size limit for a single object. If set, it will exclude too large files and won't read them.
 
 ## [0.7.7] - 2023-12-27
 
