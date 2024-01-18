@@ -162,7 +162,7 @@ See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webp
 - [Troubleshooting](https://pathway.com/developers/user-guide/development/troubleshooting/)
 
 ### Tutorials<a id="tutorials"></a>
-- [Linear regression on a Kafka Stream](https://pathway.com/developers/tutorials/linear_regression_with_kafka/) ([video](https://vimeo.com/805069039)) 
+- [Linear regression on a Kafka Stream](https://pathway.com/developers/showcases/linear_regression_with_kafka/) ([video](https://vimeo.com/805069039))
 - Joins:
   - [Interval joins](https://pathway.com/developers/user-guide/temporal-data/interval-join)
   - [Window joins](https://pathway.com/developers/user-guide/temporal-data/window-join)
@@ -174,7 +174,7 @@ See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webp
   - [Custom Python connector](https://pathway.com/developers/user-guide/connectors/custom-python-connectors/)
   - [Switching from Kafka to Redpanda](https://pathway.com/developers/user-guide/connectors/switching-to-redpanda/)
 - [Monitoring Pathway with Prometheus](https://pathway.com/developers/user-guide/deployment/prometheus-monitoring/)
-- [Time between events in a multi-topic event stream](https://pathway.com/developers/tutorials/event_stream_processing_time_between_occurrences/)
+- [Time between events in a multi-topic event stream](https://pathway.com/developers/showcases/event_stream_processing_time_between_occurrences/)
 
 ### Showcases<a id="showcases"></a>
 - [Realtime Twitter Analysis App](https://pathway.com/developers/showcases/twitter/)
@@ -182,9 +182,9 @@ See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webp
 - [Realtime Fuzzy joins](https://pathway.com/developers/showcases/fuzzy_join/fuzzy_join_chapter1/)
 
 ### External and community content<a id="external-and-community-content"></a>
-- [Real-time linear regression (Data Engineering Weekly)](https://pathway.com/developers/tutorials/unlocking-data-stream-processing-1/)
-- [Realtime server logs monitoring (Data Engineering Weekly)](https://pathway.com/developers/tutorials/unlocking-data-stream-processing-2/)
-- [Data enrichment with fuzzy joins (Data Engineering Weekly)](https://pathway.com/developers/tutorials/unlocking-data-stream-processing-3/)
+- [Real-time linear regression (Data Engineering Weekly)](https://pathway.com/developers/showcases/unlocking-data-stream-processing-1/)
+- [Realtime server logs monitoring (Data Engineering Weekly)](https://pathway.com/developers/showcases/unlocking-data-stream-processing-2/)
+- [Data enrichment with fuzzy joins (Data Engineering Weekly)](https://pathway.com/developers/showcases/unlocking-data-stream-processing-3/)
 - [▶️ How to do Realtime Twitter Sentiment Analysis in Python (video)](https://www.youtube.com/watch?v=V7T3xHfjE4o)
 
 If you would like to share with us some Pathway-related content, please give an admin a shout on [Discord](https://discord.gg/pathway).
