@@ -46,6 +46,7 @@ tests = [
     "pytest-rerunfailures >= 13.0, < 14.0",
     "networkx",
     "python-louvain",
+    "openapi_spec_validator",
 ]
 
 [project.urls]

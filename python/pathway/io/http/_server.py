@@ -9,12 +9,38 @@ from typing import Any
 from uuid import uuid4
 from warnings import warn
 
+import yaml
 from aiohttp import web
 
 import pathway.internals as pw
 import pathway.io as io
+from pathway.internals import api
 from pathway.internals.api import Pointer, unsafe_make_pointer
 from pathway.internals.runtime_type_check import check_arg_types
+
+# There is no OpenAPI type for 'any', so it's excluded from the dict
+# 'object' and 'array' are excluded because there is schema for the nested
+# objects or array items
+_ENGINE_TO_OPENAPI_TYPE = {
+    api.PathwayType.INT: "number",
+    api.PathwayType.STRING: "string",
+    api.PathwayType.BOOL: "boolean",
+    api.PathwayType.FLOAT: "number",
+    api.PathwayType.POINTER: "string",
+    api.PathwayType.DATE_TIME_NAIVE: "string",
+    api.PathwayType.DATE_TIME_UTC: "string",
+    api.PathwayType.DURATION: "string",
+    api.PathwayType.BYTES: "bytes",
+}
+
+_ENGINE_TO_OPENAPI_FORMAT = {
+    api.PathwayType.INT: "int64",
+    api.PathwayType.FLOAT: "double",
+}
+
+# Which column in schema corresponds to the payload when the
+# input format for the endpoint is 'raw'
+QUERY_SCHEMA_COLUMN = "query"
 
 
 class PathwayWebserver:
@@ -27,6 +53,9 @@ class PathwayWebserver:
     Args:
         host: TCP/IP host or a sequence of hosts for the created endpoint.
         port: Port for the created endpoint.
+        with_schema_endpoint: If set to True, the server will also provide ``/_schema`` \
+endpoint containing Open API 3.0.3 schema for the handlers generated with \
+``pw.io.http.rest_connector`` calls.
     """
 
     _host: str
@@ -36,7 +65,7 @@ class PathwayWebserver:
     _app: web.Application
     _is_launched: bool
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, with_schema_endpoint=True):
         self._host = host
         self._port = port
 
@@ -45,9 +74,125 @@ class PathwayWebserver:
         self._app = web.Application()
         self._is_launched = False
         self._app_start_mutex = threading.Lock()
+        self._openapi_description = {
+            "openapi": "3.0.3",
+            "info": {
+                "title": "Pathway-generated openapi description",
+                "version": "1.0.0",
+            },
+            "paths": {},
+            "servers": [{"url": f"http://{host}:{port}/"}],
+        }
+        if with_schema_endpoint:
+            self._app.add_routes([web.get("/_schema", self._schema_handler)])
 
-    def _register_endpoint(self, route, handler) -> None:
+    async def _schema_handler(self, request: web.Request):
+        format = request.query.get("format", "yaml")
+        if format == "json":
+            return web.json_response(
+                status=200,
+                data=self.openapi_description_json,
+                dumps=pw.Json.dumps,
+            )
+        elif format != "yaml":
+            raise web.HTTPBadRequest(
+                reason=f"Unknown format: '{format}'. Supported formats: 'json', 'yaml'"
+            )
+
+        return web.Response(
+            status=200,
+            text=self.openapi_description,
+            content_type="text/x-yaml",
+        )
+
+    def _construct_openapi_plaintext_schema(self, schema) -> dict:
+        query_column = schema.columns().get(QUERY_SCHEMA_COLUMN)
+        if query_column is None:
+            raise ValueError(
+                "'raw' endpoint input format requires 'value' column in schema"
+            )
+        openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(query_column, "string")
+        openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(query_column)
+        description = {
+            "type": openapi_type,
+        }
+        if openapi_format:
+            description["format"] = openapi_format
+        if query_column.has_default_value():
+            description["default"] = query_column.default_value
+
+        return description
+
+    def _construct_openapi_json_schema(self, schema) -> dict:
+        properties = {}
+        required = []
+        additional_properties = False
+
+        for name, props in schema.columns().items():
+            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(props.dtype.map_to_engine())
+            if openapi_type is None:
+                # not something we can clearly define the type for, so it will be
+                # read as an additional property
+                additional_properties = True
+                continue
+
+            field_description = {
+                "type": openapi_type,
+            }
+
+            if not props.has_default_value():
+                required.append(name)
+            else:
+                field_description["default"] = props.default_value
+
+            openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(props.dtype.map_to_engine())
+            if openapi_format is not None:
+                field_description["format"] = openapi_format
+
+            properties[name] = field_description
+
+        result = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": additional_properties,
+        }
+        if required:
+            result["required"] = required
+
+        return result
+
+    def _register_endpoint(self, route, handler, format, schema) -> None:
         self._app.add_routes([web.post(route, handler)])
+
+        content = {}
+        if format == "raw":
+            content["text/plain"] = {
+                "schema": self._construct_openapi_plaintext_schema(schema)
+            }
+        elif format == "custom":
+            content["application/json"] = {
+                "schema": self._construct_openapi_json_schema(schema)
+            }
+        else:
+            raise ValueError(f"Unknown endpoint input format: {format}")
+
+        self._openapi_description["paths"][route] = {  # type: ignore[index]
+            "post": {
+                "requestBody": {
+                    "content": content,
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                    },
+                    "400": {
+                        "description": "The request is incorrect. Please check if "
+                        "it complies with the auto-generated and Pathway input "
+                        "table schemas"
+                    },
+                },
+            }
+        }
 
     def _run(self) -> None:
         self._app_start_mutex.acquire()
@@ -63,6 +208,20 @@ class PathwayWebserver:
             )
         else:
             self._app_start_mutex.release()
+
+    @property
+    def openapi_description_json(self) -> dict:
+        """
+        Returns Open API description for the added set of endpoints in JSON format.
+        """
+        return self._openapi_description
+
+    @property
+    def openapi_description(self):
+        """
+        Returns Open API description for the added set of endpoints in yaml format.
+        """
+        return yaml.dump(self.openapi_description_json)
 
 
 class RestServerSubject(io.python.ConnectorSubject):
@@ -86,7 +245,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._delete_completed_queries = delete_completed_queries
         self._format = format
 
-        webserver._register_endpoint(route, self.handle)
+        webserver._register_endpoint(route, self.handle, format, schema)
 
     def run(self):
         self._webserver._run()
@@ -95,7 +254,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         id = unsafe_make_pointer(uuid4().int)
 
         if self._format == "raw":
-            payload = {"query": await request.text()}
+            payload = {QUERY_SCHEMA_COLUMN: await request.text()}
         elif self._format == "custom":
             try:
                 payload = await request.json()

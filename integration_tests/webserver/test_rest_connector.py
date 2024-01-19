@@ -1,6 +1,6 @@
 # Copyright © 2024 Pathway
 
-import os
+import multiprocessing
 import pathlib
 import threading
 import time
@@ -16,40 +16,7 @@ from pathway.tests.utils import (
 )
 
 
-class UniquePortDispenser:
-    """
-    Tests are run simultaneously by several workers.
-    Since they involve running a web server, they shouldn't interfere, so they
-    should occupy distinct ports.
-    This class automates unique port assignments for different tests.
-    """
-
-    def __init__(self, range_start: int = 12345, worker_range_size: int = 1000):
-        pytest_worker_id = os.environ["PYTEST_XDIST_WORKER"]
-        if pytest_worker_id == "master":
-            worker_id = 0
-        elif pytest_worker_id.startswith("gw"):
-            worker_id = int(pytest_worker_id[2:])
-        else:
-            raise ValueError(f"Unknown xdist worker id: {pytest_worker_id}")
-
-        self._next_available_port = range_start + worker_id * worker_range_size
-        self._lock = threading.Lock()
-
-    def get_unique_port(self) -> int:
-        self._lock.acquire()
-        result = self._next_available_port
-        self._next_available_port += 1
-        self._lock.release()
-
-        return result
-
-
-PORT_DISPENSER = UniquePortDispenser()
-
-
-def _test_server_basic(tmp_path: pathlib.Path, port_is_str: bool = False):
-    port = PORT_DISPENSER.get_unique_port()
+def _test_server_basic(tmp_path: pathlib.Path, port: int, port_is_str: bool = False):
     if port_is_str:
         port = str(port)
     output_path = tmp_path / "output.csv"
@@ -90,16 +57,15 @@ def _test_server_basic(tmp_path: pathlib.Path, port_is_str: bool = False):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server(tmp_path: pathlib.Path):
-    _test_server_basic(tmp_path)
+def test_server(tmp_path: pathlib.Path, port: int):
+    _test_server_basic(tmp_path, port)
 
 
-def test_server_str_port_compatibility(tmp_path: pathlib.Path):
-    _test_server_basic(tmp_path, port_is_str=True)
+def test_server_str_port_compatibility(tmp_path: pathlib.Path, port: int):
+    _test_server_basic(tmp_path, port, port_is_str=True)
 
 
-def test_server_customization(tmp_path: pathlib.Path):
-    port = PORT_DISPENSER.get_unique_port()
+def test_server_customization(tmp_path: pathlib.Path, port: int):
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -138,8 +104,7 @@ def test_server_customization(tmp_path: pathlib.Path):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server_schema_customization(tmp_path: pathlib.Path):
-    port = PORT_DISPENSER.get_unique_port()
+def test_server_schema_customization(tmp_path: pathlib.Path, port: int):
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -174,8 +139,7 @@ def test_server_schema_customization(tmp_path: pathlib.Path):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server_keep_queries(tmp_path: pathlib.Path):
-    port = PORT_DISPENSER.get_unique_port()
+def test_server_keep_queries(tmp_path: pathlib.Path, port: int):
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -223,8 +187,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path):
     )
 
 
-def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path):
-    port = PORT_DISPENSER.get_unique_port()
+def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int):
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -255,8 +218,7 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path):
         pw.run()
 
 
-def test_server_two_endpoints(tmp_path: pathlib.Path):
-    port = PORT_DISPENSER.get_unique_port()
+def test_server_two_endpoints(tmp_path: pathlib.Path, port: int):
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -328,3 +290,47 @@ def test_server_two_endpoints(tmp_path: pathlib.Path):
     t = threading.Thread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 8), 30)
+
+
+def test_server_schema_generation_via_endpoint(port: int):
+    class InputSchema(pw.Schema):
+        query: str
+        user: str
+
+    def uppercase_logic(queries: pw.Table) -> pw.Table:
+        return queries.select(
+            query_id=queries.id, result=pw.apply(lambda x: x.upper(), pw.this.query)
+        )
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+    uppercase_queries, uppercase_response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        schema=InputSchema,
+        route="/uppercase",
+        delete_completed_queries=True,
+    )
+    uppercase_responses = uppercase_logic(uppercase_queries)
+    uppercase_response_writer(uppercase_responses)
+
+    pw_run_process = multiprocessing.Process(target=pw.run)
+    pw_run_process.start()
+
+    succeeded = False
+    for _ in range(10):
+        try:
+            response = requests.get(
+                f"http://127.0.0.1:{port}/_schema?format=json", timeout=1
+            )
+            response.raise_for_status()
+        except Exception:
+            time.sleep(0.5)
+            continue
+
+        schema = response.json()
+        assert schema["paths"].keys() == set(["/uppercase"])
+        succeeded = True
+        break
+
+    pw_run_process.terminate()
+    pw_run_process.join()
+    assert succeeded
