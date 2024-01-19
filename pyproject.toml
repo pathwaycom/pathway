@@ -47,6 +47,9 @@ tests = [
     "networkx",
     "python-louvain",
     "openapi_spec_validator",
+    "openai >= 1.6",
+    "litellm >= 1.0",
+    "tiktoken >= 0.5",
 ]
 
 [project.urls]

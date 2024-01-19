@@ -20,6 +20,8 @@ class UDF(abc.ABC):
     Please subclass `UDFSync` and `UDFAsync` to define UDF's using python classes.
     """
 
+    __wrapped__: Callable
+
     @abc.abstractmethod
     def __call__(self, *args, **kwargs):
         ...

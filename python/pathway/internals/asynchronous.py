@@ -166,6 +166,14 @@ class ExponentialBackoffRetryStrategy(AsyncRetryStrategy):
         backoff_factor: float = 2,
         jitter_ms: int = 300,
     ) -> None:
+        """
+        Args:
+            max_retries: Maximum number of retries. As int.
+            initial_delay: First delay in milliseconds.
+            backoff_factor: Factor by which the delay between retries increases exponentially. Set as float.
+            jitter_ms: Maximum random jitter added to the delay between retries in milliseconds.
+        Returns:
+            None"""
         self._initial_delay = initial_delay / 1_000
         self._max_retries = max_retries
         self._backoff_factor = backoff_factor

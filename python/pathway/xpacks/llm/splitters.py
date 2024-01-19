@@ -3,10 +3,12 @@
 """
 A library of text spliiters - routines which slit a long text into smaller chunks.
 """
-
 import unicodedata
 
+import pathway as pw
 
+
+@pw.udf
 def null_splitter(txt: str) -> list[tuple[str, dict]]:
     """A splitter which returns its argument as one long text ith null metadata.
 
@@ -28,7 +30,7 @@ def _normalize_unicode(text: str):
     return unicodedata.normalize("NFKC", text)
 
 
-class TokenCountSplitter:
+class TokenCountSplitter(pw.UDFSync):
     """
     Splits a given string or a list of strings into chunks based on token
     count.
@@ -38,6 +40,8 @@ class TokenCountSplitter:
     `max_tokens`. It also attempts to break chunks at sensible points such as
     punctuation marks.
 
+    All arguments set default which may be overridden in the UDF call
+
     Arguments:
         min_tokens: minimum tokens in a chunk of text.
         max_tokens: maximum size of a chunk in tokens.
@@ -45,7 +49,7 @@ class TokenCountSplitter:
 
     Example:
 
-    # >>> from pathway.xpacks.llm.splitter import TokenCountSplitter
+    # >>> from pathway.xpacks.llm.splitters import TokenCountSplitter
     # >>> import pathway as pw
     # >>> t  = pw.debug.table_from_markdown(
     # ...     '''| text
@@ -67,31 +71,37 @@ class TokenCountSplitter:
         max_tokens: int = 500,
         encoding_name: str = "cl100k_base",
     ):
-        self.min_tokens = min_tokens
-        self.max_tokens = max_tokens
-        self.encoding_name = encoding_name
+        self.kwargs = dict(
+            min_tokens=min_tokens, max_tokens=max_tokens, encoding_name=encoding_name
+        )
 
-    def __call__(self, txt: str) -> list[tuple[str, dict]]:
+    def __wrapped__(self, txt: str, **kwargs) -> list[tuple[str, dict]]:
         import tiktoken
 
-        tokenizer = tiktoken.get_encoding(self.encoding_name)
+        kwargs = {**self.kwargs, **kwargs}
+
+        tokenizer = tiktoken.get_encoding(kwargs.pop("encoding_name"))
+        max_tokens = kwargs.pop("max_tokens")
+        min_tokens = kwargs.pop("min_tokens")
+
+        if kwargs:
+            raise ValueError(f"Unknown arguments: {', '.join(kwargs.keys())}")
+
         text = _normalize_unicode(txt)
         tokens = tokenizer.encode_ordinary(text)
         output: list[tuple[str, dict]] = []
         i = 0
         while i < len(tokens):
-            chunk_tokens = tokens[i : i + self.max_tokens]
+            chunk_tokens = tokens[i : i + max_tokens]
             chunk = tokenizer.decode(chunk_tokens)
             last_punctuation = max(
                 [chunk.rfind(p) for p in self.PUNCTUATION], default=-1
             )
             if (
                 last_punctuation != -1
-                and last_punctuation > self.CHARS_PER_TOKEN * self.min_tokens
+                and last_punctuation > self.CHARS_PER_TOKEN * min_tokens
             ):
                 chunk = chunk[: last_punctuation + 1]
-
             i += len(tokenizer.encode_ordinary(chunk))
-
             output.append((chunk, {}))
         return output

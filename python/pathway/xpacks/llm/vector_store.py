@@ -9,17 +9,19 @@ HTTP requests.
 The client queries the server and returns matching documents.
 """
 
-
+import asyncio
+import functools
 import json
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import requests
 
 import pathway as pw
-import pathway.xpacks.llm.parser
-import pathway.xpacks.llm.splitter
+import pathway.xpacks.llm.parsers
+import pathway.xpacks.llm.splitters
 from pathway.stdlib.ml import index
 
 
@@ -27,7 +29,60 @@ class QueryInputSchema(pw.Schema):
     query: str
     k: int
     metadata_filter: str | None = pw.column_definition(default_value=None)
-    stats: bool
+
+
+class StatsInputSchema(pw.Schema):
+    pass
+
+
+@dataclass
+class GraphResultTables:
+    retrieval_results: pw.Table
+    info_results: pw.Table
+    input_results: pw.Table
+
+
+def _unwrap_udf(func):
+    if isinstance(func, pw.UDF):
+        return func.__wrapped__
+    return func
+
+
+# https://stackoverflow.com/a/75094151
+class _RunThread(threading.Thread):
+    def __init__(self, coroutine):
+        self.coroutine = coroutine
+        self.result = None
+        super().__init__()
+
+    def run(self):
+        self.result = asyncio.run(self.coroutine)
+
+
+def _run_async(coroutine):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        thread = _RunThread(coroutine)
+        thread.start()
+        thread.join()
+        return thread.result
+    else:
+        return asyncio.run(coroutine)
+
+
+def _coerce_sync(func: Callable) -> Callable:
+    if asyncio.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return _run_async(func(*args, **kwargs))
+
+        return wrapper
+    else:
+        return func
 
 
 class VectorStoreServer:
@@ -49,26 +104,23 @@ class VectorStoreServer:
         splitter: Callable[[str], list[tuple[str, dict]]] | None = None,
     ):
         self.docs = docs
-        self.parser: Callable[[bytes], list[tuple[str, dict]]] = (
-            parser
-            if parser is not None
-            else pathway.xpacks.llm.parser.ParseUtf8()  # type:ignore
+
+        self.parser: Callable[[bytes], list[tuple[str, dict]]] = _unwrap_udf(
+            parser if parser is not None else pathway.xpacks.llm.parsers.ParseUtf8()
         )
-        self.splitter = (
+        self.splitter = _unwrap_udf(
             splitter
             if splitter is not None
-            else pathway.xpacks.llm.splitter.null_splitter
+            else pathway.xpacks.llm.splitters.null_splitter
         )
-        self.embedder = embedder
+        self.embedder = _unwrap_udf(embedder)
 
         # detect the dimensionality of the embeddings
-        self.embedding_dimension = len(embedder("."))
+        self.embedding_dimension = len(_coerce_sync(self.embedder)("."))
 
     def _build_graph(
-        self,
-        host,
-        port,
-    ):
+        self, retrieval_queries, info_queries, input_queries
+    ) -> GraphResultTables:
         """
         Builds the pathway computation graph for indexing documents and serving queries.
         """
@@ -110,9 +162,19 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             pw.this.data
         )
 
-        @pw.udf_async
-        def embedder(txt):
-            return np.asarray(self.embedder(txt))
+        if asyncio.iscoroutinefunction(self.embedder):
+
+            @pw.udf_async
+            async def embedder(txt):
+                result = await self.embedder(txt)
+                return np.asarray(result)
+
+        else:
+
+            @pw.udf
+            def embedder(txt):
+                result = self.embedder(txt)
+                return np.asarray(result)
 
         chunked_docs += chunked_docs.select(
             embedding=embedder(pw.this.data["text"].as_str())
@@ -126,63 +188,69 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             metadata=chunked_docs.data["metadata"],
         )
 
-        post_query, response_writer = pw.io.http.rest_connector(
-            host=host,
-            port=port,
-            route="/",
-            schema=QueryInputSchema,
-            autocommit_duration_ms=50,
-            delete_completed_queries=True,
-        )
-
-        stats_query, query = post_query.split(pw.this.stats)
-
         # VectorStore statistics computation
         @pw.udf
-        def format_stats(counts, last_modified):
+        def format_stats(counts, last_modified) -> pw.Json:
             if counts is not None:
                 response = {"file_count": counts, "last_modified": last_modified.value}
             else:
                 response = {"file_count": 0, "last_modified": None}
-            return json.dumps(response)
+            return pw.Json(response)
+
+        @pw.udf
+        def format_inputs(paths: list[pw.Json]) -> pw.Json:
+            input_set = []
+            if paths:
+                input_set = list(set([i.value for i in paths]))
+
+            response = {"input_files": input_set}
+            return pw.Json(response)  # type: ignore
 
         parsed_docs += parsed_docs.select(
-            modified=pw.this.data["metadata"]["modified_at"]
+            modified=pw.this.data["metadata"]["modified_at"],
+            path=pw.this.data["metadata"]["path"],
         )
         stats = parsed_docs.reduce(
             count=pw.reducers.count(), last_modified=pw.reducers.max(pw.this.modified)
         )
+        inputs = parsed_docs.reduce(paths=pw.reducers.tuple(pw.this.path))
 
-        stats_results = stats_query.join_left(stats, id=stats_query.id).select(
+        info_results = info_queries.join_left(stats, id=info_queries.id).select(
             result=format_stats(stats.count, stats.last_modified)
         )
 
+        input_results = input_queries.join_left(inputs, id=input_queries.id).select(
+            result=format_inputs(pw.this.paths)  # pw.this.paths#
+        )
+
         # Relevant document search
-        query += query.select(
+        retrieval_queries += retrieval_queries.select(
             embedding=embedder(pw.this.query),
         )
 
-        query_results = query + knn_index.get_nearest_items(
-            query.embedding,
+        retrieval_results = retrieval_queries + knn_index.get_nearest_items(
+            retrieval_queries.embedding,
             k=pw.this.k,
             collapse_rows=True,
-            metadata_filter=query.metadata_filter,
+            metadata_filter=retrieval_queries.metadata_filter,
             with_distances=True,
         ).select(
             result=pw.this.data,
             dist=pw.this.dist,
         )
 
-        query_results = query_results.select(
-            result=pw.apply(
-                lambda x, y: [{**res.value, "dist": dist} for res, dist in zip(x, y)],
+        retrieval_results = retrieval_results.select(
+            result=pw.apply_with_type(
+                lambda x, y: pw.Json(
+                    [{**res.value, "dist": dist} for res, dist in zip(x, y)]
+                ),
+                pw.Json,
                 pw.this.result,
                 pw.this.dist,
             )
         )
 
-        results = query_results.concat(stats_results)
-        response_writer(results)
+        return GraphResultTables(retrieval_results, info_results, input_results)
 
     def run_server(
         self,
@@ -210,7 +278,35 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         Returns:
             If threaded, return the Thread object. Else, does not return.
         """
-        self._build_graph(host=host, port=port)
+
+        webserver = pw.io.http.PathwayWebserver(host=host, port=port)
+        retrieval_queries, retrieval_response_writer = pw.io.http.rest_connector(
+            webserver=webserver,
+            route="/query",
+            schema=QueryInputSchema,
+            autocommit_duration_ms=50,
+            delete_completed_queries=True,
+        )
+        info_queries, info_response_writer = pw.io.http.rest_connector(
+            webserver=webserver,
+            route="/stats",
+            schema=StatsInputSchema,
+            autocommit_duration_ms=50,
+            delete_completed_queries=True,
+        )
+        input_queries, inputs_response_writer = pw.io.http.rest_connector(
+            webserver=webserver,
+            route="/get_inputs",
+            schema=StatsInputSchema,
+            autocommit_duration_ms=50,
+            delete_completed_queries=True,
+        )
+
+        graph_tables = self._build_graph(retrieval_queries, info_queries, input_queries)
+
+        retrieval_response_writer(graph_tables.retrieval_results)
+        info_response_writer(graph_tables.info_results)
+        inputs_response_writer(graph_tables.input_results)
 
         def run():
             if with_cache:
@@ -243,13 +339,13 @@ class VectorStoreClient:
         self.host = host
         self.port = port
 
-    def __call__(self, query, k=3, metadata_filter=None) -> list[dict]:
+    def query(self, query, k=3, metadata_filter=None) -> list[dict]:
         """Perform a query to the vector store and fetch results."""
 
-        data = {"query": query, "k": k, "stats": False}
+        data = {"query": query, "k": k}
         if metadata_filter is not None:
             data["metadata_filter"] = metadata_filter
-        url = f"http://{self.host}:{self.port}"
+        url = f"http://{self.host}:{self.port}/query"
         response = requests.post(
             url,
             data=json.dumps(data),
@@ -259,12 +355,27 @@ class VectorStoreClient:
         responses = response.json()
         return sorted(responses, key=lambda x: x["dist"])
 
+    # Make an alias
+    __call__ = query
+
     def get_vectorstore_statistics(self):
         """Fetch basic statistics about the vector store."""
-        data = {"query": "", "k": 0, "stats": True}
-        url = f"http://{self.host}:{self.port}"
+        url = f"http://{self.host}:{self.port}/stats"
         response = requests.post(
-            url, data=json.dumps(data), headers={"Content-Type": "application/json"}
+            url,
+            json={},
+            headers={"Content-Type": "application/json"},
+        )
+        responses = response.json()
+        return responses
+
+    def get_input_files(self):
+        """Fetch basic statistics about the vector store."""
+        url = f"http://{self.host}:{self.port}/get_inputs"
+        response = requests.post(
+            url,
+            json={},
+            headers={"Content-Type": "application/json"},
         )
         responses = response.json()
         return responses
