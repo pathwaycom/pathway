@@ -446,7 +446,12 @@ where
                 }
             }
 
+            let mut n_entries_in_batch = 0;
             loop {
+                n_entries_in_batch += 1;
+                if n_entries_in_batch == 100_000 {
+                    return ControlFlow::Continue(next_commit_at);
+                }
                 match receiver.try_recv() {
                     Ok(Entry::Realtime(ReadResult::Finished)) => {
                         if backfilling_finished {
