@@ -317,6 +317,10 @@ pub trait Reader {
     }
 
     fn storage_type(&self) -> StorageType;
+
+    fn max_allowed_consecutive_errors(&self) -> usize {
+        0
+    }
 }
 
 pub trait ReaderBuilder: Send + 'static {
@@ -703,6 +707,10 @@ impl Reader for KafkaReader {
 
     fn storage_type(&self) -> StorageType {
         StorageType::Kafka
+    }
+
+    fn max_allowed_consecutive_errors(&self) -> usize {
+        32
     }
 }
 

@@ -243,6 +243,7 @@ where
     ) {
         let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
         let mut amt_send = 0;
+        let mut consecutive_errors = 0;
         loop {
             let row_read_result = reader.read();
             let finished = matches!(row_read_result, Ok(ReadResult::Finished));
@@ -253,10 +254,14 @@ where
                     if send_res.is_err() {
                         break;
                     }
+                    consecutive_errors = 0;
                 }
                 Err(error) => {
-                    error!("There had been an error processing the row read result {error}");
-                    error_reporter.report(EngineError::ReaderFailed(error));
+                    error!("There had been an error processing the row read result: {error}");
+                    consecutive_errors += 1;
+                    if consecutive_errors > reader.max_allowed_consecutive_errors() {
+                        error_reporter.report(EngineError::ReaderFailed(error));
+                    }
                 }
             };
 
