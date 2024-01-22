@@ -413,12 +413,12 @@ with:
             )
         if isinstance(port, str):
             port = int(port)
-        # warn(
-        #    "The `host` and `port` arguments are deprecated. Please use `webserver` "
-        #    "instead.",
-        #    DeprecationWarning,
-        #    stacklevel=2,
-        # )
+        warn(
+            "The `host` and `port` arguments are deprecated. Please use `webserver` "
+            "instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         webserver = PathwayWebserver(host, port)
     else:
         if host is not None or port is not None:
