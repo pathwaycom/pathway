@@ -992,10 +992,10 @@ class Table(
                 Defaults to None.
             acceptor: callback telling whether two values are different.
             persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+                will be persisted or ``None``, if there is no need to persist the state of this table.
+                When a program restarts, it restores the state for all input tables according to what
+                was saved for their ``persistent_id``. This way it's possible to configure the start of
+                computations from the moment they were terminated last time.
 
         Returns:
             Table: the result of deduplication.
