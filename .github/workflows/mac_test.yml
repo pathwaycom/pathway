@@ -1,0 +1,13 @@
+name: macOS - test
+on:
+  push:
+    branches: 
+      - 'main'
+jobs:
+  test-macos:
+    strategy:
+      fail-fast: false
+    uses: pathwaycom/pathway/.github/workflows/package_test.yml@main
+    with:
+      runner: 'ec2-macOS'
+    secrets: inherit

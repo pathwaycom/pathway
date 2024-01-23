@@ -1,0 +1,13 @@
+name: ubuntu - test
+on:
+  push:
+    branches: 
+      - 'main'
+jobs:
+  test-ubuntu:
+    strategy:
+      fail-fast: false
+    uses: pathwaycom/pathway/.github/workflows/package_test.yml@main
+    with:
+      runner: 'ubuntu-22.04'
+    secrets: inherit

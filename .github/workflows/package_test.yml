@@ -1,0 +1,153 @@
+name: .whl test
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'select runner'
+        type: string
+        required: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/develop'}}
+env:
+  AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+  MINIO_S3_SECRET_ACCESS_KEY: ${{ secrets.MINIO_S3_SECRET_ACCESS_KEY }}
+jobs:
+  Build_packages:
+    name: Build packages
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10"]
+        os:
+          - ${{ inputs.runner }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+
+      - name: Git checkout
+        uses: actions/checkout@v4
+
+      - name: License files
+        run: |
+          rm -f LICENSE_*-LICENSE-*
+          for filename in library_licenses/*; do cp "$filename" "LICENSE_$(basename "${filename}")"; done;
+
+      - name: Set package version
+        id: set-version
+        run: |
+          BUILD_NUMBER="${{ github.run_number }}"
+          PACKAGE_VERSION=$(perl -nle 'print $& while m{^version[[:space:]]*=[[:space:]]"\K[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+(?=")}g' Cargo.toml)
+          [[ -z "$PACKAGE_VERSION" ]] && { echo "Malformed package version in Cargo.toml" ; exit 1; }
+
+          NEXT_PATCH_VERSION=$(echo "${PACKAGE_VERSION}" | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          DEV_VERSION="\"${NEXT_PATCH_VERSION}-dev${BUILD_NUMBER}\""
+
+          SED_RESULT=$(sed -i -r -E 's/^(version)[[:space:]]*=[[:space:]]"([[:digit:]]+\.[[:digit:]]+).[[:digit:]]+"/\1 = '"$DEV_VERSION"'/ w /dev/stdout' Cargo.toml)
+          echo $DEV_VERSION
+          echo "__version__ = ${DEV_VERSION}" > python/pathway/internals/version.py
+
+      - name: Build package Ubuntu x86-x64
+        if: ${{ matrix.os == 'ubuntu-22.04'}}
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: 0.14.17
+          command: build
+          args: --release --strip
+          manylinux: auto
+          rustup-components: rust-std
+          working-directory: .
+          sccache: true
+          before-script-linux: yum install -y perl-core
+        
+      - name: Build package macOS Apple silicon
+        if: ${{ matrix.os == 'ec2-macOS'}}
+        uses: PyO3/maturin-action@v1
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          DEVELOPER_DIR: /Library/Developer/CommandLineTools
+          SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+        with:
+          maturin-version: 0.14.17
+          command: build
+          args: --release --strip
+          target: universal2-apple-darwin
+          manylinux: auto
+          rustup-components: rust-std
+          working-directory: .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pathway-${{ matrix.os }}
+          path: target/wheels/
+  pytest:
+    needs: Build_packages
+    name: ${{ matrix.os }} pytest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+        os:
+          - ${{ inputs.runner }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        if: ${{ matrix.os != 'ec2-macOS'}}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pathway-${{ matrix.os }}
+          path: target/wheels/
+
+      - name: Install and verify ${{ matrix.os }} package
+        run: |
+          set -ex
+          ENV_NAME="testenv_${{ matrix.python-version }}"
+          rm -rf "${ENV_NAME}"
+          python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
+          source "${ENV_NAME}/bin/activate"
+          WHEEL=(target/wheels/pathway-*.whl)
+          pip install --prefer-binary "${WHEEL}[tests]"
+          # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
+          if [[ "$RUNNER_NAME" == *mac* ]]; then
+            export PYTEST_XDIST_AUTO_NUM_WORKERS=4
+          fi
+          export PYTEST_ADDOPTS="--dist worksteal -n auto"
+          python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+
+  Notify_on_failure:
+    needs:
+      - Build_packages
+      - pytest
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Post to a Slack channel
+        id: slack
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: "{{ secrets. SLACK_CI_ALERT }}" ## #ci-alerts channel
+          # For posting a simple plain text message
+          payload: |
+            {
+              "text": "Repository: ${{ github.repository }}\nAction name: ${{ github.workflow }}\nGitHub Action test: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.actor }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "Repository: ${{ github.repository }}\nAction name: ${{ github.workflow }}\nGitHub Action test: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
