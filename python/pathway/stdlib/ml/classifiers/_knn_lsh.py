@@ -24,11 +24,13 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 from statistics import mode
 from typing import Literal
 
 import jmespath
+import jmespath.functions
 import numpy as np
 
 # TODO change to `import pathway as pw` when it is not imported as part of stdlib, OR move the whole file to stdlib
@@ -93,6 +95,41 @@ def knn_lsh_classifier_train(
             f"Not supported `type` {type} in knn_lsh_classifier_train. "
             "The allowed values are 'euclidean' and 'cosine'."
         )
+
+
+# support for glob metadata search
+def _globmatch_impl(pat_i, pat_n, pattern, p_i, p_n, path):
+    """Match pattern to path, recursively expanding **."""
+    if pat_i == pat_n:
+        return p_i == p_n
+    if p_i == p_n:
+        return False
+    if pattern[pat_i] == "**":
+        return _globmatch_impl(
+            pat_i, pat_n, pattern, p_i + 1, p_n, path
+        ) or _globmatch_impl(pat_i + 1, pat_n, pattern, p_i, p_n, path)
+    if fnmatch.fnmatch(path[p_i], pattern[pat_i]):
+        return _globmatch_impl(pat_i + 1, pat_n, pattern, p_i + 1, p_n, path)
+    return False
+
+
+def _globmatch(pattern, path):
+    """globmatch path to patter, using fnmatch at every level."""
+    pattern_parts = pattern.split("/")
+    path_parts = path.split("/")
+    return _globmatch_impl(
+        0, len(pattern_parts), pattern_parts, 0, len(path_parts), path_parts
+    )
+
+
+class CustomFunctions(jmespath.functions.Functions):
+    @jmespath.functions.signature({"types": ["string"]}, {"types": ["string"]})
+    def _func_globmatch(self, pattern, string):
+        # Given a string, check if it matches the globbing pattern
+        return _globmatch(pattern, string)
+
+
+_glob_options = jmespath.Options(custom_functions=CustomFunctions())
 
 
 def knn_lsh_generic_classifier_train(
@@ -202,6 +239,7 @@ def knn_lsh_generic_classifier_train(
                                 self.transformer.training_data[
                                     id_candidate
                                 ].metadata.value,
+                                options=_glob_options,
                             )
                             is True
                         ]

@@ -13,22 +13,13 @@ import requests
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.vector_store import (
-    QueryInputSchema,
-    StatsInputSchema,
-    VectorStoreClient,
-    VectorStoreServer,
-)
+from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
 
 PATHWAY_HOST = "127.0.0.1"
 PATHWAY_PORT = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 20000
 
 
-class DebugStatsInputSchema(StatsInputSchema):
-    debug: str | None = pw.column_definition(default_value=None)
-
-
-class DebugInputInputSchema(StatsInputSchema):
+class DebugStatsInputSchema(VectorStoreServer.StatisticsQuerySchema):
     debug: str | None = pw.column_definition(default_value=None)
 
 
@@ -45,7 +36,6 @@ def _test_vs(fake_embeddings_model):
         embedder=fake_embeddings_model,
     )
 
-    queries = pw.debug.table_from_rows(schema=QueryInputSchema, rows=[])
     info_queries = pw.debug.table_from_rows(
         schema=DebugStatsInputSchema,
         rows=[
@@ -53,16 +43,7 @@ def _test_vs(fake_embeddings_model):
         ],
     ).select()
 
-    input_queries = pw.debug.table_from_rows(
-        schema=DebugInputInputSchema,
-        rows=[
-            (None,),
-        ],
-    ).select()
-
-    info_outputs = vector_server._build_graph(
-        queries, info_queries, input_queries
-    ).info_results
+    info_outputs = vector_server.statistics_query(info_queries)
     assert_table_equality(
         info_outputs.select(result=pw.unwrap(pw.this.result["file_count"].as_int())),
         pw.debug.table_from_markdown(
@@ -73,9 +54,14 @@ def _test_vs(fake_embeddings_model):
         ),
     )
 
-    input_outputs = vector_server._build_graph(
-        queries, info_queries, input_queries
-    ).input_results
+    input_queries = pw.debug.table_from_rows(
+        schema=VectorStoreServer.InputsQuerySchema,
+        rows=[
+            (None, "**/*.py"),
+        ],
+    )
+
+    input_outputs = vector_server.inputs_query(input_queries)
 
     @pw.udf
     def get_file_name(path) -> str:
@@ -98,15 +84,13 @@ def _test_vs(fake_embeddings_model):
     # parse_graph.G.clear()
     retrieve_queries = pw.debug.table_from_markdown(
         """
-        query | k | metadata_filter
-        "Foo" | 1 |
+        metadata_filter | filepath_globpattern | query | k
+                        |                      | "Foo" | 1
         """,
-        schema=QueryInputSchema,
+        schema=VectorStoreServer.RetrieveQuerySchema,
     )
 
-    retrieve_outputs = vector_server._build_graph(
-        retrieve_queries, info_queries, input_queries
-    ).retrieval_results
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
     _, rows = pw.debug.table_to_dicts(retrieve_outputs)
     (val,) = rows["result"].values()
     assert isinstance(val, pw.Json)

@@ -14,8 +14,8 @@ import functools
 import json
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
 
+import jmespath
 import numpy as np
 import requests
 
@@ -23,23 +23,7 @@ import pathway as pw
 import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
 from pathway.stdlib.ml import index
-
-
-class QueryInputSchema(pw.Schema):
-    query: str
-    k: int
-    metadata_filter: str | None = pw.column_definition(default_value=None)
-
-
-class StatsInputSchema(pw.Schema):
-    pass
-
-
-@dataclass
-class GraphResultTables:
-    retrieval_results: pw.Table
-    info_results: pw.Table
-    input_results: pw.Table
+from pathway.stdlib.ml.classifiers import _knn_lsh
 
 
 def _unwrap_udf(func):
@@ -118,9 +102,9 @@ class VectorStoreServer:
         # detect the dimensionality of the embeddings
         self.embedding_dimension = len(_coerce_sync(self.embedder)("."))
 
-    def _build_graph(
-        self, retrieval_queries, info_queries, input_queries
-    ) -> GraphResultTables:
+        self._graph = self._build_graph()
+
+    def _build_graph(self) -> dict:
         """
         Builds the pathway computation graph for indexing documents and serving queries.
         """
@@ -188,6 +172,30 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             metadata=chunked_docs.data["metadata"],
         )
 
+        parsed_docs += parsed_docs.select(
+            modified=pw.this.data["metadata"]["modified_at"],
+            path=pw.this.data["metadata"]["path"],
+        )
+
+        stats = parsed_docs.reduce(
+            count=pw.reducers.count(),
+            last_modified=pw.reducers.max(pw.this.modified),
+            paths=pw.reducers.tuple(pw.this.path),
+        )
+        return locals()
+
+    class StatisticsQuerySchema(pw.Schema):
+        pass
+
+    class QueryResultSchema(pw.Schema):
+        result: pw.Json
+
+    @pw.table_transformer
+    def statistics_query(
+        self, info_queries: pw.Table[StatisticsQuerySchema]
+    ) -> pw.Table[QueryResultSchema]:
+        stats = self._graph["stats"]
+
         # VectorStore statistics computation
         @pw.udf
         def format_stats(counts, last_modified) -> pw.Json:
@@ -197,33 +205,98 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                 response = {"file_count": 0, "last_modified": None}
             return pw.Json(response)
 
-        @pw.udf
-        def format_inputs(paths: list[pw.Json]) -> pw.Json:
-            input_set = []
-            if paths:
-                input_set = list(set([i.value for i in paths]))
-
-            response = {"input_files": input_set}
-            return pw.Json(response)  # type: ignore
-
-        parsed_docs += parsed_docs.select(
-            modified=pw.this.data["metadata"]["modified_at"],
-            path=pw.this.data["metadata"]["path"],
-        )
-        stats = parsed_docs.reduce(
-            count=pw.reducers.count(), last_modified=pw.reducers.max(pw.this.modified)
-        )
-        inputs = parsed_docs.reduce(paths=pw.reducers.tuple(pw.this.path))
-
         info_results = info_queries.join_left(stats, id=info_queries.id).select(
             result=format_stats(stats.count, stats.last_modified)
         )
+        return info_results
 
-        input_results = input_queries.join_left(inputs, id=input_queries.id).select(
-            result=format_inputs(pw.this.paths)  # pw.this.paths#
+    class FilterSchema(pw.Schema):
+        metadata_filter: str | None = pw.column_definition(default_value=None)
+        filepath_globpattern: str | None = pw.column_definition(default_value=None)
+
+    @staticmethod
+    def merge_filters(queries: pw.Table):
+        @pw.udf
+        def _get_jmespath_filter(
+            metadata_filter: str, filepath_globpattern: str
+        ) -> str | None:
+            ret_parts = []
+            if metadata_filter:
+                ret_parts.append(f"({metadata_filter})")
+            if filepath_globpattern:
+                ret_parts.append(f'globmatch(`"{filepath_globpattern}"`, path)')
+            if ret_parts:
+                return " && ".join(ret_parts)
+            return None
+
+        queries = queries.without(
+            *VectorStoreServer.FilterSchema.__columns__.keys()
+        ) + queries.select(
+            metadata_filter=_get_jmespath_filter(
+                pw.this.metadata_filter, pw.this.filepath_globpattern
+            )
         )
+        return queries
+
+    class InputsQuerySchema(FilterSchema):
+        pass
+
+    @pw.table_transformer
+    def inputs_query(
+        self, input_queries: pw.Table[InputsQuerySchema]
+    ) -> pw.Table[QueryResultSchema]:
+        docs = self._graph["docs"]
+        # TODO: compare this approach to first joining queries to dicuments, then filtering,
+        # then grouping to get each response.
+        # The "dumb" tuple approach has more work precomputed for an all inputs query
+        all_metas = docs.reduce(metadatas=pw.reducers.tuple(pw.this._metadata))
+
+        input_queries = self.merge_filters(input_queries)
+
+        @pw.udf
+        def format_inputs(
+            metadatas: list[pw.Json] | None, metadata_filter: str | None
+        ) -> pw.Json:
+            metadatas: list = metadatas if metadatas is not None else []  # type:ignore
+            assert metadatas is not None
+            if metadata_filter:
+                metadatas = [
+                    m
+                    for m in metadatas
+                    if jmespath.search(
+                        metadata_filter, m.value, options=_knn_lsh._glob_options
+                    )
+                ]
+            return pw.Json({"input_files": [m.value["path"] for m in metadatas]})  # type: ignore
+
+        input_results = input_queries.join_left(all_metas, id=input_queries.id).select(
+            all_metas.metadatas, input_queries.metadata_filter
+        )
+        input_results = input_results.select(
+            result=format_inputs(pw.this.metadatas, pw.this.metadata_filter)
+        )
+        return input_results
+
+    # TODO: fix
+    # class RetrieveQuerySchema(FilterSchema):
+    #     query: str
+    #     k: int
+    # Keep a weird column ordering to match one that stems from the class inheritance above.
+    class RetrieveQuerySchema(pw.Schema):
+        metadata_filter: str | None = pw.column_definition(default_value=None)
+        filepath_globpattern: str | None = pw.column_definition(default_value=None)
+        query: str
+        k: int
+
+    @pw.table_transformer
+    def retrieve_query(
+        self, retrieval_queries: pw.Table[RetrieveQuerySchema]
+    ) -> pw.Table[QueryResultSchema]:
+        embedder = self._graph["embedder"]
+        knn_index = self._graph["knn_index"]
 
         # Relevant document search
+        retrieval_queries = self.merge_filters(retrieval_queries)
         retrieval_queries += retrieval_queries.select(
             embedding=embedder(pw.this.query),
         )
@@ -250,7 +323,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             )
         )
 
-        return GraphResultTables(retrieval_results, info_results, input_results)
+        return retrieval_results
 
     def run_server(
         self,
@@ -280,33 +353,21 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         """
 
         webserver = pw.io.http.PathwayWebserver(host=host, port=port)
-        retrieval_queries, retrieval_response_writer = pw.io.http.rest_connector(
-            webserver=webserver,
-            route="/query",
-            schema=QueryInputSchema,
-            autocommit_duration_ms=50,
-            delete_completed_queries=True,
-        )
-        info_queries, info_response_writer = pw.io.http.rest_connector(
-            webserver=webserver,
-            route="/stats",
-            schema=StatsInputSchema,
-            autocommit_duration_ms=50,
-            delete_completed_queries=True,
-        )
-        input_queries, inputs_response_writer = pw.io.http.rest_connector(
-            webserver=webserver,
-            route="/get_inputs",
-            schema=StatsInputSchema,
-            autocommit_duration_ms=50,
-            delete_completed_queries=True,
-        )
 
-        graph_tables = self._build_graph(retrieval_queries, info_queries, input_queries)
+        # TODO(move into webserver??)
+        def serve(route, schema, handler):
+            queries, writer = pw.io.http.rest_connector(
+                webserver=webserver,
+                route=route,
+                schema=schema,
+                autocommit_duration_ms=50,
+                delete_completed_queries=True,
+            )
+            writer(handler(queries))
 
-        retrieval_response_writer(graph_tables.retrieval_results)
-        info_response_writer(graph_tables.info_results)
-        inputs_response_writer(graph_tables.input_results)
+        serve("/v1/retrieve", self.RetrieveQuerySchema, self.retrieve_query)
+        serve("/v1/statistics", self.StatisticsQuerySchema, self.statistics_query)
+        serve("/v1/inputs", self.InputsQuerySchema, self.inputs_query)
 
         def run():
             if with_cache:
@@ -345,7 +406,7 @@ class VectorStoreClient:
         data = {"query": query, "k": k}
         if metadata_filter is not None:
             data["metadata_filter"] = metadata_filter
-        url = f"http://{self.host}:{self.port}/query"
+        url = f"http://{self.host}:{self.port}/v1/retrieve"
         response = requests.post(
             url,
             data=json.dumps(data),
@@ -360,7 +421,7 @@ class VectorStoreClient:
 
     def get_vectorstore_statistics(self):
         """Fetch basic statistics about the vector store."""
-        url = f"http://{self.host}:{self.port}/stats"
+        url = f"http://{self.host}:{self.port}/v1/statistics"
         response = requests.post(
             url,
             json={},
@@ -371,7 +432,7 @@ class VectorStoreClient:
 
     def get_input_files(self):
         """Fetch basic statistics about the vector store."""
-        url = f"http://{self.host}:{self.port}/get_inputs"
+        url = f"http://{self.host}:{self.port}/v1/inputs"
         response = requests.post(
             url,
             json={},
