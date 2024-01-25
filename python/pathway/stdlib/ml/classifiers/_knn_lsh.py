@@ -262,8 +262,13 @@ def knn_lsh_generic_classifier_train(
                         :neighs
                     ]  # neighs - 1 in argpartition, because of 0-based indexing
                     k_distances = distances[knn_ids]
-                    ret = np.array(ids_filtered)[knn_ids]
-                    return list(zip(ret, k_distances))
+                    final_ids = np.array(ids_filtered)[knn_ids]
+                    if len(final_ids) == 0:
+                        return []
+                    sorted_dists, sorted_ids_by_dist = zip(
+                        *sorted(zip(k_distances, final_ids))
+                    )
+                    return list(zip(sorted_ids_by_dist, sorted_dists))
 
         knn_result: pw.Table = compute_knns_transformer(  # type: ignore
             training_data=data, flattened=flattened
