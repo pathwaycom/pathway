@@ -509,10 +509,27 @@ def warns_here(
     with pytest.warns(expected_warning, match=match) as context:
         yield context
 
-    for warning in context:
-        assert warning.filename == file_name
-        assert warning.lineno >= first_line
-        assert warning.lineno in function_lines
+    def matches(warning) -> bool:
+        if not isinstance(warning.message, expected_warning):
+            return False
+        if match is not None and not re.search(match, str(warning.message)):
+            return False
+        if warning.filename != file_name:
+            return False
+        if warning.lineno < first_line:
+            return False
+        if warning.lineno not in function_lines:
+            return False
+        return True
+
+    if not any(matches(warning) for warning in context):
+        raise AssertionError(
+            "No matched warning caused by expected source line.\n"
+            "All warnings:\n"
+            + "\n".join(f"  {warning}" for warning in context)
+            + f"\nExpected: {file_name!r}, line in "
+            f"{list(line for line in function_lines if line >= first_line)}"
+        )
 
 
 def deprecated_call_here(

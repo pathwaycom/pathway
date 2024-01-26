@@ -3463,13 +3463,14 @@ def test_update_cells_0_rows():
         """
     )
 
-    with warns_here(
-        match=re.escape(
-            "Key sets of self and other in update_cells are the same. "
-            "Using with_columns instead of update_cells."
-        ),
-    ):
+    match = re.escape(
+        "Key sets of self and other in update_cells are the same. "
+        "Using with_columns instead of update_cells."
+    )
+
+    with warns_here(match=match):
         new = old.update_cells(update)
+    with warns_here(match=match):
         new2 = old << update
     assert_table_equality(new, expected)
     assert_table_equality(new2, expected)
