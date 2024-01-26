@@ -501,9 +501,9 @@ def warns_here(
     first_line = frame.f_lineno
     del frame
     file_name = code.co_filename
-    function_lines = set(
+    function_lines = {
         line for (_start, _end, line) in code.co_lines() if line is not None
-    )
+    }
     del code
 
     with pytest.warns(expected_warning, match=match) as context:

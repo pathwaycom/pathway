@@ -209,9 +209,9 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
 
 def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
     pstorage_s3_path = (
-        "integration_tests/test_s3_json_read_write_pstorage_full/{}".format(time.time())
+        f"integration_tests/test_s3_json_read_write_pstorage_full/{time.time()}"
     )
-    input_s3_path = "integration_tests/test_s3_json_read_write/{}".format(time.time())
+    input_s3_path = f"integration_tests/test_s3_json_read_write/{time.time()}"
     output_path = tmp_path / "output.json"
 
     def run_pw_program():
@@ -356,7 +356,7 @@ def test_s3_alternative_path(tmp_path: pathlib.Path):
     write_lines(model_output_path, input_contents)
 
     table = pw.io.s3_csv.read(
-        "s3://aws-integrationtest/{}".format(input_s3_path),
+        f"s3://aws-integrationtest/{input_s3_path}",
         aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
             access_key="AKIAX67C7K343BP4QUWN",
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
@@ -384,7 +384,7 @@ def test_s3_wrong_path(tmp_path: pathlib.Path):
     output_path = tmp_path / "output.csv"
 
     table = pw.io.s3_csv.read(
-        "s3://aws-integrationtest/{}".format(input_s3_path),
+        f"s3://aws-integrationtest/{input_s3_path}",
         aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
             access_key="AKIAX67C7K343BP4QUWN",
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
@@ -414,7 +414,7 @@ def test_s3_creds_from_profiles(tmp_path: pathlib.Path):
     write_lines(model_output_path, input_contents)
 
     table = pw.io.s3_csv.read(
-        "s3://aws-integrationtest/{}".format(input_s3_path),
+        f"s3://aws-integrationtest/{input_s3_path}",
         aws_s3_settings=pw.io.s3_csv.AwsS3Settings(region="eu-central-1"),
         value_columns=["key", "value"],
         mode="static",
@@ -448,7 +448,7 @@ def test_s3_full_autodetect(tmp_path: pathlib.Path):
         value: str
 
     table = pw.io.s3.read(
-        "s3://aws-integrationtest/{}".format(input_s3_path),
+        f"s3://aws-integrationtest/{input_s3_path}",
         format="csv",
         schema=InputSchema,
         mode="static",

@@ -91,7 +91,7 @@ def test_two_endpoints():
     description = webserver.openapi_description_json
     openapi_spec_validator.validate(description)
 
-    assert description["paths"].keys() == set(["/one", "/two"])
+    assert description["paths"].keys() == {"/one", "/two"}
 
 
 def test_raw_input_format():

@@ -327,7 +327,7 @@ def test_server_schema_generation_via_endpoint(port: int):
             continue
 
         schema = response.json()
-        assert schema["paths"].keys() == set(["/uppercase"])
+        assert schema["paths"].keys() == {"/uppercase"}
         succeeded = True
         break
 

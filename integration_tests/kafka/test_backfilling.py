@@ -16,7 +16,7 @@ from pathway.tests.utils import get_aws_s3_settings, wait_result_with_checker
 def generate_wordcount_input(n_words, n_word_repetitions):
     input = []
     for word_idx in range(n_words):
-        word = "word_{}".format(word_idx)
+        word = f"word_{word_idx}"
         input += [word] * n_word_repetitions
     random.shuffle(input)
     return input
@@ -51,7 +51,7 @@ class WordcountChecker:
         total_incorrect_counts = 0
         expected_word_counts = self.expected_word_counts()
 
-        with open(self.output_file_path, "r") as f:
+        with open(self.output_file_path) as f:
             for raw_entry in f.readlines():
                 if not raw_entry:
                     continue

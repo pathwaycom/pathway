@@ -38,9 +38,7 @@ if __name__ == "__main__":
             snapshot_interval_ms=5000,
         )
     else:
-        raise ValueError(
-            "Unknown persistent storage type: {}".format(args.pstorage_type)
-        )
+        raise ValueError(f"Unknown persistent storage type: {args.pstorage_type}")
 
     class InputSchema(pw.Schema):
         word: str

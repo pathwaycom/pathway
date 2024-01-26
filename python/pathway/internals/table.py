@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import functools
 import warnings
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast, overload
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr

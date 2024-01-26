@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
 from types import EllipsisType
-from typing import TYPE_CHECKING, Any, Callable, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pathway.internals as pw
 from pathway.internals import column_properties as cp, dtype as dt, trace
