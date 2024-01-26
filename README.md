@@ -2,25 +2,27 @@
   <img src="https://pathway.com/logo-light.svg" /><br /><br />
 </div>
 <p align="center">
-        <img src="https://img.shields.io/badge/OS-Linux-green" alt="Linux"/>
-        <img src="https://img.shields.io/badge/OS-macOS-green" alt="macOS"/>
-    <a href="https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt">
-        <img src="https://img.shields.io/badge/license-BSL-green" alt="License: BSL"/></a>
-      <br>
-          <a href="https://github.com/pathwaycom/pathway/actions/workflows/release.yml">
+        <a href="https://github.com/pathwaycom/pathway/actions/workflows/ubuntu_test.yml">
+        <img src="https://github.com/pathwaycom/pathway/actions/workflows/ubuntu_test.yml/badge.svg" alt="ubuntu"/>
+        <a href="https://github.com/pathwaycom/pathway/actions/workflows/mac_test.yml">
+        <img src="https://github.com/pathwaycom/pathway/actions/workflows/mac_test.yml/badge.svg" alt="macOS"/>
+        <br>
+        <a href="https://github.com/pathwaycom/pathway/actions/workflows/release.yml">
         <img src="https://github.com/pathwaycom/pathway/actions/workflows/release.yml/badge.svg" alt="Last release"/></a>
         <a href="https://badge.fury.io/py/pathway"><img src="https://badge.fury.io/py/pathway.svg" alt="PyPI version" height="18"></a>
         <a href="https://badge.fury.io/py/pathway"><img src="https://static.pepy.tech/badge/pathway" alt="PyPI downloads" height="18"></a>
+        <a href="https://github.com/pathwaycom/pathway/blob/main/LICENSE.txt">
+        <img src="https://img.shields.io/badge/license-BSL-green" alt="License: BSL"/></a>
       <br>
-    <a href="https://discord.gg/pathway">
+        <a href="https://discord.gg/pathway">
         <img src="https://img.shields.io/discord/1042405378304004156?logo=discord"
             alt="chat on Discord"></a>
-    <a href="https://twitter.com/intent/follow?screen_name=pathway_com">
+        <a href="https://twitter.com/intent/follow?screen_name=pathway_com">
         <img src="https://img.shields.io/twitter/follow/pathwaycom"
             alt="follow on Twitter"></a>
-  <a href="https://linkedin.com/company/pathway">
+        <a href="https://linkedin.com/company/pathway">
         <img src="https://img.shields.io/badge/pathway-0077B5?style=social&logo=linkedin" alt="follow on LinkedIn"></a>
-  <a href="https://github.com/dylanhogg/awesome-python/blob/main/README.md">
+      <a href="https://github.com/dylanhogg/awesome-python/blob/main/README.md">
       <img src="https://awesome.re/badge.svg" alt="Awesome Python"></a>
     <br>
     <a href="#getting-started">Getting Started</a> |
