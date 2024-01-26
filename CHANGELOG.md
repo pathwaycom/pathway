@@ -5,14 +5,14 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Added
+## [0.7.10] - 2024-01-26
 
+### Added
 - `pw.io.http.rest_connector` can now generate Open API 3.0.3 schema that will be returned by the route ``/_schema``.
 - Wrappers for OpenAI Chat and Embedding services are now added to Pathway xpack for LLMs. 
 - A vector indexing pipeline that allows querying for the most similar documents. It is available as class `VectorStore` as part of Pathway xpack for LLMs.
 
 ### Fixed
-
 - `pw.debug.table_from_markdown` now uses schema parameter (when set) to properly assign _simple types_ (`int, bool, float, str, bytes`) and optional _simple types_ to columns. 
 
 ## [0.7.9] - 2024-01-18
