@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from pathway.internals import api, environ, parse_graph as graph, table, trace
+from pathway.internals import api, parse_graph as graph, table, trace
 from pathway.internals.column_path import ColumnPath
+from pathway.internals.config import pathway_config
 from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.internals.graph_runner.row_transformer_operator_handler import (  # noqa: registers handler for RowTransformerOperator
     RowTransformerOperatorHandler,
@@ -46,14 +47,14 @@ class GraphRunner:
         self._graph = input_graph
         self.debug = debug
         if ignore_asserts is None:
-            ignore_asserts = environ.ignore_asserts
+            ignore_asserts = pathway_config.ignore_asserts
         self.ignore_asserts = ignore_asserts
         self.monitoring_level = monitoring_level
         self.with_http_server = with_http_server
         self.default_logging = default_logging
-        self.persistence_config = persistence_config or environ.get_replay_config()
+        self.persistence_config = persistence_config or pathway_config.replay_config
         if runtime_typechecking is None:
-            self.runtime_typechecking = environ.runtime_typechecking
+            self.runtime_typechecking = pathway_config.runtime_typechecking
         else:
             self.runtime_typechecking = runtime_typechecking
 
