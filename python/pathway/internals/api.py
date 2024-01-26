@@ -10,6 +10,7 @@ import pandas as pd
 
 from pathway.engine import *
 from pathway.internals import dtype as dt, json
+from pathway.internals.schema import Schema
 
 if TYPE_CHECKING:
     _Value: TypeAlias = "Value"
@@ -45,7 +46,7 @@ class CombineMany(Protocol, Generic[S]):
         ...
 
 
-def denumpify(x):
+def denumpify(x, type_from_schema: dt.DType | None = None):
     def denumpify_inner(x):
         if pd.api.types.is_scalar(x) and pd.isna(x):
             return None
@@ -53,7 +54,53 @@ def denumpify(x):
             return x.item()
         return x
 
+    def _is_instance_of_simple_type(x):
+        return (
+            dt.INT.is_value_compatible(x)
+            or dt.BOOL.is_value_compatible(x)
+            or dt.STR.is_value_compatible(x)
+            or dt.BYTES.is_value_compatible(x)
+            or dt.FLOAT.is_value_compatible(x)
+        )
+
+    def fix_possibly_misassigned_type(entry, type_from_schema):
+        assert (
+            (type_from_schema.is_value_compatible(entry))
+            # the only exception for str should be conversion to bytes; however,
+            # some places use schema_from_pandas, which considers some complex types
+            # as str, which means we enter here, as it looks like simple type STR even
+            # though it's not, below the exception that should be here
+            # or (isinstance(v, str) and type_from_schema.wrapped == bytes)
+            or type_from_schema.wrapped == str
+        )
+
+        if type_from_schema == dt.STR and _is_instance_of_simple_type(entry):
+            return str(entry)
+
+        if type_from_schema == dt.FLOAT:
+            return float(entry)
+
+        if isinstance(entry, str) and type_from_schema == dt.BYTES:
+            return entry.encode("utf-8")
+
+        return entry
+
     v = denumpify_inner(x)
+
+    if isinstance(type_from_schema, dt._SimpleDType):
+        v = fix_possibly_misassigned_type(v, type_from_schema)
+    elif (
+        isinstance(type_from_schema, dt.Optional)
+        and isinstance(type_from_schema.wrapped, dt._SimpleDType)
+        and not dt.NONE.is_value_compatible(v)
+    ):
+        # pandas stores optional ints as floats
+        if isinstance(v, float) and type_from_schema.wrapped == dt.INT:
+            assert v.is_integer()
+            v = fix_possibly_misassigned_type(int(v), type_from_schema.wrapped)
+        else:
+            v = fix_possibly_misassigned_type(v, type_from_schema.wrapped)
+
     if isinstance(v, str):
         return v.encode("utf-8", "ignore").decode("utf-8")
     else:
@@ -85,12 +132,25 @@ def static_table_from_pandas(
     df: pd.DataFrame,
     connector_properties: ConnectorProperties | None = None,
     id_from: list[str] | None = None,
+    schema: type[Schema] | None = None,
 ) -> Table:
+    if schema is not None and id_from is not None:
+        assert schema.primary_key_columns() == id_from
+
+    if id_from is None and schema is not None:
+        id_from = schema.primary_key_columns()
+
     ids = ids_from_pandas(df, connector_properties, id_from)
+    column_types: dict[str, dt.DType] | None = None
+    if schema is not None:
+        column_types = dict(schema.__dtypes__)
+        for column in PANDAS_PSEUDOCOLUMNS:
+            column_types[column] = dt.INT
 
     data = {}
     for c in df.columns:
-        data[c] = [denumpify(v) for _, v in df[c].items()]
+        type_from_schema = None if column_types is None else column_types[c]
+        data[c] = [denumpify(v, type_from_schema) for _, v in df[c].items()]
         # df[c].items() is used because df[c].values is a numpy array
     ordinary_columns = [
         column for column in df.columns if column not in PANDAS_PSEUDOCOLUMNS
@@ -111,7 +171,7 @@ def static_table_from_pandas(
 
     assert len(connector_properties.column_properties) == len(
         ordinary_columns
-    ), "prrovided connector properties do not match the dataframe"
+    ), "provided connector properties do not match the dataframe"
 
     input_data: CapturedStream = []
     for i, index in enumerate(df.index):

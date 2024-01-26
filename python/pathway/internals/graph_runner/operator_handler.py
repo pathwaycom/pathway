@@ -100,7 +100,6 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
         output_storages: dict[Table, Storage],
     ):
         datasource = operator.datasource
-
         if self.graph_builder.debug and operator.debug_datasource is not None:
             if (
                 datasource.schema._dtypes()
@@ -113,7 +112,7 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                     scope=self.scope,
                     df=operator.debug_datasource.data,
                     connector_properties=operator.debug_datasource.connector_properties,
-                    id_from=operator.debug_datasource.schema.primary_key_columns(),
+                    schema=operator.debug_datasource.schema,
                 )
                 self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, PandasDataSource):
@@ -123,7 +122,7 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                     scope=self.scope,
                     df=datasource.data,
                     connector_properties=datasource.connector_properties,
-                    id_from=datasource.schema.primary_key_columns(),
+                    schema=datasource.schema,
                 )
                 self.state.set_table(output_storages[table], materialized_table)
         elif isinstance(datasource, GenericDataSource):

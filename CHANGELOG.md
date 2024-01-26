@@ -11,6 +11,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Wrappers for OpenAI Chat and Embedding services are now added to Pathway xpack for LLMs. 
 - A vector indexing pipeline that allows querying for the most similar documents. It is available as class `VectorStore` as part of Pathway xpack for LLMs.
 
+### Fixed
+
+- `pw.debug.table_from_markdown` now uses schema parameter (when set) to properly assign _simple types_ (`int, bool, float, str, bytes`) and optional _simple types_ to columns. 
+
 ## [0.7.9] - 2024-01-18
 
 ### Changed

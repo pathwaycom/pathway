@@ -652,7 +652,6 @@ def column_definition(
     >>> NewSchema
     <pathway.Schema types={'key': <class 'int'>, '@timestamp': <class 'str'>, 'data': <class 'str'>}>
     """
-    from pathway.internals import dtype as dt
 
     return ColumnDefinition(
         dtype=dt.wrap(dtype) if dtype is not None else None,

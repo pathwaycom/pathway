@@ -12,6 +12,7 @@ from types import EllipsisType, NoneType, UnionType
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 
 from pathway.engine import PathwayType
 from pathway.internals import api, datetime_types, json as js
@@ -88,6 +89,10 @@ class _SimpleDType(DType):
             )
         elif self.wrapped == int:
             return np.issubdtype(type(arg), np.integer)
+        elif self.wrapped == bool:
+            return isinstance(arg, (bool, np.bool_))
+        elif self.wrapped == bytes:
+            return isinstance(arg, (bytes, str))
         else:
             return isinstance(arg, self.wrapped)
 
@@ -123,7 +128,7 @@ class _NoneDType(DType):
         return super().__new__(cls)
 
     def is_value_compatible(self, arg):
-        return arg is None
+        return arg is None or isinstance(arg, pd._libs.missing.NAType)
 
     @property
     def typehint(self) -> None:
