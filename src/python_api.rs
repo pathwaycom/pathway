@@ -308,9 +308,9 @@ impl<'source> FromPyObject<'source> for Value {
                 return value_from_python_datetime(ob);
             } else if type_name == "timedelta" {
                 return value_from_python_timedelta(ob);
-            } else if type_name == "Timestamp" {
+            } else if matches!(type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
                 return value_from_pandas_timestamp(ob);
-            } else if type_name == "Timedelta" {
+            } else if matches!(type_name, "Timedelta" | "Duration") {
                 return value_from_pandas_timedelta(ob);
             } else if type_name == "Json" {
                 return value_json_from_py_any(ob.getattr("value")?);

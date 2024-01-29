@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- Returning `pw.Duration` from UDFs or using them as constant values no longer results in errors.
+
 ## [0.7.10] - 2024-01-26
 
 ### Added

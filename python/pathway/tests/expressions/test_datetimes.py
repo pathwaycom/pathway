@@ -1014,3 +1014,56 @@ def test_weekday(is_naive: bool) -> None:
     table_pw = table.select(txt=table.ts.dt.weekday())
     table_pd = table_from_pandas(df_new)
     assert_table_equality(table_pw, table_pd)
+
+
+def test_pathway_duration():
+    t = table_from_markdown(
+        """
+        value
+        1
+    """
+    )
+
+    @pw.udf
+    def to_duration(a) -> pw.Duration:
+        return pw.Duration(days=a)
+
+    result = t.select(value=to_duration(pw.this.value))
+    assert_table_equality(
+        result, table_from_pandas(pd.DataFrame({"value": [pd.Timedelta(days=1)]}))
+    )
+
+
+def test_pathway_datetimes():
+    @pw.udf
+    def to_naive(year, month, day) -> pw.DateTimeNaive:
+        return pw.DateTimeNaive(year=year, month=month, day=day)
+
+    @pw.udf
+    def to_utc(year, month, day) -> pw.DateTimeUtc:
+        return pw.DateTimeUtc(year=year, month=month, day=day, tz=tz.UTC)
+
+    t = table_from_markdown(
+        """
+        year | month | day
+        2023 |   8   |  12
+    """
+    )
+
+    result = t.select(value=to_naive(pw.this.year, pw.this.month, pw.this.day))
+    assert_table_equality(
+        result,
+        table_from_pandas(
+            pd.DataFrame({"value": [pd.Timestamp(year=2023, month=8, day=12)]})
+        ),
+    )
+
+    result = t.select(value=to_utc(pw.this.year, pw.this.month, pw.this.day))
+    assert_table_equality(
+        result,
+        table_from_pandas(
+            pd.DataFrame(
+                {"value": [pd.Timestamp(year=2023, month=8, day=12, tz=tz.UTC)]}
+            )
+        ),
+    )
