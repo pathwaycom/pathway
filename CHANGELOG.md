@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.http.rest_connector` can now handle different kinds of HTTP requests.
 - `pw.io.http.PathwayWebserver` can now enable CORS on the added endpoints.
 
+### Changed
+- `pw.run` now takes additional parameter `runtime_typechecking` allowing to enable strict type checking at runtime.
+- **BREAKING**: `pw.run` and `pw.run_all` now take only keyword arguments.
+
 ### Fixed
 - Returning `pw.Duration` from UDFs or using them as constant values no longer results in errors.
 
@@ -27,7 +31,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.io.http.rest_connector` now also accepts port as a string for backwards compatibility.
 - `pw.stdlib.ml.index.KNNIndex` now sorts by distance by default.
-
 
 ## [0.7.8] - 2024-01-18
 

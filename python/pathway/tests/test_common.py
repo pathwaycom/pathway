@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 import pathlib
 import re
@@ -6077,3 +6078,7 @@ def test_reducers_ix(reducer, expected, expected_type):
     )
 
     assert_table_equality_wo_index(result, expected)
+
+
+def test_pw_run_signature():
+    assert inspect.signature(pw.run) == inspect.signature(pw.run_all)
