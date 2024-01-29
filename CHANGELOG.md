@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.http.rest_connector` can now handle different kinds of HTTP requests.
+- `pw.io.http.PathwayWebserver` can now enable CORS on the added endpoints.
+
 ### Fixed
 - Returning `pw.Duration` from UDFs or using them as constant values no longer results in errors.
 

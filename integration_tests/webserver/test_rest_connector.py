@@ -218,7 +218,7 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int):
         pw.run()
 
 
-def test_server_two_endpoints(tmp_path: pathlib.Path, port: int):
+def _test_server_two_endpoints(tmp_path: pathlib.Path, port: int, with_cors: bool):
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -243,10 +243,7 @@ def test_server_two_endpoints(tmp_path: pathlib.Path, port: int):
         )
         r.raise_for_status()
         assert r.text == '"oneone"', r.text
-        r = requests.post(
-            f"http://127.0.0.1:{port}/duplicate",
-            json={"query": "two", "user": "sergey"},
-        )
+        r = requests.get(f"http://127.0.0.1:{port}/duplicate?query=two&user=sergey")
         r.raise_for_status()
         assert r.text == '"twotwo"', r.text
         r = requests.post(
@@ -255,19 +252,24 @@ def test_server_two_endpoints(tmp_path: pathlib.Path, port: int):
         )
         r.raise_for_status()
         assert r.text == '"ONE"', r.text
-        r = requests.post(
-            f"http://127.0.0.1:{port}/uppercase",
-            json={"query": "two", "user": "sergey"},
-        )
+        r = requests.get(f"http://127.0.0.1:{port}/uppercase?query=two&user=sergey")
         r.raise_for_status()
         assert r.text == '"TWO"', r.text
 
-    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+    webserver = pw.io.http.PathwayWebserver(
+        host="127.0.0.1",
+        port=port,
+        with_cors=with_cors,
+    )
 
     uppercase_queries, uppercase_response_writer = pw.io.http.rest_connector(
         webserver=webserver,
         schema=InputSchema,
         route="/uppercase",
+        methods=(
+            "GET",
+            "POST",
+        ),
         delete_completed_queries=True,
     )
     uppercase_responses = uppercase_logic(uppercase_queries)
@@ -277,6 +279,10 @@ def test_server_two_endpoints(tmp_path: pathlib.Path, port: int):
         webserver=webserver,
         schema=InputSchema,
         route="/duplicate",
+        methods=(
+            "GET",
+            "POST",
+        ),
         delete_completed_queries=True,
     )
     duplicate_responses = duplicate_logic(duplicate_queries)
@@ -290,6 +296,14 @@ def test_server_two_endpoints(tmp_path: pathlib.Path, port: int):
     t = threading.Thread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 8), 30)
+
+
+def test_server_two_endpoints_without_cors(tmp_path: pathlib.Path, port: int):
+    _test_server_two_endpoints(tmp_path, port, with_cors=False)
+
+
+def test_server_two_endpoints_with_cors(tmp_path: pathlib.Path, port: int):
+    _test_server_two_endpoints(tmp_path, port, with_cors=True)
 
 
 def test_server_schema_generation_via_endpoint(port: int):

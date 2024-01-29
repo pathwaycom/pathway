@@ -37,6 +37,7 @@ dependencies = [
     "jupyter_bokeh >= 3.0.7",
     "jmespath >= 1.0.1",
     "Office365-REST-Python-Client >= 2.5.3",
+    "aiohttp_cors >= 0.7.0",
 ]
 
 [project.optional-dependencies]

@@ -359,6 +359,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             queries, writer = pw.io.http.rest_connector(
                 webserver=webserver,
                 route=route,
+                methods=("GET", "POST"),
                 schema=schema,
                 autocommit_duration_ms=50,
                 delete_completed_queries=True,

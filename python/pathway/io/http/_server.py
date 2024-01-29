@@ -5,10 +5,11 @@ import json
 import logging
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 from warnings import warn
 
+import aiohttp_cors
 import yaml
 from aiohttp import web
 
@@ -56,6 +57,8 @@ class PathwayWebserver:
         with_schema_endpoint: If set to True, the server will also provide ``/_schema`` \
 endpoint containing Open API 3.0.3 schema for the handlers generated with \
 ``pw.io.http.rest_connector`` calls.
+        with_cors: If set to True, the server will allow cross-origin requests on the \
+added endpoints.
     """
 
     _host: str
@@ -65,13 +68,18 @@ endpoint containing Open API 3.0.3 schema for the handlers generated with \
     _app: web.Application
     _is_launched: bool
 
-    def __init__(self, host, port, with_schema_endpoint=True):
+    def __init__(self, host, port, with_schema_endpoint=True, with_cors=False):
         self._host = host
         self._port = port
 
         self._tasks = {}
         self._loop = asyncio.new_event_loop()
         self._app = web.Application()
+        self._registered_routes = {}
+        if with_cors:
+            self._cors = aiohttp_cors.setup(self._app)
+        else:
+            self._cors = None
         self._is_launched = False
         self._app_start_mutex = threading.Lock()
         self._openapi_description = {
@@ -84,7 +92,27 @@ endpoint containing Open API 3.0.3 schema for the handlers generated with \
             "servers": [{"url": f"http://{host}:{port}/"}],
         }
         if with_schema_endpoint:
-            self._app.add_routes([web.get("/_schema", self._schema_handler)])
+            self._add_endpoint_to_app("GET", "/_schema", self._schema_handler)
+
+    def _add_endpoint_to_app(self, method, route, handler):
+        if route not in self._registered_routes:
+            app_resource = self._app.router.add_resource(route)
+            if self._cors is not None:
+                app_resource = self._cors.add(app_resource)
+            self._registered_routes[route] = app_resource
+
+        app_resource_endpoint = self._registered_routes[route].add_route(
+            method, handler
+        )
+        if self._cors is not None:
+            self._cors.add(
+                app_resource_endpoint,
+                {
+                    "*": aiohttp_cors.ResourceOptions(
+                        expose_headers="*", allow_headers="*"
+                    )
+                },
+            )
 
     async def _schema_handler(self, request: web.Request):
         format = request.query.get("format", "yaml")
@@ -122,6 +150,23 @@ endpoint containing Open API 3.0.3 schema for the handlers generated with \
             description["default"] = query_column.default_value
 
         return description
+
+    def _construct_openapi_get_request_schema(self, schema) -> list:
+        parameters = []
+        for name, props in schema.columns().items():
+            field_description = {
+                "in": "query",
+                "name": name,
+                "required": not props.has_default_value(),
+            }
+            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(props.dtype.map_to_engine())
+            if openapi_type:
+                field_description["schema"] = {
+                    "type": openapi_type,
+                }
+            parameters.append(field_description)
+
+        return parameters
 
     def _construct_openapi_json_schema(self, schema) -> dict:
         properties = {}
@@ -161,38 +206,51 @@ endpoint containing Open API 3.0.3 schema for the handlers generated with \
 
         return result
 
-    def _register_endpoint(self, route, handler, format, schema) -> None:
-        self._app.add_routes([web.post(route, handler)])
-
-        content = {}
-        if format == "raw":
-            content["text/plain"] = {
-                "schema": self._construct_openapi_plaintext_schema(schema)
-            }
-        elif format == "custom":
-            content["application/json"] = {
-                "schema": self._construct_openapi_json_schema(schema)
-            }
-        else:
-            raise ValueError(f"Unknown endpoint input format: {format}")
-
-        self._openapi_description["paths"][route] = {  # type: ignore[index]
-            "post": {
-                "requestBody": {
-                    "content": content,
-                },
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                    },
-                    "400": {
-                        "description": "The request is incorrect. Please check if "
-                        "it complies with the auto-generated and Pathway input "
-                        "table schemas"
-                    },
-                },
-            }
+    def _register_endpoint(self, route, handler, format, schema, methods) -> None:
+        simple_responses_dict = {
+            "200": {
+                "description": "OK",
+            },
+            "400": {
+                "description": "The request is incorrect. Please check if "
+                "it complies with the auto-generated and Pathway input "
+                "table schemas"
+            },
         }
+
+        self._openapi_description["paths"][route] = {}  # type: ignore[index]
+        for method in methods:
+            self._add_endpoint_to_app(method, route, handler)
+
+            if method == "GET":
+                content = {
+                    "parameters": self._construct_openapi_get_request_schema(schema),
+                    "responses": simple_responses_dict,
+                }
+            elif format == "raw":
+                content = {
+                    "text/plain": {
+                        "schema": self._construct_openapi_plaintext_schema(schema)
+                    }
+                }
+            elif format == "custom":
+                content = {
+                    "application/json": {
+                        "schema": self._construct_openapi_json_schema(schema)
+                    }
+                }
+            else:
+                raise ValueError(f"Unknown endpoint input format: {format}")
+
+            if method != "GET":
+                self._openapi_description["paths"][route][method.lower()] = {  # type: ignore[index]
+                    "requestBody": {
+                        "content": content,
+                    },
+                    "responses": simple_responses_dict,
+                }
+            else:
+                self._openapi_description["paths"][route]["get"] = content  # type: ignore[index]
 
     def _run(self) -> None:
         self._app_start_mutex.acquire()
@@ -234,6 +292,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self,
         webserver: PathwayWebserver,
         route: str,
+        methods: Sequence[str],
         schema: type[pw.Schema],
         delete_completed_queries: bool,
         format: str = "raw",
@@ -245,7 +304,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._delete_completed_queries = delete_completed_queries
         self._format = format
 
-        webserver._register_endpoint(route, self.handle, format, schema)
+        webserver._register_endpoint(route, self.handle, format, schema, methods)
 
     def run(self):
         self._webserver._run()
@@ -258,12 +317,12 @@ class RestServerSubject(io.python.ConnectorSubject):
         elif self._format == "custom":
             try:
                 payload = await request.json()
-                query_params = request.query
-                for param, value in query_params.items():
-                    if param not in payload:
-                        payload[param] = value
             except json.decoder.JSONDecodeError:
-                raise web.HTTPBadRequest(reason="payload is not a valid json")
+                payload = {}
+            query_params = request.query
+            for param, value in query_params.items():
+                if param not in payload:
+                    payload[param] = value
 
         self._verify_payload(payload)
 
@@ -308,6 +367,7 @@ def rest_connector(
     webserver: PathwayWebserver | None = None,
     route: str = "/",
     schema: type[pw.Schema] | None = None,
+    methods: Sequence[str] = ("POST",),
     autocommit_duration_ms=1500,
     keep_queries: bool | None = None,
     delete_completed_queries: bool | None = None,
@@ -325,6 +385,7 @@ def rest_connector(
 need to create only one instance of this class per single host-port pair;
         route: route which will be listened to by the web server;
         schema: schema of the resulting table;
+        methods: HTTP methods that this endpoint will accept;
         autocommit_duration_ms: the maximum time between two commits. Every
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway's computation graph;
@@ -431,6 +492,7 @@ with:
         subject=RestServerSubject(
             webserver=webserver,
             route=route,
+            methods=methods,
             schema=schema,
             delete_completed_queries=delete_completed_queries,
             format=format,

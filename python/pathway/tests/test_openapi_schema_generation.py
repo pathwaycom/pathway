@@ -132,3 +132,41 @@ def test_no_routes():
     webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=8080)
     description = webserver.openapi_description_json
     openapi_spec_validator.validate(description)
+
+
+def test_several_methods():
+    class InputSchema(pw.Schema):
+        k: int
+        v: str = pw.column_definition(default_value="hello")
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=8080)
+    pw.io.http.rest_connector(
+        webserver=webserver,
+        methods=("GET", "POST"),
+        schema=InputSchema,
+        delete_completed_queries=False,
+    )
+
+    description = webserver.openapi_description_json
+    openapi_spec_validator.validate(description)
+
+    assert set(description["paths"]["/"].keys()) == set(["get", "post"])
+
+
+def test_all_methods():
+    class InputSchema(pw.Schema):
+        k: int
+        v: str = pw.column_definition(default_value="hello")
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=8080)
+    pw.io.http.rest_connector(
+        webserver=webserver,
+        methods=("GET", "POST", "PUT", "PATCH"),
+        schema=InputSchema,
+        delete_completed_queries=False,
+    )
+
+    description = webserver.openapi_description_json
+    openapi_spec_validator.validate(description)
+
+    assert set(description["paths"]["/"].keys()) == set(["get", "post", "put", "patch"])
