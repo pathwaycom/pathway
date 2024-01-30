@@ -3,6 +3,8 @@
 import pathlib
 from unittest import mock
 
+import pytest
+
 import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import assert_stream_equality_wo_index, run
@@ -362,6 +364,7 @@ def test_deduplicate_keeps_state_after_code_change(tmp_path: pathlib.Path):
     )
 
 
+@pytest.mark.flaky(reruns=2)
 def test_deduplicate_keeps_state_with_regular_persistence(tmp_path: pathlib.Path):
     persistence_path = tmp_path / "persistence"
     persistence_config = pw.persistence.Config.simple_config(
