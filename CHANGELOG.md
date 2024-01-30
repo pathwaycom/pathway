@@ -15,6 +15,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - Returning `pw.Duration` from UDFs or using them as constant values no longer results in errors.
+- `pw.io.debezium.read` now correctly handles tables without primary key.
 
 ## [0.7.10] - 2024-01-26
 

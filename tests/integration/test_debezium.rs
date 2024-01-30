@@ -2,6 +2,8 @@
 
 use super::helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use assert_matches::assert_matches;
@@ -9,7 +11,9 @@ use assert_matches::assert_matches;
 use pathway_engine::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, ParsedEvent, Parser,
 };
-use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader, ReadMethod};
+use pathway_engine::connectors::data_storage::{
+    ConnectorMode, FilesystemReader, ReadMethod, ReaderContext,
+};
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 
@@ -206,6 +210,33 @@ fn test_debezium_mongodb_format() -> eyre::Result<()> {
         ParsedEvent::Upsert((Some(vec![Value::from("1004")]), None)),
     ];
     assert_eq!(changelog, expected_values);
+
+    Ok(())
+}
+
+#[test]
+fn test_postgres_with_empty_pkey() -> eyre::Result<()> {
+    let mut parser = DebeziumMessageParser::new(
+        None,
+        vec!["first_name".to_string()],
+        "        ".to_string(),
+        DebeziumDBType::Postgres,
+    );
+
+    let reader = BufReader::new(File::open("tests/data/sample_debezium.txt")?);
+    let line: String = reader.lines().next().unwrap()?;
+    let key_value: Vec<&str> = line.split("        ").collect();
+    let value = key_value[1];
+
+    let context = ReaderContext::KeyValue((None, Some(value.into())));
+    let parse_result = parser.parse(&context)?;
+    assert_eq!(
+        parse_result,
+        vec![ParsedEvent::Insert((
+            None,
+            vec![Value::String("Sally".into())]
+        ))]
+    );
 
     Ok(())
 }

@@ -23,6 +23,7 @@ use serde_json::json;
 use serde_json::Value as JsonValue;
 
 const COMMIT_LITERAL: &str = "*COMMIT*";
+const DEBEZIUM_EMPTY_KEY_PAYLOAD: &str = "{\"payload\": {\"before\": {}, \"after\": {}}}";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParsedEvent {
@@ -1036,7 +1037,12 @@ impl Parser for DebeziumMessageParser {
             KeyValue((k, v)) => {
                 let key = match k {
                     Some(bytes) => prepare_plaintext_string(bytes)?,
-                    None => return Err(ParseError::EmptyKafkaPayload),
+                    None => {
+                        if self.key_field_names.is_some() {
+                            return Err(ParseError::EmptyKafkaPayload);
+                        }
+                        DEBEZIUM_EMPTY_KEY_PAYLOAD.to_string()
+                    }
                 };
                 let value = match v {
                     Some(bytes) => prepare_plaintext_string(bytes)?,
