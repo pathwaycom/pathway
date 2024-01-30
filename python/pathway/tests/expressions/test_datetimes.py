@@ -516,8 +516,10 @@ def test_strptime_naive_errors_on_wrong_specifier() -> None:
     )
     with pytest.raises(
         ValueError,
-        match="parse error: Cannot use format: %Y-%m-%d %H:%M:%S-%f."
-        + " Using %f without the leading dot is not supported.",
+        match=re.escape(
+            'parse error: cannot use format "%Y-%m-%d %H:%M:%S-%f": '
+            'using "%f" without the leading dot is not supported'
+        ),
     ):
         run_all()
 
@@ -528,7 +530,10 @@ def test_strptime_naive_errors_on_wrong_format() -> None:
     )
     with pytest.raises(
         ValueError,
-        match="parse error: Cannot format date: 2023-03-26T16:43:21.12 using format: %Y-%m-%d %H:%M:%S%.f.",
+        match=re.escape(
+            'parse error: cannot parse date "2023-03-26T16:43:21.12" '
+            'using format "%Y-%m-%d %H:%M:%S%.f"'
+        ),
     ):
         run_all()
 
@@ -539,8 +544,10 @@ def test_strptime_utc_errors_on_wrong_specifier() -> None:
     )
     with pytest.raises(
         ValueError,
-        match="parse error: Cannot use format: %Y-%m-%d %H:%M:%S-%f%z."
-        + " Using %f without the leading dot is not supported.",
+        match=re.escape(
+            'parse error: cannot use format "%Y-%m-%d %H:%M:%S-%f%z": '
+            'using "%f" without the leading dot is not supported'
+        ),
     ):
         run_all()
 
@@ -551,8 +558,10 @@ def test_strptime_utc_errors_on_wrong_format() -> None:
     )
     with pytest.raises(
         ValueError,
-        match="parse error: Cannot format date: 2023-03-26T16:43:21.12-0100 using"
-        + " format: %Y-%m-%d %H:%M:%S%.f%z.",
+        match=re.escape(
+            'parse error: cannot parse date "2023-03-26T16:43:21.12-0100" '
+            'using format "%Y-%m-%d %H:%M:%S%.f%z"'
+        ),
     ):
         run_all()
 

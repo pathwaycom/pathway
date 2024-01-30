@@ -91,7 +91,7 @@ pub trait DateTime {
             Ok(format)
         } else {
             Err(Error::ParseError(format!(
-                "Cannot use format: {format}. Using %f without the leading dot is not supported."
+                "cannot use format {format:?}: using \"%f\" without the leading dot is not supported"
             )))
         }
     }
@@ -111,7 +111,7 @@ fn get_unit_multiplier(unit: &str) -> Result<i64, Error> {
         "us" => Ok(1_000),
         "ns" => Ok(1),
         _ => Err(Error::ValueError(format!(
-            "unit has to be one of s, ms, us, ns but is {unit}."
+            "unit has to be one of s, ms, us, ns but is {unit:?}"
         ))),
     }
 }
@@ -140,36 +140,37 @@ impl DateTimeNaive {
             Ok(datetime.into())
         } else {
             Err(Error::ParseError(format!(
-                "Cannot format date: {date_string} using format: {format}."
+                "cannot parse date {date_string:?} using format {format:?}"
             )))
         }
     }
 
     pub fn to_utc_from_timezone(&self, timezone: &str) -> Result<DateTimeUtc> {
-        if let Ok(tz) = timezone.parse::<Tz>() {
-            let naive_local = self.as_chrono_datetime();
-            let localized = tz.from_local_datetime(&naive_local);
-            match localized {
-                LocalResult::Single(localized) | LocalResult::Ambiguous(_, localized) => {
-                    Ok(localized.into())
-                }
-                LocalResult::None => {
-                    // This NaiveDateTime doesn't exist in a given timezone.
-                    // We try getting a first date after this.
-                    let moved = naive_local + chrono::Duration::minutes(30);
-                    let rounded = moved.duration_round(chrono::Duration::hours(1)).unwrap();
-                    let localized = tz.from_local_datetime(&rounded);
-                    if let LocalResult::Single(localized) = localized {
+        match timezone.parse::<Tz>() {
+            Ok(tz) => {
+                let naive_local = self.as_chrono_datetime();
+                let localized = tz.from_local_datetime(&naive_local);
+                match localized {
+                    LocalResult::Single(localized) | LocalResult::Ambiguous(_, localized) => {
                         Ok(localized.into())
-                    } else {
-                        Err(Error::DateTimeConversionError)
+                    }
+                    LocalResult::None => {
+                        // This NaiveDateTime doesn't exist in a given timezone.
+                        // We try getting a first date after this.
+                        let moved = naive_local + chrono::Duration::minutes(30);
+                        let rounded = moved.duration_round(chrono::Duration::hours(1)).unwrap();
+                        let localized = tz.from_local_datetime(&rounded);
+                        if let LocalResult::Single(localized) = localized {
+                            Ok(localized.into())
+                        } else {
+                            Err(Error::DateTimeConversionError)
+                        }
                     }
                 }
             }
-        } else {
-            Err(Error::ParseError(format!(
-                "Cannot parse time zone: {timezone}."
-            )))
+            Err(e) => Err(Error::ParseError(format!(
+                "cannot parse time zone {timezone:?}: {e}"
+            ))),
         }
     }
 
@@ -264,22 +265,23 @@ impl DateTimeUtc {
         let format = Self::sanitize_format_string(format)?;
         match chrono::DateTime::parse_from_str(date_string, &format) {
             Ok(datetime) => Ok(datetime.into()),
-            Err(_) => Err(Error::ParseError(format!(
-                "Cannot format date: {date_string} using format: {format}."
+            Err(e) => Err(Error::ParseError(format!(
+                "cannot parse date {date_string:?} using format {format:?}: {e}"
             ))),
         }
     }
 
     pub fn to_naive_in_timezone(&self, timezone: &str) -> Result<DateTimeNaive> {
-        if let Ok(tz) = timezone.parse::<Tz>() {
-            let naive_utc = self.as_chrono_datetime();
-            let localized = tz.from_utc_datetime(&naive_utc);
-            let naive_local = localized.naive_local();
-            Ok(naive_local.into())
-        } else {
-            Err(Error::ParseError(format!(
-                "Cannot parse time zone: {timezone}."
-            )))
+        match timezone.parse::<Tz>() {
+            Ok(tz) => {
+                let naive_utc = self.as_chrono_datetime();
+                let localized = tz.from_utc_datetime(&naive_utc);
+                let naive_local = localized.naive_local();
+                Ok(naive_local.into())
+            }
+            Err(e) => Err(Error::ParseError(format!(
+                "cannot parse time zone {timezone:?}: {e}"
+            ))),
         }
     }
 
