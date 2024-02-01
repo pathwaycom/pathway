@@ -190,6 +190,9 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
     class QueryResultSchema(pw.Schema):
         result: pw.Json
 
+    class InputResultSchema(pw.Schema):
+        result: list[pw.Json]
+
     @pw.table_transformer
     def statistics_query(
         self, info_queries: pw.Table[StatisticsQuerySchema]
@@ -242,8 +245,8 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
     @pw.table_transformer
     def inputs_query(
-        self, input_queries: pw.Table[InputsQuerySchema]  # type: ignore
-    ) -> pw.Table[QueryResultSchema]:
+        self, input_queries: pw.Table[InputsQuerySchema]  # type:ignore
+    ) -> pw.Table[InputResultSchema]:
         docs = self._graph["docs"]
         # TODO: compare this approach to first joining queries to dicuments, then filtering,
         # then grouping to get each response.
@@ -255,7 +258,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         @pw.udf
         def format_inputs(
             metadatas: list[pw.Json] | None, metadata_filter: str | None
-        ) -> pw.Json:
+        ) -> list[pw.Json]:
             metadatas: list = metadatas if metadatas is not None else []  # type:ignore
             assert metadatas is not None
             if metadata_filter:
@@ -266,7 +269,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                         metadata_filter, m.value, options=_knn_lsh._glob_options
                     )
                 ]
-            return pw.Json({"input_files": [m.value["path"] for m in metadatas]})  # type: ignore
+            return metadatas
 
         input_results = input_queries.join_left(all_metas, id=input_queries.id).select(
             all_metas.metadatas, input_queries.metadata_filter
@@ -314,7 +317,10 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         retrieval_results = retrieval_results.select(
             result=pw.apply_with_type(
                 lambda x, y: pw.Json(
-                    [{**res.value, "dist": dist} for res, dist in zip(x, y)]
+                    sorted(
+                        [{**res.value, "dist": dist} for res, dist in zip(x, y)],
+                        key=lambda x: x["dist"],  # type: ignore
+                    )
                 ),
                 pw.Json,
                 pw.this.result,

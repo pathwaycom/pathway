@@ -64,15 +64,14 @@ def _test_vs(fake_embeddings_model):
     input_outputs = vector_server.inputs_query(input_queries)
 
     @pw.udf
-    def get_file_name(path) -> str:
-        return path.split("/")[-1].replace('"', "")
+    def get_file_name(result_js) -> str:
+        if len(result_js):
+            return result_js[0]["path"].value.split("/")[-1].replace('"', "")
+        else:
+            return str(result_js)
 
     assert_table_equality(
-        input_outputs.select(
-            result=pw.unwrap(
-                get_file_name(pw.this.result["input_files"][0].to_string())
-            )
-        ),
+        input_outputs.select(result=pw.unwrap(get_file_name(pw.this.result))),
         pw.debug.table_from_markdown(
             """
             result
@@ -80,6 +79,17 @@ def _test_vs(fake_embeddings_model):
             """
         ),
     )
+
+    _, rows = pw.debug.table_to_dicts(input_outputs)
+    (val,) = rows["result"].values()
+    val = val[0]  # type: ignore
+
+    assert isinstance(val, pw.Json)
+    input_result = val.value
+    assert isinstance(input_result, dict)
+
+    assert "owner" in input_result.keys()
+    assert "modified_at" in input_result.keys()
 
     # parse_graph.G.clear()
     retrieve_queries = pw.debug.table_from_markdown(
