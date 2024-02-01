@@ -5,20 +5,21 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.8.0] - 2024-02-01
+
 ### Added
-- `pw.io.http.rest_connector` can now handle different kinds of HTTP requests.
-- `pw.io.http.PathwayWebserver` can now enable CORS on the added endpoints.
+- `pw.io.http.rest_connector` now supports multiple HTTP request types.
+- `pw.io.http.PathwayWebserver` now allows Cross-Origin Resource Sharing (CORS) to be enabled on newly added endpoints
 - Wrappers for LiteLLM and HuggingFace chat services and SentenceTransformers embedding service are now added to Pathway xpack for LLMs.
 
 ### Changed
-- `pw.run` now takes additional parameter `runtime_typechecking` allowing to enable strict type checking at runtime.
-- `pathway.io.http.rest_connector` now cast endpoint arguments to their schema types.
-- Embedders in `pathway.xpacks.llm.embedders` now correctly process empty strings as queries.
-- **BREAKING**: `pw.run` and `pw.run_all` now take only keyword arguments.
+- `pw.run` now includes an additional parameter `runtime_typechecking` that enables strict type checking at runtime.
+- Embedders in pathway.xpacks.llm.embedders now correctly process empty strings as queries.
+- **BREAKING**: `pw.run` and `pw.run_all` now only accept keyword arguments.
 
 ### Fixed
-- Returning `pw.Duration` from UDFs or using them as constant values no longer results in errors.
-- `pw.io.debezium.read` now correctly handles tables without primary key.
+- `pw.Duration` can now be returned from User-Defined Functions (UDFs) or used as a constant value without resulting in errors.
+- `pw.io.debezium.read` now correctly handles tables that do not have a primary key.
 
 ## [0.7.10] - 2024-01-26
 
@@ -335,5 +336,3 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 <img src="https://d14l3brkh44201.cloudfront.net/PathwayManul.svg"  alt="manul" width="50px"></img>
-
-
