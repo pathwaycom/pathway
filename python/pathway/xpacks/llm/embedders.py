@@ -100,7 +100,7 @@ class OpenAIEmbedder(pw.UDFAsync):
 class LiteLLMEmbedder(pw.UDFAsync):
     """Pathway wrapper for `litellm.embedding`.
 
-    Model has to specified either in constructor call or in each application, no default
+    Model has to be specified either in constructor call or in each application, no default
     is provided. The capacity, retry_strategy and cache_strategy need to be specified
     during object construction. All other arguments can be overridden during application.
 
@@ -174,5 +174,55 @@ class LiteLLMEmbedder(pw.UDFAsync):
             - **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
-        ret = await litellm_mod.aembedding(input=[input], **self.kwargs, **kwargs)
+        kwargs = {**self.kwargs, **kwargs}
+        ret = await litellm_mod.aembedding(input=[input], **kwargs)
         return ret.data[0]["embedding"]
+
+
+class SentenceTransformerEmbedder(pw.UDFSync):
+    """
+    Pathway wrapper for Sentence-Transformers embedder.
+
+    Args:
+        model: model name or path
+        call_kwargs: kwargs that will be passed to each call of encode.
+            These can be overridden during each application. For possible arguments check
+            [the Sentence-Transformers documentation](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode).
+        device: defines which device will be used to run the Pipeline
+        sentencetransformer_kwargs: kwargs accepted during initialization of SentenceTransformers.
+            For possible arguments check
+            [the Sentence-Transformers documentation](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer)
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        model: str,
+        call_kwargs: dict,
+        device: str = "cpu",
+        **sentencetransformer_kwargs,
+    ):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            raise ValueError(
+                "Please install sentence_transformers: `pip install sentence_transformers`"
+            )
+
+        super().__init__()
+        self.model = SentenceTransformer(
+            model_name_or_path=model, device=device, **sentencetransformer_kwargs
+        )
+        self.kwargs = call_kwargs
+
+    def __wrapped__(self, text: str, **kwargs) -> list[float]:
+        """
+        Embed the text
+
+        Args:
+            - input: mandatory, the string to embed.
+            - **kwargs: optional parameters for `encode` method. If unset defaults from the constructor
+              will be taken. For possible arguments check
+              [the Sentence-Transformers documentation](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode).
+        """  # noqa: E501
+        kwargs = {**self.kwargs, **kwargs}
+        return self.model.encode(text, **kwargs).tolist()

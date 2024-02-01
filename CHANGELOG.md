@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.http.rest_connector` can now handle different kinds of HTTP requests.
 - `pw.io.http.PathwayWebserver` can now enable CORS on the added endpoints.
+- Wrappers for LiteLLM and HuggingFace chat services and SentenceTransformers embedding service are now added to Pathway xpack for LLMs.
 
 ### Changed
 - `pw.run` now takes additional parameter `runtime_typechecking` allowing to enable strict type checking at runtime.

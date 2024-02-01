@@ -5,6 +5,7 @@ UDF for calling LLMs:
 2. prompt building tools
 """
 
+import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
@@ -136,7 +137,7 @@ class OpenAIChat(pw.UDFAsync):
 
 
     Any arguments can be provided either to the constructor or in the UDF call.
-    To specify the `model` in the UDF call, set it to None.
+    To specify the `model` in the UDF call, set it to None in the constructor.
 
     Examples:
     >>> import pathway as pw
@@ -180,6 +181,144 @@ class OpenAIChat(pw.UDFAsync):
         client = openai_mod.AsyncOpenAI(api_key=api_key)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
         return ret.choices[0].message.content
+
+
+class LiteLLMChat(pw.UDFAsync):
+    """Pathway wrapper for LiteLLM Chat services.
+
+    Model has to be specified either in constructor call or in each application, no default
+    is provided. The capacity, retry_strategy and cache_strategy need to be specified during object
+    construction. All other arguments can be overridden during application.
+
+    Args:
+    - capacity: Maximum number of concurrent operations allowed.
+        Defaults to None, indicating no specific limit.
+    - retry_strategy: Strategy for handling retries in case of failures.
+        Defaults to None.
+    - cache_strategy: Defines the caching mechanism. If set to None and a persistency
+        is enabled, operations will be cached using the persistence layer.
+        Defaults to None.
+    - model: ID of the model to use. Check the
+      [providers supported by LiteLLM](https://docs.litellm.ai/docs/providers)
+      for details on which models work with the LiteLLM API.
+    - api_base: API endpoint to be used for the call.
+    - api_version: API version to be used for the call. Only for Azure models.
+    - num_retries: The number of retries if the API call fails.
+    - context_window_fallback_dict: Mapping of fallback models to be used in case of context window error
+    - fallbacks: List of fallback models to be used if the initial call fails
+    - metadata: Additional data to be logged when the call is made.
+
+    For more information on provider specific arguments check the
+    [LiteLLM documentation](https://docs.litellm.ai/docs/completion/input).
+
+    Any arguments can be provided either to the constructor or in the UDF call.
+    To specify the `model` in the UDF call, set it to None in the constructor.
+
+    Examples:
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import llms
+    >>> from pathway.internals.asynchronous import ExponentialBackoffRetryStrategy
+    >>> chat = llms.LiteLLMChat(model=None, retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6))
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt     | model
+    ... Wazzup? | gpt-3.5-turbo
+    ... ''')
+    >>> r = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt), model=t.model))
+    >>> r
+    <pathway.Table schema={'ret': str | None}>
+    """
+
+    def __init__(
+        self,
+        capacity: int | None = None,
+        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
+        cache_strategy: asynchronous.CacheStrategy | None = None,
+        model: str | None = None,
+        **litellm_kwargs,
+    ):
+        super().__init__(
+            capacity=capacity,
+            retry_strategy=retry_strategy,
+            cache_strategy=cache_strategy,
+        )
+        self.kwargs = litellm_kwargs
+        if model is not None:
+            self.kwargs["model"] = model
+
+    async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
+        if isinstance(messages, pw.Json):
+            messages_decoded: list[dict] = messages.as_list()
+        else:
+            messages_decoded = messages
+
+        kwargs = {**self.kwargs, **kwargs}
+        ret = await litellm_mod.acompletion(messages=messages_decoded, **kwargs)
+        return ret.choices[0].message.content
+
+
+class HFPipelineChat(pw.UDFSync):
+    """
+    Pathway wrapper for HuggingFace Pipeline.
+
+    Args:
+        model: ID of the model to be used
+        call_kwargs: kwargs that will be passed to each call of HuggingFace Pipeline.
+            These can be overridden during each application. For possible arguments check
+            [the HuggingFace documentation](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.TextGenerationPipeline.__call__).
+        device: defines which device will be used to run the Pipeline
+        pipeline_kwargs: kwargs accepted during initialization of HuggingFace Pipeline.
+            For possible arguments check
+            [the HuggingFace documentation](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline).
+
+    `call_kwargs` can be overridden during application, all other arguments need
+    to be specified during class construction.
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        model: str | None = "gpt2",
+        call_kwargs: dict = {},
+        device: str = "cpu",
+        **pipeline_kwargs,
+    ):
+        try:
+            import transformers
+        except ImportError:
+            raise ValueError("Please install transformers: `pip install transformers`")
+        super().__init__()
+
+        self.pipeline = transformers.pipeline(
+            model=model, device=device, **pipeline_kwargs
+        )
+        self.tokenizer = self.pipeline.tokenizer
+        self.kwargs = call_kwargs
+
+    def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
+        if isinstance(messages, pw.Json):
+            messages_decoded = messages.as_list()
+        else:
+            messages_decoded = messages
+
+        kwargs = {**self.kwargs, **kwargs}
+
+        prompt = self.tokenizer.apply_chat_template(
+            messages_decoded, tokenize=False, add_generation_prompt=True
+        )
+
+        output = self.pipeline(prompt, **kwargs)
+        return output[0]["generated_text"]
+
+    def crop_to_max_length(
+        self, input_string: pw.ColumnExpression, max_prompt_length: int = 500
+    ) -> pw.ColumnExpression:
+        @pw.udf
+        def wrapped(input_string: str) -> str:
+            tokens = self.tokenizer.tokenize(input_string)
+            if len(tokens) > max_prompt_length:
+                tokens = tokens[:max_prompt_length]
+            return self.tokenizer.convert_tokens_to_string(tokens)
+
+        return wrapped(input_string)
 
 
 @pw.udf
