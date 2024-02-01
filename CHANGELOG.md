@@ -12,6 +12,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.run` now takes additional parameter `runtime_typechecking` allowing to enable strict type checking at runtime.
+- `pathway.io.http.rest_connector` now cast endpoint arguments to their schema types.
+- Embedders in `pathway.xpacks.llm.embedders` now correctly process empty strings as queries.
 - **BREAKING**: `pw.run` and `pw.run_all` now take only keyword arguments.
 
 ### Fixed

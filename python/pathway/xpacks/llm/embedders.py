@@ -93,7 +93,7 @@ class OpenAIEmbedder(pw.UDFAsync):
         kwargs = {**self.kwargs, **kwargs}
         api_key = kwargs.pop("api_key", None)
         client = openai_mod.AsyncOpenAI(api_key=api_key)
-        ret = await client.embeddings.create(input=[input], **kwargs)
+        ret = await client.embeddings.create(input=[input or "."], **kwargs)
         return ret.data[0].embedding
 
 
@@ -175,7 +175,7 @@ class LiteLLMEmbedder(pw.UDFAsync):
               will be taken.
         """
         kwargs = {**self.kwargs, **kwargs}
-        ret = await litellm_mod.aembedding(input=[input], **kwargs)
+        ret = await litellm_mod.aembedding(input=[input or "."], **kwargs)
         return ret.data[0]["embedding"]
 
 

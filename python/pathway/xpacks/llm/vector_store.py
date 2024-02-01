@@ -214,6 +214,8 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         metadata_filter: str | None = pw.column_definition(default_value=None)
         filepath_globpattern: str | None = pw.column_definition(default_value=None)
 
+    InputsQuerySchema = FilterSchema
+
     @staticmethod
     def merge_filters(queries: pw.Table):
         @pw.udf
@@ -238,12 +240,9 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         )
         return queries
 
-    class InputsQuerySchema(FilterSchema):
-        pass
-
     @pw.table_transformer
     def inputs_query(
-        self, input_queries: pw.Table[InputsQuerySchema]
+        self, input_queries: pw.Table[InputsQuerySchema]  # type: ignore
     ) -> pw.Table[QueryResultSchema]:
         docs = self._graph["docs"]
         # TODO: compare this approach to first joining queries to dicuments, then filtering,
@@ -352,7 +351,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             If threaded, return the Thread object. Else, does not return.
         """
 
-        webserver = pw.io.http.PathwayWebserver(host=host, port=port)
+        webserver = pw.io.http.PathwayWebserver(host=host, port=port, with_cors=True)
 
         # TODO(move into webserver??)
         def serve(route, schema, handler):

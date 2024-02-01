@@ -348,3 +348,81 @@ def test_server_schema_generation_via_endpoint(port: int):
     pw_run_process.terminate()
     pw_run_process.join()
     assert succeeded
+
+
+def test_server_parameter_cast(tmp_path: pathlib.Path, port: int):
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        number: int
+
+    def double_logic(queries: pw.Table) -> pw.Table:
+        return queries.select(
+            query_id=queries.id, result=pw.apply(lambda x: x + x, pw.this.number)
+        )
+
+    def target():
+        time.sleep(5)
+        r = requests.post(
+            f"http://127.0.0.1:{port}/double",
+            json={"number": 5},
+        )
+        r.raise_for_status()
+        assert r.text == "10", r.text
+        r = requests.get(f"http://127.0.0.1:{port}/double?number=7")
+        r.raise_for_status()
+        assert r.text == "14", r.text
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+
+    double_queries, double_response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        schema=InputSchema,
+        route="/double",
+        methods=(
+            "GET",
+            "POST",
+        ),
+        delete_completed_queries=True,
+    )
+    double_responses = double_logic(double_queries)
+    double_response_writer(double_responses)
+
+    pw.io.csv.write(double_queries, output_path)
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+
+
+def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int):
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        data: pw.Json
+
+    def echo_logic(queries: pw.Table) -> pw.Table:
+        return queries.select(query_id=queries.id, result=pw.this.data)
+
+    def target():
+        time.sleep(5)
+        r = requests.post(f"http://127.0.0.1:{port}/echo", json={"data": {"a": 1}})
+        r.raise_for_status()
+        assert r.text == '{"a": 1}', r.text
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+
+    echo_queries, echo_response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        schema=InputSchema,
+        route="/echo",
+        delete_completed_queries=True,
+    )
+    echo_queries = echo_logic(echo_queries)
+    echo_response_writer(echo_queries)
+
+    pw.io.csv.write(echo_queries, output_path)
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)

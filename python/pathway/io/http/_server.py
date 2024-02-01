@@ -17,6 +17,7 @@ import pathway.internals as pw
 import pathway.io as io
 from pathway.internals import api
 from pathway.internals.api import Pointer, unsafe_make_pointer
+from pathway.internals.dtype import unoptionalize
 from pathway.internals.runtime_type_check import check_arg_types
 
 # There is no OpenAPI type for 'any', so it's excluded from the dict
@@ -325,9 +326,10 @@ class RestServerSubject(io.python.ConnectorSubject):
                     payload[param] = value
 
         self._verify_payload(payload)
+        self._cast_types_to_schema(payload)
 
         event = asyncio.Event()
-        data = json.dumps(payload).encode()
+        data = pw.Json.dumps(payload).encode()
 
         self._tasks[id] = {
             "event": event,
@@ -344,6 +346,19 @@ class RestServerSubject(io.python.ConnectorSubject):
         await event.wait()
         task = self._tasks.pop(id)
         return task["result"]
+
+    def _cast_types_to_schema(self, payload: dict):
+        dtypes = self._schema._dtypes()
+        for column, dtype in dtypes.items():
+            if column not in payload:
+                continue
+            try:
+                exact_type = unoptionalize(dtype).typehint
+                payload[column] = exact_type(payload[column])
+            except Exception:
+                logging.exception(
+                    f"Failed to cast column '{column}' to type '{exact_type}'"
+                )
 
     def _verify_payload(self, payload: dict):
         defaults = self._schema.default_values()
