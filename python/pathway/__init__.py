@@ -90,6 +90,8 @@ from pathway.stdlib import (
 from pathway.stdlib.utils.async_transformer import AsyncTransformer
 from pathway.stdlib.utils.pandas_transformer import pandas_transformer
 
+import pathway.persistence as persistence  # isort: skip
+
 __all__ = [
     "asynchronous",
     "ClassArg",
@@ -181,6 +183,7 @@ __all__ = [
     "join_right",
     "join_outer",
     "groupby",
+    "persistence",
 ]
 
 
