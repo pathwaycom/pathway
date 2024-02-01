@@ -197,7 +197,7 @@ class SentenceTransformerEmbedder(pw.UDFSync):
     def __init__(
         self,
         model: str,
-        call_kwargs: dict,
+        call_kwargs: dict = {},
         device: str = "cpu",
         **sentencetransformer_kwargs,
     ):
