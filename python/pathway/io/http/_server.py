@@ -350,7 +350,7 @@ class RestServerSubject(io.python.ConnectorSubject):
     def _cast_types_to_schema(self, payload: dict):
         dtypes = self._schema._dtypes()
         for column, dtype in dtypes.items():
-            if column not in payload:
+            if payload.get(column) is None:
                 continue
             try:
                 exact_type = unoptionalize(dtype).typehint

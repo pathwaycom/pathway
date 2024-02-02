@@ -437,12 +437,15 @@ class VectorStoreClient:
         responses = response.json()
         return responses
 
-    def get_input_files(self):
+    def get_input_files(self, metadata_filter=None, filepath_globpattern=None):
         """Fetch basic statistics about the vector store."""
         url = f"http://{self.host}:{self.port}/v1/inputs"
         response = requests.post(
             url,
-            json={},
+            json={
+                "metadata_filter": metadata_filter,
+                "filepath_globpattern": filepath_globpattern,
+            },
             headers={"Content-Type": "application/json"},
         )
         responses = response.json()
