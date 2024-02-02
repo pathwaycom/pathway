@@ -115,6 +115,7 @@ jobs:
           source "${ENV_NAME}/bin/activate"
           WHEEL=(target/wheels/pathway-*.whl)
           pip install --prefer-binary "${WHEEL}[tests]"
+          pip install llama_index
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           if [[ "$RUNNER_NAME" == *mac* ]]; then
             export PYTEST_XDIST_AUTO_NUM_WORKERS=4
