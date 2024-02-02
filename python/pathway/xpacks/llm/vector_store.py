@@ -173,8 +173,8 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         )
 
         parsed_docs += parsed_docs.select(
-            modified=pw.this.data["metadata"]["modified_at"],
-            path=pw.this.data["metadata"]["path"],
+            modified=pw.this.data["metadata"]["modified_at"].as_int(),
+            path=pw.this.data["metadata"]["path"].as_str(),
         )
 
         stats = parsed_docs.reduce(
@@ -203,7 +203,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         @pw.udf
         def format_stats(counts, last_modified) -> pw.Json:
             if counts is not None:
-                response = {"file_count": counts, "last_modified": last_modified.value}
+                response = {"file_count": counts, "last_modified": last_modified}
             else:
                 response = {"file_count": 0, "last_modified": None}
             return pw.Json(response)
@@ -336,8 +336,9 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         port,
         threaded: bool = False,
         with_cache: bool = True,
-        cache_backend: pw.persistence.Backend
-        | None = pw.persistence.Backend.filesystem("./Cache"),
+        cache_backend: (
+            pw.persistence.Backend | None
+        ) = pw.persistence.Backend.filesystem("./Cache"),
     ):
         """
         Builds the document processing pipeline and runs it.
