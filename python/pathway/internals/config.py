@@ -57,6 +57,8 @@ class PathwayConfig:
     persistence_mode: api.PersistenceMode = field(default_factory=_persistence_mode)
     snapshot_access: api.SnapshotAccess | None = field(default_factory=_snapshot_access)
     replay_storage: str | None = _env_field("PATHWAY_REPLAY_STORAGE")
+    license_key: str | None = _env_field("PATHWAY_LICENSE_KEY")
+    telemetry_server: str | None = _env_field("PATHWAY_TELEMETRY_SERVER")
 
     @property
     def replay_config(
@@ -86,4 +88,13 @@ class PathwayConfig:
 
 pathway_config = PathwayConfig()
 
-__all__ = ["PathwayConfig", "pathway_config"]
+
+def set_license_key(key: str) -> None:
+    pathway_config.license_key = key
+
+
+def set_telemetry_server(endpoint: str) -> None:
+    pathway_config.telemetry_server = endpoint
+
+
+__all__ = ["PathwayConfig", "pathway_config", "set_license_key", "set_telemetry_server"]

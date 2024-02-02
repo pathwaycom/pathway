@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+import pathway.internals.graph_runner.telemetry as telemetry
 from pathway.internals import api, parse_graph as graph, table, trace
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.config import pathway_config
@@ -31,6 +32,7 @@ class GraphRunner:
     debug: bool
     ignore_asserts: bool
     runtime_typechecking: bool
+    telemetry_config: api.TelemetryConfig
 
     def __init__(
         self,
@@ -43,6 +45,7 @@ class GraphRunner:
         default_logging: bool = True,
         persistence_config: PersistenceConfig | None = None,
         runtime_typechecking: bool | None = None,
+        license_key: str | None = None,
     ) -> None:
         self._graph = input_graph
         self.debug = debug
@@ -57,6 +60,9 @@ class GraphRunner:
             self.runtime_typechecking = pathway_config.runtime_typechecking
         else:
             self.runtime_typechecking = runtime_typechecking
+        if license_key is None:
+            license_key = pathway_config.license_key
+        self.license_key = license_key
 
     def run_tables(
         self,
@@ -106,59 +112,78 @@ class GraphRunner:
         output_tables: Iterable[table.Table] = (),
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
     ) -> list[api.CapturedStream]:
-        storage_graph = OperatorStorageGraph.from_scope_context(
-            context, self, output_tables
+        otel = telemetry.Telemetry.create(
+            license_key=self.license_key,
+            telemetry_server=pathway_config.telemetry_server,
         )
 
-        def logic(
-            scope: api.Scope,
-            storage_graph: OperatorStorageGraph = storage_graph,
-        ) -> list[tuple[api.Table, list[ColumnPath]]]:
-            state = ScopeState(scope)
-            storage_graph.build_scope(scope, state, self)
-            if after_build is not None:
-                after_build(state, storage_graph)
-            return storage_graph.get_output_tables(output_tables, state)
+        with otel.tracer.start_as_current_span("graph_runner.run"):
+            trace_context, trace_parent = telemetry.get_current_context()
 
-        node_names = [
-            (operator.id, operator.label())
-            for operator in context.nodes
-            if isinstance(operator, ContextualizedIntermediateOperator)
-        ]
-        monitoring_level = self.monitoring_level.to_internal()
+            storage_graph = OperatorStorageGraph.from_scope_context(
+                context, self, output_tables
+            )
 
-        with new_event_loop() as event_loop, monitor_stats(
-            monitoring_level, node_names, self.default_logging
-        ) as stats_monitor:
-            if self.persistence_config:
-                self.persistence_config.on_before_run()
-                persistence_engine_config = self.persistence_config.engine_config
-            else:
-                persistence_engine_config = None
+            @otel.tracer.start_as_current_span(
+                "graph_runner.build",
+                context=trace_context,
+                attributes=dict(
+                    graph=repr(self._graph),
+                    debug=self.debug,
+                ),
+            )
+            def logic(
+                scope: api.Scope,
+                storage_graph: OperatorStorageGraph = storage_graph,
+            ) -> list[tuple[api.Table, list[ColumnPath]]]:
+                state = ScopeState(scope)
+                storage_graph.build_scope(scope, state, self)
+                if after_build is not None:
+                    after_build(state, storage_graph)
+                return storage_graph.get_output_tables(output_tables, state)
 
-            try:
-                return api.run_with_new_graph(
-                    logic,
-                    event_loop=event_loop,
-                    ignore_asserts=self.ignore_asserts,
-                    stats_monitor=stats_monitor,
-                    monitoring_level=monitoring_level,
-                    with_http_server=self.with_http_server,
-                    persistence_config=persistence_engine_config,
-                )
-            except api.EngineErrorWithTrace as e:
-                error, frame = e.args
-                if frame is not None:
-                    trace.add_pathway_trace_note(
-                        error,
-                        trace.Frame(
-                            filename=frame.file_name,
-                            line_number=frame.line_number,
-                            line=frame.line,
-                            function=frame.function,
-                        ),
+            node_names = [
+                (operator.id, operator.label())
+                for operator in context.nodes
+                if isinstance(operator, ContextualizedIntermediateOperator)
+            ]
+            monitoring_level = self.monitoring_level.to_internal()
+
+            with new_event_loop() as event_loop, monitor_stats(
+                monitoring_level, node_names, self.default_logging
+            ) as stats_monitor:
+                if self.persistence_config:
+                    self.persistence_config.on_before_run()
+                    persistence_engine_config = self.persistence_config.engine_config
+                else:
+                    persistence_engine_config = None
+
+                try:
+                    return api.run_with_new_graph(
+                        logic,
+                        event_loop=event_loop,
+                        ignore_asserts=self.ignore_asserts,
+                        stats_monitor=stats_monitor,
+                        monitoring_level=monitoring_level,
+                        with_http_server=self.with_http_server,
+                        persistence_config=persistence_engine_config,
+                        license_key=self.license_key,
+                        telemetry_server=pathway_config.telemetry_server,
+                        trace_parent=trace_parent,
                     )
-                raise error
+                except api.EngineErrorWithTrace as e:
+                    error, frame = e.args
+                    if frame is not None:
+                        trace.add_pathway_trace_note(
+                            error,
+                            trace.Frame(
+                                filename=frame.file_name,
+                                line_number=frame.line_number,
+                                line=frame.line,
+                                function=frame.function,
+                            ),
+                        )
+                    raise error
 
     def tree_shake_tables(
         self, graph_scope: graph.Scope, tables: Iterable[table.Table]

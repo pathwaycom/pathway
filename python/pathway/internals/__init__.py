@@ -20,6 +20,7 @@ from pathway.internals.common import (
     table_transformer,
     unwrap,
 )
+from pathway.internals.config import set_license_key, set_telemetry_server
 from pathway.internals.custom_reducers import BaseCustomAccumulator
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.decorators import (
@@ -143,4 +144,6 @@ __all__ = [
     "join_right",
     "join_outer",
     "groupby",
+    "set_license_key",
+    "set_telemetry_server",
 ]

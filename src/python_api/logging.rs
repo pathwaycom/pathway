@@ -164,8 +164,8 @@ impl Log for Logger {
     }
 }
 
-pub fn init() {
+pub fn init() -> ResetHandle {
     Logger::default()
         .install()
-        .expect("initializing the logger should not fail");
+        .expect("initializing the logger should not fail")
 }

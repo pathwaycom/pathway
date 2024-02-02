@@ -156,6 +156,9 @@ pub enum Error {
 
     #[error("exception in Python subject: {0}")]
     ReaderFailed(#[source] ReadError),
+
+    #[error("invalid license key")]
+    InvalidLicenseKey,
 }
 
 impl Error {

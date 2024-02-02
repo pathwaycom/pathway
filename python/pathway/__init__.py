@@ -65,6 +65,8 @@ from pathway.internals import (
     schema_from_csv,
     schema_from_dict,
     schema_from_types,
+    set_license_key,
+    set_telemetry_server,
     sql,
     table_transformer,
     this,
@@ -184,6 +186,8 @@ __all__ = [
     "join_outer",
     "groupby",
     "persistence",
+    "set_license_key",
+    "set_telemetry_server",
 ]
 
 

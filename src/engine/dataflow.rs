@@ -20,6 +20,7 @@ use crate::engine::dataflow::operators::time_column::{
     Epsilon, TimeColumnForget, TimeColumnFreeze,
 };
 
+use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
 use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
 use crate::persistence::sync::SharedWorkersPersistenceCoordinator;
@@ -90,6 +91,7 @@ use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::graph::{DataRow, SubscribeCallbacks};
 use super::http_server::maybe_run_http_server_thread;
+use super::license::{License, ResourceLimit};
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
     AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, FloatSumReducer,
@@ -97,11 +99,13 @@ use super::reduce::{
     StatefulCombineFn, StatefulReducer, TupleReducer, UniqueReducer,
 };
 use super::report_error::{ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithReporter};
+use super::telemetry::maybe_run_telemetry_thread;
 use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, Expression,
     ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable, OperatorStats,
     ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties, UniverseHandle, Value,
 };
+use nix::sys::resource::{getrlimit, setrlimit};
 
 pub type WakeupReceiver = Receiver<Box<dyn FnOnce() -> DynResult<()> + Send + Sync + 'static>>;
 
@@ -4652,7 +4656,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
     }
 }
 
-fn parse_env_var<T: FromStr>(name: &str) -> Result<Option<T>, String>
+pub fn parse_env_var<T: FromStr>(name: &str) -> Result<Option<T>, String>
 where
     T::Err: Display,
 {
@@ -4723,6 +4727,21 @@ pub fn config_from_env() -> Result<(Config, usize), String> {
     Ok((config, workers))
 }
 
+fn set_process_limits(process_limits: Vec<ResourceLimit>) -> Result<()> {
+    let telemetry_enabled: bool = parse_env_var("PATHWAY_TELEMETRY_ENABLED")
+        .map_err(DynError::from)?
+        .unwrap_or(false);
+    if telemetry_enabled {
+        for ResourceLimit(resource, limit) in process_limits {
+            let (_, hard_limit) = getrlimit(resource).map_err(DynError::from)?;
+            let limit = hard_limit.min(limit);
+            info!("Setting process limit: {resource:?}, {limit:?}");
+            setrlimit(resource, limit, limit).map_err(DynError::from)?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)] // XXX
 #[allow(clippy::too_many_arguments)] // XXX
 pub fn run_with_new_dataflow_graph<R, R2>(
@@ -4736,11 +4755,15 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     with_http_server: bool,
     persistence_config: Option<PersistenceManagerOuterConfig>,
     num_workers: usize,
+    license: License,
+    telemetry_config: TelemetryConfig,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
     R2: Send + 'static,
 {
+    set_process_limits(license.get_resource_limits())?;
+
     if !env::var("PATHWAY_SKIP_START_LOG").is_ok_and(|v| v == "1") {
         info!("Preparing Pathway computation");
     }
@@ -4782,6 +4805,7 @@ where
                 mut probers,
                 progress_reporter_runner,
                 http_server_runner,
+                telemetry_runner,
             ) = worker.dataflow::<u64, _, _>(|scope| {
                 let graph = OuterDataflowGraph::new(
                     scope.clone(),
@@ -4791,6 +4815,7 @@ where
                     global_persistent_storage.clone(),
                 )
                 .unwrap_with_reporter(&error_reporter);
+                let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());
                 let res = logic(&graph).unwrap_with_reporter(&error_reporter);
                 let progress_reporter_runner =
                     maybe_run_reporter(&monitoring_level, &graph, stats_monitor.clone());
@@ -4808,6 +4833,7 @@ where
                     graph.probers,
                     progress_reporter_runner,
                     http_server_runner,
+                    telemetry_runner,
                 )
             });
 
@@ -4866,6 +4892,7 @@ where
 
             drop(http_server_runner);
             drop(progress_reporter_runner);
+            drop(telemetry_runner);
 
             finish(res)
         }))

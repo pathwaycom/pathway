@@ -5,7 +5,9 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::engine::{graph::SubscribeCallbacksBuilder, Computer as EngineComputer, Expressions};
+use crate::engine::{
+    graph::SubscribeCallbacksBuilder, license::License, Computer as EngineComputer, Expressions,
+};
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -30,6 +32,7 @@ use pyo3::pyclass::CompareOp;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
 use pyo3::{AsPyPointer, PyTypeInfo};
+use pyo3_log::ResetHandle;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
 use rdkafka::ClientConfig;
@@ -69,6 +72,7 @@ use crate::engine::graph::ScopedContext;
 use crate::engine::progress_reporter::MonitoringLevel;
 use crate::engine::reduce::StatefulCombineFn;
 use crate::engine::time::DateTime;
+use crate::engine::Config as EngineTelemetryConfig;
 use crate::engine::ReducerData;
 use crate::engine::{
     run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ColumnPath,
@@ -2707,7 +2711,10 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
     ignore_asserts = false,
     monitoring_level = MonitoringLevel::None,
     with_http_server = false,
-    persistence_config = None
+    persistence_config = None,
+    license_key = None,
+    telemetry_server = None,
+    trace_parent = None,
 ))]
 pub fn run_with_new_graph(
     py: Python,
@@ -2718,7 +2725,11 @@ pub fn run_with_new_graph(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceConfig>,
+    license_key: Option<String>,
+    telemetry_server: Option<String>,
+    trace_parent: Option<String>,
 ) -> PyResult<Vec<Vec<DataRow>>> {
+    LOGGING_RESET_HANDLE.reset();
     defer! {
         log::logger().flush();
     }
@@ -2731,6 +2742,8 @@ pub fn run_with_new_graph(
             None
         }
     };
+    let license = License::new(license_key)?;
+    let telemetry_config = EngineTelemetryConfig::create(license, telemetry_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         py.allow_threads(|| {
             run_with_new_dataflow_graph(
@@ -2761,6 +2774,8 @@ pub fn run_with_new_graph(
                 with_http_server,
                 persistence_config,
                 num_workers,
+                license,
+                telemetry_config,
             )
         })
     })??;
@@ -3210,6 +3225,49 @@ impl PersistenceConfig {
             self.persistence_mode,
             self.continue_after_replay,
         ))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+#[pyclass(module = "pathway.engine", frozen, get_all)]
+pub struct TelemetryConfig {
+    telemetry_enabled: bool,
+    telemetry_server_endpoint: Option<String>,
+    service_name: Option<String>,
+    service_version: Option<String>,
+    run_id: String,
+}
+
+#[pymethods]
+impl TelemetryConfig {
+    #[staticmethod]
+    #[pyo3(signature = (
+        *,
+        license_key = None,
+        telemetry_server = None,
+    ))]
+    fn create(
+        license_key: Option<String>,
+        telemetry_server: Option<String>,
+    ) -> PyResult<TelemetryConfig> {
+        let license = License::new(license_key)?;
+        let config = EngineTelemetryConfig::create(license, telemetry_server, None)?;
+        Ok(config.into())
+    }
+}
+
+impl From<EngineTelemetryConfig> for TelemetryConfig {
+    fn from(config: EngineTelemetryConfig) -> Self {
+        match config {
+            EngineTelemetryConfig::Enabled(config) => Self {
+                telemetry_enabled: true,
+                telemetry_server_endpoint: Some(config.telemetry_server_endpoint),
+                service_name: Some(config.service_name),
+                service_version: Some(config.service_version),
+                run_id: config.run_id,
+            },
+            EngineTelemetryConfig::Disabled => Self::default(),
+        }
     }
 }
 
@@ -4193,10 +4251,13 @@ fn run_with_wakeup_receiver<R>(
     Ok(logic(Some(wakeup_receiver)))
 }
 
+static LOGGING_RESET_HANDLE: Lazy<ResetHandle> = Lazy::new(logging::init);
+
 #[pymodule]
 #[pyo3(name = "engine")]
 fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    logging::init();
+    // Initialize the logging
+    let _ = Lazy::force(&LOGGING_RESET_HANDLE);
 
     m.add_class::<Pointer>()?;
     m.add_class::<PyReducer>()?;
@@ -4231,6 +4292,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyPersistenceMode>()?;
     m.add_class::<PySnapshotAccess>()?;
     m.add_class::<PySnapshotEvent>()?;
+    m.add_class::<TelemetryConfig>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

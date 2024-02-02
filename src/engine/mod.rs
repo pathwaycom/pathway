@@ -4,6 +4,7 @@
 #![allow(clippy::type_complexity)]
 
 pub mod error;
+pub mod license;
 pub use self::error::{Error, Result};
 
 pub mod report_error;
@@ -38,3 +39,6 @@ pub use expression::{
 pub mod progress_reporter;
 pub mod time;
 pub use time::{DateTimeNaive, DateTimeUtc, Duration};
+
+pub mod telemetry;
+pub use telemetry::Config;
