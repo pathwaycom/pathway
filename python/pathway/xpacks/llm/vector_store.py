@@ -86,12 +86,23 @@ class VectorStoreServer:
         embedder: Callable[[str], list[float]],
         parser: Callable[[bytes], list[tuple[str, dict]]] | None = None,
         splitter: Callable[[str], list[tuple[str, dict]]] | None = None,
+        doc_post_processors: list[Callable[[str, dict], tuple[str, dict]]]
+        | None = None,
     ):
         self.docs = docs
 
         self.parser: Callable[[bytes], list[tuple[str, dict]]] = _unwrap_udf(
             parser if parser is not None else pathway.xpacks.llm.parsers.ParseUtf8()
         )
+        self.doc_post_processors = []
+
+        if doc_post_processors:
+            self.doc_post_processors = [
+                _unwrap_udf(processor)
+                for processor in doc_post_processors
+                if processor is not None
+            ]
+
         self.splitter = _unwrap_udf(
             splitter
             if splitter is not None
@@ -132,10 +143,24 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         )
 
         @pw.udf
+        def post_proc_docs(data_json: pw.Json) -> pw.Json:
+            data: dict = data_json.value  # type:ignore
+            text = data["text"]
+            metadata = data["metadata"]
+
+            for processor in self.doc_post_processors:
+                text, metadata = processor(text, metadata)
+
+            return dict(text=text, metadata=metadata)  # type: ignore
+
+        parsed_docs = parsed_docs.select(data=post_proc_docs(pw.this.data))
+
+        @pw.udf
         def split_doc(data_json: pw.Json) -> list[pw.Json]:
             data: dict = data_json.value  # type:ignore
             text = data["text"]
             metadata = data["metadata"]
+
             rets = self.splitter(text)
             return [
                 dict(text=ret[0], metadata={**metadata, **ret[1]})  # type:ignore
@@ -269,6 +294,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                         metadata_filter, m.value, options=_knn_lsh._glob_options
                     )
                 ]
+
             return metadatas
 
         input_results = input_queries.join_left(all_metas, id=input_queries.id).select(
@@ -336,9 +362,8 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         port,
         threaded: bool = False,
         with_cache: bool = True,
-        cache_backend: (
-            pw.persistence.Backend | None
-        ) = pw.persistence.Backend.filesystem("./Cache"),
+        cache_backend: pw.persistence.Backend
+        | None = pw.persistence.Backend.filesystem("./Cache"),
     ):
         """
         Builds the document processing pipeline and runs it.
