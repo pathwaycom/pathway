@@ -53,15 +53,12 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-22.04'}}
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: 0.14.17
           command: build
           args: --release --strip
           manylinux: auto
-          rustup-components: rust-std
-          working-directory: .
           sccache: true
           before-script-linux: yum install -y perl-core
-        
+
       - name: Build package macOS Apple silicon
         if: ${{ matrix.os == 'ec2-macOS'}}
         uses: PyO3/maturin-action@v1
@@ -70,13 +67,9 @@ jobs:
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
         with:
-          maturin-version: 0.14.17
           command: build
           args: --release --strip
           target: universal2-apple-darwin
-          manylinux: auto
-          rustup-components: rust-std
-          working-directory: .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

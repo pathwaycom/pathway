@@ -75,12 +75,9 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-22.04'}}
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: 0.14.17
           command: build
           args: --release --strip
           manylinux: auto
-          rustup-components: rust-std
-          working-directory: .
           sccache: true
           before-script-linux: yum install -y perl-core
 
@@ -92,25 +89,17 @@ jobs:
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
         with:
-          maturin-version: 0.14.17
           command: build
           args: --release --strip
           target: universal2-apple-darwin
-          manylinux: auto
-          rustup-components: rust-std
-          working-directory: .
 
       - name: Build package Ubuntu AArch64
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: 0.14.17
           command: build
           args: --release --strip
-          target: aarch64-unknown-linux-gnu
-          manylinux: auto
-          rustup-components: rust-std
-          working-directory: .
+          manylinux: 2_28
           sccache: true
 
       - name: Upload artifact
