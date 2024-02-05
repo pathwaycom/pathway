@@ -178,6 +178,7 @@ class OpenAIChat(pw.UDFAsync):
 
         kwargs = {**self.kwargs, **kwargs}
         api_key = kwargs.pop("api_key", None)
+
         client = openai_mod.AsyncOpenAI(api_key=api_key)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
         return ret.choices[0].message.content

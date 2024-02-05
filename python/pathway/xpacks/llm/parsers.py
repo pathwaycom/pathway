@@ -60,6 +60,7 @@ class ParseUnstructured(pw.UDFSync):
             raise ValueError(
                 f"Got {mode} for `mode`, but should be one of `{_valid_modes}`"
             )
+
         self.kwargs = dict(
             mode=mode,
             post_processors=post_processors or [],
