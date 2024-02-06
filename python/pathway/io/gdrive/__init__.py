@@ -35,6 +35,23 @@ DEFAULT_MIME_TYPE_MAPPING: dict[str, str] = {
 GDriveFile = NewType("GDriveFile", dict)
 
 
+def extend_metadata(metadata: GDriveFile) -> GDriveFile:
+    metadata = add_url(metadata)
+    metadata = add_path(metadata)
+    return metadata
+
+
+def add_url(metadata: GDriveFile) -> GDriveFile:
+    id = metadata["id"]
+    metadata["url"] = f"https://drive.google.com/file/d/{id}/"
+    return metadata
+
+
+def add_path(metadata: GDriveFile) -> GDriveFile:
+    metadata["path"] = metadata["name"]
+    return metadata
+
+
 class _GDriveClient:
     def __init__(
         self, credentials: ServiceCredentials, object_size_limit: int | None = None
@@ -80,6 +97,8 @@ class _GDriveClient:
             subdirs = [i for i in subitems if i["mimeType"] == MIME_TYPE_FOLDER]
             for subdir in subdirs:
                 files.extend(self._ls(subdir["id"]))
+
+            files = [extend_metadata(file) for file in files]
             return files
 
     def _filter_by_size(self, files: list[GDriveFile]) -> list[GDriveFile]:
