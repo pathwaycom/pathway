@@ -38,6 +38,12 @@ GDriveFile = NewType("GDriveFile", dict)
 def extend_metadata(metadata: GDriveFile) -> GDriveFile:
     metadata = add_url(metadata)
     metadata = add_path(metadata)
+    metadata = add_seen_at(metadata)
+    return metadata
+
+
+def add_seen_at(metadata: GDriveFile) -> GDriveFile:
+    metadata["seen_at"] = int(time.time())
     return metadata
 
 

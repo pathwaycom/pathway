@@ -199,12 +199,14 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         parsed_docs += parsed_docs.select(
             modified=pw.this.data["metadata"]["modified_at"].as_int(),
+            indexed=pw.this.data["metadata"]["seen_at"].as_int(),
             path=pw.this.data["metadata"]["path"].as_str(),
         )
 
         stats = parsed_docs.reduce(
             count=pw.reducers.count(),
             last_modified=pw.reducers.max(pw.this.modified),
+            last_indexed=pw.reducers.max(pw.this.indexed),
             paths=pw.reducers.tuple(pw.this.path),
         )
         return locals()
@@ -226,15 +228,23 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         # VectorStore statistics computation
         @pw.udf
-        def format_stats(counts, last_modified) -> pw.Json:
+        def format_stats(counts, last_modified, last_indexed) -> pw.Json:
             if counts is not None:
-                response = {"file_count": counts, "last_modified": last_modified}
+                response = {
+                    "file_count": counts,
+                    "last_modified": last_modified,
+                    "last_indexed": last_indexed,
+                }
             else:
-                response = {"file_count": 0, "last_modified": None}
+                response = {
+                    "file_count": 0,
+                    "last_modified": None,
+                    "last_indexed": None,
+                }
             return pw.Json(response)
 
         info_results = info_queries.join_left(stats, id=info_queries.id).select(
-            result=format_stats(stats.count, stats.last_modified)
+            result=format_stats(stats.count, stats.last_modified, stats.last_indexed)
         )
         return info_results
 
