@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::timestamp::current_unix_timestamp_secs;
+
 /// Basic metadata for a file-like object
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -21,6 +23,10 @@ pub struct SourceMetadata {
     // * S3 path is denoted as a String
     // * This object is directly serialized and passed into a connector row
     path: String,
+
+    // Record acquisition time. Required for the real-time indexer processes
+    // to determine the gap between finding file and indexing it.
+    seen_at: u64,
 }
 
 impl SourceMetadata {
@@ -34,6 +40,7 @@ impl SourceMetadata {
             modified_at,
             owner,
             path: path.to_string_lossy().to_string(),
+            seen_at: current_unix_timestamp_secs(),
         }
     }
 }
