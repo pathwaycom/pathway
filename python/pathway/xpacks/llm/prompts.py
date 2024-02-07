@@ -87,8 +87,9 @@ def prompt_query_rewrite_hyde(query: str) -> str:
 
 @pw.udf
 def prompt_query_rewrite(query: str, *additional_args: str) -> str:
-    prompt = f"""Given a question that will be used to retrieve similar documents for RAG application,.
+    prompt = f"""Given a question that will be used to retrieve similar documents for RAG application.
     Rewrite question to be better usable in retrieval search.
+    Use important entities, words that may be related to query and other entity names.
     Your response should be three queries based on the question provided, separated by comma.
     Question: `{query}`
     """
