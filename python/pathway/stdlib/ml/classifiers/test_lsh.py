@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from pathway import apply, apply_with_type, reducers, this
+from pathway import apply, reducers, this
 from pathway.debug import table_to_pandas
 from pathway.tests.utils import (
     T,
@@ -52,7 +52,7 @@ def test_lsh():
     bucketer = generate_euclidean_lsh_bucketer(d=3, M=5, L=L, A=3)
     flat_data = lsh(data, bucketer, origin_id="data_id")
     result = flat_data.groupby(flat_data.bucketing, flat_data.band).reduce(
-        data_ids=reducers.sorted_tuple(apply_with_type(int, int, flat_data.data_id))
+        data_ids=reducers.sorted_tuple(apply(int, flat_data.data_id))
     )
     # TODO change app apply_with_type(int, int, ...) to cast(int, ...) once
     # we have cast from Pointer to int

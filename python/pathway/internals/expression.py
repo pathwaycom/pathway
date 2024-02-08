@@ -768,10 +768,13 @@ class ApplyExpression(ColumnExpression):
         super().__init__()
         self._fun = fun
         if return_type is None:
-            try:
-                return_type = inspect.signature(self._fun).return_annotation
-            except ValueError:
-                return_type = Any
+            if inspect.isclass(self._fun):
+                return_type = self._fun
+            else:
+                try:
+                    return_type = inspect.signature(self._fun).return_annotation
+                except ValueError:
+                    return_type = Any
         self._return_type = dt.wrap(return_type)
 
         self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
