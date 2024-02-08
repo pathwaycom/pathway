@@ -32,6 +32,8 @@ def environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WASABI_S3_SECRET_ACCESS_KEY", "manul")
     monkeypatch.setenv("OVH_S3_ACCESS_KEY", "Otocolobus")
     monkeypatch.setenv("OVH_S3_SECRET_ACCESS_KEY", "manul")
+    monkeypatch.setenv("SLACK_CHANNEL_ID", "Otocolobus")
+    monkeypatch.setenv("SLACK_TOKEN", "manul")
 
 
 environment_stash_key = pytest.StashKey[dict[str, str]]()

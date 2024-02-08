@@ -18,6 +18,7 @@ from pathway.io import (
     redpanda,
     s3,
     s3_csv,
+    slack,
     sqlite,
 )
 from pathway.io._subscribe import OnChangeCallback, OnFinishCallback, subscribe
@@ -41,6 +42,7 @@ __all__ = [
     "OnChangeCallback",
     "OnFinishCallback",
     "redpanda",
+    "slack",
     "subscribe",
     "s3",
     "s3_csv",

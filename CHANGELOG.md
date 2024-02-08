@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Function `send_alerts` in `pw.io.slack` namespace for sending messages from a given column to a Slack channel.
+
 ### Fixed
 - `pw.io.xpacks.llm.VectorStoreServer` now correctly computes the last modification timestamp of an indexed document.
 
