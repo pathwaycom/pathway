@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from os import PathLike
 from pydoc import locate
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, get_type_hints
+from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
 from warnings import warn
 
 import numpy as np
@@ -269,6 +269,11 @@ class SchemaMetaclass(type):
             name: column.dtype for name, column in self.__columns__.items()
         }
         self.__types__ = {k: v.typehint for k, v in self.__dtypes__.items()}
+
+    def __call__(self) -> NoReturn:
+        raise TypeError(
+            "Schemas should not be called. Use `table.schema` not `table.schema()."
+        )
 
     def __or__(self, other: type[Schema]) -> type[Schema]:  # type: ignore
         return schema_add(self, other)  # type: ignore

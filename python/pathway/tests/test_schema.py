@@ -338,3 +338,13 @@ def test_schema_properties():
         pass
 
     assert D.universe_properties.append_only is True
+
+
+def test_schemas_not_to_be_called():
+    with pytest.raises(TypeError):
+        pw.Table.empty().schema()
+
+
+def test_advanced_schemas_not_to_be_called():
+    with pytest.raises(TypeError):
+        (pw.Table.empty().schema | pw.Table.empty().schema)()
