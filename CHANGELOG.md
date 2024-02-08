@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - Function `send_alerts` in `pw.io.slack` namespace for sending messages from a given column to a Slack channel.
+- `pw.io.http.rest_connector` now supports an additional argument `request_validator` that gives the ability to check payload and raise `HTTP 400` if necessary.
 
 ### Fixed
 - `pw.io.xpacks.llm.VectorStoreServer` now correctly computes the last modification timestamp of an indexed document.

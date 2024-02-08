@@ -297,6 +297,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         schema: type[pw.Schema],
         delete_completed_queries: bool,
         format: str = "raw",
+        request_validator: Callable | None = None,
     ) -> None:
         super().__init__()
         self._webserver = webserver
@@ -304,6 +305,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._schema = schema
         self._delete_completed_queries = delete_completed_queries
         self._format = format
+        self._request_validator = request_validator
 
         webserver._register_endpoint(route, self.handle, format, schema, methods)
 
@@ -326,6 +328,15 @@ class RestServerSubject(io.python.ConnectorSubject):
                     payload[param] = value
 
         self._verify_payload(payload)
+        if self._request_validator:
+            try:
+                validator_ret = self._request_validator(payload)
+                if validator_ret is not None:
+                    raise Exception(validator_ret)
+            except Exception as e:
+                logging.debug("Rejecting request with error %s", e)
+                raise web.HTTPBadRequest(reason=str(e))
+
         self._cast_types_to_schema(payload)
 
         event = asyncio.Event()
@@ -386,6 +397,7 @@ def rest_connector(
     autocommit_duration_ms=1500,
     keep_queries: bool | None = None,
     delete_completed_queries: bool | None = None,
+    request_validator: Callable | None = None,
 ) -> tuple[pw.Table, Callable]:
     """
     Runs a lightweight HTTP server and inputs a collection from the HTTP endpoint,
@@ -407,6 +419,9 @@ need to create only one instance of this class per single host-port pair;
         keep_queries: whether to keep queries after processing; defaults to False. [deprecated]
         delete_completed_queries: whether to send a deletion entry after the query is processed.
           Allows to remove it from the system if it is stored by operators such as ``join`` or ``groupby``;
+        request_validator: a callable that can verify requests. A return value of `None` accepts payload.
+          Any other returned value is treated as error and used as the response. Any exception is
+          caught and treated as validation failure.
 
     Returns:
         table: the table read;
@@ -511,6 +526,7 @@ with:
             schema=schema,
             delete_completed_queries=delete_completed_queries,
             format=format,
+            request_validator=request_validator,
         ),
         schema=schema,
         format="json",
