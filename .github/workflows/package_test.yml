@@ -113,7 +113,7 @@ jobs:
           if [[ "$RUNNER_NAME" == *mac* ]]; then
             export PYTEST_XDIST_AUTO_NUM_WORKERS=4
           fi
-          export PYTEST_ADDOPTS="--dist worksteal -n auto"
+          export PYTEST_ADDOPTS="--dist worksteal -n 2"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
 
   Notify_on_failure:
