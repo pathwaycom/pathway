@@ -50,7 +50,7 @@ jobs:
           echo "__version__ = ${DEV_VERSION}" > python/pathway/internals/version.py
 
       - name: Build package Ubuntu x86-x64
-        if: ${{ matrix.os == 'ubuntu-22.04'}}
+        if: ${{ matrix.os == 'ubuntu-22.04-4-cores'}}
         uses: PyO3/maturin-action@v1
         with:
           command: build
@@ -113,7 +113,7 @@ jobs:
           if [[ "$RUNNER_NAME" == *mac* ]]; then
             export PYTEST_XDIST_AUTO_NUM_WORKERS=4
           fi
-          export PYTEST_ADDOPTS="--dist worksteal -n 2"
+          export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
 
   Notify_on_failure:
