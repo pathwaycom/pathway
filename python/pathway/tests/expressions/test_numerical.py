@@ -1,7 +1,5 @@
 # Copyright © 2024 Pathway
 
-from typing import Optional
-
 import pytest
 
 import pathway as pw
@@ -127,12 +125,8 @@ def test_fill_na_optional_float():
         4     | nan
         5     | 5.0
         """
-    )
-    table = table.select(
-        v=pw.apply_with_type(
-            lambda x: x if x is None else float(x), Optional[float], pw.this.v
-        )
-    )
+    ).with_columns(v=pw.require(pw.apply(float, pw.this.v), pw.this.v))
+
     results = table.select(v_filled=table.v.num.fill_na(0))
     expected = table_from_markdown(
         """
