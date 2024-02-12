@@ -528,9 +528,10 @@ def table_transformer(
     locals: dict[str, Any] | None = None,
 ) -> Callable[P, T] | Callable[[Callable[P, T]], Callable[P, T]]:
     """
-    Decorator for marking that a function performs operations on Tables. As a consequence,
-    arguments and return value, which are annotated to have type pw.Table[S]
-    will be checked whether they indeed have schema S.
+    Marks a function that performs operations on Tables.
+
+    As a consequence, arguments and return value, which are annotated to have type pw.Table[S]
+    are checked whether they indeed have schema S.
 
     Args:
         allow_superset: if True, the columns of the table can be a superset of columns
