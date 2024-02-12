@@ -412,6 +412,10 @@ pub trait Writer: Send {
         Ok(())
     }
 
+    fn retriable(&self) -> bool {
+        false
+    }
+
     fn single_threaded(&self) -> bool {
         true
     }
@@ -2028,6 +2032,10 @@ impl Writer for KafkaWriter {
             }
         }
         Ok(())
+    }
+
+    fn retriable(&self) -> bool {
+        true
     }
 
     fn single_threaded(&self) -> bool {

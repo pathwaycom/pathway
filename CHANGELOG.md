@@ -12,6 +12,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - `pw.io.xpacks.llm.VectorStoreServer` now correctly computes the last modification timestamp of an indexed document.
 
+### Changed
+- `pw.io.kafka.write` now does retries when sending to the output topic fails.
+
 ## [0.8.0] - 2024-02-01
 
 ### Added

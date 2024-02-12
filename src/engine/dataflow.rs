@@ -67,6 +67,7 @@ use log::{info, warn};
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
 use pyo3::PyObject;
+use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::ToStream as _;
@@ -121,6 +122,11 @@ const YOLO: &[&str] = &[
     #[cfg(feature = "yolo-id64")]
     "id64",
 ];
+
+const OUTPUT_RETRIES: usize = 5;
+const RETRY_SLEEP_INITIAL: Duration = Duration::from_secs(1);
+const RETRY_SLEEP_BACKOFF_FACTOR: f64 = 1.2;
+const RETRY_JITTER: Duration = Duration::from_millis(800);
 
 #[derive(Clone, Debug)]
 struct ErrorReporter {
@@ -2861,10 +2867,32 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 // Ignore entries, which had been written before
                 continue;
             }
-            let formatted = data_formatter
-                .format(&key, &values, time, diff)
-                .map_err(DynError::from)?;
-            data_sink.write(formatted).map_err(DynError::from)?;
+
+            // TODO: provide a way to configure it individually per connector maybe?
+            let mut sleep_duration = RETRY_SLEEP_INITIAL;
+            let retries = if data_sink.retriable() {
+                OUTPUT_RETRIES
+            } else {
+                1
+            };
+            for attempt in 0..retries {
+                let formatted = data_formatter
+                    .format(&key, &values, time, diff)
+                    .map_err(DynError::from)?;
+                let write_result = data_sink.write(formatted);
+                if write_result.is_err() {
+                    if attempt == retries - 1 {
+                        // If this is the last attempt and the output has failed, fail
+                        // the whole computation
+                        write_result.map_err(DynError::from)?;
+                    }
+                    std::thread::sleep(sleep_duration);
+                    sleep_duration = sleep_duration.mul_f64(RETRY_SLEEP_BACKOFF_FACTOR)
+                        + thread_rng().gen_range(Duration::ZERO..RETRY_JITTER);
+                } else {
+                    break;
+                }
+            }
             stats.on_batch_entry_written();
         }
         stats.on_batch_finished();
