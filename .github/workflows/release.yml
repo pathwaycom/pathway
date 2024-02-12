@@ -163,7 +163,6 @@ jobs:
           source "${ENV_NAME}/bin/activate"
           WHEEL=(./wheels/pathway-*.whl)
           pip install --prefer-binary "${WHEEL}[tests]"
-          pip install llama_index
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway

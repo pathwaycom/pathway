@@ -53,6 +53,7 @@ tests = [
     "openapi_spec_validator",
     "openai >= 1.6",
     "litellm >= 1.0",
+    "llama_index",
     "tiktoken >= 0.5",
 ]
 
