@@ -25,17 +25,11 @@ enum TestedFormat {
     Json,
 }
 
-fn csv_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
+fn csv_reader_parser_pair(input_path: &str) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
-    let reader = CsvFilesystemReader::new(
-        input_path.to_path_buf(),
-        builder,
-        ConnectorMode::Static,
-        Some(1),
-        "*",
-    )
-    .unwrap();
+    let reader =
+        CsvFilesystemReader::new(input_path, builder, ConnectorMode::Static, Some(1), "*").unwrap();
     let parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
@@ -47,9 +41,9 @@ fn csv_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dyn
     (Box::new(reader), Box::new(parser))
 }
 
-fn json_reader_parser_pair(input_path: &Path) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
+fn json_reader_parser_pair(input_path: &str) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
     let reader = FilesystemReader::new(
-        input_path.to_path_buf(),
+        input_path,
         ConnectorMode::Static,
         Some(1),
         ReadMethod::ByLine,
@@ -74,8 +68,8 @@ fn full_cycle_read_kv(
     global_tracker: Option<&SharedWorkersPersistenceCoordinator>,
 ) -> FullReadResult {
     let (reader, mut parser) = match format {
-        TestedFormat::Csv => csv_reader_parser_pair(input_path),
-        TestedFormat::Json => json_reader_parser_pair(input_path),
+        TestedFormat::Csv => csv_reader_parser_pair(input_path.to_str().unwrap()),
+        TestedFormat::Json => json_reader_parser_pair(input_path.to_str().unwrap()),
     };
     full_cycle_read(reader, parser.as_mut(), persistent_storage, global_tracker)
 }

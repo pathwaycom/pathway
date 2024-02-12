@@ -2824,3 +2824,62 @@ def test_server_fail_on_duplicate_route():
             schema=InputSchema,
             delete_completed_queries=False,
         )
+
+
+def test_subdirectories(tmp_path: pathlib.Path):
+    nested_inputs_path = (
+        tmp_path / "nested_level_1" / "nested_level_2" / "nested_level_3"
+    )
+    os.makedirs(nested_inputs_path)
+    output_path = tmp_path / "output.json"
+    write_lines(nested_inputs_path / "a.txt", "a\nb\nc")
+
+    table = pw.io.plaintext.read(tmp_path / "nested_level_1", mode="static")
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    assert FileLinesNumberChecker(output_path, 3)()
+
+
+def test_glob_pattern(tmp_path: pathlib.Path):
+    nested_inputs_path = (
+        tmp_path / "nested_level_1" / "nested_level_2" / "nested_level_3"
+    )
+    os.makedirs(nested_inputs_path)
+    output_path = tmp_path / "output.json"
+    write_lines(nested_inputs_path / "a.txt", "a\nb\nc")
+    write_lines(nested_inputs_path / "b.txt", "d\ne\nf\ng")
+
+    table = pw.io.plaintext.read(tmp_path / "nested_level_1/**/b.txt", mode="static")
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    assert FileLinesNumberChecker(output_path, 4)()
+
+
+def test_glob_pattern_recurse_subdirs(tmp_path: pathlib.Path):
+    os.makedirs(tmp_path / "input" / "foo" / "level2")
+    write_lines(tmp_path / "input" / "foo" / "level2" / "a.txt", "a\nb\nc")
+    write_lines(tmp_path / "input" / "f1.txt", "d\ne\nf\ng")
+    write_lines(tmp_path / "input" / "bar.txt", "h\ni\nj\nk\nl")
+    output_path = tmp_path / "output.json"
+
+    table = pw.io.plaintext.read(tmp_path / "input/f*", mode="static")
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    assert FileLinesNumberChecker(output_path, 7)()
+
+
+def test_glob_pattern_nothing_matched(tmp_path: pathlib.Path):
+    os.makedirs(tmp_path / "input" / "foo" / ".level2")
+    write_lines(tmp_path / "input" / "foo" / ".level2" / ".a.txt", "a\nb\nc")
+    write_lines(tmp_path / "input" / "f1.txt", "d\ne\nf\ng")
+    write_lines(tmp_path / "input" / "bar.txt", "h\ni\nj\nk\nl")
+    output_path = tmp_path / "output.json"
+
+    table = pw.io.plaintext.read(tmp_path / "input/f", mode="static")
+    pw.io.jsonlines.write(table, output_path)
+    pw.run()
+
+    assert FileLinesNumberChecker(output_path, 0)()

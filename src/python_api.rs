@@ -3636,107 +3636,120 @@ impl DataStorage {
             .map(IntoPersistentId::into_persistent_id)
     }
 
+    fn construct_fs_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let storage = FilesystemReader::new(
+            self.path()?,
+            self.mode,
+            self.internal_persistent_id(),
+            self.read_method,
+            &self.object_pattern,
+        )
+        .map_err(|e| PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}")))?;
+        Ok((Box::new(storage), 1))
+    }
+
+    fn construct_s3_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
+        let storage = S3GenericReader::new(
+            self.s3_bucket(py)?,
+            deduced_path.unwrap_or(self.path()?.to_string()),
+            self.mode.is_polling_enabled(),
+            self.internal_persistent_id(),
+            self.read_method,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
+        Ok((Box::new(storage), 1))
+    }
+
+    fn construct_s3_csv_reader(
+        &self,
+        py: pyo3::Python,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
+        let storage = S3CsvReader::new(
+            self.s3_bucket(py)?,
+            deduced_path.unwrap_or(self.path()?.to_string()),
+            self.build_csv_parser_settings(py),
+            self.mode.is_polling_enabled(),
+            self.internal_persistent_id(),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
+        Ok((Box::new(storage), 1))
+    }
+
+    fn construct_csv_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let reader = CsvFilesystemReader::new(
+            self.path()?,
+            self.build_csv_parser_settings(py),
+            self.mode,
+            self.internal_persistent_id(),
+            &self.object_pattern,
+        )
+        .map_err(|e| {
+            PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))
+        })?;
+        Ok((Box::new(reader), 1))
+    }
+
+    fn construct_kafka_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let client_config = self.kafka_client_config()?;
+
+        let consumer: BaseConsumer = client_config
+            .create()
+            .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
+
+        let topic = self.kafka_topic()?;
+        consumer
+            .subscribe(&[topic])
+            .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
+
+        let reader = KafkaReader::new(consumer, topic.to_string(), self.internal_persistent_id());
+        Ok((Box::new(reader), self.parallel_readers.unwrap_or(256)))
+    }
+
+    fn construct_python_reader(
+        &self,
+        py: pyo3::Python,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let subject = self.python_subject.clone().ok_or_else(|| {
+            PyValueError::new_err("For Python connector, python_subject should be specified")
+        })?;
+
+        if subject.borrow(py).is_internal && self.persistent_id.is_some() {
+            return Err(PyValueError::new_err(
+                "Python connectors marked internal can't have persistent id",
+            ));
+        }
+
+        let reader = PythonReaderBuilder::new(subject, self.internal_persistent_id());
+        Ok((Box::new(reader), 1))
+    }
+
+    fn construct_sqlite_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let connection = SqliteConnection::open_with_flags(
+            self.path()?,
+            SqliteOpenFlags::SQLITE_OPEN_READ_ONLY | SqliteOpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to open Sqlite connection: {e}")))?;
+        let table_name = self.table_name.clone().ok_or_else(|| {
+            PyValueError::new_err("For Sqlite connector, table_name should be specified")
+        })?;
+        let column_names = self.column_names.clone().ok_or_else(|| {
+            PyValueError::new_err("For Sqlite connector, column_names should be specified")
+        })?;
+        let reader = SqliteReader::new(connection, table_name, column_names);
+        Ok((Box::new(reader), 1))
+    }
+
     fn construct_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
-            "fs" => {
-                let storage = FilesystemReader::new(
-                    self.path()?,
-                    self.mode,
-                    self.internal_persistent_id(),
-                    self.read_method,
-                    &self.object_pattern,
-                )
-                .map_err(|e| {
-                    PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}"))
-                })?;
-                Ok((Box::new(storage), 1))
-            }
-            "s3" => {
-                let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
-                let storage = S3GenericReader::new(
-                    self.s3_bucket(py)?,
-                    deduced_path.unwrap_or(self.path()?.to_string()),
-                    self.mode.is_polling_enabled(),
-                    self.internal_persistent_id(),
-                    self.read_method,
-                )
-                .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
-                Ok((Box::new(storage), 1))
-            }
-            "s3_csv" => {
-                let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
-                let storage = S3CsvReader::new(
-                    self.s3_bucket(py)?,
-                    deduced_path.unwrap_or(self.path()?.to_string()),
-                    self.build_csv_parser_settings(py),
-                    self.mode.is_polling_enabled(),
-                    self.internal_persistent_id(),
-                )
-                .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
-                Ok((Box::new(storage), 1))
-            }
-            "csv" => {
-                let reader = CsvFilesystemReader::new(
-                    self.path()?,
-                    self.build_csv_parser_settings(py),
-                    self.mode,
-                    self.internal_persistent_id(),
-                    &self.object_pattern,
-                )
-                .map_err(|e| {
-                    PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))
-                })?;
-                Ok((Box::new(reader), 1))
-            }
-            "kafka" => {
-                let client_config = self.kafka_client_config()?;
-
-                let consumer: BaseConsumer = client_config.create().map_err(|e| {
-                    PyValueError::new_err(format!("Creating Kafka consumer failed: {e}"))
-                })?;
-
-                let topic = self.kafka_topic()?;
-                consumer.subscribe(&[topic]).map_err(|e| {
-                    PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}"))
-                })?;
-
-                let reader =
-                    KafkaReader::new(consumer, topic.to_string(), self.internal_persistent_id());
-                Ok((Box::new(reader), self.parallel_readers.unwrap_or(256)))
-            }
-            "python" => {
-                let subject = self.python_subject.clone().ok_or_else(|| {
-                    PyValueError::new_err(
-                        "For Python connector, python_subject should be specified",
-                    )
-                })?;
-
-                if subject.borrow(py).is_internal && self.persistent_id.is_some() {
-                    return Err(PyValueError::new_err(
-                        "Python connectors marked internal can't have persistent id",
-                    ));
-                }
-
-                let reader = PythonReaderBuilder::new(subject, self.internal_persistent_id());
-                Ok((Box::new(reader), 1))
-            }
-            "sqlite" => {
-                let connection = SqliteConnection::open_with_flags(
-                    self.path()?,
-                    SqliteOpenFlags::SQLITE_OPEN_READ_ONLY | SqliteOpenFlags::SQLITE_OPEN_NO_MUTEX,
-                )
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to open Sqlite connection: {e}"))
-                })?;
-                let table_name = self.table_name.clone().ok_or_else(|| {
-                    PyValueError::new_err("For Sqlite connector, table_name should be specified")
-                })?;
-                let column_names = self.column_names.clone().ok_or_else(|| {
-                    PyValueError::new_err("For Sqlite connector, column_names should be specified")
-                })?;
-                let reader = SqliteReader::new(connection, table_name, column_names);
-                Ok((Box::new(reader), 1))
-            }
+            "fs" => self.construct_fs_reader(),
+            "s3" => self.construct_s3_reader(py),
+            "s3_csv" => self.construct_s3_csv_reader(py),
+            "csv" => self.construct_csv_reader(py),
+            "kafka" => self.construct_kafka_reader(),
+            "python" => self.construct_python_reader(py),
+            "sqlite" => self.construct_sqlite_reader(),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
