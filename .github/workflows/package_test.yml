@@ -50,7 +50,7 @@ jobs:
           echo "__version__ = ${DEV_VERSION}" > python/pathway/internals/version.py
 
       - name: Build package Ubuntu x86-x64
-        if: ${{ matrix.os == 'ubuntu-22.04-4-cores'}}
+        if: ${{ matrix.os == 'ubuntu-22.04'}}
         uses: PyO3/maturin-action@v1
         with:
           command: build
