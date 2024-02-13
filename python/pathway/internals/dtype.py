@@ -481,6 +481,12 @@ def wrap(input_type) -> DType:
     assert input_type != Array
     assert input_type != List
     assert input_type != Json
+
+    from pathway.internals.schema import ColumnSchema
+
+    if isinstance(input_type, ColumnSchema):
+        return input_type.dtype
+
     if isinstance(input_type, DType):
         return input_type
     if typing.get_origin(input_type) == np.dtype:
@@ -548,7 +554,7 @@ def wrap(input_type) -> DType:
         if dims == typing.Any:
             return Array(n_dim=None, wrapped=wrapped)
         return Array(n_dim=len(typing.get_args(dims)), wrapped=wrapped)
-    elif issubclass(input_type, Enum):
+    elif isinstance(input_type, type) and issubclass(input_type, Enum):
         return ANY
     elif input_type == datetime.datetime:
         raise TypeError(

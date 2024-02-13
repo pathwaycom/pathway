@@ -1,5 +1,4 @@
 # Copyright © 2024 Pathway
-
 from __future__ import annotations
 
 import warnings
@@ -7,6 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import overload
 
 import pathway.internals as pw
+from pathway.internals import dtype as dt
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
 
@@ -142,6 +142,73 @@ def unpack_col(
     result = column.table.select(**kw)
     if schema is not None:
         result = result.update_types(**schema.typehints())
+    return result
+
+
+@check_arg_types
+@trace_user_frame
+def unpack_col_dict(
+    column: pw.ColumnReference,
+    schema: type[pw.Schema],
+) -> pw.Table:
+    """Unpacks columns from a json object
+
+    Input:
+    - column: Column expression of column containing some pw.Json with an object
+    - schema: Schema for columns to extract
+
+    Output:
+    - Table with columns given by the schema
+
+    Example:
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_rows(
+    ...     schema=pw.schema_from_types(data=pw.Json),
+    ...     rows=[
+    ...         ({"field_a": 13, "field_b": "foo", "field_c": False},),
+    ...         ({"field_a": 17, "field_c": True, "field_d": 3.4},)
+    ...     ]
+    ... )
+    >>> class DataSchema(pw.Schema):
+    ...     field_a: int
+    ...     field_b: str | None
+    ...     field_c: bool
+    ...     field_d: float | None
+    >>> t2 = pw.utils.col.unpack_col_dict(t.data, schema=DataSchema)
+    >>> pw.debug.compute_and_print(t2, include_id=False)
+    field_a | field_b | field_c | field_d
+    13      | foo     | False   |
+    17      |         | True    | 3.4
+    """
+    typehints = schema._dtypes()
+
+    def _convert_from_json(name: str, col: pw.ColumnExpression):
+        _type = typehints[name]
+        is_optional = isinstance(_type, dt.Optional)
+        _type = dt.unoptionalize(_type)
+        result = col
+        if _type == dt.BOOL:
+            result = col.as_bool()
+        elif _type == dt.FLOAT:
+            result = col.as_float()
+        elif _type == dt.INT:
+            result = col.as_int()
+        elif _type == dt.STR:
+            result = col.as_str()
+        elif _type == dt.JSON:
+            result = col
+        else:
+            raise TypeError(f"Unsupported conversion from pw.Json to {typehints[name]}")
+        if not is_optional:
+            result = pw.unwrap(result)
+        return result
+
+    colrefs = [pw.this[column_name] for column_name in schema.column_names()]
+    kw = {
+        colref.name: _convert_from_json(colref.name, column.get(colref.name))
+        for colref in colrefs
+    }
+    result = column.table.select(**kw).update_types(**schema)
     return result
 
 
