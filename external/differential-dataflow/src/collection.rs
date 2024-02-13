@@ -531,7 +531,6 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
           R: ::ExchangeData+Hashable,
           G::Timestamp: Lattice+Ord,
     {
-        use operators::consolidate::Consolidate;
         self.consolidate()
             .inspect(|x| panic!("Assertion failed: non-empty collection: {:?}", x));
     }
@@ -545,6 +544,7 @@ impl<G: Scope, D: Data, R: Semigroup> Collection<G, D, R> where G::Timestamp: Da
 use timely::dataflow::scopes::ScopeParent;
 use timely::progress::timestamp::Refines;
 
+/// Methods requiring a nested scope.
 impl<'a, G: Scope, T: Timestamp, D: Data, R: Semigroup> Collection<Child<'a, G, T>, D, R>
 where
     T: Refines<<G as ScopeParent>::Timestamp>,
@@ -582,6 +582,7 @@ where
     }
 }
 
+/// Methods requiring a region as the scope.
 impl<'a, G: Scope, D: Data, R: Semigroup> Collection<Child<'a, G, G::Timestamp>, D, R>
 {
     /// Returns the value of a Collection from a nested region to its containing scope.
@@ -595,6 +596,7 @@ impl<'a, G: Scope, D: Data, R: Semigroup> Collection<Child<'a, G, G::Timestamp>,
     }
 }
 
+/// Methods requiring an Abelian difference, to support negation.
 impl<G: Scope, D: Data, R: Abelian> Collection<G, D, R> where G::Timestamp: Data {
     /// Creates a new collection whose counts are the negation of those in the input.
     ///

@@ -214,7 +214,7 @@ where
 ///
 /// This method is used by the various `join` implementations, but it can also be used
 /// directly in the event that one has a handle to an `Arranged<G,T>`, perhaps because
-/// the arrangement is available for re-use, or from the output of a `group` operator.
+/// the arrangement is available for re-use, or from the output of a `reduce` operator.
 pub trait JoinCore<G: Scope, K: 'static, V: 'static, R: Semigroup> where G::Timestamp: Lattice+Ord {
 
     /// Joins two arranged collections with the same key type.

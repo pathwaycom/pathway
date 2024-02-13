@@ -898,3 +898,47 @@ pub mod logging {
         fn from(v: TargetUpdate) -> TrackerEvent { TrackerEvent::TargetUpdate(v) }
     }
 }
+
+// The Drop implementation for `Tracker` makes sure that reachability logging is correct for
+// prematurely dropped dataflows. At the moment, this is only possible through `drop_dataflow`,
+// because in all other cases the tracker stays alive while it has outstanding work, leaving no
+// remaining work for this Drop implementation.
+impl<T: Timestamp> Drop for Tracker<T> {
+    fn drop(&mut self) {
+        let logger = if let Some(logger) = &mut self.logger {
+            logger
+        } else {
+            // No cleanup necessary when there is no logger.
+            return;
+        };
+
+        // Retract pending data that `propagate_all` would normally log.
+        for (index, per_operator) in self.per_operator.iter_mut().enumerate() {
+            let target_changes = per_operator.targets
+                .iter_mut()
+                .enumerate()
+                .flat_map(|(port, target)| {
+                    target.pointstamps
+                        .updates()
+                        .map(move |(time, diff)| (index, port, time.clone(), -diff))
+                })
+                .collect::<Vec<_>>();
+            if !target_changes.is_empty() {
+                logger.log_target_updates(Box::new(target_changes));
+            }
+
+            let source_changes = per_operator.sources
+                .iter_mut()
+                .enumerate()
+                .flat_map(|(port, source)| {
+                    source.pointstamps
+                        .updates()
+                        .map(move |(time, diff)| (index, port, time.clone(), -diff))
+                })
+                .collect::<Vec<_>>();
+            if !source_changes.is_empty() {
+                logger.log_source_updates(Box::new(source_changes));
+            }
+        }
+    }
+}

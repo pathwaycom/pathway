@@ -239,11 +239,11 @@ where
     }
 }
 
-/// Extension trait for the `group_arranged` differential dataflow method.
+/// Extension trait for the `reduce_core` differential dataflow method.
 pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestamp: Lattice+Ord {
-    /// Applies `group` to arranged data, and returns an arrangement of output data.
+    /// Applies `reduce` to arranged data, and returns an arrangement of output data.
     ///
-    /// This method is used by the more ergonomic `group`, `distinct`, and `count` methods, although
+    /// This method is used by the more ergonomic `reduce`, `distinct`, and `count` methods, although
     /// it can be very useful if one needs to manually attach and re-use existing arranged collections.
     ///
     /// # Examples

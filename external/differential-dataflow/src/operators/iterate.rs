@@ -52,7 +52,7 @@ pub trait Iterate<G: Scope, D: Data, R: Semigroup> {
     /// Importantly, this method does not automatically consolidate results.
     /// It may be important to conclude with `consolidate()` to ensure that
     /// logically empty collections that contain cancelling records do not
-    /// result in non-termination. Operators like `group`, `distinct`, and
+    /// result in non-termination. Operators like `reduce`, `distinct`, and
     /// `count` also perform consolidation, and are safe to conclude with.
     ///
     /// # Examples
@@ -63,7 +63,6 @@ pub trait Iterate<G: Scope, D: Data, R: Semigroup> {
     ///
     /// use differential_dataflow::input::Input;
     /// use differential_dataflow::operators::Iterate;
-    /// use differential_dataflow::operators::Consolidate;
     ///
     /// fn main() {
     ///     ::timely::example(|scope| {
@@ -145,7 +144,6 @@ impl<G: Scope, D: Ord+Data+Debug, R: Semigroup> Iterate<G, D, R> for G {
 ///
 /// use differential_dataflow::input::Input;
 /// use differential_dataflow::operators::iterate::Variable;
-/// use differential_dataflow::operators::Consolidate;
 ///
 /// fn main() {
 ///     ::timely::example(|scope| {

@@ -105,6 +105,25 @@ impl<T: Columnation> TimelyStack<T> {
     pub unsafe fn local(&mut self) -> &mut [T] {
         &mut self.local[..]
     }
+
+    /// Estimate the memory capacity in bytes.
+    #[inline]
+    pub fn heap_size(&self, mut callback: impl FnMut(usize, usize)) {
+        let size_of = std::mem::size_of::<T>();
+        callback(self.local.len() * size_of, self.local.capacity() * size_of);
+        self.inner.heap_size(callback);
+    }
+
+    /// Estimate the consumed memory capacity in bytes, summing both used and total capacity.
+    #[inline]
+    pub fn summed_heap_size(&self) -> (usize, usize) {
+        let (mut length, mut capacity) = (0, 0);
+        self.heap_size(|len, cap| {
+            length += len;
+            capacity += cap
+        });
+        (length, capacity)
+    }
 }
 
 impl<A: Columnation, B: Columnation> TimelyStack<(A, B)> {

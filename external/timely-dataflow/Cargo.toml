@@ -3,10 +3,8 @@ members = [
     "bytes",
     "communication",
     "container",
-    "kafkaesque",
     "logging",
     "timely",
-    "experiments"
 ]
 
 [profile.release]

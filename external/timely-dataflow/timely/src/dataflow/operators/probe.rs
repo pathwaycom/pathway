@@ -76,7 +76,7 @@ pub trait Probe<G: Scope, D: Container> {
     ///     }
     /// }).unwrap();
     /// ```
-    fn probe_with(&self, handle: &mut Handle<G::Timestamp>) -> StreamCore<G, D>;
+    fn probe_with(&self, handle: &Handle<G::Timestamp>) -> StreamCore<G, D>;
 }
 
 impl<G: Scope, D: Container> Probe<G, D> for StreamCore<G, D> {
@@ -87,14 +87,14 @@ impl<G: Scope, D: Container> Probe<G, D> for StreamCore<G, D> {
         self.probe_with(&mut handle);
         handle
     }
-    fn probe_with(&self, handle: &mut Handle<G::Timestamp>) -> StreamCore<G, D> {
+    fn probe_with(&self, handle: &Handle<G::Timestamp>) -> StreamCore<G, D> {
 
         let mut builder = OperatorBuilder::new("Probe".to_owned(), self.scope());
         let mut input = PullCounter::new(builder.new_input(self, Pipeline));
         let (tee, stream) = builder.new_output();
         let mut output = PushBuffer::new(PushCounter::new(tee));
 
-        let shared_frontier = handle.frontier.clone();
+        let shared_frontier = Rc::downgrade(&handle.frontier);
         let mut started = false;
 
         let mut vector = Default::default();
@@ -103,8 +103,10 @@ impl<G: Scope, D: Container> Probe<G, D> for StreamCore<G, D> {
             move |progress| {
 
                 // surface all frontier changes to the shared frontier.
-                let mut borrow = shared_frontier.borrow_mut();
-                borrow.update_iter(progress.frontiers[0].drain());
+                if let Some(shared_frontier) = shared_frontier.upgrade() {
+                    let mut borrow = shared_frontier.borrow_mut();
+                    borrow.update_iter(progress.frontiers[0].drain());
+                }
 
                 if !started {
                     // discard initial capability.

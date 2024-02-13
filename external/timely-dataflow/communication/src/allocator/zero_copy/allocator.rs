@@ -10,7 +10,6 @@ use crate::networking::MessageHeader;
 
 use crate::{Allocate, Message, Data, Push, Pull};
 use crate::allocator::AllocateBuilder;
-use crate::allocator::Event;
 use crate::allocator::canary::Canary;
 
 use super::bytes_exchange::{BytesPull, SendEndpoint, MergeQueue};
@@ -229,7 +228,7 @@ impl<A: Allocate> Allocate for TcpAllocator<A> {
 
                     // Increment message count for channel.
                     // Safe to do this even if the channel has been dropped.
-                    events.push_back((header.channel, Event::Pushed(1)));
+                    events.push(header.channel);
 
                     // Ensure that a queue exists.
                     match self.to_local.entry(header.channel) {
@@ -269,7 +268,7 @@ impl<A: Allocate> Allocate for TcpAllocator<A> {
         //     }
         // }
     }
-    fn events(&self) -> &Rc<RefCell<VecDeque<(usize, Event)>>> {
+    fn events(&self) -> &Rc<RefCell<Vec<usize>>> {
         self.inner.events()
     }
     fn await_events(&self, duration: Option<std::time::Duration>) {

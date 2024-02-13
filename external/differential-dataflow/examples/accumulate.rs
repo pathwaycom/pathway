@@ -5,7 +5,6 @@ extern crate differential_dataflow;
 use rand::{Rng, SeedableRng, StdRng};
 
 use differential_dataflow::input::Input;
-use differential_dataflow::operators::Consolidate;
 
 fn main() {
 

@@ -1,14 +1,12 @@
 //! Parking and unparking timely fibers.
 
 use std::rc::Rc;
-use std::sync::Arc;
 use std::cell::RefCell;
 use std::thread::Thread;
 use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 use std::cmp::Reverse;
 use crossbeam_channel::{Sender, Receiver};
-use futures_util::task::ArcWake;
 
 /// Methods required to act as a timely scheduler.
 ///
@@ -271,12 +269,6 @@ impl SyncActivator {
     /// Activates the associated path and unparks the associated worker thread.
     pub fn activate(&self) -> Result<(), SyncActivationError> {
         self.queue.activate(self.path.clone())
-    }
-}
-
-impl ArcWake for SyncActivator {
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        arc_self.activate().unwrap();
     }
 }
 

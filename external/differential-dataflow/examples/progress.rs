@@ -204,7 +204,7 @@ where
 {
     // Retain node connections along "default" timestamp summaries.
     let nodes = nodes.flat_map(|(target, source, summary)| {
-        if summary != Default::default() {
+        if summary == Default::default() {
             Some((Location::from(target), Location::from(source)))
         }
         else {

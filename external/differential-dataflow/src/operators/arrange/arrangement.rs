@@ -4,7 +4,7 @@
 //! structure, provides access to both an indexed form of accepted updates as well as a stream of
 //! batches of newly arranged updates.
 //!
-//! Several operators (`join`, `group`, and `cogroup`, among others) are implemented against `Arranged`,
+//! Several operators (`join`, `reduce`, and `count`, among others) are implemented against `Arranged`,
 //! and can be applied directly to arranged data instead of the collection. Internally, the operators
 //! will borrow the shared state, and listen on the timely stream for shared batches of data. The
 //! resources to index the collection---communication, computation, and memory---are spent only once,

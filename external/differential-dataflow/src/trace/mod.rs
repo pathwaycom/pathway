@@ -160,6 +160,7 @@ pub trait TraceReader {
     /// Reads the upper frontier of committed times.
     ///
     ///
+    #[inline]
     fn read_upper(&mut self, target: &mut Antichain<Self::Time>)
     where
         Self::Time: Timestamp,

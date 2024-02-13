@@ -1,7 +1,7 @@
 //! Differential dataflow is a high-throughput, low-latency data-parallel programming framework.
 //!
 //! Differential dataflow programs are written in a collection-oriented style, where you transform
-//! collections of records using traditional operations like `map`, `filter`, `join`, and `group_by`.
+//! collections of records using traditional operations like `map`, `filter`, `join`, and `reduce`.
 //! Differential dataflow also includes the less traditional operation `iterate`, which allows you
 //! to repeatedly apply differential dataflow transformations to collections.
 //!
@@ -109,6 +109,7 @@ pub mod lattice;
 pub mod trace;
 pub mod input;
 pub mod difference;
+pub mod dynamic;
 pub mod collection;
 pub mod logging;
 pub mod consolidation;

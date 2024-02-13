@@ -61,12 +61,14 @@ where
         }
     }
     /// Replaces elements of `lower` with those of `upper`.
+    #[inline]
     pub fn adjust_logical_compaction(&mut self, lower: AntichainRef<Tr::Time>, upper: AntichainRef<Tr::Time>) {
         self.logical_compaction.update_iter(upper.iter().cloned().map(|t| (t,1)));
         self.logical_compaction.update_iter(lower.iter().cloned().map(|t| (t,-1)));
         self.trace.set_logical_compaction(self.logical_compaction.frontier());
     }
     /// Replaces elements of `lower` with those of `upper`.
+    #[inline]
     pub fn adjust_physical_compaction(&mut self, lower: AntichainRef<Tr::Time>, upper: AntichainRef<Tr::Time>) {
         self.physical_compaction.update_iter(upper.iter().cloned().map(|t| (t,1)));
         self.physical_compaction.update_iter(lower.iter().cloned().map(|t| (t,-1)));

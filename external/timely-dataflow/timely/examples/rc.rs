@@ -8,7 +8,7 @@ use abomonation::Abomonation;
 
 #[derive(Debug, Clone)]
 pub struct Test {
-    field: Rc<usize>,
+    _field: Rc<usize>,
 }
 
 impl Abomonation for Test {
@@ -32,7 +32,7 @@ fn main() {
 
         // introduce data and watch!
         for round in 0..10 {
-            input.send(Test { field: Rc::new(round) } );
+            input.send(Test { _field: Rc::new(round) } );
             input.advance_to(round + 1);
             worker.step_while(|| probe.less_than(input.time()));
         }

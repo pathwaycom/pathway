@@ -56,7 +56,7 @@ use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::operators::iterate::Variable;
 use differential_dataflow::operators::reduce::{Reduce, ReduceCore};
-use differential_dataflow::operators::{Consolidate, JoinCore};
+use differential_dataflow::operators::JoinCore;
 use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpine};
 use differential_dataflow::Collection;
 use differential_dataflow::{AsCollection as _, Data};
@@ -3024,7 +3024,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                     };
                 }
             })
-            .probe_with(&mut self.output_probe);
+            .probe_with(&self.output_probe);
 
         Ok(())
     }
@@ -3104,7 +3104,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                     }
                 }
             })
-            .probe_with(&mut self.output_probe);
+            .probe_with(&self.output_probe);
 
         Ok(())
     }

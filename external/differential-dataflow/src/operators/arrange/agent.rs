@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use timely::dataflow::Scope;
-use timely::dataflow::operators::generic::source;
+use timely::dataflow::operators::generic::{OperatorInfo, source};
 use timely::progress::Timestamp;
 use timely::progress::{Antichain, frontier::AntichainRef};
 use timely::dataflow::operators::CapabilitySet;
@@ -38,7 +38,7 @@ where
     physical_compaction: Antichain<Tr::Time>,
     temp_antichain: Antichain<Tr::Time>,
 
-    operator: ::timely::dataflow::operators::generic::OperatorInfo,
+    operator: OperatorInfo,
     logging: Option<::logging::Logger>,
 }
 
@@ -89,7 +89,7 @@ where
     Tr::Time: Timestamp+Lattice,
 {
     /// Creates a new agent from a trace reader.
-    pub fn new(trace: Tr, operator: ::timely::dataflow::operators::generic::OperatorInfo, logging: Option<::logging::Logger>) -> (Self, TraceWriter<Tr>)
+    pub fn new(trace: Tr, operator: OperatorInfo, logging: Option<::logging::Logger>) -> (Self, TraceWriter<Tr>)
     where
         Tr: Trace,
         Tr::Batch: Batch,
@@ -154,6 +154,11 @@ where
         }
         reference.0.activate();
         reference
+    }
+
+    /// The [OperatorInfo] of the underlying Timely operator
+    pub fn operator(&self) -> &OperatorInfo {
+        &self.operator
     }
 }
 

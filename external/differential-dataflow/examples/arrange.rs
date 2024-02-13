@@ -14,7 +14,6 @@ use differential_dataflow::operators::arrange::ArrangeByKey;
 use differential_dataflow::operators::reduce::Reduce;
 use differential_dataflow::operators::join::JoinCore;
 use differential_dataflow::operators::Iterate;
-use differential_dataflow::operators::Consolidate;
 
 fn main() {
 

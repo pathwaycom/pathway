@@ -59,6 +59,15 @@ implement_total!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize,
 pub use product::Product;
 /// A pair of timestamps, partially ordered by the product order.
 mod product {
+    use std::fmt::{Formatter, Error, Debug};
+
+    #[cfg(feature = "columnation")]
+    use crate::container::columnation::{Columnation, Region};
+    use crate::order::{Empty, TotalOrder};
+    use crate::progress::Timestamp;
+    use crate::progress::timestamp::PathSummary;
+    use crate::progress::timestamp::Refines;
+
     /// A nested pair of timestamps, one outer and one inner.
     ///
     /// We use `Product` rather than `(TOuter, TInner)` so that we can derive our own `PartialOrder`,
@@ -82,7 +91,6 @@ mod product {
     }
 
     // Debug implementation to avoid seeing fully qualified path names.
-    use std::fmt::{Formatter, Error, Debug};
     impl<TOuter: Debug, TInner: Debug> Debug for Product<TOuter, TInner> {
         fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
             f.write_str(&format!("({:?}, {:?})", self.outer, self.inner))
@@ -97,13 +105,11 @@ mod product {
         }
     }
 
-    use crate::progress::Timestamp;
     impl<TOuter: Timestamp, TInner: Timestamp> Timestamp for Product<TOuter, TInner> {
         type Summary = Product<TOuter::Summary, TInner::Summary>;
         fn minimum() -> Self { Self { outer: TOuter::minimum(), inner: TInner::minimum() }}
     }
 
-    use crate::progress::timestamp::PathSummary;
     impl<TOuter: Timestamp, TInner: Timestamp> PathSummary<Product<TOuter, TInner>> for Product<TOuter::Summary, TInner::Summary> {
         #[inline]
         fn results_in(&self, product: &Product<TOuter, TInner>) -> Option<Product<TOuter, TInner>> {
@@ -123,7 +129,6 @@ mod product {
         }
     }
 
-    use crate::progress::timestamp::Refines;
     impl<TOuter: Timestamp, TInner: Timestamp> Refines<TOuter> for Product<TOuter, TInner> {
         fn to_inner(other: TOuter) -> Self {
             Product::new(other, TInner::minimum())
@@ -136,9 +141,52 @@ mod product {
         }
     }
 
-    use super::{Empty, TotalOrder};
     impl<T1: Empty, T2: Empty> Empty for Product<T1, T2> { }
     impl<T1, T2> TotalOrder for Product<T1, T2> where T1: Empty, T2: TotalOrder { }
+
+    #[cfg(feature = "columnation")]
+    impl<T1: Columnation, T2: Columnation> Columnation for Product<T1, T2> {
+        type InnerRegion = ProductRegion<T1::InnerRegion, T2::InnerRegion>;
+    }
+
+    #[cfg(feature = "columnation")]
+    #[derive(Default)]
+    pub struct ProductRegion<T1, T2> {
+        outer_region: T1,
+        inner_region: T2,
+    }
+
+    #[cfg(feature = "columnation")]
+    impl<T1: Region, T2: Region> Region for ProductRegion<T1, T2> {
+        type Item = Product<T1::Item, T2::Item>;
+
+        #[inline]
+        unsafe fn copy(&mut self, item: &Self::Item) -> Self::Item {
+            Product { outer: self.outer_region.copy(&item.outer), inner: self.inner_region.copy(&item.inner) }
+        }
+
+        fn clear(&mut self) {
+            self.outer_region.clear();
+            self.inner_region.clear();
+        }
+
+        fn reserve_items<'a, I>(&mut self, items1: I) where Self: 'a, I: Iterator<Item=&'a Self::Item> + Clone {
+            let items2 = items1.clone();
+            self.outer_region.reserve_items(items1.map(|x| &x.outer));
+            self.inner_region.reserve_items(items2.map(|x| &x.inner))
+        }
+
+        fn reserve_regions<'a, I>(&mut self, regions1: I) where Self: 'a, I: Iterator<Item=&'a Self> + Clone {
+            let regions2 = regions1.clone();
+            self.outer_region.reserve_regions(regions1.map(|r| &r.outer_region));
+            self.inner_region.reserve_regions(regions2.map(|r| &r.inner_region));
+        }
+
+        fn heap_size(&self, mut callback: impl FnMut(usize, usize)) {
+            self.outer_region.heap_size(&mut callback);
+            self.inner_region.heap_size(callback);
+        }
+    }
 }
 
 /// Rust tuple ordered by the lexicographic order.
@@ -179,6 +227,19 @@ mod tuple {
                     self.1.followed_by(inner)
                         .map(|inner| (outer, inner))
                 )
+        }
+    }
+
+    use crate::progress::timestamp::Refines;
+    impl<TOuter: Timestamp, TInner: Timestamp> Refines<TOuter> for (TOuter, TInner) {
+        fn to_inner(other: TOuter) -> Self {
+            (other, TInner::minimum())
+        }
+        fn to_outer(self: (TOuter, TInner)) -> TOuter {
+            self.0
+        }
+        fn summarize(path: <Self as Timestamp>::Summary) -> <TOuter as Timestamp>::Summary {
+            path.0
         }
     }
 

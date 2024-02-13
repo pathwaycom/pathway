@@ -10,10 +10,18 @@ use timely::dataflow::Scope;
 
 use ::{Collection, ExchangeData, Hashable};
 use ::difference::Semigroup;
-use operators::arrange::arrangement::Arrange;
 
-/// An extension method for consolidating weighted streams.
-pub trait Consolidate<D: ExchangeData+Hashable> : Sized {
+use Data;
+use lattice::Lattice;
+
+/// Methods which require data be arrangeable.
+impl<G, D, R> Collection<G, D, R>
+where
+    G: Scope,
+    G::Timestamp: Data+Lattice,
+    D: ExchangeData+Hashable,
+    R: Semigroup+ExchangeData,
+{
     /// Aggregates the weights of equal records into at most one record.
     ///
     /// This method uses the type `D`'s `hashed()` method to partition the data. The data are
@@ -26,7 +34,6 @@ pub trait Consolidate<D: ExchangeData+Hashable> : Sized {
     /// extern crate differential_dataflow;
     ///
     /// use differential_dataflow::input::Input;
-    /// use differential_dataflow::operators::Consolidate;
     ///
     /// fn main() {
     ///     ::timely::example(|scope| {
@@ -40,30 +47,23 @@ pub trait Consolidate<D: ExchangeData+Hashable> : Sized {
     ///     });
     /// }
     /// ```
-    fn consolidate(&self) -> Self {
-        self.consolidate_named("Consolidate")
+    pub fn consolidate(&self) -> Self {
+        use trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
+        self.consolidate_named::<DefaultKeyTrace<_,_,_>>("Consolidate")
     }
 
-    /// As `consolidate` but with the ability to name the operator.
-    fn consolidate_named(&self, name: &str) -> Self;
-}
-
-impl<G: Scope, D, R> Consolidate<D> for Collection<G, D, R>
-where
-    D: ExchangeData+Hashable,
-    R: ExchangeData+Semigroup,
-    G::Timestamp: ::lattice::Lattice+Ord,
- {
-    fn consolidate_named(&self, name: &str) -> Self {
-        use trace::implementations::ord::OrdKeySpine as DefaultKeyTrace;
+    /// As `consolidate` but with the ability to name the operator and specify the trace type.
+    pub fn consolidate_named<Tr>(&self, name: &str) -> Self
+    where
+        Tr: crate::trace::Trace+crate::trace::TraceReader<Key=D,Val=(),Time=G::Timestamp,R=R>+'static,
+        Tr::Batch: crate::trace::Batch,
+    {
+        use operators::arrange::arrangement::Arrange;
         self.map(|k| (k, ()))
-            .arrange_named::<DefaultKeyTrace<_,_,_>>(name)
+            .arrange_named::<Tr>(name)
             .as_collection(|d: &D, _| d.clone())
     }
-}
 
-/// An extension method for consolidating weighted streams.
-pub trait ConsolidateStream<D: ExchangeData+Hashable> {
     /// Aggregates the weights of equal records.
     ///
     /// Unlike `consolidate`, this method does not exchange data and does not
@@ -79,7 +79,6 @@ pub trait ConsolidateStream<D: ExchangeData+Hashable> {
     /// extern crate differential_dataflow;
     ///
     /// use differential_dataflow::input::Input;
-    /// use differential_dataflow::operators::consolidate::ConsolidateStream;
     ///
     /// fn main() {
     ///     ::timely::example(|scope| {
@@ -93,16 +92,7 @@ pub trait ConsolidateStream<D: ExchangeData+Hashable> {
     ///     });
     /// }
     /// ```
-    fn consolidate_stream(&self) -> Self;
-}
-
-impl<G: Scope, D, R> ConsolidateStream<D> for Collection<G, D, R>
-where
-    D: ExchangeData+Hashable,
-    R: ExchangeData+Semigroup,
-    G::Timestamp: ::lattice::Lattice+Ord,
- {
-    fn consolidate_stream(&self) -> Self {
+    pub fn consolidate_stream(&self) -> Self {
 
         use timely::dataflow::channels::pact::Pipeline;
         use timely::dataflow::operators::Operator;

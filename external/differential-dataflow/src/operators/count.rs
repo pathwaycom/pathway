@@ -1,17 +1,4 @@
-//! Group records by a key, and apply a reduction function.
-//!
-//! The `group` operators act on data that can be viewed as pairs `(key, val)`. They group records
-//! with the same key, and apply user supplied functions to the key and a list of values, which are
-//! expected to populate a list of output values.
-//!
-//! Several variants of `group` exist which allow more precise control over how grouping is done.
-//! For example, the `_by` suffixed variants take arbitrary data, but require a key-value selector
-//! to be applied to each record. The `_u` suffixed variants use unsigned integers as keys, and
-//! will use a dense array rather than a `HashMap` to store their keys.
-//!
-//! The list of values are presented as an iterator which internally merges sorted lists of values.
-//! This ordering can be exploited in several cases to avoid computation when only the first few
-//! elements are required.
+//! Count the number of occurrences of each element.
 
 use timely::order::TotalOrder;
 use timely::dataflow::*;

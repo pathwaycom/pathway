@@ -4,7 +4,7 @@ extern crate differential_dataflow;
 use timely::dataflow::operators::{ToStream, Capture, Map};
 use timely::dataflow::operators::capture::Extract;
 use differential_dataflow::AsCollection;
-use differential_dataflow::operators::{Consolidate, Join, Count};
+use differential_dataflow::operators::{Join, Count};
 
 #[test]
 fn join() {

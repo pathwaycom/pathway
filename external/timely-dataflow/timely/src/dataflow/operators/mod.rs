@@ -21,7 +21,7 @@ pub use self::delay::Delay;
 pub use self::exchange::Exchange;
 pub use self::broadcast::Broadcast;
 pub use self::probe::Probe;
-pub use self::to_stream::{ToStream, ToStreamCore, ToStreamAsync, Event};
+pub use self::to_stream::{ToStream, ToStreamCore};
 pub use self::capture::Capture;
 pub use self::branch::{Branch, BranchWhen};
 pub use self::ok_err::OkErr;
@@ -62,4 +62,4 @@ pub mod count;
 
 // keep "mint" module-private
 mod capability;
-pub use self::capability::{ActivateCapability, Capability, CapabilityRef, CapabilitySet, DowngradeError};
+pub use self::capability::{ActivateCapability, Capability, InputCapability, CapabilitySet, DowngradeError};

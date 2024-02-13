@@ -38,6 +38,8 @@ pub fn consolidate_slice<T: Ord, R: Semigroup>(slice: &mut [(T, R)]) -> usize {
     // In a world where there are not many results, we may never even need to call in to merge sort.
     slice.sort_by(|x,y| x.0.cmp(&y.0));
 
+    let slice_ptr = slice.as_mut_ptr();
+
     // Counts the number of distinct known-non-zero accumulations. Indexes the write location.
     let mut offset = 0;
     for index in 1 .. slice.len() {
@@ -55,8 +57,8 @@ pub fn consolidate_slice<T: Ord, R: Semigroup>(slice: &mut [(T, R)]) -> usize {
             assert!(offset < index);
 
             // LOOP INVARIANT: offset < index
-            let ptr1 = slice.as_mut_ptr().offset(offset as isize);
-            let ptr2 = slice.as_mut_ptr().offset(index as isize);
+            let ptr1 = slice_ptr.add(offset);
+            let ptr2 = slice_ptr.add(index);
 
             if (*ptr1).0 == (*ptr2).0 {
                 (*ptr1).1.plus_equals(&(*ptr2).1);
@@ -65,7 +67,7 @@ pub fn consolidate_slice<T: Ord, R: Semigroup>(slice: &mut [(T, R)]) -> usize {
                 if !(*ptr1).1.is_zero() {
                     offset += 1;
                 }
-                let ptr1 = slice.as_mut_ptr().offset(offset as isize);
+                let ptr1 = slice_ptr.add(offset);
                 std::ptr::swap(ptr1, ptr2);
             }
         }
@@ -103,6 +105,8 @@ pub fn consolidate_updates_slice<D: Ord, T: Ord, R: Semigroup>(slice: &mut [(D, 
     // In a world where there are not many results, we may never even need to call in to merge sort.
     slice.sort_unstable_by(|x,y| (&x.0, &x.1).cmp(&(&y.0, &y.1)));
 
+    let slice_ptr = slice.as_mut_ptr();
+
     // Counts the number of distinct known-non-zero accumulations. Indexes the write location.
     let mut offset = 0;
     for index in 1 .. slice.len() {
@@ -118,8 +122,8 @@ pub fn consolidate_updates_slice<D: Ord, T: Ord, R: Semigroup>(slice: &mut [(D, 
         unsafe {
 
             // LOOP INVARIANT: offset < index
-            let ptr1 = slice.as_mut_ptr().offset(offset as isize);
-            let ptr2 = slice.as_mut_ptr().offset(index as isize);
+            let ptr1 = slice_ptr.add(offset);
+            let ptr2 = slice_ptr.add(index);
 
             if (*ptr1).0 == (*ptr2).0 && (*ptr1).1 == (*ptr2).1 {
                 (*ptr1).2.plus_equals(&(*ptr2).2);
@@ -128,7 +132,7 @@ pub fn consolidate_updates_slice<D: Ord, T: Ord, R: Semigroup>(slice: &mut [(D, 
                 if !(*ptr1).2.is_zero() {
                     offset += 1;
                 }
-                let ptr1 = slice.as_mut_ptr().offset(offset as isize);
+                let ptr1 = slice_ptr.add(offset);
                 std::ptr::swap(ptr1, ptr2);
             }
 

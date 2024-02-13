@@ -71,16 +71,19 @@ impl<T, C: Container, P: Push<BundleCore<T, C>>> BufferCore<T, C, P> where T: Eq
 
     // Gives an entire container at a specific time.
     fn give_container(&mut self, vector: &mut C) {
-        // flush to ensure fifo-ness
-        self.flush();
+        if !vector.is_empty() {
+            // flush to ensure fifo-ness
+            self.flush();
 
-        let time = self.time.as_ref().expect("Buffer::give_container(): time is None.").clone();
-        Message::push_at(vector, time, &mut self.pusher);
+            let time = self.time.as_ref().expect("Buffer::give_container(): time is None.").clone();
+            Message::push_at(vector, time, &mut self.pusher);
+        }
     }
 }
 
 impl<T, D: Data, P: Push<Bundle<T, D>>> Buffer<T, D, P> where T: Eq+Clone {
     // internal method for use by `Session`.
+    #[inline]
     fn give(&mut self, data: D) {
         if self.buffer.capacity() < crate::container::buffer::default_capacity::<D>() {
             let to_reserve = crate::container::buffer::default_capacity::<D>() - self.buffer.capacity();

@@ -3,7 +3,6 @@
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::time::Duration;
-use std::collections::VecDeque;
 
 pub use self::thread::Thread;
 pub use self::process::Process;
@@ -50,7 +49,7 @@ pub trait Allocate {
     /// drain these events in order to drive their computation. If they
     /// fail to do so the event queue may become quite large, and turn
     /// into a performance problem.
-    fn events(&self) -> &Rc<RefCell<VecDeque<(usize, Event)>>>;
+    fn events(&self) -> &Rc<RefCell<Vec<usize>>>;
 
     /// Awaits communication events.
     ///
@@ -91,12 +90,4 @@ pub trait Allocate {
     {
         thread::Thread::new_from(identifier, self.events().clone())
     }
-}
-
-/// A communication channel event.
-pub enum Event {
-    /// A number of messages pushed into the channel.
-    Pushed(usize),
-    /// A number of messages pulled from the channel.
-    Pulled(usize),
 }

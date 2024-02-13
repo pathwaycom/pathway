@@ -5,11 +5,10 @@
 
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 
 use crate::allocator::thread::ThreadBuilder;
 use crate::allocator::process::ProcessBuilder as TypedProcessBuilder;
-use crate::allocator::{Allocate, AllocateBuilder, Event, Thread, Process};
+use crate::allocator::{Allocate, AllocateBuilder, Thread, Process};
 use crate::allocator::zero_copy::allocator_process::{ProcessBuilder, ProcessAllocator};
 use crate::allocator::zero_copy::allocator::{TcpBuilder, TcpAllocator};
 
@@ -74,7 +73,7 @@ impl Generic {
             Generic::ZeroCopy(z) => z.release(),
         }
     }
-    fn events(&self) -> &Rc<RefCell<VecDeque<(usize, Event)>>> {
+    fn events(&self) -> &Rc<RefCell<Vec<usize>>> {
         match self {
             Generic::Thread(ref t) => t.events(),
             Generic::Process(ref p) => p.events(),
@@ -93,7 +92,7 @@ impl Allocate for Generic {
 
     fn receive(&mut self) { self.receive(); }
     fn release(&mut self) { self.release(); }
-    fn events(&self) -> &Rc<RefCell<VecDeque<(usize, Event)>>> { self.events() }
+    fn events(&self) -> &Rc<RefCell<Vec<usize>>> { self.events() }
     fn await_events(&self, _duration: Option<std::time::Duration>) {
         match self {
             Generic::Thread(t) => t.await_events(_duration),

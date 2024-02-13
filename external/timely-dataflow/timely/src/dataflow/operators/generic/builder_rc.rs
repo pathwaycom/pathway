@@ -31,6 +31,8 @@ pub struct OperatorBuilder<G: Scope> {
     frontier: Vec<MutableAntichain<G::Timestamp>>,
     consumed: Vec<Rc<RefCell<ChangeBatch<G::Timestamp>>>>,
     internal: Rc<RefCell<Vec<Rc<RefCell<ChangeBatch<G::Timestamp>>>>>>,
+    /// For each input, a shared list of summaries to each output.
+    summaries: Vec<Rc<RefCell<Vec<Antichain<<G::Timestamp as Timestamp>::Summary>>>>>,
     produced: Vec<Rc<RefCell<ChangeBatch<G::Timestamp>>>>,
     logging: Option<Logger>,
 }
@@ -45,6 +47,7 @@ impl<G: Scope> OperatorBuilder<G> {
             frontier: Vec::new(),
             consumed: Vec::new(),
             internal: Rc::new(RefCell::new(Vec::new())),
+            summaries: Vec::new(),
             produced: Vec::new(),
             logging,
         }
@@ -76,13 +79,16 @@ impl<G: Scope> OperatorBuilder<G> {
         where
             P: ParallelizationContractCore<G::Timestamp, D> {
 
-        let puller = self.builder.new_input_connection(stream, pact, connection);
+        let puller = self.builder.new_input_connection(stream, pact, connection.clone());
 
         let input = PullCounter::new(puller);
         self.frontier.push(MutableAntichain::new());
         self.consumed.push(input.consumed().clone());
 
-        new_input_handle(input, self.internal.clone(), self.logging.clone())
+        let shared_summary = Rc::new(RefCell::new(connection));
+        self.summaries.push(shared_summary.clone());
+
+        new_input_handle(input, self.internal.clone(), shared_summary, self.logging.clone())
     }
 
     /// Adds a new output to a generic operator builder, returning the `Push` implementor to use.
@@ -101,13 +107,17 @@ impl<G: Scope> OperatorBuilder<G> {
     /// antichain indicating that there is no connection from the input to the output.
     pub fn new_output_connection<D: Container>(&mut self, connection: Vec<Antichain<<G::Timestamp as Timestamp>::Summary>>) -> (OutputWrapper<G::Timestamp, D, TeeCore<G::Timestamp, D>>, StreamCore<G, D>) {
 
-        let (tee, stream) = self.builder.new_output_connection(connection);
+        let (tee, stream) = self.builder.new_output_connection(connection.clone());
 
         let internal = Rc::new(RefCell::new(ChangeBatch::new()));
         self.internal.borrow_mut().push(internal.clone());
 
         let mut buffer = PushBuffer::new(PushCounter::new(tee));
         self.produced.push(buffer.inner().produced().clone());
+
+        for (summary, connection) in self.summaries.iter().zip(connection.into_iter()) {
+            summary.borrow_mut().push(connection.clone());
+        }
 
         (OutputWrapper::new(buffer, internal), stream)
     }

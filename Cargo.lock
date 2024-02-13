@@ -2845,7 +2845,6 @@ dependencies = [
  "abomonation",
  "abomonation_derive",
  "crossbeam-channel",
- "futures-util",
  "getopts",
  "serde",
  "serde_derive",

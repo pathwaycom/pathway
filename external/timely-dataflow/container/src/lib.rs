@@ -79,7 +79,14 @@ mod rc {
             std::ops::Deref::deref(self).capacity()
         }
 
-        fn clear(&mut self) { }
+        fn clear(&mut self) {
+            // Try to reuse the allocation if possible
+            if let Some(inner) = Rc::get_mut(self) {
+                inner.clear();
+            } else {
+                *self = Self::default();
+            }
+        }
     }
 }
 
@@ -103,7 +110,14 @@ mod arc {
             std::ops::Deref::deref(self).capacity()
         }
 
-        fn clear(&mut self) { }
+        fn clear(&mut self) {
+            // Try to reuse the allocation if possible
+            if let Some(inner) = Arc::get_mut(self) {
+                inner.clear();
+            } else {
+                *self = Self::default();
+            }
+        }
     }
 }
 

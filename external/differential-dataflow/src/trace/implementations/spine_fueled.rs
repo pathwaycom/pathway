@@ -210,11 +210,14 @@ where
 
         Some((CursorList::new(cursors, &storage), storage))
     }
+    #[inline]
     fn set_logical_compaction(&mut self, frontier: AntichainRef<B::Time>) {
         self.logical_frontier.clear();
         self.logical_frontier.extend(frontier.iter().cloned());
     }
+    #[inline]
     fn get_logical_compaction(&mut self) -> AntichainRef<B::Time> { self.logical_frontier.borrow() }
+    #[inline]
     fn set_physical_compaction(&mut self, frontier: AntichainRef<B::Time>) {
         // We should never request to rewind the frontier.
         debug_assert!(PartialOrder::less_equal(&self.physical_frontier.borrow(), &frontier), "FAIL\tthrough frontier !<= new frontier {:?} {:?}\n", self.physical_frontier, frontier);
@@ -222,8 +225,10 @@ where
         self.physical_frontier.extend(frontier.iter().cloned());
         self.consider_merges();
     }
+    #[inline]
     fn get_physical_compaction(&mut self) -> AntichainRef<B::Time> { self.physical_frontier.borrow() }
 
+    #[inline]
     fn map_batches<F: FnMut(&Self::Batch)>(&self, mut f: F) {
         for batch in self.merging.iter().rev() {
             match batch {

@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 use std::collections::VecDeque;
 
-use crate::allocator::{Allocate, AllocateBuilder, Event};
+use crate::allocator::{Allocate, AllocateBuilder};
 use crate::allocator::counters::Pusher as CountPusher;
 use crate::allocator::counters::Puller as CountPuller;
 use crate::{Push, Pull, Message};
@@ -22,7 +22,7 @@ impl AllocateBuilder for ThreadBuilder {
 /// An allocator for intra-thread communication.
 pub struct Thread {
     /// Shared counts of messages in channels.
-    events: Rc<RefCell<VecDeque<(usize, Event)>>>,
+    events: Rc<RefCell<Vec<usize>>>,
 }
 
 impl Allocate for Thread {
@@ -32,7 +32,7 @@ impl Allocate for Thread {
         let (pusher, puller) = Thread::new_from(identifier, self.events.clone());
         (vec![Box::new(pusher)], Box::new(puller))
     }
-    fn events(&self) -> &Rc<RefCell<VecDeque<(usize, Event)>>> {
+    fn events(&self) -> &Rc<RefCell<Vec<usize>>> {
         &self.events
     }
     fn await_events(&self, duration: Option<Duration>) {
@@ -56,12 +56,12 @@ impl Thread {
     /// Allocates a new thread-local channel allocator.
     pub fn new() -> Self {
         Thread {
-            events: Rc::new(RefCell::new(VecDeque::new())),
+            events: Rc::new(RefCell::new(Default::default())),
         }
     }
 
     /// Creates a new thread-local channel from an identifier and shared counts.
-    pub fn new_from<T: 'static>(identifier: usize, events: Rc<RefCell<VecDeque<(usize, Event)>>>)
+    pub fn new_from<T: 'static>(identifier: usize, events: Rc<RefCell<Vec<usize>>>)
         -> (ThreadPusher<Message<T>>, ThreadPuller<Message<T>>)
     {
         let shared = Rc::new(RefCell::new((VecDeque::<Message<T>>::new(), VecDeque::<Message<T>>::new())));
