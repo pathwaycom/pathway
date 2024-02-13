@@ -39,9 +39,7 @@ def read(
     the modification time.
 
     Args:
-        path: [glob](https://en.wikipedia.org/wiki/Glob_(programming)) pattern for the \
-objects to be read. The connector will read the contents of all matching files as well \
-as recursively read the contents of all matching folders.
+        path: Path to the file or to the folder with files.
         schema: Schema of the resulting table.
         mode: Denotes how the engine polls the new data from the source. Currently \
 "streaming" and "static" are supported. If set to "streaming" the engine will wait for \
@@ -55,8 +53,7 @@ of it in one commit. The default value is "streaming".
             ``<field_name>: <path to be mapped>``, where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         object_pattern: Unix shell style pattern for filtering only certain files in the \
-directory. Ignored in case a path to a single file is specified. This value will be \
-deprecated soon, please use glob pattern in ``path`` instead.
+directory. Ignored in case a path to a single file is specified.
         with_metadata: When set to true, the connector will add an additional column \
 named ``_metadata`` to the table. This column will be a JSON field that will contain two \
 optional fields - ``created_at`` and ``modified_at``. These fields will have integral \

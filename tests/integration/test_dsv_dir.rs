@@ -3,6 +3,7 @@
 use super::helpers::read_data_from_reader;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use pathway_engine::connectors::data_format::ParsedEvent;
 use pathway_engine::connectors::data_format::{DsvParser, DsvSettings};
@@ -15,7 +16,7 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/csvdir",
+        PathBuf::from("tests/data/csvdir"),
         builder,
         ConnectorMode::Static,
         None,
@@ -48,7 +49,7 @@ fn test_single_file_ok() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/sample.txt",
+        PathBuf::from("tests/data/sample.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -73,7 +74,7 @@ fn test_custom_delimiter() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/sql_injection.txt",
+        PathBuf::from("tests/data/sql_injection.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -100,7 +101,7 @@ fn test_escape_fields() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/csv_fields_escaped.txt",
+        PathBuf::from("tests/data/csv_fields_escaped.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -146,7 +147,7 @@ fn test_escape_newlines() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/csv_escaped_newlines.txt",
+        PathBuf::from("tests/data/csv_escaped_newlines.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -182,17 +183,13 @@ fn test_nonexistent_file() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/nonexistent_file.txt",
+        PathBuf::from("tests/data/nonexistent_file.txt"),
         builder,
         ConnectorMode::Static,
         None,
         "*",
     );
-
-    // We treat this path as a glob pattern, so the situation is normal:
-    // the scanner will just scan the contents on an empty set. If a file
-    // will be added at this path, it will be scanned and read.
-    assert!(reader.is_ok());
+    assert!(reader.is_err());
 
     Ok(())
 }
@@ -203,7 +200,7 @@ fn test_special_fields() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/csv_special_fields.txt",
+        PathBuf::from("tests/data/csv_special_fields.txt"),
         builder,
         ConnectorMode::Static,
         None,

@@ -4,6 +4,7 @@ use super::helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 
 use assert_matches::assert_matches;
 
@@ -19,7 +20,7 @@ use pathway_engine::engine::Value;
 #[test]
 fn test_debezium_reads_ok() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        "tests/data/sample_debezium.txt",
+        PathBuf::from("tests/data/sample_debezium.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -164,7 +165,7 @@ fn test_debezium_tokens_amt_mismatch() -> eyre::Result<()> {
 #[test]
 fn test_debezium_mongodb_format() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        "tests/data/sample_debezium_mongodb.txt",
+        PathBuf::from("tests/data/sample_debezium_mongodb.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,

@@ -3,6 +3,7 @@
 use super::helpers::{data_parsing_fails, read_data_from_reader};
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, JsonLinesParser, ParsedEvent,
@@ -26,7 +27,7 @@ fn test_dsv_with_default_end_of_line() -> eyre::Result<()> {
     );
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/dsv_with_skips.txt",
+        PathBuf::from("tests/data/dsv_with_skips.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -80,7 +81,7 @@ fn test_dsv_with_default_middle_of_line() -> eyre::Result<()> {
     );
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/dsv_with_skips2.txt",
+        PathBuf::from("tests/data/dsv_with_skips2.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -130,7 +131,7 @@ fn test_dsv_fails_without_default() -> eyre::Result<()> {
     schema.insert("number".to_string(), InnerSchemaField::new(Type::Int, None));
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/dsv_with_skips.txt",
+        PathBuf::from("tests/data/dsv_with_skips.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -163,7 +164,7 @@ fn test_dsv_with_default_nullable() -> eyre::Result<()> {
     );
 
     let reader = CsvFilesystemReader::new(
-        "tests/data/dsv_with_skips.txt",
+        PathBuf::from("tests/data/dsv_with_skips.txt"),
         builder,
         ConnectorMode::Static,
         None,
@@ -207,7 +208,7 @@ fn test_dsv_with_default_nullable() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        "tests/data/jsonlines.txt",
+        PathBuf::from("tests/data/jsonlines.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -236,7 +237,7 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
     );
 
     let reader = FilesystemReader::new(
-        "tests/data/jsonlines_with_skips.txt",
+        PathBuf::from("tests/data/jsonlines_with_skips.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -289,7 +290,7 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
     );
 
     let reader = FilesystemReader::new(
-        "tests/data/jsonlines_with_skips.txt",
+        PathBuf::from("tests/data/jsonlines_with_skips.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -336,7 +337,7 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
     );
 
     let reader = FilesystemReader::new(
-        "tests/data/jsonlines_with_skips_and_nulls.txt",
+        PathBuf::from("tests/data/jsonlines_with_skips_and_nulls.txt"),
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
