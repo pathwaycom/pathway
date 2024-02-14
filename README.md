@@ -2,6 +2,11 @@
   <img src="https://pathway.com/logo-light.svg" /><br /><br />
 </div>
 <p align="center">
+        <a href="https://github.com/pathwaycom/pathway/actions/workflows/ubuntu_test.yml">
+        <img src="https://github.com/pathwaycom/pathway/actions/workflows/ubuntu_test.yml/badge.svg" alt="ubuntu"/>
+        <a href="https://github.com/pathwaycom/pathway/actions/workflows/mac_test.yml">
+        <img src="https://github.com/pathwaycom/pathway/actions/workflows/mac_test.yml/badge.svg" alt="macOS"/>
+        <br>
         <a href="https://github.com/pathwaycom/pathway/actions/workflows/release.yml">
         <img src="https://github.com/pathwaycom/pathway/actions/workflows/release.yml/badge.svg" alt="Last release"/></a>
         <a href="https://badge.fury.io/py/pathway"><img src="https://badge.fury.io/py/pathway.svg" alt="PyPI version" height="18"></a>
