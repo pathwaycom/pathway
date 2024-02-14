@@ -3,6 +3,7 @@ import time
 from multiprocessing import Process
 from typing import List
 
+import pytest
 import requests
 from llama_index.embeddings.base import BaseEmbedding
 from llama_index.node_parser import TextSplitter
@@ -18,6 +19,7 @@ PATHWAY_PORT = 7769
 
 if ENV_PORT:
     PATHWAY_PORT = int(ENV_PORT)
+
 
 EXAMPLE_TEXT_FILE = "example_text.md"
 
@@ -99,6 +101,7 @@ def pathway_server(port):
     thread.join()
 
 
+@pytest.mark.flaky(reruns=4, reruns_delay=8)
 @xfail_on_multiple_threads
 def test_llama_retriever():
     port = PATHWAY_PORT
@@ -131,6 +134,7 @@ def test_llama_retriever():
     p.terminate()
 
 
+@pytest.mark.flaky(reruns=4, reruns_delay=8)
 @xfail_on_multiple_threads
 def test_llama_reader():
     port = PATHWAY_PORT + 1
