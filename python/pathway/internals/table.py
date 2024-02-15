@@ -1969,7 +1969,7 @@ class Table(
         Args:
             table : pw.Table
                 The table to be sorted.
-            key : ColumnReference
+            key (ColumnExpression[int | float | datetime | str | bytes]):
                 An expression to sort by.
             instance : ColumnReference or None
                 An expression with instance. Rows are sorted within an instance.

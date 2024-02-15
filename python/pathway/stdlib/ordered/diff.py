@@ -17,10 +17,11 @@ def diff(
     according to the order defined by the column ``timestamp``.
 
     Args:
-        - ``timestamp`` (``ColumnReference``): The column reference to the ``timestamp`` column on
-            which the order is computed.
-        - ``*values`` (``ColumnReference``): Variable-length argument representing the column
-            references to the ``values`` columns.
+
+        - timestamp (pw.ColumnReference[int | float | datetime | str | bytes]):
+            The column reference to the ``timestamp`` column on which the order is computed.
+        - *values (pw.ColumnReference[int | float | datetime]):
+            Variable-length argument representing the column references to the ``values`` columns.
 
     Returns:
         ``Table``: A new table where each column is replaced with a new column containing

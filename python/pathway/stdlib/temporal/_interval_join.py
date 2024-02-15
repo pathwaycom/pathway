@@ -596,8 +596,10 @@ def interval_join(
 
     Args:
         other:  the right side of a join.
-        self_time: time expression in self.
-        other_time: time expression in other.
+        self_time (pw.ColumnExpression[int | float | datetime]):
+            time expression in self.
+        other_time (pw.ColumnExpression[int | float | datetime]):
+            time expression in other.
         lower_bound: a lower bound on time difference between other_time
             and self_time.
         upper_bound: an upper bound on time difference between other_time

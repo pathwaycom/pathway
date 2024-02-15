@@ -871,7 +871,7 @@ def windowby(
     optionally with `instance` argument.
 
     Args:
-        time_expr: Column expression used for windowing
+        time_expr (pw.ColumnExpression[int | float | datetime]): Column expression used for windowing
         window: type window to use
         instance: optional column expression to act as a shard key
 
