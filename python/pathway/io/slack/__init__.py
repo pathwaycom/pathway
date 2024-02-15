@@ -8,13 +8,13 @@ from pathway.io._subscribe import subscribe
 
 @check_arg_types
 @trace_user_frame
-def send_alerts(messages: ColumnReference, slack_channel_id: str, slack_token: str):
+def send_alerts(alerts: ColumnReference, slack_channel_id: str, slack_token: str):
     """Sends content of a given column to the Slack channel. Each row in a column is
     a distinct message in the Slack channel.
 
     Args:
-        messages: ColumnReference with messages to be sent.
-        slack_channel_id: id of the channel to which messages are to be sent.
+        alerts: ColumnReference with alerts to be sent.
+        slack_channel_id: id of the channel to which alerts are to be sent.
         slack_token: token used for authenticating to Slack API.
 
     Example:
@@ -24,16 +24,16 @@ def send_alerts(messages: ColumnReference, slack_channel_id: str, slack_token: s
     >>> slack_channel_id = os.environ["SLACK_CHANNEL_ID"]
     >>> slack_token = os.environ["SLACK_TOKEN"]
     >>> t = pw.debug.table_from_markdown('''
-    ... message
+    ... alert
     ... This_is_Slack_alert
     ... ''')
-    >>> pw.io.slack.send_alerts(t.message, slack_channel_id, slack_token)
+    >>> pw.io.slack.send_alerts(t.alert, slack_channel_id, slack_token)
     """
 
     def send_slack_alert(key, row, time, is_addition):
         if not is_addition:
             return
-        alert_message = row[messages.name]
+        alert_message = row[alerts.name]
         requests.post(
             "https://slack.com/api/chat.postMessage",
             data="text={}&channel={}".format(alert_message, slack_channel_id),
@@ -43,4 +43,4 @@ def send_alerts(messages: ColumnReference, slack_channel_id: str, slack_token: s
             },
         ).raise_for_status()
 
-    subscribe(messages._table, send_slack_alert)
+    subscribe(alerts._table, send_slack_alert)
