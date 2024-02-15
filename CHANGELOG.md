@@ -5,15 +5,17 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.8.1] - 2024-02-15
+
 ### Added
-- Function `send_alerts` in `pw.io.slack` namespace for sending messages from a given column to a Slack channel.
-- `pw.io.http.rest_connector` now supports an additional argument `request_validator` that gives the ability to check payload and raise `HTTP 400` if necessary.
+- Introduced the `send_alerts` function in the `pw.io.slack` namespace, enabling users to send messages from a specified column directly to a Slack channel.
+- Enhanced the `pw.io.http.rest_connector` by introducing an additional argument called `request_validator`. This feature empowers users to validate payloads and raise an `HTTP 400` error if necessary.
 
 ### Fixed
-- `pw.io.xpacks.llm.VectorStoreServer` now correctly computes the last modification timestamp of an indexed document.
+- Addressed an issue in `pw.io.xpacks.llm.VectorStoreServer` where the computation of the last modification timestamp for an indexed document was incorrect.
 
 ### Changed
-- `pw.io.kafka.write` now does retries when sending to the output topic fails.
+- Improved the behavior of `pw.io.kafka.write`. It now includes retries when sending data to the output topic encounters failures.
 
 ## [0.8.0] - 2024-02-01
 
