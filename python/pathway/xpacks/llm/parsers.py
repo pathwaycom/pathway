@@ -67,6 +67,22 @@ class ParseUnstructured(pw.UDFSync):
             unstructured_kwargs=unstructured_kwargs,
         )
 
+    # `links` and `languages` in metadata are lists, so their content should be added.
+    # We don't want return `coordinates`, `parent_id` and `category_depth` - these are
+    # element specific (i.e. they can differ for elements on the same page)
+    def _combine_metadata(self, left: dict, right: dict) -> dict:
+        result = {}
+        links = left.pop("links", []) + right.pop("links", [])
+        languages = list(set(left.pop("languages", []) + right.pop("languages", [])))
+        result.update(left)
+        result.update(right)
+        result["links"] = links
+        result["languages"] = languages
+        result.pop("coordinates", None)
+        result.pop("parent_id", None)
+        result.pop("category_depth", None)
+        return result
+
     def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
         """
         Parse the given document:
@@ -77,6 +93,10 @@ class ParseUnstructured(pw.UDFSync):
 
         Returns:
             a list of pairs: text chunk and metadata
+            The metadata is obtained from Unstructured, you can check possible values
+            in the `Unstructed documentation <https://unstructured-io.github.io/unstructured/metadata.html>`
+            Note that when `mode` is set to `single` or `paged` some of these fields are
+            removed if they are specific to a single element, e.g. `category_depth`.
         """
         import unstructured.partition.auto
 
@@ -91,8 +111,6 @@ class ParseUnstructured(pw.UDFSync):
             for post_processor in post_processors:
                 element.apply(post_processor)
 
-        metadata = {}
-
         mode = kwargs.pop("mode")
 
         if kwargs:
@@ -104,7 +122,9 @@ class ParseUnstructured(pw.UDFSync):
                 # NOTE(MthwRobinson) - the attribute check is for backward compatibility
                 # with unstructured<0.4.9. The metadata attributed was added in 0.4.9.
                 if hasattr(element, "metadata"):
-                    metadata.update(element.metadata.to_dict())
+                    metadata = element.metadata.to_dict()
+                else:
+                    metadata = {}
                 if hasattr(element, "category"):
                     metadata["category"] = element.category
                 docs.append((str(element), metadata))
@@ -114,7 +134,9 @@ class ParseUnstructured(pw.UDFSync):
 
             for idx, element in enumerate(elements):
                 if hasattr(element, "metadata"):
-                    metadata.update(element.metadata.to_dict())
+                    metadata = element.metadata.to_dict()
+                else:
+                    metadata = {}
                 page_number = metadata.get("page_number", 1)
 
                 # Check if this page_number already exists in docs_dict
@@ -125,11 +147,19 @@ class ParseUnstructured(pw.UDFSync):
                 else:
                     # If exists, append to text and update the metadata
                     text_dict[page_number] += str(element) + "\n\n"
-                    meta_dict[page_number].update(metadata)
+                    meta_dict[page_number] = self._combine_metadata(
+                        meta_dict[page_number], metadata
+                    )
 
             # Convert the dict to a list of dicts representing documents
             docs = [(text_dict[key], meta_dict[key]) for key in text_dict.keys()]
         elif mode == "single":
+            metadata = {}
+            for element in elements:
+                if hasattr(element, "metadata"):
+                    metadata = self._combine_metadata(
+                        metadata, element.metadata.to_dict()
+                    )
             text = "\n\n".join([str(el) for el in elements])
             docs = [(text, metadata)]
         else:
