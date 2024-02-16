@@ -248,15 +248,15 @@ def test_traceback_rust_expression():
     input = T(
         """
         foo | bar
-        1   | a
-        2   | b
-        3   | c
+        1   | 2
+        2   | 3
+        3   | 0
         """
-    ).update_types(bar=int)
+    )
 
-    input.select(r=pw.this.foo + pw.this.bar)  # cause
+    input.select(r=pw.this.foo / pw.this.bar)  # cause
 
-    with _assert_error_trace(TypeError):
+    with _assert_error_trace(ZeroDivisionError):
         run_all(runtime_typechecking=False)
 
 
@@ -282,25 +282,20 @@ def test_traceback_async_apply():
 
 def test_traceback_iterate():
     def iterate(iterated):
-        def func(x: int) -> int:
-            return x // 2
-
-        result = iterated.select(val=pw.apply(func, iterated.val))  # cause
+        result = iterated.select(val=pw.declare_type(str, pw.this.val))  # cause
 
         return result
 
     input = T(
         """
         val
-        foo
-        bar
+        1
+        2
         """
-    ).update_types(val=int)
-
-    pw.iterate(iterate, iterated=input)
+    )
 
     with _assert_error_trace(TypeError):
-        run_all(runtime_typechecking=False)
+        pw.iterate(iterate, iterated=input)
 
 
 def test_traceback_transformers_1():

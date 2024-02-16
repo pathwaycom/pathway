@@ -49,6 +49,9 @@ def schema_from_columns(
 def _type_converter(series: pd.Series) -> dt.DType:
     if series.empty:
         return dt.ANY
+
+    if series.apply(lambda x: isinstance(x, dict)).all():
+        return dt.JSON
     if series.apply(lambda x: isinstance(x, (tuple, list))).all():
         proposed_len = len(series[0])
         if (series.apply(lambda x: len(x) == proposed_len)).all():

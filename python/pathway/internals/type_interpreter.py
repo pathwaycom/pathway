@@ -323,6 +323,13 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.DeclareTypeExpression:
         expression = super().eval_declare(expression, state=state, **kwargs)
+        left = expression._return_type
+        right = expression._expr._dtype
+        if not (dt.dtype_issubclass(left, right) or dt.dtype_issubclass(right, left)):
+            raise TypeError(
+                f"Cannot change type from {right} to {left}.\n"
+                + "pw.`declare_type` should be used only for type narrowing or type extending."
+            )
         return _wrap(expression, expression._return_type)
 
     def eval_coalesce(
