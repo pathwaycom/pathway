@@ -396,8 +396,12 @@ def test_strptime_naive_with_python_datetime(data: list[str], fmt: str) -> None:
     "data,fmt",
     [
         (
-            ["2023-03-25 16:43:21+01:23", "2023-03-26 16:43:21+01:23"],
+            ["2023-03-25 16:43:21+0123", "2023-03-26 16:43:21+0123"],
             "%Y-%m-%d %H:%M:%S%z",
+        ),
+        (
+            ["2023-03-25 16:43:21+01:23", "2023-03-26 16:43:21+01:23"],
+            "%Y-%m-%d %H:%M:%S%:z",
         ),
         (
             ["2023-03-25T16:43:21+01:23", "2023-03-26T16:43:21+01:23"],
@@ -430,7 +434,8 @@ def test_strptime_naive_with_python_datetime(data: list[str], fmt: str) -> None:
     ],
 )
 def test_strptime_time_zone_aware(data: list[str], fmt: str) -> None:
-    df = pd.DataFrame({"ts": pd.to_datetime(data, format=fmt)})
+    pandas_fmt = fmt.replace("%:z", "%z")  # pandas does not support %:z
+    df = pd.DataFrame({"ts": pd.to_datetime(data, format=pandas_fmt)})
     table_pd = table_from_pandas(df)
     table = table_from_pandas(pd.DataFrame({"a": data}))
     table_pw = table.select(ts=table.a.dt.strptime(fmt))
@@ -772,7 +777,7 @@ def test_add_sub_in_timezone(op: Any) -> None:
     assert_table_equality(table_pw, expected)
 
 
-def test__date_time_sub_in_timezone() -> None:
+def test_date_time_sub_in_timezone() -> None:
     table = table_from_markdown(
         """
            |           a         |           b

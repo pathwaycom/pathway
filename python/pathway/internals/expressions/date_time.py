@@ -636,7 +636,7 @@ class DateTimeNamespace:
 
         if contains_timezone is None:
             if isinstance(fmt, str):
-                contains_timezone = "%z" in fmt or "%Z" in fmt
+                contains_timezone = any(code in fmt for code in ["%z", "%:z", "%Z"])
             else:
                 raise ValueError(
                     "If fmt is not a string, you need to specify whether objects"
