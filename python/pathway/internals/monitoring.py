@@ -95,9 +95,11 @@ class MonitoringOutput:
         for name, entry in self.data.connector_stats:
             table.add_row(
                 name,
-                "finished"
-                if entry.finished
-                else f"{entry.num_messages_recently_committed}",
+                (
+                    "finished"
+                    if entry.finished
+                    else f"{entry.num_messages_recently_committed}"
+                ),
                 f"{entry.num_messages_in_last_minute}",
                 f"{entry.num_messages_from_start}",
             )

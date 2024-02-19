@@ -47,8 +47,7 @@ class Window(ABC):
         key: pw.ColumnExpression,
         behavior: Behavior | None,
         instance: pw.ColumnExpression | None,
-    ) -> pw.GroupedTable:
-        ...
+    ) -> pw.GroupedTable: ...
 
     @abstractmethod
     def _join(
@@ -61,8 +60,7 @@ class Window(ABC):
         mode: pw.JoinMode,
         left_instance: pw.ColumnReference | None = None,
         right_instance: pw.ColumnReference | None = None,
-    ) -> WindowJoinResult:
-        ...
+    ) -> WindowJoinResult: ...
 
 
 _SessionPredicateType = Callable[[Any, Any], bool]

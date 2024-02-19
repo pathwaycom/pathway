@@ -189,9 +189,11 @@ class NumericalNamespace:
                     dt.Optional(dt.FLOAT),
                     dt.FLOAT,
                     lambda x: api.Expression.apply(
-                        lambda y: float(default_value)
-                        if ((y is None) or math.isnan(y))
-                        else y,
+                        lambda y: (
+                            float(default_value)
+                            if ((y is None) or math.isnan(y))
+                            else y
+                        ),
                         x,
                     ),
                 ),

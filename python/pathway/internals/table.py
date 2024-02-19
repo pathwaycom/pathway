@@ -198,12 +198,10 @@ class Table(
         )
 
     @overload
-    def __getitem__(self, args: str | expr.ColumnReference) -> expr.ColumnReference:
-        ...
+    def __getitem__(self, args: str | expr.ColumnReference) -> expr.ColumnReference: ...
 
     @overload
-    def __getitem__(self, args: list[str | expr.ColumnReference]) -> Table:
-        ...
+    def __getitem__(self, args: list[str | expr.ColumnReference]) -> Table: ...
 
     @trace_user_frame
     def __getitem__(
@@ -2309,8 +2307,7 @@ def groupby(
     sort_by: expr.ColumnReference | None = None,
     _filter_out_results_of_forgetting: bool = False,
     instance: expr.ColumnReference | None = None,
-) -> groupbys.GroupedTable:
-    ...
+) -> groupbys.GroupedTable: ...
 
 
 @overload
@@ -2318,8 +2315,7 @@ def groupby(
     grouped: JoinResult,
     *args: expr.ColumnReference,
     id: expr.ColumnReference | None = None,
-) -> groupbys.GroupedJoinResult:
-    ...
+) -> groupbys.GroupedJoinResult: ...
 
 
 def groupby(

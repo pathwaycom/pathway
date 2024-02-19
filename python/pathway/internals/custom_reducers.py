@@ -29,8 +29,7 @@ def mark_stub(fun):
 class ReducerProtocol(Protocol):
     def __call__(
         self, *args: expr.ColumnExpression | api.Value
-    ) -> expr.ColumnExpression:
-        ...
+    ) -> expr.ColumnExpression: ...
 
 
 def stateful_many(
@@ -43,8 +42,7 @@ def stateful_many(
 
 
 class CombineSingle(Protocol[S, P]):
-    def __call__(self, state: S | None, /, *args: P.args, **kwargs: P.kwargs) -> S:
-        ...
+    def __call__(self, state: S | None, /, *args: P.args, **kwargs: P.kwargs) -> S: ...
 
 
 def stateful_single(combine_single: CombineSingle[S, ...]) -> ReducerProtocol:

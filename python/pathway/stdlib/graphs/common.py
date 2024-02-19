@@ -13,6 +13,7 @@ class Edge(pw.Schema):
     r"""
     Basic edge class, holds pointers to the endpoint vertices.
     """
+
     u: pw.Pointer[Vertex]
     v: pw.Pointer[Vertex]
 
@@ -21,6 +22,7 @@ class Weight(pw.Schema):
     r"""
     Basic weight class. To be used as extension of Vertex / Edge
     """
+
     weight: float
 
 
@@ -33,4 +35,5 @@ class Clustering(pw.Schema):
     Class describing cluster membership relation:
     vertex u (id-column) belongs to cluster c.
     """
+
     c: pw.Pointer[Cluster]

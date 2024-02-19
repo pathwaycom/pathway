@@ -64,8 +64,7 @@ def flatten_column(
 @overload
 def unpack_col(
     column: pw.ColumnReference, *unpacked_columns: pw.ColumnReference | str
-) -> pw.Table:
-    ...
+) -> pw.Table: ...
 
 
 @overload
@@ -73,8 +72,7 @@ def unpack_col(
     column: pw.ColumnReference,
     *,
     schema: type[pw.Schema],
-) -> pw.Table:
-    ...
+) -> pw.Table: ...
 
 
 @check_arg_types

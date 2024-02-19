@@ -25,8 +25,7 @@ class ColumnPropertiesEvaluator(ABC):
         )
 
     @abstractmethod
-    def _append_only(self, column: clmn.ColumnWithContext) -> bool:
-        ...
+    def _append_only(self, column: clmn.ColumnWithContext) -> bool: ...
 
 
 class DefaultPropsEvaluator(ColumnPropertiesEvaluator):

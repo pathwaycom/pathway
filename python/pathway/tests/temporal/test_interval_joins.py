@@ -1023,12 +1023,16 @@ def test_interval_join_expressions(join_type: pw.JoinMode) -> None:
             t1.id,
             t2.id,
         ),
-        only_left=pw.require(t1.t + t1.a, t1.id)
-        if join_type in (pw.JoinMode.RIGHT, pw.JoinMode.OUTER)
-        else t1.t + t1.a,
-        only_right=pw.require(t2.t + t2.b, t2.id)
-        if join_type in (pw.JoinMode.LEFT, pw.JoinMode.OUTER)
-        else t2.t + t2.b,
+        only_left=(
+            pw.require(t1.t + t1.a, t1.id)
+            if join_type in (pw.JoinMode.RIGHT, pw.JoinMode.OUTER)
+            else t1.t + t1.a
+        ),
+        only_right=(
+            pw.require(t2.t + t2.b, t2.id)
+            if join_type in (pw.JoinMode.LEFT, pw.JoinMode.OUTER)
+            else t2.t + t2.b
+        ),
     )
     res = res.update_types(
         t_diff=Optional[int],

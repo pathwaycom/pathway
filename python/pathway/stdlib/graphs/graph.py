@@ -78,6 +78,7 @@ class Graph:
     r"""
     Basic class representing undirected, unweighted (multi)graph.
     """
+
     V: pw.Table[Vertex]
     E: pw.Table[Edge]
 
@@ -121,6 +122,7 @@ class WeightedGraph(Graph):
     r"""
     Basic class representing undirected, unweighted (multi)graph.
     """
+
     WE: pw.Table[Edge | Weight]
 
     @staticmethod

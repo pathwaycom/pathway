@@ -49,12 +49,10 @@ class TableSlice:
         return self._mapping.keys()
 
     @overload
-    def __getitem__(self, args: str | ColumnReference) -> ColumnReference:
-        ...
+    def __getitem__(self, args: str | ColumnReference) -> ColumnReference: ...
 
     @overload
-    def __getitem__(self, args: list[str | ColumnReference]) -> TableSlice:
-        ...
+    def __getitem__(self, args: list[str | ColumnReference]) -> TableSlice: ...
 
     @trace_user_frame
     def __getitem__(

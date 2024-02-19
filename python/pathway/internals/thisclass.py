@@ -78,12 +78,10 @@ class ThisMetaclass(type):
         return self.C
 
     @overload
-    def __getitem__(self, args: str | expr.ColumnReference) -> expr.ColumnReference:
-        ...
+    def __getitem__(self, args: str | expr.ColumnReference) -> expr.ColumnReference: ...
 
     @overload
-    def __getitem__(self, args: list[str | expr.ColumnReference]) -> ThisMetaclass:
-        ...
+    def __getitem__(self, args: list[str | expr.ColumnReference]) -> ThisMetaclass: ...
 
     @trace_user_frame
     def __getitem__(

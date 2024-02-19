@@ -41,24 +41,21 @@ class Interval(Generic[T]):
 def interval(
     lower_bound: int,
     upper_bound: int,
-) -> Interval[int]:
-    ...
+) -> Interval[int]: ...
 
 
 @overload
 def interval(
     lower_bound: float,
     upper_bound: float,
-) -> Interval[float]:
-    ...
+) -> Interval[float]: ...
 
 
 @overload
 def interval(
     lower_bound: datetime.timedelta,
     upper_bound: datetime.timedelta,
-) -> Interval[datetime.timedelta]:
-    ...
+) -> Interval[datetime.timedelta]: ...
 
 
 def interval(

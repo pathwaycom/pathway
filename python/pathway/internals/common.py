@@ -506,8 +506,7 @@ def assert_table_has_schema(
 
 
 @overload
-def table_transformer(func: Callable[P, T]) -> Callable[P, T]:
-    ...
+def table_transformer(func: Callable[P, T]) -> Callable[P, T]: ...
 
 
 @overload
@@ -516,8 +515,7 @@ def table_transformer(
     allow_superset: bool | Mapping[str, bool] = True,
     ignore_primary_keys: bool | Mapping[str, bool] = True,
     locals: dict[str, Any] | None = None,
-) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    ...
+) -> Callable[[Callable[P, T]], Callable[P, T]]: ...
 
 
 def table_transformer(

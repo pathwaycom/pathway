@@ -149,9 +149,12 @@ class GraphRunner:
             ]
             monitoring_level = self.monitoring_level.to_internal()
 
-            with new_event_loop() as event_loop, monitor_stats(
-                monitoring_level, node_names, self.default_logging
-            ) as stats_monitor:
+            with (
+                new_event_loop() as event_loop,
+                monitor_stats(
+                    monitoring_level, node_names, self.default_logging
+                ) as stats_monitor,
+            ):
                 if self.persistence_config:
                     self.persistence_config.on_before_run()
                     persistence_engine_config = self.persistence_config.engine_config

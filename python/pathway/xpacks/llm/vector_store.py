@@ -86,8 +86,9 @@ class VectorStoreServer:
         embedder: Callable[[str], list[float]],
         parser: Callable[[bytes], list[tuple[str, dict]]] | None = None,
         splitter: Callable[[str], list[tuple[str, dict]]] | None = None,
-        doc_post_processors: list[Callable[[str, dict], tuple[str, dict]]]
-        | None = None,
+        doc_post_processors: (
+            list[Callable[[str, dict], tuple[str, dict]]] | None
+        ) = None,
     ):
         self.docs = docs
 
@@ -372,8 +373,9 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         port,
         threaded: bool = False,
         with_cache: bool = True,
-        cache_backend: pw.persistence.Backend
-        | None = pw.persistence.Backend.filesystem("./Cache"),
+        cache_backend: (
+            pw.persistence.Backend | None
+        ) = pw.persistence.Backend.filesystem("./Cache"),
     ):
         """
         Builds the document processing pipeline and runs it.

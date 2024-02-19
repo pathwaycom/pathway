@@ -267,9 +267,9 @@ class AsofJoinResult(DesugaringContext):
                 key=data.make_sort_key(right_first),
                 t=data.t,
                 **{
-                    req_col.internal_name: req_col.column
-                    if data.side == req_col.side
-                    else req_col.default
+                    req_col.internal_name: (
+                        req_col.column if data.side == req_col.side else req_col.default
+                    )
                     for req_col in self._all_cols
                 },
             )

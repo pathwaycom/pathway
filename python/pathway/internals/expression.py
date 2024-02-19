@@ -97,12 +97,10 @@ class ColumnExpression(OperatorInput, ABC):
 
     @property
     @abstractmethod
-    def _deps(self) -> tuple[ColumnExpression, ...]:
-        ...
+    def _deps(self) -> tuple[ColumnExpression, ...]: ...
 
     @abstractmethod
-    def _to_internal(self) -> InternalColExpr:
-        ...
+    def _to_internal(self) -> InternalColExpr: ...
 
     def __repr__(self):
         from pathway.internals.expression_printer import ExpressionFormatter
@@ -796,8 +794,7 @@ class ApplyExpression(ColumnExpression):
         )
 
 
-class NumbaApplyExpression(ApplyExpression):
-    ...
+class NumbaApplyExpression(ApplyExpression): ...
 
 
 class AsyncApplyExpression(ApplyExpression):

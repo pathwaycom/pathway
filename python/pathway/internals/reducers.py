@@ -23,12 +23,10 @@ class Reducer(ABC):
         self.name = name
 
     @abstractmethod
-    def return_type(self, arg_types: list[dt.DType]) -> dt.DType:
-        ...
+    def return_type(self, arg_types: list[dt.DType]) -> dt.DType: ...
 
     @abstractmethod
-    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
-        ...
+    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer: ...
 
     def additional_args_from_context(
         self, context: GroupedContext
@@ -46,16 +44,14 @@ class UnaryReducer(Reducer):
         self.name = name
 
     @abstractmethod
-    def return_type_unary(self, arg_type: dt.DType) -> dt.DType:
-        ...
+    def return_type_unary(self, arg_type: dt.DType) -> dt.DType: ...
 
     def return_type(self, arg_types: list[dt.DType]) -> dt.DType:
         (arg_type,) = arg_types
         return self.return_type_unary(arg_type)
 
     @abstractmethod
-    def engine_reducer_unary(self, arg_type: dt.DType) -> api.Reducer:
-        ...
+    def engine_reducer_unary(self, arg_type: dt.DType) -> api.Reducer: ...
 
     def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
         (arg_type,) = arg_types

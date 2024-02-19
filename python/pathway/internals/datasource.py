@@ -46,12 +46,10 @@ class DataSource(ABC):
         return self.schema
 
     @abstractmethod
-    def is_bounded(self) -> bool:
-        ...
+    def is_bounded(self) -> bool: ...
 
     @abstractmethod
-    def is_append_only(self) -> bool:
-        ...
+    def is_append_only(self) -> bool: ...
 
 
 class StaticDataSource(DataSource, ABC):

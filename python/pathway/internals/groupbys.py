@@ -50,12 +50,10 @@ class GroupedJoinable(DesugaringContext, OperatorInput):
     @abstractmethod
     def reduce(
         self, *args: expr.ColumnReference, **kwargs: expr.ColumnExpression
-    ) -> table.Table:
-        ...
+    ) -> table.Table: ...
 
     @abstractmethod
-    def _operator_dependencies(self) -> StableSet[table.Table]:
-        ...
+    def _operator_dependencies(self) -> StableSet[table.Table]: ...
 
     def __getattr__(self, name):
         return getattr(self._joinable_to_group, name)

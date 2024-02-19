@@ -75,9 +75,11 @@ def plot(
         pn.Row(
             "Static preview" if bounded else "Streaming mode",
             pn.widgets.TooltipIcon(
-                value="Immediate table preview is possible as the table depends only on static inputs"
-                if bounded
-                else "Table depends on streaming inputs. Please run pw.run()"
+                value=(
+                    "Immediate table preview is possible as the table depends only on static inputs"
+                    if bounded
+                    else "Table depends on streaming inputs. Please run pw.run()"
+                )
             ),
         ),
         plot,

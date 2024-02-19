@@ -142,8 +142,7 @@ class AsyncRetryStrategy(ABC):
     """Class representing strategy of delays or backoffs for the retries."""
 
     @abstractmethod
-    async def invoke(self, func: Callable, /, *args, **kwargs):
-        ...
+    async def invoke(self, func: Callable, /, *args, **kwargs): ...
 
 
 class NoRetryStrategy(AsyncRetryStrategy):
@@ -213,8 +212,7 @@ class CacheStrategy(ABC):
     """Base class used to represent caching strategy."""
 
     @abstractmethod
-    async def invoke(self, func: Callable, /, *args, **kwargs):
-        ...
+    async def invoke(self, func: Callable, /, *args, **kwargs): ...
 
 
 class DiskCache(CacheStrategy):

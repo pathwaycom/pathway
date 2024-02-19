@@ -88,8 +88,7 @@ class ConnectorSubject(ABC):
         self._already_used = False
 
     @abstractmethod
-    def run(self) -> None:
-        ...
+    def run(self) -> None: ...
 
     def on_stop(self) -> None:
         """Called after the end of the :py:meth:`run` function."""

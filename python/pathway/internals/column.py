@@ -75,8 +75,7 @@ class Column(ABC):
 
     @property
     @abstractmethod
-    def properties(self) -> cp.ColumnProperties:
-        ...
+    def properties(self) -> cp.ColumnProperties: ...
 
     @property
     def dtype(self) -> dt.DType:
@@ -135,8 +134,7 @@ class ColumnWithContext(Column, ABC):
 
     @cached_property
     @abstractmethod
-    def context_dtype(self) -> dt.DType:
-        ...
+    def context_dtype(self) -> dt.DType: ...
 
 
 class IdColumn(ColumnWithContext):
@@ -251,8 +249,7 @@ class Context(ABC):
 
     @property
     @abstractmethod
-    def universe(self) -> Universe:
-        ...
+    def universe(self) -> Universe: ...
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return []

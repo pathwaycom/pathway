@@ -23,8 +23,7 @@ class UDF(abc.ABC):
     __wrapped__: Callable
 
     @abc.abstractmethod
-    def __call__(self, *args, **kwargs):
-        ...
+    def __call__(self, *args, **kwargs): ...
 
 
 class UDFSync(UDF):
@@ -141,8 +140,7 @@ class UDFAsyncFunction(UDFAsync):
 
 
 @overload
-def udf_async(fun: Callable) -> Callable:
-    ...
+def udf_async(fun: Callable) -> Callable: ...
 
 
 @overload
@@ -151,8 +149,7 @@ def udf_async(
     capacity: int | None = None,
     retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
     cache_strategy: asynchronous.CacheStrategy | None = None,
-) -> Callable[[Callable], Callable]:
-    ...
+) -> Callable[[Callable], Callable]: ...
 
 
 def udf_async(

@@ -48,8 +48,7 @@ class PathEvaluator(ABC):
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
-    ) -> Storage:
-        ...
+    ) -> Storage: ...
 
     _context_mapping: ClassVar[dict[type[clmn.Context], type[PathEvaluator]]] = {}
 

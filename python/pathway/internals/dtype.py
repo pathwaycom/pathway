@@ -31,12 +31,10 @@ class DType(ABC):
         return self.to_engine() or api.PathwayType.ANY
 
     @abstractmethod
-    def is_value_compatible(self, arg) -> bool:
-        ...
+    def is_value_compatible(self, arg) -> bool: ...
 
     @abstractmethod
-    def _set_args(self, *args):
-        ...
+    def _set_args(self, *args): ...
 
     def __new__(cls, *args):
         key = (cls, args)
@@ -60,8 +58,7 @@ class DType(ABC):
 
     @property
     @abstractmethod
-    def typehint(self) -> typing.Any:
-        ...
+    def typehint(self) -> typing.Any: ...
 
 
 class _SimpleDType(DType):

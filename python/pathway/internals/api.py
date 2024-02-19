@@ -42,8 +42,7 @@ S = TypeVar("S", bound=Value)
 class CombineMany(Protocol, Generic[S]):
     def __call__(
         self, state: S | None, rows: list[tuple[list[Value], int]], /
-    ) -> S | None:
-        ...
+    ) -> S | None: ...
 
 
 def denumpify(x, type_from_schema: dt.DType | None = None):
