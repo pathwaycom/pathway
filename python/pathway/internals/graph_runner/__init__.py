@@ -22,7 +22,10 @@ from pathway.internals.operator import (
     InputOperator,
     Operator,
 )
-from pathway.persistence import Config as PersistenceConfig
+from pathway.persistence import (
+    Config as PersistenceConfig,
+    get_persistence_engine_config,
+)
 
 
 class GraphRunner:
@@ -154,13 +157,10 @@ class GraphRunner:
                 monitor_stats(
                     monitoring_level, node_names, self.default_logging
                 ) as stats_monitor,
+                get_persistence_engine_config(
+                    self.persistence_config
+                ) as persistence_engine_config,
             ):
-                if self.persistence_config:
-                    self.persistence_config.on_before_run()
-                    persistence_engine_config = self.persistence_config.engine_config
-                else:
-                    persistence_engine_config = None
-
                 try:
                     return api.run_with_new_graph(
                         logic,

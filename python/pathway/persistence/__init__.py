@@ -1,6 +1,8 @@
 # Copyright © 2024 Pathway
 
+import contextlib
 import os
+from collections.abc import Generator
 from dataclasses import KW_ONLY, dataclass
 
 from pathway.internals import api
@@ -78,6 +80,10 @@ as they are used by S3 connectors.
         if self._fs_path:
             os.environ["PATHWAY_PERSISTENT_STORAGE"] = os.fspath(self._fs_path)
 
+    def remove_path_from_env_variable(self):
+        if self._fs_path:
+            del os.environ["PATHWAY_PERSISTENT_STORAGE"]
+
 
 @dataclass(frozen=True)
 class Config:
@@ -149,3 +155,21 @@ may fall behind, and the less computational resources are required.
 
     def on_before_run(self):
         self.snapshot_storage.store_path_in_env_variable()
+
+    def on_after_run(self):
+        self.snapshot_storage.remove_path_from_env_variable()
+
+
+@contextlib.contextmanager
+def get_persistence_engine_config(
+    persistence_config: Config | None,
+) -> Generator[api.PersistenceConfig | None, None, None]:
+    if persistence_config is None:
+        yield None
+        return
+
+    persistence_config.on_before_run()
+    try:
+        yield persistence_config.engine_config
+    finally:
+        persistence_config.on_after_run()
