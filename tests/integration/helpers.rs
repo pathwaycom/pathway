@@ -210,6 +210,7 @@ pub fn create_persistence_manager(
     let global_tracker = Arc::new(Mutex::new(WorkersPersistenceCoordinator::new(
         Duration::ZERO,
         1,
+        1,
     )));
 
     let tracker = Arc::new(Mutex::new(

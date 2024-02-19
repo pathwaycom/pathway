@@ -2643,7 +2643,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let has_persistent_storage = self.worker_persistent_storage.is_some();
         if external_persistent_id.is_some() {
             external_persistent_id.cloned()
-        } else if has_persistent_storage && !reader.is_internal() {
+        } else if has_persistent_storage
+            && !reader.is_internal()
+            && self
+                .worker_persistent_storage
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .persistent_id_generation_enabled()
+        {
             let table_persistence_enabled = self
                 .worker_persistent_storage
                 .as_ref()
@@ -2928,15 +2937,21 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
+        let worker_index = self.scope.index();
         let output_columns = self
             .extract_columns(table_handle, column_paths)?
             .as_collection();
         let single_threaded = data_sink.single_threaded();
+        let connector_does_output = !single_threaded || worker_index == 0;
 
         let output = output_columns.consolidate_for_output(single_threaded);
 
-        let worker_index = self.scope.index();
-        let sender = if !single_threaded || worker_index == 0 {
+        let sink_id = self
+            .worker_persistent_storage
+            .as_ref()
+            .map(|storage| storage.lock().unwrap().register_sink());
+
+        let sender = {
             let (sender, receiver) = mpsc::channel();
 
             let thread_name = format!(
@@ -2946,10 +2961,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             );
 
             let global_persistent_storage = self.global_persistent_storage.clone();
-            let sink_id = self
-                .worker_persistent_storage
-                .as_ref()
-                .map(|storage| storage.lock().unwrap().register_sink());
 
             // connector_threads vector contains both, input and output connector threads
             // connector_monitors vector contains monitors only for input connectors
@@ -2990,39 +3001,27 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 )
                 .expect("output thread creation failed");
             self.connector_threads.push(output_joiner_handle);
-            Some(sender)
-        } else {
-            None
+            sender
         };
 
         output
-            .inspect_core(move |event| match sender {
-                None => {
-                    // There is no connector thread for this worker.
-                    // We shouldn't be getting any data, but we can get frontier updates.
-                    match event {
-                        Ok((_time, [])) => {}
-                        Err(_frontier) => {}
-                        _ => panic!("got data in a worker that is not doing output"),
-                    }
-                }
-                Some(ref sender) => {
-                    match event {
-                        Ok((_time, batches)) => {
-                            for batch in batches {
-                                sender
-                                    .send(OutputEvent::Batch(batch.clone()))
-                                    .expect("sending output batch should not fail");
-                            }
-                        }
-                        Err(frontier) => {
-                            assert!(frontier.len() <= 1);
+            .inspect_core(move |event| {
+                match event {
+                    Ok((_time, batches)) => {
+                        assert!(connector_does_output || batches.is_empty());
+                        for batch in batches {
                             sender
-                                .send(OutputEvent::Commit(frontier.first().copied()))
-                                .expect("sending output commit should not fail");
+                                .send(OutputEvent::Batch(batch.clone()))
+                                .expect("sending output batch should not fail");
                         }
-                    };
-                }
+                    }
+                    Err(frontier) => {
+                        assert!(frontier.len() <= 1);
+                        sender
+                            .send(OutputEvent::Commit(frontier.first().copied()))
+                            .expect("sending output commit should not fail");
+                    }
+                };
             })
             .probe_with(&self.output_probe);
 
@@ -4708,7 +4707,22 @@ where
     parse_env_var(name)?.ok_or_else(|| format!("{name} is not set"))
 }
 
-pub fn config_from_env() -> Result<(Config, usize), String> {
+pub struct WorkersSplitConfig {
+    pub threads: usize,
+    pub processes: usize,
+}
+
+impl WorkersSplitConfig {
+    pub fn new(threads: usize, processes: usize) -> WorkersSplitConfig {
+        WorkersSplitConfig { threads, processes }
+    }
+
+    pub fn num_workers(&self) -> usize {
+        self.threads * self.processes
+    }
+}
+
+pub fn config_from_env() -> Result<(Config, WorkersSplitConfig), String> {
     let mut threads: usize = parse_env_var("PATHWAY_THREADS")?.unwrap_or(1);
     let mut processes: usize = parse_env_var("PATHWAY_PROCESSES")?.unwrap_or(1);
     if threads == 0 {
@@ -4752,7 +4766,7 @@ pub fn config_from_env() -> Result<(Config, usize), String> {
     } else {
         Config::thread()
     };
-    Ok((config, workers))
+    Ok((config, WorkersSplitConfig::new(threads, processes)))
 }
 
 fn set_process_limits(process_limits: Vec<ResourceLimit>) -> Result<()> {
@@ -4782,7 +4796,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceManagerOuterConfig>,
-    num_workers: usize,
+    workers_split_config: &WorkersSplitConfig,
     license: License,
     telemetry_config: TelemetryConfig,
 ) -> Result<Vec<R2>>
@@ -4806,9 +4820,10 @@ where
         _ => 0,
     };
     let global_persistent_storage = persistence_config.as_ref().map(|cfg| {
-        Arc::new(Mutex::new(
-            cfg.create_workers_persistence_coordinator(num_workers),
-        ))
+        Arc::new(Mutex::new(cfg.create_workers_persistence_coordinator(
+            workers_split_config.num_workers(),
+            workers_split_config.threads,
+        )))
     });
 
     let guards = execute(config, move |worker| {

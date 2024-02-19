@@ -23,8 +23,8 @@ use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
 use postgres::{Client, NoTls};
 use pyo3::exceptions::{
-    PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyRuntimeError, PyTypeError,
-    PyValueError, PyZeroDivisionError,
+    PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
+    PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
 };
 use pyo3::marker::Ungil;
 use pyo3::prelude::*;
@@ -2733,10 +2733,18 @@ pub fn run_with_new_graph(
     defer! {
         log::logger().flush();
     }
-    let (config, num_workers) =
+    let (config, workers_split_config) =
         config_from_env().map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg))?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
+            if workers_split_config.processes > 1
+                && matches!(
+                    persistence_config.persistence_mode,
+                    PersistenceMode::Persisting
+                )
+            {
+                return Err(PyNotImplementedError::new_err("Persistence mode is not supported in multiprocessing mode. Please use SelectivePersistence mode or switch to the enterprise version of Pathway."));
+            }
             Some(persistence_config.prepare(py)?)
         } else {
             None
@@ -2773,7 +2781,7 @@ pub fn run_with_new_graph(
                 monitoring_level,
                 with_http_server,
                 persistence_config,
-                num_workers,
+                &workers_split_config,
                 license,
                 telemetry_config,
             )
@@ -3131,6 +3139,8 @@ impl PyPersistenceMode {
     pub const BATCH: PersistenceMode = PersistenceMode::Batch;
     #[classattr]
     pub const PERSISTING: PersistenceMode = PersistenceMode::Persisting;
+    #[classattr]
+    pub const SELECTIVE_PERSISTING: PersistenceMode = PersistenceMode::SelectivePersisting;
     #[classattr]
     pub const UDF_CACHING: PersistenceMode = PersistenceMode::UdfCaching;
 }

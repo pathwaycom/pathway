@@ -93,8 +93,13 @@ impl PersistenceManagerOuterConfig {
     pub fn create_workers_persistence_coordinator(
         &self,
         num_workers: usize,
+        expected_ready_workers: usize,
     ) -> WorkersPersistenceCoordinator {
-        WorkersPersistenceCoordinator::new(self.snapshot_interval, num_workers)
+        WorkersPersistenceCoordinator::new(
+            self.snapshot_interval,
+            num_workers,
+            expected_ready_workers,
+        )
     }
 }
 
@@ -181,7 +186,12 @@ impl PersistenceManagerConfig {
             }
         };
 
+        let min_threshold_time = *threshold_times.values().min().unwrap_or(&0);
         for (worker_id, reader_impl) in reader_impls {
+            if matches!(self.persistence_mode, PersistenceMode::SelectivePersisting) {
+                result.push(SnapshotReader::new(reader_impl, min_threshold_time)?);
+                continue;
+            }
             let Some(threshold_time) = threshold_times.get(&worker_id) else {
                 // append the snapshot reader which would truncate snapshot straight away
                 result.push(SnapshotReader::new(reader_impl, 0)?);

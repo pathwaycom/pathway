@@ -105,6 +105,7 @@ pub enum PersistenceMode {
     SpeedrunReplay,
     Batch,
     Persisting,
+    SelectivePersisting,
     UdfCaching,
 }
 
@@ -123,7 +124,10 @@ impl PersistenceMode {
 
     fn handle_snapshot_time_advancement(self, sender: &Sender<Entry>, entry_read: SnapshotEvent) {
         match self {
-            PersistenceMode::Batch | PersistenceMode::Persisting | PersistenceMode::UdfCaching => {}
+            PersistenceMode::Batch
+            | PersistenceMode::Persisting
+            | PersistenceMode::SelectivePersisting
+            | PersistenceMode::UdfCaching => {}
             PersistenceMode::SpeedrunReplay => {
                 let send_res = sender.send(Entry::Snapshot(entry_read));
                 if let Err(e) = send_res {
@@ -334,11 +338,11 @@ where
                         .create_snapshot_writer(persistent_id)?,
                 ))
             } else {
-                let persistent_id_needed = persistent_storage
+                let persistent_ids_enforced = persistent_storage
                     .lock()
                     .unwrap()
-                    .table_persistence_enabled();
-                assert!(!persistent_id_needed || reader.is_internal());
+                    .persistent_id_generation_enabled();
+                assert!(!persistent_ids_enforced || reader.is_internal());
                 Ok(None)
             }
         } else {

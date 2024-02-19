@@ -80,6 +80,13 @@ impl SingleWorkerPersistentStorage {
     }
 
     pub fn table_persistence_enabled(&self) -> bool {
+        matches!(
+            self.config.persistence_mode,
+            PersistenceMode::Persisting | PersistenceMode::SelectivePersisting
+        )
+    }
+
+    pub fn persistent_id_generation_enabled(&self) -> bool {
         matches!(self.config.persistence_mode, PersistenceMode::Persisting)
     }
 

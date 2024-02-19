@@ -675,6 +675,7 @@ class PersistenceMode(Enum):
     SPEEDRUN_REPLAY: PersistenceMode
     REALTIME_REPLAY: PersistenceMode
     PERSISTING: PersistenceMode
+    SELECTIVE_PERSISTING: PersistenceMode
     UDF_CACHING: PersistenceMode
 
 class SnapshotAccess(Enum):
