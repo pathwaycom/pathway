@@ -70,7 +70,9 @@ impl WorkersPersistenceCoordinator {
                 current_timestamp.duration_since(last_timestamp).unwrap() >= self.refresh_frequency
             }) || reported_timestamp.is_none();
             if should_refresh {
-                info!("Updating persistent state...");
+                if self.refresh_frequency > Duration::ZERO {
+                    info!("Updating persistent state...");
+                }
                 self.last_flush_at = Some(current_timestamp);
 
                 self.last_timestamp_flushed = global_finalized_timestamp;
