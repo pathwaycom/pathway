@@ -42,24 +42,24 @@ class TokenCountSplitter(pw.UDFSync):
 
     All arguments set default which may be overridden in the UDF call
 
-    Arguments:
+    Args:
         min_tokens: minimum tokens in a chunk of text.
         max_tokens: maximum size of a chunk in tokens.
         encoding_name: name of the encoding from `tiktoken`.
 
     Example:
 
-    # >>> from pathway.xpacks.llm.splitters import TokenCountSplitter
-    # >>> import pathway as pw
-    # >>> t  = pw.debug.table_from_markdown(
-    # ...     '''| text
-    # ... 1| cooltext'''
-    # ... )
-    # >>> splitter = TokenCountSplitter(min_tokens=1, max_tokens=1)
-    # >>> t += t.select(chunks = pw.apply(splitter, pw.this.text))
-    # >>> pw.debug.compute_and_print(t, include_id=False)
-    # text     | chunks
-    # cooltext | (('cool', pw.Json({})), ('text', pw.Json({})))
+    >>> from pathway.xpacks.llm.splitters import TokenCountSplitter
+    >>> import pathway as pw
+    >>> t  = pw.debug.table_from_markdown(
+    ...     '''| text
+    ... 1| cooltext'''
+    ... )
+    >>> splitter = TokenCountSplitter(min_tokens=1, max_tokens=1)
+    >>> t += t.select(chunks = splitter(pw.this.text))
+    >>> pw.debug.compute_and_print(t, include_id=False)
+    text     | chunks
+    cooltext | (('cool', pw.Json({})), ('text', pw.Json({})))
     """
 
     CHARS_PER_TOKEN = 3

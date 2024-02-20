@@ -440,12 +440,31 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
 
 class VectorStoreClient:
+    """
+    A client you can use to query :py:class:`VectorStoreServer`.
+
+    Args:
+        - host: host on which `:py:class:`VectorStoreServer` listens
+        - port: port on which `:py:class:`VectorStoreServer` listens
+    """
+
     def __init__(self, host, port):
         self.host = host
         self.port = port
 
-    def query(self, query, k=3, metadata_filter=None) -> list[dict]:
-        """Perform a query to the vector store and fetch results."""
+    def query(
+        self, query: str, k: int = 3, metadata_filter: str | None = None
+    ) -> list[dict]:
+        """
+        Perform a query to the vector store and fetch results.
+
+        Args:
+            - query:
+            - k: number of documents to be returned
+            - metadata_filter: optional string representing the metadata filtering query
+                in the JMESPath format. The search will happen only for documents
+                satisfying this filtering.
+        """
 
         data = {"query": query, "k": k}
         if metadata_filter is not None:
@@ -474,8 +493,21 @@ class VectorStoreClient:
         responses = response.json()
         return responses
 
-    def get_input_files(self, metadata_filter=None, filepath_globpattern=None):
-        """Fetch basic statistics about the vector store."""
+    def get_input_files(
+        self,
+        metadata_filter: str | None = None,
+        filepath_globpattern: str | None = None,
+    ):
+        """
+        Fetch information on documents in the the vector store.
+
+        Args:
+            metadata_filter: optional string representing the metadata filtering query
+                in the JMESPath format. The search will happen only for documents
+                satisfying this filtering.
+            filepath_globpattern: optional glob pattern specifying which documents
+                will be searched for this query.
+        """
         url = f"http://{self.host}:{self.port}/v1/inputs"
         response = requests.post(
             url,

@@ -16,33 +16,34 @@ class OpenAIEmbedder(pw.UDFAsync):
     The capacity, retry_strategy and cache_strategy need to be specified during object
     construction. All other arguments can be overridden during application.
 
-    Parameters:
-    - capacity: Maximum number of concurrent operations allowed.
-        Defaults to None, indicating no specific limit.
-    - retry_strategy: Strategy for handling retries in case of failures.
-        Defaults to None.
-    - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-        is enabled, operations will be cached using the persistence layer.
-        Defaults to None.
-    - model: ID of the model to use. You can use the
-        [List models](https://platform.openai.com/docs/api-reference/models/list) API to
-        see all of your available models, or see
-        [Model overview](https://platform.openai.com/docs/models/overview) for
-        descriptions of them.
-    - encoding_format: The format to return the embeddings in. Can be either `float` or
-        [`base64`](https://pypi.org/project/pybase64/).
-    - user: A unique identifier representing your end-user, which can help OpenAI to monitor
-        and detect abuse.
-        [Learn more](https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids).
-    - extra_headers: Send extra headers
-    - extra_query: Add additional query parameters to the request
-    - extra_body: Add additional JSON properties to the request
-    - timeout: Timeout for requests, in seconds
+    Args:
+        - capacity: Maximum number of concurrent operations allowed.
+            Defaults to None, indicating no specific limit.
+        - retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
+            is enabled, operations will be cached using the persistence layer.
+            Defaults to None.
+        - model: ID of the model to use. You can use the
+            `List models <https://platform.openai.com/docs/api-reference/models/list>`_ API to
+            see all of your available models, or see
+            `Model overview <https://platform.openai.com/docs/models/overview>`_ for
+            descriptions of them.
+        - encoding_format: The format to return the embeddings in. Can be either `float` or
+            `base64 <https://pypi.org/project/pybase64/>`_.
+        - user: A unique identifier representing your end-user, which can help OpenAI to monitor
+            and detect abuse.
+            `Learn more <https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids>`_.
+        - extra_headers: Send extra headers
+        - extra_query: Add additional query parameters to the request
+        - extra_body: Add additional JSON properties to the request
+        - timeout: Timeout for requests, in seconds
 
     Any arguments can be provided either to the constructor or in the UDF call.
     To specify the `model` in the UDF call, set it to None.
 
-    Examples:
+    Example:
+
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
     >>> embedder = embedders.OpenAIEmbedder(model="text-embedding-ada-002")
@@ -85,7 +86,7 @@ class OpenAIEmbedder(pw.UDFAsync):
     async def __wrapped__(self, input, **kwargs) -> list[float]:
         """Embed the documents
 
-        Parameters:
+        Args:
             - input: mandatory, the string to embed.
             - **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
@@ -104,29 +105,30 @@ class LiteLLMEmbedder(pw.UDFAsync):
     is provided. The capacity, retry_strategy and cache_strategy need to be specified
     during object construction. All other arguments can be overridden during application.
 
-    Parameters:
-    - capacity: Maximum number of concurrent operations allowed.
-        Defaults to None, indicating no specific limit.
-    - retry_strategy: Strategy for handling retries in case of failures.
-        Defaults to None.
-    - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-        is enabled, operations will be cached using the persistence layer.
-        Defaults to None.
-    - model: The embedding model to use.
-    - timeout: The timeout value for the API call, default 10 mins
-    - litellm_call_id: The call ID for litellm logging.
-    - litellm_logging_obj: The litellm logging object.
-    - logger_fn: The logger function.
-    - api_base: Optional. The base URL for the API.
-    - api_version: Optional. The version of the API.
-    - api_key: Optional. The API key to use.
-    - api_type: Optional. The type of the API.
-    - custom_llm_provider: The custom llm provider.
+    Args:
+        - capacity: Maximum number of concurrent operations allowed.
+            Defaults to None, indicating no specific limit.
+        - retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
+            is enabled, operations will be cached using the persistence layer.
+            Defaults to None.
+        - model: The embedding model to use.
+        - timeout: The timeout value for the API call, default 10 mins
+        - litellm_call_id: The call ID for litellm logging.
+        - litellm_logging_obj: The litellm logging object.
+        - logger_fn: The logger function.
+        - api_base: Optional. The base URL for the API.
+        - api_version: Optional. The version of the API.
+        - api_key: Optional. The API key to use.
+        - api_type: Optional. The type of the API.
+        - custom_llm_provider: The custom llm provider.
 
     Any arguments can be provided either to the constructor or in the UDF call.
     To specify the `model` in the UDF call, set it to None.
 
-    Examples:
+    Example:
+
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
     >>> embedder = embedders.LiteLLMEmbedder(model="text-embedding-ada-002")
@@ -169,7 +171,7 @@ class LiteLLMEmbedder(pw.UDFAsync):
     async def __wrapped__(self, input, **kwargs) -> list[float]:
         """Embed the documents
 
-        Parameters:
+        Args:
             - input: mandatory, the string to embed.
             - **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
@@ -187,11 +189,25 @@ class SentenceTransformerEmbedder(pw.UDFSync):
         model: model name or path
         call_kwargs: kwargs that will be passed to each call of encode.
             These can be overridden during each application. For possible arguments check
-            [the Sentence-Transformers documentation](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode).
+            `the Sentence-Transformers documentation
+            <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         device: defines which device will be used to run the Pipeline
         sentencetransformer_kwargs: kwargs accepted during initialization of SentenceTransformers.
             For possible arguments check
-            [the Sentence-Transformers documentation](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer)
+            `the Sentence-Transformers documentation
+            <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer>`_
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import embedders
+    >>> embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt
+    ... Text
+    ... ''')
+    >>> t.select(ret=embedder(pw.this.txt))
+    <pathway.Table schema={'ret': list[float]}>
     """  # noqa: E501
 
     def __init__(
@@ -222,7 +238,8 @@ class SentenceTransformerEmbedder(pw.UDFSync):
             - input: mandatory, the string to embed.
             - **kwargs: optional parameters for `encode` method. If unset defaults from the constructor
               will be taken. For possible arguments check
-              [the Sentence-Transformers documentation](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode).
+              `the Sentence-Transformers documentation
+              <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         """  # noqa: E501
         kwargs = {**self.kwargs, **kwargs}
         return self.model.encode(text, **kwargs).tolist()

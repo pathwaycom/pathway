@@ -28,7 +28,7 @@ class ParseUtf8(pw.UDFSync):
 # MIT licensed
 class ParseUnstructured(pw.UDFSync):
     """
-    Parse document using https://unstructured.io/.
+    Parse document using `https://unstructured.io/ <https://unstructured.io/>`_.
 
     All arguments can be overridden during UDF application.
 
