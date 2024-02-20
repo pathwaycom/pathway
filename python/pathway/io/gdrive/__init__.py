@@ -20,6 +20,7 @@ import pathway as pw
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.runtime_type_check import check_arg_types
+from pathway.io._utils import STATUS_DOWNLOADED, STATUS_SIZE_LIMIT_EXCEEDED
 from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -119,7 +120,9 @@ class _GDriveClient:
                     f"Skipping object {name} because its size "
                     f"{size} exceeds the limit {self.object_size_limit}"
                 )
-                continue
+                file["status"] = STATUS_SIZE_LIMIT_EXCEEDED
+            else:
+                file["status"] = STATUS_DOWNLOADED
             result.append(file)
         return result
 
@@ -158,6 +161,8 @@ class _GDriveClient:
             return self.drive.files().get_media(fileId=file_id)
 
     def download(self, file: GDriveFile) -> bytes | None:
+        if file["status"] == STATUS_SIZE_LIMIT_EXCEEDED:
+            return None
         try:
             response = io.BytesIO()
             request = self._prepare_download_request(file)
@@ -170,6 +175,7 @@ class _GDriveClient:
             file_id = file["id"]
             reason: str = e.reason
             warnings.warn(f"cannot fetch file with id {file_id}, reason: {reason}")
+            file["status"] = "download_error"
             return None
 
     def tree(self, root_id: str) -> _GDriveTree:

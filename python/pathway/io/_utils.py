@@ -16,6 +16,9 @@ SNAPSHOT_MODE_NAME = "streaming_with_deletions"  # deprecated
 
 METADATA_COLUMN_NAME = "_metadata"
 
+STATUS_SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
+STATUS_DOWNLOADED = "downloaded"
+
 _INPUT_MODES_MAPPING = {
     STATIC_MODE_NAME: ConnectorMode.STATIC,
     STREAMING_MODE_NAME: ConnectorMode.STREAMING,
