@@ -186,7 +186,7 @@ class GraphRunner:
                                 function=frame.function,
                             ),
                         )
-                    raise error
+                    raise error from None
 
     def tree_shake_tables(
         self, graph_scope: graph.Scope, tables: Iterable[table.Table]

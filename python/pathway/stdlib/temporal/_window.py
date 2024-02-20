@@ -526,21 +526,25 @@ class _IntervalsOverWindow(Window):
         behavior: CommonBehavior | None,
         instance: pw.ColumnExpression | None,
     ) -> pw.GroupedTable:
-        check_joint_types(
-            {
-                "time_expr": (key, TimeEventType),
-                "window.lower_bound": (self.lower_bound, IntervalType),
-                "window.upper_bound": (self.upper_bound, IntervalType),
-                "window.at": (self.at, TimeEventType),
-            }
-        )
-
-        if self.at.table == table:
+        if not isinstance(self.at.table, pw.Table):
+            at_table = table
+            at = table[self.at]
+        elif self.at.table == table:
             at_table = self.at.table.copy()
             at = at_table[self.at.name]
         else:
             at_table = self.at.table
             at = self.at
+
+        check_joint_types(
+            {
+                "time_expr": (key, TimeEventType),
+                "window.lower_bound": (self.lower_bound, IntervalType),
+                "window.upper_bound": (self.upper_bound, IntervalType),
+                "window.at": (at, TimeEventType),
+            }
+        )
+
         return (
             interval_join(
                 at_table,
@@ -551,9 +555,9 @@ class _IntervalsOverWindow(Window):
                 how=pw.JoinMode.LEFT if self.is_outer else pw.JoinMode.INNER,
             )
             .select(
-                _pw_window_location=pw.left[self.at.name],
-                _pw_window_start=pw.left[self.at.name] + self.lower_bound,
-                _pw_window_end=pw.left[self.at.name] + self.upper_bound,
+                _pw_window_location=pw.left[at.name],
+                _pw_window_start=pw.left[at.name] + self.lower_bound,
+                _pw_window_end=pw.left[at.name] + self.upper_bound,
                 _pw_instance=instance,
                 _pw_key=key,
                 *pw.right,
