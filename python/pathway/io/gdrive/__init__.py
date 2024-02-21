@@ -40,6 +40,7 @@ def extend_metadata(metadata: GDriveFile) -> GDriveFile:
     metadata = add_url(metadata)
     metadata = add_path(metadata)
     metadata = add_seen_at(metadata)
+    metadata = add_status(metadata)
     return metadata
 
 
@@ -56,6 +57,11 @@ def add_url(metadata: GDriveFile) -> GDriveFile:
 
 def add_path(metadata: GDriveFile) -> GDriveFile:
     metadata["path"] = metadata["name"]
+    return metadata
+
+
+def add_status(metadata: GDriveFile) -> GDriveFile:
+    metadata["status"] = STATUS_DOWNLOADED
     return metadata
 
 
