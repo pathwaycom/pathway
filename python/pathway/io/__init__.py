@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
 from pathway.io import (
+    airbyte,
     csv,
     debezium,
     elasticsearch,
@@ -25,6 +26,7 @@ from pathway.io._subscribe import OnChangeCallback, OnFinishCallback, subscribe
 from pathway.io._utils import CsvParserSettings
 
 __all__ = [
+    "airbyte",
     "csv",
     "CsvParserSettings",
     "debezium",
