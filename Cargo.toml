@@ -51,7 +51,7 @@ ordered-float = { version = "4.2.0", features = ["serde"] }
 pipe = "0.4.0"
 postgres = { version = "0.19.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
 prometheus-client = "0.22.1"
-pyo3 = { version = "0.20.2", features = ["abi3-py310", "multiple-pymethods"] }
+pyo3 = { version = "0.20.3", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-asyncio = "0.20.0"
 pyo3-log = "0.9.0"
 rand = "0.8.5"
