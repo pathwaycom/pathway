@@ -1,7 +1,7 @@
 // Copyright © 2024 Pathway
 
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
 use cfg_if::cfg_if;
 use nix::fcntl::{fcntl, FcntlArg, FdFlag, OFlag};
@@ -27,14 +27,6 @@ pub struct Pipe {
     pub writer: OwnedFd,
 }
 
-impl Pipe {
-    unsafe fn from_raw_fds((reader, writer): (RawFd, RawFd)) -> Self {
-        let reader = unsafe { OwnedFd::from_raw_fd(reader) };
-        let writer = unsafe { OwnedFd::from_raw_fd(writer) };
-        Self { reader, writer }
-    }
-}
-
 fn set_non_blocking(fd: impl AsFd) -> io::Result<()> {
     let fd = fd.as_fd();
     let flags = fcntl(fd.as_raw_fd(), FcntlArg::F_GETFL)?;
@@ -43,7 +35,7 @@ fn set_non_blocking(fd: impl AsFd) -> io::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)] // it is used on non-Linux
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn set_cloexec(fd: impl AsFd) -> io::Result<()> {
     let fd = fd.as_fd();
     let flags = fcntl(fd.as_raw_fd(), FcntlArg::F_GETFD)?;
@@ -58,23 +50,21 @@ fn set_cloexec(fd: impl AsFd) -> io::Result<()> {
 pub fn pipe(reader_type: ReaderType, writer_type: WriterType) -> io::Result<Pipe> {
     cfg_if! {
         if #[cfg(target_os = "linux")] {
-            let pipe = unistd::pipe2(OFlag::O_CLOEXEC)?;
-            let pipe = unsafe { Pipe::from_raw_fds(pipe) };
+            let (reader, writer) = unistd::pipe2(OFlag::O_CLOEXEC)?;
         } else {
-            let pipe = unistd::pipe()?;
-            let pipe = unsafe { Pipe::from_raw_fds(pipe) };
-            set_cloexec(&pipe.reader)?;
-            set_cloexec(&pipe.writer)?;
+            let (reader, writer) = unistd::pipe()?;
+            set_cloexec(&reader)?;
+            set_cloexec(&writer)?;
         }
     }
 
     if let ReaderType::NonBlocking = reader_type {
-        set_non_blocking(&pipe.reader)?;
+        set_non_blocking(&reader)?;
     }
 
     if let WriterType::NonBlocking = writer_type {
-        set_non_blocking(&pipe.writer)?;
+        set_non_blocking(&writer)?;
     }
 
-    Ok(pipe)
+    Ok(Pipe { reader, writer })
 }

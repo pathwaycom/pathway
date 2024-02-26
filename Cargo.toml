@@ -39,7 +39,7 @@ itertools = "0.12.1"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
 log = { version = "0.4.20", features = ["std"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
-nix = { version = "0.27.1", features = ["fs", "user", "resource"] }
+nix = { version = "0.28.0", features = ["fs", "user", "resource"] }
 num-integer = "0.1.46"
 numpy = "0.20.0"
 once_cell = "1.19.0"
