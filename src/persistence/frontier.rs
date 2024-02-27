@@ -1,6 +1,6 @@
 // Copyright © 2024 Pathway
 
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -42,20 +42,24 @@ impl OffsetAntichain {
     pub fn empty(&self) -> bool {
         self.antichain.is_empty()
     }
+
+    pub fn iter(&self) -> hash_map::Iter<'_, OffsetKey, OffsetValue> {
+        self.antichain.iter()
+    }
 }
 
 impl<'a> IntoIterator for &'a OffsetAntichain {
     type Item = (&'a OffsetKey, &'a OffsetValue);
-    type IntoIter = std::collections::hash_map::Iter<'a, OffsetKey, OffsetValue>;
+    type IntoIter = hash_map::Iter<'a, OffsetKey, OffsetValue>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.antichain.iter()
+        self.iter()
     }
 }
 
 impl IntoIterator for OffsetAntichain {
     type Item = (OffsetKey, OffsetValue);
-    type IntoIter = std::collections::hash_map::IntoIter<OffsetKey, OffsetValue>;
+    type IntoIter = hash_map::IntoIter<OffsetKey, OffsetValue>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.antichain.into_iter()
