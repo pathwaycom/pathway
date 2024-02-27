@@ -89,6 +89,7 @@ class VectorStoreServer:
         doc_post_processors: (
             list[Callable[[str, dict], tuple[str, dict]]] | None
         ) = None,
+        index_params: dict | None = {},
     ):
         self.docs = docs
 
@@ -113,6 +114,12 @@ class VectorStoreServer:
 
         # detect the dimensionality of the embeddings
         self.embedding_dimension = len(_coerce_sync(self.embedder)("."))
+
+        DEFAULT_INDEX_PARAMS = dict(distance_type="cosine")
+        if index_params is not None:
+            DEFAULT_INDEX_PARAMS.update(index_params)
+
+        self.index_params = DEFAULT_INDEX_PARAMS
 
         self._graph = self._build_graph()
 
@@ -193,9 +200,9 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         knn_index = index.KNNIndex(
             chunked_docs.embedding,
             chunked_docs,
-            distance_type="cosine",
             n_dimensions=self.embedding_dimension,
             metadata=chunked_docs.data["metadata"],
+            **self.index_params,  # type:ignore
         )
 
         parsed_docs += parsed_docs.select(
