@@ -563,11 +563,16 @@ impl Pointer {
     }
 
     #[classmethod]
-    pub fn __class_getitem__<'py>(
-        cls: &'py PyType,
-        #[allow(unused)] item: &'py PyAny,
-    ) -> &'py PyType {
-        cls
+    pub fn __class_getitem__<'py>(cls: &'py PyType, item: &'py PyAny) -> PyResult<&'py PyAny> {
+        static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+
+        let py = cls.py();
+        GENERIC_ALIAS
+            .get_or_try_init(py, || -> PyResult<_> {
+                Ok(py.import("types")?.getattr("GenericAlias")?.into())
+            })?
+            .as_ref(py)
+            .call1((cls, item))
     }
 }
 
