@@ -115,6 +115,19 @@ class AddNewColumnsPathEvaluator(
                 return None
         return Storage(self.context.universe, paths, has_only_references=True)
 
+    def compute_if_old_are_not_required(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storage: Storage,
+    ) -> Storage | None:
+        paths = {}
+        for i, column in enumerate(output_columns):
+            if input_storage.has_column(column):
+                return None
+            else:
+                paths[column] = ColumnPath((i,))
+        return Storage(self.context.universe, paths, has_only_new_columns=True)
+
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
@@ -125,6 +138,10 @@ class AddNewColumnsPathEvaluator(
             maybe_storage = self.compute_if_all_new_are_references(
                 output_columns, input_storage
             )
+            if maybe_storage is None:
+                maybe_storage = self.compute_if_old_are_not_required(
+                    output_columns, input_storage
+                )
             if maybe_storage is not None:
                 return maybe_storage
         paths = {}

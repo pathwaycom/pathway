@@ -216,7 +216,9 @@ class RowwiseEvaluator(
         expressions = []
         eval_state = RowwiseEvalState()
 
-        if old_path is not None:  # keep old columns if they are needed
+        if (
+            old_path is not None and not output_storage.has_only_new_columns
+        ):  # keep old columns if they are needed
             placeholder_column = clmn.MaterializedColumn(
                 self.context.universe, ColumnProperties(dtype=dt.ANY)
             )
