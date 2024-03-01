@@ -15,6 +15,7 @@ from unittest import mock
 
 import pandas as pd
 import pytest
+from fs import open_fs
 
 import pathway as pw
 from pathway.engine import ref_scalar
@@ -392,7 +393,7 @@ def test_python_connector_deletions_disabled_logs_error_on_upsert():
 
     with pytest.raises(
         RuntimeError,
-        match=r"Trying to upsert a row in .* but deletions_enabled is set to False",
+        match=r"Trying to modify a row in the Python connector but deletions_enabled is set to False",
     ):
         run_all()
 
@@ -2824,3 +2825,79 @@ def test_server_fail_on_duplicate_route():
             schema=InputSchema,
             delete_completed_queries=False,
         )
+
+
+def test_pyfilesystem_simple(tmp_path: pathlib.Path):
+    zip_path = (
+        pathlib.Path("/".join(__file__.split("/")[:-1])) / "data" / "pyfs-testdata.zip"
+    )
+    output_path = tmp_path / "output.txt"
+
+    with open_fs("zip://" + str(zip_path)) as source:
+        table = pw.io.pyfilesystem.read(
+            source,
+            mode="static",
+            with_metadata=True,
+        )
+        pw.io.jsonlines.write(table, output_path)
+        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    paths = set()
+    names = set()
+    with open(output_path, "r") as f:
+        for line in f:
+            data = json.loads(line)
+            assert "_metadata" in data
+            assert "data" in data
+            assert "diff" in data
+            assert "time" in data
+            metadata = data["_metadata"]
+            paths.add(metadata["path"])
+            names.add(metadata["name"])
+            assert metadata["size"] == len(data["data"])
+
+    assert names == set(["a.txt", "b.txt"])
+    assert paths == set(["projects/a.txt", "projects/b.txt"])
+
+
+@pytest.mark.flaky(reruns=2)
+@needs_multiprocessing_fork
+def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
+    inputs_path = tmp_path / "inputs"
+    os.mkdir(inputs_path)
+    output_path = tmp_path / "output.txt"
+
+    def stream_inputs():
+        first_line = {"key": 1, "value": "one"}
+        second_line = {"key": 2, "value": "two"}
+        write_lines(inputs_path / "input1.jsonlines", json.dumps(first_line))
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 1), 30, target=None
+        )
+        write_lines(inputs_path / "input1.jsonlines", json.dumps(second_line))
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 3), 30, target=None
+        )
+        write_lines(inputs_path / "input1.jsonlines", json.dumps(first_line))
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 5), 30, target=None
+        )
+        os.remove(inputs_path / "input1.jsonlines")
+        wait_result_with_checker(
+            FileLinesNumberChecker(output_path, 6), 30, target=None
+        )
+        write_lines(inputs_path / "input2.jsonlines", json.dumps(first_line))
+
+    t = threading.Thread(target=stream_inputs, daemon=True)
+    t.start()
+
+    with open_fs(os.fspath(inputs_path)) as source:
+        table = pw.io.pyfilesystem.read(
+            source,
+            with_metadata=True,
+            refresh_interval=0.1,
+        )
+        pw.io.jsonlines.write(table, output_path)
+        wait_result_with_checker(FileLinesNumberChecker(output_path, 7), 30)
+
+    t.join()

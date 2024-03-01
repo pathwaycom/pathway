@@ -1431,7 +1431,7 @@ impl Reader for PythonReader {
 
             if event != DataEventType::Insert && !self.subject.borrow(py).deletions_enabled {
                 return Err(ReadError::Py(PyValueError::new_err(
-                    "Trying to delete a row in the Python connector but deletions_enabled is set to False.",
+                    "Trying to modify a row in the Python connector but deletions_enabled is set to False.",
                 )));
             }
 

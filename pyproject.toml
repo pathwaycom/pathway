@@ -42,6 +42,7 @@ dependencies = [
     "opentelemetry-sdk >= 1.22.0",
     "opentelemetry-exporter-otlp-proto-grpc >= 1.22.0",
     "airbyte-serverless == 0.23",
+    "fs >= 2.4.16",
 ]
 
 [project.optional-dependencies]

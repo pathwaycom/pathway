@@ -127,14 +127,24 @@ class ConnectorSubject(ABC):
 
     def commit(self) -> None:
         """Sends a commit message."""
-        self._buffer.put((DataEventType.INSERT, None, b"*COMMIT*", None))
+        event_type = (
+            DataEventType.INSERT
+            if self._session_type == SessionType.NATIVE
+            else DataEventType.UPSERT
+        )
+        self._buffer.put((event_type, None, b"*COMMIT*", None))
 
     def close(self) -> None:
         """Sends a sentinel message.
 
         Should be called to indicate that no new messages will be sent.
         """
-        self._buffer.put((DataEventType.INSERT, None, b"*FINISH*", None))
+        event_type = (
+            DataEventType.INSERT
+            if self._session_type == SessionType.NATIVE
+            else DataEventType.UPSERT
+        )
+        self._buffer.put((event_type, None, b"*FINISH*", None))
 
     def start(self) -> None:
         """Runs a separate thread with function feeding data into buffer.

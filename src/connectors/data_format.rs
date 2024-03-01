@@ -25,6 +25,14 @@ use serde_json::Value as JsonValue;
 const COMMIT_LITERAL: &str = "*COMMIT*";
 const DEBEZIUM_EMPTY_KEY_PAYLOAD: &str = "{\"payload\": {\"before\": {}, \"after\": {}}}";
 
+fn is_commit_literal(value: &Value) -> bool {
+    match value {
+        Value::String(arc_str) => arc_str.as_str() == COMMIT_LITERAL,
+        Value::Bytes(arc_bytes) => **arc_bytes == *COMMIT_LITERAL.as_bytes(),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParsedEvent {
     AdvanceTime,
@@ -613,13 +621,7 @@ impl Parser for IdentityParser {
             }
         };
 
-        let is_commit = {
-            if let Value::String(arc_str) = &value {
-                arc_str.as_str() == COMMIT_LITERAL
-            } else {
-                false
-            }
-        };
+        let is_commit = is_commit_literal(&value);
 
         let event = if is_commit {
             ParsedEvent::AdvanceTime
