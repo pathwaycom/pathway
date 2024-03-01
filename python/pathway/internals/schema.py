@@ -228,6 +228,8 @@ def _create_column_definitions(
             dtype=dt.wrap(dtype),
             name=column_name,
             append_only=_get_column_property("append_only", False),
+            description=column.description,
+            example=column.example,
         )
 
     if fields:
@@ -591,6 +593,8 @@ class ColumnSchema:
     primary_key: bool = False
     default_value: Any = _no_default_value_marker
     append_only: bool = False
+    description: str | None = None  # used in OpenAPI schema autogeneration
+    example: Any = None  # used in OpenAPI schema autogeneration
 
     def has_default_value(self) -> bool:
         return self.default_value != _no_default_value_marker
@@ -602,6 +606,8 @@ class ColumnSchema:
             dtype=self.dtype,
             name=self.name,
             append_only=self.append_only,
+            description=self.description,
+            example=self.example,
         )
 
     @property
@@ -616,6 +622,8 @@ class ColumnDefinition:
     dtype: dt.DType | None = dt.ANY
     name: str | None = None
     append_only: bool | None = None
+    description: str | None = None  # used in OpenAPI schema autogeneration
+    example: Any = None  # used in OpenAPI schema autogeneration
 
     def __post_init__(self):
         assert self.dtype is None or isinstance(self.dtype, dt.DType)
@@ -632,6 +640,8 @@ def column_definition(
     dtype: Any | None = None,
     name: str | None = None,
     append_only: bool | None = None,
+    description: str | None = None,
+    example: Any = None,
 ) -> Any:  # Return any so that mypy does not complain
     """Creates column definition
 
@@ -667,6 +677,8 @@ def column_definition(
         default_value=default_value,
         name=name,
         append_only=append_only,
+        description=description,
+        example=example,
     )
 
 

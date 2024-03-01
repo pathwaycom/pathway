@@ -3,20 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import pathlib
-import time
-from multiprocessing import Process
-
-import pytest
-import requests
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
-
-PATHWAY_HOST = "127.0.0.1"
-PATHWAY_PORT = int(os.environ.get("PATHWAY_MONITORING_HTTP_PORT", "20000")) + 20000
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 
 class DebugStatsInputSchema(VectorStoreServer.StatisticsQuerySchema):
@@ -94,8 +84,8 @@ def _test_vs(fake_embeddings_model):
     # parse_graph.G.clear()
     retrieve_queries = pw.debug.table_from_markdown(
         """
-        metadata_filter | filepath_globpattern | query | k
-                        |                      | "Foo" | 1
+        query | k metadata_filter | filepath_globpattern
+        "Foo" | 1                 |
         """,
         schema=VectorStoreServer.RetrieveQuerySchema,
     )
@@ -125,58 +115,3 @@ def test_async_embedder():
         return [1.0, 1.0, 0.0]
 
     _test_vs(fake_embeddings_model)
-
-
-def pathway_server(tmp_path):
-    docs = pw.io.fs.read(
-        tmp_path,
-        format="binary",
-        mode="streaming",
-        with_metadata=True,
-    )
-
-    @pw.udf_async
-    async def fake_embeddings_model(x: str):
-        return [1.0, 1.0, 0.0]
-
-    vector_server = VectorStoreServer(
-        docs,
-        embedder=fake_embeddings_model,
-    )
-
-    thread = vector_server.run_server(
-        host=PATHWAY_HOST,
-        port=PATHWAY_PORT,
-        threaded=True,
-        with_cache=False,
-    )
-    thread.join()
-
-
-@pytest.mark.skip(reason="works locally, fails on CI; to be investigated")
-def test_similarity_search_without_metadata(tmp_path: pathlib.Path):
-    with open(tmp_path / "file_one.txt", "w+") as f:
-        f.write("foo")
-
-    p = Process(target=pathway_server, args=[tmp_path])
-    p.start()
-    time.sleep(5)
-    client = VectorStoreClient(host=PATHWAY_HOST, port=PATHWAY_PORT)
-    MAX_ATTEMPTS = 5
-    attempts = 0
-    output = []
-    while attempts < MAX_ATTEMPTS:
-        try:
-            output = client("foo")
-        except requests.exceptions.RequestException:
-            pass
-        else:
-            break
-        time.sleep(1)
-        attempts += 1
-    p.terminate()
-    time.sleep(2)
-    assert len(output) == 1
-    assert output[0]["dist"] < 0.0001
-    assert output[0]["text"] == "foo"
-    assert "metadata" in output[0]

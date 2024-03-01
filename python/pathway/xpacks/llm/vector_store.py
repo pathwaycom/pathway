@@ -257,8 +257,12 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         return info_results
 
     class FilterSchema(pw.Schema):
-        metadata_filter: str | None = pw.column_definition(default_value=None)
-        filepath_globpattern: str | None = pw.column_definition(default_value=None)
+        metadata_filter: str | None = pw.column_definition(
+            default_value=None, description="Metadata filter in JMESPath format"
+        )
+        filepath_globpattern: str | None = pw.column_definition(
+            default_value=None, description="An optional Glob pattern for the file path"
+        )
 
     InputsQuerySchema = FilterSchema
 
@@ -323,16 +327,20 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         )
         return input_results
 
-    # TODO: fix
-    # class RetrieveQuerySchema(FilterSchema):
-    #     query: str
-    #     k: int
-    # Keep a weird column ordering to match one that stems from the class inheritance above.
     class RetrieveQuerySchema(pw.Schema):
-        metadata_filter: str | None = pw.column_definition(default_value=None)
-        filepath_globpattern: str | None = pw.column_definition(default_value=None)
-        query: str
-        k: int
+        query: str = pw.column_definition(
+            description="Your query for the similarity search",
+            example="Pathway data processing framework",
+        )
+        k: int = pw.column_definition(
+            description="The number of documents to provide", example=2
+        )
+        metadata_filter: str | None = pw.column_definition(
+            default_value=None, description="Metadata filter in JMESPath format"
+        )
+        filepath_globpattern: str | None = pw.column_definition(
+            default_value=None, description="An optional Glob pattern for the file path"
+        )
 
     @pw.table_transformer
     def retrieve_query(
@@ -405,7 +413,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         webserver = pw.io.http.PathwayWebserver(host=host, port=port, with_cors=True)
 
         # TODO(move into webserver??)
-        def serve(route, schema, handler):
+        def serve(route, schema, handler, documentation):
             queries, writer = pw.io.http.rest_connector(
                 webserver=webserver,
                 route=route,
@@ -413,12 +421,44 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                 schema=schema,
                 autocommit_duration_ms=50,
                 delete_completed_queries=True,
+                documentation=documentation,
             )
             writer(handler(queries))
 
-        serve("/v1/retrieve", self.RetrieveQuerySchema, self.retrieve_query)
-        serve("/v1/statistics", self.StatisticsQuerySchema, self.statistics_query)
-        serve("/v1/inputs", self.InputsQuerySchema, self.inputs_query)
+        serve(
+            "/v1/retrieve",
+            self.RetrieveQuerySchema,
+            self.retrieve_query,
+            pw.io.http.EndpointDocumentation(
+                summary="Do a similarity search for your query",
+                description="Request the given number of documents from the "
+                "realtime-maintained index.",
+                method_types=("GET",),
+            ),
+        )
+        serve(
+            "/v1/statistics",
+            self.StatisticsQuerySchema,
+            self.statistics_query,
+            pw.io.http.EndpointDocumentation(
+                summary="Get current indexer stats",
+                description="Request for the basic stats of the indexer process. "
+                "It returns the number of documents that are currently present in the "
+                "indexer and the time the last of them was added.",
+                method_types=("GET",),
+            ),
+        )
+        serve(
+            "/v1/inputs",
+            self.InputsQuerySchema,
+            self.inputs_query,
+            pw.io.http.EndpointDocumentation(
+                summary="Get indexed documents list",
+                description="Request for the list of documents present in the indexer. "
+                "It returns the list of metadata objects.",
+                method_types=("GET",),
+            ),
+        )
 
         def run():
             if with_cache:

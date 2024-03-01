@@ -1,9 +1,11 @@
 # Copyright © 2024 Pathway
 
 import asyncio
+import copy
 import json
 import logging
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, Sequence
 from uuid import uuid4
@@ -45,6 +47,171 @@ _ENGINE_TO_OPENAPI_FORMAT = {
 QUERY_SCHEMA_COLUMN = "query"
 
 
+class EndpointDocumentation:
+    """
+    The settings for the automatic OpenAPI v3 docs generation for an endpoint.
+
+    Args:
+        summary: Short endpoint description shown as a hint in the endpoints list.
+        description: Comprehensive description for the endpoint.
+        tags: Tags for grouping the endpoints.
+        method_types: If set, Pathway will document only the given method types. This \
+way, one can exclude certain endpoints and methods from being documented.
+    """
+
+    DEFAULT_RESPONSES_DESCRIPTION = {
+        "200": {
+            "description": "OK",
+        },
+        "400": {
+            "description": "The request is incorrect. Please check if "
+            "it complies with the auto-generated and Pathway input "
+            "table schemas"
+        },
+    }
+
+    def __init__(
+        self,
+        *,
+        summary: str | None = None,
+        description: str | None = None,
+        tags: Sequence[str] | None = None,
+        method_types: Sequence[str] | None = None,
+    ):
+        self.summary = summary
+        self.description = description
+        self.tags = tags
+        self.method_types = None
+        if method_types is not None:
+            self.method_types = set([x.upper() for x in method_types])
+
+    def generate_docs(self, format, method, schema) -> dict:
+        if not self._is_method_exposed(method):
+            return {}
+        if method.upper() == "GET":
+            # Get requests receive parameters from CGI, so their schema description
+            # is a bit different from the POST / PUT / PATCH
+            endpoint_description = {
+                "parameters": self._construct_openapi_get_request_schema(schema),
+                "responses": self.DEFAULT_RESPONSES_DESCRIPTION,
+            }
+        else:
+            if format == "raw":
+                content_header = "text/plain"
+                openapi_schema = self._construct_openapi_plaintext_schema(schema)
+            elif format == "custom":
+                content_header = "application/json"
+                openapi_schema = self._construct_openapi_json_schema(schema)
+            else:
+                raise ValueError(f"Unknown endpoint input format: {format}")
+            content_description = {content_header: {"schema": openapi_schema}}
+            endpoint_description = {
+                "requestBody": {
+                    "content": content_description,
+                },
+                "responses": self.DEFAULT_RESPONSES_DESCRIPTION,
+            }
+
+        if self.tags is not None:
+            endpoint_description["tags"] = list(self.tags)
+        if self.description is not None:
+            endpoint_description["description"] = self.description
+        if self.summary is not None:
+            endpoint_description["summary"] = self.summary
+
+        return {method.lower(): endpoint_description}
+
+    def _is_method_exposed(self, method):
+        return self.method_types is None or method.upper() in self.method_types
+
+    def _add_optional_traits_if_present(self, field_description, props):
+        if props.example is not None:
+            field_description["example"] = props.example
+        if props.description is not None:
+            field_description["description"] = props.description
+
+    def _construct_openapi_plaintext_schema(self, schema) -> dict:
+        query_column = schema.columns().get(QUERY_SCHEMA_COLUMN)
+        if query_column is None:
+            raise ValueError(
+                "'raw' endpoint input format requires 'value' column in schema"
+            )
+        openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(query_column, "string")
+        openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(query_column)
+        description = {
+            "type": openapi_type,
+        }
+        if openapi_format:
+            description["format"] = openapi_format
+        if query_column.has_default_value():
+            description["default"] = query_column.default_value
+        self._add_optional_traits_if_present(description, query_column)
+
+        return description
+
+    def _construct_openapi_get_request_schema(self, schema) -> list:
+        parameters = []
+        for name, props in schema.columns().items():
+            field_description = {
+                "in": "query",
+                "name": name,
+                "required": not props.has_default_value(),
+            }
+            self._add_optional_traits_if_present(field_description, props)
+            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(
+                unoptionalize(props.dtype).map_to_engine()
+            )
+            if openapi_type:
+                field_description["schema"] = {
+                    "type": openapi_type,
+                }
+            else:
+                # Get request params without type make schema invalid
+                field_description["schema"] = {"type": "string"}
+            parameters.append(field_description)
+
+        return parameters
+
+    def _construct_openapi_json_schema(self, schema) -> dict:
+        properties = {}
+        required = []
+        additional_properties = False
+
+        for name, props in schema.columns().items():
+            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(props.dtype.map_to_engine())
+            if openapi_type is None:
+                # not something we can clearly define the type for, so it will be
+                # read as an additional property
+                additional_properties = True
+                continue
+
+            field_description = {
+                "type": openapi_type,
+            }
+
+            if not props.has_default_value():
+                required.append(name)
+            else:
+                field_description["default"] = props.default_value
+
+            self._add_optional_traits_if_present(field_description, props)
+            openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(props.dtype.map_to_engine())
+            if openapi_format is not None:
+                field_description["format"] = openapi_format
+
+            properties[name] = field_description
+
+        result = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": additional_properties,
+        }
+        if required:
+            result["required"] = required
+
+        return result
+
+
 class PathwayWebserver:
     """
     The basic configuration class for ``pw.io.http.rest_connector``.
@@ -83,15 +250,17 @@ added endpoints.
             self._cors = None
         self._is_launched = False
         self._app_start_mutex = threading.Lock()
-        self._openapi_description = {
-            "openapi": "3.0.3",
-            "info": {
-                "title": "Pathway-generated openapi description",
-                "version": "1.0.0",
-            },
-            "paths": {},
-            "servers": [{"url": f"http://{host}:{port}/"}],
-        }
+        self._openapi_description = OrderedDict(
+            {
+                "openapi": "3.0.3",
+                "info": {
+                    "title": "Pathway-generated openapi description",
+                    "version": "1.0.0",
+                },
+                "paths": {},
+                "servers": [{"url": f"http://{host}:{port}/"}],
+            }
+        )
         if with_schema_endpoint:
             self._add_endpoint_to_app("GET", "/_schema", self._schema_handler)
 
@@ -116,11 +285,12 @@ added endpoints.
             )
 
     async def _schema_handler(self, request: web.Request):
+        origin = f"{request.scheme}://{request.host}"
         format = request.query.get("format", "yaml")
         if format == "json":
             return web.json_response(
                 status=200,
-                data=self.openapi_description_json,
+                data=self.openapi_description_json(origin),
                 dumps=pw.Json.dumps,
             )
         elif format != "yaml":
@@ -130,128 +300,18 @@ added endpoints.
 
         return web.Response(
             status=200,
-            text=self.openapi_description,
+            text=self.openapi_description(origin),
             content_type="text/x-yaml",
         )
 
-    def _construct_openapi_plaintext_schema(self, schema) -> dict:
-        query_column = schema.columns().get(QUERY_SCHEMA_COLUMN)
-        if query_column is None:
-            raise ValueError(
-                "'raw' endpoint input format requires 'value' column in schema"
-            )
-        openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(query_column, "string")
-        openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(query_column)
-        description = {
-            "type": openapi_type,
-        }
-        if openapi_format:
-            description["format"] = openapi_format
-        if query_column.has_default_value():
-            description["default"] = query_column.default_value
-
-        return description
-
-    def _construct_openapi_get_request_schema(self, schema) -> list:
-        parameters = []
-        for name, props in schema.columns().items():
-            field_description = {
-                "in": "query",
-                "name": name,
-                "required": not props.has_default_value(),
-            }
-            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(props.dtype.map_to_engine())
-            if openapi_type:
-                field_description["schema"] = {
-                    "type": openapi_type,
-                }
-            parameters.append(field_description)
-
-        return parameters
-
-    def _construct_openapi_json_schema(self, schema) -> dict:
-        properties = {}
-        required = []
-        additional_properties = False
-
-        for name, props in schema.columns().items():
-            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(props.dtype.map_to_engine())
-            if openapi_type is None:
-                # not something we can clearly define the type for, so it will be
-                # read as an additional property
-                additional_properties = True
-                continue
-
-            field_description = {
-                "type": openapi_type,
-            }
-
-            if not props.has_default_value():
-                required.append(name)
-            else:
-                field_description["default"] = props.default_value
-
-            openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(props.dtype.map_to_engine())
-            if openapi_format is not None:
-                field_description["format"] = openapi_format
-
-            properties[name] = field_description
-
-        result = {
-            "type": "object",
-            "properties": properties,
-            "additionalProperties": additional_properties,
-        }
-        if required:
-            result["required"] = required
-
-        return result
-
-    def _register_endpoint(self, route, handler, format, schema, methods) -> None:
-        simple_responses_dict = {
-            "200": {
-                "description": "OK",
-            },
-            "400": {
-                "description": "The request is incorrect. Please check if "
-                "it complies with the auto-generated and Pathway input "
-                "table schemas"
-            },
-        }
-
+    def _register_endpoint(
+        self, route, handler, format, schema, methods, documentation
+    ) -> None:
         self._openapi_description["paths"][route] = {}  # type: ignore[index]
         for method in methods:
             self._add_endpoint_to_app(method, route, handler)
-
-            if method == "GET":
-                content = {
-                    "parameters": self._construct_openapi_get_request_schema(schema),
-                    "responses": simple_responses_dict,
-                }
-            elif format == "raw":
-                content = {
-                    "text/plain": {
-                        "schema": self._construct_openapi_plaintext_schema(schema)
-                    }
-                }
-            elif format == "custom":
-                content = {
-                    "application/json": {
-                        "schema": self._construct_openapi_json_schema(schema)
-                    }
-                }
-            else:
-                raise ValueError(f"Unknown endpoint input format: {format}")
-
-            if method != "GET":
-                self._openapi_description["paths"][route][method.lower()] = {  # type: ignore[index]
-                    "requestBody": {
-                        "content": content,
-                    },
-                    "responses": simple_responses_dict,
-                }
-            else:
-                self._openapi_description["paths"][route]["get"] = content  # type: ignore[index]
+            endpoint_docs = documentation.generate_docs(format, method, schema)
+            self._openapi_description["paths"][route].update(endpoint_docs)  # type: ignore[index]
 
     def _run(self) -> None:
         self._app_start_mutex.acquire()
@@ -268,19 +328,20 @@ added endpoints.
         else:
             self._app_start_mutex.release()
 
-    @property
-    def openapi_description_json(self) -> dict:
+    def openapi_description_json(self, origin) -> dict:
         """
         Returns Open API description for the added set of endpoints in JSON format.
         """
-        return self._openapi_description
+        result = copy.deepcopy(self._openapi_description)
+        result["servers"] = [{"url": origin}]
 
-    @property
-    def openapi_description(self):
+        return result
+
+    def openapi_description(self, origin):
         """
         Returns Open API description for the added set of endpoints in yaml format.
         """
-        return yaml.dump(self.openapi_description_json)
+        return yaml.dump(dict(self.openapi_description_json(origin)), sort_keys=False)
 
 
 class RestServerSubject(io.python.ConnectorSubject):
@@ -298,6 +359,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         delete_completed_queries: bool,
         format: str = "raw",
         request_validator: Callable | None = None,
+        documentation: EndpointDocumentation = EndpointDocumentation(),
     ) -> None:
         super().__init__()
         self._webserver = webserver
@@ -307,7 +369,9 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._format = format
         self._request_validator = request_validator
 
-        webserver._register_endpoint(route, self.handle, format, schema, methods)
+        webserver._register_endpoint(
+            route, self.handle, format, schema, methods, documentation
+        )
 
     def run(self):
         self._webserver._run()
@@ -395,6 +459,7 @@ def rest_connector(
     schema: type[pw.Schema] | None = None,
     methods: Sequence[str] = ("POST",),
     autocommit_duration_ms=1500,
+    documentation: EndpointDocumentation = EndpointDocumentation(),
     keep_queries: bool | None = None,
     delete_completed_queries: bool | None = None,
     request_validator: Callable | None = None,
@@ -527,6 +592,7 @@ with:
             delete_completed_queries=delete_completed_queries,
             format=format,
             request_validator=request_validator,
+            documentation=documentation,
         ),
         schema=schema,
         format="json",
