@@ -5,9 +5,8 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
-from pathway.internals.api import Pointer
+from pathway.internals import api
 
 
 class DataSink(ABC):
@@ -16,13 +15,18 @@ class DataSink(ABC):
 
 @dataclass(frozen=True)
 class GenericDataSink(DataSink):
-    datastorage: Any  # api.DataStorage
-    dataformat: Any  # api.DataFormat
+    datastorage: api.DataStorage
+    dataformat: api.DataFormat
 
 
 @dataclass(frozen=True)
 class CallbackDataSink(DataSink):
-    on_change: Callable[[Pointer, list[Any], int, int], None]
+    on_change: Callable[[api.Pointer, list[api.Value], int, int], None]
     on_time_end: Callable[[int], None]
     on_end: Callable[[], None]
     skip_persisted_batch: bool
+
+
+@dataclass(frozen=True)
+class ExportDataSink(DataSink):
+    callback: Callable[[api.Scope, api.ExportedTable], None]

@@ -18,9 +18,9 @@ pub use reduce::Reducer;
 pub mod graph;
 pub use graph::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Computer,
-    ConcatHandle, Context, DataRow, ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle,
-    JoinType, LegacyTable, OperatorStats, ProberStats, ReducerData, ScopedGraph, TableHandle,
-    TableProperties, UniverseHandle,
+    ConcatHandle, Context, DataRow, ExportedTable, ExportedTableCallback, ExpressionData, Graph,
+    IterationLogic, IxKeyPolicy, IxerHandle, JoinType, LegacyTable, OperatorStats, ProberStats,
+    ReducerData, ScopedGraph, TableHandle, TableProperties, UniverseHandle,
 };
 
 pub mod http_server;
@@ -39,6 +39,9 @@ pub use expression::{
 pub mod progress_reporter;
 pub mod time;
 pub use time::{DateTimeNaive, DateTimeUtc, Duration};
+
+pub mod frontier;
+pub use frontier::TotalFrontier;
 
 pub mod telemetry;
 pub use telemetry::Config;

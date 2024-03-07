@@ -5,9 +5,9 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::engine::{
-    graph::SubscribeCallbacksBuilder, license::License, Computer as EngineComputer, Expressions,
-};
+use crate::engine::graph::{ExportedTable, SubscribeCallbacksBuilder};
+use crate::engine::license::License;
+use crate::engine::{Computer as EngineComputer, Expressions, TotalFrontier};
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -66,7 +66,7 @@ use crate::connectors::data_storage::{
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
-use crate::engine::dataflow::config_from_env;
+use crate::engine::dataflow::Config;
 use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
 use crate::engine::graph::ScopedContext;
 use crate::engine::progress_reporter::MonitoringLevel;
@@ -1868,6 +1868,26 @@ impl Scope {
 
 #[pymethods]
 impl Scope {
+    #[getter]
+    pub fn worker_index(&self) -> usize {
+        self.graph.worker_index()
+    }
+
+    #[getter]
+    pub fn worker_count(&self) -> usize {
+        self.graph.worker_count()
+    }
+
+    #[getter]
+    pub fn thread_count(&self) -> usize {
+        self.graph.thread_count()
+    }
+
+    #[getter]
+    pub fn process_count(&self) -> usize {
+        self.graph.process_count()
+    }
+
     pub fn empty_table(
         self_: &PyCell<Self>,
         properties: ConnectorProperties,
@@ -2670,6 +2690,23 @@ impl Scope {
             .probe_table(table.handle, operator_id)?;
         Ok(())
     }
+
+    pub fn export_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        column_paths: Vec<ColumnPath>,
+    ) -> PyResult<PyExportedTable> {
+        let exported_table = self_
+            .borrow()
+            .graph
+            .export_table(table.handle, column_paths)?;
+        Ok(PyExportedTable::new(exported_table))
+    }
+
+    pub fn import_table(self_: &PyCell<Self>, table: &PyExportedTable) -> PyResult<Py<Table>> {
+        let table_handle = self_.borrow().graph.import_table(table.inner.clone())?;
+        Table::new(self_, table_handle)
+    }
 }
 
 type CapturedTableData = Arc<Mutex<Vec<DataRow>>>;
@@ -2738,11 +2775,11 @@ pub fn run_with_new_graph(
     defer! {
         log::logger().flush();
     }
-    let (config, workers_split_config) =
-        config_from_env().map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg))?;
+    let config = Config::from_env()
+        .map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg.to_string()))?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
-            if workers_split_config.processes > 1
+            if config.processes() > 1
                 && matches!(
                     persistence_config.persistence_mode,
                     PersistenceMode::Persisting
@@ -2786,7 +2823,6 @@ pub fn run_with_new_graph(
                 monitoring_level,
                 with_http_server,
                 persistence_config,
-                &workers_split_config,
                 license,
                 telemetry_config,
             )
@@ -4192,6 +4228,93 @@ impl IntoPy<PyObject> for EngineTrace {
     }
 }
 
+// submodule to make sure no other code can create instances of `Done`
+mod done {
+    use once_cell::sync::Lazy;
+    use pyo3::prelude::*;
+
+    struct InnerDone;
+
+    #[pyclass(module = "pathway.engine", frozen)]
+    pub struct Done(InnerDone);
+
+    pub static DONE: Lazy<Py<Done>> = Lazy::new(|| {
+        Python::with_gil(|py| Py::new(py, Done(InnerDone)).expect("creating DONE should not fail"))
+    });
+}
+use done::{Done, DONE};
+
+#[pymethods]
+impl Done {
+    pub fn __hash__(self_: &PyCell<Self>) -> usize {
+        // mimic the default Python hash
+        (self_.as_ptr() as usize).rotate_right(4)
+    }
+
+    pub fn __richcmp__(self_: &PyCell<Self>, other: &PyAny, op: CompareOp) -> Py<PyAny> {
+        let py = other.py();
+        if other.is_instance_of::<Self>() {
+            assert!(self_.is(other));
+            op.matches(Ordering::Equal).into_py(py)
+        } else if other.is_instance_of::<PyInt>() {
+            op.matches(Ordering::Greater).into_py(py)
+        } else {
+            py.NotImplemented()
+        }
+    }
+}
+
+impl<'source> FromPyObject<'source> for TotalFrontier<u64> {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        if ob.is_instance_of::<Done>() {
+            Ok(TotalFrontier::Done)
+        } else {
+            Ok(TotalFrontier::At(ob.extract()?))
+        }
+    }
+}
+
+impl IntoPy<PyObject> for TotalFrontier<u64> {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            Self::At(i) => i.into_py(py),
+            Self::Done => DONE.clone_ref(py).into_py(py),
+        }
+    }
+}
+
+impl ToPyObject for TotalFrontier<u64> {
+    fn to_object(&self, py: Python<'_>) -> PyObject {
+        self.into_py(py)
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "ExpportedTable")]
+pub struct PyExportedTable {
+    inner: Arc<dyn ExportedTable>,
+}
+
+impl PyExportedTable {
+    fn new(inner: Arc<dyn ExportedTable>) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyExportedTable {
+    fn frontier(&self) -> TotalFrontier<u64> {
+        self.inner.frontier()
+    }
+
+    fn snapshot_at(&self, frontier: TotalFrontier<u64>) -> Vec<(Key, Vec<Value>)> {
+        self.inner.snapshot_at(frontier)
+    }
+
+    fn failed(&self) -> bool {
+        self.inner.failed()
+    }
+}
+
 struct WakeupHandler<'py> {
     py: Python<'py>,
     _fd: OwnedFd,
@@ -4313,6 +4436,8 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<ColumnProperties>()?;
     m.add_class::<TableProperties>()?;
     m.add_class::<Trace>()?;
+    m.add_class::<Done>()?;
+    m.add_class::<PyExportedTable>()?;
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;
@@ -4322,6 +4447,8 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;
     m.add("EngineErrorWithTrace", &*ENGINE_ERROR_WITH_TRACE_TYPE)?;
+
+    m.add("DONE", &*DONE)?;
 
     Ok(())
 }

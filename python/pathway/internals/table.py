@@ -17,11 +17,7 @@ from pathway.internals.arg_handlers import (
     reduce_args_handler,
     select_args_handler,
 )
-from pathway.internals.decorators import (
-    contextualized_operator,
-    empty_from_schema,
-    table_to_datasink,
-)
+from pathway.internals.decorators import contextualized_operator
 from pathway.internals.desugaring import (
     RestrictUniverseDesugaring,
     combine_args_kwargs,
@@ -43,9 +39,11 @@ from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
     from pathway.internals.datasink import DataSink
+    from pathway.internals.interactive import LiveTable
 
 
 TSchema = TypeVar("TSchema", bound=Schema)
+TTable = TypeVar("TTable", bound="Table[Any]")
 T = TypeVar("T", bound=api.Value)
 
 
@@ -359,7 +357,9 @@ class Table(
         >>> pw.debug.compute_and_print(t1, include_id=False)
         age | pet
         """
-        ret = empty_from_schema(schema_from_types(None, **kwargs))
+        from pathway.internals import table_io
+
+        ret = table_io.empty_from_schema(schema_from_types(None, **kwargs))
         G.universe_solver.register_as_empty(ret._universe)
         return ret
 
@@ -842,12 +842,15 @@ class Table(
         False
         """
 
+        return self._copy_as(type(self))
+
+    def _copy_as(self, table_type: type[TTable], /, **kwargs) -> TTable:
         columns = {
             name: self._wrap_column_in_context(self._rowwise_context, column, name)
             for name, column in self._columns.items()
         }
 
-        return Table(_columns=columns, _context=self._rowwise_context)
+        return table_type(_columns=columns, _context=self._rowwise_context, **kwargs)
 
     @trace_user_frame
     @desugar
@@ -2096,7 +2099,7 @@ class Table(
         return column
 
     @classmethod
-    def _from_schema(cls, schema: type[Schema]) -> Table:
+    def _from_schema(cls: type[TTable], schema: type[Schema]) -> TTable:
         universe = Universe()
         context = clmn.MaterializedContext(universe, schema.universe_properties)
         columns = {
@@ -2137,7 +2140,9 @@ class Table(
         return self
 
     def to(self, sink: DataSink) -> None:
-        table_to_datasink(self, sink)
+        from pathway.internals import table_io
+
+        table_io.table_to_datasink(self, sink)
 
     def _materialize(self, universe: Universe):
         context = clmn.MaterializedContext(universe)
@@ -2297,6 +2302,22 @@ class Table(
             .eval_expression(expression, state=TypeInterpreterState())
             ._dtype
         )
+
+    def _auto_live(self) -> Table:
+        """Make self automatically live in interactive mode"""
+        from pathway.internals.interactive import is_interactive_mode_enabled
+
+        if is_interactive_mode_enabled():
+            return self.live()
+        else:
+            return self
+
+    def live(self) -> LiveTable[TSchema]:
+        from pathway.internals.interactive import LiveTable
+
+        warnings.warn("live tables are an experimental feature", stacklevel=2)
+
+        return LiveTable._create(self)
 
 
 @overload

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from pathway.internals import operator
+from pathway.internals.helpers import StableSet
 
 if TYPE_CHECKING:
     from pathway.internals.graph_runner import GraphRunner
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ScopeContext:
-    nodes: Iterable[operator.Operator]
+    nodes: StableSet[operator.Operator]
     run_all: bool = False
     subscopes: dict[operator.Operator, ScopeContext] = field(default_factory=dict)
     runtime_typechecking: bool = False

@@ -14,6 +14,7 @@ pub mod engine;
 pub mod persistence;
 pub mod python_api;
 
+mod env;
 mod fs_helpers;
 mod mat_mul;
 mod pipe;

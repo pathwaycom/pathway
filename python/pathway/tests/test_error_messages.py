@@ -217,15 +217,12 @@ def test_runtime_type_check_decorator():
 
 
 @contextlib.contextmanager
-def _assert_error_trace(error_type: type, match: str | None = ""):
-    file_name = os.path.basename(__file__)
-    with pytest.raises(
-        error_type,
-        match=match,
-    ) as e:
-        yield
+def _assert_error_trace(error_type: type, *, match: str | None = None):
+    file_name = os.path.abspath(__file__)
+    with pytest.raises(error_type, match=match) as e:
+        yield e
     assert re.match(
-        rf"(?s).*Occurred here:.*# cause..*{file_name}.*",
+        rf"Occurred here:\n    Line: .* # cause\n    File: {re.escape(file_name)}:\d+$",
         e.value._pathway_trace_note,
     )
 

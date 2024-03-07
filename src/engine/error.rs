@@ -48,8 +48,8 @@ pub enum Error {
     #[error("invalid venn universes handle")]
     InvalidVennUniversesHandle,
 
-    #[error("invalid requested columns")]
-    InvalidRequestedColumns,
+    #[error("invalid column path")]
+    InvalidColumnPath,
 
     #[error("graph not in scope")]
     GraphNotInScope,
@@ -159,6 +159,9 @@ pub enum Error {
 
     #[error("invalid license key")]
     InvalidLicenseKey,
+
+    #[error("computation of imported table failed")]
+    ImportedTableFailed,
 }
 
 impl Error {

@@ -1,7 +1,9 @@
 // Copyright © 2024 Pathway
 
+use std::any::Any;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -20,7 +22,7 @@ use crate::persistence::ExternalPersistentId;
 
 use super::error::{DynResult, Trace};
 use super::reduce::StatefulCombineFn;
-use super::{Error, Expression, Key, Reducer, Result, Type, Value};
+use super::{Error, Expression, Key, Reducer, Result, TotalFrontier, Type, Value};
 
 macro_rules! define_handle {
     ($handle:ident) => {
@@ -125,7 +127,7 @@ impl ColumnPath {
                     if *value == Value::None {
                         break; // FIXME needed in outer joins. Maybe have it as a separate function?
                     }
-                    value = value.as_tuple()?.get(*i).ok_or(Error::IndexOutOfBounds)?;
+                    value = value.as_tuple()?.get(*i).ok_or(Error::InvalidColumnPath)?;
                 }
                 Ok(value.clone())
             }
@@ -138,7 +140,7 @@ impl ColumnPath {
             Self::ValuePath(path) => {
                 let mut value = value;
                 for i in path {
-                    value = value.as_tuple()?.get(*i).ok_or(Error::IndexOutOfBounds)?;
+                    value = value.as_tuple()?.get(*i).ok_or(Error::InvalidColumnPath)?;
                 }
                 Ok(value.clone())
             }
@@ -147,18 +149,18 @@ impl ColumnPath {
 
     pub fn extract_properties(
         &self,
-        table_properties: &Arc<TableProperties>,
+        table_properties: &TableProperties,
     ) -> Result<TableProperties> {
         match self {
             ColumnPath::Key => Ok(TableProperties::Empty),
             ColumnPath::ValuePath(path) => {
-                let mut table_properties = table_properties.as_ref();
+                let mut table_properties = table_properties;
                 for i in path {
                     match table_properties {
                         TableProperties::Table(inner) => {
-                            table_properties = inner.get(*i).ok_or(Error::IndexOutOfBounds)?;
+                            table_properties = inner.get(*i).ok_or(Error::InvalidColumnPath)?;
                         }
-                        _ => break,
+                        _ => return Err(Error::InvalidColumnPath),
                     }
                 }
                 Ok(table_properties.clone())
@@ -553,10 +555,50 @@ impl Default for SubscribeCallbacksBuilder {
     }
 }
 
+pub type ExportedTableCallback = Box<dyn FnMut() -> ControlFlow<()> + Send>;
+
+pub trait ExportedTable: Send + Sync + Any {
+    fn failed(&self) -> bool;
+
+    fn properties(&self) -> Arc<TableProperties>;
+
+    fn frontier(&self) -> TotalFrontier<u64>;
+
+    fn data_from_offset(&self, offset: usize) -> (Vec<DataRow>, usize);
+
+    fn subscribe(&self, callback: ExportedTableCallback);
+
+    fn snapshot_at(&self, frontier: TotalFrontier<u64>) -> Vec<(Key, Vec<Value>)> {
+        let (mut data, _offset) = self.data_from_offset(0);
+        data.retain(|row| frontier.is_time_done(&row.time));
+        data.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.values.cmp(&b.values)));
+        data.dedup_by(|new, old| {
+            if new.key == old.key && new.values == old.values {
+                old.diff += new.diff;
+                true
+            } else {
+                false
+            }
+        });
+        data.into_iter()
+            .filter_map(|row| {
+                (row.diff != 0).then(|| {
+                    assert_eq!(row.diff, 1, "row had a final count different from 1");
+                    (row.key, row.values)
+                })
+            })
+            .collect()
+    }
+}
+
 pub trait Graph {
     fn worker_index(&self) -> usize;
 
     fn worker_count(&self) -> usize;
+
+    fn thread_count(&self) -> usize;
+
+    fn process_count(&self) -> usize;
 
     fn empty_universe(&self) -> Result<UniverseHandle>;
 
@@ -851,6 +893,14 @@ pub trait Graph {
     ) -> Result<()>;
 
     fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()>;
+
+    fn export_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<Arc<dyn ExportedTable>>;
+
+    fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -902,6 +952,14 @@ impl Graph for ScopedGraph {
     fn worker_count(&self) -> usize {
         self.try_with(|g| Ok(g.worker_count())).unwrap()
     }
+    fn thread_count(&self) -> usize {
+        self.try_with(|g| Ok(g.thread_count())).unwrap()
+    }
+
+    fn process_count(&self) -> usize {
+        self.try_with(|g| Ok(g.process_count())).unwrap()
+    }
+
     fn empty_universe(&self) -> Result<UniverseHandle> {
         #[allow(clippy::redundant_closure_for_method_calls)]
         self.try_with(|g| g.empty_universe())
@@ -1059,27 +1117,6 @@ impl Graph for ScopedGraph {
                 threshold_time_column_path,
                 current_time_column_path,
                 mark_forgetting_records,
-                table_properties,
-            )
-        })
-    }
-
-    fn gradual_broadcast(
-        &self,
-        input_table_handle: TableHandle,
-        threshold_table_handle: TableHandle,
-        lower_path: ColumnPath,
-        value_path: ColumnPath,
-        upper_path: ColumnPath,
-        table_properties: Arc<TableProperties>,
-    ) -> Result<TableHandle> {
-        self.try_with(|g| {
-            g.gradual_broadcast(
-                input_table_handle,
-                threshold_table_handle,
-                lower_path,
-                value_path,
-                upper_path,
                 table_properties,
             )
         })
@@ -1289,6 +1326,27 @@ impl Graph for ScopedGraph {
         })
     }
 
+    fn gradual_broadcast(
+        &self,
+        input_table_handle: TableHandle,
+        threshold_table_handle: TableHandle,
+        lower_path: ColumnPath,
+        value_path: ColumnPath,
+        upper_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.gradual_broadcast(
+                input_table_handle,
+                threshold_table_handle,
+                lower_path,
+                value_path,
+                upper_path,
+                table_properties,
+            )
+        })
+    }
+
     fn ix_table(
         &self,
         to_ix_handle: TableHandle,
@@ -1401,5 +1459,17 @@ impl Graph for ScopedGraph {
 
     fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
         self.try_with(|g| g.probe_table(table_handle, operator_id))
+    }
+
+    fn export_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<Arc<dyn ExportedTable>> {
+        self.try_with(|g| g.export_table(table_handle, column_paths))
+    }
+
+    fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
+        self.try_with(|g| g.import_table(table))
     }
 }

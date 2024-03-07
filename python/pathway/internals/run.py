@@ -18,7 +18,7 @@ def run(
     persistence_config: PersistenceConfig | None = None,
     runtime_typechecking: bool | None = None,
     license_key: str | None = None,
-):
+) -> None:
     """Runs the computation graph.
 
     Args:
@@ -57,7 +57,7 @@ def run_all(
     persistence_config: PersistenceConfig | None = None,
     runtime_typechecking: bool | None = None,
     license_key: str | None = None,
-):
+) -> None:
     """Runs the computation graph with disabled tree-shaking optimization.
 
     Args:

@@ -18,8 +18,8 @@ import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
 from pathway.internals import dtype as dt
-from pathway.internals.decorators import empty_from_schema
 from pathway.internals.expression import NumbaApplyExpression
+from pathway.internals.table_io import empty_from_schema
 from pathway.tests.utils import (
     T,
     assert_table_equality,

@@ -12,10 +12,11 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from pathway.internals import api, trace
-from pathway.internals.datasink import CallbackDataSink, GenericDataSink
+from pathway.internals.datasink import CallbackDataSink, ExportDataSink, GenericDataSink
 from pathway.internals.datasource import (
     EmptyDataSource,
     GenericDataSource,
+    ImportDataSource,
     PandasDataSource,
 )
 from pathway.internals.graph_runner.expression_evaluator import ExpressionEvaluator
@@ -141,6 +142,12 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                     datasource.connector_properties
                 )
                 self.state.set_table(output_storages[table], materialized_table)
+        elif isinstance(datasource, ImportDataSource):
+            for table in operator.output_tables:
+                assert table.schema is not None
+                exported_table = datasource.callback(self.scope)
+                materialized_table = self.scope.import_table(exported_table)
+                self.state.set_table(output_storages[table], materialized_table)
         else:
             raise RuntimeError("datasource not supported")
 
@@ -177,6 +184,11 @@ class OutputOperatorHandler(
                 on_end=datasink.on_end,
                 skip_persisted_batch=datasink.skip_persisted_batch,
             )
+        elif isinstance(datasink, ExportDataSink):
+            exported_table = self.scope.export_table(
+                table=engine_table, column_paths=column_paths
+            )
+            datasink.callback(self.scope, exported_table)
         else:
             raise RuntimeError("datasink not supported")
 

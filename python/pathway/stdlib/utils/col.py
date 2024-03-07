@@ -15,7 +15,7 @@ from pathway.internals.trace import trace_user_frame
 @trace_user_frame
 def flatten_column(
     column: pw.ColumnReference,
-    origin_id: str | pw.ColumnReference | None = pw.this.origin_id,
+    origin_id: str | pw.ColumnReference | None = "origin_id",
 ) -> pw.Table:
     """Deprecated: use pw.Table.flatten instead.
 

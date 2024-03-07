@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -88,6 +89,17 @@ class EmptyDataSource(DataSource):
 
     def is_append_only(self) -> bool:
         return True
+
+
+@dataclass(frozen=True)
+class ImportDataSource(DataSource):
+    callback: Callable[[api.Scope], api.ExportedTable]
+
+    def is_bounded(self) -> bool:
+        return False
+
+    def is_append_only(self) -> bool:
+        return False
 
 
 def debug_datasource(debug_data) -> StaticDataSource | None:

@@ -17,12 +17,12 @@ from pathway import (
 )
 from pathway.debug import _markdown_to_pandas
 from pathway.internals import column, datasink, datasource, graph_runner
-from pathway.internals.decorators import table_from_datasource
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.graph_runner.storage_graph import OperatorStorageGraph
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.internals.schema import Schema, schema_from_pandas
+from pathway.internals.table_io import table_from_datasource
 from pathway.io import csv
 from pathway.tests.utils import T, TestDataSource
 

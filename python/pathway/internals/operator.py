@@ -8,7 +8,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import pathway.internals as pw
 import pathway.internals.row_transformer_table as tt
@@ -222,16 +222,18 @@ class DebugOperator(Operator):
         super().__init__(id)
         self.name = name
 
-    def __call__(self, table):
+    def __call__(self, table: pw.Table) -> None:
         self._prepare_inputs(as_arg_tuple(table))
         self.table = table
-        return ArgTuple.empty()
 
     def label(self):
         return f"debug: {self.name}"
 
     def hard_table_dependencies(self) -> StableSet[pw.Table]:
         return self.input_tables
+
+
+TTable = TypeVar("TTable", bound="pw.Table[Any]")
 
 
 class InputOperator(Operator):
@@ -250,8 +252,8 @@ class InputOperator(Operator):
         self.datasource = datasource
         self.debug_datasource = debug_datasource
 
-    def __call__(self) -> pw.Table:
-        result = pw.Table._from_schema(self.datasource.get_effective_schema())
+    def __call__(self, table_cls: type[TTable]) -> TTable:
+        result = table_cls._from_schema(self.datasource.get_effective_schema())
         self._prepare_outputs(as_arg_tuple(result))
         return result
 

@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from pathway.internals import datasink
 from pathway.internals.api import Pointer
-from pathway.internals.decorators import table_to_datasink
+from pathway.internals.table_io import table_to_datasink
 
 
 class OnFinishCallback(Protocol):
@@ -82,7 +82,7 @@ def subscribe(
     on_change: OnChangeCallback,
     on_time_end: OnTimeEndCallback = lambda time: None,
     on_end: OnFinishCallback = lambda: None,
-):
+) -> None:
     """
     Calls a callback function on_change on every change happening in table. This method
     is similar to the one we expose to the user but provides more parameters for
@@ -131,7 +131,7 @@ def subscribe(
 
         return on_change(key=key, row=row, time=time, is_addition=(diff == 1))
 
-    return table_to_datasink(
+    table_to_datasink(
         table,
         datasink.CallbackDataSink(
             on_change_wrapper, on_time_end, on_end, skip_persisted_batch

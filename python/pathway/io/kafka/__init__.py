@@ -9,10 +9,10 @@ from typing import Any
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.api import PathwayType
-from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
+from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import check_deprecated_kwargs, construct_schema_and_data_format
 

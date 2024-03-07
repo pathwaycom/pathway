@@ -37,6 +37,7 @@ from pathway.internals.expression import (
     ReducerExpression,
 )
 from pathway.internals.groupbys import GroupedJoinResult, GroupedTable
+from pathway.internals.interactive import LiveTable, enable_interactive_mode
 from pathway.internals.join_mode import JoinMode
 from pathway.internals.joins import (
     Joinable,
@@ -144,6 +145,8 @@ __all__ = [
     "join_right",
     "join_outer",
     "groupby",
+    "enable_interactive_mode",
+    "LiveTable",
     "set_license_key",
     "set_telemetry_server",
 ]

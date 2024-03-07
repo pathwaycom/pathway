@@ -10,7 +10,6 @@ import numpy as np
 
 from pathway.internals import api, dtype as dt, expression as expr
 from pathway.internals.column import ColumnExpression, GroupedContext
-from pathway.internals.common import apply_with_type
 
 
 class Reducer(ABC):
@@ -589,6 +588,8 @@ def ndarray(expression: expr.ColumnExpression, *, skip_nones: bool = False):
     [4 4 7]    | [6 1]
     [-1  1  2] | [ 4  7 -3]
     """
+    from pathway.internals.common import apply_with_type
+
     return apply_with_type(
         np.array, np.ndarray, tuple(expression, skip_nones=skip_nones)
     )

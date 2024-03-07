@@ -260,6 +260,7 @@ class OperatorStorageGraph:
                 table._id_column.context,
             )
             self.output_storages[operator][table] = path_storage
+            assert table._universe not in storages
             storages[table._universe] = path_storage
 
     def _compute_storage_paths_iterate(

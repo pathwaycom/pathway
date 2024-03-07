@@ -7,10 +7,10 @@ from typing import Any
 from pathway.engine import DebeziumDBType
 from pathway.internals import api, datasource
 from pathway.internals.api import PathwayType
-from pathway.internals.decorators import table_from_datasource
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
+from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import read_schema
 

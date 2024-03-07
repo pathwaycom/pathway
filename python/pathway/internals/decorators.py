@@ -4,15 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathway import Table
-    from pathway.internals.datasink import DataSink
-    from pathway.internals.schema import Schema
 
 from pathway.internals import dtype as dt, operator as op, row_transformer as rt
-from pathway.internals.datasource import EmptyDataSource, StaticDataSource
 from pathway.internals.helpers import function_spec, with_optional_kwargs
 from pathway.internals.parse_graph import G
 
@@ -225,23 +218,6 @@ def method(func, **kwargs):
     return rt.Method(func, **kwargs)
 
 
-def table_from_datasource(
-    datasource,
-    debug_datasource: StaticDataSource | None = None,
-) -> Table:
-    return G.add_operator(
-        lambda id: op.InputOperator(datasource, id, debug_datasource),
-        lambda operator: operator(),
-    )
-
-
-def table_to_datasink(table: Table, datasink: DataSink):
-    return G.add_operator(
-        lambda id: op.OutputOperator(datasink, id),
-        lambda operator: operator(table),
-    )
-
-
 def transformer(cls):
     """Decorator that wraps the outer class when defining class transformers.
 
@@ -272,7 +248,3 @@ def transformer(cls):
     10  | 11
     """
     return rt.RowTransformer.from_class(cls)
-
-
-def empty_from_schema(schema: type[Schema]) -> Table:
-    return table_from_datasource(EmptyDataSource(schema=schema))

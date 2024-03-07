@@ -4,6 +4,8 @@
 #![allow(clippy::non_canonical_partial_ord_impl)] // False positive with Derivative
 
 mod complex_columns;
+pub mod config;
+mod export;
 pub mod maybe_total;
 pub mod operators;
 pub mod shard;
@@ -19,9 +21,9 @@ use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
     Epsilon, TimeColumnForget, TimeColumnFreeze,
 };
-
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
+use crate::env::parse_env_var;
 use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
 use crate::persistence::sync::SharedWorkersPersistenceCoordinator;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
@@ -33,13 +35,11 @@ use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::iter::once;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::{mpsc, Arc};
@@ -63,7 +63,7 @@ use differential_dataflow::{AsCollection as _, Data};
 use futures::future::BoxFuture;
 use id_arena::Arena;
 use itertools::{process_results, Itertools};
-use log::{info, warn};
+use log::info;
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
 use pyo3::PyObject;
@@ -73,13 +73,14 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::ToStream as _;
 use timely::dataflow::operators::{Filter, Inspect, Probe};
 use timely::dataflow::scopes::Child;
+use timely::execute;
 use timely::order::{Product, TotalOrder};
 use timely::progress::timestamp::Refines;
 use timely::progress::{PathSummary, Timestamp};
-use timely::{execute, CommunicationConfig, Config, WorkerConfig};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::complex_columns::complex_columns;
+use self::export::{export_table, import_table};
 use self::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp, NotTotal, Total};
 use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
@@ -90,7 +91,7 @@ use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
-use super::graph::{DataRow, SubscribeCallbacks};
+use super::graph::{DataRow, ExportedTable, SubscribeCallbacks};
 use super::http_server::maybe_run_http_server_thread;
 use super::license::{License, ResourceLimit};
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
@@ -108,13 +109,9 @@ use super::{
 };
 use nix::sys::resource::{getrlimit, setrlimit};
 
-pub type WakeupReceiver = Receiver<Box<dyn FnOnce() -> DynResult<()> + Send + Sync + 'static>>;
+pub use self::config::Config;
 
-const MAX_WORKERS: usize = if cfg!(feature = "unlimited-workers") {
-    usize::MAX
-} else {
-    8
-};
+pub type WakeupReceiver = Receiver<Box<dyn FnOnce() -> DynResult<()> + Send + Sync + 'static>>;
 
 const YOLO: &[&str] = &[
     #[cfg(feature = "yolo-id32")]
@@ -666,6 +663,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     worker_persistent_storage: WorkerPersistentStorage,
     global_persistent_storage: GlobalPersistentStorage,
     persisted_states_count: u64,
+    config: Arc<Config>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -804,6 +802,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         ignore_asserts: bool,
         persistence_config: Option<PersistenceManagerConfig>,
         global_persistent_storage: Option<SharedWorkersPersistenceCoordinator>,
+        config: Arc<Config>,
     ) -> Result<Self> {
         let worker_persistent_storage = {
             if let Some(persistence_config) = &persistence_config {
@@ -841,6 +840,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             worker_persistent_storage,
             global_persistent_storage,
             persisted_states_count: 0,
+            config,
         })
     }
 
@@ -850,6 +850,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
     fn worker_count(&self) -> usize {
         self.scope.peers()
+    }
+
+    fn thread_count(&self) -> usize {
+        self.config.threads()
+    }
+
+    fn process_count(&self) -> usize {
+        self.config.processes()
     }
 
     fn empty_universe(&mut self) -> Result<UniverseHandle> {
@@ -3129,6 +3137,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 self.error_reporter.clone(),
                 self.ignore_asserts,
                 self.global_persistent_storage.clone(),
+                self.config.clone(),
             )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
             let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
@@ -3183,6 +3192,18 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             run_callback_every_time,
         ));
         Ok(())
+    }
+
+    fn export_table(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<Arc<dyn ExportedTable>> {
+        export_table(self, table_handle, column_paths)
+    }
+
+    fn import_table(&mut self, table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
+        import_table(self, table)
     }
 }
 
@@ -3648,6 +3669,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
         error_reporter: ErrorReporter,
         ignore_asserts: bool,
         global_persistent_storage: Option<SharedWorkersPersistenceCoordinator>,
+        config: Arc<Config>,
     ) -> Result<Self> {
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
@@ -3655,6 +3677,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             ignore_asserts,
             None,
             global_persistent_storage,
+            config,
         )?)))
     }
 }
@@ -3669,6 +3692,14 @@ where
 
     fn worker_count(&self) -> usize {
         self.0.borrow().worker_count()
+    }
+
+    fn thread_count(&self) -> usize {
+        self.0.borrow().thread_count()
+    }
+
+    fn process_count(&self) -> usize {
+        self.0.borrow().process_count()
     }
 
     fn empty_universe(&self) -> Result<UniverseHandle> {
@@ -3797,6 +3828,16 @@ where
             table_properties,
             trace,
         )
+    }
+
+    fn subscribe_table(
+        &self,
+        _table_handle: TableHandle,
+        _column_paths: Vec<ColumnPath>,
+        _callbacks: SubscribeCallbacks,
+        _skip_persisted_batch: bool,
+    ) -> Result<()> {
+        Err(Error::IoNotPossible)
     }
 
     fn filter_table(
@@ -4103,16 +4144,6 @@ where
         Err(Error::IoNotPossible)
     }
 
-    fn subscribe_table(
-        &self,
-        _table_handle: TableHandle,
-        _column_paths: Vec<ColumnPath>,
-        _callbacks: SubscribeCallbacks,
-        _skip_persisted_batch: bool,
-    ) -> Result<()> {
-        Err(Error::IoNotPossible)
-    }
-
     fn output_table(
         &self,
         mut _data_sink: Box<dyn Writer>,
@@ -4135,6 +4166,18 @@ where
     fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
         self.0.borrow_mut().probe_table(table_handle, operator_id)
     }
+
+    fn export_table(
+        &self,
+        _table_handle: TableHandle,
+        _column_paths: Vec<ColumnPath>,
+    ) -> Result<Arc<dyn ExportedTable>> {
+        Err(Error::IoNotPossible)
+    }
+
+    fn import_table(&self, _table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
+        Err(Error::IoNotPossible)
+    }
 }
 
 struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = u64>>(
@@ -4148,6 +4191,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
         ignore_asserts: bool,
         persistence_config: Option<PersistenceManagerOuterConfig>,
         global_persistent_storage: Option<SharedWorkersPersistenceCoordinator>,
+        config: Arc<Config>,
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
@@ -4157,6 +4201,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
             ignore_asserts,
             persistence_config.map(|cfg| cfg.into_inner(worker_idx, total_workers)),
             global_persistent_storage,
+            config,
         )?)))
     }
 }
@@ -4168,6 +4213,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
 
     fn worker_count(&self) -> usize {
         self.0.borrow().worker_count()
+    }
+
+    fn thread_count(&self) -> usize {
+        self.0.borrow().thread_count()
+    }
+
+    fn process_count(&self) -> usize {
+        self.0.borrow().process_count()
     }
 
     fn empty_universe(&self) -> Result<UniverseHandle> {
@@ -4681,92 +4734,18 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
     fn probe_table(&self, table_handle: TableHandle, operator_id: usize) -> Result<()> {
         self.0.borrow_mut().probe_table(table_handle, operator_id)
     }
-}
 
-pub fn parse_env_var<T: FromStr>(name: &str) -> Result<Option<T>, String>
-where
-    T::Err: Display,
-{
-    if let Some(value) = env::var_os(name) {
-        Ok(Some(
-            value
-                .into_string()
-                .map_err(|_| format!("Couldn't parse the value of {name} as UTF-8 string"))?
-                .parse()
-                .map_err(|err| format!("Couldn't parse the value of {name}: {err}"))?,
-        ))
-    } else {
-        Ok(None)
-    }
-}
-
-fn parse_env_var_required<T: FromStr>(name: &str) -> Result<T, String>
-where
-    T::Err: Display,
-{
-    parse_env_var(name)?.ok_or_else(|| format!("{name} is not set"))
-}
-
-pub struct WorkersSplitConfig {
-    pub threads: usize,
-    pub processes: usize,
-}
-
-impl WorkersSplitConfig {
-    pub fn new(threads: usize, processes: usize) -> WorkersSplitConfig {
-        WorkersSplitConfig { threads, processes }
+    fn export_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+    ) -> Result<Arc<dyn ExportedTable>> {
+        self.0.borrow_mut().export_table(table_handle, column_paths)
     }
 
-    pub fn num_workers(&self) -> usize {
-        self.threads * self.processes
+    fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
+        self.0.borrow_mut().import_table(table)
     }
-}
-
-pub fn config_from_env() -> Result<(Config, WorkersSplitConfig), String> {
-    let mut threads: usize = parse_env_var("PATHWAY_THREADS")?.unwrap_or(1);
-    let mut processes: usize = parse_env_var("PATHWAY_PROCESSES")?.unwrap_or(1);
-    if threads == 0 {
-        return Err("Can't run with 0 threads".to_string());
-    }
-    if processes == 0 {
-        return Err("Can't run with 0 processes".to_string());
-    }
-    let workers = threads * processes;
-    if workers > MAX_WORKERS {
-        warn!("{workers} is greater than the the maximum allowed number of workers ({MAX_WORKERS}), reducing");
-        threads = MAX_WORKERS / processes;
-        if threads == 0 {
-            threads = 1;
-            processes = MAX_WORKERS;
-        }
-    }
-    let workers = threads * processes;
-    assert!(workers <= MAX_WORKERS);
-    let config = if processes > 1 {
-        let process_id: usize = parse_env_var_required("PATHWAY_PROCESS_ID")?;
-        if process_id >= processes {
-            return Err(format!("Process ID {process_id} is too big"));
-        }
-        let first_port: usize = parse_env_var_required("PATHWAY_FIRST_PORT")?;
-        let addresses = (0..processes)
-            .map(|id| format!("127.0.0.1:{}", first_port + id))
-            .collect();
-        Config {
-            communication: CommunicationConfig::Cluster {
-                threads,
-                process: process_id,
-                addresses,
-                report: false,
-                log_fn: Box::new(|_| None),
-            },
-            worker: WorkerConfig::default(),
-        }
-    } else if threads > 1 {
-        Config::process(threads)
-    } else {
-        Config::thread()
-    };
-    Ok((config, WorkersSplitConfig::new(threads, processes)))
 }
 
 fn set_process_limits(process_limits: Vec<ResourceLimit>) -> Result<()> {
@@ -4796,7 +4775,6 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceManagerOuterConfig>,
-    workers_split_config: &WorkersSplitConfig,
     license: License,
     telemetry_config: TelemetryConfig,
 ) -> Result<Vec<R2>>
@@ -4812,21 +4790,18 @@ where
     if !YOLO.is_empty() {
         info!("Running in YOLO mode: {}", YOLO.iter().format(", "));
     }
+    let config = Arc::new(config);
     let (error_reporter, error_receiver) = ErrorReporter::create();
     let failed = Arc::new(AtomicBool::new(false));
     let failed_2 = failed.clone();
-    let process_id = match config.communication {
-        CommunicationConfig::Cluster { process, .. } => process,
-        _ => 0,
-    };
     let global_persistent_storage = persistence_config.as_ref().map(|cfg| {
         Arc::new(Mutex::new(cfg.create_workers_persistence_coordinator(
-            workers_split_config.num_workers(),
-            workers_split_config.threads,
+            config.workers(),
+            config.threads(),
         )))
     });
 
-    let guards = execute(config, move |worker| {
+    let guards = execute(config.to_timely_config(), move |worker| {
         catch_unwind(AssertUnwindSafe(|| {
             if let Ok(addr) = env::var("DIFFERENTIAL_LOG_ADDR") {
                 if let Ok(stream) = std::net::TcpStream::connect(&addr) {
@@ -4856,6 +4831,7 @@ where
                     ignore_asserts,
                     persistence_config.clone(),
                     global_persistent_storage.clone(),
+                    config.clone(),
                 )
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());
@@ -4863,7 +4839,7 @@ where
                 let progress_reporter_runner =
                     maybe_run_reporter(&monitoring_level, &graph, stats_monitor.clone());
                 let http_server_runner =
-                    maybe_run_http_server_thread(with_http_server, &graph, process_id);
+                    maybe_run_http_server_thread(with_http_server, &graph, config.process_id());
                 let graph = graph.0.into_inner();
                 (
                     res,

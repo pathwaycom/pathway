@@ -7,7 +7,7 @@ from pathway import io
 from pathway.internals import dtype as dt
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.datasource import DataSource
-from pathway.internals.decorators import empty_from_schema, table_from_datasource
+from pathway.internals.table_io import empty_from_schema, table_from_datasource
 from pathway.tests.utils import T
 
 

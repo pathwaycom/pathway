@@ -349,11 +349,11 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
     return inner
 
 
-def T(*args, format="markdown", **kwargs):
+def T(*args, format="markdown", _stacklevel=1, **kwargs):
     if format == "pandas":
-        return table_from_pandas(*args, **kwargs, _stacklevel=2)
+        return table_from_pandas(*args, **kwargs, _stacklevel=_stacklevel + 1)
     assert format == "markdown"
-    return table_from_markdown(*args, **kwargs, _stacklevel=2)
+    return table_from_markdown(*args, **kwargs, _stacklevel=_stacklevel + 1)
 
 
 def remove_ansi_escape_codes(msg: str) -> str:

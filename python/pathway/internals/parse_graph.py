@@ -1,91 +1,134 @@
 # Copyright © 2024 Pathway
 
+# mypy: disallow-untyped-defs, extra-checks, disallow-any-generics, warn-return-any
+
 from __future__ import annotations
 
 import hashlib
 import itertools
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from pathway.internals import operator, trace
+from pathway.internals import operator
 from pathway.internals.helpers import FunctionSpec, StableSet
 from pathway.internals.universe_solver import UniverseSolver
 
 if TYPE_CHECKING:
-    from pathway.internals import Table
+    from pathway.internals import Table, interactive
 
 
 class Scope:
     """Keeps all nodes of one scope."""
 
-    _nodes: dict[int, operator.Operator]
+    _graph: ParseGraph
+    _nodes: StableSet[operator.Operator]
+    _normal_nodes: StableSet[operator.Operator]
 
-    def __init__(self):
-        self.source = []
-        self._nodes = {}
+    def __init__(self, graph: ParseGraph) -> None:
+        self._graph = graph
+        self._nodes = StableSet()
+        self._normal_nodes = StableSet()
 
-    def add_node(self, node: operator.Operator):
-        self._nodes[node.id] = node
+    def is_empty(self) -> bool:
+        return not self._nodes
+
+    def add_node(self, node: operator.Operator, *, special: bool = False) -> None:
+        self._nodes.add(node)
+        if not special:
+            self._normal_nodes.add(node)
 
     @property
-    def nodes(self):
-        return self._nodes.values()
+    def nodes(self) -> Iterator[operator.Operator]:
+        return iter(self._nodes)
 
     @property
-    def output_nodes(self):
+    def normal_nodes(self) -> Iterator[operator.Operator]:
+        return iter(self._normal_nodes)
+
+    @property
+    def output_nodes(self) -> Iterator[operator.OutputOperator]:
         return (
-            node for node in self.nodes if isinstance(node, operator.OutputOperator)
+            node
+            for node in self.normal_nodes
+            if isinstance(node, operator.OutputOperator)
         )
 
     @property
-    def debug_nodes(self):
-        return (node for node in self.nodes if isinstance(node, operator.DebugOperator))
+    def debug_nodes(self) -> Iterator[operator.DebugOperator]:
+        return (
+            node
+            for node in self.normal_nodes
+            if isinstance(node, operator.DebugOperator)
+        )
 
-    def relevant_nodes(self, *operators: operator.Operator) -> list[operator.Operator]:
-        visited: StableSet[operator.Operator] = StableSet()
-        stack: list[operator.Operator] = list(StableSet(operators))
+    def relevant_nodes(
+        self, operators: Iterable[operator.Operator]
+    ) -> list[operator.Operator]:
+        stack: list[operator.Operator] = list(operators)
+        visited: set[operator.Operator] = set(stack)
         while stack:
             node = stack.pop()
-            if node in visited:
-                continue
-            visited.add(node)
             for dependency in node.input_operators():
-                if dependency not in visited:
+                if dependency not in visited and dependency in self._nodes:
+                    visited.add(dependency)
                     stack.append(dependency)
         # Iterate over original list of nodes to preserve insertion order
         return [node for node in self.nodes if node in visited]
 
+    def __enter__(self) -> Scope:
+        self._graph._scope_stack.append(self)
+        return self
 
-T = TypeVar("T", bound=operator.Operator)
+    def __exit__(
+        self,
+        /,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert self._graph._current_scope == self
+        self._graph._scope_stack.pop()
+
+
+O = TypeVar("O", bound=operator.Operator)
+T = TypeVar("T")
 
 
 class ParseGraph:
     """Relates Tables and Operations."""
 
-    node_id_sequence: itertools.count
+    node_id_sequence: Iterator[int]
     scopes: list[Scope]
     _scope_stack: list[Scope]
     universe_solver: UniverseSolver
     cache: dict[Any, Any]
-    static_tables_cache: dict[int, Table]
+    static_tables_cache: dict[int, Table[Any]]
+    interactive_mode_controller: interactive.InteractiveModeController | None = None
 
     def __init__(self) -> None:
         self.clear()
 
     @property
-    def _current_scope(self):
+    def _current_scope(self) -> Scope:
         return self._scope_stack[-1]
 
     @property
-    def global_scope(self):
+    def global_scope(self) -> Scope:
         return self._scope_stack[0]
 
-    @trace.trace_user_frame
+    def new_scope(self) -> Scope:
+        scope = Scope(self)
+        self.scopes.append(scope)
+        return scope
+
     def add_operator(
         self,
-        create_node: Callable[[int], T],
-        call_operator: Callable[[T], Any],
-    ):
+        create_node: Callable[[int], O],
+        call_operator: Callable[[O], T],
+        *,
+        special: bool = False,
+    ) -> T:
         """Adds an operator to current scope.
 
         Args:
@@ -95,15 +138,15 @@ class ParseGraph:
         node = create_node(next(self.node_id_sequence))
         node.set_graph(self)
         result = call_operator(node)
-        self._current_scope.add_node(node)
+        self._current_scope.add_node(node, special=special)
         return result
 
     def add_iterate(
         self,
         body: FunctionSpec,
-        clb: Callable[[operator.IterateOperator], Any],
+        call_operator: Callable[[operator.IterateOperator], T],
         iteration_limit: int | None = None,
-    ):
+    ) -> T:
         """Adds iterate operator.
 
         New scope is added to stack before calling iteration result. This scope is then preserved
@@ -113,42 +156,38 @@ class ParseGraph:
             body: specification of an iterated body function
             call_operator: iterate opereator callback
         """
-        iterate_scope = Scope()
-        node = operator.IterateOperator(
-            body, next(self.node_id_sequence), iterate_scope, iteration_limit
-        )
-        node.set_graph(self)
-        self._current_scope.add_node(node)
 
-        self.scopes.append(iterate_scope)
-        self._scope_stack.append(iterate_scope)
-        result = clb(node)
-        self._scope_stack.pop()
-        return result
+        def create_node(id: int) -> operator.IterateOperator:
+            return operator.IterateOperator(body, id, iterate_scope, iteration_limit)
 
-    def clear(self):
+        def call_operator_in_scope(o: operator.IterateOperator) -> T:
+            with iterate_scope:
+                return call_operator(o)
+
+        iterate_scope = self.new_scope()
+        return self.add_operator(create_node, call_operator_in_scope)
+
+    def clear(self) -> None:
         self.node_id_sequence = itertools.count()
-        global_scope = Scope()
+        global_scope = Scope(self)
         self._scope_stack = [global_scope]
         self.scopes = [global_scope]
         self.universe_solver = UniverseSolver()
         self.cache = {}
         self.static_tables_cache = {}
 
-    def sig(self):
+    def sig(self) -> str:
         return hashlib.sha256(repr(self).encode()).hexdigest()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         rows = []
         for scope_index, scope in enumerate(self.scopes):
             for node in scope.nodes:
                 output_schemas = [table.schema for table in node.output_tables]
                 rows.append((scope_index, node, output_schemas))
         return "\n".join(
-            [
-                f"{scope}, {node.id} [{node.label()}]: {schema}"
-                for scope, node, schema in rows
-            ]
+            f"{scope}, {node.id} [{node.label()}]: {schema}"
+            for scope, node, schema in rows
         )
 
 

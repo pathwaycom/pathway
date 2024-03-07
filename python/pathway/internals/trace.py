@@ -6,8 +6,9 @@ import contextlib
 import functools
 import sys
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
     from pathway.internals import api
@@ -120,7 +121,11 @@ def add_pathway_trace_note(e: Exception, frame: Frame) -> None:
         e.add_note(note)
 
 
-def trace_user_frame(func):
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+def trace_user_frame(func: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(func)
     def _pathway_trace_marker(*args, **kwargs):
         try:

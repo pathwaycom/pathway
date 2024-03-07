@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
+from itertools import chain
 
 import pathway.internals.graph_runner.telemetry as telemetry
 from pathway.internals import api, parse_graph as graph, table, trace
@@ -67,38 +68,39 @@ class GraphRunner:
             license_key = pathway_config.license_key
         self.license_key = license_key
 
+    def run_nodes(
+        self,
+        nodes: Iterable[Operator],
+        /,
+        *,
+        after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
+    ):
+        all_nodes = self._tree_shake(self._graph.global_scope, nodes)
+        self._run(all_nodes, after_build=after_build)
+
     def run_tables(
         self,
         *tables: table.Table,
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
     ) -> list[api.CapturedStream]:
         nodes = self.tree_shake_tables(self._graph.global_scope, tables)
-        context = ScopeContext(nodes, runtime_typechecking=self.runtime_typechecking)
-        return self._run(context, output_tables=tables, after_build=after_build)
+        return self._run(nodes, output_tables=tables, after_build=after_build)
 
     def run_all(
         self,
+        *,
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
-    ) -> list[api.CapturedStream]:
-        context = ScopeContext(
-            nodes=self._graph.global_scope.nodes,
-            run_all=True,
-            runtime_typechecking=self.runtime_typechecking,
+    ) -> None:
+        self._run(
+            self._graph.global_scope.normal_nodes, after_build=after_build, run_all=True
         )
-        return self._run(context, after_build=after_build)
 
     def run_outputs(
         self,
+        *,
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
-    ):
-        tables = (node.table for node in self._graph.global_scope.output_nodes)
-        nodes = self._tree_shake(
-            self._graph.global_scope, self._graph.global_scope.output_nodes, tables
-        )
-        context = ScopeContext(
-            nodes=nodes, runtime_typechecking=self.runtime_typechecking
-        )
-        return self._run(context, after_build=after_build)
+    ) -> None:
+        self.run_nodes(self._graph.global_scope.output_nodes, after_build=after_build)
 
     def has_bounded_input(self, table: table.Table) -> bool:
         nodes = self.tree_shake_tables(self._graph.global_scope, [table])
@@ -111,9 +113,12 @@ class GraphRunner:
 
     def _run(
         self,
-        context: ScopeContext,
-        output_tables: Iterable[table.Table] = (),
+        nodes: Iterable[Operator],
+        /,
+        *,
+        output_tables: Collection[table.Table] = (),
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
+        run_all: bool = False,
     ) -> list[api.CapturedStream]:
         otel = telemetry.Telemetry.create(
             license_key=self.license_key,
@@ -122,6 +127,12 @@ class GraphRunner:
 
         with otel.tracer.start_as_current_span("graph_runner.run"):
             trace_context, trace_parent = telemetry.get_current_context()
+
+            context = ScopeContext(
+                nodes=StableSet(nodes),
+                runtime_typechecking=self.runtime_typechecking,
+                run_all=run_all,
+            )
 
             storage_graph = OperatorStorageGraph.from_scope_context(
                 context, self, output_tables
@@ -137,7 +148,10 @@ class GraphRunner:
             )
             def logic(
                 scope: api.Scope,
+                /,
+                *,
                 storage_graph: OperatorStorageGraph = storage_graph,
+                output_tables: Collection[table.Table] = output_tables,
             ) -> list[tuple[api.Table, list[ColumnPath]]]:
                 state = ScopeState(scope)
                 storage_graph.build_scope(scope, state, self)
@@ -191,21 +205,17 @@ class GraphRunner:
     def tree_shake_tables(
         self, graph_scope: graph.Scope, tables: Iterable[table.Table]
     ) -> StableSet[Operator]:
-        starting_nodes: Iterable[Operator] = (
-            table._source.operator for table in tables
-        )
-        return self._tree_shake(graph_scope, starting_nodes, tables)
+        starting_nodes = (table._source.operator for table in tables)
+        return self._tree_shake(graph_scope, starting_nodes)
 
     def _tree_shake(
         self,
         graph_scope: graph.Scope,
         starting_nodes: Iterable[Operator],
-        tables: Iterable[table.Table],
     ) -> StableSet[Operator]:
         if self.debug:
-            starting_nodes = (*starting_nodes, *graph_scope.debug_nodes)
-            tables = (*tables, *(node.table for node in graph_scope.debug_nodes))
-        nodes = StableSet(graph_scope.relevant_nodes(*starting_nodes))
+            starting_nodes = chain(starting_nodes, graph_scope.debug_nodes)
+        nodes = StableSet(graph_scope.relevant_nodes(starting_nodes))
         return nodes
 
 

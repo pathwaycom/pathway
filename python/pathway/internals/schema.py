@@ -566,7 +566,11 @@ def _schema_builder(
     *,
     properties: SchemaProperties = SchemaProperties(),
 ) -> type[Schema]:
-    return SchemaMetaclass(_name, (Schema,), _dict, append_only=properties.append_only)
+    schema = SchemaMetaclass(
+        _name, (Schema,), _dict, append_only=properties.append_only
+    )
+    assert issubclass(schema, Schema)
+    return schema
 
 
 def is_subschema(left: type[Schema], right: type[Schema]):
