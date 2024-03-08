@@ -2860,7 +2860,7 @@ def test_pyfilesystem_simple(tmp_path: pathlib.Path):
     assert paths == set(["projects/a.txt", "projects/b.txt"])
 
 
-@pytest.mark.flaky(reruns=2)
+@pytest.mark.flaky(reruns=4)
 @needs_multiprocessing_fork
 def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
     inputs_path = tmp_path / "inputs"

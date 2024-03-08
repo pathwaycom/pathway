@@ -5,8 +5,9 @@ import copy
 import json
 import logging
 import threading
+import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Sequence
 from uuid import uuid4
 from warnings import warn
@@ -45,6 +46,40 @@ _ENGINE_TO_OPENAPI_FORMAT = {
 # Which column in schema corresponds to the payload when the
 # input format for the endpoint is 'raw'
 QUERY_SCHEMA_COLUMN = "query"
+
+
+class _LoggingContext:
+    def __init__(self, request: web.Request):
+        self.log = {
+            "_type": "http_access",
+            "method": request.method,
+            "scheme": request.scheme,
+            "host": request.host,
+            "route": str(request.rel_url),
+            "content_type": request.headers.get("Content-Type"),
+            "user_agent": request.headers.get("User-Agent"),
+            "unix_timestamp": int(time.time()),
+            "remote": request.remote,
+        }
+        headers = []
+        for header, value in request.headers.items():
+            headers.append(
+                {
+                    "header": header,
+                    "value": value,
+                }
+            )
+        self.log["headers"] = headers  # type:ignore
+        self.request_start = time.time()
+
+    def log_response(self, status: int):
+        self.log["status"] = status
+        time_elapsed = time.time() - self.request_start
+        self.log["time_elapsed"] = "{:.3f}".format(time_elapsed)
+        if status < 400:
+            logging.info(json.dumps(self.log))
+        else:
+            logging.error(json.dumps(self.log))
 
 
 class EndpointDocumentation:
@@ -265,6 +300,7 @@ added endpoints.
             self._add_endpoint_to_app("GET", "/_schema", self._schema_handler)
 
     def _add_endpoint_to_app(self, method, route, handler):
+        handler = self._wrap_handler_with_logger(handler)
         if route not in self._registered_routes:
             app_resource = self._app.router.add_resource(route)
             if self._cors is not None:
@@ -283,6 +319,27 @@ added endpoints.
                     )
                 },
             )
+
+    def _wrap_handler_with_logger(
+        self, handler_method: Callable[[web.Request], Awaitable[web.Response]]
+    ):
+        async def wrapped_handler(request: web.Request):
+            logging_context = _LoggingContext(request)
+            try:
+                response = await handler_method(request)
+            except web.HTTPError as http_error:
+                logging_context.log_response(status=http_error.status_code)
+                raise
+            except Exception:
+                logging.exception("Error in HTTP handler")
+                # the server framework translates all non-native
+                # exceptions into responses with code 500 so we use it
+                logging_context.log_response(status=500)
+                raise
+            logging_context.log_response(response.status)
+            return response
+
+        return wrapped_handler
 
     async def _schema_handler(self, request: web.Request):
         origin = f"{request.scheme}://{request.host}"
@@ -398,7 +455,12 @@ class RestServerSubject(io.python.ConnectorSubject):
                 if validator_ret is not None:
                     raise Exception(validator_ret)
             except Exception as e:
-                logging.debug("Rejecting request with error %s", e)
+                record = {
+                    "_type": "validator_rejected_http_request",
+                    "error": str(e),
+                    "payload": payload,
+                }
+                logging.error(json.dumps(record))
                 raise web.HTTPBadRequest(reason=str(e))
 
         self._cast_types_to_schema(payload)

@@ -7,11 +7,18 @@ This momdule contains UDFs for calling LLMs chat services:
 2. prompt building tools
 """
 
+import copy
+import json
+import logging
+import uuid
+
 import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
 from pathway.internals import asynchronous
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIChat(pw.UDFAsync):
@@ -182,9 +189,27 @@ class OpenAIChat(pw.UDFAsync):
         kwargs = {**self.kwargs, **kwargs}
         api_key = kwargs.pop("api_key", None)
 
+        msg_id = str(uuid.uuid4())[-8:]
+
+        event = {
+            "_type": "openai_chat_request",
+            "kwargs": copy.deepcopy(kwargs),
+            "id": msg_id,
+            "messages": messages_decoded,
+        }
+        logger.info(json.dumps(event))
+
         client = openai_mod.AsyncOpenAI(api_key=api_key)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
-        return ret.choices[0].message.content
+        response = ret.choices[0].message.content
+
+        event = {
+            "_type": "openai_chat_response",
+            "response": response,
+            "id": msg_id,
+        }
+        logger.info(json.dumps(event))
+        return response
 
 
 class LiteLLMChat(pw.UDFAsync):
