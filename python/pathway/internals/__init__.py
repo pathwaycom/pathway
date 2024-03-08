@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathway.internals import asynchronous, reducers, universes
+from pathway.internals import reducers, udfs, universes
 from pathway.internals.api import Pointer
 from pathway.internals.common import (
     apply,
@@ -67,7 +67,7 @@ from pathway.internals.table import Table, groupby
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
 from pathway.internals.thisclass import left, right, this
-from pathway.internals.udf import UDF, UDFAsync, UDFSync, udf, udf_async
+from pathway.internals.udfs import UDF, UDFAsync, UDFSync, udf, udf_async
 from pathway.internals.version import __version__
 
 __all__ = [
@@ -120,7 +120,7 @@ __all__ = [
     "numba_apply",
     "__version__",
     "universes",
-    "asynchronous",
+    "udfs",
     "AsofJoinResult",
     "schema_builder",
     "column_definition",

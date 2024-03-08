@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pathway.internals import (
     api,
-    apply_with_type,
-    asynchronous,
     column as clmn,
     dtype as dt,
     expression as expr,
@@ -30,6 +28,7 @@ from pathway.internals.operator_mapping import (
     get_convert_operators_mapping,
     get_unary_expression,
 )
+from pathway.internals.udfs import udf
 
 if TYPE_CHECKING:
     from pathway.internals.graph_runner.state import ScopeState
@@ -137,10 +136,12 @@ class ExpressionEvaluator(ABC):
 class RowwiseEvalState:
     _dependencies: dict[clmn.Column, int]
     _storages: dict[Storage, api.Table]
+    _deterministic: bool
 
     def __init__(self) -> None:
         self._dependencies = {}
         self._storages = {}
+        self._deterministic = True
 
     def dependency(self, column: clmn.Column) -> int:
         return self._dependencies.setdefault(column, len(self._dependencies))
@@ -158,6 +159,13 @@ class RowwiseEvalState:
     @property
     def storages(self) -> list[Storage]:
         return list(self._storages.keys())
+
+    def set_non_deterministic(self) -> None:
+        self._deterministic = False
+
+    @property
+    def deterministic(self) -> bool:
+        return self._deterministic
 
 
 class DependencyReference:
@@ -188,12 +196,13 @@ class TypeVerifier(IdentityTransform):
 
         dtype = expression._dtype
 
+        @udf(return_type=dtype, deterministic=True)
         def test_type(val):
             if not dtype.is_value_compatible(val):
                 raise TypeError(f"Value {val} is not of type {dtype}.")
             return val
 
-        ret = apply_with_type(test_type, dtype, expression)
+        ret = test_type(expression)
         ret._dtype = dtype
 
         return ret
@@ -265,9 +274,7 @@ class RowwiseEvaluator(
         paths = [input_storage.get_path(dep) for dep in eval_state.columns]
 
         return self.scope.expression_table(
-            engine_input_table,
-            paths,
-            expressions,
+            engine_input_table, paths, expressions, eval_state.deterministic
         )
 
     def run_subexpressions(
@@ -409,9 +416,13 @@ class RowwiseEvaluator(
         fun, args = self._prepare_positional_apply(
             fun=expression._fun, args=expression._args, kwargs=expression._kwargs
         )
+        if not expression._deterministic:
+            assert eval_state is not None
+            eval_state.set_non_deterministic()
         return api.Expression.apply(
             fun,
             *(self.eval_expression(arg, eval_state=eval_state) for arg in args),
+            propagate_none=expression._propagate_none,
         )
 
     def eval_async_apply(
@@ -420,7 +431,7 @@ class RowwiseEvaluator(
         eval_state: RowwiseEvalState | None = None,
     ):
         fun, args = self._prepare_positional_apply(
-            fun=asynchronous.coerce_async(expression._fun),
+            fun=expression._fun,
             args=expression._args,
             kwargs=expression._kwargs,
         )
@@ -435,6 +446,8 @@ class RowwiseEvaluator(
             engine_input_table,
             paths,
             fun,
+            expression._propagate_none,
+            expression._deterministic,
             self._table_properties(output_storage),
         )
 
@@ -448,6 +461,9 @@ class RowwiseEvaluator(
         eval_state: RowwiseEvalState | None = None,
     ):
         assert not expression._kwargs
+        if not expression._deterministic:
+            assert eval_state is not None
+            eval_state.set_non_deterministic()
         return api.Expression.unsafe_numba_apply(
             expression._fun,
             *(

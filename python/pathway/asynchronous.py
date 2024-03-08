@@ -1,5 +1,7 @@
 # Copyright © 2024 Pathway
 """
+This module is DEPRECATED. Its content has been moved to `pathway.udfs </developers/api-docs/udfs/>`_ .
+
 Helper methods and classes used along with :py:func:`~pathway.udf_async` and :py:func:`~pathway.AsyncTransformer`.
 
 Typical use:
@@ -25,30 +27,18 @@ Bobdog
 Bobdog
 """
 
-from pathway.internals.asynchronous import (
-    AsyncRetryStrategy,
-    CacheStrategy,
-    DefaultCache,
-    ExponentialBackoffRetryStrategy,
-    FixedDelayRetryStrategy,
-    NoRetryStrategy,
-    async_options,
-    coerce_async,
-    with_cache_strategy,
-    with_capacity,
-    with_retry_strategy,
-)
+from warnings import warn
 
-__all__ = [
-    "with_capacity",
-    "with_retry_strategy",
-    "with_cache_strategy",
-    "async_options",
-    "coerce_async",
-    "AsyncRetryStrategy",
-    "NoRetryStrategy",
-    "ExponentialBackoffRetryStrategy",
-    "FixedDelayRetryStrategy",
-    "CacheStrategy",
-    "DefaultCache",
-]
+from pathway.internals import udfs
+
+
+def __getattr__(name):
+    warn(
+        "pathway.asynchronous module is deprecated. Its content has been moved to pathway.udfs.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    try:
+        return getattr(udfs, name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

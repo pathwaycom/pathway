@@ -168,13 +168,20 @@ class IdentityTransform(ExpressionVisitor):
     def eval_apply(
         self, expression: expr.ApplyExpression, **kwargs
     ) -> expr.ApplyExpression:
-        expr_args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
+        expr_args = tuple(
+            self.eval_expression(arg, **kwargs) for arg in expression._args
+        )
         expr_kwargs = {
             name: self.eval_expression(arg, **kwargs)
             for name, arg in expression._kwargs.items()
         }
         return expr.ApplyExpression(
-            expression._fun, expression._return_type, *expr_args, **expr_kwargs
+            expression._fun,
+            expression._return_type,
+            propagate_none=expression._propagate_none,
+            deterministic=expression._deterministic,
+            args=expr_args,
+            kwargs=expr_kwargs,
         )
 
     def eval_numbaapply(
@@ -186,7 +193,12 @@ class IdentityTransform(ExpressionVisitor):
             for name, arg in expression._kwargs.items()
         }
         return expr.NumbaApplyExpression(
-            expression._fun, expression._return_type, *expr_args, **expr_kwargs
+            expression._fun,
+            expression._return_type,
+            propagate_none=expression._propagate_none,
+            deterministic=expression._deterministic,
+            args=tuple(expr_args),
+            kwargs=expr_kwargs,
         )
 
     def eval_async_apply(
@@ -198,7 +210,12 @@ class IdentityTransform(ExpressionVisitor):
             for name, arg in expression._kwargs.items()
         }
         return expr.AsyncApplyExpression(
-            expression._fun, expression._return_type, *expr_args, **expr_kwargs
+            expression._fun,
+            expression._return_type,
+            propagate_none=expression._propagate_none,
+            deterministic=expression._deterministic,
+            args=tuple(expr_args),
+            kwargs=expr_kwargs,
         )
 
     def eval_pointer(

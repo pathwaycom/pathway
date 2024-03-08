@@ -182,7 +182,9 @@ class Expression:
     @staticmethod
     def argument(index: int) -> Expression: ...
     @staticmethod
-    def apply(fun: Callable, /, *args: Expression) -> Expression: ...
+    def apply(
+        fun: Callable, /, *args: Expression, propagate_none=False
+    ) -> Expression: ...
     @staticmethod
     def unsafe_numba_apply(fun: Callable, /, *args: Expression) -> Expression: ...
     @staticmethod
@@ -431,6 +433,7 @@ class Scope:
         table: Table,
         column_paths: list[ColumnPath],
         expressions: list[tuple[Expression, TableProperties]],
+        deterministic: bool,
     ) -> Table: ...
     def table_properties(self, table: Table) -> TableProperties: ...
     def columns_to_table(self, universe: Universe, columns: list[Column]) -> Table: ...
@@ -446,6 +449,8 @@ class Scope:
         table: Table,
         column_paths: list[ColumnPath],
         function: Callable[..., Value],
+        propagate_none: bool,
+        deterministic: bool,
         properties: TableProperties,
     ) -> Table: ...
     def gradual_broadcast(

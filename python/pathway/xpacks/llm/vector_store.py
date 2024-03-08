@@ -181,7 +181,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         if asyncio.iscoroutinefunction(self.embedder):
 
-            @pw.udf_async
+            @pw.udf
             async def embedder(txt):
                 result = await self.embedder(txt)
                 return np.asarray(result)

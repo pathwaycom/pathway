@@ -8,20 +8,25 @@ pub mod time_column;
 mod utils;
 
 use std::any::type_name;
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::panic::Location;
 
-use differential_dataflow::difference::Semigroup;
+use differential_dataflow::difference::{Monoid, Semigroup};
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::trace::{Batch, Trace, TraceReader};
 use differential_dataflow::{AsCollection, Collection, Data, ExchangeData};
-use futures::stream::FuturesUnordered;
+use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::StreamExt;
 use futures::{future, Future};
 use timely::dataflow::channels::pact::{Exchange, Pipeline};
 use timely::dataflow::operators::Exchange as _;
 use timely::dataflow::operators::Operator;
 
+use crate::engine::dataflow::operators::output::OutputBatch;
 use crate::engine::BatchWrapper;
+
+use self::output::ConsolidateForOutput;
 
 use super::maybe_total::{MaybeTotalScope, MaybeTotalSwitch};
 use super::shard::Shard;
@@ -292,6 +297,140 @@ where
                         }));
 
                         output.session(&time).give_vec(&mut result);
+                    }
+                }
+            })
+            .as_collection()
+    }
+}
+
+pub trait MapWithConsistentDeletions<S, K, V, R>
+where
+    S: MaybeTotalScope,
+    R: Monoid + ExchangeData,
+{
+    fn map_named_with_consistent_deletions<V2: Data>(
+        &self,
+        name: &str,
+        wrapper: BatchWrapper,
+        logic: impl FnMut((K, V)) -> (K, V2) + 'static,
+    ) -> Collection<S, (K, V2), R>;
+
+    fn map_named_async_with_consistent_deletions<F: Future>(
+        &self,
+        name: &str,
+        logic: impl Fn((K, V)) -> F + 'static,
+    ) -> Collection<S, F::Output, R>
+    where
+        F::Output: Data;
+}
+
+impl<S, K, V, R> MapWithConsistentDeletions<S, K, V, R> for Collection<S, (K, V), R>
+where
+    S: MaybeTotalScope,
+    K: ExchangeData + Shard + Hash,
+    V: ExchangeData,
+    (K, V): Shard,
+    R: Monoid + ExchangeData,
+{
+    #[track_caller]
+    fn map_named_with_consistent_deletions<V2: Data>(
+        &self,
+        name: &str,
+        wrapper: BatchWrapper,
+        mut logic: impl FnMut((K, V)) -> (K, V2) + 'static,
+    ) -> Collection<S, (K, V2), R> {
+        let caller = Location::caller();
+        let name = format!("{name} at {caller}");
+        let mut cache: HashMap<K, V2> = HashMap::new();
+        self.consolidate_for_output_named(&format!("ConsolidateForOutput: {name}"), false)
+            .unary(Pipeline, &name, move |_, _| {
+                let mut vector = Vec::new();
+                move |input, output| {
+                    wrapper.run(|| {
+                        while let Some((cap, data)) = input.next() {
+                            data.swap(&mut vector);
+                            for batch in vector.drain(..) {
+                                let OutputBatch { time, mut data } = batch;
+                                output.session(&cap.delayed(&time)).give_iterator(
+                                    data.drain(..).map(|((key, value), diff)| {
+                                        let result = if diff < Monoid::zero() {
+                                            cache
+                                                .remove(&key)
+                                                .expect("result for negative diff should be stored")
+                                                .clone()
+                                        } else {
+                                            let (_, result_value) = logic((key.clone(), value));
+                                            cache.insert(key.clone(), result_value.clone());
+                                            result_value
+                                        };
+                                        ((key, result), time.clone(), diff)
+                                    }),
+                                );
+                            }
+                        }
+                    });
+                }
+            })
+            .as_collection()
+    }
+
+    #[track_caller]
+    fn map_named_async_with_consistent_deletions<F: Future>(
+        &self,
+        name: &str,
+        logic: impl Fn((K, V)) -> F + 'static,
+    ) -> Collection<S, F::Output, R>
+    where
+        F::Output: Data,
+    {
+        let caller = Location::caller();
+        let name = format!("{name} at {caller}");
+        let mut buffer = Vec::new();
+        let mut cache: HashMap<K, F::Output> = HashMap::new();
+        self.consolidate_for_output_named(&format!("ConsolidateForOutput: {name}"), false)
+            .unary(Pipeline, &name, move |_, _| {
+                let mut vector = Vec::new();
+                move |input, output| {
+                    while let Some((cap, data)) = input.next() {
+                        data.swap(&mut vector);
+                        for batch in vector.drain(..) {
+                            let OutputBatch { time, mut data } = batch;
+                            let futures: FuturesOrdered<_> =
+                                data.drain(..)
+                                    .map(|((key, value), diff)| {
+                                        let maybe_result =
+                                            if diff < Monoid::zero() {
+                                                Some(cache.remove(&key).expect(
+                                            "result for negative diff should be stored",
+                                        ).clone())
+                                            } else {
+                                                None
+                                            };
+                                        ((key, value), diff, maybe_result)
+                                    })
+                                    .map(|((key, value), diff, maybe_result)| async {
+                                        if let Some(result) = maybe_result {
+                                            (result, diff, key)
+                                        } else {
+                                            (logic((key.clone(), value)).await, diff, key)
+                                        }
+                                    })
+                                    .collect();
+                            assert!(buffer.is_empty());
+                            buffer.reserve(futures.len());
+
+                            futures::executor::block_on(futures.for_each(|item| {
+                                let (result, diff, key) = item;
+                                if diff > Monoid::zero() {
+                                    let current = cache.insert(key, result.clone());
+                                    assert!(current.is_none());
+                                }
+                                buffer.push((result, time.clone(), diff));
+                                future::ready(())
+                            }));
+                            output.session(&cap.delayed(&time)).give_vec(&mut buffer);
+                        }
                     }
                 }
             })

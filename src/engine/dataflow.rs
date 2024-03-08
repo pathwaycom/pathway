@@ -86,7 +86,7 @@ use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
 use self::operators::time_column::{MaxTimestamp, SelfCompactionTime, TimeColumnBuffer};
-use self::operators::{ArrangeWithTypes, MapWrapped};
+use self::operators::{ArrangeWithTypes, MapWithConsistentDeletions, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
@@ -1119,6 +1119,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
+        deterministic: bool,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -1133,28 +1134,39 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
-        let new_values = table.values_consolidated().map_wrapped_named(
-            "expression_table::evaluate_expression",
-            wrapper,
-            move |(key, values)| {
-                let args: Vec<Value> = column_paths
-                    .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .collect::<Result<_>>()
-                    .unwrap_with_reporter(&error_reporter);
-                let new_values = expressions.iter().map(|expression_data| {
-                    let result = expression_data
-                        .expression
-                        .eval(&args)
-                        .unwrap_with_reporter_and_trace(
-                            &error_reporter,
-                            expression_data.properties.trace(),
-                        );
-                    result
-                });
-                (key, Value::Tuple(new_values.collect()))
-            },
-        );
+        let closure = move |(key, values)| {
+            let args: Vec<Value> = column_paths
+                .iter()
+                .map(|path| path.extract(&key, &values))
+                .collect::<Result<_>>()
+                .unwrap_with_reporter(&error_reporter);
+            let new_values = expressions.iter().map(|expression_data| {
+                let result = expression_data
+                    .expression
+                    .eval(&args)
+                    .unwrap_with_reporter_and_trace(
+                        &error_reporter,
+                        expression_data.properties.trace(),
+                    );
+                result
+            });
+            (key, Value::Tuple(new_values.collect()))
+        };
+
+        let new_values = if deterministic {
+            table.values_consolidated().map_wrapped_named(
+                "expression_table::evaluate_expression",
+                wrapper,
+                closure,
+            )
+        } else {
+            table.values().map_named_with_consistent_deletions(
+                "expression_table::evaluate_expression",
+                wrapper,
+                closure,
+            )
+        };
+        // TODO: move determinization to apply (create a list of caches for each expression_table)
 
         Ok(self
             .tables
@@ -1298,6 +1310,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
+        deterministic: bool,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -1305,29 +1318,36 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
         let trace = Arc::new(trace);
-        let new_values = table.values().map_named_async(
-            "expression_column::apply_async",
-            move |(key, values)| {
-                let args: Vec<Value> = column_paths
-                    .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .collect::<Result<_>>()
-                    .unwrap_with_reporter_and_trace(&error_reporter, &trace);
-                let error_reporter = error_reporter.clone();
-                let function = function.clone();
-                let trace = trace.clone();
-                let future = async move {
-                    let value = async {
-                        function(key, &args)
-                            .await
-                            .unwrap_with_reporter_and_trace(&error_reporter, &trace)
-                    }
-                    .await;
-                    (key, Value::from([value].as_slice()))
-                };
-                Box::pin(future)
-            },
-        );
+        let closure = move |(key, values)| {
+            let args: Vec<Value> = column_paths
+                .iter()
+                .map(|path| path.extract(&key, &values))
+                .collect::<Result<_>>()
+                .unwrap_with_reporter_and_trace(&error_reporter, &trace);
+            let error_reporter = error_reporter.clone();
+            let function = function.clone();
+            let trace = trace.clone();
+            let future = async move {
+                let value = async {
+                    function(key, &args)
+                        .await
+                        .unwrap_with_reporter_and_trace(&error_reporter, &trace)
+                }
+                .await;
+                (key, Value::from([value].as_slice()))
+            };
+            Box::pin(future)
+        };
+        let new_values = if deterministic {
+            table
+                .values()
+                .map_named_async("expression_column::apply_async", closure)
+        } else {
+            table.values().map_named_async_with_consistent_deletions(
+                "expression_column::apply_async",
+                closure,
+            )
+        };
         Ok(self
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
@@ -3768,10 +3788,19 @@ where
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
+        deterministic: bool,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .expression_table(table_handle, column_paths, expressions, wrapper)
+        if deterministic {
+            self.0.borrow_mut().expression_table(
+                table_handle,
+                column_paths,
+                expressions,
+                wrapper,
+                deterministic,
+            )
+        } else {
+            Err(Error::NotSupportedInIteration)
+        }
     }
 
     fn columns_to_table(
@@ -3820,6 +3849,7 @@ where
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
+        deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().async_apply_table(
             function,
@@ -3827,6 +3857,7 @@ where
             column_paths,
             table_properties,
             trace,
+            deterministic,
         )
     }
 
@@ -4289,10 +4320,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
+        deterministic: bool,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .expression_table(table_handle, column_paths, expressions, wrapper)
+        self.0.borrow_mut().expression_table(
+            table_handle,
+            column_paths,
+            expressions,
+            wrapper,
+            deterministic,
+        )
     }
 
     fn columns_to_table(
@@ -4341,6 +4377,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
+        deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().async_apply_table(
             function,
@@ -4348,6 +4385,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             column_paths,
             table_properties,
             trace,
+            deterministic,
         )
     }
 

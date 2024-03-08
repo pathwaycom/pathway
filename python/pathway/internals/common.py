@@ -15,6 +15,7 @@ from typing import (
     get_type_hints,
     overload,
 )
+from warnings import warn
 
 from pathway.internals import (
     dtype as dt,
@@ -28,6 +29,7 @@ from pathway.internals.helpers import function_spec
 from pathway.internals.parse_graph import G
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
+from pathway.internals.udfs import async_executor, udf
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -50,6 +52,7 @@ def iterate(
 
     >>> import pathway as pw
     >>> def collatz_transformer(iterated):
+    ...     @pw.udf(deterministic=True)
     ...     def collatz_step(x: int) -> int:
     ...         if x == 1:
     ...             return 1
@@ -57,7 +60,7 @@ def iterate(
     ...             return x // 2
     ...         else:
     ...             return 3 * x + 1
-    ...     return iterated.select(val=pw.apply(collatz_step, iterated.val))
+    ...     return iterated.select(val=collatz_step(iterated.val))
     >>> tab = pw.debug.table_from_markdown('''
     ... val
     ...   1
@@ -117,7 +120,13 @@ def apply(
     Bobdog
     Bobdog
     """
-    return expr.ApplyExpression(fun, None, *args, **kwargs)
+    if kwargs:
+        warn(
+            "Passing keyword arguments to the function in pw.apply is deprecated. Use positional arguments instead.",
+            DeprecationWarning,
+            stacklevel=5,
+        )
+    return udf(fun)(*args, **kwargs)
 
 
 @check_arg_types
@@ -152,7 +161,7 @@ def numba_apply(
     16
     36
     """
-    ret_type = {
+    return_type = {
         "int64": int,
         "int32": int,
         "int128": int,
@@ -164,12 +173,26 @@ def numba_apply(
     try:
         import numba
     except ImportError:
-        return expr.ApplyExpression(fun, ret_type, *args, **kwargs)
+        return expr.ApplyExpression(
+            fun,
+            return_type,
+            propagate_none=False,
+            deterministic=False,
+            args=args,
+            kwargs=kwargs,
+        )
 
     try:
         # Disabling nopython should result in compiling more functions, but with a speed penalty
         fun = numba.cfunc(numba_signature, nopython=True)(fun)
-        return expr.NumbaApplyExpression(fun, ret_type, *args, **kwargs)
+        return expr.NumbaApplyExpression(
+            fun,
+            return_type,
+            propagate_none=False,
+            deterministic=False,
+            args=args,
+            kwargs=kwargs,
+        )
     except Exception as e:
         raise ValueError("Numba compilation failed!") from e
 
@@ -200,7 +223,14 @@ def apply_with_type(
     Bobdog
     Bobdog
     """
-    return expr.ApplyExpression(fun, ret_type, *args, **kwargs)
+    if kwargs:
+        warn(
+            "Passing keyword arguments to the function in pw.apply_with_type is deprecated."
+            + " Use positional arguments instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    return udf(fun, return_type=ret_type)(*args, **kwargs)
 
 
 @check_arg_types
@@ -235,7 +265,14 @@ def apply_async(
     Bobdog
     Bobdog
     """
-    return expr.AsyncApplyExpression(fun, None, *args, **kwargs)
+    if kwargs:
+        warn(
+            "Passing keyword arguments to the function in pw.apply_async is deprecated."
+            + " Use positional arguments instead.",
+            DeprecationWarning,
+            stacklevel=5,
+        )
+    return udf(fun, executor=async_executor())(*args, **kwargs)
 
 
 # declare_type used to demand that target_type is of type 'type'

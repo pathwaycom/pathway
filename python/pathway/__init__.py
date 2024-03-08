@@ -6,7 +6,7 @@ import pathway._engine_finder  # noqa: F401  # isort: split
 
 import pathway.reducers as reducers
 import pathway.universes as universes
-from pathway import debug, demo, io
+from pathway import asynchronous, debug, demo, io, udfs
 from pathway.internals import (
     UDF,
     ClassArg,
@@ -36,7 +36,6 @@ from pathway.internals import (
     apply_async,
     apply_with_type,
     assert_table_has_schema,
-    asynchronous,
     attribute,
     cast,
     coalesce,
@@ -98,6 +97,7 @@ import pathway.persistence as persistence  # isort: skip
 
 __all__ = [
     "asynchronous",
+    "udfs",
     "ClassArg",
     "graphs",
     "utils",

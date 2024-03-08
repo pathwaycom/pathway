@@ -16,12 +16,12 @@ import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
-from pathway.internals import asynchronous
+from pathway.internals import udfs
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAIChat(pw.UDFAsync):
+class OpenAIChat(pw.UDF):
     """Pathway wrapper for OpenAI Chat services.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
@@ -31,7 +31,7 @@ class OpenAIChat(pw.UDFAsync):
         - capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None.
+            Defaults to None, meaning no retries.
         - cache_strategy: Defines the caching mechanism. If set to None and a persistency
             is enabled, operations will be cached using the persistence layer.
             Defaults to None.
@@ -152,7 +152,7 @@ class OpenAIChat(pw.UDFAsync):
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import llms
-    >>> from pathway.internals.asynchronous import ExponentialBackoffRetryStrategy
+    >>> from pathway.udfs import ExponentialBackoffRetryStrategy
     >>> chat = llms.OpenAIChat(model=None, retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6))
     >>> t = pw.debug.table_from_markdown('''
     ... txt     | model
@@ -166,14 +166,17 @@ class OpenAIChat(pw.UDFAsync):
     def __init__(
         self,
         capacity: int | None = None,
-        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
-        cache_strategy: asynchronous.CacheStrategy | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "gpt-3.5-turbo",
         **openai_kwargs,
     ):
-        super().__init__(
+        executor = udfs.async_executor(
             capacity=capacity,
             retry_strategy=retry_strategy,
+        )
+        super().__init__(
+            executor=executor,
             cache_strategy=cache_strategy,
         )
         self.kwargs = dict(openai_kwargs)
@@ -212,7 +215,7 @@ class OpenAIChat(pw.UDFAsync):
         return response
 
 
-class LiteLLMChat(pw.UDFAsync):
+class LiteLLMChat(pw.UDF):
     """Pathway wrapper for LiteLLM Chat services.
 
     Model has to be specified either in constructor call or in each application, no default
@@ -223,7 +226,7 @@ class LiteLLMChat(pw.UDFAsync):
         - capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None.
+            Defaults to None, meaning no retries.
         - cache_strategy: Defines the caching mechanism. If set to None and a persistency
             is enabled, operations will be cached using the persistence layer.
             Defaults to None.
@@ -247,7 +250,7 @@ class LiteLLMChat(pw.UDFAsync):
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import llms
-    >>> from pathway.internals.asynchronous import ExponentialBackoffRetryStrategy
+    >>> from pathway.udfs import ExponentialBackoffRetryStrategy
     >>> chat = llms.LiteLLMChat(model=None, retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6))
     >>> t = pw.debug.table_from_markdown('''
     ... txt     | model
@@ -261,14 +264,17 @@ class LiteLLMChat(pw.UDFAsync):
     def __init__(
         self,
         capacity: int | None = None,
-        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
-        cache_strategy: asynchronous.CacheStrategy | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = None,
         **litellm_kwargs,
     ):
-        super().__init__(
+        executor = udfs.async_executor(
             capacity=capacity,
             retry_strategy=retry_strategy,
+        )
+        super().__init__(
+            executor=executor,
             cache_strategy=cache_strategy,
         )
         self.kwargs = litellm_kwargs
@@ -286,7 +292,7 @@ class LiteLLMChat(pw.UDFAsync):
         return ret.choices[0].message.content
 
 
-class HFPipelineChat(pw.UDFSync):
+class HFPipelineChat(pw.UDF):
     """
     Pathway wrapper for HuggingFace Pipeline.
 
@@ -308,8 +314,7 @@ class HFPipelineChat(pw.UDFSync):
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import llms
-    >>> from pathway.internals.asynchronous import ExponentialBackoffRetryStrategy
-    >>> chat = llms.HFPipelineChat(model="gpt2", retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6))
+    >>> chat = llms.HFPipelineChat(model="gpt2")
     >>> t = pw.debug.table_from_markdown('''
     ... txt
     ... Wazzup?

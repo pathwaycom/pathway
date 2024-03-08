@@ -8,6 +8,7 @@ import pathway.internals as pw
 from pathway.internals.fingerprints import fingerprint
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
+from pathway.internals.udfs import udf
 from pathway.stdlib.graphs.common import Clustering, Edge, Weight
 from pathway.stdlib.graphs.graph import WeightedGraph
 from pathway.stdlib.utils.filtering import argmax_rows
@@ -105,6 +106,7 @@ def _propose_clusters(
         total_weight=clustering.ix(pw.this.u).total_weight,
     )
 
+    @udf(deterministic=True)
     def louvain_gain(gain, degree, penalty, total):
         return 2.0 * gain - degree * (2.0 * penalty + degree) / total
 
@@ -112,8 +114,7 @@ def _propose_clusters(
         pw.this.u,
         pw.this.vc,
         pw.this.total_weight,
-        gain=pw.apply(
-            louvain_gain,
+        gain=louvain_gain(
             aggregated_gain.gain,
             vertex_degrees.ix(aggregated_gain.u).degree,
             cluster_penalties.ix(aggregated_gain.vc).unscaled_penalty,
@@ -130,8 +131,7 @@ def _propose_clusters(
             pw.this.u,
             pw.this.vc,
             pw.this.total_weight,
-            gain=pw.apply(
-                louvain_gain,
+            gain=louvain_gain(
                 aggregated_gain.ix(pw.this.id).gain,
                 vertex_degrees.ix(pw.this.u).degree,
                 cluster_penalties.ix(pw.this.vc).unscaled_penalty
@@ -186,11 +186,12 @@ def _one_step(
     by selecting local maxima over random priority
     """
 
+    @udf(deterministic=True)
     def rand(x) -> int:
         return fingerprint((x, iter), format="i64")
 
     # sample priorities
-    candidate_moves += candidate_moves.select(r=pw.apply(rand, candidate_moves.id))
+    candidate_moves += candidate_moves.select(r=rand(candidate_moves.id))
     # compute maximum priority over all incident edges
     out_priorities = candidate_moves.select(
         candidate_moves.r, c=candidate_moves.uc, total_weight=pw.this.total_weight

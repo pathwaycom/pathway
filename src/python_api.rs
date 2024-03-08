@@ -833,24 +833,25 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (function, *args))]
-    fn apply(function: Py<PyAny>, args: Vec<PyRef<PyExpression>>) -> Self {
+    #[pyo3(signature = (function, *args, propagate_none=false))]
+    fn apply(function: Py<PyAny>, args: Vec<PyRef<PyExpression>>, propagate_none: bool) -> Self {
         let args = args
             .into_iter()
             .map(|expr| expr.inner.clone())
             .collect_vec();
-        Self::new(
-            Arc::new(Expression::Any(AnyExpression::Apply(
-                Box::new(move |input| {
-                    with_gil_and_pool(|py| -> DynResult<Value> {
-                        let args = PyTuple::new(py, input);
-                        Ok(function.call1(py, args)?.extract::<Value>(py)?)
-                    })
-                }),
-                args.into(),
-            ))),
-            true,
-        )
+        let func = Box::new(move |input: &[Value]| {
+            with_gil_and_pool(|py| -> DynResult<Value> {
+                let args = PyTuple::new(py, input);
+                Ok(function.call1(py, args)?.extract::<Value>(py)?)
+            })
+        });
+
+        let expression = if propagate_none {
+            AnyExpression::OptionalApply(func, args.into())
+        } else {
+            AnyExpression::Apply(func, args.into())
+        };
+        Self::new(Arc::new(Expression::Any(expression)), true)
     }
 
     #[staticmethod]
@@ -2081,11 +2082,16 @@ impl Scope {
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         function: Py<PyAny>,
+        propagate_none: bool,
+        deterministic: bool,
         properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let event_loop = self_.borrow().event_loop.clone();
         let table_handle = self_.borrow().graph.async_apply_table(
-            Arc::new(move |_, values| {
+            Arc::new(move |_, values: &[Value]| {
+                if propagate_none && values.iter().any(|a| matches!(a, Value::None)) {
+                    return Box::pin(futures::future::ok(Value::None));
+                }
                 let future = with_gil_and_pool(|py| {
                     let event_loop = event_loop.clone();
                     let args = PyTuple::new(py, values);
@@ -2105,6 +2111,7 @@ impl Scope {
             column_paths,
             properties.0,
             EngineTrace::Empty,
+            deterministic,
         )?;
         Table::new(self_, table_handle)
     }
@@ -2117,6 +2124,7 @@ impl Scope {
             PyRef<PyExpression>,
             TableProperties,
         )>,
+        deterministic: bool,
     ) -> PyResult<Py<Table>> {
         let gil = expressions
             .iter()
@@ -2137,6 +2145,7 @@ impl Scope {
             column_paths,
             expressions,
             wrapper,
+            deterministic,
         )?;
         Table::new(self_, table_handle)
     }

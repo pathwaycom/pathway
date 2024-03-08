@@ -30,7 +30,7 @@ def _normalize_unicode(text: str):
     return unicodedata.normalize("NFKC", text)
 
 
-class TokenCountSplitter(pw.UDFSync):
+class TokenCountSplitter(pw.UDF):
     """
     Splits a given string or a list of strings into chunks based on token
     count.
@@ -71,6 +71,7 @@ class TokenCountSplitter(pw.UDFSync):
         max_tokens: int = 500,
         encoding_name: str = "cl100k_base",
     ):
+        super().__init__()
         self.kwargs = dict(
             min_tokens=min_tokens, max_tokens=max_tokens, encoding_name=encoding_name
         )

@@ -6,12 +6,12 @@ import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from pathway.internals import api, dtype as dt, helpers
 from pathway.internals.api import Value
 from pathway.internals.operator_input import OperatorInput
-from pathway.internals.shadows import inspect, operator
+from pathway.internals.shadows import operator
 from pathway.internals.trace import Trace
 
 if TYPE_CHECKING:
@@ -752,6 +752,8 @@ class CountExpression(ColumnExpression):
 
 class ApplyExpression(ColumnExpression):
     _return_type: dt.DType
+    _propagate_none: bool
+    _deterministic: bool
     _args: tuple[ColumnExpression, ...]
     _kwargs: dict[str, ColumnExpression]
     _fun: Callable
@@ -759,21 +761,20 @@ class ApplyExpression(ColumnExpression):
     def __init__(
         self,
         fun: Callable,
-        return_type=None,
-        *args: ColumnExpression | Value,
-        **kwargs: ColumnExpression | Value,
+        return_type: Any,
+        propagate_none: bool,
+        deterministic: bool,
+        args: tuple[ColumnExpression | Value, ...],
+        kwargs: Mapping[str, ColumnExpression | Value],
     ):
         super().__init__()
         self._fun = fun
-        if return_type is None:
-            if inspect.isclass(self._fun):
-                return_type = self._fun
-            else:
-                try:
-                    return_type = inspect.signature(self._fun).return_annotation
-                except ValueError:
-                    return_type = Any
-        self._return_type = dt.wrap(return_type)
+        return_type = dt.wrap(return_type)
+        if propagate_none:
+            return_type = dt.Optional(return_type)
+        self._return_type = return_type
+        self._propagate_none = propagate_none
+        self._deterministic = deterministic
 
         self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
 
@@ -789,28 +790,19 @@ class ApplyExpression(ColumnExpression):
             type(self),
             self._fun,
             self._return_type,
+            self._propagate_none,
+            self._deterministic,
             *self._args,
             **self._kwargs,
         )
 
 
-class NumbaApplyExpression(ApplyExpression): ...
+class NumbaApplyExpression(ApplyExpression):
+    pass
 
 
 class AsyncApplyExpression(ApplyExpression):
-    def __init__(
-        self,
-        fun: Callable,
-        return_type: Any,
-        *args: ColumnExpression | Value,
-        **kwargs: ColumnExpression | Value,
-    ):
-        super().__init__(
-            fun,
-            dt.wrap(return_type) if return_type is not None else None,
-            *args,
-            **kwargs,
-        )
+    pass
 
 
 class CastExpression(ColumnExpression):

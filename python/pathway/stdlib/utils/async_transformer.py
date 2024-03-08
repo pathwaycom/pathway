@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 
 import pathway.internals as pw
 import pathway.io as io
-from pathway.internals import asynchronous, operator, parse_graph
+from pathway.internals import operator, parse_graph, udfs
 from pathway.internals.api import Pointer
 from pathway.internals.helpers import StableSet
 from pathway.internals.operator import Operator
@@ -48,10 +48,10 @@ class _AsyncConnector(io.python.ConnectorSubject):
     def set_options(
         self,
         capacity: int | None = None,
-        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
-        cache_strategy: asynchronous.CacheStrategy | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
     ):
-        self._invoke = asynchronous.async_options(
+        self._invoke = udfs.async_options(
             capacity=capacity,
             retry_strategy=retry_strategy,
             cache_strategy=cache_strategy,
@@ -203,7 +203,7 @@ class AsyncTransformer(ABC):
         # TODO: when AsyncTransformer uses persistence backend for cache
         # just take the settings for persistence config
         # Use DefaultCache for now as the only available option
-        self._connector.set_options(cache_strategy=pw.asynchronous.DefaultCache())
+        self._connector.set_options(cache_strategy=udfs.DefaultCache())
 
         self._input_table = input_table
 
@@ -236,8 +236,8 @@ class AsyncTransformer(ABC):
     def with_options(
         self,
         capacity: int | None = None,
-        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
-        cache_strategy: asynchronous.CacheStrategy | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
     ) -> AsyncTransformer:
         """
         Sets async options.
@@ -246,7 +246,7 @@ class AsyncTransformer(ABC):
             capacity: Maximum number of concurrent operations.
                 Defaults to None, indicating no specific limit.
             retry_strategy: Strategy for handling retries in case of failures.
-                Defaults to None.
+                Defaults to None, meaning no retries.
             cache_strategy: Defines the caching mechanism. If set to None
                 and a persistency is enabled, operations will be cached using the
                 persistence layer. Defaults to None.

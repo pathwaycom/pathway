@@ -641,6 +641,7 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
+        deterministic: bool,
     ) -> Result<TableHandle>;
 
     fn columns_to_table(
@@ -673,6 +674,7 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
+        deterministic: bool,
     ) -> Result<TableHandle>;
 
     fn subscribe_table(
@@ -1026,8 +1028,17 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
+        deterministic: bool,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.expression_table(table_handle, column_paths, expressions, wrapper))
+        self.try_with(|g| {
+            g.expression_table(
+                table_handle,
+                column_paths,
+                expressions,
+                wrapper,
+                deterministic,
+            )
+        })
     }
 
     fn columns_to_table(
@@ -1070,6 +1081,7 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
+        deterministic: bool,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.async_apply_table(
@@ -1078,6 +1090,7 @@ impl Graph for ScopedGraph {
                 column_paths,
                 table_properties,
                 trace,
+                deterministic,
             )
         })
     }

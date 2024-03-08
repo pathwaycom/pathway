@@ -7,10 +7,10 @@ import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
-from pathway.internals import asynchronous
+from pathway.internals import udfs
 
 
-class OpenAIEmbedder(pw.UDFAsync):
+class OpenAIEmbedder(pw.UDF):
     """Pathway wrapper for OpenAI Embedding services.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
@@ -20,7 +20,7 @@ class OpenAIEmbedder(pw.UDFAsync):
         - capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None.
+            Defaults to None, meaning no retries.
         - cache_strategy: Defines the caching mechanism. If set to None and a persistency
             is enabled, operations will be cached using the persistence layer.
             Defaults to None.
@@ -69,14 +69,14 @@ class OpenAIEmbedder(pw.UDFAsync):
         self,
         *,
         capacity: int | None = None,
-        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
-        cache_strategy: asynchronous.CacheStrategy | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "text-embedding-ada-002",
         **openai_kwargs,
     ):
+        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
-            capacity=capacity,
-            retry_strategy=retry_strategy,
+            executor=executor,
             cache_strategy=cache_strategy,
         )
         self.kwargs = dict(openai_kwargs)
@@ -98,7 +98,7 @@ class OpenAIEmbedder(pw.UDFAsync):
         return ret.data[0].embedding
 
 
-class LiteLLMEmbedder(pw.UDFAsync):
+class LiteLLMEmbedder(pw.UDF):
     """Pathway wrapper for `litellm.embedding`.
 
     Model has to be specified either in constructor call or in each application, no default
@@ -109,7 +109,7 @@ class LiteLLMEmbedder(pw.UDFAsync):
         - capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None.
+            Defaults to None, meaning no retries.
         - cache_strategy: Defines the caching mechanism. If set to None and a persistency
             is enabled, operations will be cached using the persistence layer.
             Defaults to None.
@@ -154,14 +154,14 @@ class LiteLLMEmbedder(pw.UDFAsync):
         self,
         *,
         capacity: int | None = None,
-        retry_strategy: asynchronous.AsyncRetryStrategy | None = None,
-        cache_strategy: asynchronous.CacheStrategy | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = None,
         **llmlite_kwargs,
     ):
+        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
-            capacity=capacity,
-            retry_strategy=retry_strategy,
+            executor=executor,
             cache_strategy=cache_strategy,
         )
         self.kwargs = dict(llmlite_kwargs)
@@ -181,7 +181,7 @@ class LiteLLMEmbedder(pw.UDFAsync):
         return ret.data[0]["embedding"]
 
 
-class SentenceTransformerEmbedder(pw.UDFSync):
+class SentenceTransformerEmbedder(pw.UDF):
     """
     Pathway wrapper for Sentence-Transformers embedder.
 

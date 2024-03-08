@@ -1436,6 +1436,7 @@ def test_reindex_no_columns():
 
 def test_column_fixpoint():
     def collatz_transformer(iterated):
+        @pw.udf(deterministic=True)
         def collatz_step(x: float) -> float:
             if x == 1:
                 return 1
@@ -1444,7 +1445,7 @@ def test_column_fixpoint():
             else:
                 return 3 * x + 1
 
-        return iterated.select(val=pw.apply(collatz_step, iterated.val))
+        return iterated.select(val=collatz_step(iterated.val))
 
     ret = pw.iterate(
         collatz_transformer,
@@ -2083,7 +2084,7 @@ def test_apply_async_disk_cache(tmp_path: pathlib.Path):
     cache_dir = tmp_path / "test_cache"
     counter = mock.Mock()
 
-    @pw.asynchronous.async_options(cache_strategy=pw.internals.asynchronous.DiskCache())
+    @pw.udfs.async_options(cache_strategy=pw.udfs.DiskCache())
     def inc(x: int) -> int:
         counter()
         return x + 1

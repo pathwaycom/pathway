@@ -12,12 +12,7 @@ from typing import Any
 import pathway as pw
 
 
-class ParseUtf8(pw.UDFSync):
-    def __init__(
-        self,
-    ):
-        pass
-
+class ParseUtf8(pw.UDF):
     def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         docs: list[tuple[str, dict]] = [(contents.decode("utf-8"), {})]
         return docs
@@ -26,7 +21,7 @@ class ParseUtf8(pw.UDFSync):
 # Based on:
 # https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/document_loaders/unstructured.py#L134
 # MIT licensed
-class ParseUnstructured(pw.UDFSync):
+class ParseUnstructured(pw.UDF):
     """
     Parse document using `https://unstructured.io/ <https://unstructured.io/>`_.
 

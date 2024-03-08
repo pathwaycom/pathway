@@ -95,6 +95,10 @@ pub enum AnyExpression {
         #[derivative(Debug = "ignore")] Box<dyn Fn(&[Value]) -> DynResult<Value> + Send + Sync>,
         Expressions,
     ),
+    OptionalApply(
+        #[derivative(Debug = "ignore")] Box<dyn Fn(&[Value]) -> DynResult<Value> + Send + Sync>,
+        Expressions,
+    ),
     IfElse(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     OptionalPointerFrom(Expressions),
     MakeTuple(Expressions),
@@ -482,6 +486,14 @@ impl AnyExpression {
             Self::Argument(i) => Ok(values.get(*i).ok_or(Error::IndexOutOfBounds)?.clone()), // XXX: oob
             Self::Const(v) => Ok(v.clone()),
             Self::Apply(f, args) => Ok(f(&args.eval(values)?)?),
+            Self::OptionalApply(f, args) => {
+                let args = args.eval(values)?;
+                if args.iter().any(|a| matches!(a, Value::None)) {
+                    Ok(Value::None)
+                } else {
+                    Ok(f(&args)?)
+                }
+            }
             Self::IfElse(if_, then, else_) => Ok(if if_.eval_as_bool(values)? {
                 then.eval(values)?
             } else {
