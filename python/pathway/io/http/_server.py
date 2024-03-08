@@ -49,7 +49,7 @@ QUERY_SCHEMA_COLUMN = "query"
 
 
 class _LoggingContext:
-    def __init__(self, request: web.Request):
+    def __init__(self, request: web.Request, session_id: str):
         self.log = {
             "_type": "http_access",
             "method": request.method,
@@ -60,6 +60,7 @@ class _LoggingContext:
             "user_agent": request.headers.get("User-Agent"),
             "unix_timestamp": int(time.time()),
             "remote": request.remote,
+            "session_id": session_id,
         }
         headers = []
         for header, value in request.headers.items():
@@ -324,8 +325,12 @@ added endpoints.
         self, handler_method: Callable[[web.Request], Awaitable[web.Response]]
     ):
         async def wrapped_handler(request: web.Request):
-            logging_context = _LoggingContext(request)
+            session_id = "uuid-" + str(uuid4())
+            logging_context = _LoggingContext(request, session_id)
             try:
+                headers = request.headers.copy()  # type:ignore
+                headers["X-Pathway-Session"] = session_id
+                request = request.clone(headers=headers)
                 response = await handler_method(request)
             except web.HTTPError as http_error:
                 logging_context.log_response(status=http_error.status_code)
@@ -447,7 +452,15 @@ class RestServerSubject(io.python.ConnectorSubject):
             for param, value in query_params.items():
                 if param not in payload:
                     payload[param] = value
-
+        logging.info(
+            json.dumps(
+                {
+                    "_type": "request_payload",
+                    "session_id": request.headers.get("X-Pathway-Session"),
+                    "payload": payload,
+                }
+            )
+        )
         self._verify_payload(payload)
         if self._request_validator:
             try:
