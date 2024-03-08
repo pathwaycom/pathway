@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 const DEFAULT_TELEMETRY_SERVER: &str = "";
 
-const PERIODIC_READER_INTERVAL: Duration = Duration::from_secs(10);
+const PERIODIC_READER_INTERVAL: Duration = Duration::from_secs(60);
 const OPENTELEMETRY_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";
@@ -150,6 +150,7 @@ pub struct TelemetryEnabled {
     pub telemetry_server_endpoint: String,
     pub service_name: String,
     pub service_version: String,
+    pub service_instance_id: String,
     pub run_id: String,
     pub trace_parent: Option<String>,
 }
@@ -172,6 +173,9 @@ impl Config {
         let run_id: String = parse_env_var("PATHWAY_RUN_ID")
             .map_err(DynError::from)?
             .unwrap_or(Uuid::new_v4().to_string());
+        let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
+            .map_err(DynError::from)?
+            .unwrap_or(Uuid::new_v4().to_string());
         let config = if telemetry_enabled {
             let telemetry_server =
                 telemetry_server.unwrap_or(String::from(DEFAULT_TELEMETRY_SERVER));
@@ -180,6 +184,7 @@ impl Config {
                     telemetry_server_endpoint: telemetry_server,
                     service_name: env!("CARGO_PKG_NAME").to_string(),
                     service_version: env!("CARGO_PKG_VERSION").to_string(),
+                    service_instance_id,
                     run_id,
                     trace_parent,
                 }),
