@@ -167,8 +167,11 @@ class _GDriveClient:
             return self.drive.files().get_media(fileId=file_id)
 
     def download(self, file: GDriveFile) -> bytes | None:
-        if file["status"] == STATUS_SIZE_LIMIT_EXCEEDED:
-            return None
+        if file["status"] == STATUS_SIZE_LIMIT_EXCEEDED or int(file.get("size", 0)) > (
+            self.object_size_limit or 1
+        ):
+            file["status"] = STATUS_SIZE_LIMIT_EXCEEDED
+            return b""
         try:
             response = io.BytesIO()
             request = self._prepare_download_request(file)
