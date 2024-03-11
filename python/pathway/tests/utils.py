@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from abc import abstractmethod
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, TypeVar
@@ -402,14 +402,14 @@ def run_all(**kwargs):
 
 
 def wait_result_with_checker(
-    checker,
-    timeout_sec,
+    checker: Callable[[], bool],
+    timeout_sec: float,
     *,
-    step=0.1,
-    target=run,
-    args=(),
-    kwargs={},
-):
+    step: float = 0.1,
+    target: Callable[..., None] | None = run,
+    args: Iterable[Any] = (),
+    kwargs: Mapping[str, Any] = {},
+) -> None:
     try:
         if target is not None:
             assert (
@@ -436,7 +436,13 @@ def wait_result_with_checker(
                 break
 
         if not succeeded:
-            details = checker.provide_information_on_failure()
+            provide_information_on_failure: Callable[[], str] | None = getattr(
+                checker, "provide_information_on_failure", None
+            )
+            if provide_information_on_failure is not None:
+                details = provide_information_on_failure()
+            else:
+                details = "(no details)"
             print(f"Checker failed: {details}", file=sys.stderr)
             raise AssertionError(details)
     finally:

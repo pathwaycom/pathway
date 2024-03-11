@@ -79,7 +79,7 @@ features = ["pyo3/extension-module"]
 
 [tool.mypy]
 python_version = "3.11"
-exclude = ["target", "examples", "python/pathway/tests", "integration_tests"]
+exclude = ["(^|/)target/", "(^|/)examples/", '(^|/)tests(/.*)?/test_.*\.py$']
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_redundant_casts = true

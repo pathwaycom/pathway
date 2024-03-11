@@ -4,13 +4,12 @@ import json
 import os
 import pathlib
 import random
-import time
-
-from utils import KafkaTestContext
 
 import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import get_aws_s3_settings, wait_result_with_checker
+
+from .utils import KafkaTestContext
 
 
 def generate_wordcount_input(n_words, n_word_repetitions):
@@ -72,6 +71,9 @@ class WordcountChecker:
 
         return result
 
+    def provide_information_on_failure(self) -> str:
+        return repr(self.topic_stats())
+
 
 class WordcountProgram:
     def __init__(self, output_file_path, reader_method, *reader_args, **reader_kwargs):
@@ -131,7 +133,7 @@ def run_backfilling_program(
                     persistent_id="1",
                 ),
                 kwargs={"persistence_config": persistence_config},
-            ), str(checker.topic_stats())
+            )
     finally:
         del os.environ["PATHWAY_THREADS"]
 
@@ -147,13 +149,9 @@ def test_backfilling_fs_storage(
 
 
 def test_backfilling_s3_storage(
-    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext, s3_path: str
 ):
-    pstorage_s3_path = (
-        "integration_tests/test_backfilling_s3_storage_pstorage_full/{}".format(
-            time.time()
-        )
-    )
+    pstorage_s3_path = f"{s3_path}/PStorage"
     s3_persistence_config = pw.persistence.Config.simple_config(
         pw.persistence.Backend.s3(
             root_path=pstorage_s3_path,

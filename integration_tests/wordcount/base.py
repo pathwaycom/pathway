@@ -18,7 +18,6 @@ DEFAULT_INPUT_SIZE = 5000000
 COMMIT_LINE = "*COMMIT*\n"
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
-DICTIONARY = None
 FS_STORAGE_NAME = "fs"
 S3_STORAGE_NAME = "s3"
 
@@ -132,6 +131,8 @@ def check_output_correctness(
                     ), "'count' is absent in CSV header"
                     continue
 
+                assert word_column_index is not None
+                assert count_column_index is not None
                 tokens = row.strip().split(",")
                 try:
                     word = tokens[word_column_index].strip('"')
@@ -156,10 +157,10 @@ def check_output_correctness(
 
     for word, output_count in output_word_counts.items():
         if interrupted_run:
-            assert input_word_counts.get(word) >= output_count
+            assert input_word_counts[word] >= output_count
         else:
             assert (
-                input_word_counts.get(word) == output_count
+                input_word_counts[word] == output_count
             ), f"Word: {word} Output count: {output_count} Input count: {input_word_counts.get(word)}"
 
     if not interrupted_run:
@@ -285,14 +286,14 @@ def reset_runtime(inputs_path, output_path, pstorage_path, pstorage_type):
     print("State successfully re-set")
 
 
-def generate_word():
+def generate_word() -> str:
     word_chars = []
     for _ in range(10):
         word_chars.append(random.choice("abcdefghijklmnopqrstuvwxyz"))
     return "".join(word_chars)
 
 
-def generate_dictionary(dict_size):
+def generate_dictionary(dict_size: int) -> list[str]:
     result_as_set = set()
     for _ in range(dict_size):
         word = generate_word()
@@ -302,7 +303,7 @@ def generate_dictionary(dict_size):
     return list(result_as_set)
 
 
-DICTIONARY = generate_dictionary(10000)
+DICTIONARY: list[str] = generate_dictionary(10000)
 
 
 def generate_input(file_name, input_size, commit_frequency):

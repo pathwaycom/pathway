@@ -3,8 +3,6 @@
 import json
 import os
 import pathlib
-import time
-import uuid
 
 import boto3
 import pandas as pd
@@ -59,8 +57,8 @@ def read_jsonlines_fields(path, keys_to_extract):
     return result
 
 
-def test_s3_read_write(tmp_path: pathlib.Path):
-    input_s3_path = "integration_tests/test_s3_read_write/input.csv"
+def test_s3_read_write(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
     model_output_path = tmp_path / "model_output.csv"
 
@@ -89,12 +87,12 @@ def test_s3_read_write(tmp_path: pathlib.Path):
     assert result.equals(expected)
 
 
-def test_minio_read_write(tmp_path: pathlib.Path):
+def test_minio_read_write(tmp_path: pathlib.Path, s3_path: str):
     class InputSchema(pw.Schema):
         key: int
         value: str
 
-    input_s3_path = "integration_tests/test_minio_read_write/input.csv"
+    input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
     model_output_path = tmp_path / "model_output.csv"
 
@@ -129,15 +127,14 @@ def test_minio_read_write(tmp_path: pathlib.Path):
     assert result.equals(expected)
 
 
-def test_s3_backfilling(tmp_path: pathlib.Path):
+def test_s3_backfilling(tmp_path: pathlib.Path, s3_path: str):
     pathway_persistent_storage = tmp_path / "PStorage"
-    s3_folder_path = f"integration_tests/test_s3_backfilling/{time.time()}"
-    s3_input_path = s3_folder_path + "/input.csv"
+    s3_input_path = f"{s3_path}/input.csv"
 
     input_contents = "key,value\n1,Hello\n2,World"
     put_aws_object(s3_input_path, input_contents)
     table = pw.io.s3_csv.read(
-        s3_folder_path,
+        s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
@@ -156,7 +153,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde"
     put_aws_object(s3_input_path, input_contents)
     table = pw.io.s3_csv.read(
-        s3_folder_path,
+        s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
@@ -173,13 +170,13 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     G.clear()
 
     input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde\n5,Hola"
-    s3_input_path_2 = s3_folder_path + "/input_2.csv"
+    s3_input_path_2 = f"{s3_path}/input_2.csv"
     input_contents_2 = "key,value\n6,Mundo"
     output_path = tmp_path / "output_final.csv"
     put_aws_object(s3_input_path, input_contents)
     put_aws_object(s3_input_path_2, input_contents_2)
     table = pw.io.s3_csv.read(
-        s3_folder_path,
+        s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         value_columns=["key", "value"],
         mode="static",
@@ -207,11 +204,9 @@ def test_s3_backfilling(tmp_path: pathlib.Path):
     assert result.equals(expected)
 
 
-def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
-    pstorage_s3_path = (
-        f"integration_tests/test_s3_json_read_write_pstorage_full/{time.time()}"
-    )
-    input_s3_path = f"integration_tests/test_s3_json_read_write/{time.time()}"
+def test_s3_json_read_and_recovery(tmp_path: pathlib.Path, s3_path: str):
+    pstorage_s3_path = f"{s3_path}/PStorage"
+    input_s3_path = f"{s3_path}/input"
     output_path = tmp_path / "output.json"
 
     def run_pw_program():
@@ -244,7 +239,7 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
         {"key": 2, "value": "Two"},
     ]
     put_aws_object(
-        os.path.join(input_s3_path, "input_1.json"),
+        f"{input_s3_path}/input_1.json",
         create_jsonlines(input_contents),
     )
 
@@ -259,7 +254,7 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
     ]
     input_contents += second_input_part
     put_aws_object(
-        os.path.join(input_s3_path, "input_1.json"),
+        f"{input_s3_path}/input_1.json",
         create_jsonlines(input_contents),
     )
 
@@ -274,7 +269,7 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
     ]
     input_contents += third_input_part
     put_aws_object(
-        os.path.join(input_s3_path, "input_2.json"),
+        f"{input_s3_path}/input_2.json",
         create_jsonlines(third_input_part),
     )
 
@@ -284,10 +279,8 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path):
     assert output_contents == third_input_part
 
 
-def test_s3_bytes_read(tmp_path: pathlib.Path):
-    input_path = (
-        f"integration_tests/test_s3_bytes_read/{time.time()}-{uuid.uuid4()}/input.txt"
-    )
+def test_s3_bytes_read(tmp_path: pathlib.Path, s3_path: str):
+    input_path = f"{s3_path}/input.txt"
     input_full_contents = "abc\n\ndef\nghi\njkl"
     output_path = tmp_path / "output.json"
 
@@ -307,16 +300,12 @@ def test_s3_bytes_read(tmp_path: pathlib.Path):
         assert result["data"] == [ord(c) for c in input_full_contents]
 
 
-def test_s3_empty_bytes_read(tmp_path: pathlib.Path):
-    base_path = (
-        f"integration_tests/test_s3_empty_bytes_read/{time.time()}-{uuid.uuid4()}/"
-    )
-
-    put_aws_object(base_path + "input", "")
-    put_aws_object(base_path + "input2", "")
+def test_s3_empty_bytes_read(tmp_path: pathlib.Path, s3_path: str):
+    put_aws_object(f"{s3_path}/input", "")
+    put_aws_object(f"{s3_path}/input2", "")
 
     table = pw.io.s3.read(
-        base_path,
+        s3_path,
         aws_s3_settings=get_aws_s3_settings(),
         format="binary",
         mode="static",
@@ -345,8 +334,8 @@ def test_s3_empty_bytes_read(tmp_path: pathlib.Path):
     )
 
 
-def test_s3_alternative_path(tmp_path: pathlib.Path):
-    input_s3_path = "integration_tests/test_s3_alternative_path/input.csv"
+def test_s3_alternative_path(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
     model_output_path = tmp_path / "model_output.csv"
 
@@ -358,7 +347,7 @@ def test_s3_alternative_path(tmp_path: pathlib.Path):
     table = pw.io.s3_csv.read(
         f"s3://aws-integrationtest/{input_s3_path}",
         aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            access_key="AKIAX67C7K343BP4QUWN",
+            access_key=os.environ["AWS_S3_ACCESS_KEY"],
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         ),
@@ -379,14 +368,14 @@ def test_s3_alternative_path(tmp_path: pathlib.Path):
     assert result.equals(expected)
 
 
-def test_s3_wrong_path(tmp_path: pathlib.Path):
-    input_s3_path = "integration_tests/test_s3_wrong_path/input.csv"
+def test_s3_wrong_path(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
 
     table = pw.io.s3_csv.read(
         f"s3://aws-integrationtest/{input_s3_path}",
         aws_s3_settings=pw.io.s3_csv.AwsS3Settings(
-            access_key="AKIAX67C7K343BP4QUWN",
+            access_key=os.environ["AWS_S3_ACCESS_KEY"],
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         ),
@@ -403,8 +392,8 @@ def test_s3_wrong_path(tmp_path: pathlib.Path):
         pw.run()
 
 
-def test_s3_creds_from_profiles(tmp_path: pathlib.Path):
-    input_s3_path = "integration_tests/test_s3_creds_from_profiles/input.csv"
+def test_s3_creds_from_profiles(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
     model_output_path = tmp_path / "model_output.csv"
 
@@ -433,8 +422,8 @@ def test_s3_creds_from_profiles(tmp_path: pathlib.Path):
     assert result.equals(expected)
 
 
-def test_s3_full_autodetect(tmp_path: pathlib.Path):
-    input_s3_path = "integration_tests/test_s3_full_autodetect/input.csv"
+def test_s3_full_autodetect(tmp_path: pathlib.Path, s3_path: str):
+    input_s3_path = f"{s3_path}/input.csv"
     output_path = tmp_path / "output.csv"
     model_output_path = tmp_path / "model_output.csv"
 

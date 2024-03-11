@@ -16,9 +16,7 @@ from pathway.tests.utils import (
 )
 
 
-def _test_server_basic(tmp_path: pathlib.Path, port: int, port_is_str: bool = False):
-    if port_is_str:
-        port = str(port)
+def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -30,7 +28,7 @@ def _test_server_basic(tmp_path: pathlib.Path, port: int, port_is_str: bool = Fa
             query_id=queries.id, result=pw.apply(lambda x: x.upper(), pw.this.query)
         )
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         r = requests.post(
             f"http://127.0.0.1:{port}",
@@ -57,15 +55,15 @@ def _test_server_basic(tmp_path: pathlib.Path, port: int, port_is_str: bool = Fa
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server(tmp_path: pathlib.Path, port: int):
+def test_server(tmp_path: pathlib.Path, port: int) -> None:
     _test_server_basic(tmp_path, port)
 
 
-def test_server_str_port_compatibility(tmp_path: pathlib.Path, port: int):
-    _test_server_basic(tmp_path, port, port_is_str=True)
+def test_server_str_port_compatibility(tmp_path: pathlib.Path, port: int) -> None:
+    _test_server_basic(tmp_path, port=str(port))
 
 
-def test_server_customization(tmp_path: pathlib.Path, port: int):
+def test_server_customization(tmp_path: pathlib.Path, port: int) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -77,7 +75,7 @@ def test_server_customization(tmp_path: pathlib.Path, port: int):
             query_id=queries.id, result=pw.apply(lambda x: x.upper(), pw.this.query)
         )
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         requests.post(
             f"http://127.0.0.1:{port}/endpoint?user=sergey",
@@ -104,7 +102,7 @@ def test_server_customization(tmp_path: pathlib.Path, port: int):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server_schema_customization(tmp_path: pathlib.Path, port: int):
+def test_server_schema_customization(tmp_path: pathlib.Path, port: int) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -116,7 +114,7 @@ def test_server_schema_customization(tmp_path: pathlib.Path, port: int):
             query_id=queries.id, result=pw.apply(lambda x: x.upper(), pw.this.query)
         )
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         requests.post(
             f"http://127.0.0.1:{port}/",
@@ -139,14 +137,14 @@ def test_server_schema_customization(tmp_path: pathlib.Path, port: int):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server_keep_queries(tmp_path: pathlib.Path, port: int):
+def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
         k: int
         v: int
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         requests.post(
             f"http://127.0.0.1:{port}/",
@@ -187,7 +185,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path, port: int):
     )
 
 
-def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int):
+def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -218,7 +216,9 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int):
         pw.run()
 
 
-def _test_server_two_endpoints(tmp_path: pathlib.Path, port: int, with_cors: bool):
+def _test_server_two_endpoints(
+    tmp_path: pathlib.Path, port: int, with_cors: bool
+) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -235,7 +235,7 @@ def _test_server_two_endpoints(tmp_path: pathlib.Path, port: int, with_cors: boo
             query_id=queries.id, result=pw.apply(lambda x: x + x, pw.this.query)
         )
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         r = requests.post(
             f"http://127.0.0.1:{port}/duplicate",
@@ -306,7 +306,7 @@ def test_server_two_endpoints_with_cors(tmp_path: pathlib.Path, port: int):
     _test_server_two_endpoints(tmp_path, port, with_cors=True)
 
 
-def test_server_schema_generation_via_endpoint(port: int):
+def test_server_schema_generation_via_endpoint(port: int) -> None:
     class InputSchema(pw.Schema):
         query: str
         user: str
@@ -350,7 +350,7 @@ def test_server_schema_generation_via_endpoint(port: int):
     assert succeeded
 
 
-def test_server_parameter_cast(tmp_path: pathlib.Path, port: int):
+def test_server_parameter_cast(tmp_path: pathlib.Path, port: int) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -361,7 +361,7 @@ def test_server_parameter_cast(tmp_path: pathlib.Path, port: int):
             query_id=queries.id, result=pw.apply(lambda x: x + x, pw.this.number)
         )
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         r = requests.post(
             f"http://127.0.0.1:{port}/double",
@@ -395,7 +395,7 @@ def test_server_parameter_cast(tmp_path: pathlib.Path, port: int):
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
 
 
-def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int):
+def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int) -> None:
     output_path = tmp_path / "output.csv"
 
     class InputSchema(pw.Schema):
@@ -404,7 +404,7 @@ def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int):
     def echo_logic(queries: pw.Table) -> pw.Table:
         return queries.select(query_id=queries.id, result=pw.this.data)
 
-    def target():
+    def target() -> None:
         time.sleep(5)
         r = requests.post(f"http://127.0.0.1:{port}/echo", json={"data": {"a": 1}})
         r.raise_for_status()

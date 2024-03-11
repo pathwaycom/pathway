@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from utils import KafkaTestContext
+
+from .utils import KafkaTestContext
 
 
 @pytest.fixture

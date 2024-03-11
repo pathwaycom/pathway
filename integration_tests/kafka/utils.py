@@ -12,6 +12,8 @@ kafka_settings = {"bootstrap_servers": "kafka:9092"}
 class KafkaTestContext:
     _producer: KafkaProducer
     _admin: KafkaAdminClient
+    _input_topic: str
+    _output_topic: str
 
     def __init__(self) -> None:
         self._producer = KafkaProducer(
@@ -93,3 +95,6 @@ class KafkaTestContext:
             "auto.offset.reset": "beginning",
             "group.id": str(uuid4()),
         }
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__qualname__} input_topic={self.input_topic!r} output_topic={self.output_topic!r}>"

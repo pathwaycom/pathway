@@ -3,11 +3,11 @@
 import json
 import pathlib
 
-from utils import KafkaTestContext
-
 import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import expect_csv_checker, wait_result_with_checker
+
+from .utils import KafkaTestContext
 
 
 def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
