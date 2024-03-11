@@ -301,7 +301,7 @@ def read(
         object_size_limit: Maximum size (in bytes) of a file that will be processed by \
 this connector or `None` if no filtering by size should be made;
         refresh_interval: time in seconds between scans. Applicable if mode is set to 'streaming'.
-        service_user_credentials_file: Google API service user json file.
+        service_user_credentials_file: Google API service user json file. Please follow the instructions provided in the `developer's user guide <https://pathway.com/developers/user-guide/connectors/gdrive-connector/#setting-up-google-drive>`_ to obtain them.
         with_metadata: when set to True, the connector will add an additional column named
             `_metadata` to the table. This column will contain file metadata,
             such as: `id`, `name`, `mimeType`, `parents`, `modifiedTime`, `thumbnailLink`, `lastModifyingUser`.
