@@ -22,7 +22,9 @@ pub trait DateTime {
             secs -= 1;
             nanos += 1_000_000_000;
         }
-        chrono::NaiveDateTime::from_timestamp_opt(secs, u32::try_from(nanos).unwrap()).unwrap()
+        chrono::DateTime::from_timestamp(secs, u32::try_from(nanos).unwrap())
+            .unwrap()
+            .naive_utc()
     }
 
     fn nanosecond(&self) -> i64 {
@@ -73,6 +75,7 @@ pub trait DateTime {
         self.as_chrono_datetime()
             .duration_round(duration.as_chrono_duration())
             .unwrap()
+            .and_utc()
             .timestamp_nanos_opt()
             .unwrap()
     }
@@ -81,6 +84,7 @@ pub trait DateTime {
         self.as_chrono_datetime()
             .duration_trunc(duration.as_chrono_duration())
             .unwrap()
+            .and_utc()
             .timestamp_nanos_opt()
             .unwrap()
     }
@@ -157,8 +161,10 @@ impl DateTimeNaive {
                     LocalResult::None => {
                         // This NaiveDateTime doesn't exist in a given timezone.
                         // We try getting a first date after this.
-                        let moved = naive_local + chrono::Duration::minutes(30);
-                        let rounded = moved.duration_round(chrono::Duration::hours(1)).unwrap();
+                        let moved = naive_local + chrono::Duration::try_minutes(30).unwrap();
+                        let rounded = moved
+                            .duration_round(chrono::Duration::try_hours(1).unwrap())
+                            .unwrap();
                         let localized = tz.from_local_datetime(&rounded);
                         if let LocalResult::Single(localized) = localized {
                             Ok(localized.into())
@@ -200,7 +206,7 @@ impl DateTimeNaive {
 impl From<chrono::NaiveDateTime> for DateTimeNaive {
     fn from(value: chrono::NaiveDateTime) -> Self {
         Self {
-            timestamp: value.timestamp_nanos_opt().unwrap(),
+            timestamp: value.and_utc().timestamp_nanos_opt().unwrap(),
         }
     }
 }
@@ -299,7 +305,7 @@ impl DateTimeUtc {
 impl<Tz: chrono::TimeZone> From<chrono::DateTime<Tz>> for DateTimeUtc {
     fn from(value: chrono::DateTime<Tz>) -> Self {
         Self {
-            timestamp: value.naive_utc().timestamp_nanos_opt().unwrap(),
+            timestamp: value.timestamp_nanos_opt().unwrap(),
         }
     }
 }
