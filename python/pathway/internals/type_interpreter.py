@@ -91,7 +91,7 @@ class TypeInterpreter(IdentityTransform):
         expression_info = get_expression_info(expression)
         raise TypeError(
             f"Pathway does not support using unary operator {operator_fun.__name__}"
-            + f" on column of type {expression._dtype.typehint}.\n"
+            + f" on column of type {expression._expr._dtype.typehint}.\n"
             + "It refers to the following expression:\n"
             + expression_info
         )

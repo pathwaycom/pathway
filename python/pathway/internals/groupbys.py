@@ -119,7 +119,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         col_sort_by = (
             sort_by._to_original()._to_internal() if sort_by is not None else None
         )
-        key = (cls.__name__, table._universe, cols, set_id, col_sort_by)
+        key = (cls.__name__, table, cols, set_id, col_sort_by)
         if key not in G.cache:
             result = GroupedTable(
                 _table=table,

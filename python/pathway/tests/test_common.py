@@ -6083,3 +6083,10 @@ def test_reducers_ix(reducer, expected, expected_type):
 
 def test_pw_run_signature():
     assert inspect.signature(pw.run) == inspect.signature(pw.run_all)
+
+
+def test_gruopby_caching_doesnt_explode():
+    # minimal failing example for a particular bug in caching
+    tab = pw.Table.empty(a=int)
+    tab.groupby(pw.this.a)
+    tab.with_columns(b=0).groupby(pw.this.a).reduce(b=pw.reducers.any(pw.this.b))
