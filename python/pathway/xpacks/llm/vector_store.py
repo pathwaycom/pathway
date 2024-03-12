@@ -487,17 +487,36 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
 
 class VectorStoreClient:
-    """
-    A client you can use to query :py:class:`VectorStoreServer`.
+    def __init__(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        url: str | None = None,
+        timeout: int = 15,
+    ):
+        """
+        A client you can use to query :py:class:`VectorStoreServer`.
 
-    Args:
-        - host: host on which `:py:class:`VectorStoreServer` listens
-        - port: port on which `:py:class:`VectorStoreServer` listens
-    """
+        Please provide either the `url`, or `host` and `port`.
 
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
+        Args:
+            - host: host on which `:py:class:`VectorStoreServer` listens
+            - port: port on which `:py:class:`VectorStoreServer` listens
+            - url: url at which `:py:class:`VectorStoreServer` listens
+            - timeout: timeout for the post requests in seconds
+        """
+        err = "Either (`host` and `port`) or `url` must be provided, but not both."
+        if url is not None:
+            if host or port:
+                raise ValueError(err)
+            self.url = url
+        else:
+            if host is None:
+                raise ValueError(err)
+            port = port or 80
+            self.url = f"http://{host}:{port}"
+
+        self.timeout = timeout
 
     def query(
         self, query: str, k: int = 3, metadata_filter: str | None = None
@@ -516,13 +535,14 @@ class VectorStoreClient:
         data = {"query": query, "k": k}
         if metadata_filter is not None:
             data["metadata_filter"] = metadata_filter
-        url = f"http://{self.host}:{self.port}/v1/retrieve"
+        url = self.url + "/v1/retrieve"
         response = requests.post(
             url,
             data=json.dumps(data),
             headers={"Content-Type": "application/json"},
-            timeout=3,
+            timeout=self.timeout,
         )
+
         responses = response.json()
         return sorted(responses, key=lambda x: x["dist"])
 
@@ -531,11 +551,13 @@ class VectorStoreClient:
 
     def get_vectorstore_statistics(self):
         """Fetch basic statistics about the vector store."""
-        url = f"http://{self.host}:{self.port}/v1/statistics"
+
+        url = self.url + "/v1/statistics"
         response = requests.post(
             url,
             json={},
             headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
         )
         responses = response.json()
         return responses
@@ -555,7 +577,7 @@ class VectorStoreClient:
             filepath_globpattern: optional glob pattern specifying which documents
                 will be searched for this query.
         """
-        url = f"http://{self.host}:{self.port}/v1/inputs"
+        url = self.url + "/v1/inputs"
         response = requests.post(
             url,
             json={
@@ -563,6 +585,7 @@ class VectorStoreClient:
                 "filepath_globpattern": filepath_globpattern,
             },
             headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
         )
         responses = response.json()
         return responses
