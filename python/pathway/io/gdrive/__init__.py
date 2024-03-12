@@ -20,7 +20,11 @@ import pathway as pw
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.io._utils import STATUS_DOWNLOADED, STATUS_SIZE_LIMIT_EXCEEDED
+from pathway.io._utils import (
+    STATUS_DOWNLOADED,
+    STATUS_SIZE_LIMIT_EXCEEDED,
+    STATUS_SKIPPED,
+)
 from pathway.io.python import ConnectorSubject
 
 SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
@@ -119,16 +123,20 @@ class _GDriveClient:
             return files
         result = []
         for file in files:
-            size = int(file["size"])
-            if size > self.object_size_limit:
-                name = file["name"]
-                logging.info(
-                    f"Skipping object {name} because its size "
-                    f"{size} exceeds the limit {self.object_size_limit}"
-                )
-                file["status"] = STATUS_SIZE_LIMIT_EXCEEDED
+            name = file["name"]
+            if "size" not in file:
+                logging.info(f"Skipping object {name} because it doesn't have size")
+                file["status"] = STATUS_SKIPPED
             else:
-                file["status"] = STATUS_DOWNLOADED
+                size = int(file["size"])
+                if size > self.object_size_limit:
+                    logging.info(
+                        f"Skipping object {name} because its size "
+                        f"{size} exceeds the limit {self.object_size_limit}"
+                    )
+                    file["status"] = STATUS_SIZE_LIMIT_EXCEEDED
+                else:
+                    file["status"] = STATUS_DOWNLOADED
             result.append(file)
         return result
 
