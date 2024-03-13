@@ -5,9 +5,9 @@ from typing import List
 
 import pytest
 import requests
-from llama_index.embeddings.base import BaseEmbedding
-from llama_index.node_parser import TextSplitter
-from llama_index.retrievers import PathwayVectorServer
+from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.node_parser import TextSplitter
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 import pathway as pw
 from pathway.tests.utils import xfail_on_multiple_threads
@@ -87,7 +87,7 @@ def pathway_server(port):
         embed_model,
     ]
 
-    processing_pipeline = PathwayVectorServer(
+    processing_pipeline = VectorStoreServer.from_llamaindex_components(
         *data_sources,
         transformations=custom_transformations,  # type: ignore
     )
@@ -110,7 +110,7 @@ def test_llama_retriever():
 
     time.sleep(15)
 
-    from llama_index.retrievers import PathwayRetriever
+    from llama_index.retrievers.pathway import PathwayRetriever
 
     retriever = PathwayRetriever(host=PATHWAY_HOST, port=port)
 
@@ -143,7 +143,7 @@ def test_llama_reader():
 
     time.sleep(20)
 
-    from llama_index.readers import PathwayReader
+    from llama_index.readers.pathway import PathwayReader
 
     pr = PathwayReader(host=PATHWAY_HOST, port=port)
 
