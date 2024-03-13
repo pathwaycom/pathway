@@ -194,8 +194,8 @@ class VectorStoreServer:
         """
         try:
             from llama_index.core.base.embeddings.base import BaseEmbedding
-            from llama_index.core.schema import BaseNode, MetadataMode, TextNode
             from llama_index.core.ingestion.pipeline import run_transformations
+            from llama_index.core.schema import BaseNode, MetadataMode, TextNode
         except ImportError:
             raise ImportError(
                 "Please install llama-index-core: `pip install llama-index-core`"
@@ -230,7 +230,7 @@ class VectorStoreServer:
                 f"found {type(transformations[-1])}."
             )
 
-        embedder: BaseEmbedding = transformations.pop()  # type: ignore
+        embedder: BaseEmbedding = transformations.pop()
 
         async def embedding_callable(x: str) -> list[float]:
             embedding = await embedder.aget_text_embedding(x)

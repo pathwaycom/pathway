@@ -7,10 +7,10 @@ import pytest
 import requests
 from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.core.node_parser import TextSplitter
-from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 import pathway as pw
 from pathway.tests.utils import xfail_on_multiple_threads
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 PATHWAY_HOST = "127.0.0.1"
 
