@@ -742,6 +742,7 @@ class TelemetryConfig:
     telemetry_server_endpoint: str | None
     service_name: str | None
     service_version: str | None
+    service_namespace: str | None
     service_instance_id: str | None
     run_id: str
     @staticmethod

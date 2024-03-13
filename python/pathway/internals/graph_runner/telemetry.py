@@ -14,6 +14,7 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import (
     SERVICE_INSTANCE_ID,
     SERVICE_NAME,
+    SERVICE_NAMESPACE,
     SERVICE_VERSION,
     Resource,
 )
@@ -47,10 +48,10 @@ class Telemetry:
             attributes={
                 SERVICE_NAME: self.config.service_name or "",
                 SERVICE_VERSION: self.config.service_version or "",
+                SERVICE_NAMESPACE: self.config.service_namespace or "",
                 SERVICE_INSTANCE_ID: self.config.service_instance_id or "",
                 "run.id": self.config.run_id,
                 "python.version": sys.version,
-                "otel.scope.name": "python",
             }
         )
 

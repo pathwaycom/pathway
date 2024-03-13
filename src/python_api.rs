@@ -3295,6 +3295,7 @@ pub struct TelemetryConfig {
     telemetry_server_endpoint: Option<String>,
     service_name: Option<String>,
     service_version: Option<String>,
+    service_namespace: Option<String>,
     service_instance_id: Option<String>,
     run_id: String,
 }
@@ -3325,6 +3326,7 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
                 telemetry_server_endpoint: Some(config.telemetry_server_endpoint),
                 service_name: Some(config.service_name),
                 service_version: Some(config.service_version),
+                service_namespace: Some(config.service_namespace),
                 service_instance_id: Some(config.service_instance_id),
                 run_id: config.run_id,
             },

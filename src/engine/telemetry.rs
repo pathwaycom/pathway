@@ -26,7 +26,7 @@ use opentelemetry_sdk::{
     Resource,
 };
 use opentelemetry_semantic_conventions::resource::{
-    OTEL_SCOPE_NAME, PROCESS_PID, SERVICE_NAME, SERVICE_VERSION,
+    PROCESS_PID, SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
 };
 use scopeguard::defer;
 use sysinfo::{get_current_pid, System};
@@ -48,6 +48,8 @@ const OUTPUT_LATENCY: &str = "latency.output";
 const ROOT_TRACE_ID: Key = Key::from_static_str("root.trace.id");
 const RUN_ID: Key = Key::from_static_str("run.id");
 
+const LOCAL_DEV_NAMESPACE: &str = "local-dev";
+
 struct Telemetry {
     pub config: TelemetryEnabled,
 }
@@ -68,7 +70,8 @@ impl Telemetry {
         Resource::new([
             SERVICE_NAME.string(self.config.service_name.clone()),
             SERVICE_VERSION.string(self.config.service_version.clone()),
-            OTEL_SCOPE_NAME.string("rust"),
+            SERVICE_INSTANCE_ID.string(self.config.service_instance_id.clone()),
+            SERVICE_NAMESPACE.string(self.config.service_namespace.clone()),
             PROCESS_PID.i64(pid),
             ROOT_TRACE_ID.string(root_trace_id.to_string()),
             RUN_ID.string(self.config.run_id.clone()),
@@ -150,6 +153,7 @@ pub struct TelemetryEnabled {
     pub telemetry_server_endpoint: String,
     pub service_name: String,
     pub service_version: String,
+    pub service_namespace: String,
     pub service_instance_id: String,
     pub run_id: String,
     pub trace_parent: Option<String>,
@@ -170,13 +174,22 @@ impl Config {
         let telemetry_enabled: bool = parse_env_var("PATHWAY_TELEMETRY_ENABLED")
             .map_err(DynError::from)?
             .unwrap_or(false);
-        let run_id: String = parse_env_var("PATHWAY_RUN_ID")
-            .map_err(DynError::from)?
-            .unwrap_or(Uuid::new_v4().to_string());
-        let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
-            .map_err(DynError::from)?
-            .unwrap_or(Uuid::new_v4().to_string());
         let config = if telemetry_enabled {
+            let run_id: String = parse_env_var("PATHWAY_RUN_ID")
+                .map_err(DynError::from)?
+                .unwrap_or(Uuid::new_v4().to_string());
+            let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
+                .map_err(DynError::from)?
+                .unwrap_or(Uuid::new_v4().to_string());
+            let service_namespace: String = parse_env_var("PATHWAY_SERVICE_NAMESPACE")
+                .map_err(DynError::from)?
+                .unwrap_or_else(|| {
+                    if service_instance_id.ends_with(LOCAL_DEV_NAMESPACE) {
+                        LOCAL_DEV_NAMESPACE.to_string()
+                    } else {
+                        format!("external-{}", Uuid::new_v4())
+                    }
+                });
             let telemetry_server =
                 telemetry_server.unwrap_or(String::from(DEFAULT_TELEMETRY_SERVER));
             match license {
@@ -184,6 +197,7 @@ impl Config {
                     telemetry_server_endpoint: telemetry_server,
                     service_name: env!("CARGO_PKG_NAME").to_string(),
                     service_version: env!("CARGO_PKG_VERSION").to_string(),
+                    service_namespace,
                     service_instance_id,
                     run_id,
                     trace_parent,
