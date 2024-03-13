@@ -13,7 +13,8 @@ import asyncio
 import functools
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING
 
 import jmespath
 import numpy as np
@@ -24,6 +25,10 @@ import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
 from pathway.stdlib.ml import index
 from pathway.stdlib.ml.classifiers import _knn_lsh
+
+if TYPE_CHECKING:
+    import langchain_core.documents
+    import langchain_core.embeddings
 
 
 def _unwrap_udf(func):
@@ -83,7 +88,7 @@ class VectorStoreServer:
     def __init__(
         self,
         *docs: pw.Table,
-        embedder: Callable[[str], list[float]],
+        embedder: Callable[[str], list[float] | Coroutine],
         parser: Callable[[bytes], list[tuple[str, dict]]] | None = None,
         splitter: Callable[[str], list[tuple[str, dict]]] | None = None,
         doc_post_processors: (
@@ -122,6 +127,41 @@ class VectorStoreServer:
         self.index_params = DEFAULT_INDEX_PARAMS
 
         self._graph = self._build_graph()
+
+    @classmethod
+    def from_langchain_components(
+        cls,
+        *docs,
+        embedder: "langchain_core.embeddings.Embeddings",
+        parser: Callable[[bytes], list[tuple[str, dict]]] | None = None,
+        splitter: "langchain_core.documents.BaseDocumentTransformer | None" = None,
+        **kwargs,
+    ):
+        try:
+            from langchain_core.documents import Document
+        except ImportError:
+            raise ImportError(
+                "Please install langchain_core: `pip install langchain_core`"
+            )
+
+        generic_splitter = None
+        if splitter:
+            generic_splitter = lambda x: [  # noqa
+                (doc.page_content, doc.metadata)
+                for doc in splitter.transform_documents([Document(page_content=x)])
+            ]
+
+        async def generic_embedded(x: str):
+            res = await embedder.aembed_documents([x])
+            return res[0]
+
+        return cls(
+            *docs,
+            embedder=generic_embedded,
+            parser=parser,
+            splitter=generic_splitter,
+            **kwargs,
+        )
 
     def _build_graph(self) -> dict:
         """
