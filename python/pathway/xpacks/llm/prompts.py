@@ -8,7 +8,7 @@ def prompt_citing_qa(query: str, docs: list[pw.Json]):
     context_pieces = []
 
     for i, doc in enumerate(docs, 1):
-        context_pieces.append(f"# Source {i}/n/n")
+        context_pieces.append(f"# Source {i}")
         context_pieces.append(doc["text"])  # type: ignore
         context_pieces.append("")
     context_str = "\n".join(context_pieces)
@@ -55,6 +55,34 @@ def prompt_short_qa(query: str, docs: list[pw.Json]):
         "Only respond without any explanation, for example questions asking for date should be answered in strictly date format: `05 January 2011`"  # noqa: E501
         "Yes or No questions should be responded with simple `Yes` or `No` and so on."
         "If question cannot be inferred from documents SAY `No information found`"
+        "Now it's your turn. Below are several sources of information:"
+        "\n------\n"
+        f"{context_str}"
+        "\n------\n"
+        f"Query: {query}\n"
+        "Answer: "
+    )
+    return prompt
+
+
+@pw.udf
+def prompt_qa(
+    query: str,
+    docs: list[pw.Json] | list[str],
+    information_not_found_response="No information found.",
+):
+    context_pieces = []
+
+    for i, doc in enumerate(docs, 1):
+        if isinstance(doc, str):
+            context_pieces.append(doc)
+        else:
+            context_pieces.append(doc["text"])  # type: ignore
+    context_str = "\n\n".join(context_pieces)
+    prompt = (
+        "Please provide an answer based solely on the provided sources. "
+        "Keep your answer concise and accurate. "
+        f"If question cannot be inferred from documents SAY `{information_not_found_response}`. "
         "Now it's your turn. Below are several sources of information:"
         "\n------\n"
         f"{context_str}"
