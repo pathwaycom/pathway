@@ -1735,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "pathway"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "arc-swap",
  "arcstr",

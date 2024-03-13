@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.8.3] - 2024-03-13
+
 ### Added
 - New parameters of `pw.UDF` class and `pw.udf` decorator: `return_type`, `deterministic`, `propagate_none`, `executor`, `cache_strategy`.
 - The LLM Xpack now provides integrations with LlamaIndex and LangChain for running the Pathway VectorStore server.
