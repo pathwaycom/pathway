@@ -2,12 +2,56 @@
 """
 Pathway embedder UDFs.
 """
+import asyncio
 
 import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
 from pathway.internals import udfs
+
+__all__ = ["OpenAIEmbedder", "LiteLLMEmbedder", "SentenceTransformerEmbedder"]
+
+
+async def _safe_aclose(self):
+    try:
+        await self.aclose()
+    except RuntimeError:
+        pass
+
+
+def _mokeypatch_openai_async():
+    """Be more permissive on errors happening in httpx loop closing.
+
+
+    Without this patch, many runtime errors appear while the server is running in a thread.
+    The errors can be ignored, but look scary.
+    """
+    try:
+        import openai._base_client
+
+        if hasattr(openai._base_client, "OrigAsyncHttpxClientWrapper"):
+            return
+
+        openai._base_client.OrigAsyncHttpxClientWrapper = (  # type:ignore
+            openai._base_client.AsyncHttpxClientWrapper
+        )
+
+        class AsyncHttpxClientWrapper(
+            openai._base_client.OrigAsyncHttpxClientWrapper  # type:ignore
+        ):
+            def __del__(self) -> None:
+                try:
+                    # TODO(someday): support non asyncio runtimes here
+                    asyncio.get_running_loop().create_task(_safe_aclose(self))
+                except Exception:
+                    pass
+
+        openai._base_client.AsyncHttpxClientWrapper = (  # type:ignore
+            AsyncHttpxClientWrapper
+        )
+    except Exception:
+        pass
 
 
 class OpenAIEmbedder(pw.UDF):
@@ -74,6 +118,7 @@ class OpenAIEmbedder(pw.UDF):
         model: str | None = "text-embedding-ada-002",
         **openai_kwargs,
     ):
+        _mokeypatch_openai_async()
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
             executor=executor,
@@ -159,6 +204,7 @@ class LiteLLMEmbedder(pw.UDF):
         model: str | None = None,
         **llmlite_kwargs,
     ):
+        _mokeypatch_openai_async()
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
             executor=executor,

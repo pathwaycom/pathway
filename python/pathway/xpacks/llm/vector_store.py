@@ -12,6 +12,7 @@ The client queries the server and returns matching documents.
 import asyncio
 import functools
 import json
+import logging
 import threading
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING
@@ -94,7 +95,7 @@ class VectorStoreServer:
         doc_post_processors: (
             list[Callable[[str, dict], tuple[str, dict]]] | None
         ) = None,
-        index_params: dict | None = {},
+        index_params: dict | None = None,
     ):
         self.docs = docs
 
@@ -119,6 +120,7 @@ class VectorStoreServer:
 
         # detect the dimensionality of the embeddings
         self.embedding_dimension = len(_coerce_sync(self.embedder)("."))
+        logging.debug("Embedder has dimension %s", self.embedding_dimension)
 
         DEFAULT_INDEX_PARAMS = dict(distance_type="cosine")
         if index_params is not None:
@@ -519,7 +521,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             )
 
         if threaded:
-            t = threading.Thread(target=run)
+            t = threading.Thread(target=run, name="VectorStoreServer")
             t.start()
             return t
         else:
