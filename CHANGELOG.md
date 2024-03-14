@@ -5,13 +5,6 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Added
-- Introduced `instance` parameter in `AsyncTransformer`. All calls with a given `(instance, processing_time)` pair are returned at the same processing time. Ordering is preserved within a single instance.
-- Added `successful`, `failed`, `finished` properties to `AsyncTransformer`. They return tables with successful calls, failed calls and all finished calls, respectively.
-
-### Changed
-- Property `result` of `AsyncTransformer` is deprecated. Property `successful` should be used instead.
-
 ### Fixed
 - Pathway will only require `LiteLLM` package, if you use one of the wrappers for `LiteLLM`.
 

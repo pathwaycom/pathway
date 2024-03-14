@@ -198,11 +198,6 @@ impl DataRow {
             shard,
         }
     }
-
-    fn __repr__(&self) -> String {
-        format!("{self:?}")
-    }
-
     fn __richcmp__(&self, other: &Self, op: CompareOp) -> PyResult<bool> {
         // TODO: replace with __eq__ when pyo3 is updated to 0.20
         match op {
