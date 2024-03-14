@@ -62,7 +62,7 @@ use differential_dataflow::Collection;
 use differential_dataflow::{AsCollection as _, Data};
 use futures::future::BoxFuture;
 use id_arena::Arena;
-use itertools::{process_results, Itertools};
+use itertools::{chain, process_results, Itertools};
 use log::info;
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
@@ -792,6 +792,12 @@ impl<T> Shard for KeyWith<T> {
     fn shard(&self) -> u64 {
         self.0.shard()
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+enum MaybeUpdate<T> {
+    Original(T),
+    Update(T),
 }
 
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
@@ -1770,7 +1776,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &mut self,
         table_handle: TableHandle,
         update_handle: TableHandle,
-    ) -> Result<ArrangedByKey<S, Key, (bool, Value)>> {
+    ) -> Result<ArrangedByKey<S, Key, MaybeUpdate<Value>>> {
         let table = self
             .tables
             .get(table_handle)
@@ -1782,11 +1788,15 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         Ok(table
             .values()
-            .map_named("update_rows_arrange::table", |(k, v)| (k, (false, v)))
+            .map_named("update_rows_arrange::table", |(k, v)| {
+                (k, MaybeUpdate::Original(v))
+            })
             .concat(
                 &update
                     .values()
-                    .map_named("update_rows_arrange::update", |(k, v)| (k, (true, v))),
+                    .map_named("update_rows_arrange::update", |(k, v)| {
+                        (k, MaybeUpdate::Update(v))
+                    }),
             )
             .arrange_named("update_rows_arrange::both"))
     }
@@ -1802,8 +1812,17 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let updated_values = both_arranged.reduce_abelian(
             "update_rows_table::updated",
             move |_key, input, output| {
-                let ((_is_right, value), _count) = input.last().unwrap();
-                output.push((value.clone(), 1));
+                let values = match input {
+                    [(MaybeUpdate::Original(original_values), 1)] => original_values,
+                    [(MaybeUpdate::Update(new_values), 1)] => new_values,
+                    [(MaybeUpdate::Original(_), 1), (MaybeUpdate::Update(new_values), 1)] => {
+                        new_values
+                    }
+                    _ => {
+                        panic!("unexpected counts in input");
+                    }
+                };
+                output.push((values.clone(), 1));
             },
         );
 
@@ -1827,21 +1846,30 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let updated_values = both_arranged.reduce_abelian(
             "update_cells_table::updated",
             move |key, input, output| {
-                let ((_is_right, values), _count) = input[0];
-                let maybe_update: Vec<_> = match input.get(1) {
-                    Some(((_is_right, updates), _count)) => update_paths
-                        .iter()
-                        .map(|path| path.extract(key, updates))
-                        .collect::<Result<_>>(),
-                    None => column_paths
-                        .iter()
-                        .map(|path| path.extract(key, values))
-                        .collect::<Result<_>>(),
-                }
-                .unwrap_with_reporter(&error_reporter);
+                let (original_values, selected_values, selected_paths) = match input {
+                    [(MaybeUpdate::Original(original_values), 1)] => {
+                        (original_values, original_values, &column_paths)
+                    }
+                    [
+                        (MaybeUpdate::Original(original_values), 1),
+                        (MaybeUpdate::Update(new_values), 1),
+                    ] => {
+                        (original_values, new_values, &update_paths)
+                    }
+                    [(MaybeUpdate::Update(_), 1)] => {
+                        panic!("updating a row that does not exist");
+                    }
+                    _ => {
+                        panic!("unexpected counts in input");
+                    }
+                };
+                let updates: Vec<_> = selected_paths
+                    .iter()
+                    .map(|path| path.extract(key, selected_values))
+                    .try_collect()
+                    .unwrap_with_reporter(&error_reporter);
 
-                let result =
-                    Value::Tuple([values.clone()].into_iter().chain(maybe_update).collect());
+                let result = Value::Tuple(chain!([original_values.clone()], updates).collect());
                 output.push((result, 1));
             },
         );

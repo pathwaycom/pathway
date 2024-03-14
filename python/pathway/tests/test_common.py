@@ -3533,6 +3533,58 @@ def test_update_cells_warns_when_using_with_columns():
     assert_table_equality(new2, expected)
 
 
+def test_update_cells_with_broken_promises():
+    tab1 = T(
+        """
+            | a | b
+        1   | 1 | 1
+        2   | 2 | 1
+        3   | 6 | 1
+        4   | 3 | 1
+        5   | 9 | 1
+        """
+    )
+    tab2 = T(
+        """
+            | a
+        1   | 1
+        2   | 2
+        3   | 6
+        4   | 3
+        6   | 9
+        """
+    )
+    tab1.update_cells(tab2.promise_universe_is_subset_of(tab1))
+    with pytest.raises(Exception):
+        run_all()
+
+
+def test_update_cells_with_broken_promises_2():
+    tab1 = T(
+        """
+            | a
+        1   | 1
+        2   | 2
+        3   | 6
+        4   | 3
+        5   | 9
+        """
+    )
+    tab2 = T(
+        """
+            | a
+        1   | 1
+        2   | 2
+        3   | 6
+        4   | 3
+        6   | 9
+        """
+    )
+    tab1.update_cells(tab2.promise_universe_is_subset_of(tab1))
+    with pytest.raises(Exception):
+        run_all()
+
+
 def test_update_rows():
     old = T(
         """
