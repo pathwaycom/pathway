@@ -10,7 +10,7 @@ import re
 import sys
 import time
 from abc import abstractmethod
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Hashable, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, TypeVar
@@ -202,7 +202,7 @@ def assert_equal_tables_wo_index(
 
 
 def assert_equal_streams(t0: api.CapturedStream, t1: api.CapturedStream) -> None:
-    def transform(row: api.DataRow):
+    def transform(row: api.DataRow) -> Hashable:
         t = (row.key,) + tuple(row.values) + (row.time, row.diff)
         return make_row_hashable(t)
 
@@ -214,13 +214,62 @@ def assert_equal_streams(t0: api.CapturedStream, t1: api.CapturedStream) -> None
 def assert_equal_streams_wo_index(
     t0: api.CapturedStream, t1: api.CapturedStream
 ) -> None:
-    def transform(row: api.DataRow):
+    def transform(row: api.DataRow) -> Hashable:
         t = tuple(row.values) + (row.time, row.diff)
         return make_row_hashable(t)
 
     assert collections.Counter(transform(row) for row in t0) == collections.Counter(
         transform(row) for row in t1
     )
+
+
+def assert_split_into_time_groups(
+    t0: api.CapturedStream,
+    t1: api.CapturedStream,
+    transform: Callable[[api.DataRow], tuple[Hashable, int]],
+) -> None:
+    result: list[tuple[Any, int]] = [transform(row) for row in t0]
+    expected: list[tuple[Any, int]] = [transform(row) for row in t1]
+    assert len(result) == len(expected)
+    expected_counter = collections.Counter(row[0] for row in expected)
+    for key, count in expected_counter.items():
+        if count != 1:
+            raise ValueError(
+                "This utility function does not support cases where the count of (value, diff)"
+                + f" pair is !=1, but the count of {key} is {count}."
+            )
+    result.sort()
+    expected.sort()
+    expected_to_result_time: dict[int, int] = {}
+    for (res_val, res_time), (ex_val, ex_time) in zip(result, expected):
+        assert res_val == ex_val
+        if ex_time not in expected_to_result_time:
+            expected_to_result_time[ex_time] = res_time
+        if res_time != expected_to_result_time[ex_time]:
+            raise AssertionError(
+                f"Expected {res_val} to have time {expected_to_result_time[ex_time]}"
+                + f" but it has time {res_time}."
+            )
+
+
+def assert_streams_in_time_groups(
+    t0: api.CapturedStream, t1: api.CapturedStream
+) -> None:
+    def transform(row: api.DataRow) -> tuple[Hashable, int]:
+        t = (row.key, *row.values, row.diff)
+        return make_row_hashable(t), row.time
+
+    assert_split_into_time_groups(t0, t1, transform)
+
+
+def assert_streams_in_time_groups_wo_index(
+    t0: api.CapturedStream, t1: api.CapturedStream
+) -> None:
+    def transform(row: api.DataRow) -> tuple[Hashable, int]:
+        t = (*row.values, row.diff)
+        return make_row_hashable(t), row.time
+
+    assert_split_into_time_groups(t0, t1, transform)
 
 
 class CsvLinesNumberChecker:
@@ -388,6 +437,22 @@ assert_stream_equality_wo_types = run_graph_and_validate_result(
 
 assert_stream_equality_wo_index_types = run_graph_and_validate_result(
     assert_equal_streams_wo_index, assert_schemas=False
+)
+
+assert_stream_split_into_groups = run_graph_and_validate_result(
+    assert_streams_in_time_groups
+)
+
+assert_stream_split_into_groups_wo_index = run_graph_and_validate_result(
+    assert_streams_in_time_groups_wo_index
+)
+
+assert_stream_split_into_groups_wo_types = run_graph_and_validate_result(
+    assert_streams_in_time_groups, assert_schemas=False
+)
+
+assert_stream_split_into_groups_wo_index_types = run_graph_and_validate_result(
+    assert_streams_in_time_groups_wo_index, assert_schemas=False
 )
 
 

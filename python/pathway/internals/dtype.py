@@ -761,3 +761,27 @@ def unoptionalize_pair(left_dtype: DType, right_dtype: DType) -> tuple[DType, DT
 def get_args(dtype: typing.Any) -> tuple[EllipsisType | DType, ...]:
     arg_types = typing.get_args(dtype)
     return tuple(wrap(arg) if arg != ... else ... for arg in arg_types)
+
+
+_HASHABLE_DTYPES = {
+    INT,
+    BOOL,
+    STR,
+    BYTES,
+    FLOAT,
+    NONE,
+    POINTER,
+    DATE_TIME_NAIVE,
+    DATE_TIME_UTC,
+    DURATION,
+}
+
+
+def is_hashable_in_python(dtype: DType) -> bool:
+    if isinstance(dtype, Optional):
+        return is_hashable_in_python(unoptionalize(dtype))
+    if isinstance(dtype, Tuple):
+        return all(is_hashable_in_python(d) for d in dtype.args)
+    if isinstance(dtype, List):
+        return is_hashable_in_python(dtype.wrapped)
+    return dtype in _HASHABLE_DTYPES
