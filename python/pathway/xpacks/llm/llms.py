@@ -12,7 +12,6 @@ import json
 import logging
 import uuid
 
-import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
@@ -269,6 +268,11 @@ class LiteLLMChat(pw.UDF):
         model: str | None = None,
         **litellm_kwargs,
     ):
+        try:
+            import litellm  # noqa
+        except ImportError:
+            raise ImportError("Please install litellm: `pip install litellm`")
+
         executor = udfs.async_executor(
             capacity=capacity,
             retry_strategy=retry_strategy,
@@ -282,6 +286,8 @@ class LiteLLMChat(pw.UDF):
             self.kwargs["model"] = model
 
     async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
+        import litellm as litellm_mod
+
         if isinstance(messages, pw.Json):
             messages_decoded: list[dict] = messages.as_list()
         else:

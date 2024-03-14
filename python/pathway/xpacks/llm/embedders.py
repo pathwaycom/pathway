@@ -4,7 +4,6 @@ Pathway embedder UDFs.
 """
 import asyncio
 
-import litellm as litellm_mod
 import openai as openai_mod
 
 import pathway as pw
@@ -204,6 +203,11 @@ class LiteLLMEmbedder(pw.UDF):
         model: str | None = None,
         **llmlite_kwargs,
     ):
+        try:
+            import litellm  # noqa
+        except ImportError:
+            raise ImportError("Please install litellm: `pip install litellm`")
+
         _mokeypatch_openai_async()
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
@@ -222,6 +226,8 @@ class LiteLLMEmbedder(pw.UDF):
             - **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
+        import litellm as litellm_mod
+
         kwargs = {**self.kwargs, **kwargs}
         ret = await litellm_mod.aembedding(input=[input or "."], **kwargs)
         return ret.data[0]["embedding"]

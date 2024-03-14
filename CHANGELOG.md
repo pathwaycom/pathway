@@ -12,6 +12,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - Property `result` of `AsyncTransformer` is deprecated. Property `successful` should be used instead.
 
+### Fixed
+- Pathway will only require `LiteLLM` package, if you use one of the wrappers for `LiteLLM`.
 
 ## [0.8.3] - 2024-03-13
 

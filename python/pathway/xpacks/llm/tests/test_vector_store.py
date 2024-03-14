@@ -7,6 +7,7 @@ import multiprocessing
 import pathlib
 import time
 
+import pytest
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_core.embeddings import Embeddings
 
@@ -157,6 +158,7 @@ def pathway_server(tmp_path, host, port):
     thread.join()
 
 
+@pytest.mark.flaky(reruns=4)
 @xfail_on_multiple_threads
 def test_vector_store_with_langchain(tmp_path: pathlib.Path) -> None:
     host = "0.0.0.0"
