@@ -83,6 +83,43 @@ class _LoggingContext:
             logging.error(json.dumps(self.log))
 
 
+class EndpointExamples:
+    """
+    Examples for endpoint documentation.
+    """
+
+    def __init__(self):
+        self.examples_by_id = {}
+
+    def add_example(self, id, summary, values):
+        """
+        Adds an example to the collection.
+
+        Args:
+            id: Short and unique ID for the example. It is used for naming the example \
+within the Open API schema. By using `default` as an ID, you can set the example \
+default for the readers, while users will be able to select another ones via the \
+dropdown menu.
+            summary: Human-readable summary of the example, describing what is shown. \
+It is shown in the automatically generated dropdown menu.
+            values: The key-value dictionary, a mapping from the fields described in \
+schema to their values in the example.
+
+        Returns:
+            None
+        """
+        if id in self.examples_by_id:
+            raise ValueError(f"Duplicate example id: {id}")
+        self.examples_by_id[id] = {
+            "summary": summary,
+            "value": values,
+        }
+        return self
+
+    def _openapi_description(self):
+        return self.examples_by_id
+
+
 class EndpointDocumentation:
     """
     The settings for the automatic OpenAPI v3 docs generation for an endpoint.
@@ -113,6 +150,7 @@ way, one can exclude certain endpoints and methods from being documented.
         description: str | None = None,
         tags: Sequence[str] | None = None,
         method_types: Sequence[str] | None = None,
+        examples: EndpointExamples | None = None,
     ):
         self.summary = summary
         self.description = description
@@ -120,6 +158,7 @@ way, one can exclude certain endpoints and methods from being documented.
         self.method_types = None
         if method_types is not None:
             self.method_types = set([x.upper() for x in method_types])
+        self.examples = examples
 
     def generate_docs(self, format, method, schema) -> dict:
         if not self._is_method_exposed(method):
@@ -140,7 +179,10 @@ way, one can exclude certain endpoints and methods from being documented.
                 openapi_schema = self._construct_openapi_json_schema(schema)
             else:
                 raise ValueError(f"Unknown endpoint input format: {format}")
-            content_description = {content_header: {"schema": openapi_schema}}
+            schema_and_examples = {"schema": openapi_schema}
+            if self.examples:
+                schema_and_examples["examples"] = self.examples._openapi_description()
+            content_description = {content_header: schema_and_examples}
             endpoint_description = {
                 "requestBody": {
                     "content": content_description,
@@ -214,7 +256,9 @@ way, one can exclude certain endpoints and methods from being documented.
         additional_properties = False
 
         for name, props in schema.columns().items():
-            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(props.dtype.map_to_engine())
+            openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(
+                unoptionalize(props.dtype).map_to_engine()
+            )
             if openapi_type is None:
                 # not something we can clearly define the type for, so it will be
                 # read as an additional property
@@ -369,11 +413,14 @@ added endpoints.
     def _register_endpoint(
         self, route, handler, format, schema, methods, documentation
     ) -> None:
-        self._openapi_description["paths"][route] = {}  # type: ignore[index]
+        endpoint_docs = {}
         for method in methods:
             self._add_endpoint_to_app(method, route, handler)
-            endpoint_docs = documentation.generate_docs(format, method, schema)
-            self._openapi_description["paths"][route].update(endpoint_docs)  # type: ignore[index]
+            method_docs = documentation.generate_docs(format, method, schema)
+            if method_docs:
+                endpoint_docs.update(method_docs)
+        if endpoint_docs:
+            self._openapi_description["paths"][route] = endpoint_docs  # type: ignore[index]
 
     def _run(self) -> None:
         self._app_start_mutex.acquire()

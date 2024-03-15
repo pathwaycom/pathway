@@ -14,7 +14,12 @@ from pathway.io import python
 
 from .._subscribe import subscribe
 from ._common import RetryPolicy, Sender, prepare_request_payload, unescape
-from ._server import EndpointDocumentation, PathwayWebserver, rest_connector
+from ._server import (
+    EndpointDocumentation,
+    EndpointExamples,
+    PathwayWebserver,
+    rest_connector,
+)
 from ._streaming import HttpStreamingSubject
 
 
@@ -292,4 +297,5 @@ __all__ = [
     "rest_connector",
     "PathwayWebserver",
     "EndpointDocumentation",
+    "EndpointExamples",
 ]

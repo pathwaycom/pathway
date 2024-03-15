@@ -320,3 +320,42 @@ def test_column_example():
         break
 
     assert field_found
+
+
+def test_endpoint_examples_for_payload():
+    test_tags = ["Testing", "Endpoint", "Hello world"]
+
+    class InputSchema(pw.Schema):
+        k: int
+        v: str = pw.column_definition(default_value="hello")
+
+    examples = pw.io.http.EndpointExamples()
+    examples.add_example("default", "Default example", values={"k": 1, "v": "Hello"})
+    examples.add_example("kv_empty", "Default example", values={"k": 0, "v": ""})
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=8080)
+    pw.io.http.rest_connector(
+        webserver=webserver,
+        methods=("GET", "POST", "PUT", "PATCH"),
+        schema=InputSchema,
+        delete_completed_queries=False,
+        documentation=pw.io.http.EndpointDocumentation(
+            description="Endpoint description",
+            summary="Endpoint summary",
+            tags=test_tags,
+            method_types=("GET", "POST"),
+            examples=examples,
+        ),
+    )
+
+    description = webserver.openapi_description_json("127.0.0.1:8080")
+    openapi_spec_validator.validate(description)
+
+    assert set(description["paths"]["/"].keys()) == set(["get", "post"])
+
+    assert description["paths"]["/"]["post"]["tags"] == test_tags
+    assert description["paths"]["/"]["post"]["description"] == "Endpoint description"
+    examples = description["paths"]["/"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["examples"]
+    assert len(examples) == 2
