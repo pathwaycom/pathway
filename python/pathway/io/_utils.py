@@ -18,7 +18,7 @@ METADATA_COLUMN_NAME = "_metadata"
 
 STATUS_SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
 STATUS_DOWNLOADED = "downloaded"
-STATUS_SKIPPED = "skipped_size_not_available"
+STATUS_SYMLINKS_NOT_SUPPORTED = "skipped_symlinks_not_supported"
 
 _INPUT_MODES_MAPPING = {
     STATIC_MODE_NAME: ConnectorMode.STATIC,

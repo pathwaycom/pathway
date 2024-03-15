@@ -23,7 +23,7 @@ from pathway.internals.runtime_type_check import check_arg_types
 from pathway.io._utils import (
     STATUS_DOWNLOADED,
     STATUS_SIZE_LIMIT_EXCEEDED,
-    STATUS_SKIPPED,
+    STATUS_SYMLINKS_NOT_SUPPORTED,
 )
 from pathway.io.python import ConnectorSubject
 
@@ -124,9 +124,10 @@ class _GDriveClient:
         result = []
         for file in files:
             name = file["name"]
-            if "size" not in file:
+            is_symlink = "size" not in file
+            if is_symlink:
                 logging.info(f"Skipping object {name} because it doesn't have size")
-                file["status"] = STATUS_SKIPPED
+                file["status"] = STATUS_SYMLINKS_NOT_SUPPORTED
             else:
                 size = int(file["size"])
                 if size > self.object_size_limit:
@@ -175,9 +176,15 @@ class _GDriveClient:
             return self.drive.files().get_media(fileId=file_id)
 
     def download(self, file: GDriveFile) -> bytes | None:
-        if file["status"] == STATUS_SIZE_LIMIT_EXCEEDED or int(file.get("size", 0)) > (
-            self.object_size_limit or 1
-        ):
+        is_symlink = file.get("size") is None
+        is_too_large = (
+            self.object_size_limit is not None
+            and int(file.get("size", "0")) > self.object_size_limit
+        )
+        if is_symlink:
+            file["status"] = STATUS_SYMLINKS_NOT_SUPPORTED
+            return b""
+        if is_too_large:
             file["status"] = STATUS_SIZE_LIMIT_EXCEEDED
             return b""
         try:
