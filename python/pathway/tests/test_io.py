@@ -22,6 +22,7 @@ from pathway.engine import ref_scalar
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
+from pathway.io.airbyte import _PathwayAirbyteDestination
 from pathway.tests.utils import (
     CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
@@ -2901,3 +2902,94 @@ def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
         wait_result_with_checker(FileLinesNumberChecker(output_path, 7), 30)
 
     t.join()
+
+
+def test_airbyte_stream_state():
+    # Actual github state used for commits
+    # not_commits is a mock to check that one stream won't overwrite another
+    destination = _PathwayAirbyteDestination(lambda x: print(x))
+    assert destination.get_state() == {}
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "4450e616-fb46-458e-aa78-16c1f631dbfb",
+                "_airbyte_job_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_slice_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-15T16:01:13.809156",
+                "_airbyte_data": '{"type": "STREAM", "stream": {"stream_descriptor": {"name": "commits", "namespace": null}, "stream_state": {"pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:53Z"}}}}}',  # noqa
+            }
+        ],
+    )
+    assert destination.get_state() == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:53Z"}}
+        },
+    }
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "4450e616-fb46-458e-aa78-16c1f631dbfb",
+                "_airbyte_job_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_slice_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-15T16:01:13.809156",
+                "_airbyte_data": '{"type": "STREAM", "stream": {"stream_descriptor": {"name": "not_commits", "namespace": null}, "stream_state": {"pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:54Z"}}}}}',  # noqa
+            }
+        ],
+    )
+    assert destination.get_state() == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:53Z"}}
+        },
+        "not_commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:54Z"}}
+        },
+    }
+    # Check that the state for a stream is updated
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "4450e616-fb46-458e-aa78-16c1f631dbfb",
+                "_airbyte_job_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_slice_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-15T16:01:13.809156",
+                "_airbyte_data": '{"type": "STREAM", "stream": {"stream_descriptor": {"name": "commits", "namespace": null}, "stream_state": {"pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:55Z"}}}}}',  # noqa
+            }
+        ],
+    )
+    assert destination.get_state() == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:55Z"}}
+        },
+        "not_commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:54Z"}}
+        },
+    }
+
+
+def test_airbyte_legacy_state():
+    destination = _PathwayAirbyteDestination(on_event=lambda x: print(x))
+    assert destination.get_state() == {}
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "b677b191-e0f5-4852-965c-c76e47127c99",
+                "_airbyte_job_started_at": "2024-03-17T19:19:45.269451",
+                "_airbyte_slice_started_at": "2024-03-17T19:19:45.269451",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-17T19:19:50.820893",
+                "_airbyte_data": '{"data": {"commits": {"pathwaycom/pathway": {"main": {"created_at": "2024-03-15T18:24:20Z"}}}}}',  # noqa
+            }
+        ],
+    )
+    assert destination.get_state() == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T18:24:20Z"}}
+        },
+    }
