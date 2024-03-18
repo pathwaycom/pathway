@@ -511,7 +511,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._verify_payload(payload)
         if self._request_validator:
             try:
-                validator_ret = self._request_validator(payload)
+                validator_ret = self._request_validator(payload, request.headers)
                 if validator_ret is not None:
                     raise Exception(validator_ret)
             except Exception as e:
