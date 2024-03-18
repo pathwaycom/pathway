@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.8.4] - 2024-03-18
+
 ### Fixed
 - Pathway will only require `LiteLLM` package, if you use one of the wrappers for `LiteLLM`.
 - Retries are implemented in `pw.io.airbyte.read`.
