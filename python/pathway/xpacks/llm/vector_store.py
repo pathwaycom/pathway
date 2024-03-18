@@ -619,6 +619,7 @@ class VectorStoreClient:
         port: int | None = None,
         url: str | None = None,
         timeout: int = 15,
+        additional_headers: dict | None = None,
     ):
         """
         A client you can use to query :py:class:`VectorStoreServer`.
@@ -643,6 +644,7 @@ class VectorStoreClient:
             self.url = f"http://{host}:{port}"
 
         self.timeout = timeout
+        self.additional_headers = additional_headers or {}
 
     def query(
         self, query: str, k: int = 3, metadata_filter: str | None = None
@@ -665,7 +667,7 @@ class VectorStoreClient:
         response = requests.post(
             url,
             data=json.dumps(data),
-            headers={"Content-Type": "application/json"},
+            headers=self._get_request_headers(),
             timeout=self.timeout,
         )
 
@@ -682,7 +684,7 @@ class VectorStoreClient:
         response = requests.post(
             url,
             json={},
-            headers={"Content-Type": "application/json"},
+            headers=self._get_request_headers(),
             timeout=self.timeout,
         )
         responses = response.json()
@@ -710,8 +712,13 @@ class VectorStoreClient:
                 "metadata_filter": metadata_filter,
                 "filepath_globpattern": filepath_globpattern,
             },
-            headers={"Content-Type": "application/json"},
+            headers=self._get_request_headers(),
             timeout=self.timeout,
         )
         responses = response.json()
         return responses
+
+    def _get_request_headers(self):
+        request_headers = {"Content-Type": "application/json"}
+        request_headers.update(self.additional_headers)
+        return request_headers
