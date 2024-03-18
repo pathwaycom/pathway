@@ -36,7 +36,7 @@ class GraphRunner:
     debug: bool
     ignore_asserts: bool
     runtime_typechecking: bool
-    telemetry_config: api.TelemetryConfig
+    telemetry: telemetry.Telemetry
 
     def __init__(
         self,
@@ -67,6 +67,10 @@ class GraphRunner:
         if license_key is None:
             license_key = pathway_config.license_key
         self.license_key = license_key
+        self.telemetry = telemetry.Telemetry.create(
+            license_key=self.license_key,
+            telemetry_server=pathway_config.telemetry_server,
+        )
 
     def run_nodes(
         self,
@@ -120,12 +124,7 @@ class GraphRunner:
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
         run_all: bool = False,
     ) -> list[api.CapturedStream]:
-        otel = telemetry.Telemetry.create(
-            license_key=self.license_key,
-            telemetry_server=pathway_config.telemetry_server,
-        )
-
-        with otel.tracer.start_as_current_span("graph_runner.run"):
+        with self.telemetry.tracer.start_as_current_span("graph_runner.run"):
             trace_context, trace_parent = telemetry.get_current_context()
 
             context = ScopeContext(
@@ -138,7 +137,7 @@ class GraphRunner:
                 context, self, output_tables
             )
 
-            @otel.tracer.start_as_current_span(
+            @self.telemetry.tracer.start_as_current_span(
                 "graph_runner.build",
                 context=trace_context,
                 attributes=dict(
@@ -171,6 +170,7 @@ class GraphRunner:
                 monitor_stats(
                     monitoring_level, node_names, self.default_logging
                 ) as stats_monitor,
+                self.telemetry.with_logging_handler(),
                 get_persistence_engine_config(
                     self.persistence_config
                 ) as persistence_engine_config,

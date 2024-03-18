@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import contextmanager
 from functools import cached_property
 
 from opentelemetry import trace
-from opentelemetry._logs import set_logger_provider
 from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -21,7 +21,6 @@ from opentelemetry.sdk.resources import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.util.types import AttributeValue
 
 from pathway.internals import api
 
@@ -35,12 +34,10 @@ logging.getLogger("opentelemetry").setLevel(logging.CRITICAL)
 class Telemetry:
     config: api.TelemetryConfig
     tracer: trace.Tracer
-    logging_handler: logging.Handler
 
     def __init__(self, telemetry_config: api.TelemetryConfig) -> None:
         self.config = telemetry_config
         self.tracer = self._init_tracer()
-        self.logging_handler = self._init_logging()
 
     @cached_property
     def _resource(self) -> Resource:
@@ -57,12 +54,35 @@ class Telemetry:
 
     @classmethod
     def create(
-        cls, license_key: str | None = None, telemetry_server: str | None = None
+        cls,
+        license_key: str | None = None,
+        telemetry_server: str | None = None,
     ) -> Telemetry:
         config = api.TelemetryConfig.create(
-            license_key=license_key, telemetry_server=telemetry_server
+            license_key=license_key,
+            telemetry_server=telemetry_server,
         )
         return cls(config)
+
+    @contextmanager
+    def with_logging_handler(self):
+        logging_handler = self._logging_handler()
+        root_logger = logging.getLogger()
+        try:
+            root_logger.addHandler(logging_handler)
+            yield
+        finally:
+            logging_handler.flush()
+            root_logger.removeHandler(logging_handler)
+
+    def _logging_handler(self) -> logging.Handler:
+        if self.config.telemetry_enabled:
+            exporter = OTLPLogExporter(endpoint=self.config.telemetry_server_endpoint)
+            logger_provider = LoggerProvider(resource=self._resource)
+            logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+            return LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+        else:
+            return logging.NullHandler()
 
     def _init_tracer(self) -> trace.Tracer:
         if self.config.telemetry_enabled:
@@ -73,20 +93,6 @@ class Telemetry:
         else:
             return trace.NoOpTracer()
 
-    def _init_logging(self) -> logging.Handler:
-        if self.config.telemetry_enabled:
-            exporter = OTLPLogExporter(endpoint=self.config.telemetry_server_endpoint)
-            logger_provider = LoggerProvider(resource=self._resource)
-            logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
-            handler = LoggingHandler(
-                level=logging.NOTSET, logger_provider=logger_provider
-            )
-            set_logger_provider(logger_provider)
-            logging.getLogger().addHandler(handler)
-            return handler
-        else:
-            return logging.NullHandler()
-
 
 def get_current_context() -> tuple[Context, str | None]:
     carrier: dict[str, str | list[str]] = {}
@@ -95,8 +101,3 @@ def get_current_context() -> tuple[Context, str | None]:
     trace_parent = carrier.get("traceparent", None)
     assert trace_parent is None or isinstance(trace_parent, str)
     return context, trace_parent
-
-
-def event(name: str, attributes: dict[str, AttributeValue]):
-    span = trace.get_current_span()
-    span.add_event(name, attributes)
