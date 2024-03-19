@@ -54,6 +54,7 @@ class _LoggingContext:
             "_type": "http_access",
             "method": request.method,
             "scheme": request.scheme,
+            "scheme_with_forwarded": _request_scheme(request),
             "host": request.host,
             "route": str(request.rel_url),
             "content_type": request.headers.get("Content-Type"),
@@ -70,7 +71,7 @@ class _LoggingContext:
                     "value": value,
                 }
             )
-        self.log["headers"] = headers  # type:ignore
+        self.log["headers"] = headers
         self.request_start = time.time()
 
     def log_response(self, status: int):
@@ -168,7 +169,10 @@ way, one can exclude certain endpoints and methods from being documented.
             # is a bit different from the POST / PUT / PATCH
             endpoint_description = {
                 "parameters": self._construct_openapi_get_request_schema(schema),
-                "responses": self.DEFAULT_RESPONSES_DESCRIPTION,
+                # disable yaml optimisation to avoid
+                # "instance type (string) does not match any allowed primitive type"
+                # error from openapi validator
+                "responses": copy.deepcopy(self.DEFAULT_RESPONSES_DESCRIPTION),
             }
         else:
             if format == "raw":
@@ -292,6 +296,31 @@ way, one can exclude certain endpoints and methods from being documented.
         return result
 
 
+def _request_scheme(request: web.Request):
+    """
+    Get request scheme taking into account the forwarded headers.
+    """
+    scheme_headers = [
+        "X-Forwarded-Proto",
+        "X-Scheme",
+        "X-Forwarded-Scheme",
+    ]
+    request_schemes = [
+        "http",
+        "https",
+    ]
+    for header in scheme_headers:
+        header_value = request.headers.get(header)
+        if header_value is None:
+            continue
+        header_value = header_value.lower()
+        if header_value in request_schemes:
+            return header_value
+
+    # fallback, doesn't work for forwarded scenarios
+    return request.scheme
+
+
 class PathwayWebserver:
     """
     The basic configuration class for ``pw.io.http.rest_connector``.
@@ -391,7 +420,7 @@ added endpoints.
         return wrapped_handler
 
     async def _schema_handler(self, request: web.Request):
-        origin = f"{request.scheme}://{request.host}"
+        origin = f"{_request_scheme(request)}://{request.host}"
         format = request.query.get("format", "yaml")
         if format == "json":
             return web.json_response(
