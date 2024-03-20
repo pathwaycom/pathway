@@ -191,7 +191,10 @@ way, one can exclude certain endpoints and methods from being documented.
                 "requestBody": {
                     "content": content_description,
                 },
-                "responses": self.DEFAULT_RESPONSES_DESCRIPTION,
+                # disable yaml optimisation to avoid
+                # "instance type (string) does not match any allowed primitive type"
+                # error from openapi validator
+                "responses": copy.deepcopy(self.DEFAULT_RESPONSES_DESCRIPTION),
             }
 
         if self.tags is not None:
