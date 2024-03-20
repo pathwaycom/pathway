@@ -318,7 +318,7 @@ jobs:
         run: |
           set -ex
           aws s3 cp ${{ secrets.ARTIFACT_AWS_BUCKET }}/templates/pip-index.html pip-index.html
-          export PACKAGE_LIST_HTML=$(aws s3 ls ${{ secrets.ARTIFACT_AWS_BUCKET }} | awk '/\.whl$/ {href=$4; sub("+","%252B",href); print "<li><a href=\""href"\">"$4"</a></li>"}')
+          export PACKAGE_LIST_HTML=$(aws s3 ls ${{ secrets.ARTIFACT_AWS_BUCKET }}/ | awk '/\.whl$/ {href=$4; sub("+","%252B",href); print "<li><a href=\""href"\">"$4"</a></li>"}')
           perl -i -pe 's/<PACKAGE_LIST>/$ENV{"PACKAGE_LIST_HTML"}/g' pip-index.html
           aws s3 cp pip-index.html ${{ secrets.ARTIFACT_AWS_BUCKET }}/index.html
 
