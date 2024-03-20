@@ -1,4 +1,6 @@
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from pathway import persistence
@@ -86,15 +88,43 @@ class PathwayConfig:
             return None
 
 
-pathway_config = PathwayConfig()
+_pathway_config: ContextVar[PathwayConfig] = ContextVar(
+    "pathway_config", default=PathwayConfig()
+)
 
 
-def set_license_key(key: str) -> None:
-    pathway_config.license_key = key
+@contextmanager
+def local_pathway_config():
+    config = PathwayConfig()
+    token = _pathway_config.set(config)
+    try:
+        yield config
+    finally:
+        _pathway_config.reset(token)
 
 
-def set_telemetry_server(endpoint: str) -> None:
-    pathway_config.telemetry_server = endpoint
+pathway_config: PathwayConfig
 
 
-__all__ = ["PathwayConfig", "pathway_config", "set_license_key", "set_telemetry_server"]
+def __getattr__(name: str):
+    if name == "pathway_config":
+        return _pathway_config.get()
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def set_license_key(key: str | None) -> None:
+    _pathway_config.get().license_key = key
+
+
+def set_telemetry_server(endpoint: str | None) -> None:
+    _pathway_config.get().telemetry_server = endpoint
+
+
+__all__ = [
+    "PathwayConfig",
+    "pathway_config",
+    "local_pathway_config",
+    "set_license_key",
+    "set_telemetry_server",
+]

@@ -7,7 +7,7 @@ from collections.abc import Generator
 
 import pytest
 
-from pathway.internals import parse_graph
+from pathway.internals import config, parse_graph
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +34,12 @@ def environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLACK_CHANNEL_ID", "Otocolobus")
     monkeypatch.setenv("SLACK_TOKEN", "manul")
     monkeypatch.setenv("TIKTOKEN_CACHE_DIR", "manul")
+
+
+@pytest.fixture(autouse=True)
+def local_pathway_config(environment_variables):
+    with config.local_pathway_config() as cfg:
+        yield cfg
 
 
 environment_stash_key = pytest.StashKey[dict[str, str]]()
