@@ -613,6 +613,18 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
 
 class VectorStoreClient:
+    """
+    A client you can use to query VectorStoreServer.
+
+    Please provide either the `url`, or `host` and `port`.
+
+    Args:
+        - host: host on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
+        - port: port on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
+        - url: url at which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
+        - timeout: timeout for the post requests in seconds
+    """  # noqa
+
     def __init__(
         self,
         host: str | None = None,
@@ -621,17 +633,6 @@ class VectorStoreClient:
         timeout: int = 15,
         additional_headers: dict | None = None,
     ):
-        """
-        A client you can use to query :py:class:`VectorStoreServer`.
-
-        Please provide either the `url`, or `host` and `port`.
-
-        Args:
-            - host: host on which `:py:class:`VectorStoreServer` listens
-            - port: port on which `:py:class:`VectorStoreServer` listens
-            - url: url at which `:py:class:`VectorStoreServer` listens
-            - timeout: timeout for the post requests in seconds
-        """
         err = "Either (`host` and `port`) or `url` must be provided, but not both."
         if url is not None:
             if host or port:
