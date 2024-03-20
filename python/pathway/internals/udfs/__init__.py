@@ -167,7 +167,8 @@ class UDF(abc.ABC):
         except TypeError:
             wrapped_sig_return_type = None
         if wrapped_sig_return_type is None or (
-            not dt.dtype_issubclass(wrapped_sig_return_type, dt.wrap(return_type))
+            sig_return_type != Any
+            and not dt.dtype_issubclass(wrapped_sig_return_type, dt.wrap(return_type))
         ):
             warn(
                 f"The value of return_type parameter ({return_type}) is inconsistent with"
