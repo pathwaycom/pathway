@@ -103,27 +103,21 @@ def local_pathway_config():
         _pathway_config.reset(token)
 
 
-pathway_config: PathwayConfig
-
-
-def __getattr__(name: str):
-    if name == "pathway_config":
-        return _pathway_config.get()
-    else:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def get_pathway_config() -> PathwayConfig:
+    return _pathway_config.get()
 
 
 def set_license_key(key: str | None) -> None:
-    _pathway_config.get().license_key = key
+    get_pathway_config().license_key = key
 
 
 def set_telemetry_server(endpoint: str | None) -> None:
-    _pathway_config.get().telemetry_server = endpoint
+    get_pathway_config().telemetry_server = endpoint
 
 
 __all__ = [
     "PathwayConfig",
-    "pathway_config",
+    "get_pathway_config",
     "local_pathway_config",
     "set_license_key",
     "set_telemetry_server",

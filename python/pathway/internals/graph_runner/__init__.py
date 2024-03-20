@@ -8,7 +8,7 @@ from itertools import chain
 import pathway.internals.graph_runner.telemetry as telemetry
 from pathway.internals import api, parse_graph as graph, table, trace
 from pathway.internals.column_path import ColumnPath
-from pathway.internals.config import pathway_config
+from pathway.internals.config import get_pathway_config
 from pathway.internals.graph_runner.async_utils import new_event_loop
 from pathway.internals.graph_runner.row_transformer_operator_handler import (  # noqa: registers handler for RowTransformerOperator
     RowTransformerOperatorHandler,
@@ -51,6 +51,7 @@ class GraphRunner:
         runtime_typechecking: bool | None = None,
         license_key: str | None = None,
     ) -> None:
+        pathway_config = get_pathway_config()
         self._graph = input_graph
         self.debug = debug
         if ignore_asserts is None:
@@ -164,6 +165,7 @@ class GraphRunner:
                 if isinstance(operator, ContextualizedIntermediateOperator)
             ]
             monitoring_level = self.monitoring_level.to_internal()
+            pathway_config = get_pathway_config()
 
             with (
                 new_event_loop() as event_loop,
