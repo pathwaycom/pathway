@@ -27,10 +27,7 @@ impl<T: Timestamp, D: Container, P> Push<BundleCore<T, D>> for CounterCore<T, D,
             self.produced.borrow_mut().update(message.time.clone(), message.data.len() as i64);
         }
 
-        // only propagate `None` if dirty (indicates flush)
-        if message.is_some() || !self.produced.borrow_mut().is_empty() {
-            self.pushee.push(message);
-        }
+        self.pushee.push(message);
     }
 }
 
