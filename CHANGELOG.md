@@ -7,6 +7,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - Added support for custom state serialization to `udf_reducer`.
+- Introduced `instance` parameter in `AsyncTransformer`. All calls with a given `(instance, processing_time)` pair are returned at the same processing time. Ordering is preserved within a single instance.
+- Added `successful`, `failed`, `finished` properties to `AsyncTransformer`. They return tables with successful calls, failed calls and all finished calls, respectively.
+
+### Changed
+- Property `result` of `AsyncTransformer` is deprecated. Property `successful` should be used instead.
 
 ## [0.8.4] - 2024-03-18
 
