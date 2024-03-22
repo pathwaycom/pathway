@@ -61,7 +61,10 @@ class BaseCustomAccumulator(ABC):
     """Utility class for defining custom accumulators, used for custom reducers.
     Custom accumulators should inherit from this class, and should implement ``from_row``,
     ``update`` and ``compute_result``. Optionally ``neutral`` and ``retract`` can be provided
-    for more efficient processing on streams with changing data.
+    for more efficient processing on streams with changing data. Additionally, ``serialize``
+    and ``deserialize`` can be customized. By default they use ``pickle`` module,
+    but if the accumulator state is serializable to pathway value type in an easier way,
+    this can be overwritten.
 
     >>> import pathway as pw
     >>> class CustomAvgAccumulator(pw.BaseCustomAccumulator):
@@ -140,10 +143,18 @@ class BaseCustomAccumulator(ABC):
         """
         raise NotImplementedError()
 
+    def serialize(self) -> api.Value:
+        """Serialize state to pathway value type."""
+        return pickle.dumps(self)
 
-def udf_reducer(
-    reducer_cls: type[BaseCustomAccumulator],
-):
+    @classmethod
+    def deserialize(cls, val: api.Value):
+        """Deserialize state from pathway value type."""
+        assert isinstance(val, bytes)
+        return pickle.loads(val)
+
+
+def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
     """Decorator for defining custom reducers. Requires custom accumulator as an argument.
     Custom accumulator should implement ``from_row``, ``update`` and ``compute_result``.
     Optionally ``neutral`` and ``retract`` can be provided for more efficient processing on
@@ -187,12 +198,13 @@ def udf_reducer(
     def wrapper(*args: expr.ColumnExpression | api.Value) -> ColumnExpression:
         @stateful_many
         def stateful_wrapper(
-            pickled_state: bytes | None, rows: list[tuple[list[api.Value], int]]
-        ) -> bytes | None:
-            if pickled_state is not None:
-                state = pickle.loads(pickled_state)
-                if not retract_available:
-                    state._positive_updates = list(state._positive_updates)
+            packed_state: tuple[api.Value, tuple, int] | None,
+            rows: list[tuple[list[api.Value], int]],
+        ) -> tuple[api.Value, tuple, int] | None:
+            if packed_state is not None:
+                serialized_state, _positive_updates_tuple, _cnt = packed_state
+                state = reducer_cls.deserialize(serialized_state)
+                _positive_updates = list(_positive_updates_tuple)
             else:
                 state = None
             positive_updates: list[tuple[api.Value, ...]] = []
@@ -205,8 +217,9 @@ def udf_reducer(
 
             if not retract_available and len(negative_updates) > 0:
                 if state is not None:
-                    positive_updates.extend(state._positive_updates)
-                    state._positive_updates = []
+                    assert _positive_updates is not None
+                    positive_updates.extend(_positive_updates)
+                    _positive_updates = []
                     state = None
                 acc = Counter(positive_updates)
                 acc.subtract(negative_updates)
@@ -217,10 +230,8 @@ def udf_reducer(
             if state is None:
                 if neutral_available:
                     state = reducer_cls.neutral()
-                    if not retract_available:
-                        state._positive_updates = []
-                    else:
-                        state._cnt = 0
+                    _positive_updates = []
+                    _cnt = 0
                 elif len(positive_updates) == 0:
                     if len(negative_updates) == 0:
                         return None
@@ -231,16 +242,18 @@ def udf_reducer(
                 else:
                     state = reducer_cls.from_row(list(positive_updates[0]))
                     if not retract_available:
-                        state._positive_updates = positive_updates[0:1]
+                        _positive_updates = positive_updates[0:1]
+                        _cnt = 0
                     else:
-                        state._cnt = 1
+                        _positive_updates = []
+                        _cnt = 1
                     positive_updates = positive_updates[1:]
 
             for row_up in positive_updates:
                 if not retract_available:
-                    state._positive_updates.append(row_up)
+                    _positive_updates.append(row_up)
                 else:
-                    state._cnt += 1
+                    _cnt += 1
                 val = reducer_cls.from_row(list(row_up))
                 state.update(val)
 
@@ -250,28 +263,23 @@ def udf_reducer(
                         "Unable to process negative update with this custom reducer."
                     )
                 else:
-                    state._cnt -= 1
+                    _cnt -= 1
                 val = reducer_cls.from_row(list(row_up))
                 state.retract(val)
 
-            if not retract_available:
-                state._positive_updates = tuple(
-                    tuple(x) for x in state._positive_updates
-                )
-            else:
-                if state._cnt == 0:
-                    # this is fine in this setting, where we process values one by one
-                    # if this ever becomes accumulated in a tree, we have to handle
-                    # (A-B) updates, so we have to distinguish `0` from intermediate states
-                    # accumulating weighted count (weighted by hash) should do fine here
-                    return None
+            _positive_updates_tuple = tuple(tuple(x) for x in _positive_updates)
+            if retract_available and _cnt == 0:
+                # this is fine in this setting, where we process values one by one
+                # if this ever becomes accumulated in a tree, we have to handle
+                # (A-B) updates, so we have to distinguish `0` from intermediate states
+                # accumulating weighted count (weighted by hash) should do fine here
+                return None
+            return state.serialize(), _positive_updates_tuple, _cnt
 
-            return pickle.dumps(state)
-
-        def extractor(x: bytes):
-            unpickled = pickle.loads(x)
-            assert isinstance(unpickled, reducer_cls)
-            return unpickled.compute_result()
+        def extractor(packed: tuple):
+            deserialized = reducer_cls.deserialize(packed[0])
+            assert isinstance(deserialized, reducer_cls)
+            return deserialized.compute_result()
 
         return apply_with_type(
             extractor,

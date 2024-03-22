@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Added support for custom state serialization to `udf_reducer`.
+
 ## [0.8.4] - 2024-03-18
 
 ### Fixed
