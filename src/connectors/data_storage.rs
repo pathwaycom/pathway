@@ -1636,7 +1636,7 @@ impl Writer for PsqlWriter {
     }
 
     fn single_threaded(&self) -> bool {
-        false
+        true
     }
 }
 
