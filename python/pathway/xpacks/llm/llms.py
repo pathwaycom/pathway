@@ -294,8 +294,24 @@ class LiteLLMChat(pw.UDF):
             messages_decoded = messages
 
         kwargs = {**self.kwargs, **kwargs}
+
+        event = {
+            "_type": "litellm_chat_request",
+            "kwargs": copy.deepcopy(kwargs),
+            "messages": messages_decoded,
+        }
+        logger.info(json.dumps(event))
+
         ret = await litellm_mod.acompletion(messages=messages_decoded, **kwargs)
-        return ret.choices[0].message.content
+        response = ret.choices[0]["message"]["content"]
+
+        event = {
+            "_type": "litellm_chat_response",
+            "response": response,
+        }
+        logger.info(json.dumps(event))
+
+        return response
 
 
 class HFPipelineChat(pw.UDF):
