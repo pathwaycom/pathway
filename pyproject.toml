@@ -18,7 +18,7 @@ dependencies = [
     "geopy >= 2.4.0",
     "h3 >= 3.7.6",
     "numpy >= 1.21",
-    "pandas >= 1.3",
+    "pandas >= 2.0",
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
     "sqlglot == 10.6.1",

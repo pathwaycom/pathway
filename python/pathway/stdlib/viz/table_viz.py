@@ -136,8 +136,7 @@ def show(
                 )
                 df = df[col_names]
 
-                # TODO Replace with df.map for Pandas 2
-                df = df.applymap(_format_types)  # type: ignore
+                df = df.map(_format_types)
 
                 dynamic_table.value = df
                 # todo: use async transformer to throttle updates
