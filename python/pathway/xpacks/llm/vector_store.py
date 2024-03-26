@@ -15,7 +15,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import jmespath
 import numpy as np
@@ -77,6 +77,7 @@ def _coerce_sync(func: Callable) -> Callable:
 
 
 class VectorStoreServer:
+    embedder_config: dict[str, Any]
     """
     Builds a document indexing pipeline and starts an HTTP REST server for nearest neighbors queries.
 
@@ -118,6 +119,10 @@ class VectorStoreServer:
             else pathway.xpacks.llm.splitters.null_splitter
         )
         self.embedder = _unwrap_udf(embedder)
+        if isinstance(embedder, pw.UDF):
+            self.embedder_config = embedder._get_config()
+        else:
+            self.embedder_config = {}
 
         # detect the dimensionality of the embeddings
         self.embedding_dimension = len(_coerce_sync(self.embedder)("."))
@@ -307,14 +312,14 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         if asyncio.iscoroutinefunction(self.embedder):
 
-            @pw.udf
+            @pw.udf(**self.embedder_config)
             async def embedder(txt):
                 result = await self.embedder(txt)
                 return np.asarray(result)
 
         else:
 
-            @pw.udf
+            @pw.udf(**self.embedder_config)
             def embedder(txt):
                 result = self.embedder(txt)
                 return np.asarray(result)

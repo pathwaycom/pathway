@@ -150,6 +150,15 @@ class UDF(abc.ABC):
         self.cache_strategy = cache_strategy
         self.func = self._wrap_function()
 
+    def _get_config(self) -> dict[str, Any]:
+        return {
+            "return_type": self.return_type,
+            "deterministic": self.deterministic,
+            "propagate_none": self.propagate_none,
+            "executor": self.executor,
+            "cache_strategy": self.cache_strategy,
+        }
+
     def _get_return_type(self) -> Any:
         return_type = self.return_type
         if inspect.isclass(self.__wrapped__):
