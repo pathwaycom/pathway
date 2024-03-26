@@ -44,6 +44,36 @@ def test_preserve_dependency_properties():
     assert_col_props(result.c, ColumnProperties(dtype=dt.INT, append_only=False))
 
 
+def test_preserve_dependency_properties_update_types():
+    input1 = T(
+        """
+            | a
+        1   | 42
+        """
+    )
+    input2 = T(
+        """
+            | b
+        1   | 42
+        """,
+    )
+    input3 = T(
+        """
+            | c   | __diff__
+        1   | 42  |     1
+        1   | 42  |    -1
+        1   | 43  |     1
+        """
+    ).with_universe_of(input1)
+
+    result = input1.select(a=input1.a, b=input1.a + input2.b, c=input1.a + input3.c)
+    result = result.update_types(a=int, b=int, c=int)
+
+    assert_col_props(result.a, ColumnProperties(dtype=dt.INT, append_only=True))
+    assert_col_props(result.b, ColumnProperties(dtype=dt.INT, append_only=True))
+    assert_col_props(result.c, ColumnProperties(dtype=dt.INT, append_only=False))
+
+
 def test_preserve_context_dependency_properties():
     input1 = T(
         """

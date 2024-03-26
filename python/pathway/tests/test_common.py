@@ -6142,3 +6142,8 @@ def test_gruopby_caching_doesnt_explode():
     tab = pw.Table.empty(a=int)
     tab.groupby(pw.this.a)
     tab.with_columns(b=0).groupby(pw.this.a).reduce(b=pw.reducers.any(pw.this.b))
+
+
+def test_error_when_changing_incompatible_types():
+    with pytest.raises(TypeError):
+        pw.Table.empty(foo=int).update_types(foo=str)

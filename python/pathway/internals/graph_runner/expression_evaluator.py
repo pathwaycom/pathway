@@ -1244,3 +1244,12 @@ class SortingEvaluator(ExpressionEvaluator, context_type=clmn.SortingContext):
             instance_column_path,
             properties,
         )
+
+
+class SetSchemaContextEvaluator(
+    ExpressionEvaluator, context_type=clmn.SetSchemaContext
+):
+    context: clmn.SetSchemaContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        return self.state.get_table(self.context.universe)

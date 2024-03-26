@@ -346,6 +346,35 @@ class MaterializedContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
+class SetSchemaContext(RowwiseContext):
+    _new_properties: dict[InternalColRef, cp.ColumnProperties]
+    _id_column_props: cp.ColumnProperties
+
+    def expression_with_type(self, expression: ColumnExpression) -> ColumnExpression:
+        assert isinstance(expression, ColumnReference)
+        internal = expression._to_internal()
+        if internal._name == "id":
+            dtype = self._id_column_props.dtype
+        else:
+            dtype = self._new_properties[internal].dtype
+        ret = internal.to_column_expression()
+        ret._dtype = dtype
+        return ret
+
+    def input_universe(self) -> Universe:
+        return self._id_column.universe
+
+    def column_properties(self, column: ColumnWithContext) -> cp.ColumnProperties:
+        if isinstance(column, IdColumn):
+            return self._id_column_props
+        else:
+            assert isinstance(column, ColumnWithExpression)
+            expression = column.expression
+            assert isinstance(expression, ColumnReference)
+            return self._new_properties[expression._to_internal()]
+
+
+@dataclass(eq=False, frozen=True)
 class GradualBroadcastContext(Context):
     orig_id_column: IdColumn
     lower_column: ColumnWithExpression

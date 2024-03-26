@@ -237,6 +237,7 @@ NoNewColumnsContext = (
     | clmn.BufferContext
     | clmn.ConcatUnsafeContext
     | clmn.UpdateRowsContext
+    | clmn.SetSchemaContext
 )
 
 
@@ -253,6 +254,7 @@ class NoNewColumnsPathEvaluator(
         clmn.FilterOutForgettingContext,
         clmn.FreezeContext,
         clmn.BufferContext,
+        clmn.SetSchemaContext,
     ],
 ):
     context: NoNewColumnsContext
@@ -265,9 +267,14 @@ class NoNewColumnsPathEvaluator(
         input_storage = input_storages[self.context.input_universe()]
         paths: dict[clmn.Column, ColumnPath] = {}
         for column in output_columns:
-            assert isinstance(column, clmn.ColumnWithReference)
-            source_column = column.expression._column
-            paths[column] = input_storage.get_path(source_column)
+            if (
+                isinstance(column, clmn.ColumnWithReference)
+                and column.context == self.context
+            ):
+                source_column = column.expression._column
+                paths[column] = input_storage.get_path(source_column)
+            else:  # column from the same universe, but not the current table
+                paths[column] = input_storage.get_path(column)
         return Storage(self.context.universe, paths)
 
 

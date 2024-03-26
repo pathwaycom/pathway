@@ -1807,6 +1807,25 @@ class Table(
             return rets[0].intersect(*rets[1:])
 
     @trace_user_frame
+    @contextualized_operator
+    @check_arg_types
+    def _with_schema(self, schema: type[Schema]) -> Table:
+        """Returns updated table with a forced schema on it."""
+        if schema.keys() != self.schema.keys():
+            raise ValueError(
+                "Table.with_schema() argument has to have the same column names as in the table."
+            )
+        context = clmn.SetSchemaContext(
+            _id_column=self._id_column,
+            _new_properties={
+                self[name]._to_internal(): schema.column_properties(name)
+                for name in self.column_names()
+            },
+            _id_column_props=schema.__universe_properties__,
+        )
+        return self._table_with_context(context)
+
+    @trace_user_frame
     @check_arg_types
     def update_types(self, **kwargs: Any) -> Table:
         """Updates types in schema. Has no effect on the runtime."""
@@ -1816,11 +1835,18 @@ class Table(
                 raise ValueError(
                     "Table.update_types() argument name has to be an existing table column name."
                 )
-        from pathway.internals.common import declare_type
-
-        return self.with_columns(
-            **{key: declare_type(val, self[key]) for key, val in kwargs.items()}
-        )
+        new_schema = self.schema.update_types(**kwargs)
+        for name in kwargs.keys():
+            left = new_schema._dtypes()[name]
+            right = self.schema._dtypes()[name]
+            if not (
+                dt.dtype_issubclass(left, right) or dt.dtype_issubclass(right, left)
+            ):
+                raise TypeError(
+                    f"Cannot change type from {right} to {left}.\n"
+                    + "Table.update_types() should be used only for type narrowing or type extending."
+                )
+        return self._with_schema(new_schema)
 
     @check_arg_types
     def cast_to_types(self, **kwargs: Any) -> Table:
