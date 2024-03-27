@@ -4,7 +4,7 @@ import pathway.internals as pw
 from pathway.internals import ColumnReference, Table
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
-from pathway.xpacks.llm.prompts import prompt_qa
+from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
 
 
 @pw.udf
@@ -12,11 +12,13 @@ def _limit_documents(documents: list[str], k: int) -> list[str]:
     return documents[:k]
 
 
-_answer_not_known = "No information found."
+_answer_not_known = "I could not find an answer."
 
 
 def _query_chat(chat: pw.UDF, t: Table) -> pw.Table:
-    t += t.select(prompt=prompt_qa(t.query, t.documents, _answer_not_known))
+    t += t.select(
+        prompt=prompt_qa_geometric_rag(t.query, t.documents, _answer_not_known)
+    )
     answer = t.select(answer=chat(prompt_chat_single_qa(t.prompt)))
     answer = answer.select(
         answer=pw.if_else(pw.this.answer == _answer_not_known, None, pw.this.answer)

@@ -110,6 +110,43 @@ def prompt_qa(
     return prompt
 
 
+# prompt for `answer_with_geometric_rag_strategy`, it is the same as in the research project
+@pw.udf
+def prompt_qa_geometric_rag(
+    query: str,
+    docs: list[pw.Json] | list[str],
+    information_not_found_response="No information found.",
+    additional_rules: str = "",
+):
+    context_pieces = []
+
+    for i, doc in enumerate(docs, 1):
+        if isinstance(doc, str):
+            context_pieces.append(f"Source {i}: {doc}")
+        else:
+            context_pieces.append(f"Source {i}: {doc['text']}")  # type: ignore
+    context_str = "\n\n".join(context_pieces)
+
+    prompt = f"""
+    Use the below articles to answer the subsequent question. If the answer cannot be found in the articles, write "{information_not_found_response}" Do not answer in full sentences.
+    When referencing information from a source, cite the appropriate source(s) using their corresponding numbers. Every answer should include at least one source citation.
+    Only cite a source when you are explicitly referencing it. For example:\n"Source 1:\nThe sky is red in the evening and blue in the morning.\nSource 2:\nWater is wet when the sky is red.\n
+    Query: When is water wet?\nAnswer: When the sky is red [2], which occurs in the evening [1]."
+    """  # noqa
+
+    prompt += additional_rules + " "
+
+    prompt += (
+        "Now it's your turn."
+        "\n------\n"
+        f"{context_str}"
+        "\n------\n"
+        f"Query: {query}\n"
+        "Answer:"
+    )
+    return prompt
+
+
 @pw.udf
 def prompt_summarize(text_list: list[str]):
     text = "\n".join(text_list)
