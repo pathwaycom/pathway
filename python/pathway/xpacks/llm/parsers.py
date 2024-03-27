@@ -49,7 +49,7 @@ class ParseUnstructured(pw.UDF):
             raise ValueError(
                 "Please install unstructured with all documents support: `pip install unstructured[all-docs]`"
             )
-
+        super().__init__()
         _valid_modes = {"single", "elements", "paged"}
         if mode not in _valid_modes:
             raise ValueError(

@@ -64,7 +64,9 @@ tests = [
     "sentence_transformers == 2.4.0",
     "transformers == 4.38.1",
     "langchain_core == 0.1.30",
-    "langchain == 0.1.11"
+    "langchain == 0.1.11",
+    "unstructured[all-docs] == 0.10.28",
+    "python-magic"
 ]
 
 [project.urls]

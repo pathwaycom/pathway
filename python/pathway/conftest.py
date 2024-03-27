@@ -61,4 +61,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
         for key in new_env.keys() - saved_env.keys():
             del os.environ[key]
 
+    if list(item.iter_markers("environment_changes")):
+        return
+
     assert saved_env == new_env, "environment changed during the test run"
