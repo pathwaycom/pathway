@@ -43,9 +43,15 @@ from pathway.io.python import ConnectorSubject, read
 
 
 @check_arg_types
-def _compute_table(table: Table, **kwargs) -> api.CapturedStream:
+def _compute_table(
+    table: Table, *, _stacklevel: int = 1, **kwargs
+) -> api.CapturedStream:
     [captured] = GraphRunner(
-        parse_graph.G, debug=True, monitoring_level=MonitoringLevel.NONE, **kwargs
+        parse_graph.G,
+        debug=True,
+        monitoring_level=MonitoringLevel.NONE,
+        _stacklevel=_stacklevel + 1,
+        **kwargs,
     ).run_tables(table)
     return captured
 
@@ -93,9 +99,10 @@ def _compute_and_print_internal(
     include_id: bool,
     short_pointers: bool,
     n_rows: int | None,
+    _stacklevel: int = 1,
     **kwargs,
 ) -> None:
-    captured = _compute_table(table, **kwargs)
+    captured = _compute_table(table, _stacklevel=_stacklevel + 1, **kwargs)
     columns = list(table._columns.keys())
     if squash_updates:
         output_data = list(api.squash_updates(captured).items())
@@ -189,6 +196,7 @@ def compute_and_print(
         include_id=include_id,
         short_pointers=short_pointers,
         n_rows=n_rows,
+        _stacklevel=7,
         **kwargs,
     )
 
@@ -217,6 +225,7 @@ def compute_and_print_update_stream(
         include_id=include_id,
         short_pointers=short_pointers,
         n_rows=n_rows,
+        _stacklevel=7,
         **kwargs,
     )
 
@@ -353,9 +362,12 @@ def table_from_pandas(
     return ret
 
 
-def _markdown_to_pandas(table_def):
+def _markdown_to_pandas(table_def: str, split_on_whitespace: bool = True):
     table_def = table_def.lstrip("\n")
-    sep = r"(?:\s*\|\s*)|\s+"
+    if split_on_whitespace:
+        sep = r"(?:\s*\|\s*)|\s+"
+    else:
+        sep = r"\s*\|\s*"
     header = table_def.partition("\n")[0].strip()
     column_names = re.split(sep, header)
     for index, name in enumerate(column_names):
@@ -381,13 +393,14 @@ def table_from_markdown(
     schema: type[Schema] | None = None,
     *,
     _stacklevel: int = 1,
+    split_on_whitespace: bool = True,
 ) -> Table:
     """A function for creating a table from its definition in markdown. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
     A special column ``__diff__`` can be used to set an event type - with ``1`` treated
     as inserting the row and ``-1`` as removing it.
     """
-    df = _markdown_to_pandas(table_def)
+    df = _markdown_to_pandas(table_def, split_on_whitespace)
     return table_from_pandas(
         df,
         id_from=id_from,

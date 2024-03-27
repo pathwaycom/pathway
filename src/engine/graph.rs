@@ -61,6 +61,8 @@ define_handle!(IxerHandle);
 
 define_handle!(ConcatHandle);
 
+define_handle!(ErrorLogHandle);
+
 pub type LegacyTable = (UniverseHandle, Vec<ColumnHandle>);
 
 pub trait Context: Send {
@@ -688,6 +690,7 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
+        skip_errors: bool,
     ) -> Result<()>;
 
     fn filter_table(
@@ -891,6 +894,15 @@ pub trait Graph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
     ) -> Result<()>;
+
+    fn set_operator_id(&self, operator_id: usize) -> Result<()>;
+
+    fn set_error_log(&self, error_log_handle: Option<ErrorLogHandle>) -> Result<()>;
+
+    fn error_log(
+        &self,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<(TableHandle, ErrorLogHandle)>;
 
     fn attach_prober(
         &self,
@@ -1106,9 +1118,16 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
+        skip_errors: bool,
     ) -> Result<()> {
         self.try_with(|g| {
-            g.subscribe_table(table_handle, column_paths, callbacks, skip_persisted_batch)
+            g.subscribe_table(
+                table_handle,
+                column_paths,
+                callbacks,
+                skip_persisted_batch,
+                skip_errors,
+            )
         })
     }
 
@@ -1462,6 +1481,21 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
         self.try_with(|g| g.output_table(data_sink, data_formatter, table_handle, column_paths))
+    }
+
+    fn set_operator_id(&self, operator_id: usize) -> Result<()> {
+        self.try_with(|g| g.set_operator_id(operator_id))
+    }
+
+    fn set_error_log(&self, error_log_handle: Option<ErrorLogHandle>) -> Result<()> {
+        self.try_with(|g| g.set_error_log(error_log_handle))
+    }
+
+    fn error_log(
+        &self,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<(TableHandle, ErrorLogHandle)> {
+        self.try_with(|g| g.error_log(table_properties))
     }
 
     fn attach_prober(

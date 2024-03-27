@@ -111,3 +111,12 @@ def debug_datasource(debug_data) -> StaticDataSource | None:
         )
     else:
         raise TypeError("not supported type of debug data")
+
+
+@dataclass(frozen=True)
+class ErrorLogDataSource(DataSource):
+    def is_bounded(self) -> bool:
+        return False
+
+    def is_append_only(self) -> bool:
+        return True

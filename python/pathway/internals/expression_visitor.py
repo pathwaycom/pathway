@@ -38,6 +38,7 @@ class ExpressionVisitor(ABC):
             expr.IsNotNoneExpression: self.eval_not_none,
             expr.IsNoneExpression: self.eval_none,
             expr.UnwrapExpression: self.eval_unwrap,
+            expr.FillErrorExpression: self.eval_fill_error,
         }
         if not isinstance(expression, expr.ColumnExpression):
             return self.eval_any(expression, **kwargs)
@@ -111,6 +112,9 @@ class ExpressionVisitor(ABC):
 
     @abstractmethod
     def eval_unwrap(self, expression: expr.UnwrapExpression): ...
+
+    @abstractmethod
+    def eval_fill_error(self, expression: expr.FillErrorExpression): ...
 
     def eval_any(self, expression, **kwargs):
         expression = expr.ColumnConstExpression(expression)
@@ -316,6 +320,13 @@ class IdentityTransform(ExpressionVisitor):
     ) -> expr.UnwrapExpression:
         result = self.eval_expression(expression._expr, **kwargs)
         return expr.UnwrapExpression(expr=result)
+
+    def eval_fill_error(
+        self, expression: expr.FillErrorExpression, **kwargs
+    ) -> expr.FillErrorExpression:
+        result = self.eval_expression(expression._expr, **kwargs)
+        replacement = self.eval_expression(expression._replacement, **kwargs)
+        return expr.FillErrorExpression(result, replacement)
 
 
 class TableCollector(IdentityTransform):

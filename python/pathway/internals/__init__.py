@@ -12,6 +12,7 @@ from pathway.internals.common import (
     cast,
     coalesce,
     declare_type,
+    fill_error,
     if_else,
     iterate,
     make_tuple,
@@ -31,6 +32,7 @@ from pathway.internals.decorators import (
     output_attribute,
     transformer,
 )
+from pathway.internals.errors import global_error_log, local_error_log
 from pathway.internals.expression import (
     ColumnExpression,
     ColumnReference,
@@ -129,6 +131,7 @@ __all__ = [
     "DATE_TIME_UTC",
     "DURATION",
     "unwrap",
+    "fill_error",
     "SchemaProperties",
     "schema_from_csv",
     "schema_from_dict",
@@ -149,4 +152,6 @@ __all__ = [
     "LiveTable",
     "set_license_key",
     "set_telemetry_server",
+    "global_error_log",
+    "local_error_log",
 ]

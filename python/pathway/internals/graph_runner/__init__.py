@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Collection, Iterable
 from itertools import chain
 
@@ -37,6 +38,7 @@ class GraphRunner:
     ignore_asserts: bool
     runtime_typechecking: bool
     telemetry: telemetry.Telemetry
+    terminate_on_error: bool
 
     def __init__(
         self,
@@ -50,6 +52,8 @@ class GraphRunner:
         persistence_config: PersistenceConfig | None = None,
         runtime_typechecking: bool | None = None,
         license_key: str | None = None,
+        terminate_on_error: bool | None = None,
+        _stacklevel: int = 1,
     ) -> None:
         pathway_config = get_pathway_config()
         self._graph = input_graph
@@ -72,6 +76,14 @@ class GraphRunner:
             license_key=self.license_key,
             telemetry_server=pathway_config.telemetry_server,
         )
+        if terminate_on_error is None:
+            terminate_on_error = pathway_config.terminate_on_error
+        self.terminate_on_error = terminate_on_error
+        if not self.terminate_on_error:
+            warnings.warn(
+                "terminate_on_error=False mode is experimental",
+                stacklevel=_stacklevel + 1,
+            )
 
     def run_nodes(
         self,
@@ -189,6 +201,7 @@ class GraphRunner:
                         license_key=self.license_key,
                         telemetry_server=pathway_config.telemetry_server,
                         trace_parent=trace_parent,
+                        terminate_on_error=self.terminate_on_error,
                     )
                 except api.EngineErrorWithTrace as e:
                     error, frame = e.args

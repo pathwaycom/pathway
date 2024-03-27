@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pathway
 import pathway.internals.row_transformer_table as tt
-from pathway.internals import dtype as dt, operator as op, parse_graph, schema
+from pathway.internals import dtype as dt, operator as op, schema
 from pathway.internals.api import Pointer, ref_scalar
 from pathway.internals.column import MaterializedColumn, MethodColumn
 from pathway.internals.column_properties import ColumnProperties
@@ -48,6 +48,8 @@ class RowTransformer:
         }
 
         assert len(tables) == len(self.class_args)
+
+        from pathway.internals import parse_graph
 
         return parse_graph.G.add_operator(
             lambda id: op.RowTransformerOperator(id, self),

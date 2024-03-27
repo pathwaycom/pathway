@@ -1140,6 +1140,27 @@ class UnwrapExpression(ColumnExpression):
         return (self._expr,)
 
 
+class FillErrorExpression(ColumnExpression):
+    _expr: ColumnExpression
+    _replacement: ColumnExpression
+
+    def __init__(
+        self,
+        expr: ColumnExpression | Value,
+        replacement: ColumnExpression | Value,
+    ):
+        super().__init__()
+        self._expr = ColumnExpression._wrap(expr)
+        self._replacement = ColumnExpression._wrap(replacement)
+
+    def _to_internal(self) -> InternalColExpr:
+        return InternalColExpr.build(type(self), self._expr, self._replacement)
+
+    @property
+    def _deps(self) -> tuple[ColumnExpression, ...]:
+        return (self._expr, self._replacement)
+
+
 def smart_name(arg: ColumnExpression) -> str | None:
     from pathway.internals.reducers import _any, _unique
 

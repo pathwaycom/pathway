@@ -28,7 +28,6 @@ from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.joins import Joinable, JoinResult
 from pathway.internals.operator import DebugOperator, OutputHandle
 from pathway.internals.operator_input import OperatorInput
-from pathway.internals.parse_graph import G
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema, schema_from_columns, schema_from_types
 from pathway.internals.table_like import TableLike
@@ -36,6 +35,7 @@ from pathway.internals.table_slice import TableSlice
 from pathway.internals.trace import trace_user_frame
 from pathway.internals.type_interpreter import TypeInterpreterState
 from pathway.internals.universe import Universe
+from pathway.internals.universe_solver import UniverseSolver
 
 if TYPE_CHECKING:
     from pathway.internals.datasink import DataSink
@@ -251,6 +251,12 @@ class Table(
         else:
             return self.select(*[self[name] for name in args])
 
+    @staticmethod
+    def _get_universe_solver() -> UniverseSolver:
+        from pathway.internals.parse_graph import G
+
+        return G.universe_solver
+
     @trace_user_frame
     @staticmethod
     @check_arg_types
@@ -287,7 +293,7 @@ class Table(
             arg = next(iter(all_args.values()))
             table: Table = arg.table
             for arg in all_args.values():
-                if not G.universe_solver.query_are_equal(
+                if not Table._get_universe_solver().query_are_equal(
                     table._universe, arg.table._universe
                 ):
                     raise ValueError(
@@ -360,7 +366,7 @@ class Table(
         from pathway.internals import table_io
 
         ret = table_io.empty_from_schema(schema_from_types(None, **kwargs))
-        G.universe_solver.register_as_empty(ret._universe)
+        Table._get_universe_solver().register_as_empty(ret._universe)
         return ret
 
     @trace_user_frame
@@ -444,7 +450,9 @@ class Table(
         Cat | 3
         Dog | 10
         """
-        if not G.universe_solver.query_are_equal(self._universe, other._universe):
+        if not self._get_universe_solver().query_are_equal(
+            self._universe, other._universe
+        ):
             raise ValueError(
                 "Universes of all arguments of Table.__add__() have to be equal.\n"
                 + "Consider using Table.promise_universes_are_equal() to assert it.\n"
@@ -747,7 +755,7 @@ class Table(
             self._universe,
             *tuple(table._universe for table in tables),
         )
-        universe = G.universe_solver.get_intersection(*intersecting_universes)
+        universe = self._get_universe_solver().get_intersection(*intersecting_universes)
         if universe in intersecting_universes:
             context: clmn.Context = clmn.RestrictContext(self._id_column, universe)
         else:
@@ -799,7 +807,9 @@ class Table(
         8   | Alice | 2
         9   | Bob   | 1
         """
-        if not G.universe_solver.query_is_subset(other._universe, self._universe):
+        if not self._get_universe_solver().query_is_subset(
+            other._universe, self._universe
+        ):
             raise ValueError(
                 "Table.restrict(): other universe has to be a subset of self universe."
                 + "Consider using Table.promise_universe_is_subset_of() to assert it."
@@ -1273,7 +1283,9 @@ class Table(
     @contextualized_operator
     def _concat(self, *others: Table[TSchema]) -> Table[TSchema]:
         union_ids = (self._id_column, *(other._id_column for other in others))
-        if not G.universe_solver.query_are_disjoint(*(c.universe for c in union_ids)):
+        if not self._get_universe_solver().query_are_disjoint(
+            *(c.universe for c in union_ids)
+        ):
             raise ValueError(
                 "Universes of the arguments of Table.concat() have to be disjoint.\n"
                 + "Consider using Table.promise_universes_are_disjoint() to assert it.\n"
@@ -1424,7 +1436,7 @@ class Table(
             for key in self.keys()
         }
         union_universes = (self._universe, other._universe)
-        universe = G.universe_solver.get_union(*union_universes)
+        universe = self._get_universe_solver().get_union(*union_universes)
         if universe == self._universe:
             return Table._update_cells(
                 self.cast_to_types(**schema), other.cast_to_types(**schema)
@@ -2159,6 +2171,8 @@ class Table(
         return StableSet([self])
 
     def debug(self, name: str):
+        from pathway.internals.parse_graph import G
+
         G.add_operator(
             lambda id: DebugOperator(name, id),
             lambda operator: operator(self),

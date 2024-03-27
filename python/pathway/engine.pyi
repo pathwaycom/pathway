@@ -105,6 +105,9 @@ class LegacyTable:
 class Table:
     """Table with tuples containing values from multiple columns."""
 
+class ErrorLog:
+    """Error log you can append messages to."""
+
 class DataRow:
     """Row of data for static_table"""
 
@@ -348,6 +351,8 @@ class Expression:
     def unwrap(expr: Expression) -> Expression: ...
     @staticmethod
     def to_string(expr: Expression) -> Expression: ...
+    @staticmethod
+    def fill_error(expr: Expression, replacement: Expression) -> Expression: ...
 
 class MonitoringLevel(Enum):
     NONE = 0
@@ -622,6 +627,13 @@ class Scope:
         self, table: Table, column_paths: Iterable[ColumnPath]
     ) -> ExportedTable: ...
     def import_table(self, table: ExportedTable) -> Table: ...
+    def error_log(self, properties: ConnectorProperties) -> tuple[Table, ErrorLog]: ...
+    def set_error_log(self, error_log: ErrorLog | None) -> None: ...
+    def set_operator_id(self, id: int) -> None: ...
+
+class Error: ...
+
+ERROR: Error
 
 class Done:
     def __lt__(self, other: Frontier) -> bool: ...
@@ -650,6 +662,7 @@ def run_with_new_graph(
     license_key: str | None = None,
     telemetry_server: str | None = None,
     trace_parent: str | None = None,
+    terminate_on_error: bool = True,
 ) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
 

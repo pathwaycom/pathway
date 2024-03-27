@@ -293,3 +293,16 @@ def test_unwrap():
         """
     )
     assert repr(pw.unwrap(t.pet)) == "pathway.unwrap(<table1>.pet)"
+
+
+def test_fill_error():
+    t = T(
+        """
+    pet  |  owner  | age
+     1   | Alice   | 10
+        """
+    )
+    assert (
+        repr(pw.fill_error(t.pet, t.age))
+        == "pathway.fill_error(<table1>.pet, <table1>.age)"
+    )

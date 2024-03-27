@@ -199,6 +199,7 @@ pub enum Value {
         deserialize_with = "deserialize_json"
     )]
     Json(Handle<JsonValue>),
+    Error,
 }
 
 const _: () = assert!(align_of::<Value>() <= 16);
@@ -308,6 +309,13 @@ impl Value {
             Err(self.type_mismatch("Json"))
         }
     }
+
+    pub fn into_result(self) -> DynResult<Self> {
+        match self {
+            Self::Error => Err(Error::ErrorInValue.into()),
+            value => Ok(value),
+        }
+    }
 }
 
 impl Display for Value {
@@ -327,6 +335,7 @@ impl Display for Value {
             Self::DateTimeUtc(date_time) => write!(fmt, "{date_time}"),
             Self::Duration(duration) => write!(fmt, "{duration}"),
             Self::Json(json) => write!(fmt, "{json}"),
+            Self::Error => write!(fmt, "Error"),
         }
     }
 }
@@ -452,6 +461,7 @@ pub enum SimpleType {
     Duration,
     Bytes,
     Json,
+    Error,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -490,6 +500,7 @@ impl Value {
             Self::DateTimeUtc(_) => SimpleType::DateTimeUtc,
             Self::Duration(_) => SimpleType::Duration,
             Self::Json(_) => SimpleType::Json,
+            Self::Error => SimpleType::Error,
         }
     }
 }
@@ -632,6 +643,7 @@ impl HashInto for Value {
             Self::DateTimeUtc(date_time) => date_time.hash_into(hasher),
             Self::Duration(duration) => duration.hash_into(hasher),
             Self::Json(json) => json.hash_into(hasher),
+            Self::Error => panic!("trying to hash error"), // FIXME
         }
     }
 }

@@ -11,7 +11,10 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pathway.internals import operator
+from pathway.internals.datasource import ErrorLogDataSource
 from pathway.internals.helpers import FunctionSpec, StableSet
+from pathway.internals.json import Json
+from pathway.internals.schema import Schema
 from pathway.internals.universe_solver import UniverseSolver
 
 if TYPE_CHECKING:
@@ -105,6 +108,7 @@ class ParseGraph:
     cache: dict[Any, Any]
     static_tables_cache: dict[int, Table[Any]]
     interactive_mode_controller: interactive.InteractiveModeController | None = None
+    error_log_stack: list[Table[ErrorLogSchema]]
 
     def __init__(self) -> None:
         self.clear()
@@ -137,6 +141,7 @@ class ParseGraph:
         """
         node = create_node(next(self.node_id_sequence))
         node.set_graph(self)
+        node.set_error_log(self.error_log_stack[-1] if self.error_log_stack else None)
         result = call_operator(node)
         self._current_scope.add_node(node, special=special)
         return result
@@ -175,6 +180,9 @@ class ParseGraph:
         self.universe_solver = UniverseSolver()
         self.cache = {}
         self.static_tables_cache = {}
+        self.error_log_stack = []
+        # error_log_stack has to exist when create_error_log is called
+        self.error_log_stack.append(create_error_log(self))
 
     def sig(self) -> str:
         return hashlib.sha256(repr(self).encode()).hexdigest()
@@ -189,6 +197,22 @@ class ParseGraph:
             f"{scope}, {node.id} [{node.label()}]: {schema}"
             for scope, node, schema in rows
         )
+
+
+class ErrorLogSchema(Schema):
+    operator_id: int
+    message: str
+    trace: Json | None
+
+
+def create_error_log(parse_graph: ParseGraph) -> Table[ErrorLogSchema]:
+    datasource = ErrorLogDataSource(schema=ErrorLogSchema)
+    from pathway.internals.table import Table
+
+    return parse_graph.add_operator(
+        lambda id: operator.InputOperator(datasource, id),
+        lambda operator: operator(Table),
+    )
 
 
 G = ParseGraph()

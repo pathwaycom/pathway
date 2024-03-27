@@ -24,7 +24,6 @@ use crate::mat_mul::mat_mul;
 #[derive(Debug)]
 pub enum Expressions {
     Explicit(SmallVec<[Arc<Expression>; 2]>),
-    AllArguments,
     Arguments(Range<usize>),
 }
 
@@ -51,8 +50,14 @@ impl Expressions {
             Self::Explicit(exprs) => Ok(MaybeOwnedValues::Owned(
                 exprs.iter().map(|e| e.eval(values)).try_collect()?,
             )),
-            Self::Arguments(range) => Ok(MaybeOwnedValues::Borrowed(&values[range.clone()])),
-            Self::AllArguments => Ok(MaybeOwnedValues::Borrowed(values)),
+            Self::Arguments(range) => {
+                let values = &values[range.clone()];
+                if values.contains(&Value::Error) {
+                    Err(Error::ErrorInValue.into())
+                } else {
+                    Ok(MaybeOwnedValues::Borrowed(values))
+                }
+            }
         }
     }
 }
@@ -113,6 +118,7 @@ pub enum AnyExpression {
     CastToOptionalIntFromOptionalFloat(Arc<Expression>),
     CastToOptionalFloatFromOptionalInt(Arc<Expression>),
     MatMul(Arc<Expression>, Arc<Expression>),
+    FillError(Arc<Expression>, Arc<Expression>),
 }
 
 #[derive(Debug)]
@@ -482,41 +488,47 @@ fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering>
 impl AnyExpression {
     #[allow(clippy::too_many_lines)]
     pub fn eval(&self, values: &[Value]) -> DynResult<Value> {
-        match self {
-            Self::Argument(i) => Ok(values.get(*i).ok_or(Error::IndexOutOfBounds)?.clone()), // XXX: oob
-            Self::Const(v) => Ok(v.clone()),
-            Self::Apply(f, args) => Ok(f(&args.eval(values)?)?),
+        let res = match self {
+            Self::Argument(i) => values
+                .get(*i)
+                .ok_or(Error::IndexOutOfBounds)?
+                .clone()
+                .into_result()?,
+            Self::Const(v) => v.clone(),
+            Self::Apply(f, args) => f(&args.eval(values)?)?,
             Self::OptionalApply(f, args) => {
                 let args = args.eval(values)?;
                 if args.iter().any(|a| matches!(a, Value::None)) {
-                    Ok(Value::None)
+                    Value::None
                 } else {
-                    Ok(f(&args)?)
+                    f(&args)?
                 }
             }
-            Self::IfElse(if_, then, else_) => Ok(if if_.eval_as_bool(values)? {
-                then.eval(values)?
-            } else {
-                else_.eval(values)?
-            }),
+            Self::IfElse(if_, then, else_) => {
+                if if_.eval_as_bool(values)? {
+                    then.eval(values)?
+                } else {
+                    else_.eval(values)?
+                }
+            }
             Self::OptionalPointerFrom(args) => {
                 let args = args.eval(values)?;
                 if args.iter().any(|a| matches!(a, Value::None)) {
-                    Ok(Value::None)
+                    Value::None
                 } else {
-                    Ok(Value::from(Key::for_values(&args)))
+                    Value::from(Key::for_values(&args))
                 }
             }
             Self::MakeTuple(args) => {
                 let args = args.eval(values)?;
                 let args_arc: Arc<[Value]> = (*args).into();
-                Ok(Value::Tuple(args_arc))
+                Value::Tuple(args_arc)
             }
             Self::TupleGetItemChecked(tuple, index, default) => {
                 if let Some(entry) = get_array_element(tuple, index, values)? {
-                    Ok(entry)
+                    entry
                 } else {
-                    Ok(default.eval(values)?)
+                    default.eval(values)?
                 }
             }
             Self::TupleGetItemUnchecked(tuple, index) => {
@@ -524,13 +536,13 @@ impl AnyExpression {
                     Ok(entry)
                 } else {
                     Err(DynError::from(Error::IndexOutOfBounds))
-                }
+                }?
             }
             Self::JsonGetItem(tuple, index, default) => {
                 if let Some(entry) = get_json_item(tuple, index, values)? {
-                    Ok(entry)
+                    entry
                 } else {
-                    Ok(default.eval(values)?)
+                    default.eval(values)?
                 }
             }
             Self::ParseStringToInt(e, optional) => {
@@ -538,13 +550,13 @@ impl AnyExpression {
                 let val_str = val.trim();
                 let parse_result = val_str.parse().map(Value::Int);
                 if *optional {
-                    Ok(parse_result.unwrap_or(Value::None))
+                    parse_result.unwrap_or(Value::None)
                 } else {
                     parse_result.map_err(|e| {
                         DynError::from(Error::ParseError(format!(
                             "cannot parse {val:?} to int: {e}"
                         )))
-                    })
+                    })?
                 }
             }
             Self::ParseStringToFloat(e, optional) => {
@@ -552,13 +564,13 @@ impl AnyExpression {
                 let val_str = val.trim();
                 let parse_result = val_str.parse().map(Value::Float);
                 if *optional {
-                    Ok(parse_result.unwrap_or(Value::None))
+                    parse_result.unwrap_or(Value::None)
                 } else {
                     parse_result.map_err(|e| {
                         DynError::from(Error::ParseError(format!(
                             "cannot parse {val:?} to float: {e}"
                         )))
-                    })
+                    })?
                 }
             }
             Self::ParseStringToBool(e, true_list, false_list, optional) => {
@@ -574,7 +586,7 @@ impl AnyExpression {
                     Err(DynError::from(Error::ParseError(format!(
                         "cannot parse {val:?} to bool"
                     ))))
-                }
+                }?
             }
             Self::CastToOptionalIntFromOptionalFloat(expr) => match expr.eval(values)? {
                 #[allow(clippy::cast_possible_truncation)]
@@ -583,7 +595,7 @@ impl AnyExpression {
                 val => Err(DynError::from(Error::ValueError(format!(
                     "Cannot cast to int from {val:?}"
                 )))),
-            },
+            }?,
             Self::CastToOptionalFloatFromOptionalInt(expr) => match expr.eval(values)? {
                 #[allow(clippy::cast_precision_loss)]
                 Value::Int(i) => Ok((i as f64).into()),
@@ -591,7 +603,7 @@ impl AnyExpression {
                 val => Err(DynError::from(Error::ValueError(format!(
                     "Cannot cast to float from {val:?}"
                 )))),
-            },
+            }?,
             Self::JsonToOptional(expr, type_) => match expr.eval(values)? {
                 Value::Json(json) => {
                     if json.is_null() {
@@ -619,7 +631,7 @@ impl AnyExpression {
                 val => Err(DynError::from(Error::ValueError(format!(
                     "Expected Json or None, found {val:?}"
                 )))),
-            },
+            }?,
             Self::MatMul(lhs, rhs) => {
                 let lhs_val = lhs.eval(values)?;
                 let rhs_val = rhs.eval(values)?;
@@ -633,7 +645,7 @@ impl AnyExpression {
                             "can't perform matrix multiplication on {lhs_type:?} and {rhs_type:?}",
                         ))))
                     }
-                }
+                }?
             }
             Self::Unwrap(e) => {
                 let val = e.eval(values)?;
@@ -643,9 +655,14 @@ impl AnyExpression {
                     ))))
                 } else {
                     Ok(val)
-                }
+                }?
             }
-        }
+            Self::FillError(e, replacement) => {
+                e.eval(values).or_else(|_| replacement.eval(values))?
+            }
+        };
+        debug_assert!(!matches!(res, Value::Error));
+        Ok(res)
     }
 }
 

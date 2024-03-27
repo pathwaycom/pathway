@@ -707,6 +707,23 @@ class RowwiseEvaluator(
         val = self.eval_expression(expression._expr, eval_state=eval_state)
         return api.Expression.unwrap(val)
 
+    def eval_fill_error(
+        self,
+        expression: expr.FillErrorExpression,
+        eval_state: RowwiseEvalState | None = None,
+    ):
+        dtype = expression._dtype
+        ret = self.eval_expression(
+            expr.CastExpression(dtype, expression._expr),
+            eval_state=eval_state,
+        )
+        replacement = self.eval_expression(
+            expr.CastExpression(dtype, expression._replacement),
+            eval_state=eval_state,
+        )
+
+        return api.Expression.fill_error(ret, replacement)
+
     def _prepare_positional_apply(
         self,
         fun: Callable,

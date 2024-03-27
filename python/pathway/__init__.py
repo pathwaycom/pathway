@@ -42,6 +42,8 @@ from pathway.internals import (
     column_definition,
     declare_type,
     enable_interactive_mode,
+    fill_error,
+    global_error_log,
     groupby,
     if_else,
     input_attribute,
@@ -54,6 +56,7 @@ from pathway.internals import (
     join_outer,
     join_right,
     left,
+    local_error_log,
     make_tuple,
     method,
     numba_apply,
@@ -168,6 +171,7 @@ __all__ = [
     "DATE_TIME_UTC",
     "DURATION",
     "unwrap",
+    "fill_error",
     "SchemaProperties",
     "schema_from_csv",
     "schema_from_dict",
@@ -192,6 +196,8 @@ __all__ = [
     "persistence",
     "set_license_key",
     "set_telemetry_server",
+    "global_error_log",
+    "local_error_log",
 ]
 
 

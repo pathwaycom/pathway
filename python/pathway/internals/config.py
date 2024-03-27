@@ -14,9 +14,9 @@ def _env_field(name: str, default: str | None = None):
     return field(default_factory=factory)
 
 
-def _env_bool_field(name: str):
+def _env_bool_field(name: str, *, default: str = "false"):
     def factory():
-        value = os.environ.get(name, "false").lower()
+        value = os.environ.get(name, default).lower()
         if value in ("1", "true", "yes"):
             return True
         elif value in ("0", "false", "no"):
@@ -61,6 +61,9 @@ class PathwayConfig:
     replay_storage: str | None = _env_field("PATHWAY_REPLAY_STORAGE")
     license_key: str | None = _env_field("PATHWAY_LICENSE_KEY")
     telemetry_server: str | None = _env_field("PATHWAY_TELEMETRY_SERVER")
+    terminate_on_error: bool = _env_bool_field(
+        "PATHWAY_TERMINATE_ON_ERROR", default="true"
+    )
 
     @property
     def replay_config(

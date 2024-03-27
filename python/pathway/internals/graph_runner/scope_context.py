@@ -18,6 +18,7 @@ class ScopeContext:
     run_all: bool = False
     subscopes: dict[operator.Operator, ScopeContext] = field(default_factory=dict)
     runtime_typechecking: bool = False
+    inside_iterate: bool = False
 
     def iterate_subscope(
         self, operator: operator.IterateOperator, graph_builder: GraphRunner
@@ -27,6 +28,6 @@ class ScopeContext:
                 operator.scope,
                 operator.result_iterated + operator.result_iterated_with_universe,
             )
-            self.subscopes[operator] = replace(self, nodes=nodes)
+            self.subscopes[operator] = replace(self, nodes=nodes, inside_iterate=True)
 
         return self.subscopes[operator]

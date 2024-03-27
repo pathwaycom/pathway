@@ -19,6 +19,7 @@ class ScopeState:
     computers: list[Callable]
     tables: dict[universe.Universe, api.Table]
     storages: dict[universe.Universe, Storage]
+    error_logs: dict[table.Table, api.ErrorLog]
 
     def __init__(self, scope: api.Scope) -> None:
         self.scope = scope
@@ -28,6 +29,7 @@ class ScopeState:
         self.legacy_tables = {}
         self.tables = {}
         self.storages = {}
+        self.error_logs = {}
 
     def extract_universe(self, univ: universe.Universe) -> api.Universe:
         engine_table = self.get_table(univ)
@@ -154,3 +156,11 @@ class ScopeState:
 
     def get_storages(self, keys: Iterable[universe.Universe]) -> list[Storage]:
         return [self.get_storage(key) for key in keys]
+
+    def set_error_log(self, table: table.Table, error_log: api.ErrorLog) -> None:
+        self.error_logs[table] = error_log
+
+    def get_error_log(self, table: table.Table) -> api.ErrorLog | None:
+        # None is returned if the error_log is not used.
+        # It was removed by tree shaking and there's no need to put entries in it.
+        return self.error_logs.get(table)

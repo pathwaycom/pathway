@@ -131,3 +131,72 @@ impl SpawnWithReporter for thread::Builder {
         })
     }
 }
+
+pub trait LogError {
+    fn log_error(&self, error: Error);
+    fn log_error_with_trace(&self, error: DynError, trace: &Trace);
+}
+
+impl<T: ReportError> LogError for T {
+    fn log_error(&self, error: Error) {
+        self.report_and_panic(error);
+    }
+
+    fn log_error_with_trace(&self, error: DynError, trace: &Trace) {
+        self.report_and_panic_with_trace(error, trace);
+    }
+}
+
+pub trait UnwrapWithErrorLogger<T> {
+    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T;
+    fn unwrap_or_log_with_trace(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        trace: &Trace,
+        default: T,
+    ) -> T;
+}
+
+impl<T> UnwrapWithErrorLogger<T> for DynResult<T> {
+    #[track_caller]
+    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T {
+        self.unwrap_or_else(|err| {
+            error_logger.log_error(err.into());
+            default
+        })
+    }
+    #[track_caller]
+    fn unwrap_or_log_with_trace(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        trace: &Trace,
+        default: T,
+    ) -> T {
+        self.unwrap_or_else(|err| {
+            error_logger.log_error_with_trace(err, trace);
+            default
+        })
+    }
+}
+
+impl<T> UnwrapWithErrorLogger<T> for Result<T> {
+    #[track_caller]
+    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T {
+        self.unwrap_or_else(|err| {
+            error_logger.log_error(err);
+            default
+        })
+    }
+    #[track_caller]
+    fn unwrap_or_log_with_trace(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        trace: &Trace,
+        default: T,
+    ) -> T {
+        self.unwrap_or_else(|err| {
+            error_logger.log_error_with_trace(err.into(), trace);
+            default
+        })
+    }
+}

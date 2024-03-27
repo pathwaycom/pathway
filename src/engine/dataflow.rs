@@ -28,6 +28,7 @@ use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOut
 use crate::persistence::sync::SharedWorkersPersistenceCoordinator;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId};
+use crate::timestamp::current_unix_timestamp_ms;
 
 use std::any::type_name;
 use std::borrow::{Borrow, Cow};
@@ -47,6 +48,7 @@ use std::thread::{Builder, JoinHandle};
 use std::time::{Duration, SystemTime};
 use std::{env, slice};
 
+use arcstr;
 use arcstr::ArcStr;
 use crossbeam_channel::{bounded, never, select, Receiver, RecvError, Sender};
 use derivative::Derivative;
@@ -63,7 +65,7 @@ use differential_dataflow::{AsCollection as _, Data};
 use futures::future::BoxFuture;
 use id_arena::Arena;
 use itertools::{chain, process_results, Itertools};
-use log::info;
+use log::{error, info};
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
 use pyo3::PyObject;
@@ -100,12 +102,16 @@ use super::reduce::{
     IntSumReducer, MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer,
     StatefulCombineFn, StatefulReducer, TupleReducer, UniqueReducer,
 };
-use super::report_error::{ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithReporter};
+use super::report_error::{
+    LogError, ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithErrorLogger,
+    UnwrapWithReporter,
+};
 use super::telemetry::maybe_run_telemetry_thread;
 use super::{
-    BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, Expression,
-    ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable, OperatorStats,
-    ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties, UniverseHandle, Value,
+    BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
+    Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable,
+    OperatorStats, ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties,
+    UniverseHandle, Value,
 };
 use nix::sys::resource::{getrlimit, setrlimit};
 
@@ -124,6 +130,7 @@ const OUTPUT_RETRIES: usize = 5;
 const RETRY_SLEEP_INITIAL: Duration = Duration::from_secs(1);
 const RETRY_SLEEP_BACKOFF_FACTOR: f64 = 1.2;
 const RETRY_JITTER: Duration = Duration::from_millis(800);
+const ERROR_LOG_FLUSH_PERIOD: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
 struct ErrorReporter {
@@ -505,6 +512,100 @@ impl<S: MaybeTotalScope> Table<S> {
     }
 }
 
+struct ErrorLogInner {
+    input_session: InputSession<u64, (Key, Value), isize>,
+    last_flush: Option<SystemTime>,
+}
+
+impl ErrorLogInner {
+    fn new(input_session: InputSession<u64, (Key, Value), isize>) -> Self {
+        let mut log = ErrorLogInner {
+            input_session,
+            last_flush: None,
+        };
+        log.maybe_flush();
+        log
+    }
+    fn insert(&mut self, value: Value) {
+        self.input_session.insert((Key::random(), value));
+        self.maybe_flush();
+    }
+    fn maybe_flush(&mut self) -> SystemTime {
+        // returns time of the next flush
+        let now = SystemTime::now();
+        let flush = self.last_flush.map_or(true, |last_flush| {
+            last_flush + ERROR_LOG_FLUSH_PERIOD <= now
+        });
+        if flush {
+            self.last_flush = Some(now);
+            let new_timestamp = u64::try_from(current_unix_timestamp_ms())
+                .expect("number of milliseconds should fit in 64 bits");
+            let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
+            self.input_session.advance_to(new_timestamp);
+            self.input_session.flush();
+        }
+        self.last_flush.expect("last_flush should be set") + ERROR_LOG_FLUSH_PERIOD
+    }
+}
+
+#[derive(Clone)]
+struct ErrorLog {
+    inner: Rc<RefCell<ErrorLogInner>>,
+}
+
+impl ErrorLog {
+    fn new(input_session: InputSession<u64, (Key, Value), isize>) -> ErrorLog {
+        let inner = ErrorLogInner::new(input_session);
+        ErrorLog {
+            inner: Rc::new(RefCell::new(inner)),
+        }
+    }
+
+    fn insert(&self, value: Value) {
+        self.inner.borrow_mut().insert(value);
+    }
+
+    fn maybe_flush(&self) -> SystemTime {
+        self.inner.borrow_mut().maybe_flush()
+    }
+}
+
+struct ErrorLogger {
+    operator_id: i64,
+    error_log: Option<ErrorLog>,
+}
+
+impl ErrorLogger {
+    fn inner_log(&self, error: &Error, trace: Option<String>) {
+        if matches!(error, Error::ErrorInValue) {
+            return;
+        }
+        let trace = trace.unwrap_or_default();
+        let error = error.to_string();
+        error!("{error} in operator {}. {trace}", self.operator_id);
+        if let Some(error_log) = self.error_log.as_ref() {
+            error_log.insert(Value::from(
+                [
+                    Value::from(self.operator_id),
+                    Value::from(ArcStr::from(error)),
+                    Value::from(ArcStr::from(trace)),
+                ]
+                .as_slice(),
+            ));
+        }
+    }
+}
+
+impl LogError for ErrorLogger {
+    fn log_error(&self, error: Error) {
+        self.inner_log(&error, None);
+    }
+
+    fn log_error_with_trace(&self, error: DynError, trace: &Trace) {
+        self.inner_log(&error.into(), Some(format!("{trace}")));
+    }
+}
+
 struct Prober {
     input_time: Option<u64>,
     input_time_changed: Option<SystemTime>,
@@ -650,6 +751,8 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     universes: Arena<Universe<S>, UniverseHandle>,
     columns: Arena<Column<S>, ColumnHandle>,
     tables: Arena<Table<S>, TableHandle>,
+    error_logs: Arena<ErrorLog, ErrorLogHandle>,
+    flushers: Vec<Box<dyn FnMut() -> SystemTime>>,
     pollers: Vec<Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>>,
     connector_threads: Vec<JoinHandle<()>>,
     connector_monitors: Vec<Rc<RefCell<ConnectorMonitor>>>,
@@ -664,6 +767,10 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     global_persistent_storage: GlobalPersistentStorage,
     persisted_states_count: u64,
     config: Arc<Config>,
+    terminate_on_error: bool,
+    default_error_log: Option<ErrorLog>,
+    current_error_log: Option<ErrorLog>,
+    current_operator_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -775,6 +882,22 @@ impl<S: MaybeTotalScope> TupleCollection<S> {
     }
 }
 
+trait FilterOutErrors {
+    fn filter_out_errors(&self, error_logger: Box<dyn LogError>) -> Self;
+}
+
+impl<S: MaybeTotalScope> FilterOutErrors for Collection<S, (Key, Tuple)> {
+    fn filter_out_errors(&self, error_logger: Box<dyn LogError>) -> Self {
+        self.filter(move |(_key, values)| {
+            let contains_errors = values.as_value_slice().contains(&Value::Error);
+            if contains_errors {
+                error_logger.log_error(Error::ErrorInOutput);
+            }
+            !contains_errors
+        })
+    }
+}
+
 #[derive(Derivative, Debug, Clone, Serialize, Deserialize)]
 #[derivative(PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct KeyWith<T>(
@@ -802,6 +925,7 @@ enum MaybeUpdate<T> {
 
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
 impl<S: MaybeTotalScope> DataflowGraphInner<S> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         scope: S,
         error_reporter: ErrorReporter,
@@ -809,6 +933,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         persistence_config: Option<PersistenceManagerConfig>,
         global_persistent_storage: Option<SharedWorkersPersistenceCoordinator>,
         config: Arc<Config>,
+        terminate_on_error: bool,
+        default_error_log: Option<ErrorLog>,
     ) -> Result<Self> {
         let worker_persistent_storage = {
             if let Some(persistence_config) = &persistence_config {
@@ -833,6 +959,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             universes: Arena::new(),
             columns: Arena::new(),
             tables: Arena::new(),
+            error_logs: Arena::new(),
+            flushers: Vec::new(),
             pollers: Vec::new(),
             connector_threads: Vec::new(),
             connector_monitors: Vec::new(),
@@ -847,6 +975,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             global_persistent_storage,
             persisted_states_count: 0,
             config,
+            terminate_on_error,
+            default_error_log,
+            current_error_log: None,
+            current_operator_id: None,
         })
     }
 
@@ -1139,6 +1271,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let properties = TableProperties::Table(properties.as_slice().into());
 
         let error_reporter = self.error_reporter.clone();
+        let error_logger = self.create_error_logger()?;
 
         let closure = move |(key, values)| {
             let args: Vec<Value> = column_paths
@@ -1150,9 +1283,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 let result = expression_data
                     .expression
                     .eval(&args)
-                    .unwrap_with_reporter_and_trace(
-                        &error_reporter,
+                    .unwrap_or_log_with_trace(
+                        error_logger.as_ref(),
                         expression_data.properties.trace(),
+                        Value::Error,
                     );
                 result
             });
@@ -1323,6 +1457,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
+        let error_logger: Rc<dyn LogError> = self.create_error_logger()?.into();
         let trace = Arc::new(trace);
         let closure = move |(key, values)| {
             let args: Vec<Value> = column_paths
@@ -1330,14 +1465,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .map(|path| path.extract(&key, &values))
                 .collect::<Result<_>>()
                 .unwrap_with_reporter_and_trace(&error_reporter, &trace);
-            let error_reporter = error_reporter.clone();
+            let error_logger = error_logger.clone();
             let function = function.clone();
             let trace = trace.clone();
             let future = async move {
                 let value = async {
-                    function(key, &args)
-                        .await
-                        .unwrap_with_reporter_and_trace(&error_reporter, &trace)
+                    function(key, &args).await.unwrap_or_log_with_trace(
+                        error_logger.as_ref(),
+                        &trace,
+                        Value::Error,
+                    )
                 }
                 .await;
                 (key, Value::from([value].as_slice()))
@@ -1371,11 +1508,15 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
 
         let error_reporter = self.error_reporter.clone();
+        let error_logger = self.create_error_logger()?;
 
         let new_table = table.values().flat_map(move |(key, values)| {
             if filtering_column_path
                 .extract(&key, &values)
                 .unwrap_with_reporter(&error_reporter)
+                .into_result()
+                .map_err(|_err| Error::ErrorInFilter)
+                .unwrap_or_log(error_logger.as_ref(), Value::Bool(false))
                 .as_bool()
                 .unwrap_with_reporter(&error_reporter)
             {
@@ -1564,19 +1705,23 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
 
         let error_reporter = self.error_reporter.clone();
+        let error_logger = self.create_error_logger()?;
 
-        let new_values =
-            table
-                .values()
-                .map_named("reindex_table::new_values", move |(key, values)| {
-                    let value = reindexing_column_path
-                        .extract(&key, &values)
-                        .unwrap_with_reporter(&error_reporter);
-                    (
-                        value.as_pointer().unwrap_with_reporter(&error_reporter),
-                        values,
-                    )
-                });
+        let new_values = table.values().flat_map(move |(key, values)| {
+            let value = reindexing_column_path
+                .extract(&key, &values)
+                .unwrap_with_reporter(&error_reporter);
+            match value {
+                Value::Error => {
+                    error_logger.log_error(Error::ErrorInReindex);
+                    None
+                }
+                value => Some((
+                    value.as_pointer().unwrap_with_reporter(&error_reporter),
+                    values,
+                )),
+            }
+        });
 
         if !self.ignore_asserts {
             let new_keys = new_values.map_named("reindex_table:new_keys", |(key, _)| key);
@@ -1668,6 +1813,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
 
         let error_reporter = self.error_reporter.clone();
+        let error_logger = self.create_error_logger()?;
 
         let new_table = table.values().flat_map(move |(key, values)| {
             let value = flatten_column_path
@@ -1686,9 +1832,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         Ok(array.into_iter().map(Value::from).collect())
                     } else {
                         let repr = json.to_string();
-                        Err(Error::ValueError(format!(
+                        error_logger.log_error(Error::ValueError(format!(
                             "Pathway can't flatten this Json: {repr}"
-                        )))
+                        )));
+                        Ok(vec![])
                     }
                 }
                 value => Err(Error::ValueError(format!(
@@ -2035,6 +2182,33 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         join_type: JoinType,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
+        fn extract_join_keys(
+            key: Key,
+            values: Value,
+            column_paths: &[ColumnPath],
+            error_reporter: &ErrorReporter,
+            error_logger: &mut dyn LogError,
+        ) -> Option<(Key, (Key, Value))> {
+            let join_key_parts: Result<Vec<_>> = column_paths
+                .iter()
+                .map(|path| path.extract(&key, &values))
+                .collect::<Result<Vec<_>>>()
+                .unwrap_with_reporter(error_reporter)
+                .into_iter()
+                .map(|v| v.into_result().map_err(|_err| Error::ErrorInJoin))
+                .collect::<Result<Vec<_>>>();
+            match join_key_parts {
+                Ok(join_key_parts) => {
+                    let join_key = Key::for_values(&join_key_parts);
+                    Some((join_key, (key, values)))
+                }
+                Err(error) => {
+                    error_logger.log_error(error);
+                    None
+                }
+            }
+        }
+
         let left_table = self
             .tables
             .get(left_table_handle)
@@ -2047,31 +2221,28 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_reporter_left = self.error_reporter.clone();
         let error_reporter_right = self.error_reporter.clone();
 
-        let join_left =
-            left_table
-                .values()
-                .map_named("join_tables::join_left", move |(key, values)| {
-                    let join_key_parts: Vec<_> = left_column_paths
-                        .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter_left);
-                    let join_key = Key::for_values(&join_key_parts);
-                    (join_key, (key, values))
-                });
+        let mut error_logger_left = self.create_error_logger()?;
+        let mut error_logger_right = self.create_error_logger()?;
+
+        let join_left = left_table.values().flat_map(move |(key, values)| {
+            extract_join_keys(
+                key,
+                values,
+                &left_column_paths,
+                &error_reporter_left,
+                error_logger_left.as_mut(),
+            )
+        });
         let join_left_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_left.arrange();
-        let join_right =
-            right_table
-                .values()
-                .map_named("join_tables::join_right", move |(key, values)| {
-                    let join_key_parts: Vec<_> = right_column_paths
-                        .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter_right);
-                    let join_key = Key::for_values(&join_key_parts);
-                    (join_key, (key, values))
-                });
+        let join_right = right_table.values().flat_map(move |(key, values)| {
+            extract_join_keys(
+                key,
+                values,
+                &right_column_paths,
+                &error_reporter_right,
+                error_logger_right.as_mut(),
+            )
+        });
         let join_right_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_right.arrange();
 
         let join_left_right = join_left_arranged
@@ -2104,20 +2275,15 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         );
 
         let left_outer = || {
-            join_left
-                .map_named(
-                    "join_tables::left_outer_left",
-                    |(_join_key, left_key_values)| left_key_values,
-                )
-                .concat(
-                    &join_left_right
-                        .map_named(
-                            "join::left_outer_res",
-                            |(_join_key, left_key_values, _right_key_values)| left_key_values,
-                        )
-                        .distinct()
-                        .negate(),
-                )
+            left_table.values().concat(
+                &join_left_right
+                    .map_named(
+                        "join::left_outer_res",
+                        |(_join_key, left_key_values, _right_key_values)| left_key_values,
+                    )
+                    .distinct()
+                    .negate(),
+            )
         };
         let result_left_outer = match join_type {
             JoinType::LeftOuter | JoinType::FullOuter => Some(left_outer().map_named(
@@ -2160,20 +2326,15 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         };
 
         let right_outer = || {
-            join_right
-                .map_named(
-                    "join::right_outer_right",
-                    |(_join_key, right_key_values)| right_key_values,
-                )
-                .concat(
-                    &join_left_right
-                        .map_named(
-                            "join::right_outer_res",
-                            |(_join_key, _left_key, right_key_values)| right_key_values,
-                        )
-                        .distinct()
-                        .negate(),
-                )
+            right_table.values().concat(
+                &join_left_right
+                    .map_named(
+                        "join::right_outer_res",
+                        |(_join_key, _left_key, right_key_values)| right_key_values,
+                    )
+                    .distinct()
+                    .negate(),
+            )
         };
         let result_right_outer = match join_type {
             JoinType::RightOuter | JoinType::FullOuter => Some(right_outer().map_named(
@@ -2270,6 +2431,42 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table
             .values()
             .probe_with(self.probes.entry(operator_id).or_default());
+        Ok(())
+    }
+
+    fn create_error_logger(&self) -> Result<Box<dyn LogError>> {
+        if self.terminate_on_error {
+            Ok(Box::new(self.error_reporter.clone()))
+        } else {
+            let operator_id = self
+                .current_operator_id
+                .ok_or_else(|| Error::OperatorIdNotSet)?;
+            let error_log = self
+                .current_error_log
+                .clone()
+                .or(self.default_error_log.clone());
+            Ok(Box::new(ErrorLogger {
+                operator_id: operator_id.try_into().map_err(DynError::from)?,
+                error_log,
+            }))
+        }
+    }
+
+    fn set_operator_id(&mut self, operator_id: usize) -> Result<()> {
+        self.current_operator_id = Some(operator_id);
+        Ok(())
+    }
+
+    fn set_error_log(&mut self, error_log_handle: Option<ErrorLogHandle>) -> Result<()> {
+        self.current_error_log = error_log_handle
+            .map(|handle| -> Result<ErrorLog> {
+                Ok(self
+                    .error_logs
+                    .get(handle)
+                    .ok_or(Error::InvalidErrorLogHandle)?
+                    .clone())
+            })
+            .transpose()?;
         Ok(())
     }
 }
@@ -2994,9 +3191,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         column_paths: Vec<ColumnPath>,
     ) -> Result<()> {
         let worker_index = self.scope.index();
+        let error_logger = self.create_error_logger()?;
         let output_columns = self
             .extract_columns(table_handle, column_paths)?
-            .as_collection();
+            .as_collection()
+            .filter_out_errors(error_logger);
         let single_threaded = data_sink.single_threaded();
         let connector_does_output = !single_threaded || worker_index == 0;
 
@@ -3090,6 +3289,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
+        skip_errors: bool,
     ) -> Result<()> {
         let worker_index = self.scope.index();
 
@@ -3102,6 +3302,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
+        let error_logger = self.create_error_logger()?;
 
         let SubscribeCallbacks {
             wrapper,
@@ -3111,8 +3312,15 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         } = callbacks;
         let wrapper_2 = wrapper.clone();
 
-        self.extract_columns(table_handle, column_paths)?
-            .as_collection()
+        let output_columns = self
+            .extract_columns(table_handle, column_paths)?
+            .as_collection();
+        let output_columns = if skip_errors {
+            output_columns.filter_out_errors(error_logger)
+        } else {
+            output_columns
+        };
+        output_columns
             .consolidate_for_output(true)
             .inspect(move |batch| {
                 if batch.time == ARTIFICIAL_TIME_ON_REWIND_START && skip_initial_time {
@@ -3186,6 +3394,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 self.ignore_asserts,
                 self.global_persistent_storage.clone(),
                 self.config.clone(),
+                self.terminate_on_error,
+                self.current_error_log.clone(),
             )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
             let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
@@ -3226,6 +3436,23 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 .collect::<Result<_>>()?;
             Ok((result, result_with_universe))
         })
+    }
+
+    fn error_log(
+        &mut self,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<(TableHandle, ErrorLogHandle)> {
+        let mut input_session = InputSession::new();
+        let collection = input_session.to_collection(&mut self.scope);
+        let table_handle = self
+            .tables
+            .alloc(Table::from_collection(collection).with_properties(table_properties));
+        let error_log = ErrorLog::new(input_session);
+        let error_log_2 = error_log.clone();
+        self.flushers
+            .push(Box::new(move || error_log_2.maybe_flush()));
+        let error_log_handle = self.error_logs.alloc(error_log);
+        Ok((table_handle, error_log_handle))
     }
 
     fn attach_prober(
@@ -3718,6 +3945,8 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
         ignore_asserts: bool,
         global_persistent_storage: Option<SharedWorkersPersistenceCoordinator>,
         config: Arc<Config>,
+        terminate_on_error: bool,
+        default_error_log: Option<ErrorLog>,
     ) -> Result<Self> {
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
@@ -3726,6 +3955,8 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             None,
             global_persistent_storage,
             config,
+            terminate_on_error,
+            default_error_log,
         )?)))
     }
 }
@@ -3895,6 +4126,7 @@ where
         _column_paths: Vec<ColumnPath>,
         _callbacks: SubscribeCallbacks,
         _skip_persisted_batch: bool,
+        _skip_errors: bool,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
     }
@@ -4213,6 +4445,21 @@ where
         Err(Error::IoNotPossible)
     }
 
+    fn set_operator_id(&self, operator_id: usize) -> Result<()> {
+        self.0.borrow_mut().set_operator_id(operator_id)
+    }
+
+    fn set_error_log(&self, _error_log_handle: Option<ErrorLogHandle>) -> Result<()> {
+        Err(Error::NotSupportedInIteration)
+    }
+
+    fn error_log(
+        &self,
+        _table_properties: Arc<TableProperties>,
+    ) -> Result<(TableHandle, ErrorLogHandle)> {
+        Err(Error::NotSupportedInIteration)
+    }
+
     fn attach_prober(
         &self,
         _logic: Box<dyn FnMut(ProberStats)>,
@@ -4251,6 +4498,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
         persistence_config: Option<PersistenceManagerOuterConfig>,
         global_persistent_storage: Option<SharedWorkersPersistenceCoordinator>,
         config: Arc<Config>,
+        terminate_on_error: bool,
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
@@ -4261,6 +4509,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
             persistence_config.map(|cfg| cfg.into_inner(worker_idx, total_workers)),
             global_persistent_storage,
             config,
+            terminate_on_error,
+            None,
         )?)))
     }
 }
@@ -4423,12 +4673,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
+        skip_errors: bool,
     ) -> Result<()> {
         self.0.borrow_mut().subscribe_table(
             table_handle,
             column_paths,
             callbacks,
             skip_persisted_batch,
+            skip_errors,
         )
     }
 
@@ -4784,6 +5036,21 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             .output_table(data_sink, data_formatter, table_handle, column_paths)
     }
 
+    fn set_operator_id(&self, operator_id: usize) -> Result<()> {
+        self.0.borrow_mut().set_operator_id(operator_id)
+    }
+
+    fn set_error_log(&self, error_log_handle: Option<ErrorLogHandle>) -> Result<()> {
+        self.0.borrow_mut().set_error_log(error_log_handle)
+    }
+
+    fn error_log(
+        &self,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<(TableHandle, ErrorLogHandle)> {
+        self.0.borrow_mut().error_log(table_properties)
+    }
+
     fn attach_prober(
         &self,
         logic: Box<dyn FnMut(ProberStats)>,
@@ -4843,6 +5110,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     persistence_config: Option<PersistenceManagerOuterConfig>,
     license: License,
     telemetry_config: TelemetryConfig,
+    terminate_on_error: bool,
 ) -> Result<Vec<R2>>
 where
     R: 'static,
@@ -4880,6 +5148,7 @@ where
 
             let (
                 res,
+                mut flushers,
                 mut pollers,
                 connector_threads,
                 connector_monitors,
@@ -4898,6 +5167,7 @@ where
                     persistence_config.clone(),
                     global_persistent_storage.clone(),
                     config.clone(),
+                    terminate_on_error,
                 )
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());
@@ -4909,6 +5179,7 @@ where
                 let graph = graph.0.into_inner();
                 (
                     res,
+                    graph.flushers,
                     graph.pollers,
                     graph.connector_threads,
                     graph.connector_monitors,
@@ -4940,20 +5211,37 @@ where
 
                 let iteration_start = SystemTime::now();
 
-                pollers.retain_mut(|poller| match poller() {
-                    ControlFlow::Continue(None) => true,
-                    ControlFlow::Continue(Some(next_commit_at)) => {
+                let next_step_duration_computer =
+                    |next_commit_at: SystemTime, next_step_duration: Option<Duration>| {
                         let time_to_commit = next_commit_at
                             .duration_since(iteration_start)
                             .unwrap_or(Duration::ZERO);
 
-                        next_step_duration = Some(
-                            next_step_duration.map_or(time_to_commit, |x| min(x, time_to_commit)),
-                        );
+                        Some(next_step_duration.map_or(time_to_commit, |x| min(x, time_to_commit)))
+                    };
+
+                for flusher in &mut flushers {
+                    let next_flush_at = flusher();
+                    next_step_duration =
+                        next_step_duration_computer(next_flush_at, next_step_duration);
+                }
+
+                pollers.retain_mut(|poller| match poller() {
+                    ControlFlow::Continue(None) => true,
+                    ControlFlow::Continue(Some(next_commit_at)) => {
+                        next_step_duration =
+                            next_step_duration_computer(next_commit_at, next_step_duration);
                         true
                     }
                     ControlFlow::Break(()) => false,
                 });
+
+                if pollers.is_empty() {
+                    //flushers don't know if they're no longer needed
+                    //if there are no pollers left, computation is close to finishing
+                    //so stop flushing and have the final flush at input session drop
+                    flushers.clear();
+                }
 
                 if !worker.step_or_park(next_step_duration) {
                     break;

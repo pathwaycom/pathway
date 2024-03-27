@@ -1579,6 +1579,7 @@ mod to_sql {
                     try_forward!(&serde_json::Value, &**j);
                     "JSON"
                 }
+                Self::Error => "error",
             };
             Err(Box::new(WrongPathwayType {
                 pathway_type: pathway_type.to_owned(),

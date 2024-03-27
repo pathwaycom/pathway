@@ -5,7 +5,7 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::engine::graph::{ExportedTable, SubscribeCallbacksBuilder};
+use crate::engine::graph::{ErrorLogHandle, ExportedTable, SubscribeCallbacksBuilder};
 use crate::engine::license::License;
 use crate::engine::{Computer as EngineComputer, Expressions, TotalFrontier};
 use csv::ReaderBuilder as CsvReaderBuilder;
@@ -359,6 +359,7 @@ impl ToPyObject for Value {
             Self::DateTimeUtc(dt) => dt.into_py(py),
             Self::Duration(d) => d.into_py(py),
             Self::Json(j) => json_to_py_object(py, j),
+            Self::Error => ERROR.clone_ref(py).into_py(py),
         }
     }
 }
@@ -1299,6 +1300,7 @@ unary_expr!(
     false_list: Vec<String>,
     optional: bool
 );
+binary_expr!(fill_error, AnyExpression::FillError);
 
 #[pyclass(module = "pathway.engine", frozen, name = "PathwayType")]
 pub struct PathwayType(Type);
@@ -1609,6 +1611,59 @@ impl Table {
     }
 }
 
+#[pyclass(module = "pathway.engine", frozen)]
+pub struct ErrorLog {
+    scope: Py<Scope>,
+    handle: ErrorLogHandle,
+}
+
+impl ErrorLog {
+    fn new(scope: &PyCell<Scope>, handle: ErrorLogHandle) -> PyResult<Py<Self>> {
+        let py = scope.py();
+        if let Some(error_log) = scope.borrow().error_logs.borrow().get(&handle) {
+            return Ok(error_log.clone());
+        }
+        let res = Py::new(
+            py,
+            Self {
+                scope: scope.into(),
+                handle,
+            },
+        )?;
+        scope
+            .borrow()
+            .error_logs
+            .borrow_mut()
+            .insert(handle, res.clone());
+        Ok(res)
+    }
+}
+
+// submodule to make sure no other code can create instances of `Error`
+mod error {
+    use once_cell::sync::Lazy;
+    use pyo3::prelude::*;
+
+    struct InnerError;
+    #[pyclass(module = "pathway.engine", frozen)]
+    pub struct Error(InnerError);
+
+    #[pymethods]
+    impl Error {
+        #[allow(clippy::unused_self)]
+        fn __repr__(&self) -> &'static str {
+            "Error"
+        }
+    }
+
+    pub static ERROR: Lazy<Py<Error>> = Lazy::new(|| {
+        Python::with_gil(|py| {
+            Py::new(py, Error(InnerError)).expect("creating ERROR should not fail")
+        })
+    });
+}
+use error::{Error, ERROR};
+
 impl<'source> FromPyObject<'source> for ColumnPath {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
         if ob.getattr("is_key").is_ok_and(|is_key| {
@@ -1842,6 +1897,7 @@ pub struct Scope {
     universes: RefCell<HashMap<UniverseHandle, Py<Universe>>>,
     columns: RefCell<HashMap<ColumnHandle, Py<Column>>>,
     tables: RefCell<HashMap<TableHandle, Py<Table>>>,
+    error_logs: RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>,
     persistent_ids: RefCell<HashSet<ExternalPersistentId>>,
     event_loop: PyObject,
 }
@@ -1855,6 +1911,7 @@ impl Scope {
             universes: RefCell::new(HashMap::new()),
             columns: RefCell::new(HashMap::new()),
             tables: RefCell::new(HashMap::new()),
+            error_logs: RefCell::new(HashMap::new()),
             persistent_ids: RefCell::new(HashSet::new()),
             event_loop,
         }
@@ -1864,6 +1921,7 @@ impl Scope {
         self.universes.borrow_mut().clear();
         self.columns.borrow_mut().clear();
         self.tables.borrow_mut().clear();
+        self.error_logs.borrow_mut().clear();
     }
 }
 
@@ -2067,7 +2125,7 @@ impl Scope {
                         Ok(function.call1(py, args)?.extract::<Value>(py)?)
                     })
                 }),
-                Expressions::AllArguments,
+                Expressions::Arguments(0..table.columns.len()),
             ))),
             universe_ref.handle,
             column_handles,
@@ -2684,8 +2742,38 @@ impl Scope {
             column_paths,
             callbacks,
             skip_persisted_batch,
+            true,
         )?;
         Ok(())
+    }
+
+    pub fn set_operator_id(self_: &PyCell<Self>, operator_id: usize) -> PyResult<()> {
+        Ok(self_.borrow().graph.set_operator_id(operator_id)?)
+    }
+
+    pub fn set_error_log(self_: &PyCell<Self>, error_log: Option<PyRef<ErrorLog>>) -> PyResult<()> {
+        if let Some(error_log) = error_log.as_ref() {
+            check_identity(self_, &error_log.scope, "scope mismatch")?;
+        }
+        Ok(self_
+            .borrow()
+            .graph
+            .set_error_log(error_log.map(|error_log| error_log.handle))?)
+    }
+
+    pub fn error_log(
+        self_: &PyCell<Self>,
+        properties: ConnectorProperties,
+    ) -> PyResult<(Py<Table>, Py<ErrorLog>)> {
+        let column_properties = properties.column_properties();
+        let (table_handle, error_log_handle) = self_
+            .borrow()
+            .graph
+            .error_log(Arc::new(EngineTableProperties::flat(column_properties)))?;
+        Ok((
+            Table::new(self_, table_handle)?,
+            ErrorLog::new(self_, error_log_handle)?,
+        ))
     }
 
     pub fn probe_table(
@@ -2740,7 +2828,7 @@ fn capture_table_data(
                 Ok(())
             }))
             .build();
-        graph.subscribe_table(table.handle, column_paths, callbacks, false)?;
+        graph.subscribe_table(table.handle, column_paths, callbacks, false, false)?;
     }
     Ok(table_data)
 }
@@ -2758,6 +2846,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
 #[pyo3(signature = (
     logic,
     event_loop,
+    *,
     stats_monitor = None,
     ignore_asserts = false,
     monitoring_level = MonitoringLevel::None,
@@ -2766,6 +2855,7 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
     license_key = None,
     telemetry_server = None,
     trace_parent = None,
+    terminate_on_error = true,
 ))]
 pub fn run_with_new_graph(
     py: Python,
@@ -2779,6 +2869,7 @@ pub fn run_with_new_graph(
     license_key: Option<String>,
     telemetry_server: Option<String>,
     trace_parent: Option<String>,
+    terminate_on_error: bool,
 ) -> PyResult<Vec<Vec<DataRow>>> {
     LOGGING_RESET_HANDLE.reset();
     defer! {
@@ -2834,6 +2925,7 @@ pub fn run_with_new_graph(
                 persistence_config,
                 license,
                 telemetry_config,
+                terminate_on_error,
             )
         })
     })??;
@@ -4451,6 +4543,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Trace>()?;
     m.add_class::<Done>()?;
     m.add_class::<PyExportedTable>()?;
+    m.add_class::<Error>()?;
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;
@@ -4462,6 +4555,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add("EngineErrorWithTrace", &*ENGINE_ERROR_WITH_TRACE_TYPE)?;
 
     m.add("DONE", &*DONE)?;
+    m.add("ERROR", &*ERROR)?;
 
     Ok(())
 }

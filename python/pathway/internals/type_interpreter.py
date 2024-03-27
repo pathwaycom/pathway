@@ -570,6 +570,23 @@ class TypeInterpreter(IdentityTransform):
         dtype = expression._expr._dtype
         return _wrap(expression, dt.unoptionalize(dtype))
 
+    def eval_fill_error(
+        self,
+        expression: expr.FillErrorExpression,
+        state: TypeInterpreterState | None = None,
+        **kwargs,
+    ) -> expr.FillErrorExpression:
+        expression = super().eval_fill_error(expression, state=state, **kwargs)
+        inner_dtype = expression._expr._dtype
+        replacement_dtype = expression._replacement._dtype
+        lca = dt.types_lca(inner_dtype, replacement_dtype)
+        if lca is dt.ANY and inner_dtype is not dt.ANY:
+            raise TypeError(
+                "Cannot perform pathway.fill_error on columns of types"
+                + f" {inner_dtype.typehint} and {replacement_dtype.typehint}."
+            )
+        return _wrap(expression, lca)
+
 
 class JoinTypeInterpreter(TypeInterpreter):
     """This type interpreter is used by JoinContext.

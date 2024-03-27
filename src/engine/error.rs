@@ -30,6 +30,9 @@ pub enum Error {
     #[error("invalid table handle")]
     InvalidTableHandle,
 
+    #[error("invalid error log handle")]
+    InvalidErrorLogHandle,
+
     #[error("invalid grouper handle")]
     InvalidGrouperHandle,
 
@@ -162,6 +165,24 @@ pub enum Error {
 
     #[error("computation of imported table failed")]
     ImportedTableFailed,
+
+    #[error("operator_id not set")]
+    OperatorIdNotSet,
+
+    #[error("Error value in column")]
+    ErrorInValue,
+
+    #[error("Error value encountered in filter condition, skipping the row")]
+    ErrorInFilter,
+
+    #[error("Error value encountered in reindex as new id, skipping the row")]
+    ErrorInReindex,
+
+    #[error("Error value encountered in join condition, skipping the row")]
+    ErrorInJoin,
+
+    #[error("Error value encountered in output, skipping the row")]
+    ErrorInOutput,
 }
 
 impl Error {

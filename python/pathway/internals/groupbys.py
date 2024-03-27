@@ -29,7 +29,6 @@ from pathway.internals.desugaring import (
 )
 from pathway.internals.helpers import StableSet
 from pathway.internals.operator_input import OperatorInput
-from pathway.internals.parse_graph import G
 from pathway.internals.universe import Universe
 
 
@@ -120,6 +119,8 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             sort_by._to_original()._to_internal() if sort_by is not None else None
         )
         key = (cls.__name__, table, cols, set_id, col_sort_by)
+        from pathway.internals.parse_graph import G
+
         if key not in G.cache:
             result = GroupedTable(
                 _table=table,
@@ -212,6 +213,8 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             _columns=reduced_columns,
             _context=context,
         )
+        from pathway.internals.parse_graph import G
+
         G.universe_solver.register_as_equal(self._universe, result._universe)
         return result
 

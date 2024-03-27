@@ -821,6 +821,7 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
         Value::DateTimeUtc(dt) => Ok(json!(dt.to_string())),
         Value::Duration(d) => Ok(json!(d.nanoseconds())),
         Value::Json(j) => Ok((**j).clone()),
+        Value::Error => Err(FormatterError::ValueDoesNotFit),
     }
 }
 

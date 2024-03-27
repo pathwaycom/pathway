@@ -503,6 +503,42 @@ def unwrap(col: expr.ColumnExpression | Value) -> expr.ColumnExpression:
     return expr.UnwrapExpression(col)
 
 
+def fill_error(
+    col: expr.ColumnExpression | Value, replacement: expr.ColumnExpression | Value
+) -> expr.ColumnExpression:
+    """Replaces Error values with ``replacement``. Only useful if program termination
+    on error is disabled (PATHWAY_TERMINATE_ON_ERROR=0).
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown(
+    ...     '''
+    ...     a | b
+    ...     3 | 3
+    ...     4 | 0
+    ...     5 | 5
+    ...     6 | 2
+    ...     '''
+    ... )
+    >>> res_with_errors = t1.with_columns(c=pw.this.a // pw.this.b)
+    >>> pw.debug.compute_and_print(res_with_errors, include_id=False, terminate_on_error=False)
+    a | b | c
+    3 | 3 | 1
+    4 | 0 | Error
+    5 | 5 | 1
+    6 | 2 | 3
+    >>> res_wo_errors = res_with_errors.with_columns(c=pw.fill_error(pw.this.c, -1))
+    >>> pw.debug.compute_and_print(res_wo_errors, include_id=False, terminate_on_error=False)
+    a | b | c
+    3 | 3 | 1
+    4 | 0 | -1
+    5 | 5 | 1
+    6 | 2 | 3
+    """
+    return expr.FillErrorExpression(col, replacement)
+
+
 def assert_table_has_schema(
     table: table.Table,
     schema: type[schema.Schema],

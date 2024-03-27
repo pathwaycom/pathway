@@ -359,7 +359,7 @@ def apply_defaults_for_run_kwargs(kwargs):
 
 
 def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
-    def inner(table: Table, expected: Table, **kwargs):
+    def assert_schemas_the_same(table: Table, expected: Table):
         table_schema_dict = table.schema.typehints()
         expected_schema_dict = expected.schema.typehints()
         columns_schema_dict = schema_from_columns(table._columns).typehints()
@@ -387,13 +387,26 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
                 f"Mismatched column names, {list(table.column_names())} vs {list(expected.column_names())}"
             )
 
+    def inner(
+        table: Table | tuple[Table, ...], expected: Table | tuple[Table, ...], **kwargs
+    ):
+        if isinstance(table, Table):
+            table = (table,)
+        if isinstance(expected, Table):
+            expected = (expected,)
+        for t, ex in zip(table, expected, strict=True):
+            assert_schemas_the_same(t, ex)
+
         apply_defaults_for_run_kwargs(kwargs)
         print("We will do GraphRunner with the following kwargs: ", kwargs)
 
-        [captured_table, captured_expected] = GraphRunner(
-            table._source.graph, **kwargs
-        ).run_tables(table, expected)
-        return verifier(captured_table, captured_expected)
+        captured = GraphRunner(
+            table[0]._source.graph, _stacklevel=2, **kwargs
+        ).run_tables(*table, *expected)
+        n = len(expected)
+        captured_tables, captured_expected = captured[:n], captured[n:]
+        for captured_t, captured_ex in zip(captured_tables, captured_expected):
+            verifier(captured_t, captured_ex)
 
     return inner
 

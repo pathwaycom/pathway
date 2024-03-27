@@ -164,6 +164,10 @@ class ExpressionFormatter(ExpressionVisitor):
         uexpr = self.eval_expression(expression._expr)
         return f"pathway.unwrap({uexpr})"
 
+    def eval_fill_error(self, expression: expr.FillErrorExpression):
+        args = self._eval_args_kwargs((expression._expr, expression._replacement))
+        return f"pathway.fill_error({args})"
+
 
 def get_expression_info(expression: expr.ColumnExpression) -> str:
     printer = ExpressionFormatter()

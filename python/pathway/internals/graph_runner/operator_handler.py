@@ -15,6 +15,7 @@ from pathway.internals import api, trace
 from pathway.internals.datasink import CallbackDataSink, ExportDataSink, GenericDataSink
 from pathway.internals.datasource import (
     EmptyDataSource,
+    ErrorLogDataSource,
     GenericDataSource,
     ImportDataSource,
     PandasDataSource,
@@ -79,6 +80,9 @@ class OperatorHandler(ABC, Generic[T]):
         output_storages: dict[Table, Storage],
     ):
         with trace.custom_trace(operator.trace):
+            self.scope.set_operator_id(self.operator_id)
+            if operator.error_log and not self.scope_context.inside_iterate:
+                self.scope.set_error_log(self.state.get_error_log(operator.error_log))
             self._run(operator, output_storages)
 
     @abstractmethod
@@ -148,6 +152,13 @@ class InputOperatorHandler(OperatorHandler[InputOperator], operator_type=InputOp
                 exported_table = datasource.callback(self.scope)
                 materialized_table = self.scope.import_table(exported_table)
                 self.state.set_table(output_storages[table], materialized_table)
+        elif isinstance(datasource, ErrorLogDataSource):
+            for table in operator.output_tables:
+                (materialized_table, error_log) = self.scope.error_log(
+                    properties=datasource.connector_properties
+                )
+                self.state.set_table(output_storages[table], materialized_table)
+                self.state.set_error_log(table, error_log)
         else:
             raise RuntimeError("datasource not supported")
 

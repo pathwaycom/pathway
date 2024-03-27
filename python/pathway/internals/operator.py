@@ -10,7 +10,6 @@ from functools import cached_property
 from itertools import chain
 from typing import TYPE_CHECKING, Any, TypeVar
 
-import pathway.internals as pw
 import pathway.internals.row_transformer_table as tt
 from pathway.internals.arg_tuple import ArgTuple, as_arg_tuple
 from pathway.internals.helpers import (
@@ -24,6 +23,7 @@ from pathway.internals.trace import Trace
 from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
+    import pathway.internals.table as tables
     from pathway.internals import row_transformer as rt
     from pathway.internals.datasink import DataSink
     from pathway.internals.datasource import DataSource, StaticDataSource
@@ -73,9 +73,9 @@ class InputHandle(InOut):
 class OutputHandle(InOut):
     """Handle for the output of the Operator."""
 
-    value: pw.Table
+    value: tables.Table
 
-    def __init__(self, operator: Operator, name, value: pw.Table):
+    def __init__(self, operator: Operator, name, value: tables.Table):
         super().__init__(operator, name)
         self.value = value
 
@@ -92,6 +92,7 @@ class Operator(ABC):
     trace: Trace
     graph: SetOnceProperty[ParseGraph] = SetOnceProperty()
     id: int
+    error_log: tables.Table | None
 
     def __init__(self, id: int) -> None:
         self.id = id
@@ -100,11 +101,11 @@ class Operator(ABC):
         self.trace = Trace.from_traceback()
 
     @property
-    def output_tables(self) -> Iterable[pw.Table]:
+    def output_tables(self) -> Iterable[tables.Table]:
         return (output.value for output in self.outputs)
 
     @cached_property
-    def intermediate_and_output_tables(self) -> Iterable[pw.Table]:
+    def intermediate_and_output_tables(self) -> Iterable[tables.Table]:
         return list(
             chain(
                 *(
@@ -116,7 +117,7 @@ class Operator(ABC):
         )
 
     @property
-    def input_tables(self) -> StableSet[pw.Table]:
+    def input_tables(self) -> StableSet[tables.Table]:
         return StableSet.union(
             *(i.value._operator_dependencies() for i in self._inputs.values())
         )
@@ -135,7 +136,7 @@ class Operator(ABC):
     def get_output(self, name: str) -> OutputHandle:
         return self._outputs[name]
 
-    def get_table(self, name: str) -> pw.Table:
+    def get_table(self, name: str) -> tables.Table:
         return self._outputs[name].value
 
     def _prepare_inputs(self, inputs: ArgTuple):
@@ -149,14 +150,19 @@ class Operator(ABC):
             self._inputs[name] = input
 
     def _prepare_outputs(self, outputs: ArgTuple):
+        from pathway.internals.table import Table
+
         for name, value in outputs.items():
-            assert isinstance(value, pw.Table)
+            assert isinstance(value, Table)
             output = OutputHandle(self, name, value)
             value._set_source(output)
             self._outputs[name] = output
 
     def set_graph(self, graph: ParseGraph):
         self.graph = graph
+
+    def set_error_log(self, error_log: tables.Table | None) -> None:
+        self.error_log = error_log
 
     def input_operators(self) -> StableSet[Operator]:
         result: StableSet[Operator] = StableSet()
@@ -165,7 +171,7 @@ class Operator(ABC):
                 result.add(dependency)
         return result
 
-    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+    def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return StableSet()
 
     def label(self) -> str:
@@ -216,24 +222,24 @@ class ContextualizedIntermediateOperator(OperatorFromDef):
 
 class DebugOperator(Operator):
     name: str
-    table: pw.Table
+    table: tables.Table
 
     def __init__(self, name: str, id: int):
         super().__init__(id)
         self.name = name
 
-    def __call__(self, table: pw.Table) -> None:
+    def __call__(self, table: tables.Table) -> None:
         self._prepare_inputs(as_arg_tuple(table))
         self.table = table
 
     def label(self):
         return f"debug: {self.name}"
 
-    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+    def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return self.input_tables
 
 
-TTable = TypeVar("TTable", bound="pw.Table[Any]")
+TTable = TypeVar("TTable", bound="tables.Table[Any]")
 
 
 class InputOperator(Operator):
@@ -262,24 +268,24 @@ class OutputOperator(Operator):
     """Holds a definition of datasink."""
 
     datasink: DataSink
-    table: pw.Table
+    table: tables.Table
 
     def __init__(self, datasink: DataSink, id: int) -> None:
         super().__init__(id)
         self.datasink = datasink
 
-    def __call__(self, table: pw.Table) -> OutputOperator:
+    def __call__(self, table: tables.Table) -> OutputOperator:
         self._prepare_inputs(as_arg_tuple(table))
         self.table = table
         return self
 
-    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+    def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return self.input_tables
 
 
 @dataclass
 class iterate_universe(OperatorInput):
-    table: pw.Table
+    table: tables.Table
 
     def _operator_dependencies(self):
         return self.table._operator_dependencies()
@@ -325,8 +331,10 @@ class IterateOperator(OperatorFromDef):
         iterated_with_universe_copy = ArgTuple.empty()
 
         # unwrap input and materialize input copy
+        from pathway.internals.table import Table
+
         for name, arg in input.items():
-            if isinstance(arg, pw.Table):
+            if isinstance(arg, Table):
                 input_copy[name] = self._copy_input_table(name, arg, unique=False)
             elif isinstance(arg, iterate_universe):
                 iterated_with_universe_copy[name] = self._copy_input_table(
@@ -336,7 +344,7 @@ class IterateOperator(OperatorFromDef):
             else:
                 raise TypeError(f"{name} has to be a Table instead of {type(arg)}")
 
-        assert all(isinstance(table, pw.Table) for table in input)
+        assert all(isinstance(table, Table) for table in input)
 
         # call iteration logic with copied input and sort result by input order
         raw_result = self.func_spec.func(**input_copy, **iterated_with_universe_copy)
@@ -347,8 +355,8 @@ class IterateOperator(OperatorFromDef):
                 "not all arguments marked as iterated returned from iteration"
             )
         for name, table in result.items():
-            input_table: pw.Table = input[name]
-            assert isinstance(table, pw.Table)
+            input_table: Table = input[name]
+            assert isinstance(table, Table)
             input_schema = input_table.schema._dtypes()
             result_schema = table.schema._dtypes()
             if input_schema != result_schema:
@@ -397,7 +405,7 @@ class IterateOperator(OperatorFromDef):
         self._prepare_outputs(output)
         return output.to_output()
 
-    def _copy_input_table(self, name: str, table: pw.Table, unique: bool):
+    def _copy_input_table(self, name: str, table: tables.Table, unique: bool):
         if unique:
             universe = Universe()
         else:
@@ -406,7 +414,7 @@ class IterateOperator(OperatorFromDef):
         table_copy._set_source(OutputHandle(self, name, table_copy))
         return table_copy
 
-    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+    def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return self.input_tables
 
     def label(self):
@@ -424,7 +432,7 @@ class RowTransformerOperator(Operator):
         self.transformer = transformer
         self.transformer_inputs = []
 
-    def __call__(self, tables: dict[str, pw.Table]):
+    def __call__(self, tables: dict[str, tables.Table]):
         input_tables, output_tables = self._prepare_tables(tables)
 
         self.transformer_inputs = list(input_tables.values())
@@ -436,10 +444,10 @@ class RowTransformerOperator(Operator):
         return result.scalar_or_tuple()
 
     def _prepare_tables(
-        self, tables_dict: dict[str, pw.Table]
-    ) -> tuple[dict[str, tt.TransformerTable], dict[str, pw.Table]]:
+        self, tables_dict: dict[str, tables.Table]
+    ) -> tuple[dict[str, tt.TransformerTable], dict[str, tables.Table]]:
         input_tables: dict[str, tt.TransformerTable] = {}
-        output_tables: dict[str, pw.Table] = {}
+        output_tables: dict[str, tables.Table] = {}
 
         for class_arg in self.transformer.class_args.values():
             param_table = tables_dict[class_arg.name]
@@ -459,7 +467,7 @@ class RowTransformerOperator(Operator):
     def _prepare_input_table(
         self,
         attributes: Collection[rt.AbstractAttribute],
-        param_table: pw.Table,
+        param_table: tables.Table,
     ) -> tt.TransformerTable:
         columns: list[tt.TransformerColumn] = [
             attr.to_transformer_column(self, param_table) for attr in attributes
@@ -469,7 +477,7 @@ class RowTransformerOperator(Operator):
     def _prepare_output_table(
         self,
         attributes: Collection[rt.AbstractOutputAttribute],
-        param_table: pw.Table,
+        param_table: tables.Table,
         schema: type[Schema],
     ):
         columns = {
@@ -485,7 +493,7 @@ class RowTransformerOperator(Operator):
                 columns.append(column)
         return columns
 
-    def hard_table_dependencies(self) -> StableSet[pw.Table]:
+    def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return self.input_tables
 
     def label(self):
