@@ -31,7 +31,10 @@ def read(
     modification time is, the earlier the file will be passed to the engine.
 
     Args:
-        path: Path to a file or to a folder.
+        path: Path to the file or to the folder with files or \
+`glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the \
+objects to be read. The connector will read the contents of all matching files as well \
+as recursively read the contents of all matching folders.
         mode: Denotes how the engine polls the new data from the source. Currently \
 "streaming" and "static" are supported. If set to "streaming" the engine will wait for \
 the updates in the specified directory. It will track file additions, deletions, and \
@@ -40,7 +43,8 @@ modifications and reflect these events in the state. For example, if a file was 
 the other hand, the "static" mode will only consider the available data and ingest all \
 of it in one commit. The default value is "streaming".
         object_pattern: Unix shell style pattern for filtering only certain files in the \
-directory. Ignored in case a path to a single file is specified.
+directory. Ignored in case a path to a single file is specified. This value will be \
+deprecated soon, please use glob pattern in ``path`` instead.
         with_metadata: When set to true, the connector will add an additional column \
 named ``_metadata`` to the table. This column will be a JSON field that will contain two \
 optional fields - ``created_at`` and ``modified_at``. These fields will have integral \

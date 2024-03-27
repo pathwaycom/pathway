@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::env;
 use std::fmt::Debug;
-use std::fs::DirEntry;
 use std::fs::File;
 use std::io;
 use std::io::BufRead;
@@ -26,7 +25,7 @@ use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use std::thread;
 use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, FixedOffset};
 use log::{error, warn};
@@ -73,9 +72,12 @@ use serde::{Deserialize, Serialize};
 mod inotify_support {
     use inotify::WatchMask;
     use std::path::Path;
+    use std::thread::sleep;
+    use std::time::Duration;
 
     pub use inotify::Inotify;
 
+    #[allow(dead_code)]
     pub fn subscribe_inotify(path: impl AsRef<Path>) -> Option<Inotify> {
         let inotify = Inotify::init().ok()?;
 
@@ -96,11 +98,17 @@ mod inotify_support {
         Some(inotify)
     }
 
-    pub fn wait(inotify: &mut Inotify) -> Option<()> {
-        inotify
-            .read_events_blocking(&mut [0; 1024])
-            .ok()
-            .map(|_events| ())
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn wait(_inotify: &mut Inotify) -> Option<()> {
+        sleep(Duration::from_millis(500));
+        None
+
+        // Commented out due to using recursive subdirs
+        //
+        // inotify
+        //     .read_events_blocking(&mut [0; 1024])
+        //     .ok()
+        //     .map(|_events| ())
     }
 }
 
@@ -475,7 +483,7 @@ pub struct FilesystemReader {
 
 impl FilesystemReader {
     pub fn new(
-        path: impl Into<PathBuf>,
+        path: &str,
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
         read_method: ReadMethod,
@@ -741,11 +749,10 @@ enum PosixScannerAction {
 
 #[derive(Debug)]
 struct FilesystemScanner {
-    path: PathBuf,
+    path: GlobPattern,
     cache_directory_path: Option<PathBuf>,
-
-    is_directory: bool,
     streaming_mode: ConnectorMode,
+    object_pattern: String,
 
     // Mapping from the path of the loaded file to its modification timestamp
     known_files: HashMap<PathBuf, u64>,
@@ -753,7 +760,6 @@ struct FilesystemScanner {
     current_action: Option<PosixScannerAction>,
     cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
     inotify: Option<inotify_support::Inotify>,
-    object_pattern: GlobPattern,
     next_file_for_insertion: Option<PathBuf>,
     cached_metadata: HashMap<PathBuf, Option<SourceMetadata>>,
 
@@ -764,22 +770,16 @@ struct FilesystemScanner {
 
 impl FilesystemScanner {
     fn new(
-        path: impl Into<PathBuf>,
+        path: &str,
         persistent_id: Option<PersistentId>,
         streaming_mode: ConnectorMode,
         object_pattern: &str,
     ) -> Result<FilesystemScanner, ReadError> {
-        let mut path = path.into();
-        if path.exists() || matches!(streaming_mode, ConnectorMode::Static) {
-            path = std::fs::canonicalize(path)?;
-        }
+        let path_glob = GlobPattern::new(path)?;
 
-        let is_directory = path.is_dir();
-        let inotify = if streaming_mode.is_polling_enabled() {
-            inotify_support::subscribe_inotify(&path)
-        } else {
-            None
-        };
+        // Alternative solution here is to do inotify_support::subscribe_inotify(path)
+        // if streaming mode allows polling.
+        let inotify = None;
 
         let (cache_directory_path, connector_tmp_storage) = {
             if streaming_mode.are_deletions_enabled() {
@@ -805,16 +805,15 @@ impl FilesystemScanner {
         };
 
         Ok(Self {
-            path,
-            is_directory,
+            path: path_glob,
             streaming_mode,
             cache_directory_path,
 
+            object_pattern: object_pattern.to_string(),
             known_files: HashMap::new(),
             current_action: None,
             cached_modify_times: HashMap::new(),
             inotify,
-            object_pattern: GlobPattern::new(object_pattern)?,
             next_file_for_insertion: None,
             cached_metadata: HashMap::new(),
             _connector_tmp_storage: connector_tmp_storage,
@@ -859,31 +858,17 @@ impl FilesystemScanner {
         }
     }
 
-    fn seek_to_file(&mut self, seek_file_path: &Path) -> io::Result<()> {
+    fn seek_to_file(&mut self, seek_file_path: &Path) -> Result<(), ReadError> {
         if self.streaming_mode.are_deletions_enabled() {
             warn!("seek for snapshot mode may not work correctly in case deletions take place");
         }
 
         self.known_files.clear();
-        if !self.is_directory {
-            self.current_action = Some(PosixScannerAction::Read(Arc::new(
-                seek_file_path.to_path_buf(),
-            )));
-            let modify_system_time = std::fs::metadata(seek_file_path)?.modified().unwrap();
-            let modify_unix_timestamp = modify_system_time
-                .duration_since(UNIX_EPOCH)
-                .expect("File modified earlier than UNIX epoch")
-                .as_secs();
-            self.known_files
-                .insert(seek_file_path.to_path_buf(), modify_unix_timestamp);
-            return Ok(());
-        }
-
         let target_modify_time = match std::fs::metadata(seek_file_path) {
             Ok(metadata) => metadata.modified()?,
             Err(e) => {
                 if !matches!(e.kind(), std::io::ErrorKind::NotFound) {
-                    return Err(e);
+                    return Err(ReadError::Io(e));
                 }
                 warn!(
                     "Unable to restore state: last persisted file {seek_file_path:?} not found in directory. Processing all files in directory."
@@ -891,24 +876,20 @@ impl FilesystemScanner {
                 return Ok(());
             }
         };
-        let files_in_directory = std::fs::read_dir(self.path.as_path())?;
-        for entry in files_in_directory.flatten() {
-            if let Ok(file_type) = entry.file_type() {
-                if !file_type.is_file() {
-                    continue;
-                }
-
-                let Some(modify_time) = self.modify_time(&entry) else {
-                    continue;
-                };
-                let current_path = entry.path();
-                if (modify_time, current_path.as_path()) <= (target_modify_time, seek_file_path) {
-                    let modify_timestamp = modify_time
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .expect("System time should be after the Unix epoch")
-                        .as_secs();
-                    self.known_files.insert(current_path, modify_timestamp);
-                }
+        let matching_files: Vec<PathBuf> = self.get_matching_file_paths()?;
+        for entry in matching_files {
+            if !entry.is_file() {
+                continue;
+            }
+            let Some(modify_time) = self.modify_time(&entry) else {
+                continue;
+            };
+            if (modify_time, entry.as_path()) <= (target_modify_time, seek_file_path) {
+                let modify_timestamp = modify_time
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("System time should be after the Unix epoch")
+                    .as_secs();
+                self.known_files.insert(entry, modify_timestamp);
             }
         }
         self.current_action = Some(PosixScannerAction::Read(Arc::new(
@@ -918,7 +899,7 @@ impl FilesystemScanner {
         Ok(())
     }
 
-    fn modify_time(&mut self, entry: &DirEntry) -> Option<SystemTime> {
+    fn modify_time(&mut self, entry: &Path) -> Option<SystemTime> {
         if self.streaming_mode.are_deletions_enabled() {
             // If deletions are enabled, we also need to handle the case when the modification
             // time of an entry changes. Hence, we can't just memorize it once.
@@ -926,7 +907,7 @@ impl FilesystemScanner {
         } else {
             *self
                 .cached_modify_times
-                .entry(entry.path())
+                .entry(entry.to_path_buf())
                 .or_insert_with(|| entry.metadata().ok()?.modified().ok())
         }
     }
@@ -939,7 +920,7 @@ impl FilesystemScanner {
     /// a `FinishedSource` event when we've had a scheduled action but the
     /// corresponding file was deleted before we were able to execute this scheduled action.
     /// scheduled action.
-    fn next_action_determined(&mut self) -> io::Result<Option<ReadResult>> {
+    fn next_action_determined(&mut self) -> Result<Option<ReadResult>, ReadError> {
         // Finalize the current processing action
         if let Some(PosixScannerAction::Delete(path)) = take(&mut self.current_action) {
             let cached_path = self
@@ -1039,58 +1020,56 @@ impl FilesystemScanner {
         })
     }
 
-    fn next_insertion_entry(&mut self) -> io::Result<Option<ReadResult>> {
-        let mut selected_file: Option<(PathBuf, SystemTime)> = None;
-        if self.is_directory {
-            let files_in_directory = std::fs::read_dir(self.path.as_path())?;
+    fn get_matching_file_paths(&self) -> Result<Vec<PathBuf>, ReadError> {
+        let mut result = Vec::new();
 
-            for entry in files_in_directory.flatten() {
-                if let Ok(file_type) = entry.file_type() {
-                    if !file_type.is_file() {
-                        continue;
-                    }
+        let file_and_folder_paths = glob::glob(self.path.as_str())?.flatten();
+        for entry in file_and_folder_paths {
+            // If an entry is a file, it should just be added to result
+            if entry.is_file() {
+                result.push(entry);
+                continue;
+            }
 
-                    let Some(modify_time) = self.modify_time(&entry) else {
-                        continue;
-                    };
+            // Otherwise scan all files in all subdirectories and add them
+            let Some(path) = entry.to_str() else {
+                error!("Non-unicode paths are not supported. Ignoring: {entry:?}");
+                continue;
+            };
 
-                    let current_path = entry.path();
-
-                    if let Some(file_name) = entry.file_name().to_str() {
-                        if !self.object_pattern.matches(file_name) {
-                            continue;
-                        }
-                    } else {
-                        warn!(
-                            "Failed to parse file name (non-unicode): {:?}. It will be ignored",
-                            entry.file_name()
-                        );
-                        continue;
-                    }
-
-                    {
-                        if self.known_files.contains_key(&(*current_path)) {
-                            continue;
-                        }
-                        match &selected_file {
-                            Some((currently_selected_name, selected_file_created_at)) => {
-                                if (selected_file_created_at, currently_selected_name)
-                                    > (&modify_time, &current_path)
-                                {
-                                    selected_file = Some((current_path, modify_time));
-                                }
-                            }
-                            None => selected_file = Some((current_path, modify_time)),
-                        }
-                    }
+            let folder_scan_pattern = format!("{path}/**/{}", self.object_pattern);
+            let folder_contents = glob::glob(&folder_scan_pattern)?.flatten();
+            for nested_entry in folder_contents {
+                if nested_entry.is_file() {
+                    result.push(nested_entry);
                 }
             }
-        } else {
-            let is_existing_file = self.path.exists() && self.path.is_file();
-            if !self.known_files.is_empty() || !is_existing_file {
-                return Ok(None);
+        }
+
+        Ok(result)
+    }
+
+    fn next_insertion_entry(&mut self) -> Result<Option<ReadResult>, ReadError> {
+        let matching_files: Vec<PathBuf> = self.get_matching_file_paths()?;
+        let mut selected_file: Option<(PathBuf, SystemTime)> = None;
+        for entry in matching_files {
+            if !entry.is_file() || self.known_files.contains_key(&(*entry)) {
+                continue;
             }
-            selected_file = Some((self.path.clone(), SystemTime::now()));
+
+            let Some(modify_time) = self.modify_time(&entry) else {
+                continue;
+            };
+
+            match &selected_file {
+                Some((currently_selected_name, selected_file_created_at)) => {
+                    if (selected_file_created_at, currently_selected_name) > (&modify_time, &entry)
+                    {
+                        selected_file = Some((entry, modify_time));
+                    }
+                }
+                None => selected_file = Some((entry, modify_time)),
+            }
         }
 
         match selected_file {
@@ -1169,14 +1148,14 @@ pub struct CsvFilesystemReader {
 
 impl CsvFilesystemReader {
     pub fn new(
-        path: impl Into<PathBuf>,
+        path: &str,
         parser_builder: csv::ReaderBuilder,
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
         object_pattern: &str,
     ) -> Result<CsvFilesystemReader, ReadError> {
         let filesystem_scanner =
-            FilesystemScanner::new(path.into(), persistent_id, streaming_mode, object_pattern)?;
+            FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
         Ok(CsvFilesystemReader {
             parser_builder,
             persistent_id,

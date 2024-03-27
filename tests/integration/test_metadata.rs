@@ -3,7 +3,6 @@
 use super::helpers::read_data_from_reader;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, IdentityParser, JsonLinesParser, ParsedEvent,
@@ -31,7 +30,7 @@ fn check_file_name_in_metadata(data_read: &ParsedEvent, name: &str) {
 #[test]
 fn test_metadata_fs_dir() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/csvdir/"),
+        "tests/data/csvdir/",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -61,7 +60,7 @@ fn test_metadata_fs_dir() -> eyre::Result<()> {
 #[test]
 fn test_metadata_fs_file() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/minimal.txt"),
+        "tests/data/minimal.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -92,7 +91,7 @@ fn test_metadata_csv_dir() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        PathBuf::from("tests/data/csvdir/"),
+        "tests/data/csvdir/",
         builder,
         ConnectorMode::Static,
         None,
@@ -125,7 +124,7 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let reader = CsvFilesystemReader::new(
-        PathBuf::from("tests/data/minimal.txt"),
+        "tests/data/minimal.txt",
         builder,
         ConnectorMode::Static,
         None,
@@ -153,7 +152,7 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
 #[test]
 fn test_metadata_json_file() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -177,7 +176,7 @@ fn test_metadata_json_file() -> eyre::Result<()> {
 #[test]
 fn test_metadata_json_dir() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines/"),
+        "tests/data/jsonlines/",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -202,7 +201,7 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
 #[test]
 fn test_metadata_identity_file() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -223,7 +222,7 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
 #[test]
 fn test_metadata_identity_dir() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines/"),
+        "tests/data/jsonlines/",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,

@@ -3,7 +3,6 @@
 use super::helpers::{assert_error_shown, read_data_from_reader};
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use std::sync::Arc;
 
@@ -15,7 +14,7 @@ use pathway_engine::engine::Value;
 #[test]
 fn test_jsonlines_ok() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -55,7 +54,7 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -82,7 +81,7 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -106,7 +105,7 @@ fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -133,7 +132,7 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_types_parsing() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines_types.txt"),
+        "tests/data/jsonlines_types.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -184,7 +183,7 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_complex_paths() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/json_complex_paths.txt"),
+        "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -241,7 +240,7 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/json_complex_paths.txt"),
+        "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -283,7 +282,7 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/json_complex_paths.txt"),
+        "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -322,7 +321,7 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -352,7 +351,7 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
     routes.insert("d".to_string(), "/non/existent/path".to_string());
 
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/jsonlines.txt"),
+        "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,
@@ -379,7 +378,7 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
 #[test]
 fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
     let reader = FilesystemReader::new(
-        PathBuf::from("tests/data/json_complex_paths.txt"),
+        "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
         None,
         ReadMethod::ByLine,

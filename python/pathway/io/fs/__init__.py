@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from os import PathLike, fspath
 from typing import Any
 
@@ -56,7 +57,10 @@ def read(
     ``data`` with each cell containing a single line from the file.
 
     Args:
-        path: Path to the file or to the folder with files.
+        path: Path to the file or to the folder with files or \
+`glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the \
+objects to be read. The connector will read the contents of all matching files as well \
+as recursively read the contents of all matching folders.
         format: Format of data to be read. Currently "csv", "json", "plaintext", \
 "plaintext_by_file" and "binary" formats are supported. The difference between \
 "plaintext" and "plaintext_by_file" is how the input is tokenized: if the "plaintext" \
@@ -79,7 +83,8 @@ of it in one commit. The default value is "streaming".
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
         object_pattern: Unix shell style pattern for filtering only certain files in the \
-directory. Ignored in case a path to a single file is specified.
+directory. Ignored in case a path to a single file is specified. This value will be \
+deprecated soon, please use glob pattern in ``path`` instead.
         with_metadata: When set to true, the connector will add an additional column \
 named ``_metadata`` to the table. This column will be a JSON field that will contain two \
 optional fields - ``created_at`` and ``modified_at``. These fields will have integral \
@@ -214,10 +219,20 @@ named ``path`` that will show the full path to the file from where a row was fil
     >>> t = pw.io.fs.read("raw_dataset/lines.txt", format="plaintext")
     """
 
+    path = fspath(path)
+
+    if object_pattern != "*":
+        warnings.warn(
+            "'object_pattern' is deprecated and will be removed soon. "
+            "Please use a glob pattern in `path` instead",
+            DeprecationWarning,
+            stacklevel=_stacklevel + 4,
+        )
+
     if format == "csv":
         data_storage = api.DataStorage(
             storage_type="csv",
-            path=fspath(path),
+            path=path,
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
             mode=internal_connector_mode(mode),
             object_pattern=object_pattern,
@@ -226,7 +241,7 @@ named ``path`` that will show the full path to the file from where a row was fil
     else:
         data_storage = api.DataStorage(
             storage_type="fs",
-            path=fspath(path),
+            path=path,
             mode=internal_connector_mode(mode),
             read_method=internal_read_method(format),
             object_pattern=object_pattern,
