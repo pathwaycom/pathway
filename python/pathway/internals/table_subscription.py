@@ -82,6 +82,7 @@ def subscribe(
     on_change: OnChangeCallback,
     on_time_end: OnTimeEndCallback = lambda time: None,
     on_end: OnFinishCallback = lambda: None,
+    skip_errors: bool = True,
 ) -> None:
     """
     Calls a callback function on_change on every change happening in table. This method
@@ -101,6 +102,7 @@ def subscribe(
           names row, time and is_addition respectively.
         on_time_end: the callback function to be called on each closed time of computation.
         on_end: the callback function to be called when the stream of changes ends.
+        skip_errors: whether to skip rows containing errors
     Returns:
         None
     """
@@ -134,6 +136,10 @@ def subscribe(
     table_to_datasink(
         table,
         datasink.CallbackDataSink(
-            on_change_wrapper, on_time_end, on_end, skip_persisted_batch
+            on_change=on_change_wrapper,
+            on_time_end=on_time_end,
+            on_end=on_end,
+            skip_persisted_batch=skip_persisted_batch,
+            skip_errors=skip_errors,
         ),
     )

@@ -194,6 +194,7 @@ class OutputOperatorHandler(
                 on_time_end=datasink.on_time_end,
                 on_end=datasink.on_end,
                 skip_persisted_batch=datasink.skip_persisted_batch,
+                skip_errors=datasink.skip_errors,
             )
         elif isinstance(datasink, ExportDataSink):
             exported_table = self.scope.export_table(

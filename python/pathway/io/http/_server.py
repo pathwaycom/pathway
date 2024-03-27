@@ -22,6 +22,7 @@ from pathway.internals import api
 from pathway.internals.api import Pointer, unsafe_make_pointer
 from pathway.internals.dtype import unoptionalize
 from pathway.internals.runtime_type_check import check_arg_types
+from pathway.internals.table_subscription import subscribe as internal_subscribe
 
 # There is no OpenAPI type for 'any', so it's excluded from the dict
 # 'object' and 'array' are excluded because there is schema for the nested
@@ -569,6 +570,8 @@ class RestServerSubject(io.python.ConnectorSubject):
         response = await self._fetch_response(id, event)
         if self._delete_completed_queries:
             self._remove(id, data)
+        if response == api.ERROR:
+            return web.json_response(status=500)
         return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
 
     async def _fetch_response(self, id, event) -> Any:
@@ -773,6 +776,11 @@ with:
 
             webserver._loop.call_soon_threadsafe(set_task)
 
-        io.subscribe(table=responses, on_change=on_change)
+        internal_subscribe(
+            table=responses,
+            on_change=on_change,
+            skip_errors=False,
+            skip_persisted_batch=True,
+        )
 
     return input_table, response_writer

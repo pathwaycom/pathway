@@ -426,3 +426,43 @@ def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int) -> None:
     t = threading.Thread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)
+
+
+def test_errors(tmp_path: pathlib.Path, port: int) -> None:
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        a: int
+        b: int
+
+    def target() -> None:
+        time.sleep(5)
+        r = requests.post(
+            f"http://127.0.0.1:{port}/div",
+            json={"a": 7, "b": 2},
+        )
+        r.raise_for_status()
+        assert r.text == "3", r.text
+        r = requests.post(
+            f"http://127.0.0.1:{port}/div",
+            json={"a": 3, "b": 0},
+        )
+        assert r.status_code == 500
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+    queries, response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        schema=InputSchema,
+        route="/div",
+        delete_completed_queries=False,
+    )
+    responses = queries.select(result=pw.this.a // pw.this.b)
+    response_writer(responses)
+    pw.io.csv.write(queries, output_path)
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    wait_result_with_checker(
+        CsvLinesNumberChecker(output_path, 2), 30, kwargs={"terminate_on_error": False}
+    )
+    t.join()

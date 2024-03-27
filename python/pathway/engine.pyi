@@ -612,6 +612,7 @@ class Scope:
         table: Table,
         column_paths: Iterable[ColumnPath],
         skip_persisted_batch: bool,
+        skip_errors: bool,
         on_change: Callable,
         on_time_end: Callable,
         on_end: Callable,

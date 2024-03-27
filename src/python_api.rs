@@ -2707,11 +2707,13 @@ impl Scope {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn subscribe_table(
         self_: &PyCell<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         skip_persisted_batch: bool,
+        skip_errors: bool,
         on_change: Py<PyAny>,
         on_time_end: Py<PyAny>,
         on_end: Py<PyAny>,
@@ -2742,7 +2744,7 @@ impl Scope {
             column_paths,
             callbacks,
             skip_persisted_batch,
-            true,
+            skip_errors,
         )?;
         Ok(())
     }

@@ -19,12 +19,13 @@ class GenericDataSink(DataSink):
     dataformat: api.DataFormat
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CallbackDataSink(DataSink):
     on_change: Callable[[api.Pointer, list[api.Value], int, int], None]
     on_time_end: Callable[[int], None]
     on_end: Callable[[], None]
     skip_persisted_batch: bool
+    skip_errors: bool
 
 
 @dataclass(frozen=True)
