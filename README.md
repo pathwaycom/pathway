@@ -24,37 +24,53 @@
       <img src="https://awesome.re/badge.svg" alt="Awesome Python"></a>
     <br>
     <a href="#getting-started">Getting Started</a> |
-    <a href="#example">Example</a> |
-    <a href="#performance">Performance</a> |
     <a href="#deployment">Deployment</a> |
-    <a href="#resources">Resources</a> |
-    <a href="https://pathway.com/developers/">Documentation</a> |
+    <a href="#resources">Documentation and Support</a> |
     <a href="https://pathway.com/blog/">Blog</a> |
-    <a href="#get-help">Get Help</a>
+    <a href="#license">License</a>
 
   
 </p>
 
 # Pathway<a id="pathway"></a>
 
-[Pathway](https://pathway.com) is an open framework for high-throughput and low-latency real-time data processing. It is used to create Python code which seamlessly combines batch processing, streaming, and real-time API's for LLM apps. Pathway's distributed runtime (🦀-🐍) provides fresh results of your data pipelines whenever new inputs and requests are received.
+[Pathway](https://pathway.com) is a Python data processing framework for analytics and AI pipelines over data streams.
+It's the ideal solution for real-time processing use cases like streaming ETL or RAG pipelines for unstructured data.
 
-![Pathway is an incremental data stream processing engine](https://github.com/pathwaycom/IoT-Pathway/assets/28102878/084593de-9325-4eee-b84a-06b8666efcd1)
+Pathway comes with an **easy-to-use Python API**, allowing you to seamlessly integrate your favorite Python ML libraries.
+Pathway code is versatile and robust: **you can use it in both development and production environments, handling both batch and streaming data effectively**.
+The same code can be used for local development, CI/CD tests, running batch jobs, handling stream replays, and processing data streams.
 
-In the first place, Pathway was designed to be a life-saver (or at least a time-saver) for Python developers and ML/AI engineers faced with live data sources, where you need to react quickly to fresh data. Still, Pathway is a powerful tool that can be used for a lot of things. If you want to do streaming in Python, build an AI data pipeline, or if you are looking for your next Python data processing framework, keep reading.
+Pathway is powered by a **scalable Rust engine** based on Differential Dataflow and performs incremental computation.
+Your Pathway code, despite being written in Python, is run by the Rust engine, enabling multithreading, multiprocessing, and distributed computations.
+All the pipeline is kept in memory and can be easily deployed with **Docker and Kubernetes**.
 
-Pathway provides a high-level programming interface in Python for defining data transformations, aggregations, and other operations on data streams.
-With Pathway, you can effortlessly design and deploy sophisticated data workflows that efficiently handle high volumes of data in real time.
-
-Pathway is interoperable with various data sources and sinks such as Kafka, CSV files, SQL/noSQL databases, and REST API's, allowing you to connect and process data from different storage systems.
-
-Typical use-cases of Pathway include realtime data processing, ETL (Extract, Transform, Load) pipelines, data analytics, monitoring, anomaly detection, and recommendation. Pathway can also independently provide the backbone of a light LLMops stack for [real-time LLM applications](https://github.com/pathwaycom/llm-app).
-
-In Pathway, data is represented in the form of Tables. Live data streams are also treated as Tables. The library provides a rich set of operations like filtering, joining, grouping, and windowing.
+You can install Pathway with pip:
+```
+pip install -U pathway
+```
 
 For any questions, you will find the community and team behind the project [on Discord](https://discord.com/invite/pathway).
 
-![Screencast animation of converting batch code to streaming by changing one keyword argument in the script.](https://github.com/pathwaycom/pathway/assets/68642378/79f4250d-0641-4b97-87f8-0820d9399c6b)
+## Features
+
+- **A wide range of connectors**: Pathway comes with connectors that connect to external data sources such as Kafka, GDrive, PostgreSQL, or SharePoint. Its Airbyte connector allows you to connect to more than 300 different data sources. If the connector you want is not available, you can build your own custom connector using Pathway Python connector.
+- **Stateless and stateful transformations**: Pathway supports stateful transformations such as joins, windowing, and sorting. It provides many transformations directly implemented in Rust. In addition to the provided transformation, you can use any Python function. You can implement your own or you can use any Python library to process your data.
+- **Persistence**: Pathway provides persistence to save the state of the computation. This allows you to restart your pipeline after an update or a crash. Your pipelines are in good hands with Pathway!
+- **Consistency**: Pathway handles the time for you, making your all your computations are consistent. In particular, Pathway manages late and out-of-order points by updating its results whenever new (or late, in this case) data points come into the system. The free version of Pathway gives the "at least once" consistency while the enterprise version provides the "exactly once" consistency.
+- **Scalable Rust engine**: with Pathway Rust engine, you are free from the usual limits imposed by Python. You can easily do multithreading, multiprocessing, and distributed computations.
+
+## Use-cases
+
+1. Real-time processing over data streams:
+  - [Real-time ETL.](/developers/showcases/kafka-etl)
+  - [Event-driven pipelines with alerting.](/developers/showcases/realtime-log-monitoring)
+  - [Realtime analytics.](/developers/showcases/linear_regression_with_kafka/)
+  - [Switch from batch to streaming.](/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
+2. Live Data AI Pipelines:
+  - [Data indexing pipeline and RAG.](/developers/user-guide/llm-xpack/vectorstore_pipeline/)
+  - [LLM-powered data pipeline.](/developers/showcases/llm-alert-pathway/)
+  - [Unstructured data to SQL on-the-fly.](/developers/showcases/unstructured-to-structured/)
 
 ## Getting started<a id="getting-started"></a>
 
@@ -71,7 +87,43 @@ $ pip install -U pathway
 
 ⚠️ Pathway is available on MacOS and Linux. Users of other systems should run Pathway on a Virtual Machine.
 
-### Running Pathway locally<a id="running-pathway-locally"></a>
+
+### Example: computing the sum of positive values in real time.<a id="example"></a>
+
+```python
+import pathway as pw
+
+# Define the schema of your data (Optional)
+class InputSchema(pw.Schema):
+  value: int
+
+# Connect to your data using connectors
+input_table = pw.io.csv.read(
+  "./input/",
+  schema=InputSchema
+)
+
+#Define your operations on the data
+filtered_table = input_table.filter(input_table.value>=0)
+result_table = filtered_table.reduce(
+  sum_value = pw.reducers.sum(filtered_table.value)
+)
+
+# Load your results to external systems
+pw.io.jsonlines.write(result_table, "output.jsonl")
+
+# Run the computation
+pw.run()
+```
+
+Run Pathway [in Google Colab](https://colab.research.google.com/drive/1aBIJ2HCng-YEUOMrr0qtj0NeZMEyRz55?usp=sharing).
+
+You can find more examples [here](https://github.com/pathwaycom/pathway/tree/main/examples).
+
+
+## Deployment<a id="deployment"></a>
+
+### Locally<a id="running-pathway-locally"></a>
 
 To use Pathway, you only need to import it:
 
@@ -85,7 +137,12 @@ Now, you can easily create your processing pipeline, and let Pathway handle the 
 pw.run()
 ```
 
-You can then run your Pathway project (say, `main.py`) just like a normal Python script: `$ python main.py`. Alternatively, use the pathway'ish version:
+You can then run your Pathway project (say, `main.py`) just like a normal Python script: `$ python main.py`.
+Pathway comes with a monitoring dashboard that allows you to keep track of the number of messages sent by each connector and the latency of the system. The dashboard also includes log messages. 
+
+<img src="https://d14l3brkh44201.cloudfront.net/pathway-dashboard.png" width="1326" alt="Pathway dashboard"/>
+
+Alternatively, you can use the pathway'ish version:
 
 ```
 $ pathway spawn python main.py
@@ -100,129 +157,81 @@ $ pathway spawn --threads 3 python main.py
 To jumpstart a Pathway project, you can use our [cookiecutter template](https://github.com/pathwaycom/cookiecutter-pathway).
 
 
-### Example<a id="example"></a>
+### Docker<a id="docker"></a>
 
-```python
-import pathway as pw
+You can easily run Pathway using docker.
 
-# Using the `demo` module to create a data stream
-table = pw.demo.range_stream(nb_rows=50)
-# Storing the stream into a CSV file
-pw.io.csv.write(table, "output_table.csv")
+#### Pathway image
 
-# Summing all the values in a new table
-sum_table = table.reduce(sum=pw.reducers.sum(pw.this.value))
-# Storing the sum (which is a stream) in another CSV file
-pw.io.csv.write(sum_table, "sum_table.csv")
+You can use the [Pathway docker image](https://hub.docker.com/r/pathwaycom/pathway), using a Dockerfile:
 
-# Now that the pipeline is built, the computation is started
-pw.run()
+```dockerfile
+FROM pathwaycom/pathway:latest
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD [ "python", "./your-script.py" ]
 ```
 
-Run this example [in Google Colab](https://colab.research.google.com/drive/1kLx5-vKKg0IeQ88ydS-ehtrxSujEZrXK?usp=sharing)!
+You can then build and run the Docker image:
 
-You can find more examples [here](https://github.com/pathwaycom/pathway/tree/main/examples).
+```console
+docker build -t my-pathway-app .
+docker run -it --rm --name my-pathway-app my-pathway-app
+```
 
-## Deployment<a id="deployment"></a>
+#### Run a single Python script
 
-Do you feel limited by a local run?
+When dealing with single-file projects, creating a full-fledged `Dockerfile`
+might seem unnecessary. In such scenarios, you can execute a
+Python script directly using the Pathway Docker image. For example:
+
+```console
+docker run -it --rm --name my-pathway-app -v "$PWD":/app pathwaycom/pathway:latest python my-pathway-app.py
+```
+
+#### Python docker image
+
+You can also use a standard Python image and install Pathway using pip with a Dockerfile:
+
+```dockerfile
+FROM --platform=linux/x86_64 python:3.10
+
+RUN pip install -U pathway
+COPY ./pathway-script.py pathway-script.py
+
+CMD ["python", "-u", "pathway-script.py"]
+```
+
+### Kubernetes and cloud<a id="k8s"></a>
+
+Docker containers are ideally suited for deployment on the cloud with Kubernetes.
 If you want to scale your Pathway application, you may be interested in our Pathway for Enterprise.
 Pathway for Enterprise is specially tailored towards end-to-end data processing and real time intelligent analytics.
-It scales using distributed computing on the cloud and supports Kubernetes deployment.
+It scales using distributed computing on the cloud and supports distributed Kubernetes deployment, with external persistence setup.
 
 You can learn more about the features of Pathway for Enterprise on our [website](https://pathway.com/features).
 
 If you are interested, don't hesitate to [contact us](mailto:contact@pathway.com) to learn more.
 
-## Monitoring Pathway<a id="monitoring-pathway"></a>
-
-Pathway comes with a monitoring dashboard that allows you to keep track of the number of messages sent by each connector and the latency of the system. The dashboard also includes log messages. 
-
-This dashboard is enabled by default; you can disable it by passing `monitoring_level = pathway.MonitoringLevel.NONE` to `pathway.run()`.
-
-<img src="https://d14l3brkh44201.cloudfront.net/pathway-dashboard.png" width="1326" alt="Pathway dashboard"/>
-
-In addition to Pathway's built-in dashboard, you can [use Prometheus](https://pathway.com/developers/user-guide/deployment/prometheus-monitoring) to monitor your Pathway application.
-
-## Resources<a id="resources"></a>
-
-See also: **📖 [Pathway Documentation](https://pathway.com/developers/)** webpage (including API Docs).
-
-### Videos about Pathway<a id="videos-about-pathway"></a>
-[▶️ Building an LLM Application without a vector database](https://www.youtube.com/watch?v=kcrJSk00duw) - by [Jan Chorowski](https://scholar.google.com/citations?user=Yc94070AAAAJ) (7min 56s)
-
-[▶️ Linear regression on a Kafka Stream](https://vimeo.com/805069039) - by [Richard Pelgrim](https://twitter.com/richardpelgrim) (7min 53s)
-
-### Guides<a id="guides"></a>
-- [Core concepts of Pathway](https://pathway.com/developers/user-guide/introduction/dataflow/)
-- [Basic operations](https://pathway.com/developers/user-guide/data-transformation/table-operations/)
-- [Joins](https://pathway.com/developers/user-guide/data-transformation/join-manual/)
-- [Groupby](https://pathway.com/developers/user-guide/data-transformation/groupby-reduce-manual/)
-- [Windowby](https://pathway.com/developers/user-guide/temporal-data/windows-manual/)
-- [Transformer classes](https://pathway.com/developers/user-guide/diving-deeper/transformer-introduction/)
-- [Input and output connectors](https://pathway.com/developers/user-guide/connecting-to-data/connectors/)
-- [Coming from pandas](https://pathway.com/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming/)
-- [API docs](https://pathway.com/developers/api-docs/pathway)
-- [Troubleshooting](https://pathway.com/developers/user-guide/development/troubleshooting/)
-
-### Tutorials<a id="tutorials"></a>
-- [Linear regression on a Kafka Stream](https://pathway.com/developers/showcases/linear_regression_with_kafka/) ([video](https://vimeo.com/805069039))
-- Joins:
-  - [Interval joins](https://pathway.com/developers/user-guide/temporal-data/interval-join)
-  - [Window joins](https://pathway.com/developers/user-guide/temporal-data/window-join)
-  - [ASOF joins](https://pathway.com/developers/user-guide/temporal-data/asof-join)
-- Connectors:
-  - [CSV connectors](https://pathway.com/developers/user-guide/connectors/csv_connectors/)
-  - [Database connectors](https://pathway.com/developers/user-guide/connectors/database-connectors/)
-  - [Kafka connectors](https://pathway.com/developers/user-guide/connectors/kafka_connectors/)
-  - [Custom Python connector](https://pathway.com/developers/user-guide/connectors/custom-python-connectors/)
-  - [Switching from Kafka to Redpanda](https://pathway.com/developers/user-guide/connectors/switching-to-redpanda/)
-- [Monitoring Pathway with Prometheus](https://pathway.com/developers/user-guide/deployment/prometheus-monitoring/)
-- [Time between events in a multi-topic event stream](https://pathway.com/developers/showcases/event_stream_processing_time_between_occurrences/)
-
-### Showcases<a id="showcases"></a>
-- [Realtime Twitter Analysis App](https://pathway.com/developers/showcases/twitter/)
-- [Realtime classification with Nearest Neighbors](https://pathway.com/developers/showcases/lsh/lsh_chapter1/)
-- [Realtime Fuzzy joins](https://pathway.com/developers/showcases/fuzzy_join/fuzzy_join_chapter1/)
-
-### External and community content<a id="external-and-community-content"></a>
-- [Real-time linear regression (Data Engineering Weekly)](https://pathway.com/developers/showcases/unlocking-data-stream-processing-1/)
-- [Realtime server logs monitoring (Data Engineering Weekly)](https://pathway.com/developers/showcases/unlocking-data-stream-processing-2/)
-- [Data enrichment with fuzzy joins (Data Engineering Weekly)](https://pathway.com/developers/showcases/unlocking-data-stream-processing-3/)
-- [▶️ How to do Realtime Twitter Sentiment Analysis in Python (video)](https://www.youtube.com/watch?v=V7T3xHfjE4o)
-
-If you would like to share with us some Pathway-related content, please give an admin a shout on [Discord](https://discord.gg/pathway).
-
-### Manul conventions<a id="manul-conventions"></a>
-
-Manuls (aka Pallas's Cats) [are creatures with fascinating habits](https://www.youtube.com/watch?v=rlSTBvViflc). As a tribute to them, we usually read `pw`, one of the most frequent tokens in Pathway code, as: `"paw"`. 
-
-<img src="https://d14l3brkh44201.cloudfront.net/PathwayManul.svg" alt="manul" width="50px"></img>
-
 ## Performance<a id="performance"></a>
 
 Pathway is made to outperform state-of-the-art technologies designed for streaming and batch data processing tasks, including: Flink, Spark, and Kafka Streaming. It also makes it possible to implement a lot of algorithms/UDF's in streaming mode which are not readily supported by other streaming frameworks (especially: temporal joins, iterative graph algorithms, machine learning routines).
 
-If you are curious, here are [some benchmarks to play with](https://github.com/pathwaycom/pathway-benchmarks). 
+If you are curious, here are [some benchmarks to play with](https://github.com/pathwaycom/pathway-benchmarks).
 
 <img src="https://github.com/pathwaycom/pathway-benchmarks/raw/main/images/bm-wordcount-lineplot.png" width="1326" alt="WordCount Graph"/>
 
-If you try your own benchmarks, please don't hesitate to let us know. We investigate situations in which Pathway is underperforming on par with bugs (i.e., to our knowledge, they shouldn't happen...).
+## Documentation and Support<a id="resources"></a>
 
-## Coming soon<a id="coming-soon"></a>
+The entire documentation of Pathway is available at [pathway.com/developers/](https://pathway.com/developers/), including the [API Docs](https://pathway.com/developers/api-docs/pathway).
 
-Here are some features we plan to incorporate in the near future:
-
-- Enhanced monitoring, observability, and data drift detection (integrates with Grafana visualization and other dashboarding tools).
-- New connectors: interoperability with Delta Lake and Snowflake data sources.
-- Easier connection setup for MongoDB.
-- More performant garbage collection.
-
-
-
-## Dependencies<a id="dependencies"></a>
-
-Pathway is made to run in a "clean" Linux/MacOS + Python environment. When installing the pathway package with `pip` (from a wheel), you are likely to encounter a small number of Python package dependencies, such as sqlglot (used in the SQL API) and python-sat (useful for resolving dependencies during compilation). All necessary Rust crates are pre-built; the Rust compiler is not required to install Pathway, unless building from sources. A modified version of Timely/Differential Dataflow (which provides a dataflow assembly layer) is part of this repo. 
+If you have any question, don't hesitate to [open an issue on GitHub](https://github.com/pathwaycom/pathway/issues), join us on [Discord](https://discord.com/invite/pathway), or send us an email at [contact@pathway.com](mailto:contact@pathway.com).
 
 ## License<a id="license"></a>
 
@@ -234,14 +243,3 @@ Pathway is distributed on a [BSL 1.1 License](https://github.com/pathwaycom/path
 If you develop a library or connector which you would like to integrate with this repo, we suggest releasing it first as a separate repo on a MIT/Apache 2.0 license. 
 
 For all concerns regarding core Pathway functionalities, Issues are encouraged. For further information, don't hesitate to engage with Pathway's [Discord community](https://discord.gg/pathway).
-
-## Get Help<a id="get-help"></a>
-
-If you have any questions, issues, or just want to chat about Pathway, we're here to help! Feel free to:
-- Check out the [documentation](https://pathway.com/developers/) for detailed information.
-- [Open an issue on GitHub](https://github.com/pathwaycom/pathway/issues) if you encounter any bugs or have feature requests.
-- Join us on [Discord](https://discord.com/invite/pathway) to connect with other users and get support.
-- Reach out to us via email at [contact@pathway.com](mailto:contact@pathway.com).
-
- Our team is always happy to help you and ensure that you get the most out of Pathway.
-If you would like to better understand how best to use Pathway in your project, please don't hesitate to reach out to us.
