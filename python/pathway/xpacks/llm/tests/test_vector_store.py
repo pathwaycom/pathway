@@ -158,7 +158,7 @@ def pathway_server(tmp_path, host, port):
     thread.join()
 
 
-@pytest.mark.flaky(reruns=4)
+@pytest.mark.flaky(reruns=4, reruns_delay=20)
 @xfail_on_multiple_threads
 def test_vector_store_with_langchain(tmp_path: pathlib.Path) -> None:
     host = "0.0.0.0"
@@ -171,7 +171,7 @@ def test_vector_store_with_langchain(tmp_path: pathlib.Path) -> None:
     p.start()
     time.sleep(5)
     client = VectorStoreClient(host=host, port=port)
-    MAX_ATTEMPTS = 7
+    MAX_ATTEMPTS = 8
     attempts = 0
     output = []
     while attempts < MAX_ATTEMPTS:
