@@ -2,6 +2,7 @@
 
 from pathway.io import (
     airbyte,
+    bigquery,
     csv,
     debezium,
     elasticsearch,
@@ -28,6 +29,7 @@ from pathway.io._utils import CsvParserSettings
 
 __all__ = [
     "airbyte",
+    "bigquery",
     "csv",
     "CsvParserSettings",
     "debezium",
