@@ -270,6 +270,7 @@ named ``path`` that will show the full path to the file from where a row was fil
             dataformat=data_format,
             data_source_options=data_source_options,
             schema=schema,
+            datasource_name="fs",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -365,9 +366,4 @@ a plain JSON.
             value_fields=_format_output_value_fields(table),
         )
 
-    table.to(
-        datasink.GenericDataSink(
-            data_storage,
-            data_format,
-        )
-    )
+    table.to(datasink.GenericDataSink(data_storage, data_format, datasink_name="fs"))

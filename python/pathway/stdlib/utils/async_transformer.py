@@ -496,6 +496,7 @@ class AsyncTransformer(ABC):
             self._connector,
             schema=schema | _AsyncStatusSchema,
             autocommit_duration_ms=None,
+            name="async-transformer",
         )
         input_node = table._source.operator
 

@@ -263,6 +263,7 @@ def read(
             dataformat=data_format,
             data_source_options=data_source_options,
             schema=schema,
+            datasource_name="kafka",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -551,9 +552,4 @@ def write(
     else:
         raise ValueError(f"Unsupported format: {format}")
 
-    table.to(
-        datasink.GenericDataSink(
-            data_storage,
-            data_format,
-        )
-    )
+    table.to(datasink.GenericDataSink(data_storage, data_format, datasink_name="kafka"))

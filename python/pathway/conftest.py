@@ -34,6 +34,7 @@ def environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLACK_CHANNEL_ID", "Otocolobus")
     monkeypatch.setenv("SLACK_TOKEN", "manul")
     monkeypatch.setenv("TIKTOKEN_CACHE_DIR", "manul")
+    monkeypatch.delenv("PATHWAY_MONITORING_SERVER", raising=False)
 
 
 @pytest.fixture(autouse=True)

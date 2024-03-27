@@ -104,8 +104,7 @@ single transaction.
 
     table.to(
         datasink.GenericDataSink(
-            data_storage,
-            data_format,
+            data_storage, data_format, datasink_name="postgres.sink"
         )
     )
 
@@ -187,7 +186,6 @@ single transaction.
 
     table.to(
         datasink.GenericDataSink(
-            data_storage,
-            data_format,
+            data_storage, data_format, datasink_name="postgres.snapshot"
         )
     )

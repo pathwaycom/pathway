@@ -66,6 +66,7 @@ def read(
             dataformat=data_format,
             schema=schema,
             data_source_options=data_source_options,
+            datasource_name="sqlite",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

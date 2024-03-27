@@ -52,6 +52,10 @@ class DataSource(ABC):
     @abstractmethod
     def is_append_only(self) -> bool: ...
 
+    @property
+    def name(self) -> str:
+        return type(self).__qualname__.lower().removesuffix("datasource")
+
 
 class StaticDataSource(DataSource, ABC):
     data: Any
@@ -74,12 +78,17 @@ class PandasDataSource(StaticDataSource):
 class GenericDataSource(DataSource):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
+    datasource_name: str
 
     def is_bounded(self) -> bool:
         return self.datastorage.mode == api.ConnectorMode.STATIC
 
     def is_append_only(self) -> bool:
         return self.datastorage.mode != api.ConnectorMode.STREAMING
+
+    @property
+    def name(self) -> str:
+        return self.datasource_name
 
 
 @dataclass(frozen=True)

@@ -149,6 +149,7 @@ def read(
         default_values=default_values,
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,
+        name="http",
     )
 
 

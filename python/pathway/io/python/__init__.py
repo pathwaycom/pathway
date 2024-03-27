@@ -244,6 +244,7 @@ def read(
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
     persistent_id: str | None = None,
+    name: str = "python",
 ) -> Table:
     """Reads a table from a ConnectorSubject.
 
@@ -336,6 +337,7 @@ computations from the moment they were terminated last time.
             dataformat=data_format,
             data_source_options=data_source_options,
             schema=schema,
+            datasource_name=name,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

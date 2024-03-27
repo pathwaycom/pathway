@@ -754,6 +754,7 @@ with:
         schema=schema,
         format="json",
         autocommit_duration_ms=autocommit_duration_ms,
+        name="rest-connector",
     )
 
     def response_writer(responses: pw.Table):

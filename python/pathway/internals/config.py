@@ -7,9 +7,12 @@ from pathway import persistence
 from pathway.internals import api
 
 
-def _env_field(name: str, default: str | None = None):
+def _env_field(name: str, default: str | None = None, default_if_empty: bool = False):
     def factory():
-        return os.environ.get(name, default)
+        value = os.environ.get(name, default)
+        if default_if_empty and value == "":
+            value = default
+        return value
 
     return field(default_factory=factory)
 
@@ -60,7 +63,9 @@ class PathwayConfig:
     snapshot_access: api.SnapshotAccess | None = field(default_factory=_snapshot_access)
     replay_storage: str | None = _env_field("PATHWAY_REPLAY_STORAGE")
     license_key: str | None = _env_field("PATHWAY_LICENSE_KEY")
-    telemetry_server: str | None = _env_field("PATHWAY_TELEMETRY_SERVER")
+    monitoring_server: str | None = _env_field(
+        "PATHWAY_MONITORING_SERVER", default_if_empty=True
+    )
     terminate_on_error: bool = _env_bool_field(
         "PATHWAY_TERMINATE_ON_ERROR", default="true"
     )
@@ -114,8 +119,8 @@ def set_license_key(key: str | None) -> None:
     get_pathway_config().license_key = key
 
 
-def set_telemetry_server(endpoint: str | None) -> None:
-    get_pathway_config().telemetry_server = endpoint
+def set_monitoring_config(*, server_endpoint: str | None) -> None:
+    get_pathway_config().monitoring_server = server_endpoint
 
 
 __all__ = [
@@ -123,5 +128,5 @@ __all__ = [
     "get_pathway_config",
     "local_pathway_config",
     "set_license_key",
-    "set_telemetry_server",
+    "set_monitoring_config",
 ]

@@ -521,7 +521,10 @@ class StreamGenerator:
                         raise ValueError("only diffs of 1 and -1 are supported")
 
         return read(
-            _EmptyConnectorSubject(), persistent_id=persistent_id, schema=schema
+            _EmptyConnectorSubject(),
+            persistent_id=persistent_id,
+            schema=schema,
+            name="debug.stream-generator",
         )
 
     def table_from_list_of_batches_by_workers(

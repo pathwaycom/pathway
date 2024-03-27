@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import uuid
 import warnings
 from collections.abc import Callable, Collection, Iterable
 from itertools import chain
@@ -37,7 +40,6 @@ class GraphRunner:
     debug: bool
     ignore_asserts: bool
     runtime_typechecking: bool
-    telemetry: telemetry.Telemetry
     terminate_on_error: bool
 
     def __init__(
@@ -72,10 +74,6 @@ class GraphRunner:
         if license_key is None:
             license_key = pathway_config.license_key
         self.license_key = license_key
-        self.telemetry = telemetry.Telemetry.create(
-            license_key=self.license_key,
-            telemetry_server=pathway_config.telemetry_server,
-        )
         if terminate_on_error is None:
             terminate_on_error = pathway_config.terminate_on_error
         self.terminate_on_error = terminate_on_error
@@ -137,7 +135,14 @@ class GraphRunner:
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
         run_all: bool = False,
     ) -> list[api.CapturedStream]:
-        with self.telemetry.tracer.start_as_current_span("graph_runner.run"):
+        run_id = self._get_run_id()
+        pathway_config = get_pathway_config()
+        otel = telemetry.Telemetry.create(
+            run_id=run_id,
+            license_key=self.license_key,
+            monitoring_server=pathway_config.monitoring_server,
+        )
+        with otel.tracer.start_as_current_span("graph_runner.run"):
             trace_context, trace_parent = telemetry.get_current_context()
 
             context = ScopeContext(
@@ -150,14 +155,6 @@ class GraphRunner:
                 context, self, output_tables
             )
 
-            @self.telemetry.tracer.start_as_current_span(
-                "graph_runner.build",
-                context=trace_context,
-                attributes=dict(
-                    graph=repr(self._graph),
-                    debug=self.debug,
-                ),
-            )
             def logic(
                 scope: api.Scope,
                 /,
@@ -165,11 +162,20 @@ class GraphRunner:
                 storage_graph: OperatorStorageGraph = storage_graph,
                 output_tables: Collection[table.Table] = output_tables,
             ) -> list[tuple[api.Table, list[ColumnPath]]]:
-                state = ScopeState(scope)
-                storage_graph.build_scope(scope, state, self)
-                if after_build is not None:
-                    after_build(state, storage_graph)
-                return storage_graph.get_output_tables(output_tables, state)
+                with otel.tracer.start_as_current_span(
+                    "graph_runner.build",
+                    context=trace_context,
+                    attributes=dict(
+                        worker_id=scope.worker_index,
+                        worker_count=scope.worker_count,
+                        graph_statistics=json.dumps(self._graph.statistics()),
+                    ),
+                ):
+                    state = ScopeState(scope)
+                    storage_graph.build_scope(scope, state, self)
+                    if after_build is not None:
+                        after_build(state, storage_graph)
+                    return storage_graph.get_output_tables(output_tables, state)
 
             node_names = [
                 (operator.id, operator.label())
@@ -177,14 +183,13 @@ class GraphRunner:
                 if isinstance(operator, ContextualizedIntermediateOperator)
             ]
             monitoring_level = self.monitoring_level.to_internal()
-            pathway_config = get_pathway_config()
 
             with (
                 new_event_loop() as event_loop,
                 monitor_stats(
                     monitoring_level, node_names, self.default_logging
                 ) as stats_monitor,
-                self.telemetry.with_logging_handler(),
+                otel.with_logging_handler(),
                 get_persistence_engine_config(
                     self.persistence_config
                 ) as persistence_engine_config,
@@ -199,8 +204,9 @@ class GraphRunner:
                         with_http_server=self.with_http_server,
                         persistence_config=persistence_engine_config,
                         license_key=self.license_key,
-                        telemetry_server=pathway_config.telemetry_server,
+                        monitoring_server=pathway_config.monitoring_server,
                         trace_parent=trace_parent,
+                        run_id=run_id,
                         terminate_on_error=self.terminate_on_error,
                     )
                 except api.EngineErrorWithTrace as e:
@@ -216,6 +222,12 @@ class GraphRunner:
                             ),
                         )
                     raise error from None
+
+    def _get_run_id(self):
+        run_id = os.environ.get("PATHWAY_RUN_ID")
+        if run_id is None:
+            run_id = str(uuid.uuid4())
+        return run_id
 
     def tree_shake_tables(
         self, graph_scope: graph.Scope, tables: Iterable[table.Table]

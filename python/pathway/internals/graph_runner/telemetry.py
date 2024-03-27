@@ -1,3 +1,20 @@
+# Copyright © 2024 Pathway
+
+"""
+EXPERIMENTAL
+This module provides functionality for monitoring, telemetry, and quality of service.
+
+When enabled, telemetry data, including pipeline metadata and process metrics,
+is gathered and dispatched to specified endpoints utilizing the OpenTelemetry protocol.
+Logs are not included in the telemetry data sent to the telemetry server.
+
+Additionally, the module permits the configuration of an extra OpenTelemetry Collector endpoint
+or another endpoint compatible with the OTLP (via gRPC), supporting logs, metrics, and tracing.
+Data forwarded to the monitoring server will include both logs and telemetry data.
+
+By default, both telemetry and monitoring are turned OFF.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -55,12 +72,14 @@ class Telemetry:
     @classmethod
     def create(
         cls,
+        run_id: str,
         license_key: str | None = None,
-        telemetry_server: str | None = None,
+        monitoring_server: str | None = None,
     ) -> Telemetry:
         config = api.TelemetryConfig.create(
+            run_id=run_id,
             license_key=license_key,
-            telemetry_server=telemetry_server,
+            monitoring_server=monitoring_server,
         )
         return cls(config)
 
@@ -76,19 +95,23 @@ class Telemetry:
             root_logger.removeHandler(logging_handler)
 
     def _logging_handler(self) -> logging.Handler:
-        if self.config.telemetry_enabled:
-            exporter = OTLPLogExporter(endpoint=self.config.telemetry_server_endpoint)
+        if len(self.config.logging_servers) > 0:
             logger_provider = LoggerProvider(resource=self._resource)
-            logger_provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+            for endpoint in self.config.logging_servers:
+                exporter = OTLPLogExporter(endpoint=endpoint)
+                logger_provider.add_log_record_processor(
+                    BatchLogRecordProcessor(exporter)
+                )
             return LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
         else:
             return logging.NullHandler()
 
     def _init_tracer(self) -> trace.Tracer:
-        if self.config.telemetry_enabled:
-            exporter = OTLPSpanExporter(endpoint=self.config.telemetry_server_endpoint)
+        if len(self.config.tracing_servers) > 0:
             trace_provider = TracerProvider(resource=self._resource)
-            trace_provider.add_span_processor(BatchSpanProcessor(exporter))
+            for endpoint in self.config.tracing_servers:
+                exporter = OTLPSpanExporter(endpoint=endpoint)
+                trace_provider.add_span_processor(BatchSpanProcessor(exporter))
             return trace_provider.get_tracer("pathway-tracer")
         else:
             return trace.NoOpTracer()

@@ -112,5 +112,6 @@ def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> 
         datasink.GenericDataSink(
             data_storage,
             data_format,
+            datasink_name="elasticsearch",
         )
     )

@@ -109,6 +109,7 @@ provided the default type is ``pw.Type.ANY``.
         format="json",
         autocommit_duration_ms=autocommit_duration_ms,
         persistent_id=persistent_id,
+        name="demo.custom-stream",
     )
 
     return table
@@ -250,6 +251,7 @@ def replay_csv(
         schema=schema.update_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
+        name="demo.replay-csv",
     ).cast_to_types(**schema.typehints())
 
 
@@ -333,4 +335,5 @@ def replay_csv_with_time(
         schema=schema.update_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
+        name="demo.replay-csv-with-time",
     ).cast_to_types(**schema.typehints())

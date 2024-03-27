@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -197,6 +198,11 @@ class ParseGraph:
             f"{scope}, {node.id} [{node.label()}]: {schema}"
             for scope, node, schema in rows
         )
+
+    def statistics(self) -> dict[str, int]:
+        all_nodes = [node for scope in self.scopes for node in scope.nodes]
+        counter = Counter(node.operator_type() for node in all_nodes)
+        return dict(counter)
 
 
 class ErrorLogSchema(Schema):

@@ -25,3 +25,8 @@ def root_s3_path() -> str:
 def s3_path(request: pytest.FixtureRequest, root_s3_path: str) -> str:
     node_name = request.node.name
     return f"{root_s3_path}/{node_name}/{uuid.uuid4()}"
+
+
+@pytest.fixture(autouse=True)
+def disable_monitoring(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PATHWAY_MONITORING_SERVER", raising=False)

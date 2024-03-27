@@ -44,5 +44,6 @@ def write(table: Table) -> None:
         datasink.GenericDataSink(
             data_storage,
             data_format,
+            datasink_name="null",
         )
     )

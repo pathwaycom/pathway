@@ -70,7 +70,7 @@ from pathway.internals import (
     schema_from_dict,
     schema_from_types,
     set_license_key,
-    set_telemetry_server,
+    set_monitoring_config,
     sql,
     table_transformer,
     this,
@@ -195,7 +195,7 @@ __all__ = [
     "LiveTable",
     "persistence",
     "set_license_key",
-    "set_telemetry_server",
+    "set_monitoring_config",
     "global_error_log",
     "local_error_log",
 ]

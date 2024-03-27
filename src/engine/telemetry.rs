@@ -4,9 +4,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::{error::DynError, license::License, Graph, ProberStats, Result};
+use super::{error::DynError, license::License, Error, Graph, ProberStats, Result};
 use crate::env::parse_env_var;
 use arc_swap::ArcSwapOption;
+use itertools::Itertools;
 use log::{debug, info};
 use nix::sys::{
     resource::{getrusage, UsageWho},
@@ -26,20 +27,18 @@ use opentelemetry_sdk::{
     Resource,
 };
 use opentelemetry_semantic_conventions::resource::{
-    PROCESS_PID, SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
+    SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
 };
 use scopeguard::defer;
 use sysinfo::{get_current_pid, System};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-const DEFAULT_TELEMETRY_SERVER: &str = "";
-
+const PATHWAY_TELEMETRY_SERVER: &str = "https://usage.pathway.com";
 const PERIODIC_READER_INTERVAL: Duration = Duration::from_secs(60);
 const OPENTELEMETRY_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const PROCESS_MEMORY_USAGE: &str = "process.memory.usage";
-const PROCESS_CPU_USAGAE: &str = "process.cpu.usage";
 const PROCESS_CPU_USER_TIME: &str = "process.cpu.utime";
 const PROCESS_CPU_SYSTEM_TIME: &str = "process.cpu.stime";
 const INPUT_LATENCY: &str = "latency.input";
@@ -51,20 +50,15 @@ const RUN_ID: Key = Key::from_static_str("run.id");
 const LOCAL_DEV_NAMESPACE: &str = "local-dev";
 
 struct Telemetry {
-    pub config: TelemetryEnabled,
+    pub config: Box<TelemetryEnabled>,
 }
 
 impl Telemetry {
-    fn new(config: TelemetryEnabled) -> Self {
+    fn new(config: Box<TelemetryEnabled>) -> Self {
         Telemetry { config }
     }
 
     fn resource(&self) -> Resource {
-        let pid: i64 = get_current_pid()
-            .expect("Failed to get current PID")
-            .as_u32()
-            .into();
-
         let root_trace_id = root_trace_id(self.config.trace_parent.as_deref()).unwrap_or_default();
 
         Resource::new([
@@ -72,55 +66,62 @@ impl Telemetry {
             SERVICE_VERSION.string(self.config.service_version.clone()),
             SERVICE_INSTANCE_ID.string(self.config.service_instance_id.clone()),
             SERVICE_NAMESPACE.string(self.config.service_namespace.clone()),
-            PROCESS_PID.i64(pid),
             ROOT_TRACE_ID.string(root_trace_id.to_string()),
             RUN_ID.string(self.config.run_id.clone()),
         ])
     }
 
-    fn base_otel_exporter_builder(&self) -> opentelemetry_otlp::TonicExporterBuilder {
+    fn base_otel_exporter_builder(
+        server_endpoint: &str,
+    ) -> opentelemetry_otlp::TonicExporterBuilder {
         opentelemetry_otlp::new_exporter()
             .tonic()
             .with_protocol(Protocol::Grpc)
-            .with_endpoint(self.config.telemetry_server_endpoint.clone())
+            .with_endpoint(server_endpoint)
             .with_timeout(OPENTELEMETRY_EXPORT_TIMEOUT)
     }
 
     fn init_tracer_provider(&self) {
+        if self.config.tracing_servers.is_empty() {
+            return;
+        }
         global::set_text_map_propagator(TraceContextPropagator::new());
 
-        let exporter = self
-            .base_otel_exporter_builder()
-            .build_span_exporter()
-            .expect("exporter initialization should not fail");
+        let mut provider_builder = TracerProvider::builder()
+            .with_config(trace::Config::default().with_resource(self.resource()));
 
-        let provider = TracerProvider::builder()
-            .with_config(trace::Config::default().with_resource(self.resource()))
-            .with_batch_exporter(exporter, runtime::Tokio)
-            .build();
+        for endpoint in &self.config.tracing_servers {
+            let exporter = Telemetry::base_otel_exporter_builder(endpoint)
+                .build_span_exporter()
+                .expect("exporter initialization should not fail");
+            provider_builder = provider_builder.with_batch_exporter(exporter, runtime::Tokio);
+        }
 
-        global::set_tracer_provider(provider.clone());
+        global::set_tracer_provider(provider_builder.build().clone());
     }
 
     fn init_meter_provider(&self) {
-        let exporter = self
-            .base_otel_exporter_builder()
-            .build_metrics_exporter(
-                Box::new(DefaultAggregationSelector::new()),
-                Box::new(DefaultTemporalitySelector::new()),
-            )
-            .unwrap();
+        if self.config.metrics_servers.is_empty() {
+            return;
+        }
+        let mut provider_builder = MeterProvider::builder().with_resource(self.resource());
 
-        let reader = PeriodicReader::builder(exporter, runtime::Tokio)
-            .with_interval(PERIODIC_READER_INTERVAL)
-            .build();
+        for endpoint in &self.config.metrics_servers {
+            let exporter = Telemetry::base_otel_exporter_builder(endpoint)
+                .build_metrics_exporter(
+                    Box::new(DefaultAggregationSelector::new()),
+                    Box::new(DefaultTemporalitySelector::new()),
+                )
+                .unwrap();
 
-        let meter_provider = MeterProvider::builder()
-            .with_resource(self.resource())
-            .with_reader(reader)
-            .build();
+            let reader = PeriodicReader::builder(exporter, runtime::Tokio)
+                .with_interval(PERIODIC_READER_INTERVAL)
+                .build();
 
-        global::set_meter_provider(meter_provider.clone());
+            provider_builder = provider_builder.with_reader(reader);
+        }
+
+        global::set_meter_provider(provider_builder.build().clone());
     }
 
     fn init(&self) {
@@ -147,10 +148,16 @@ fn root_trace_id(trace_parent: Option<&str>) -> Option<&str> {
     }
 }
 
+fn deduplicate(input: Vec<Option<String>>) -> Vec<String> {
+    input.into_iter().flatten().sorted().dedup().collect()
+}
+
 #[derive(Clone, Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TelemetryEnabled {
-    pub telemetry_server_endpoint: String,
+    pub logging_servers: Vec<String>,
+    pub tracing_servers: Vec<String>,
+    pub metrics_servers: Vec<String>,
     pub service_name: String,
     pub service_version: String,
     pub service_namespace: String,
@@ -161,53 +168,70 @@ pub struct TelemetryEnabled {
 
 #[derive(Clone, Debug)]
 pub enum Config {
-    Enabled(TelemetryEnabled),
+    Enabled(Box<TelemetryEnabled>),
     Disabled,
 }
 
 impl Config {
     pub fn create(
         license: License,
-        telemetry_server: Option<String>,
+        run_id: Option<String>,
+        monitoring_server: Option<String>,
         trace_parent: Option<String>,
     ) -> Result<Self> {
-        let telemetry_enabled: bool = parse_env_var("PATHWAY_TELEMETRY_ENABLED")
-            .map_err(DynError::from)?
-            .unwrap_or(false);
-        let config = if telemetry_enabled {
-            let run_id: String = parse_env_var("PATHWAY_RUN_ID")
-                .map_err(DynError::from)?
-                .unwrap_or(Uuid::new_v4().to_string());
-            let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
-                .map_err(DynError::from)?
-                .unwrap_or(Uuid::new_v4().to_string());
-            let service_namespace: String = parse_env_var("PATHWAY_SERVICE_NAMESPACE")
-                .map_err(DynError::from)?
-                .unwrap_or_else(|| {
-                    if service_instance_id.ends_with(LOCAL_DEV_NAMESPACE) {
-                        LOCAL_DEV_NAMESPACE.to_string()
-                    } else {
-                        format!("external-{}", Uuid::new_v4())
-                    }
-                });
-            let telemetry_server =
-                telemetry_server.unwrap_or(String::from(DEFAULT_TELEMETRY_SERVER));
-            match license {
-                License::Evaluation | License::DebugNoLimit => Config::Enabled(TelemetryEnabled {
-                    telemetry_server_endpoint: telemetry_server,
-                    service_name: env!("CARGO_PKG_NAME").to_string(),
-                    service_version: env!("CARGO_PKG_VERSION").to_string(),
-                    service_namespace,
-                    service_instance_id,
-                    run_id,
-                    trace_parent,
-                }),
-                License::NoLicenseKey => Config::Disabled,
+        let run_id = run_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        match license {
+            License::Evaluation => Config::create_enabled(
+                run_id,
+                Some(PATHWAY_TELEMETRY_SERVER.to_string()),
+                monitoring_server,
+                trace_parent,
+            ),
+            License::DebugNoLimit => {
+                Config::create_enabled(run_id, None, monitoring_server, trace_parent)
             }
-        } else {
-            Config::Disabled
-        };
-        Ok(config)
+            License::NoLicenseKey => {
+                if monitoring_server.is_some() {
+                    Err(Error::InsufficientLicense(
+                        "monitoring cannot be enabled".to_string(),
+                    ))
+                } else {
+                    Ok(Config::Disabled)
+                }
+            }
+        }
+    }
+
+    fn create_enabled(
+        run_id: String,
+        telemetry_server: Option<String>,
+        monitoring_server: Option<String>,
+        trace_parent: Option<String>,
+    ) -> Result<Self> {
+        let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
+            .map_err(DynError::from)?
+            .unwrap_or(Uuid::new_v4().to_string());
+        let service_namespace: String = parse_env_var("PATHWAY_SERVICE_NAMESPACE")
+            .map_err(DynError::from)?
+            .unwrap_or_else(|| {
+                if service_instance_id.ends_with(LOCAL_DEV_NAMESPACE) {
+                    LOCAL_DEV_NAMESPACE.to_string()
+                } else {
+                    format!("external-{}", Uuid::new_v4())
+                }
+            });
+        Ok(Config::Enabled(Box::new(TelemetryEnabled {
+            logging_servers: deduplicate(vec![monitoring_server.clone()]),
+            tracing_servers: deduplicate(vec![telemetry_server.clone(), monitoring_server.clone()]),
+            metrics_servers: deduplicate(vec![telemetry_server, monitoring_server]),
+            service_name: env!("CARGO_PKG_NAME").to_string(),
+            service_version: env!("CARGO_PKG_VERSION").to_string(),
+            service_namespace,
+            service_instance_id,
+            run_id,
+            trace_parent,
+        })))
     }
 }
 
@@ -301,11 +325,6 @@ fn register_sys_metrics() {
         .with_unit(Unit::new("byte"))
         .init();
 
-    let cpu_usage_gauge = meter
-        .f64_observable_gauge(PROCESS_CPU_USAGAE)
-        .with_unit(Unit::new("%"))
-        .init();
-
     let cpu_user_time_gauge = meter
         .i64_observable_gauge(PROCESS_CPU_USER_TIME)
         .with_unit(Unit::new("s"))
@@ -320,7 +339,6 @@ fn register_sys_metrics() {
         .register_callback(
             &[
                 memory_usage_gauge.as_any(),
-                cpu_usage_gauge.as_any(),
                 cpu_user_time_gauge.as_any(),
                 cpu_system_time_gauge.as_any(),
             ],
@@ -331,7 +349,6 @@ fn register_sys_metrics() {
 
                 if let Some(process) = sys.process(pid) {
                     observer.observe_u64(&memory_usage_gauge, process.memory(), &[]);
-                    observer.observe_f64(&cpu_usage_gauge, process.cpu_usage().into(), &[]);
                 }
                 observer.observe_i64(&cpu_user_time_gauge, usage.user_time().num_seconds(), &[]);
                 observer.observe_i64(
@@ -358,8 +375,12 @@ impl Drop for Runner {
 pub fn maybe_run_telemetry_thread(graph: &dyn Graph, config: Config) -> Option<Runner> {
     match config {
         Config::Enabled(config) => {
-            info!("Telemetry enabled");
-            debug!("Telemetry config: {config:?}");
+            if config.tracing_servers.is_empty() {
+                debug!("Telemetry disabled");
+            } else {
+                info!("Telemetry enabled");
+            }
+            debug!("OTEL config: {config:?}");
             let telemetry = Telemetry::new(config);
             let stats_shared = Arc::new(ArcSwapOption::from(None));
             let runner = Runner::run(telemetry, stats_shared.clone());

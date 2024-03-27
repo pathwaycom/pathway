@@ -174,8 +174,11 @@ class Operator(ABC):
     def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return StableSet()
 
-    def label(self) -> str:
+    def operator_type(self) -> str:
         return type(self).__name__
+
+    def label(self) -> str:
+        return self.operator_type()
 
     def __repr__(self) -> str:
         return f"{self.id} [{self.label()}]"
@@ -194,7 +197,7 @@ class OperatorFromDef(Operator, ABC):
     def __call__(self, *args, **kwargs):
         pass
 
-    def label(self) -> str:
+    def operator_type(self) -> str:
         return self.func_spec.func.__name__
 
 
@@ -258,6 +261,9 @@ class InputOperator(Operator):
         self.datasource = datasource
         self.debug_datasource = debug_datasource
 
+    def operator_type(self) -> str:
+        return f"input({self.datasource.name})"
+
     def __call__(self, table_cls: type[TTable]) -> TTable:
         result = table_cls._from_schema(self.datasource.get_effective_schema())
         self._prepare_outputs(as_arg_tuple(result))
@@ -281,6 +287,9 @@ class OutputOperator(Operator):
 
     def hard_table_dependencies(self) -> StableSet[tables.Table]:
         return self.input_tables
+
+    def operator_type(self) -> str:
+        return f"output({self.datasink.name})"
 
 
 @dataclass

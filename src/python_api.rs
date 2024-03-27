@@ -2855,8 +2855,9 @@ pub fn make_captured_table(table_data: Vec<CapturedTableData>) -> PyResult<Vec<D
     with_http_server = false,
     persistence_config = None,
     license_key = None,
-    telemetry_server = None,
+    monitoring_server = None,
     trace_parent = None,
+    run_id = None,
     terminate_on_error = true,
 ))]
 pub fn run_with_new_graph(
@@ -2869,8 +2870,9 @@ pub fn run_with_new_graph(
     with_http_server: bool,
     persistence_config: Option<PersistenceConfig>,
     license_key: Option<String>,
-    telemetry_server: Option<String>,
+    monitoring_server: Option<String>,
     trace_parent: Option<String>,
+    run_id: Option<String>,
     terminate_on_error: bool,
 ) -> PyResult<Vec<Vec<DataRow>>> {
     LOGGING_RESET_HANDLE.reset();
@@ -2895,7 +2897,8 @@ pub fn run_with_new_graph(
         }
     };
     let license = License::new(license_key)?;
-    let telemetry_config = EngineTelemetryConfig::create(license, telemetry_server, trace_parent)?;
+    let telemetry_config =
+        EngineTelemetryConfig::create(license, run_id, monitoring_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         py.allow_threads(|| {
             run_with_new_dataflow_graph(
@@ -3385,8 +3388,9 @@ impl PersistenceConfig {
 #[derive(Clone, Debug, Default)]
 #[pyclass(module = "pathway.engine", frozen, get_all)]
 pub struct TelemetryConfig {
-    telemetry_enabled: bool,
-    telemetry_server_endpoint: Option<String>,
+    logging_servers: Vec<String>,
+    tracing_servers: Vec<String>,
+    metrics_servers: Vec<String>,
     service_name: Option<String>,
     service_version: Option<String>,
     service_namespace: Option<String>,
@@ -3399,15 +3403,17 @@ impl TelemetryConfig {
     #[staticmethod]
     #[pyo3(signature = (
         *,
+        run_id = None,
         license_key = None,
-        telemetry_server = None,
+        monitoring_server = None,
     ))]
     fn create(
+        run_id: Option<String>,
         license_key: Option<String>,
-        telemetry_server: Option<String>,
+        monitoring_server: Option<String>,
     ) -> PyResult<TelemetryConfig> {
         let license = License::new(license_key)?;
-        let config = EngineTelemetryConfig::create(license, telemetry_server, None)?;
+        let config = EngineTelemetryConfig::create(license, run_id, monitoring_server, None)?;
         Ok(config.into())
     }
 }
@@ -3416,8 +3422,9 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
     fn from(config: EngineTelemetryConfig) -> Self {
         match config {
             EngineTelemetryConfig::Enabled(config) => Self {
-                telemetry_enabled: true,
-                telemetry_server_endpoint: Some(config.telemetry_server_endpoint),
+                logging_servers: config.logging_servers,
+                tracing_servers: config.tracing_servers,
+                metrics_servers: config.metrics_servers,
                 service_name: Some(config.service_name),
                 service_version: Some(config.service_version),
                 service_namespace: Some(config.service_namespace),

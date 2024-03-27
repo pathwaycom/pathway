@@ -289,4 +289,5 @@ once and then terminate the connector:
         subject=subject,
         schema=_AirbyteRecordSchema,
         autocommit_duration_ms=max(refresh_interval_ms, 1),
+        name="airbyte",
     )

@@ -10,13 +10,20 @@ from pathway.internals import api
 
 
 class DataSink(ABC):
-    pass
+    @property
+    def name(self) -> str:
+        return type(self).__qualname__.lower().removesuffix("datasink")
 
 
 @dataclass(frozen=True)
 class GenericDataSink(DataSink):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
+    datasink_name: str
+
+    @property
+    def name(self) -> str:
+        return self.datasink_name
 
 
 @dataclass(frozen=True, kw_only=True)

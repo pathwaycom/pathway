@@ -217,4 +217,5 @@ connector. It can be done with the usage of `FTP` file source with the code as f
         subject,
         format="binary",
         autocommit_duration_ms=None,
+        name="pyfilesystem",
     )

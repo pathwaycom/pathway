@@ -147,6 +147,7 @@ def read(
             dataformat=data_format,
             data_source_options=data_source_options,
             schema=schema,
+            datasource_name="debezium",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

@@ -163,6 +163,9 @@ pub enum Error {
     #[error("invalid license key")]
     InvalidLicenseKey,
 
+    #[error("insufficient license: {0}")]
+    InsufficientLicense(String),
+
     #[error("computation of imported table failed")]
     ImportedTableFailed,
 

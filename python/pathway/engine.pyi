@@ -661,8 +661,9 @@ def run_with_new_graph(
     with_http_server: bool = False,
     persistence_config: PersistenceConfig | None = None,
     license_key: str | None = None,
-    telemetry_server: str | None = None,
+    monitoring_server: str | None = None,
     trace_parent: str | None = None,
+    run_id: str | None = None,
     terminate_on_error: bool = True,
 ) -> list[CapturedStream]: ...
 def unsafe_make_pointer(arg) -> Pointer: ...
@@ -752,8 +753,9 @@ class LocalBinarySnapshotWriter:
     def write(self, events: list[SnapshotEvent]): ...
 
 class TelemetryConfig:
-    telemetry_enabled: bool
-    telemetry_server_endpoint: str | None
+    logging_servers: list[str]
+    tracing_servers: list[str]
+    metrics_servers: list[str]
     service_name: str | None
     service_version: str | None
     service_namespace: str | None
@@ -761,5 +763,8 @@ class TelemetryConfig:
     run_id: str
     @staticmethod
     def create(
-        *, license_key: str | None = None, telemetry_server: str | None = None
+        *,
+        run_id: str,
+        license_key: str | None = None,
+        monitoring_server: str | None = None,
     ) -> TelemetryConfig: ...

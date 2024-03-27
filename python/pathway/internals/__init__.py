@@ -21,7 +21,7 @@ from pathway.internals.common import (
     table_transformer,
     unwrap,
 )
-from pathway.internals.config import set_license_key, set_telemetry_server
+from pathway.internals.config import set_license_key, set_monitoring_config
 from pathway.internals.custom_reducers import BaseCustomAccumulator
 from pathway.internals.datetime_types import DateTimeNaive, DateTimeUtc, Duration
 from pathway.internals.decorators import (
@@ -151,7 +151,7 @@ __all__ = [
     "enable_interactive_mode",
     "LiveTable",
     "set_license_key",
-    "set_telemetry_server",
+    "set_monitoring_config",
     "global_error_log",
     "local_error_log",
 ]

@@ -23,7 +23,6 @@ use crate::engine::dataflow::operators::time_column::{
 };
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
-use crate::env::parse_env_var;
 use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
 use crate::persistence::sync::SharedWorkersPersistenceCoordinator;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
@@ -95,7 +94,7 @@ use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::graph::{DataRow, ExportedTable, SubscribeCallbacks};
 use super::http_server::maybe_run_http_server_thread;
-use super::license::{License, ResourceLimit};
+use super::license::License;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
     AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, FloatSumReducer,
@@ -113,7 +112,6 @@ use super::{
     OperatorStats, ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties,
     UniverseHandle, Value,
 };
-use nix::sys::resource::{getrlimit, setrlimit};
 
 pub use self::config::Config;
 
@@ -5081,21 +5079,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
     }
 }
 
-fn set_process_limits(process_limits: Vec<ResourceLimit>) -> Result<()> {
-    let telemetry_enabled: bool = parse_env_var("PATHWAY_TELEMETRY_ENABLED")
-        .map_err(DynError::from)?
-        .unwrap_or(false);
-    if telemetry_enabled {
-        for ResourceLimit(resource, limit) in process_limits {
-            let (_, hard_limit) = getrlimit(resource).map_err(DynError::from)?;
-            let limit = hard_limit.min(limit);
-            info!("Setting process limit: {resource:?}, {limit:?}");
-            setrlimit(resource, limit, limit).map_err(DynError::from)?;
-        }
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_lines)] // XXX
 #[allow(clippy::too_many_arguments)] // XXX
 pub fn run_with_new_dataflow_graph<R, R2>(
@@ -5108,7 +5091,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceManagerOuterConfig>,
-    license: License,
+    #[allow(unused)] license: License,
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
 ) -> Result<Vec<R2>>
@@ -5116,8 +5099,6 @@ where
     R: 'static,
     R2: Send + 'static,
 {
-    set_process_limits(license.get_resource_limits())?;
-
     if !env::var("PATHWAY_SKIP_START_LOG").is_ok_and(|v| v == "1") {
         info!("Preparing Pathway computation");
     }

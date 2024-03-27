@@ -198,6 +198,7 @@ def read(
             dataformat=data_format,
             schema=schema,
             data_source_options=data_source_options,
+            datasource_name="s3",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -302,6 +303,7 @@ def read_from_digital_ocean(
             dataformat=data_format,
             data_source_options=datasource_options,
             schema=schema,
+            datasource_name="s3-digital-ocean",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
@@ -404,6 +406,7 @@ def read_from_wasabi(
             dataformat=data_format,
             data_source_options=datasource_options,
             schema=schema,
+            datasource_name="s3-wasabi",
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
