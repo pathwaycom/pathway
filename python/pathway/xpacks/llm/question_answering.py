@@ -2,6 +2,7 @@
 
 import pathway.internals as pw
 from pathway.internals import ColumnReference, Table
+from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa
 
@@ -91,3 +92,58 @@ def answer_with_geometric_rag_strategy(
         t = t.update_rows(new_answers)
         n_documents *= factor
     return t.answer
+
+
+def answer_with_geometric_rag_strategy_from_index(
+    questions: ColumnReference,
+    index: DataIndex,
+    documents_column: str | ColumnReference,
+    llm_chat_model: pw.UDF,
+    n_starting_documents: int,
+    factor: int,
+    max_iterations: int,
+    metadata_filter: pw.ColumnExpression | None = None,
+) -> ColumnReference:
+    """
+    Function for querying LLM chat while providing increasing number of documents until an answer
+    is found. Documents are taken from `index`. Initially first `n_starting_documents` documents
+    are embedded in the query. If the LLM chat fails to find an answer, the number of documents
+    is multiplied by `factor` and the question is asked again.
+
+    Args:
+        questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
+        index: Index from which closest documents are obtained.
+        documents_column: name of the column in table passed to index, which contains documents.
+        llm_chat_model: Chat model which will be queried for answers
+        n_starting_documents: Number of documents embedded in the first query.
+        factor: Factor by which a number of documents increases in each next query, if
+            an answer is not found.
+        max_iterations: Number of times to ask a question, with the increasing number of documents.
+
+    Returns:
+        A column with answers to the question. If answer is not found, then None is returned.
+    """
+    max_documents = n_starting_documents * (factor ** (max_iterations - 1))
+
+    if isinstance(documents_column, ColumnReference):
+        documents_column_name = documents_column.name
+    else:
+        documents_column_name = documents_column
+
+    query_context = questions.table + index.query(
+        questions,
+        number_of_matches=max_documents,
+        collapse_rows=True,
+        metadata_filter=metadata_filter,
+    ).select(
+        documents_list=pw.this[documents_column_name],
+    )
+
+    return answer_with_geometric_rag_strategy(
+        questions,
+        query_context.documents_list,
+        llm_chat_model,
+        n_starting_documents,
+        factor,
+        max_iterations,
+    )

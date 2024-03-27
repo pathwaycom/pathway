@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from .data_index import DataIndex, VectorDocumentIndex
 from .sorting import (
     SortedIndex,
     binsearch_oracle,
@@ -16,7 +17,9 @@ from .sorting import (
 )
 
 __all__ = [
+    "DataIndex",
     "SortedIndex",
+    "VectorDocumentIndex",
     "binsearch_oracle",
     "build_sorted_index",
     "filter_cmp_helper",
