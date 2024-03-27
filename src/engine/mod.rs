@@ -46,3 +46,5 @@ pub use frontier::TotalFrontier;
 
 pub mod telemetry;
 pub use telemetry::Config;
+
+pub mod external_index_wrappers;

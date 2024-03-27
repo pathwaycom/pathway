@@ -11,6 +11,12 @@ pub trait ReportError: Send {
     fn report(&self, error: Error);
 }
 
+impl ReportError for Box<dyn ReportError> {
+    fn report(&self, error: Error) {
+        self.as_ref().report(error);
+    }
+}
+
 pub trait ReportErrorExt: ReportError {
     #[track_caller]
     fn report_and_panic(&self, error: impl Into<Error>) -> ! {

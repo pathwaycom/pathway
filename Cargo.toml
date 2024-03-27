@@ -37,6 +37,7 @@ hyper = { version = "0.14", features = ["server"] }
 id-arena = "2.2.1"
 itertools = "0.12.1"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
+jmespath = "0.3.0"
 log = { version = "0.4.21", features = ["std"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
 nix = { version = "0.28.0", features = ["fs", "user", "resource"] }
@@ -70,6 +71,7 @@ tempfile = "3.10.1"
 thiserror = "1.0.58"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
+usearch = "2.9.2"
 uuid = { version = "1.8.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.10", features = ["xxh3"] }
 

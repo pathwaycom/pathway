@@ -573,6 +573,13 @@ class Scope:
         left_ear: bool = False,
         right_ear: bool = False,
     ) -> Table: ...
+    def use_external_index_as_of_now(
+        self,
+        index: ExternalIndexData,
+        queries: ExternalIndexQuery,
+        table_properties: TableProperties,
+        external_index_factory: ExternalIndexFactory,
+    ) -> Table: ...
 
     # Transformers
 
@@ -768,3 +775,22 @@ class TelemetryConfig:
         license_key: str | None = None,
         monitoring_server: str | None = None,
     ) -> TelemetryConfig: ...
+
+class ExternalIndexFactory:
+    @staticmethod
+    def usearch_knn_factory(
+        dimensions: int, reserved_space: int
+    ) -> ExternalIndexFactory: ...
+
+@dataclasses.dataclass(frozen=True)
+class ExternalIndexData:
+    table: Table
+    data_column: ColumnPath
+    filter_data_column: ColumnPath | None
+
+@dataclasses.dataclass(frozen=True)
+class ExternalIndexQuery:
+    table: Table
+    query_column: ColumnPath
+    limit_column: ColumnPath | None
+    filter_column: ColumnPath | None

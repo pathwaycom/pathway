@@ -18,9 +18,11 @@ use scopeguard::defer;
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::ConnectorStats;
+use crate::external_integration::ExternalIndex;
 use crate::persistence::ExternalPersistentId;
 
 use super::error::{DynResult, Trace};
+use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
 use super::reduce::StatefulCombineFn;
 use super::{Error, Expression, Key, Reducer, Result, TotalFrontier, Type, Value};
 
@@ -838,6 +840,14 @@ pub trait Graph {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
+    fn use_external_index_as_of_now(
+        &self,
+        index_stream: ExternalIndexData,
+        query_stream: ExternalIndexQuery,
+        table_properties: Arc<TableProperties>,
+        external_index: Box<dyn ExternalIndex>,
+    ) -> Result<TableHandle>;
+
     fn ix_table(
         &self,
         to_ix_handle: TableHandle,
@@ -1159,6 +1169,22 @@ impl Graph for ScopedGraph {
         })
     }
 
+    fn use_external_index_as_of_now(
+        &self,
+        index_stream: ExternalIndexData,
+        query_stream: ExternalIndexQuery,
+        table_properties: Arc<TableProperties>,
+        external_index: Box<dyn ExternalIndex>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.use_external_index_as_of_now(
+                index_stream,
+                query_stream,
+                table_properties,
+                external_index,
+            )
+        })
+    }
     fn forget_immediately(
         &self,
         table_handle: TableHandle,

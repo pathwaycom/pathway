@@ -11,6 +11,7 @@ from types import EllipsisType
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import pathway.internals as pw
+from pathway.engine import ExternalIndexFactory
 from pathway.internals import column_properties as cp, dtype as dt, trace
 from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
@@ -393,6 +394,79 @@ class GradualBroadcastContext(Context):
     @property
     def universe(self) -> Universe:
         return self.orig_id_column.universe
+
+
+@dataclass(eq=False, frozen=True)
+class ExternalIndexAsOfNowContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
+    _index_id_column: IdColumn
+    _query_id_column: IdColumn
+    index_table: pw.Table
+    query_table: pw.Table
+    index_column: ColumnWithExpression
+    query_column: ColumnWithExpression
+    index_factory: ExternalIndexFactory
+    query_response_limit_column: ColumnWithExpression | None
+    index_filter_data_column: ColumnWithExpression | None
+    query_filter_column: ColumnWithExpression | None
+
+    @property
+    def universe(self) -> Universe:
+        return self._query_id_column.universe
+
+    def _index_columns(self) -> list[Column]:
+        columns = [self.index_column, self.index_filter_data_column]
+        return [col for col in columns if col is not None]
+
+    def _query_columns(self) -> list[Column]:
+        columns = [
+            self.query_column,
+            self.query_response_limit_column,
+            self.query_filter_column,
+        ]
+        return [col for col in columns if col is not None]
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self._index_id_column, self._query_id_column]
+
+    def column_dependencies_internal(self) -> Iterable[Column]:
+        return self._index_columns() + self._query_columns()
+
+    def index_universe(self) -> Universe:
+        return self.index_table._universe
+
+    def query_universe(self) -> Universe:
+        return self.query_table._universe
+
+    def intermediate_tables(self) -> Iterable[Table]:
+        index_columns = self._index_columns()
+
+        query_columns = self._query_columns()
+
+        return [
+            _create_internal_table(
+                index_columns,
+                self.index_table._context,
+            ),
+            _create_internal_table(
+                query_columns,
+                self.query_table._context,
+            ),
+        ]
+
+    # todo: when needed, add support for more general types;
+    # not sure yet how config is to be passed from method invocation,
+    # but that's the right place to configure what is returned, so the type(s)
+    # of columns should be inferred from there
+    #
+    # list of pointers is simply a reasonable default
+    @cached_property
+    def matched_items(self):
+        return MaterializedColumn(
+            self.query_table._universe,
+            cp.ColumnProperties(dtype=dt.List(dt.POINTER)),
+        )
 
 
 @dataclass(eq=False, frozen=True)

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import pathway.internals.column as clmn
 import pathway.internals.expression as expr
+from pathway.engine import ExternalIndexFactory
 from pathway.internals import api, dtype as dt, groupbys, thisclass, universes
 from pathway.internals.api import Value
 from pathway.internals.arg_handlers import (
@@ -572,6 +573,52 @@ class Table(
         context = clmn.FilterContext(filtering_column, self._id_column)
 
         return self._table_with_context(context)
+
+    @trace_user_frame
+    @desugar
+    @check_arg_types
+    @contextualized_operator
+    def _external_index_as_of_now(
+        self,
+        query_table: Table,
+        *,
+        index_column: expr.ColumnExpression,
+        query_column: expr.ColumnExpression,
+        index_factory: ExternalIndexFactory,
+        query_responses_limit_column: expr.ColumnExpression | None = None,
+        index_filter_data_column: expr.ColumnExpression | None = None,
+        query_filter_column: expr.ColumnExpression | None = None,
+    ) -> Table:
+        ev_query_responses_limit_column = (
+            query_table._eval(query_responses_limit_column)
+            if query_responses_limit_column is not None
+            else None
+        )
+        ev_index_filter_data_column = (
+            self._eval(index_filter_data_column)
+            if index_filter_data_column is not None
+            else None
+        )
+        ev_query_filter_column = (
+            query_table._eval(query_filter_column)
+            if query_filter_column is not None
+            else None
+        )
+        context = clmn.ExternalIndexAsOfNowContext(
+            _index_id_column=self._id_column,
+            _query_id_column=query_table._id_column,
+            index_table=self,
+            query_table=query_table,
+            index_column=self._eval(index_column),
+            query_column=query_table._eval(query_column),
+            index_factory=index_factory,
+            query_response_limit_column=ev_query_responses_limit_column,
+            index_filter_data_column=ev_index_filter_data_column,
+            query_filter_column=ev_query_filter_column,
+        )
+        return Table(
+            _columns={"matched_items": context.matched_items}, _context=context
+        )
 
     @trace_user_frame
     @desugar

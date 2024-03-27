@@ -94,6 +94,7 @@ class AddNewColumnsPathEvaluator(
         clmn.JoinRowwiseContext,
         clmn.SortingContext,
         clmn.GradualBroadcastContext,
+        clmn.ExternalIndexAsOfNowContext,
     ],
 ):
     def compute_if_all_new_are_references(

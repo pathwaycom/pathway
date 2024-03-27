@@ -53,7 +53,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
 
-use self::threads::PythonThreadState;
+use self::{
+    external_index_wrappers::{PyExternalIndexData, PyExternalIndexQuery},
+    threads::PythonThreadState,
+};
 use crate::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
     InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
@@ -92,8 +95,11 @@ use crate::persistence::config::{
 };
 use crate::persistence::{ExternalPersistentId, IntoPersistentId, PersistentId};
 use crate::pipe::{pipe, ReaderType, WriterType};
+use crate::python_api::external_index_wrappers::PyExternalIndexFactory;
+
 use s3::creds::Credentials as AwsCredentials;
 
+mod external_index_wrappers;
 mod logging;
 mod numba;
 pub mod threads;
@@ -2353,6 +2359,22 @@ impl Scope {
         Table::new(self_, new_table_handle)
     }
 
+    pub fn use_external_index_as_of_now(
+        self_: &PyCell<Self>,
+        index: &PyExternalIndexData,
+        queries: &PyExternalIndexQuery,
+        table_properties: TableProperties,
+        external_index_factory: PyExternalIndexFactory,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_.borrow().graph.use_external_index_as_of_now(
+            index.to_external_index_data(),
+            queries.to_external_index_query(),
+            table_properties.0,
+            external_index_factory.inner.make_instance(),
+        )?;
+        Table::new(self_, new_table_handle)
+    }
+
     pub fn buffer(
         self_: &PyCell<Self>,
         table: PyRef<Table>,
@@ -4566,6 +4588,10 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Done>()?;
     m.add_class::<PyExportedTable>()?;
     m.add_class::<Error>()?;
+
+    m.add_class::<PyExternalIndexFactory>()?;
+    m.add_class::<PyExternalIndexData>()?;
+    m.add_class::<PyExternalIndexQuery>()?;
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;

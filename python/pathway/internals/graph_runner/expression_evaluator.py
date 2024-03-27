@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from pathway.engine import ExternalIndexData, ExternalIndexQuery
 from pathway.internals import (
     api,
     column as clmn,
@@ -810,6 +811,54 @@ class GradualBroadcastEvaluator(
             value_path,
             upper_path,
             properties,
+        )
+
+
+class ExternalIndexAsOfNowEvaluator(
+    ExpressionEvaluator, context_type=clmn.ExternalIndexAsOfNowContext
+):
+    context: clmn.ExternalIndexAsOfNowContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        index_storage = self.state.get_storage(self.context.index_universe())
+        index_path = index_storage.get_path(self.context.index_column)
+        index_filter_data_path = (
+            index_storage.get_path(self.context.index_filter_data_column)
+            if self.context.index_filter_data_column is not None
+            else None
+        )
+        queries_storage = self.state.get_storage(self.context.query_universe())
+        query_path = queries_storage.get_path(self.context.query_column)
+        query_response_limit_path = (
+            queries_storage.get_path(self.context.query_response_limit_column)
+            if self.context.query_response_limit_column is not None
+            else None
+        )
+        query_filter_path = (
+            queries_storage.get_path(self.context.query_filter_column)
+            if self.context.query_filter_column is not None
+            else None
+        )
+
+        properties = self._table_properties(output_storage)
+
+        index = ExternalIndexData(
+            self.state.get_table(self.context.index_universe()),
+            index_path,
+            index_filter_data_path,
+        )
+        queries = ExternalIndexQuery(
+            self.state.get_table(self.context.query_universe()),
+            query_path,
+            query_response_limit_path,
+            query_filter_path,
+        )
+
+        return self.scope.use_external_index_as_of_now(
+            index=index,
+            queries=queries,
+            table_properties=properties,
+            external_index_factory=self.context.index_factory,
         )
 
 

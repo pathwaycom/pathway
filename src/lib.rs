@@ -11,6 +11,7 @@
 pub mod connectors;
 pub mod deepcopy;
 pub mod engine;
+pub mod external_integration;
 pub mod persistence;
 pub mod python_api;
 

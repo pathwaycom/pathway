@@ -77,7 +77,8 @@ where
 }
 
 /// Reorganizes a set of batches into set of vectors, each vector corresponding
-/// to updates from a specific time
+/// to updates from a specific time. While doing so, it applies logic to each
+/// (key, val, time, diff) tuple.
 pub(crate) fn batch_by_time<B, O>(
     input: &[B],
     mut logic: impl FnMut(&B::Key, &B::Val, &B::Time, &B::R) -> O,

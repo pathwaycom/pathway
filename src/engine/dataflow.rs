@@ -17,6 +17,7 @@ use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConn
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{read_persisted_state, ARTIFICIAL_TIME_ON_REWIND_START};
 use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
+use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
     Epsilon, TimeColumnForget, TimeColumnFreeze,
@@ -92,6 +93,7 @@ use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use super::error::{DynError, DynResult, Trace};
 use super::expression::AnyExpression;
+use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
 use super::graph::{DataRow, ExportedTable, SubscribeCallbacks};
 use super::http_server::maybe_run_http_server_thread;
 use super::license::License;
@@ -111,6 +113,9 @@ use super::{
     Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable,
     OperatorStats, ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties,
     UniverseHandle, Value,
+};
+use crate::external_integration::{
+    make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
 };
 
 pub use self::config::Config;
@@ -2170,6 +2175,51 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .alloc(Table::from_collection(new_table).with_properties(table_properties)))
     }
 
+    fn use_external_index_as_of_now(
+        &mut self,
+        index_stream: ExternalIndexData,
+        query_stream: ExternalIndexQuery,
+        table_properties: Arc<TableProperties>,
+        external_index: Box<dyn ExternalIndex>,
+    ) -> Result<TableHandle> {
+        let index = self
+            .tables
+            .get(index_stream.table)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let queries = self
+            .tables
+            .get(query_stream.table)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let data_acc = make_accessor(index_stream.data_column, self.error_reporter.clone());
+        let filter_data_acc =
+            make_option_accessor(index_stream.filter_data_column, self.error_reporter.clone());
+        let query_acc = make_accessor(query_stream.query_column, self.error_reporter.clone());
+        let limit_acc =
+            make_option_accessor(query_stream.limit_column, self.error_reporter.clone());
+        let filter_acc =
+            make_option_accessor(query_stream.filter_column, self.error_reporter.clone());
+
+        let extended_external_index = Box::new(IndexDerivedImpl::new(
+            external_index,
+            Box::new(self.error_reporter.clone()),
+            data_acc,
+            filter_data_acc,
+            query_acc,
+            limit_acc,
+            filter_acc,
+        ));
+
+        let new_values = index
+            .values()
+            .use_external_index_as_of_now(queries.values(), extended_external_index);
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn join_tables(
         &mut self,
@@ -3339,7 +3389,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                     .unwrap_with_reporter(&error_reporter);
             })
             .inspect_core(move |event| {
-                // Another inspect, so we are looking at the first inspect's output fronitier,
+                // Another inspect, so we are looking at the first inspect's output frontier,
                 // i.e., we are called after every worker has finished processing callbacks from
                 // the first inspect for this frontier.
                 if let Err(frontier) = event {
@@ -4357,6 +4407,21 @@ where
         )
     }
 
+    fn use_external_index_as_of_now(
+        &self,
+        index_stream: ExternalIndexData,
+        query_stream: ExternalIndexQuery,
+        table_properties: Arc<TableProperties>,
+        external_index: Box<dyn ExternalIndex>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().use_external_index_as_of_now(
+            index_stream,
+            query_stream,
+            table_properties,
+            external_index,
+        )
+    }
+
     fn ix_table(
         &self,
         to_ix_handle: TableHandle,
@@ -4934,6 +4999,21 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
             value_path,
             upper_path,
             table_properties,
+        )
+    }
+
+    fn use_external_index_as_of_now(
+        &self,
+        index_stream: ExternalIndexData,
+        query_stream: ExternalIndexQuery,
+        table_properties: Arc<TableProperties>,
+        external_index: Box<dyn ExternalIndex>,
+    ) -> Result<TableHandle> {
+        self.0.borrow_mut().use_external_index_as_of_now(
+            index_stream,
+            query_stream,
+            table_properties,
+            external_index,
         )
     }
 
