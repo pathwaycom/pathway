@@ -2356,6 +2356,34 @@ class Table(
             context=context,
         )
 
+    @trace_user_frame
+    @contextualized_operator
+    def remove_errors(self) -> Table[TSchema]:
+        """Filters out rows that contain errors.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> t1 = pw.debug.table_from_markdown(
+        ...     '''
+        ...     a | b
+        ...     3 | 3
+        ...     4 | 0
+        ...     5 | 5
+        ...     6 | 2
+        ... '''
+        ... )
+        >>> t2 = t1.with_columns(x=pw.this.a // pw.this.b)
+        >>> res = t2.remove_errors()
+        >>> pw.debug.compute_and_print(res, include_id=False, terminate_on_error=False)
+        a | b | x
+        3 | 3 | 1
+        5 | 5 | 1
+        6 | 2 | 3
+        """
+        context = clmn.RemoveErrorsContext(self._id_column)
+        return self._table_with_context(context)
+
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])
 

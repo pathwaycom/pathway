@@ -930,6 +930,13 @@ pub trait Graph {
     ) -> Result<Arc<dyn ExportedTable>>;
 
     fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle>;
+
+    fn remove_errors_from_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -1549,5 +1556,14 @@ impl Graph for ScopedGraph {
 
     fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
         self.try_with(|g| g.import_table(table))
+    }
+
+    fn remove_errors_from_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.remove_errors_from_table(table_handle, column_paths, table_properties))
     }
 }

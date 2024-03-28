@@ -425,3 +425,67 @@ def test_udf(sync: bool) -> None:
         ),
         terminate_on_error=False,
     )
+
+
+def test_remove_errors():
+    t1 = T(
+        """
+        a | b | c
+        3 | 3 | 1
+        4 | 0 | 2
+        5 | 5 | 0
+        6 | 2 | 3
+    """
+    )
+
+    t2 = t1.select(x=pw.this.a // pw.this.b)
+    t3 = t1.select(y=pw.this.a // pw.this.c)
+
+    t4 = t1.select(pw.this.a, x=t2.x, y=t3.y)
+
+    res = t4.remove_errors()
+
+    assert_table_equality_wo_index(
+        res,
+        T(
+            """
+            a | x | y
+            3 | 1 | 3
+            6 | 3 | 2
+            """
+        ),
+        terminate_on_error=False,
+    )
+
+
+def test_remove_errors_identity():
+    t1 = T(
+        """
+        a | b | c
+        3 | 3 | 1
+        4 | 1 | 2
+        5 | 5 | 1
+        6 | 2 | 3
+    """
+    )
+
+    t2 = t1.select(x=pw.this.a // pw.this.b)
+    t3 = t1.select(y=pw.this.a // pw.this.c)
+
+    t4 = t1.select(pw.this.a, x=t2.x, y=t3.y)
+
+    res = t4.remove_errors()
+
+    assert_table_equality_wo_index(
+        res,
+        T(
+            """
+            a | x | y
+            3 | 1 | 3
+            4 | 4 | 2
+            5 | 1 | 5
+            6 | 3 | 2
+            """
+        ),
+        terminate_on_error=False,
+    )

@@ -1319,3 +1319,21 @@ class SetSchemaContextEvaluator(
 
     def run(self, output_storage: Storage) -> api.Table:
         return self.state.get_table(self.context.universe)
+
+
+class RemoveErrorsEvaluator(ExpressionEvaluator, context_type=clmn.RemoveErrorsContext):
+    context: clmn.RemoveErrorsContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
+        column_paths = []
+        for column in output_storage.get_columns():
+            assert isinstance(column, clmn.ColumnWithReference)
+            path = input_storage.get_path(column.expression._column)
+            column_paths.append(path)
+        properties = self._table_properties(output_storage)
+        return self.scope.remove_errors_from_table(
+            self.state.get_table(input_storage._universe),
+            column_paths,
+            properties,
+        )

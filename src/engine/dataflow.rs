@@ -886,15 +886,17 @@ impl<S: MaybeTotalScope> TupleCollection<S> {
 }
 
 trait FilterOutErrors {
-    fn filter_out_errors(&self, error_logger: Box<dyn LogError>) -> Self;
+    fn filter_out_errors(&self, error_logger: Option<Box<dyn LogError>>) -> Self;
 }
 
 impl<S: MaybeTotalScope> FilterOutErrors for Collection<S, (Key, Tuple)> {
-    fn filter_out_errors(&self, error_logger: Box<dyn LogError>) -> Self {
+    fn filter_out_errors(&self, error_logger: Option<Box<dyn LogError>>) -> Self {
         self.filter(move |(_key, values)| {
             let contains_errors = values.as_value_slice().contains(&Value::Error);
             if contains_errors {
-                error_logger.log_error(Error::ErrorInOutput);
+                if let Some(error_logger) = error_logger.as_ref() {
+                    error_logger.log_error(Error::ErrorInOutput);
+                }
             }
             !contains_errors
         })
@@ -2517,6 +2519,25 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .transpose()?;
         Ok(())
     }
+
+    fn remove_errors_from_table(
+        &mut self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let new_values = self
+            .extract_columns(table_handle, column_paths)?
+            .as_collection()
+            .filter_out_errors(None)
+            .map_named("remove_errors_from_table", |(key, tuple)| {
+                (key, Value::from(tuple.as_value_slice()))
+            });
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+    }
 }
 
 trait DataflowReducer<S: MaybeTotalScope> {
@@ -3243,7 +3264,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let output_columns = self
             .extract_columns(table_handle, column_paths)?
             .as_collection()
-            .filter_out_errors(error_logger);
+            .filter_out_errors(Some(error_logger));
         let single_threaded = data_sink.single_threaded();
         let connector_does_output = !single_threaded || worker_index == 0;
 
@@ -3364,7 +3385,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             .extract_columns(table_handle, column_paths)?
             .as_collection();
         let output_columns = if skip_errors {
-            output_columns.filter_out_errors(error_logger)
+            output_columns.filter_out_errors(Some(error_logger))
         } else {
             output_columns
         };
@@ -4547,6 +4568,17 @@ where
     fn import_table(&self, _table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
     }
+
+    fn remove_errors_from_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .remove_errors_from_table(table_handle, column_paths, table_properties)
+    }
 }
 
 struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = u64>>(
@@ -5156,6 +5188,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph
 
     fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle> {
         self.0.borrow_mut().import_table(table)
+    }
+
+    fn remove_errors_from_table(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .remove_errors_from_table(table_handle, column_paths, table_properties)
     }
 }
 

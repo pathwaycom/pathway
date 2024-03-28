@@ -2828,6 +2828,20 @@ impl Scope {
         let table_handle = self_.borrow().graph.import_table(table.inner.clone())?;
         Table::new(self_, table_handle)
     }
+
+    pub fn remove_errors_from_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_.borrow().graph.remove_errors_from_table(
+            table.handle,
+            column_paths,
+            table_properties.0,
+        )?;
+        Table::new(self_, new_table_handle)
+    }
 }
 
 type CapturedTableData = Arc<Mutex<Vec<DataRow>>>;

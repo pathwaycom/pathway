@@ -949,3 +949,22 @@ class SortingContext(Context):
         return MaterializedColumn(
             self.universe, cp.ColumnProperties(dtype=dt.Optional(dt.POINTER))
         )
+
+
+@dataclass(eq=False, frozen=True)
+class RemoveErrorsContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
+    """Context of `table.remove_errors() operation."""
+
+    orig_id_column: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.orig_id_column]
+
+    def input_universe(self) -> Universe:
+        return self.orig_id_column.universe
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.orig_id_column.universe.subset()

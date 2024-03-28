@@ -64,7 +64,7 @@ class PathEvaluator(ABC):
 
 class FlatStoragePathEvaluator(
     PathEvaluator,
-    context_types=[clmn.GroupedContext],
+    context_types=[clmn.GroupedContext, clmn.RemoveErrorsContext],
 ):
     def compute(
         self,
