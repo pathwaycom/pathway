@@ -4,6 +4,8 @@ import time
 
 import openapi_spec_validator
 import requests
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_core.embeddings import Embeddings
 
 import pathway as pw
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
@@ -12,23 +14,31 @@ PATHWAY_HOST = "127.0.0.1"
 MAX_ATTEMPTS = 20
 
 
+class FakeEmbeddings(Embeddings):
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0, 1.0, 1.0 if text == "foo" else -1.0]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_query(text) for text in texts]
+
+
 def pathway_server(tmp_path, port):
-    docs = pw.io.fs.read(
-        tmp_path,
-        format="binary",
-        mode="streaming",
-        with_metadata=True,
+    data_sources = []
+    data_sources.append(
+        pw.io.fs.read(
+            tmp_path,
+            format="binary",
+            mode="streaming",
+            with_metadata=True,
+        )
     )
 
-    @pw.udf_async
-    async def fake_embeddings_model(x: str):
-        return [1.0, 1.0, 0.0]
+    embeddings_model = FakeEmbeddings()
+    splitter = CharacterTextSplitter("\n\n", chunk_size=4, chunk_overlap=0)
 
-    vector_server = VectorStoreServer(
-        docs,
-        embedder=fake_embeddings_model,
+    vector_server = VectorStoreServer.from_langchain_components(
+        *data_sources, embedder=embeddings_model, splitter=splitter
     )
-
     thread = vector_server.run_server(
         host=PATHWAY_HOST,
         port=port,
@@ -78,7 +88,6 @@ def test_similarity_search_without_metadata(tmp_path: pathlib.Path, port: int):
             output = client("foo")
         except requests.exceptions.RequestException:
             print("No reply so far, retrying in 1 second...")
-            pass
         else:
             print("Got a reply from server, proceeding to checker stage")
             break
@@ -89,3 +98,30 @@ def test_similarity_search_without_metadata(tmp_path: pathlib.Path, port: int):
     assert output[0]["dist"] < 0.0001
     assert output[0]["text"] == "foo"
     assert "metadata" in output[0]
+
+
+def test_vector_store_with_langchain(tmp_path: pathlib.Path, port) -> None:
+    with open(tmp_path / "file_one.txt", "w+") as f:
+        f.write("foo\n\nbar")
+
+    time.sleep(5)
+    p = multiprocessing.Process(target=pathway_server, args=[tmp_path, port])
+    p.start()
+    time.sleep(5)
+    client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+    attempts = 0
+    output = []
+    while attempts < MAX_ATTEMPTS:
+        try:
+            output = client.query("foo", 1)
+        except requests.exceptions.RequestException:
+            print("No reply so far, retrying in 1 second...")
+        else:
+            print("Got a reply from server, proceeding to checker stage")
+            break
+        time.sleep(3)
+        attempts += 1
+    time.sleep(3)
+    p.terminate()
+    assert len(output) == 1
+    assert output[0]["text"] == "foo"

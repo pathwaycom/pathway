@@ -3,17 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import multiprocessing
-import pathlib
-import time
-
-import pytest
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_core.embeddings import Embeddings
 
 import pathway as pw
-from pathway.tests.utils import assert_table_equality, xfail_on_multiple_threads
-from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
+from pathway.tests.utils import assert_table_equality
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 
 class DebugStatsInputSchema(VectorStoreServer.StatisticsQuerySchema):
@@ -122,66 +115,3 @@ def test_async_embedder():
         return [1.0, 1.0, 0.0]
 
     _test_vs(fake_embeddings_model)
-
-
-class FakeEmbeddings(Embeddings):
-    def embed_query(self, text: str) -> list[float]:
-        return [1.0, 1.0, 1.0 if text == "foo" else -1.0]
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self.embed_query(text) for text in texts]
-
-
-def pathway_server(tmp_path, host, port):
-    data_sources = []
-    data_sources.append(
-        pw.io.fs.read(
-            tmp_path,
-            format="binary",
-            mode="streaming",
-            with_metadata=True,
-        )
-    )
-
-    embeddings_model = FakeEmbeddings()
-    splitter = CharacterTextSplitter("\n\n", chunk_size=4, chunk_overlap=0)
-
-    vector_server = VectorStoreServer.from_langchain_components(
-        *data_sources, embedder=embeddings_model, splitter=splitter
-    )
-    thread = vector_server.run_server(
-        host=host,
-        port=port,
-        threaded=True,
-        with_cache=False,
-    )
-    thread.join()
-
-
-@pytest.mark.flaky(reruns=4, reruns_delay=20)
-@xfail_on_multiple_threads
-def test_vector_store_with_langchain(tmp_path: pathlib.Path) -> None:
-    host = "0.0.0.0"
-    port = 8773
-    with open(tmp_path / "file_one.txt", "w+") as f:
-        f.write("foo\n\nbar")
-
-    time.sleep(5)
-    p = multiprocessing.Process(target=pathway_server, args=[tmp_path, host, port])
-    p.start()
-    time.sleep(5)
-    client = VectorStoreClient(host=host, port=port)
-    MAX_ATTEMPTS = 8
-    attempts = 0
-    output = []
-    while attempts < MAX_ATTEMPTS:
-        try:
-            output = client.query("foo", 1)
-        except Exception:
-            pass
-        time.sleep(3)
-        attempts += 1
-    time.sleep(3)
-    p.terminate()
-    assert len(output) == 1
-    assert output[0]["text"] == "foo"
