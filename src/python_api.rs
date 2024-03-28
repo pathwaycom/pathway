@@ -3283,6 +3283,7 @@ pub struct DataStorage {
     csv_parser_settings: Option<Py<CsvParserSettings>>,
     mode: ConnectorMode,
     read_method: ReadMethod,
+    snapshot_maintenance_on_output: bool,
     aws_s3_settings: Option<Py<AwsS3Settings>>,
     elasticsearch_params: Option<Py<ElasticSearchParams>>,
     parallel_readers: Option<usize>,
@@ -3581,6 +3582,7 @@ impl DataStorage {
         csv_parser_settings = None,
         mode = ConnectorMode::Streaming,
         read_method = ReadMethod::ByLine,
+        snapshot_maintenance_on_output = false,
         aws_s3_settings = None,
         elasticsearch_params = None,
         parallel_readers = None,
@@ -3602,6 +3604,7 @@ impl DataStorage {
         csv_parser_settings: Option<Py<CsvParserSettings>>,
         mode: ConnectorMode,
         read_method: ReadMethod,
+        snapshot_maintenance_on_output: bool,
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         parallel_readers: Option<usize>,
@@ -3622,6 +3625,7 @@ impl DataStorage {
             csv_parser_settings,
             mode,
             read_method,
+            snapshot_maintenance_on_output,
             aws_s3_settings,
             elasticsearch_params,
             parallel_readers,
@@ -4041,7 +4045,11 @@ impl DataStorage {
             "postgres" => {
                 let connection_string = self.connection_string()?;
                 let storage = match Client::connect(connection_string, NoTls) {
-                    Ok(client) => PsqlWriter::new(client, self.max_batch_size),
+                    Ok(client) => PsqlWriter::new(
+                        client,
+                        self.max_batch_size,
+                        self.snapshot_maintenance_on_output,
+                    ),
                     Err(e) => {
                         return Err(PyIOError::new_err(format!(
                             "Failed to establish PostgreSQL connection: {e:?}"

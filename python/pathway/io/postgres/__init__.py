@@ -176,6 +176,7 @@ single transaction.
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
+        snapshot_maintenance_on_output=True,
     )
     data_format = api.DataFormat(
         format_type="sql_snapshot",

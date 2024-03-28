@@ -1454,14 +1454,20 @@ pub struct PsqlWriter {
     client: PsqlClient,
     max_batch_size: Option<usize>,
     buffer: Vec<FormatterContext>,
+    snapshot_mode: bool,
 }
 
 impl PsqlWriter {
-    pub fn new(client: PsqlClient, max_batch_size: Option<usize>) -> PsqlWriter {
+    pub fn new(
+        client: PsqlClient,
+        max_batch_size: Option<usize>,
+        snapshot_mode: bool,
+    ) -> PsqlWriter {
         PsqlWriter {
             client,
             max_batch_size,
             buffer: Vec::new(),
+            snapshot_mode,
         }
     }
 }
@@ -1616,7 +1622,7 @@ impl Writer for PsqlWriter {
     }
 
     fn single_threaded(&self) -> bool {
-        true
+        self.snapshot_mode
     }
 }
 

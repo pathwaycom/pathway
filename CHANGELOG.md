@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.bigquery.write` connector for writing Pathway tables into Google BigQuery.
 
+### Changed
+- `pw.io.postgres.write` can now parallelize writes to several threads if several workers are configured.
+
 ## [0.8.5] - 2024-03-27
 
 ### Added
