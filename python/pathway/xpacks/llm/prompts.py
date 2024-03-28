@@ -4,7 +4,9 @@ import pathway as pw
 
 
 @pw.udf
-def prompt_citing_qa(query: str, docs: list[pw.Json], additional_rules: str = ""):
+def prompt_citing_qa(
+    query: str, docs: list[pw.Json], additional_rules: str = ""
+) -> str:
     context_pieces = []
 
     for i, doc in enumerate(docs, 1):
@@ -47,13 +49,16 @@ def prompt_citing_qa(query: str, docs: list[pw.Json], additional_rules: str = ""
 
 
 @pw.udf
-def prompt_short_qa(query: str, docs: list[pw.Json], additional_rules: str = ""):
+def prompt_short_qa(
+    query: str, docs: list[pw.Json] | list[str], additional_rules: str = ""
+) -> str:
     context_pieces = []
 
     for i, doc in enumerate(docs, 1):
-        context_pieces.append(doc["text"])
-        context_pieces.append("")  # type: ignore
-    context_str = "\n".join(context_pieces)  # type: ignore
+        context_pieces.append(str(doc))
+        context_pieces.append("")
+
+    context_str = "\n".join(context_pieces)
     prompt = (
         "Please provide an answer based solely on the provided sources. "
         "Keep your answer concise and accurate. Make sure that it starts with an expression in standardized format. "
@@ -81,14 +86,12 @@ def prompt_qa(
     docs: list[pw.Json] | list[str],
     information_not_found_response="No information found.",
     additional_rules: str = "",
-):
+) -> str:
     context_pieces = []
 
     for i, doc in enumerate(docs, 1):
-        if isinstance(doc, str):
-            context_pieces.append(doc)
-        else:
-            context_pieces.append(doc["text"])  # type: ignore
+        context_pieces.append(str(doc))
+
     context_str = "\n\n".join(context_pieces)
 
     prompt = (
