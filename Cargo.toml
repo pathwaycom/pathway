@@ -90,10 +90,15 @@ yolo-id32 = []
 
 [profile.dev]
 opt-level = 3
+debug = "line-tables-only"
 
 [profile.profiling]
 inherits = "release"
-debug = true
+debug = "line-tables-only"
+
+[profile.debugging]
+inherits = "dev"
+debug = "full"
 
 [build-dependencies]
 pyo3-build-config = "0.20.0"
