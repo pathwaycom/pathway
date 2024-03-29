@@ -63,14 +63,14 @@ For any questions, you will find the community and team behind the project [on D
 ## Use-cases
 
 1. Real-time processing over data streams:
-  - [Real-time ETL.](/developers/showcases/kafka-etl)
-  - [Event-driven pipelines with alerting.](/developers/showcases/realtime-log-monitoring)
-  - [Realtime analytics.](/developers/showcases/linear_regression_with_kafka/)
-  - [Switch from batch to streaming.](/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
+  - [Real-time ETL.](https://pathway.com/developers/showcases/kafka-etl)
+  - [Event-driven pipelines with alerting.](https://pathway.com/developers/showcases/realtime-log-monitoring)
+  - [Realtime analytics.](https://pathway.com/developers/showcases/linear_regression_with_kafka/)
+  - [Switch from batch to streaming.](https://pathway.com/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
 2. Live Data AI Pipelines:
-  - [Data indexing pipeline and RAG.](/developers/user-guide/llm-xpack/vectorstore_pipeline/)
-  - [LLM-powered data pipeline.](/developers/showcases/llm-alert-pathway/)
-  - [Unstructured data to SQL on-the-fly.](/developers/showcases/unstructured-to-structured/)
+  - [Data indexing pipeline and RAG.](https://pathway.com/developers/user-guide/llm-xpack/vectorstore_pipeline/)
+  - [LLM-powered data pipeline.](https://pathway.com/developers/showcases/llm-alert-pathway/)
+  - [Unstructured data to SQL on-the-fly.](https://pathway.com/developers/showcases/unstructured-to-structured/)
 
 ## Getting started<a id="getting-started"></a>
 
