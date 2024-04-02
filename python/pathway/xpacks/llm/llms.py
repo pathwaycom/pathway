@@ -393,6 +393,120 @@ class HFPipelineChat(pw.UDF):
         return wrapped(input_string)
 
 
+class CohereChat(pw.UDF):
+    """Pathway wrapper for Cohere Chat services.
+    Returns answer and cited docs as tuple[str, list[dict]]. Cited docs is empty list if
+    there are no citations.
+
+    Model defaults to `command`.
+
+    The capacity, retry_strategy and cache_strategy need to be specified during object
+    construction. All other arguments can be overridden during application.
+
+    Args:
+        - capacity: Maximum number of concurrent operations allowed.
+            Defaults to None, indicating no specific limit.
+        - retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to None, meaning no retries.
+        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
+            is enabled, operations will be cached using the persistence layer.
+            Defaults to None.
+        - model: name of the model to use. Check the
+            `available models <https://docs.cohere.com/docs/command-beta>`_
+            for details.
+        - documents: (only in call) list of documents for RAG capability.
+            Cohere client returns cited docs and cited chunks of text.
+
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import llms
+    >>> from pathway.udfs import ExponentialBackoffRetryStrategy
+    >>> chat = llms.CohereChat(retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6))
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt
+    ... Wazzup?
+    ... ''')
+    >>> r = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt)))
+    >>> parsed_table = r.select(response=pw.this.ret[0], citations=pw.this.ret[1])
+    >>> parsed_table
+    <pathway.Table schema={'response': <class 'str'>, 'citations': list[pathway.internals.json.Json]}>
+    >>> docs = [{"text": "Pathway is a high-throughput, low-latency data processing framework that handles live data & streaming for you."},
+    ... {"text": "RAG stands for Retrieval Augmented Generation."}]
+    >>> t_with_docs = t.select(*pw.this, docs=docs)
+    >>> r = t_with_docs.select(ret=chat(llms.prompt_chat_single_qa("what is rag?"), documents=pw.this.docs))
+    >>> parsed_table = r.select(response=pw.this.ret[0], citations=pw.this.ret[1])
+    >>> parsed_table
+    <pathway.Table schema={'response': <class 'str'>, 'citations': list[pathway.internals.json.Json]}>
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        capacity: int | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
+        model: str | None = "command",
+        **cohere_kwargs,
+    ):
+        try:
+            import cohere  # noqa
+        except ImportError:
+            raise ImportError("Please install cohere with: `pip install cohere`")
+
+        executor = udfs.async_executor(
+            capacity=capacity,
+            retry_strategy=retry_strategy,
+        )
+        super().__init__(
+            executor=executor,
+            cache_strategy=cache_strategy,
+        )
+        self.kwargs = dict(cohere_kwargs)
+        if model is not None:
+            self.kwargs["model"] = model
+
+    def __wrapped__(
+        self,
+        messages: list[dict] | pw.Json,
+        documents: list[dict] | pw.Json | tuple | None = None,
+        **kwargs,
+    ) -> tuple[str, list[dict]]:
+        import cohere  # noqa
+
+        if isinstance(messages, pw.Json):
+            messages_decoded: list = messages.as_list()
+        else:
+            messages_decoded = messages
+
+        chat_history = messages_decoded[:-1]
+        message = messages_decoded[-1]["content"]
+
+        if isinstance(documents, pw.Json):
+            docs: list[dict[str, str]] | None = documents.as_list()
+        elif isinstance(documents, tuple):
+            docs = [doc.value if isinstance(doc, pw.Json) else doc for doc in documents]
+        else:
+            docs = documents
+
+        kwargs = {**self.kwargs, **kwargs}
+        api_key = kwargs.pop("api_key", None)
+
+        client = cohere.Client(api_key=api_key)
+        ret = client.chat(
+            message=message, chat_history=chat_history, documents=docs, **kwargs
+        )
+        response: str = ret.text
+        cited_documents: list = ret.citations or []
+        cited_documents = list(map(lambda citation: citation.dict(), cited_documents))
+
+        event = {
+            "_type": "cohere_chat_response",
+            "response": response,
+        }
+        logger.info(json.dumps(event))
+
+        return (response, cited_documents)
+
+
 @pw.udf
 def prompt_chat_single_qa(question: str) -> pw.Json:
     """
