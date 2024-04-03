@@ -113,7 +113,7 @@ def test_vector_store_with_langchain(tmp_path: pathlib.Path, port) -> None:
     output = []
     while attempts < MAX_ATTEMPTS:
         try:
-            output = client.query("foo", 1)
+            output = client.query("foo", 1, filepath_globpattern="**/file_one.txt")
         except requests.exceptions.RequestException:
             print("No reply so far, retrying in 1 second...")
         else:

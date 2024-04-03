@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.bigquery.write` connector for writing Pathway tables into Google BigQuery.
+- parameter `filepath_globpattern` to `query` method in `VectorStoreClient` for specifying which files should be considered in the query.
 
 ### Changed
 - `pw.io.postgres.write` can now parallelize writes to several threads if several workers are configured.

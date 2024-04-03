@@ -624,10 +624,10 @@ class VectorStoreClient:
     Please provide either the `url`, or `host` and `port`.
 
     Args:
-        - host: host on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
-        - port: port on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
-        - url: url at which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
-        - timeout: timeout for the post requests in seconds
+        host: host on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
+        port: port on which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
+        url: url at which `VectorStoreServer </developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_ listens
+        timeout: timeout for the post requests in seconds
     """  # noqa
 
     def __init__(
@@ -653,22 +653,30 @@ class VectorStoreClient:
         self.additional_headers = additional_headers or {}
 
     def query(
-        self, query: str, k: int = 3, metadata_filter: str | None = None
+        self,
+        query: str,
+        k: int = 3,
+        metadata_filter: str | None = None,
+        filepath_globpattern: str | None = None,
     ) -> list[dict]:
         """
         Perform a query to the vector store and fetch results.
 
         Args:
-            - query:
-            - k: number of documents to be returned
-            - metadata_filter: optional string representing the metadata filtering query
+            query:
+            k: number of documents to be returned
+            metadata_filter: optional string representing the metadata filtering query
                 in the JMESPath format. The search will happen only for documents
                 satisfying this filtering.
+            filepath_globpattern: optional glob pattern specifying which documents
+                will be searched for this query.
         """
 
         data = {"query": query, "k": k}
         if metadata_filter is not None:
             data["metadata_filter"] = metadata_filter
+        if filepath_globpattern is not None:
+            data["filepath_globpattern"] = filepath_globpattern
         url = self.url + "/v1/retrieve"
         response = requests.post(
             url,
