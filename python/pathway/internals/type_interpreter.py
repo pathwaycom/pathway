@@ -36,7 +36,7 @@ class TypeInterpreterState:
             [
                 *self.unoptionalize,
                 *[col._to_internal() for col in new_cols],
-            ]
+            ],
         )
 
     def check_colref_to_unoptionalize_from_colrefs(
@@ -221,13 +221,15 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.ReducerExpression:
         expression = super().eval_reducer(expression, state=state, **kwargs)
-        return _wrap(expression, self._eval_reducer(expression))
+        return _wrap(
+            expression,
+            expression._reducer.return_type(
+                [arg._dtype for arg in expression._args], self._pointer_type()
+            ),
+        )
 
-    def _eval_reducer(
-        self,
-        expression: expr.ReducerExpression,
-    ) -> dt.DType:
-        return expression._reducer.return_type([arg._dtype for arg in expression._args])
+    def _pointer_type(self):
+        return dt.ANY_POINTER
 
     def eval_count(
         self,
@@ -292,11 +294,14 @@ class TypeInterpreter(IdentityTransform):
         expression = super().eval_pointer(expression, state=state, **kwargs)
         arg_types = [arg._dtype for arg in expression._args]
         if expression._optional and any(
-            isinstance(arg, dt.Optional) for arg in arg_types
+            isinstance(arg, dt.Optional) or arg == dt.ANY for arg in arg_types
         ):
-            return _wrap(expression, dt.Optional(dt.POINTER))
+            return _wrap(
+                expression,
+                dt.Optional(dt.Pointer(*[dt.unoptionalize(arg) for arg in arg_types])),
+            )
         else:
-            return _wrap(expression, dt.POINTER)
+            return _wrap(expression, dt.Pointer(*arg_types))
 
     def eval_cast(
         self,
@@ -343,7 +348,7 @@ class TypeInterpreter(IdentityTransform):
         ret_type = dtypes[0]
         non_optional_arg = False
         for dtype in dtypes:
-            ret_type = dt.types_lca(dtype, ret_type)
+            ret_type = dt.types_lca(dtype, ret_type, raising=True)
             if not isinstance(dtype, dt.Optional):
                 # FIXME: do we want to be more radical and return now?
                 # Maybe with a warning that some args are skipped?
@@ -425,7 +430,7 @@ class TypeInterpreter(IdentityTransform):
 
         then_dtype = then_._dtype
         else_dtype = else_._dtype
-        lca = dt.types_lca(then_dtype, else_dtype)
+        lca = dt.types_lca(then_dtype, else_dtype, raising=True)
         if lca is dt.ANY:
             raise TypeError(
                 f"Cannot perform pathway.if_else on columns of types {then_dtype.typehint} and {else_dtype.typehint}."
@@ -464,7 +469,7 @@ class TypeInterpreter(IdentityTransform):
 
         if object_dtype == dt.JSON:
             # json
-            if not default_dtype.is_subclass_of(dt.Optional(dt.JSON)):
+            if not dt.dtype_issubclass(default_dtype, dt.Optional(dt.JSON)):
                 raise TypeError(
                     f"Default must be of type {Json | None}, found {default_dtype.typehint}."
                 )
@@ -511,9 +516,11 @@ class TypeInterpreter(IdentityTransform):
                 return_dtype = dtypes[0]
                 for dtype in dtypes[1:]:
                     if isinstance(dtype, dt.DType):
-                        return_dtype = dt.types_lca(return_dtype, dtype)
+                        return_dtype = dt.types_lca(return_dtype, dtype, raising=False)
                 if expression._check_if_exists:
-                    return_dtype = dt.types_lca(return_dtype, default_dtype)
+                    return_dtype = dt.types_lca(
+                        return_dtype, default_dtype, raising=False
+                    )
                 return _wrap(expression, return_dtype)
 
             if not isinstance(expression._const_index, int):
@@ -579,13 +586,24 @@ class TypeInterpreter(IdentityTransform):
         expression = super().eval_fill_error(expression, state=state, **kwargs)
         inner_dtype = expression._expr._dtype
         replacement_dtype = expression._replacement._dtype
-        lca = dt.types_lca(inner_dtype, replacement_dtype)
+        lca = dt.types_lca(inner_dtype, replacement_dtype, raising=False)
         if lca is dt.ANY and inner_dtype is not dt.ANY:
             raise TypeError(
                 "Cannot perform pathway.fill_error on columns of types"
                 + f" {inner_dtype.typehint} and {replacement_dtype.typehint}."
             )
         return _wrap(expression, lca)
+
+
+class ReducerInterprerer(TypeInterpreter):
+    id_column_type: dt.DType
+
+    def __init__(self, id_column_type):
+        self.id_column_type = id_column_type
+        super().__init__()
+
+    def _pointer_type(self):
+        return self.id_column_type
 
 
 class JoinTypeInterpreter(TypeInterpreter):

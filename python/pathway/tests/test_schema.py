@@ -194,64 +194,66 @@ def test_schema_from_csv(tmp_path: pathlib.Path):
     write_csv(
         filename,
         """
-        id   | value    | time          | diff
+        ID   | value    | time          | diff
         "a"  | "worrld" | 1692262484324 | 1
         #"b" | "worrld" | 1692262510368 | 1.1
         "c"  | "worrld" | 1692262510368 | 1
         """,
         quoting=csv.QUOTE_NONE,
         float_format="%g",
+        index=False,
     )
 
     schema1 = pw.schema_from_csv(filename, name="schema1")
     expected1 = pw.schema_from_types(
-        _name="schema1", id=str, value=str, time=int, diff=float
+        _name="schema1", ID=str, value=str, time=int, diff=float
     )
     assert_same_schema(schema1, expected1)
 
     # When only one row is to be parsed, the last column has type int
     schema2 = pw.schema_from_csv(filename, name="schema2", num_parsed_rows=1)
     expected2 = pw.schema_from_types(
-        _name="schema2", id=str, value=str, time=int, diff=int
+        _name="schema2", ID=str, value=str, time=int, diff=int
     )
     assert_same_schema(schema2, expected2)
 
     # Skips commented row, so last column has type int
     schema3 = pw.schema_from_csv(filename, name="schema3", comment_character="#")
     expected3 = pw.schema_from_types(
-        _name="schema3", id=str, value=str, time=int, diff=int
+        _name="schema3", ID=str, value=str, time=int, diff=int
     )
     assert_same_schema(schema3, expected3)
 
     # When no rows are parsed, all types are Any
     schema4 = pw.schema_from_csv(filename, name="schema4", num_parsed_rows=0)
     expected4 = pw.schema_from_types(
-        _name="schema4", id=Any, value=Any, time=Any, diff=Any
+        _name="schema4", ID=Any, value=Any, time=Any, diff=Any
     )
     assert_same_schema(schema4, expected4)
 
     # Changing delimiter yields only one column
     schema5 = pw.schema_from_csv(filename, name="schema5", delimiter="]")
     expected5 = pw.schema_builder(
-        {"id,value,time,diff": pw.column_definition(dtype=str)}, name="schema5"
+        {"ID,value,time,diff": pw.column_definition(dtype=str)}, name="schema5"
     )
     assert_same_schema(schema5, expected5)
 
     write_csv(
         filename,
         """
-        id   | "va""l""ue"
+        ID   | "va""l""ue"
         "1"  | "worrld"
         "3"  | "worrld"
         """,
         quoting=csv.QUOTE_NONE,
         float_format="%g",
+        index=False,
     )
 
     schema6 = pw.schema_from_csv(filename, name="schema6")
     expected6 = pw.schema_builder(
         {
-            "id": pw.column_definition(dtype=int),
+            "ID": pw.column_definition(dtype=int),
             'va"l"ue': pw.column_definition(dtype=str),
         },
         name="schema6",
@@ -261,7 +263,7 @@ def test_schema_from_csv(tmp_path: pathlib.Path):
     schema7 = pw.schema_from_csv(filename, name="schema7", quote="'")
     expected7 = pw.schema_builder(
         {
-            "id": pw.column_definition(dtype=str),
+            "ID": pw.column_definition(dtype=str),
             '"va""l""ue"': pw.column_definition(dtype=str),
         },
         name="schema7",
@@ -271,7 +273,7 @@ def test_schema_from_csv(tmp_path: pathlib.Path):
     schema8 = pw.schema_from_csv(filename, name="schema8", double_quote_escapes=False)
     expected8 = pw.schema_builder(
         {
-            "id": pw.column_definition(dtype=int),
+            "ID": pw.column_definition(dtype=int),
             'va"l""ue"': pw.column_definition(dtype=str),
         },
         name="schema8",

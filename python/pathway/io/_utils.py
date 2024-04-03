@@ -41,7 +41,7 @@ _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
     PathwayType.FLOAT: dt.FLOAT,
     PathwayType.STRING: dt.STR,
     PathwayType.ANY: dt.ANY,
-    PathwayType.POINTER: dt.POINTER,
+    PathwayType.POINTER: dt.ANY_POINTER,
     PathwayType.DATE_TIME_NAIVE: dt.DATE_TIME_NAIVE,
     PathwayType.DATE_TIME_UTC: dt.DATE_TIME_UTC,
     PathwayType.DURATION: dt.DURATION,

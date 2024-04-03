@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 import pathway.internals as pw
 from pathway.internals.arg_tuple import wrap_arg_tuple
@@ -51,7 +51,7 @@ class Candidate(pw.Schema):
 
 
 class Instance(pw.Schema):
-    instance: float
+    instance: Any
 
 
 class PrevNext(pw.Schema):
@@ -102,24 +102,27 @@ class SortedIndex(TypedDict):
 def build_sorted_index(nodes: pw.Table[Key | Instance]) -> SortedIndex:
     """Treap built with priorities being hashes (minhash is the root, and recursively),
     sorted according to key column."""
-    result: pw.Table = nodes + nodes.select(hash=pw.apply(hash, nodes.id))
+    orig_id_type = nodes.schema.id_type
+    nodes = nodes.update_id_type(pw.Pointer[Node])
+    result: pw.Table = nodes.with_columns(hash=pw.apply(hash, nodes.id))
     root = result.groupby(result.instance).reduce(
         result.instance, root=pw.reducers.argmin(result.hash)
     )
-    result += result.select(
+    result = result.with_columns(
         candidate=root.ix_ref(result.instance).root,
         left=pw.declare_type(Optional[pw.Pointer], None),
         right=pw.declare_type(Optional[pw.Pointer], None),
     )
 
     result = pw.iterate(_build_tree_step, result=result)
+    root = root.update_types(root=pw.Pointer[Any])
     result = result.select(
         result.key,
         result.left,
         result.right,
         result.instance,
         parent=None,
-    )
+    ).update_types(left=orig_id_type | None, right=orig_id_type | None)
 
     result_nonull_left = result.filter(result.left.is_not_none())
     result <<= (
@@ -268,11 +271,11 @@ class _prefix_sum_oracle:
         root = pw.input_attribute()
 
         @pw.method
-        def prefix_sum_upperbound(self, value) -> pw.Pointer | None:
+        def prefix_sum_upperbound(self, value) -> pw.Pointer[Node] | None:
             """Returns id of minimum key k such that:
             sum{i.val : i.key <= k} > value
             (i.e. returns id of a first row that does not fit in the knapsack)
-            Returns None if not such k exists.
+            Returns None if no such k exists.
             """
             return self.transformer.index[self.root].prefix_sum_upperbound(value)
 
@@ -281,7 +284,7 @@ class _prefix_sum_oracle:
             """Returns minimum key k such that:
             sum{i.val : i.key <= k} > value
             (i.e. returns id of a first row that does not fit in the knapsack)
-            Returns inf if not such k exists.
+            Returns inf if no such k exists.
             """
             upperbound = self.prefix_sum_upperbound(value)
             if upperbound is None:
@@ -307,7 +310,7 @@ class _prefix_sum_oracle:
             return ret
 
         @pw.method
-        def prefix_sum_upperbound(self, value) -> pw.Pointer | None:
+        def prefix_sum_upperbound(self, value) -> pw.Pointer[Node] | None:
             if self.left is not None:
                 lagg = self.transformer.index[self.left].agg
                 if value < lagg:
@@ -332,8 +335,8 @@ class _prefix_sum_oracle:
 
 
 class BinsearchOracle(pw.Schema):
-    lowerbound: Callable[..., pw.Pointer | None]
-    upperbound: Callable[..., pw.Pointer | None]
+    lowerbound: Callable[..., pw.Pointer[Node] | None]
+    upperbound: Callable[..., pw.Pointer[Node] | None]
 
 
 @check_arg_types
@@ -348,12 +351,12 @@ class _binsearch_oracle:
         root = pw.input_attribute()
 
         @pw.method
-        def lowerbound(self, value) -> pw.Pointer | None:
+        def lowerbound(self, value) -> pw.Pointer[Node] | None:
             """Returns id of item such that item.key <= value and item.key is maximal."""
             return self.transformer.index[self.root].lowerbound(value)
 
         @pw.method
-        def upperbound(self, value) -> pw.Pointer | None:
+        def upperbound(self, value) -> pw.Pointer[Node] | None:
             """Returns id of item such that item.key >= value and item.key is minimal."""
             return self.transformer.index[self.root].upperbound(value)
 
@@ -363,7 +366,7 @@ class _binsearch_oracle:
         right = pw.input_attribute()
 
         @pw.method
-        def lowerbound(self, value) -> pw.Pointer | None:
+        def lowerbound(self, value) -> pw.Pointer[Node] | None:
             if self.key <= value:
                 if self.right is not None:
                     right_lowerbound = self.transformer.index[self.right].lowerbound(
@@ -378,7 +381,7 @@ class _binsearch_oracle:
                 return None
 
         @pw.method
-        def upperbound(self, value) -> pw.Pointer | None:
+        def upperbound(self, value) -> pw.Pointer[Node] | None:
             if self.key >= value:
                 if self.left is not None:
                     left_upperbound = self.transformer.index[self.left].upperbound(
@@ -409,10 +412,9 @@ def filter_smallest_k(
     oracle_restricted = oracle.restrict(ks)
     # root is pked with instance, ks also
     res = ks.select(res=oracle_restricted.prefix_sum_upperbound(ks.k))
-    validres = res.filter(res.res.is_not_none())
-    validres = validres.select(res=getattr(table.ix(validres.res), colname))
-    res <<= res.filter(res.res.is_none()).select(res=math.inf)
-    res <<= validres
+    res = res.select(
+        res=pw.coalesce(table.ix(res.res, optional=True)[colname], math.inf)
+    )
 
     selector = filter_cmp_helper(filter_val=res.select(val=res.res), **sorted_index)
     # todo drop agg

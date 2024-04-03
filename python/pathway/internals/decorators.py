@@ -92,7 +92,7 @@ def input_method(type=float):
     ... 7''')
     >>> t2 = first_transformer(table=t1.select(a=t1.age)).table
     >>> t2.schema
-    <pathway.Schema types={'fun': typing.Callable[..., int]}>
+    <pathway.Schema types={'fun': typing.Callable[..., int]}, id_type=<class 'pathway.engine.Pointer'>>
     >>> t3 = second_transformer(table=t2.select(m=t2.fun)).table
     >>> pw.debug.compute_and_print(t1 + t3, include_id=False)
     age | val
@@ -202,7 +202,8 @@ def method(func, **kwargs):
     ... 7''')
     >>> t2 = simple_transformer(table=t1.select(a=t1.age)).table
     >>> t2.schema
-    <pathway.Schema types={'b': <class 'float'>, 'fun': typing.Callable[..., float]}>
+    <pathway.Schema types={'b': <class 'float'>, 'fun': typing.Callable[..., float]}, \
+id_type=<class 'pathway.engine.Pointer'>>
     >>> pw.debug.compute_and_print(t1 + t2.select(t2.b), include_id=False)
     age | b
     7   | 49

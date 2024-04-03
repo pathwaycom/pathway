@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.io.postgres.write` can now parallelize writes to several threads if several workers are configured.
+- Pathway now checks types of pointers rigorously. Indexing table with mismatched number/types of columns vs what was used to create index will now result in a TypeError.
 
 ## [0.8.5] - 2024-03-27
 

@@ -56,6 +56,7 @@ from pathway.internals.operator import iterate_universe
 from pathway.internals.row_transformer import ClassArg
 from pathway.internals.run import run, run_all
 from pathway.internals.schema import (
+    ColumnDefinition,
     Schema,
     SchemaProperties,
     column_definition,
@@ -154,4 +155,5 @@ __all__ = [
     "set_monitoring_config",
     "global_error_log",
     "local_error_log",
+    "ColumnDefinition",
 ]

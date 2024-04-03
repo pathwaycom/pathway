@@ -19,12 +19,12 @@ class Hash(pw.Schema):
 
 class Node(pw.Schema):
     val: Any
-    next: pw.Pointer[Node]
+    next: pw.Pointer[Any]
 
 
 class Shortcuts(pw.Schema):
     shortcut_val: Any
-    shortcut_next: pw.Pointer[Shortcuts] | None
+    shortcut_next: pw.Pointer[Any] | None
 
 
 @pw.transformer
@@ -58,7 +58,7 @@ class shortcut_transformer:
                 )
 
         @pw.output_attribute(output_name="shortcut_next")
-        def new_shortcut_next(self) -> pw.Pointer[Shortcuts] | None:
+        def new_shortcut_next(self) -> pw.Pointer[Any] | None:
             ret, _ = self._shortcut
             return ret
 

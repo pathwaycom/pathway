@@ -21,14 +21,14 @@ class Feature(pw.Schema):
 
 
 class Edge(pw.Schema):
-    node: pw.Pointer[Node]
-    feature: pw.Pointer[Feature]
+    node: pw.Pointer[Any]
+    feature: pw.Pointer[Any]
     weight: float
 
 
 class JoinResult(pw.Schema):
-    left: pw.Pointer[Node]
-    right: pw.Pointer[Node]
+    left: pw.Pointer[Any]
+    right: pw.Pointer[Any]
     weight: float
 
 

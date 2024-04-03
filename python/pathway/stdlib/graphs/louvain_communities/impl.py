@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pathway.internals as pw
 from pathway.internals.fingerprints import fingerprint
@@ -230,7 +231,9 @@ def _louvain_level(G: WeightedGraph) -> pw.Table[Clustering]:
     # arbitrary new ID generation;
     # without re-generating we sometimes end up in a situation in which
     # a cluster of id X does not contain a vertex of id X
-    clustering = G.V.select(c=G.V.pointer_from(G.V.id), total_weight=G.V.apx_value)
+    clustering = G.V.select(
+        c=G.V.pointer_from(G.V.id), total_weight=G.V.apx_value
+    ).update_types(c=pw.Pointer[Any])
     return pw.iterate(
         lambda clustering, V, WE: dict(
             clustering=_one_step(

@@ -6,8 +6,8 @@ import pathway.internals.dtype as dt
 def test_identities():
     assert dt.Optional(dt.INT) is dt.Optional(dt.INT)
     assert dt.Pointer() is dt.Pointer()
-    assert dt.Tuple(dt.INT, dt.Optional(dt.POINTER)) is dt.Tuple(
-        dt.INT, dt.Optional(dt.POINTER)
+    assert dt.Tuple(dt.INT, dt.Optional(dt.ANY_POINTER)) is dt.Tuple(
+        dt.INT, dt.Optional(dt.ANY_POINTER)
     )
     assert dt.Tuple(dt.INT, ...) is dt.List(dt.INT)
     assert dt.Optional(dt.ANY) is dt.ANY

@@ -485,7 +485,7 @@ class AsyncTransformer(ABC):
         )
         output_node = list(parse_graph.G.global_scope.nodes)[-1]
 
-        schema = self.output_schema.update_types(
+        schema = self.output_schema.with_types(
             **{
                 key: dt.Optional(orig_dtype)
                 for key, orig_dtype in self.output_schema._dtypes().items()

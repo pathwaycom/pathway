@@ -481,6 +481,8 @@ class RowwiseEvaluator(
         arg = self.eval_expression(expression._expr, eval_state=eval_state)
         source_type = expression._expr._dtype
         target_type = expression._return_type
+        source_type = dt.normalize_pointers(source_type)
+        target_type = dt.normalize_pointers(target_type)
 
         if (
             dt.dtype_equivalence(target_type, source_type)

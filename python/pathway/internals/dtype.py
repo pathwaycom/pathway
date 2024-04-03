@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import datetime
+import functools
 import typing
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -18,7 +19,7 @@ from pathway.engine import PathwayType
 from pathway.internals import api, datetime_types, json as js
 
 if typing.TYPE_CHECKING:
-    from pathway.internals.schema import Schema
+    from pathway.internals.schema import SchemaMetaclass
 
 
 class DType(ABC):
@@ -52,9 +53,6 @@ class DType(ABC):
 
     def equivalent_to(self, other: DType) -> bool:
         return dtype_equivalence(self, other)
-
-    def is_subclass_of(self, other: DType) -> bool:
-        return dtype_issubclass(self, other)
 
     @property
     @abstractmethod
@@ -248,36 +246,44 @@ class Array(DType):
 T = typing.TypeVar("T")
 
 
-class Pointer(DType, typing.Generic[T]):
-    wrapped: type[Schema] | None = None
+class Pointer(DType):
+    args: tuple[DType, ...] | None
 
     def __repr__(self):
-        if self.wrapped is not None:
-            return f"Pointer({self.wrapped.__name__})"
+        if self.args is None:
+            return "ANY_POINTER"
         else:
-            return "Pointer"
+            return f"Pointer({', '.join(repr(arg) for arg in self.args)})"
 
-    def _set_args(self, wrapped):
-        self.wrapped = wrapped
+    def _set_args(self, args):
+        self.args = args
 
     def to_engine(self) -> api.PathwayType:
         return api.PathwayType.POINTER
 
-    def __new__(cls, wrapped: type[Schema] | None = None) -> Pointer:
-        return super().__new__(cls, wrapped)
+    def __new__(cls, *args: DType | EllipsisType | SchemaMetaclass) -> Pointer:
+        if args == (...,):
+            return super().__new__(cls, None)  # ANY_POINTER
+        else:
+            from pathway.internals.schema import SchemaMetaclass
+
+            if len(args) == 1 and isinstance(args[0], SchemaMetaclass):
+                return args[0]._id_dtype
+            else:
+                return super().__new__(cls, tuple(wrap(arg) for arg in args))
 
     def is_value_compatible(self, arg):
         return isinstance(arg, api.Pointer)
 
     @cached_property
     def typehint(self) -> type[api.Pointer]:
-        if self.wrapped is None:
+        if self.args is None:
             return api.Pointer
         else:
-            return api.Pointer[self.wrapped]  # type: ignore[name-defined]
+            return api.Pointer[tuple(arg.typehint for arg in self.args)]  # type: ignore[misc]
 
 
-POINTER: DType = Pointer()
+ANY_POINTER: DType = Pointer(...)
 
 
 class Optional(DType):
@@ -470,14 +476,13 @@ DURATION = _Duration()
 
 
 def wrap(input_type) -> DType:
-    assert input_type != ...
     assert input_type != Optional
-    assert input_type != Pointer
     assert input_type != Tuple
     assert input_type != Callable
     assert input_type != Array
     assert input_type != List
     assert input_type != Json
+    assert input_type != ...
 
     from pathway.internals.schema import ColumnSchema
 
@@ -492,17 +497,11 @@ def wrap(input_type) -> DType:
         return NONE
     elif input_type == typing.Any:
         return ANY
-    elif (
-        input_type is api.Pointer
-        or input_type is api.Pointer
-        or typing.get_origin(input_type) is api.Pointer
-    ):
+    elif input_type == api.Pointer:
+        return ANY_POINTER
+    elif typing.get_origin(input_type) == api.Pointer:
         args = typing.get_args(input_type)
-        if len(args) == 0:
-            return Pointer()
-        else:
-            assert len(args) == 1
-            return Pointer(args[0])
+        return Pointer(*args)
     elif isinstance(input_type, str):
         return ANY  # TODO: input_type is annotation for class
     elif typing.get_origin(input_type) == collections.abc.Callable:
@@ -575,7 +574,7 @@ def wrap(input_type) -> DType:
             bytes: BYTES,
         }.get(input_type, None)
         if dtype is None:
-            raise TypeError(f"Unsupported type {input_type}.")
+            raise TypeError(f"Unsupported type {input_type!r}.")
         return dtype
 
 
@@ -623,13 +622,23 @@ def broadcast_tuples(
     return (largs, rargs)
 
 
-def dtype_tuple_equivalence(left: Tuple | List, right: Tuple | List) -> bool:
+def dtype_tuple_issubclass(left: Tuple | List, right: Tuple | List) -> bool:
     if left == ANY_TUPLE or right == ANY_TUPLE:
         return True
     largs, rargs = broadcast_tuples(left, right)
     if len(largs) != len(rargs):
         return False
-    return all(dtype_equivalence(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
+    return all(dtype_issubclass(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
+
+
+def dtype_pointer_issubclass(left: Pointer, right: Pointer) -> bool:
+    if left.args is None or right.args is None:
+        return True
+    largs = left.args
+    rargs = right.args
+    if len(largs) != len(rargs):
+        return False
+    return all(dtype_issubclass(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
 
 
 def dtype_array_equivalence(left: Array, right: Array) -> bool:
@@ -655,11 +664,11 @@ def dtype_issubclass(left: DType, right: DType) -> bool:
     elif isinstance(right, Optional):
         return dtype_issubclass(left, unoptionalize(right))
     elif isinstance(left, (Tuple, List)) and isinstance(right, (Tuple, List)):
-        return dtype_tuple_equivalence(left, right)
+        return dtype_tuple_issubclass(left, right)
     elif isinstance(left, Array) and isinstance(right, Array):
         return dtype_array_equivalence(left, right)
     elif isinstance(left, Pointer) and isinstance(right, Pointer):
-        return True  # TODO
+        return dtype_pointer_issubclass(left, right)
     elif isinstance(left, _SimpleDType) and isinstance(right, _SimpleDType):
         if left == INT and right == FLOAT:
             return True
@@ -672,17 +681,29 @@ def dtype_issubclass(left: DType, right: DType) -> bool:
     return left == right
 
 
-def types_lca(left: DType, right: DType) -> DType:
+def types_lca(left: DType, right: DType, *, raising: bool) -> DType:
     """LCA of two types."""
     if isinstance(left, Optional) or isinstance(right, Optional):
-        return Optional(types_lca(unoptionalize(left), unoptionalize(right)))
+        return Optional(
+            types_lca(unoptionalize(left), unoptionalize(right), raising=raising)
+        )
     elif isinstance(left, (Tuple, List)) and isinstance(right, (Tuple, List)):
         if left == ANY_TUPLE or right == ANY_TUPLE:
             return ANY_TUPLE
-        elif dtype_tuple_equivalence(left, right):
-            return left
-        else:
-            return ANY_TUPLE
+        if isinstance(left, List) and isinstance(right, List):
+            return List(types_lca(left.wrapped, right.wrapped, raising=raising))
+        largs, rargs = broadcast_tuples(left, right)
+        if len(largs) != len(rargs):
+            if raising:
+                raise TypeError
+            else:
+                return ANY_TUPLE
+        return Tuple(
+            *[
+                types_lca(l_arg, r_arg, raising=raising)
+                for l_arg, r_arg in zip(largs, rargs)
+            ]
+        )
     elif isinstance(left, Array) and isinstance(right, Array):
         if left.n_dim is None or right.n_dim is None:
             n_dim = None
@@ -695,19 +716,25 @@ def types_lca(left: DType, right: DType) -> DType:
         elif left.wrapped == right.wrapped:
             wrapped = left.wrapped
         else:
-            wrapped = ANY
+            if raising:
+                raise TypeError
+            else:
+                wrapped = ANY
         return Array(n_dim=n_dim, wrapped=wrapped)
     elif isinstance(left, Pointer) and isinstance(right, Pointer):
-        l_schema = left.wrapped
-        r_schema = right.wrapped
-        if l_schema is None:
-            return right
-        elif r_schema is None:
-            return left
-        if l_schema == r_schema:
-            return left
-        else:
-            return POINTER
+        if left.args is None or right.args is None:
+            return ANY_POINTER
+        if len(left.args) != len(right.args):
+            if raising:
+                raise TypeError
+            else:
+                return ANY_POINTER
+        return Pointer(
+            *[
+                types_lca(left, right, raising=False)
+                for left, right in zip(left.args, right.args)
+            ]
+        )
     if dtype_issubclass(left, right):
         return right
     elif dtype_issubclass(right, left):
@@ -717,8 +744,17 @@ def types_lca(left: DType, right: DType) -> DType:
         return Optional(right)
     elif right == NONE:
         return Optional(left)
-    else:
+    elif left == ANY or right == ANY:
         return ANY
+    else:
+        if raising:
+            raise TypeError
+        else:
+            return ANY
+
+
+def types_lca_many(*args: DType, raising: bool) -> DType:
+    return functools.reduce(lambda x, y: types_lca(x, y, raising=raising), args)
 
 
 def unoptionalize(dtype: DType) -> DType:
@@ -727,9 +763,21 @@ def unoptionalize(dtype: DType) -> DType:
 
 def normalize_dtype(dtype: DType) -> DType:
     if isinstance(dtype, Pointer):
-        return POINTER
+        return ANY_POINTER
     if isinstance(dtype, Array):
         return ANY_ARRAY
+    return dtype
+
+
+def normalize_pointers(dtype: DType) -> DType:
+    if isinstance(dtype, Pointer):
+        return ANY_POINTER
+    if isinstance(dtype, List):
+        return List(normalize_pointers(dtype.wrapped))
+    if isinstance(dtype, Tuple):
+        return Tuple(*[normalize_pointers(arg) for arg in dtype.args])
+    if isinstance(dtype, Optional):
+        return Optional(normalize_pointers(dtype.wrapped))
     return dtype
 
 
@@ -770,7 +818,6 @@ _HASHABLE_DTYPES = {
     BYTES,
     FLOAT,
     NONE,
-    POINTER,
     DATE_TIME_NAIVE,
     DATE_TIME_UTC,
     DURATION,
@@ -784,4 +831,6 @@ def is_hashable_in_python(dtype: DType) -> bool:
         return all(is_hashable_in_python(d) for d in dtype.args)
     if isinstance(dtype, List):
         return is_hashable_in_python(dtype.wrapped)
+    if isinstance(dtype, Pointer):
+        return True
     return dtype in _HASHABLE_DTYPES

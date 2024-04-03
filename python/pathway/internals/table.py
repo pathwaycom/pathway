@@ -112,11 +112,12 @@ class Table(
         _schema: type[Schema] | None = None,
     ):
         if _schema is None:
-            _schema = schema_from_columns(_columns)
+            _schema = schema_from_columns(_columns, _context.id_column)
         super().__init__(_context)
         self._columns = dict(_columns)
         self._schema = _schema
         self._id_column = _context.id_column
+        assert dt.wrap(self._id_column.dtype) == dt.wrap(self._schema.id_type)
         self._substitution = {thisclass.this: self}
         self._rowwise_context = clmn.RowwiseContext(self._id_column)
 
@@ -180,7 +181,8 @@ class Table(
         ... 7   | Bob   | dog
         ... ''')
         >>> t1.schema
-        <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}>
+        <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}, \
+id_type=<class 'pathway.engine.Pointer'>>
         >>> t1.typehints()['age']
         <class 'int'>
         """
@@ -338,11 +340,13 @@ class Table(
         Manul
         Octopus
         """
+        all_tables: list[Table] = [self, *tables]
+        all_tables = [table.update_id_type(dt.ANY_POINTER) for table in all_tables]
         reindexed = [
-            table.with_id_from(table.id, i) for i, table in enumerate([self, *tables])
+            table.with_id_from(table.id, i) for i, table in enumerate(all_tables)
         ]
         universes.promise_are_pairwise_disjoint(*reindexed)
-        return Table.concat(*reindexed)
+        return Table.concat(*reindexed).update_id_type(dt.ANY_POINTER)
 
     @trace_user_frame
     @staticmethod
@@ -1193,11 +1197,20 @@ class Table(
         expression = restrict_universe.eval_expression(expression)
         key_col = context.select(tmp=expression).tmp
         key_dtype = self.eval_type(key_col)
-        if (
-            optional and not dt.dtype_issubclass(key_dtype, dt.Optional(dt.POINTER))
-        ) or (not optional and not isinstance(key_dtype, dt.Pointer)):
+        supertype = dt.ANY_POINTER
+        if optional:
+            supertype = dt.Optional(supertype)
+        if not dt.dtype_issubclass(key_dtype, supertype):
             raise TypeError(
                 f"Pathway supports indexing with Pointer type only. The type used was {key_dtype}."
+            )
+        supertype = self._id_column.dtype
+        if optional:
+            supertype = dt.Optional(supertype)
+        if not dt.dtype_issubclass(key_dtype, supertype):
+            raise TypeError(
+                "Indexing a table with a Pointer type with probably mismatched primary keys."
+                + f" Type used was {key_dtype}. Indexed id type was {supertype}."
             )
         if optional and isinstance(key_dtype, dt.Optional):
             self_ = self.update_types(
@@ -1214,7 +1227,10 @@ class Table(
         optional: bool,
     ) -> Table:
         key_column = key_expression._column
-        context = clmn.IxContext(key_column, self._id_column, optional)
+
+        context = clmn.IxContext(
+            key_column, key_expression._table._id_column, self._id_column, optional
+        )
 
         return self._table_with_context(context)
 
@@ -1313,10 +1329,10 @@ class Table(
                 )
 
         schema = {
-            key: functools.reduce(
-                dt.types_lca,
-                [other.schema._dtypes()[key] for other in others],
+            key: dt.types_lca_many(
                 self.schema._dtypes()[key],
+                *[other.schema._dtypes()[key] for other in others],
+                raising=True,
             )
             for key in self.keys()
         }
@@ -1402,7 +1418,9 @@ class Table(
             return self.with_columns(*(other[name] for name in other))
 
         schema = {
-            key: dt.types_lca(self.schema.__dtypes__[key], other.schema.__dtypes__[key])
+            key: dt.types_lca(
+                self.schema.__dtypes__[key], other.schema.__dtypes__[key], raising=True
+            )
             for key in other.keys()
         }
         return Table._update_cells(
@@ -1479,7 +1497,9 @@ class Table(
             return other
 
         schema = {
-            key: dt.types_lca(self.schema.__dtypes__[key], other.schema.__dtypes__[key])
+            key: dt.types_lca(
+                self.schema.__dtypes__[key], other.schema.__dtypes__[key], raising=True
+            )
             for key in self.keys()
         }
         union_universes = (self._universe, other._universe)
@@ -1894,7 +1914,7 @@ class Table(
                 raise ValueError(
                     "Table.update_types() argument name has to be an existing table column name."
                 )
-        new_schema = self.schema.update_types(**kwargs)
+        new_schema = self.schema.with_types(**kwargs)
         for name in kwargs.keys():
             left = new_schema._dtypes()[name]
             right = self.schema._dtypes()[name]
@@ -1906,6 +1926,13 @@ class Table(
                     + "Table.update_types() should be used only for type narrowing or type extending."
                 )
         return self._with_schema(new_schema)
+
+    @trace_user_frame
+    @check_arg_types
+    def update_id_type(self, id_type) -> Table:
+        id_type = dt.wrap(id_type)
+        assert isinstance(id_type, dt.Pointer)
+        return self._with_schema(self.schema.with_id_type(id_type))
 
     @check_arg_types
     def cast_to_types(self, **kwargs: Any) -> Table:
@@ -1926,7 +1953,9 @@ class Table(
     @check_arg_types
     def _having(self, indexer: expr.ColumnReference) -> Table[TSchema]:
         context = clmn.HavingContext(
-            orig_id_column=self._id_column, key_column=indexer._column
+            orig_id_column=self._id_column,
+            key_column=indexer._column,
+            key_id_column=indexer._table._id_column,
         )
         return self._table_with_context(context)
 
@@ -2103,6 +2132,7 @@ class Table(
         context = clmn.SortingContext(
             self._eval(key),
             self._eval(instance),
+            self._id_column.dtype,
         )
         return Table(
             _columns={
@@ -2197,7 +2227,11 @@ class Table(
         return cls(_columns=columns, _schema=schema, _context=context)
 
     def __repr__(self) -> str:
-        return f"<pathway.Table schema={dict(self.typehints())}>"
+        id_dtype = self._id_column.dtype
+        if id_dtype == dt.ANY_POINTER:
+            return f"<pathway.Table schema={dict(self.typehints())}>"
+        else:
+            return f"<pathway.Table schema={dict(self.typehints())} id_type={id_dtype.typehint}>"
 
     def _with_same_universe(
         self,
@@ -2232,14 +2266,14 @@ class Table(
         table_io.table_to_datasink(self, sink)
 
     def _materialize(self, universe: Universe):
-        context = clmn.MaterializedContext(universe)
+        context = clmn.MaterializedContext(universe, self._id_column.properties)
         columns = {
             name: clmn.MaterializedColumn(universe, column.properties)
             for (name, column) in self._columns.items()
         }
         return Table(
             _columns=columns,
-            _schema=self.schema,
+            _schema=self.schema.with_id_type(context.id_column_type()),
             _context=context,
         )
 

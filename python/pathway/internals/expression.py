@@ -419,7 +419,7 @@ class ColumnExpression(OperatorInput, ABC):
         ... 3
         ... 4''')
         >>> t1.schema
-        <pathway.Schema types={'val': <class 'int'>}>
+        <pathway.Schema types={'val': <class 'int'>}, id_type=<class 'pathway.engine.Pointer'>>
         >>> pw.debug.compute_and_print(t1, include_id=False)
         val
         1
@@ -428,7 +428,7 @@ class ColumnExpression(OperatorInput, ABC):
         4
         >>> t2 = t1.select(val = pw.this.val.to_string())
         >>> t2.schema
-        <pathway.Schema types={'val': <class 'str'>}>
+        <pathway.Schema types={'val': <class 'str'>}, id_type=<class 'pathway.engine.Pointer'>>
         >>> pw.debug.compute_and_print(t2.select(val=pw.this.val + "a"), include_id=False)
         val
         1a

@@ -65,7 +65,6 @@ from pathway.internals import (
     right,
     run,
     run_all,
-    schema_builder,
     schema_from_csv,
     schema_from_dict,
     schema_from_types,
@@ -82,6 +81,7 @@ from pathway.internals import (
 from pathway.internals.api import PathwayType as Type, PersistenceMode
 from pathway.internals.custom_reducers import BaseCustomAccumulator
 from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, DURATION
+from pathway.schema import schema_builder
 from pathway.stdlib import (
     graphs,
     indexing,

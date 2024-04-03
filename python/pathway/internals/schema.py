@@ -32,10 +32,9 @@ def _cls_fields(cls):
 
 def schema_from_columns(
     columns: Mapping[str, clmn.Column],
-    _name: str | None = None,
+    id_column: clmn.IdColumn,
 ) -> type[Schema]:
-    if _name is None:
-        _name = "schema_from_columns(" + str(list(columns.keys())) + ")"
+    _name = "schema_from_columns(" + str(list(columns.keys())) + ")"
 
     return schema_builder(
         columns={
@@ -43,6 +42,7 @@ def schema_from_columns(
             for name, c in columns.items()
         },
         name=_name,
+        id_dtype=id_column.dtype,
     )
 
 
@@ -136,20 +136,22 @@ def schema_from_types(
     >>> import pathway as pw
     >>> s = pw.schema_from_types(foo=int, bar=str)
     >>> s
-    <pathway.Schema types={'foo': <class 'int'>, 'bar': <class 'str'>}>
+    <pathway.Schema types={'foo': <class 'int'>, 'bar': <class 'str'>}, id_type=<class 'pathway.engine.Pointer'>>
     >>> issubclass(s, pw.Schema)
     True
     """
+    id_dtype = kwargs.pop("id", dt.ANY_POINTER)
     if _name is None:
         _name = "schema(" + str(kwargs) + ")"
     __dict = {
         "__metaclass__": SchemaMetaclass,
         "__annotations__": kwargs,
     }
-    return _schema_builder(_name, __dict)
+    return _schema_builder(_name, __dict, id_dtype=id_dtype)
 
 
 def schema_add(*schemas: type[Schema]) -> type[Schema]:
+    # TODO: we are dropping properties here
     annots_list = [get_type_hints(schema) for schema in schemas]
     annotations = dict(ChainMap(*annots_list))
 
@@ -159,6 +161,8 @@ def schema_add(*schemas: type[Schema]) -> type[Schema]:
     fields = dict(ChainMap(*fields_list))
 
     assert len(fields) == sum([len(f) for f in fields_list])
+
+    # TODO: id_dtype should be an LCA od all id_types
 
     return _schema_builder(
         "_".join(schema.__name__ for schema in schemas),
@@ -240,15 +244,14 @@ def _create_column_definitions(
 
 
 def _universe_properties(
-    columns: list[ColumnSchema], schema_properties: SchemaProperties
+    columns: list[ColumnSchema], schema_properties: SchemaProperties, dtype: dt.DType
 ) -> ColumnProperties:
     append_only: bool = False
     if len(columns) > 0:
         append_only = any(c.append_only for c in columns)
     elif schema_properties.append_only is not None:
         append_only = schema_properties.append_only
-
-    return ColumnProperties(dtype=dt.POINTER, append_only=append_only)
+    return ColumnProperties(dtype=dtype, append_only=append_only)
 
 
 @dataclass(frozen=True)
@@ -263,12 +266,23 @@ class SchemaMetaclass(type):
     __universe_properties__: ColumnProperties
 
     @trace.trace_user_frame
-    def __init__(self, *args, append_only: bool | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        append_only: bool | None = None,
+        id_dtype: dt.DType = dt.ANY_POINTER,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         schema_properties = SchemaProperties(append_only=append_only)
         self.__columns__ = _create_column_definitions(self, schema_properties)
+        pk_dtypes = [col.dtype for col in self.__columns__.values() if col.primary_key]
+        if len(pk_dtypes) > 0:
+            derived_type = dt.Pointer(*pk_dtypes)
+            assert id_dtype in [derived_type, dt.ANY_POINTER]
+            id_dtype = derived_type
         self.__universe_properties__ = _universe_properties(
-            list(self.__columns__.values()), schema_properties
+            list(self.__columns__.values()), schema_properties, dtype=id_dtype
         )
         self.__dtypes__ = {
             name: column.dtype for name, column in self.__columns__.items()
@@ -288,6 +302,18 @@ class SchemaMetaclass(type):
 
     def column_names(self) -> list[str]:
         return list(self.keys())
+
+    @property
+    def _id_dtype(self):
+        return self.id.dtype
+
+    @property
+    def id_type(self):
+        return self.id.dtype.typehint
+
+    @property
+    def id(self):
+        return self.__universe_properties__
 
     @property
     def universe_properties(self) -> ColumnProperties:
@@ -319,18 +345,26 @@ class SchemaMetaclass(type):
     def keys(self) -> KeysView[str]:
         return self.__columns__.keys()
 
-    def update_types(self, **kwargs) -> type[Schema]:
+    def with_types(self, **kwargs) -> type[Schema]:
         columns: dict[str, ColumnDefinition] = {
             col.name: col.to_definition() for col in self.__columns__.values()
         }
         for name, dtype in kwargs.items():
             if name not in columns:
                 raise ValueError(
-                    "Schema.update_types() argument name has to be an existing column name."
+                    "Schema.with_types() argument name has to be an existing column name."
                 )
             columns[name] = dataclasses.replace(columns[name], dtype=dt.wrap(dtype))
 
-        return schema_builder(columns=columns)
+        return schema_builder(columns=columns, id_dtype=self.id.dtype)
+
+    def with_id_type(self, type):
+        type = dt.wrap(type)
+        assert isinstance(type, dt.Pointer)
+        columns: dict[str, ColumnDefinition] = {
+            col.name: col.to_definition() for col in self.__columns__.values()
+        }
+        return schema_builder(columns=columns, id_dtype=type)
 
     def update_properties(self, **kwargs) -> type[Schema]:
         columns: dict[str, ColumnDefinition] = {
@@ -358,25 +392,27 @@ class SchemaMetaclass(type):
         return MappingProxyType(self.__types__)
 
     def __repr__(self):
-        return f"<pathway.Schema types={self.__types__}>"
+        return f"<pathway.Schema types={self.__types__}, id_type={self.id_type}>"
 
     def __str__(self):
         col_names = [k for k in self.keys()]
-        max_lens = [
+        max_lens = [max(len("id"), len(str(self._id_dtype)))] + [
             max(len(column_name), len(str(self.__dtypes__[column_name])))
             for column_name in col_names
         ]
         res = " | ".join(
-            [
+            ["id".ljust(max_lens[0])]
+            + [
                 column_name.ljust(max_len)
-                for (column_name, max_len) in zip(col_names, max_lens)
+                for (column_name, max_len) in zip(col_names, max_lens[1:])
             ]
         )
         res = res.rstrip() + "\n"
         res = res + " | ".join(
-            [
+            [str(self._id_dtype).ljust(max_lens[0])]
+            + [
                 (str(self.__dtypes__[column_name])).ljust(max_len)
-                for (column_name, max_len) in zip(col_names, max_lens)
+                for (column_name, max_len) in zip(col_names, max_lens[1:])
             ]
         )
         return res
@@ -532,42 +568,15 @@ class SchemaMetaclass(type):
             )
 
 
-class Schema(metaclass=SchemaMetaclass):
-    """Base class to inherit from when creating schemas.
-    All schemas should be subclasses of this one.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> t1 = pw.debug.table_from_markdown('''
-    ...    age  owner  pet
-    ... 1   10  Alice  dog
-    ... 2    9    Bob  dog
-    ... 3    8  Alice  cat
-    ... 4    7    Bob  dog''')
-    >>> t1.schema
-    <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}>
-    >>> issubclass(t1.schema, pw.Schema)
-    True
-    >>> class NewSchema(pw.Schema):
-    ...   foo: int
-    >>> SchemaSum = NewSchema | t1.schema
-    >>> SchemaSum
-    <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, 'foo': <class 'int'>}>
-    """
-
-    def __init_subclass__(cls, /, append_only: bool | None = None, **kwargs) -> None:
-        super().__init_subclass__(**kwargs)
-
-
 def _schema_builder(
     _name: str,
     _dict: dict[str, Any],
     *,
     properties: SchemaProperties = SchemaProperties(),
+    id_dtype: dt.DType = dt.ANY_POINTER,
 ) -> type[Schema]:
     schema = SchemaMetaclass(
-        _name, (Schema,), _dict, append_only=properties.append_only
+        _name, (Schema,), _dict, append_only=properties.append_only, id_dtype=id_dtype
     )
     assert issubclass(schema, Schema)
     return schema
@@ -579,6 +588,7 @@ def is_subschema(left: type[Schema], right: type[Schema]):
     for k in left.keys():
         if not dt.dtype_issubclass(left.__dtypes__[k], right.__dtypes__[k]):
             return False
+    # TODO something about id_dtype
     return True
 
 
@@ -672,7 +682,8 @@ def column_definition(
     ...   timestamp: str = pw.column_definition(name="@timestamp")
     ...   data: str
     >>> NewSchema
-    <pathway.Schema types={'key': <class 'int'>, '@timestamp': <class 'str'>, 'data': <class 'str'>}>
+    <pathway.Schema types={'key': <class 'int'>, '@timestamp': <class 'str'>, 'data': <class 'str'>}, \
+id_type=pathway.engine.Pointer[int]>
     """
 
     return ColumnDefinition(
@@ -691,27 +702,8 @@ def schema_builder(
     *,
     name: str | None = None,
     properties: SchemaProperties = SchemaProperties(),
+    id_dtype: dt.DType = dt.ANY_POINTER,
 ) -> type[Schema]:
-    """Allows to build schema inline, from a dictionary of column definitions.
-
-    Args:
-        columns: dictionary of column definitions.
-        name: schema name.
-        properties: schema properties.
-
-    Returns:
-        Schema
-
-    Example:
-
-    >>> import pathway as pw
-    >>> pw.schema_builder(columns={
-    ...   'key': pw.column_definition(dtype=int, primary_key=True),
-    ...   'data': pw.column_definition(dtype=int, default_value=0)
-    ... }, name="my_schema")
-    <pathway.Schema types={'key': <class 'int'>, 'data': <class 'int'>}>
-    """
-
     if name is None:
         name = "custom_schema(" + str(list(columns.keys())) + ")"
 
@@ -723,7 +715,7 @@ def schema_builder(
         **columns,
     }
 
-    return _schema_builder(name, __dict, properties=properties)
+    return _schema_builder(name, __dict, properties=properties, id_dtype=id_dtype)
 
 
 def schema_from_dict(
@@ -759,7 +751,7 @@ def schema_from_dict(
     ...   'key': {"dtype": "int", "primary_key": True},
     ...   'data': {"dtype": "int", "default_value": 0}
     ... }, name="my_schema")
-    <pathway.Schema types={'key': <class 'int'>, 'data': <class 'int'>}>
+    <pathway.Schema types={'key': <class 'int'>, 'data': <class 'int'>}, id_type=pathway.engine.Pointer[int]>
     """
 
     def get_dtype(dtype) -> dt.DType:
@@ -870,3 +862,41 @@ def schema_from_csv(
     }
 
     return schema_builder(columns, name=name, properties=properties)
+
+
+# do not move this class to any other place than the end of this file
+# or otherwise bad things happen (circular imports)
+class Schema(metaclass=SchemaMetaclass):
+    """Base class to inherit from when creating schemas.
+    All schemas should be subclasses of this one.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t1 = pw.debug.table_from_markdown('''
+    ...    age  owner  pet
+    ... 1   10  Alice  dog
+    ... 2    9    Bob  dog
+    ... 3    8  Alice  cat
+    ... 4    7    Bob  dog''')
+    >>> t1.schema
+    <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>}, \
+id_type=<class 'pathway.engine.Pointer'>>
+    >>> issubclass(t1.schema, pw.Schema)
+    True
+    >>> class NewSchema(pw.Schema):
+    ...   foo: int
+    >>> SchemaSum = NewSchema | t1.schema
+    >>> SchemaSum
+    <pathway.Schema types={'age': <class 'int'>, 'owner': <class 'str'>, 'pet': <class 'str'>, \
+'foo': <class 'int'>}, id_type=<class 'pathway.engine.Pointer'>>
+    """
+
+    def __init_subclass__(
+        cls,
+        /,
+        append_only: bool | None = None,
+        id_dtype: dt.DType = dt.ANY_POINTER,  # FIXME, pw.Pointer
+        **kwargs,
+    ) -> None:
+        super().__init_subclass__(**kwargs)

@@ -493,7 +493,9 @@ class RowTransformerOperator(Operator):
             attr.output_name: attr.to_output_column(param_table._universe)
             for attr in attributes
         }
-        return param_table._with_same_universe(*columns.items(), schema=schema)
+        return param_table._with_same_universe(
+            *columns.items(), schema=schema.with_id_type(param_table.schema.id_type)
+        )
 
     def all_columns(self) -> list[tt.TransformerColumn]:
         columns = []

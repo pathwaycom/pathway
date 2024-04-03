@@ -6147,3 +6147,16 @@ def test_gruopby_caching_doesnt_explode():
 def test_error_when_changing_incompatible_types():
     with pytest.raises(TypeError):
         pw.Table.empty(foo=int).update_types(foo=str)
+
+
+def test_error_when_wrong_indexing():
+    tab = pw.Table.empty(a=int)
+    index = tab.groupby(pw.this.a).reduce(*pw.this)
+    with pytest.raises(TypeError):
+        index.ix_ref(tab.a, tab.a)
+
+
+def test_groupby_pointer_type():
+    tab = pw.Table.empty(a=int)
+    index = tab.groupby(pw.this.a).reduce()
+    assert index.schema.id.dtype == dt.Pointer(dt.INT)

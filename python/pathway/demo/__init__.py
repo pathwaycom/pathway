@@ -248,7 +248,7 @@ def replay_csv(
 
     return pw.io.python.read(
         FileStreamSubject(),
-        schema=schema.update_types(**{name: str for name in schema.column_names()}),
+        schema=schema.with_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
         name="demo.replay-csv",
@@ -332,7 +332,7 @@ def replay_csv_with_time(
 
     return pw.io.python.read(
         FileStreamSubject(),
-        schema=schema.update_types(**{name: str for name in schema.column_names()}),
+        schema=schema.with_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
         name="demo.replay-csv-with-time",

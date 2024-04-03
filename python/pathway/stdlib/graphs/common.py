@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pathway.internals as pw
 
 
@@ -14,8 +16,8 @@ class Edge(pw.Schema):
     Basic edge class, holds pointers to the endpoint vertices.
     """
 
-    u: pw.Pointer[Vertex]
-    v: pw.Pointer[Vertex]
+    u: pw.Pointer[Any]
+    v: pw.Pointer[Any]
 
 
 class Weight(pw.Schema):
@@ -36,4 +38,4 @@ class Clustering(pw.Schema):
     vertex u (id-column) belongs to cluster c.
     """
 
-    c: pw.Pointer[Cluster]
+    c: pw.Pointer[Any]

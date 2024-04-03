@@ -22,7 +22,7 @@ class Reducer(ABC):
         self.name = name
 
     @abstractmethod
-    def return_type(self, arg_types: list[dt.DType]) -> dt.DType: ...
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType: ...
 
     @abstractmethod
     def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer: ...
@@ -43,11 +43,11 @@ class UnaryReducer(Reducer):
         self.name = name
 
     @abstractmethod
-    def return_type_unary(self, arg_type: dt.DType) -> dt.DType: ...
+    def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType: ...
 
-    def return_type(self, arg_types: list[dt.DType]) -> dt.DType:
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
         (arg_type,) = arg_types
-        return self.return_type_unary(arg_type)
+        return self.return_type_unary(arg_type, id_type)
 
     @abstractmethod
     def engine_reducer_unary(self, arg_type: dt.DType) -> api.Reducer: ...
@@ -68,26 +68,22 @@ class UnaryReducerWithDefault(UnaryReducer):
         return self._engine_reducer
 
 
-class FixedOutputUnaryReducer(UnaryReducerWithDefault):
-    output_type: dt.DType
+class IdTypeUnaryReducer(UnaryReducerWithDefault):
 
-    def __init__(
-        self, *, output_type: dt.DType, name: str, engine_reducer: api.Reducer
-    ):
+    def __init__(self, *, name: str, engine_reducer: api.Reducer):
         super().__init__(name=name, engine_reducer=engine_reducer)
-        self.output_type = output_type
 
-    def return_type_unary(self, arg_type: dt.DType) -> dt.DType:
-        return self.output_type
+    def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
+        return id_type
 
 
 class TypePreservingUnaryReducer(UnaryReducerWithDefault):
-    def return_type_unary(self, arg_type: dt.DType) -> dt.DType:
+    def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
         return arg_type
 
 
 class SumReducer(UnaryReducer):
-    def return_type_unary(self, arg_type: dt.DType) -> dt.DType:
+    def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
         for allowed_dtype in [dt.FLOAT, dt.ANY_ARRAY]:
             if dt.dtype_issubclass(arg_type, allowed_dtype):
                 return arg_type
@@ -118,7 +114,7 @@ class SortedTupleWrappingReducer(UnaryReducerWithDefault):
         super().__init__(name=name, engine_reducer=engine_reducer)
         self._skip_nones = skip_nones
 
-    def return_type_unary(self, arg_type: dt.DType) -> dt.DType:
+    def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
         if self._skip_nones:
             arg_type = dt.unoptionalize(arg_type)
 
@@ -140,7 +136,7 @@ class TupleWrappingReducer(Reducer):
         self._engine_reducer = engine_reducer
         self._skip_nones = skip_nones
 
-    def return_type(self, arg_types: list[dt.DType]) -> dt.DType:
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
         arg_type = arg_types[0]
         if self._skip_nones:
             arg_type = dt.unoptionalize(arg_type)
@@ -166,7 +162,7 @@ class StatefulManyReducer(Reducer):
     def __init__(self, combine_many: api.CombineMany):
         self.combine_many = combine_many
 
-    def return_type(self, arg_types: list[dt.DType]) -> dt.DType:
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
         return dt.ANY
 
     def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
@@ -194,13 +190,11 @@ def _tuple(skip_nones: bool):
     )
 
 
-_argmin = FixedOutputUnaryReducer(
-    output_type=dt.POINTER,
+_argmin = IdTypeUnaryReducer(
     name="argmin",
     engine_reducer=api.Reducer.ARG_MIN,
 )
-_argmax = FixedOutputUnaryReducer(
-    output_type=dt.POINTER,
+_argmax = IdTypeUnaryReducer(
     name="argmax",
     engine_reducer=api.Reducer.ARG_MAX,
 )

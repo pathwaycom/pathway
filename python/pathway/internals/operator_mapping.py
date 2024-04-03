@@ -123,12 +123,12 @@ _binary_operators_mapping: BinaryOperatorMapping = {
     (operator.add, dt.STR, dt.STR): dt.STR,
     (operator.mul, dt.STR, dt.INT): dt.STR,
     (operator.mul, dt.INT, dt.STR): dt.STR,
-    (operator.eq, dt.POINTER, dt.POINTER): dt.BOOL,
-    (operator.ne, dt.POINTER, dt.POINTER): dt.BOOL,
-    (operator.lt, dt.POINTER, dt.POINTER): dt.BOOL,
-    (operator.le, dt.POINTER, dt.POINTER): dt.BOOL,
-    (operator.gt, dt.POINTER, dt.POINTER): dt.BOOL,
-    (operator.ge, dt.POINTER, dt.POINTER): dt.BOOL,
+    (operator.eq, dt.ANY_POINTER, dt.ANY_POINTER): dt.BOOL,
+    (operator.ne, dt.ANY_POINTER, dt.ANY_POINTER): dt.BOOL,
+    (operator.lt, dt.ANY_POINTER, dt.ANY_POINTER): dt.BOOL,
+    (operator.le, dt.ANY_POINTER, dt.ANY_POINTER): dt.BOOL,
+    (operator.gt, dt.ANY_POINTER, dt.ANY_POINTER): dt.BOOL,
+    (operator.ge, dt.ANY_POINTER, dt.ANY_POINTER): dt.BOOL,
     (operator.eq, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
     (operator.ne, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
     (operator.lt, dt.DATE_TIME_NAIVE, dt.DATE_TIME_NAIVE): dt.BOOL,
@@ -194,11 +194,13 @@ tuple_handling_operators = {
 }
 
 
-def get_binary_operators_mapping(op, left, right, default=None):
+def get_binary_operators_mapping(op, left, right):
     if isinstance(left, dt.Array) and isinstance(right, dt.Array):
         left, right = dt.coerce_arrays_pair(left, right)
+    if isinstance(left, dt.Pointer) and isinstance(right, dt.Pointer):
+        dt.types_lca(left, right, raising=True)
     return _binary_operators_mapping.get(
-        (op, dt.normalize_dtype(left), dt.normalize_dtype(right)), default
+        (op, dt.normalize_dtype(left), dt.normalize_dtype(right))
     )
 
 
@@ -224,7 +226,12 @@ _binary_operators_mapping_optionals: OptionalMapping = {
 
 
 def get_binary_operators_mapping_optionals(op, left, right, default=None):
-    if left == right or left == dt.NONE or right == dt.NONE:
+    if (
+        left == right
+        or left == dt.NONE
+        or right == dt.NONE
+        or (isinstance(left, dt.Pointer) and isinstance(right, dt.Pointer))
+    ):
         return _binary_operators_mapping_optionals.get(op, default)
     else:
         return default
@@ -278,5 +285,5 @@ def common_dtype_in_binary_operator(
         left_dtype in [dt.FLOAT, dt.Optional(dt.FLOAT)]
         and right_dtype in [dt.INT, dt.Optional(dt.INT)]
     ):
-        return dt.types_lca(left_dtype, right_dtype)
+        return dt.types_lca(left_dtype, right_dtype, raising=False)
     return None

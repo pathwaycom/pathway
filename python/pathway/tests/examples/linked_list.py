@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import pathway as pw
 
 
 class Node(pw.Schema):
-    next: pw.Pointer[Node] | None
+    next: pw.Pointer[Any] | None
 
 
 class Output(pw.Schema):
     len: float
-    forward: Callable[..., pw.Pointer[Node] | None]
+    forward: Callable[..., pw.Pointer[Any] | None]
 
 
 @pw.transformer
@@ -29,7 +30,7 @@ class linked_list_transformer:
                 return 1 + self.transformer.linked_list[self.next].len
 
         @pw.method
-        def forward(self, steps) -> pw.Pointer[Node] | None:
+        def forward(self, steps) -> pw.Pointer[Any] | None:
             if steps == 0:
                 return self.id
             elif self.next is not None:

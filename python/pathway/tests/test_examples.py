@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from random import randint
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -198,8 +199,9 @@ def test_linked_list_forward():
         """,
     ).with_columns(node_id=nodes.pointer_from(this.node_id))
     ret = queries.select(result=linked_list.ix(queries.node_id).forward(queries.steps))
-    expected = T(
-        """
+    expected = (
+        T(
+            """
       | result
     0 | 1
     1 | 3
@@ -208,5 +210,8 @@ def test_linked_list_forward():
     4 | 8
     5 |
     """,
-    ).select(result=nodes.pointer_from(this.result, optional=True))
+        )
+        .update_types(result=Any)
+        .select(result=nodes.pointer_from(this.result, optional=True))
+    )
     assert_table_equality(ret, expected)

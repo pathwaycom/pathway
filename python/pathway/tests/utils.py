@@ -362,7 +362,9 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
     def assert_schemas_the_same(table: Table, expected: Table):
         table_schema_dict = table.schema.typehints()
         expected_schema_dict = expected.schema.typehints()
-        columns_schema_dict = schema_from_columns(table._columns).typehints()
+        columns_schema_dict = schema_from_columns(
+            table._columns, table._id_column
+        ).typehints()
         if assert_schemas:
             if columns_schema_dict != table_schema_dict:
                 raise RuntimeError(
@@ -376,6 +378,7 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
                 raise RuntimeError(
                     f"Output schema validation error, table {table_schema_dict} vs expected {expected_schema_dict}"  # noqa
                 )
+            # assert table.schema._id_dtype == expected.schema._id_dtype
         else:
             assert columns_schema_dict != table_schema_dict or not (
                 is_subschema(table.schema, expected.schema)
