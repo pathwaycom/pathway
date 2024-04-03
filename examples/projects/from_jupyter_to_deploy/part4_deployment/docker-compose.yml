@@ -1,0 +1,39 @@
+version: '3'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:5.5.3
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+  kafka:
+    image: confluentinc/cp-kafka:5.5.3
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_AUTO_CREATE_TOPICS: true
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_HOST_NAME: kafka
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9991
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CONFLUENT_SUPPORT_METRICS_ENABLE: false
+    command: sh -c "((sleep 15 && kafka-topics --create --zookeeper zookeeper:2181 --replication-factor 1 --partitions 1 --topic tickers)&) && /etc/confluent/docker/run "
+
+  dashboard:
+    build:
+      context: ./
+    depends_on:
+      - kafka
+    ports:
+      - 8080:8080
+    command: sh -c "sleep 10 && python dashboard.py"
+
+  data-streamer:
+    build:
+      context: ./
+    depends_on:
+      - kafka
+    command: sh -c "sleep 10 && python kafka-data-streamer.py"

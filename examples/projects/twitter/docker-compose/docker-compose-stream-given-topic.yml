@@ -1,0 +1,93 @@
+version: "3.8"
+services:
+  zookeeper:
+    image: wurstmeister/zookeeper
+  kafka:
+    image: wurstmeister/kafka
+    ports:
+      - "${KAFKA_PORT}:9092"
+    depends_on:
+      zookeeper:
+        condition: service_started
+    environment:
+      DOCKER_API_VERSION: 1.22
+      HOSTNAME_COMMAND: "route -n | awk '/UG[ \t]/{print $$2}'"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_CREATE_TOPICS: "device:1:1:compact,geofence:1:1:compact,event:10:1:delete,telemetry:10:1:delete"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: -1
+      KAFKA_LOG_RETENTION_BYTES: -1
+    healthcheck:
+      test: [ "CMD", "nc", "-vz", "localhost", "9092" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  postgres:
+    container_name: postgres_container
+    image: postgres
+    environment:
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - ../postgres_schema.sql:/docker-entrypoint-initdb.d/init.sql
+
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ../services/frontend/
+      args:
+        API_PORT: "${API_PORT}"
+        MAPBOX_TOKEN: "${MAPBOX_TOKEN}"
+    ports:
+      - ${FRONTEND_PORT}:80
+    depends_on:
+      - api
+
+  api:
+    build: ../services/api/
+    ports:
+      - ${API_PORT}:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  pelias_geocoder:
+    build: ../services/geocoder/
+    healthcheck:
+      test: [ "CMD", "nc", "-vz", "localhost", "3000" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "${PELIAS_GEOCODER_PORT}:3000"
+
+  pathway_app:
+    build:
+      context: ../services/pathway-app/
+      dockerfile: use_kafka.Dockerfile
+      args:
+        PATHWAY_INDEX_URL: "${PATHWAY_INDEX_URL}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  tweets_stream:
+    build: ../services/tweets-streamer/
+    environment:
+      TWITTER_API_TOKEN: "${TWITTER_API_TOKEN}"
+    depends_on:
+      - postgres
+      - kafka
+      - pathway_app

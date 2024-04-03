@@ -1,0 +1,48 @@
+version: "3.7"
+services:
+  filebeat:
+    build:
+      context: .
+      dockerfile: ./filebeat-src/Dockerfile
+    links:
+      - logstash:logstash
+    depends_on:
+      - logstash
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.6.2
+    volumes:
+    - ./logstash-src/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    ports:
+      - 5044:5044
+  zookeeper:
+    image: confluentinc/cp-zookeeper:5.5.3
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+  kafka:
+    image: confluentinc/cp-enterprise-kafka:5.5.3
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9991
+    ports:
+    - 9092:9092
+    command: sh -c "((sleep 15 && kafka-topics --create --zookeeper zookeeper:2181 --replication-factor 1 --partitions 1 --topic logs)&) && /etc/confluent/docker/run "
+  pathway:
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on: [filebeat,kafka,elasticsearch]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.6.2
+    ports:
+      - 9200:9200
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - ELASTIC_PASSWORD=password
+      - xpack.security.enabled=false
+    restart: unless-stopped

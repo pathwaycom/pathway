@@ -1,0 +1,48 @@
+version: "3.7"
+name: best-movies-redpanda
+networks:
+  best-movies-redpanda-network:
+    driver: bridge
+volumes:
+  redpanda: null
+services:
+  redpanda:
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=debug
+      - --set redpanda.enable_transactions=true
+      - --set redpanda.enable_idempotence=true
+      - --set redpanda.auto_create_topics_enabled=true
+    image: docker.redpanda.com/redpandadata/redpanda:v23.1.2
+    container_name: redpanda
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    networks:
+      - best-movies-redpanda-network
+  pathway:
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on:
+      - redpanda
+    networks:
+      - best-movies-redpanda-network
+  stream-producer:
+    build:
+      context: .
+      dockerfile: ./producer-src/Dockerfile
+    depends_on:
+      - redpanda
+    networks:
+      - best-movies-redpanda-network

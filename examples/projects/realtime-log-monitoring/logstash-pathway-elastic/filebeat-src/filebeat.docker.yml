@@ -1,0 +1,14 @@
+filebeat.inputs:
+- type: filestream
+  id: my-logs
+  paths:
+    - /input_stream/*
+
+filebeat.config.modules:
+  path: /usr/share/filebeat/modules.d/
+  reload.enable: false
+
+
+output.logstash:
+  enabled: true
+  hosts: ["logstash:5044"]

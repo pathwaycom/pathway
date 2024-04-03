@@ -4,7 +4,7 @@ import pathway as pw
 
 
 # DO NOT MODIFY WITHOUT MODIFYING THE EXAMPLE AT:
-# public/pathway-examples/examples/realtime-log-monitoring/filebeat-pathway-slack/pathway-src/alerts.py
+# public/pathway/examples/projects/realtime-log-monitoring/filebeat-pathway-slack/pathway-src/alerts.py
 def test():
     alert_threshold = 5
     sliding_window_duration = 1_000_000_000
