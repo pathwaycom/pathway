@@ -1,26 +1,3 @@
-<div align="center">
-  <img src="https://pathway.com/logo-light.svg" /><br /><br />
-</div>
-<p align="center">
-    <a href="https://github.com/pathwaycom/pathway/blob/main/LICENSE">
-        <img src="https://img.shields.io/github/license/pathwaycom/pathway?style=plastic" alt="Contributors"/></a>
-    <a href="https://github.com/pathwaycom/pathway/graphs/contributors">
-        <img src="https://img.shields.io/github/contributors/pathwaycom?style=plastic" alt="Contributors"/></a>
-    <a href="https://github.com/pathwaycom/pathway/actions/workflows/install_package.yml">
-        <img src="https://img.shields.io/github/actions/workflow/status/pathwaycom/pathway/install_package.yml?style=plastic" alt="Build" /></a>
-        <img src="https://img.shields.io/badge/OS-Linux-green" alt="Linux"/>
-        <img src="https://img.shields.io/badge/OS-macOS-green" alt="macOS"/>
-      <br>
-    <a href="https://discord.gg/pathway">
-        <img src="https://img.shields.io/discord/1042405378304004156?logo=discord"
-            alt="chat on Discord"></a>
-    <a href="https://twitter.com/intent/follow?screen_name=pathway_com">
-        <img src="https://img.shields.io/twitter/follow/pathway_com?style=social&logo=twitter"
-            alt="follow on Twitter"></a>
-  <a href="https://linkedin.com/company/pathway">
-        <img src="https://img.shields.io/badge/pathway-0077B5?style=social&logo=linkedin" alt="follow on LinkedIn"></a>
-</p>
-
 # Pathway examples
 
 This repository contains examples of data processing using [Pathway](https://pathway.com/developers/documentation/introduction/welcome), the Python-based programming framework for easy building of realtime and reactive data products.
