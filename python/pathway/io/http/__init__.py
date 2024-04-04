@@ -205,7 +205,7 @@ def write(
 
     Examples:
 
-    For the sake of demonstation, let's try diffirent ways to send the stream of changes
+    For the sake of demonstation, let's try different ways to send the stream of changes
     on a table ``pets``, containing data about pets and their owners. The table contains
     just two columns: the pet and the owner's name.
 

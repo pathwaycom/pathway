@@ -67,7 +67,7 @@ tests = [
     "langchain == 0.1.11",
     "unstructured[all-docs] == 0.10.28",
     "python-magic",
-    "cohere == 5.1.7"
+    "cohere ~= 5.1.0"
 ]
 
 [project.urls]
