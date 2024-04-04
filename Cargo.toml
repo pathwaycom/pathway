@@ -71,7 +71,7 @@ tempfile = "3.10.1"
 thiserror = "1.0.58"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.37.0", features = ["rt-multi-thread"] }
-usearch = "2.9.2"
+usearch = "~2.9.2" # 2.10 seems to have build problems (https://github.com/unum-cloud/usearch/issues/378)
 uuid = { version = "1.8.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.10", features = ["xxh3"] }
 
@@ -101,4 +101,4 @@ inherits = "dev"
 debug = "full"
 
 [build-dependencies]
-pyo3-build-config = "0.20.0"
+pyo3-build-config = "0.20.3"
