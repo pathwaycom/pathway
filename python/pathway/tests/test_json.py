@@ -57,9 +57,9 @@ def _optional_json_table(**kwargs) -> pw.Table:
 
 
 def test_json_get_simple():
-    input = _json_table(data=[{"value": 1}, {"value": 2}])
+    input = _json_table(data=[{"field": 1}, {"field": 2}])
 
-    result = input.select(ret=pw.this.data.get("value"))
+    result = input.select(ret=pw.this.data.get("field"))
 
     assert_table_equality(
         _optional_json_table(ret=[1, 2]),
@@ -206,10 +206,10 @@ def test_json_get_item():
 def test_json_get_array_index():
     input = _json_table(
         index=[0, 1, 2],
-        data=[{"value": [1, 2, 3]}, {"value": [4, 5, 6]}, {"value": [7, 8, 9]}],
+        data=[{"field": [1, 2, 3]}, {"field": [4, 5, 6]}, {"field": [7, 8, 9]}],
     )
 
-    result = input.select(result=pw.this.data["value"][pw.this.index.as_int()])
+    result = input.select(result=pw.this.data["field"][pw.this.index.as_int()])
 
     assert_table_equality(
         _json_table(result=[1, 5, 9]),
@@ -219,9 +219,9 @@ def test_json_get_array_index():
 
 @pytest.mark.parametrize("index", [-1, -4, 3])
 def test_json_get_array_index_out_of_bounds(index):
-    input = _json_table(data=[{"value": [0, 1, 2]}])
+    input = _json_table(data=[{"field": [0, 1, 2]}])
 
-    result = input.select(result=pw.this.data["value"][index])
+    result = input.select(result=pw.this.data["field"][index])
 
     assert_table_equality(
         _json_table(result=[None]),
@@ -243,31 +243,31 @@ def test_json_get_item_optional_json():
     "from_,to_,method",
     [
         (
-            [{"value": 42}, {"value": -1}, {"value": None}, {}],
+            [{"field": 42}, {"field": -1}, {"field": None}, {}],
             [42, -1, None, None],
             pw.ColumnExpression.as_int,
         ),
         (
             [
-                {"value": 1.5},
-                {"value": 10},
-                {"value": 0},
-                {"value": -1},
-                {"value": 2**32 + 1},
-                {"value": 2**45 + 1},
-                {"value": None},
+                {"field": 1.5},
+                {"field": 10},
+                {"field": 0},
+                {"field": -1},
+                {"field": 2**32 + 1},
+                {"field": 2**45 + 1},
+                {"field": None},
                 {},
             ],
             [1.5, 10.0, 0.0, -1.0, float(2**32 + 1), float(2**45 + 1), None, None],
             pw.ColumnExpression.as_float,
         ),
         (
-            [{"value": "foo"}, {"value": "42"}, {"value": "true"}, {"value": None}, {}],
+            [{"field": "foo"}, {"field": "42"}, {"field": "true"}, {"field": None}, {}],
             ["foo", "42", "true", None, None],
             pw.ColumnExpression.as_str,
         ),
         (
-            [{"value": True}, {"value": False}, {"value": None}, {}],
+            [{"field": True}, {"field": False}, {"field": None}, {}],
             [True, False, None, None],
             pw.ColumnExpression.as_bool,
         ),
@@ -278,7 +278,7 @@ def test_json_as_type(from_, to_, method):
 
     input = _json_table(data=from_)
 
-    result = input.select(result=method(pw.this.data.get("value")))
+    result = input.select(result=method(pw.this.data.get("field")))
 
     expected = table_from_pandas(
         pd.DataFrame({"key": list(range(1, len(to_) + 1)), "result": to_}),
@@ -298,9 +298,9 @@ def test_json_as_type(from_, to_, method):
     ["42", "foo", 1.6, True],
 )
 def test_json_as_int_wrong_values(value):
-    input = _json_table(data=[{"value": value}])
+    input = _json_table(data=[{"field": value}])
 
-    input.select(result=pw.this.data.get("value").as_int())
+    input.select(result=pw.this.data.get("field").as_int())
 
     with pytest.raises(ValueError):
         run_all()
@@ -311,9 +311,9 @@ def test_json_as_int_wrong_values(value):
     ["42", "foo", True],
 )
 def test_json_as_float_wrong_values(value):
-    input = _json_table(data=[{"value": value}])
+    input = _json_table(data=[{"field": value}])
 
-    input.select(result=pw.this.data.get("value").as_float())
+    input.select(result=pw.this.data.get("field").as_float())
 
     with pytest.raises(ValueError):
         run_all()
@@ -324,9 +324,9 @@ def test_json_as_float_wrong_values(value):
     [1, 1.6, True],
 )
 def test_json_as_str_wrong_values(value):
-    input = _json_table(data=[{"value": value}])
+    input = _json_table(data=[{"field": value}])
 
-    input.select(result=pw.this.data.get("value").as_str())
+    input.select(result=pw.this.data.get("field").as_str())
 
     with pytest.raises(ValueError):
         run_all()
@@ -337,9 +337,9 @@ def test_json_as_str_wrong_values(value):
     [1, 0, 1.6, "1", "0", "true", "True"],
 )
 def test_json_as_bool_wrong_values(value):
-    input = _json_table(data=[{"value": value}])
+    input = _json_table(data=[{"field": value}])
 
-    input.select(result=pw.this.data.get("value").as_bool())
+    input.select(result=pw.this.data.get("field").as_bool())
 
     with pytest.raises(ValueError):
         run_all()
@@ -349,7 +349,7 @@ def test_json_input():
     table = _json_table_from_list(
         [
             {
-                "a": {"value": 1},
+                "a": {"field": 1},
                 "b": 2,
                 "c": 1.5,
                 "d": True,
@@ -360,7 +360,7 @@ def test_json_input():
     )
 
     result = table.select(
-        a=pw.this.a["value"].as_int(),
+        a=pw.this.a["field"].as_int(),
         b=pw.this.b.as_int(),
         c=pw.this.c.as_float(),
         d=pw.this.d.as_bool(),
@@ -433,7 +433,7 @@ def test_json_flatten():
 
 @pytest.mark.parametrize(
     "value",
-    [1, 0, 1.6, "1", "0", "true", {"value": [1]}, None],
+    [1, 0, 1.6, "1", "0", "true", {"field": [1]}, None],
 )
 def test_json_flatten_wrong_values(value):
     input = _json_table(
@@ -447,11 +447,11 @@ def test_json_flatten_wrong_values(value):
 
 
 def test_json_udf_array_getitem():
-    table = _json_table(a=[{"value": [1]}, {"value": [2]}, {"value": [3]}])
+    table = _json_table(a=[{"field": [1]}, {"field": [2]}, {"field": [3]}])
 
     @pw.udf
     def map(a: pw.Json) -> int:
-        value = a["value"][0].as_int()
+        value = a["field"][0].as_int()
         assert isinstance(value, int)
         return value + 1
 
@@ -471,11 +471,11 @@ def test_json_udf_array_getitem():
 
 
 def test_json_udf_str_getitem():
-    table = _json_table(a=[{"value": "foo"}, {"value": "bar"}, {"value": "baz"}])
+    table = _json_table(a=[{"field": "foo"}, {"field": "bar"}, {"field": "baz"}])
 
     @pw.udf
     def map(a: pw.Json) -> str:
-        value = a["value"][0].as_str()
+        value = a["field"][0].as_str()
         assert isinstance(value, str)
         return value
 
@@ -499,7 +499,7 @@ def test_json_udf_number_getitem():
 
     @pw.udf
     def map(a: pw.Json) -> int:
-        a["value"]
+        a["field"]
         return 42
 
     table.select(ret=map(**table))
@@ -512,7 +512,7 @@ def test_json_udf_number_getitem():
     "values,method",
     [
         ([0, 1, -1], pw.Json.as_int),
-        ([1.0, 3.14, -1.2], pw.Json.as_float),
+        ([1.0, 3.14, -1.2, -1, 42], pw.Json.as_float),
         (["foo", "bar", "baz"], pw.Json.as_str),
         ([True, False], pw.Json.as_bool),
         ([[1, 2, 3], [3, 4, 5]], pw.Json.as_list),
@@ -560,12 +560,14 @@ def test_json_udf_as_type(values, method):
 def test_json_udf_as_type_wrong_values(value, _type, method):
     if isinstance(value, _type):
         return
+    if isinstance(value, int) and _type == float:
+        return
 
-    table = _json_table(a=[{"value": value}])
+    table = _json_table(a=[{"field": value}])
 
     @pw.udf
     def map(a: pw.Json) -> Any:
-        return method(a["value"])
+        return method(a["field"])
 
     table.select(ret=map(**table))
 
@@ -575,7 +577,7 @@ def test_json_udf_as_type_wrong_values(value, _type, method):
 
 def test_json_type():
     table = _json_table(
-        a=[{"value": 1}], b=[2], c=[1.5], d=[True], e="foo", f=[[1, 2, 3]]
+        a=[{"field": 1}], b=[2], c=[1.5], d=[True], e="foo", f=[[1, 2, 3]]
     )
 
     @pw.udf
@@ -680,7 +682,7 @@ def test_json_in_csv(tmp_path: pathlib.Path, delimiter: str):
 
     if delimiter != ",":
         values += [
-            ('{"value": 1, "b": "foo", "c": null, "d": [1,2,3]}', dict),
+            ('{"field": 1, "b": "foo", "c": null, "d": [1,2,3]}', dict),
             ("[1,2,3]", list),
         ]
 
@@ -722,3 +724,169 @@ def test_json_in_csv(tmp_path: pathlib.Path, delimiter: str):
         ),
         result,
     )
+
+
+@pytest.mark.parametrize(
+    "data,_type",
+    [
+        ([0, 1.0, -1.5, "0", "0.0", True], float),
+        ([0, 1.0, -1.5, "0", True], int),
+        ([True, 1.5, 42, 0, "", "1", "0", [42], {}], bool),
+    ],
+)
+def test_json_coerce(data, _type):
+    @pw.udf(return_type=_type)
+    def coerce(value: pw.Json):
+        result = _type(value)
+        assert isinstance(result, _type)
+        return result
+
+    table = _json_table(data=data).select(ret=coerce(pw.this.data))
+
+    expected = pw.debug.table_from_rows(
+        schema=pw.schema_builder(
+            columns={
+                "ret": pw.column_definition(dtype=_type),
+            }
+        ),
+        rows=[(_type(x),) for x in data],
+    )
+
+    assert_table_equality_wo_index(
+        table,
+        expected,
+    )
+
+
+def test_json_iter():
+    table = _json_table(data=[{"field": [1, 2, 3]}, {"field": [4, 5, 6]}])
+
+    @pw.udf
+    def sum_(a: pw.Json) -> int:
+        return sum(x.as_int() for x in a["field"])
+
+    result = table.select(ret=sum_(pw.this.data))
+
+    assert_table_equality(
+        T(
+            """
+                | ret
+            1   | 6
+            2   | 15
+            """
+        ).update_types(ret=int),
+        result,
+    )
+
+
+def test_json_iter_wrong_value():
+    table = _json_table(data=[{"field": 42}])
+
+    @pw.udf
+    def sum_(value: pw.Json) -> int:
+        return sum(x.as_int() for x in value["field"])
+
+    table.select(ret=sum_(pw.this.data))
+
+    with pytest.raises(TypeError, match="'int' object is not iterable"):
+        run_all()
+
+
+def test_json_len():
+    table = _json_table(
+        data=[{"field": [1, 2, 3]}, {"field": {"foo": 1, "bar": [1, 2, 3]}}]
+    )
+
+    @pw.udf
+    def len_(value: pw.Json) -> int:
+        return len(value["field"])
+
+    result = table.select(ret=len_(pw.this.data))
+
+    assert_table_equality(
+        T(
+            """
+                | ret
+            1   | 3
+            2   | 2
+            """
+        ).update_types(ret=int),
+        result,
+    )
+
+
+def test_json_len_wrong_value():
+    table = _json_table(data=[{"field": 42}])
+
+    @pw.udf
+    def len_(value: pw.Json) -> int:
+        return len(value["field"])
+
+    table.select(ret=len_(pw.this.data))
+
+    with pytest.raises(TypeError, match="object of type 'int' has no len()"):
+        run_all()
+
+
+def test_json_index():
+    table = _json_table(data=[{"field": 42}])
+
+    @pw.udf
+    def bin_(value: pw.Json) -> str:
+        return bin(value["field"])
+
+    result = table.select(ret=bin_(pw.this.data))
+
+    assert_table_equality(
+        T(
+            """
+                | ret
+            1   | 0b101010
+            """
+        ).update_types(ret=str),
+        result,
+    )
+
+
+def test_json_index_wrong_value():
+    table = _json_table(data=[{"field": 42.5}])
+
+    @pw.udf
+    def bin_(value: pw.Json) -> str:
+        return bin(value["field"])
+
+    table.select(ret=bin_(pw.this.data))
+
+    with pytest.raises(
+        TypeError, match="'float' object cannot be interpreted as an integer"
+    ):
+        run_all()
+
+
+def test_json_reversed():
+    table = _json_table(
+        data=[{"field": ["foo", "bar"]}, {"field": {"baz": 42, "foo": 42}}]
+    )
+
+    @pw.udf
+    def reversed_(value: pw.Json) -> pw.Json:
+        result = reversed(value["field"])
+        return next(result)
+
+    result = table.select(ret=reversed_(pw.this.data))
+
+    assert_table_equality(result, _json_table(ret=["bar", "foo"]))
+
+
+def test_json_reversed_wrong_value():
+    table = _json_table(data=[{"field": 42}])
+
+    @pw.udf
+    def reversed_(value: pw.Json) -> pw.Json:
+        result = reversed(value["field"])
+        return next(result)
+
+    table.select(ret=reversed_(pw.this.data))
+
+    with pytest.raises(TypeError, match="'int' object is not reversible"):
+        run_all()

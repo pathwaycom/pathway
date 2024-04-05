@@ -244,6 +244,11 @@ impl IntoPy<PyObject> for Duration {
     }
 }
 
+fn is_pathway_json(ob: &PyAny) -> PyResult<bool> {
+    let type_name = ob.get_type().name()?;
+    Ok(type_name == "Json")
+}
+
 impl<'source> FromPyObject<'source> for Value {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
         if ob.is_none() {
@@ -282,6 +287,8 @@ impl<'source> FromPyObject<'source> for Value {
                 ob.extract::<Key>()
                     .expect("type conversion should work for Key"),
             ))
+        } else if is_pathway_json(ob)? {
+            value_json_from_py_any(ob.getattr("value")?)
         } else if let Ok(b) = ob.extract::<&PyBool>() {
             // Fallback checks from now on
             Ok(Value::Bool(b.is_true()))
@@ -322,8 +329,6 @@ impl<'source> FromPyObject<'source> for Value {
                 return value_from_pandas_timestamp(ob);
             } else if matches!(type_name, "Timedelta" | "Duration") {
                 return value_from_pandas_timedelta(ob);
-            } else if type_name == "Json" {
-                return value_json_from_py_any(ob.getattr("value")?);
             }
 
             if let Ok(vec) = ob.extract::<Vec<&PyAny>>() {

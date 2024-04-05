@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json as _json  # otherwise its easy to mistake `json` and `Json`
+import operator
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Iterator, TypeVar
 
 
 class _JsonEncoder(_json.JSONEncoder):
@@ -42,13 +43,34 @@ class Json:
     def __str__(self) -> str:
         return _json.dumps(self.value)
 
+    def __float__(self) -> float:
+        return float(self.value)  # type:ignore[arg-type]
+
+    def __int__(self) -> int:
+        return int(self.value)  # type:ignore[arg-type]
+
+    def __bool__(self) -> bool:
+        return bool(self.value)
+
     def __repr__(self) -> str:
         return f"pw.Json({self.value!r})"
 
     def __getitem__(self, key: int | str) -> Json:
         return Json(self.value[key])  # type:ignore[index]
 
-    __iter__ = None
+    def __iter__(self) -> Iterator[Json]:
+        for item in self.value:  # type:ignore[union-attr]
+            yield Json(item)
+
+    def __len__(self) -> int:
+        return len(self.value)  # type:ignore[arg-type]
+
+    def __index__(self) -> int:
+        return operator.index(self.value)  # type:ignore[arg-type]
+
+    def __reversed__(self) -> Iterator[Json]:
+        for item in reversed(self.value):  # type:ignore[arg-type]
+            yield Json(item)
 
     @cached_property
     def value(self) -> JsonValue:
@@ -132,7 +154,10 @@ class Json:
         3.14
         """
 
-        return self._as_type(float)
+        if isinstance(self.value, int):
+            return float(self.value)
+        else:
+            return self._as_type(float)
 
     def as_bool(self) -> bool:
         """Returns Json value as a float if possible.
