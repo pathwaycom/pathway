@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pathway as pw
-from pathway import Table, apply_with_type, this
+from pathway import Table, apply_with_type
 from pathway.stdlib.ml.smart_table_ops import (
     FuzzyJoinFeatureGeneration,
     FuzzyJoinNormalization,
@@ -21,6 +21,18 @@ from pathway.tests.utils import (
 
 
 def test_fuzzy_match_simple():
+    nodes = T(
+        """
+        name
+        a
+        b
+        c
+        AA
+        BB
+        CC
+        """,
+        id_from=["name"],
+    )
     features = T(
         """
       | weight
@@ -39,7 +51,8 @@ def test_fuzzy_match_simple():
 
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     node_feature_right = T(
@@ -51,7 +64,8 @@ def test_fuzzy_match_simple():
 
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     assert_table_equality_wo_index(
@@ -63,11 +77,26 @@ def test_fuzzy_match_simple():
            BB |   b  |    0.5
            CC |   c  |    0.5
     """,
+        ).with_columns(
+            right=nodes.pointer_from(pw.this.right),
+            left=nodes.pointer_from(pw.this.left),
         ),
     )
 
 
 def test_fuzzy_match_same_features():
+    nodes = T(
+        """
+        name
+        a
+        b
+        c
+        AA
+        BB
+        CC
+        """,
+        id_from=["name"],
+    )
     features = T(
         """
       | weight
@@ -86,7 +115,8 @@ def test_fuzzy_match_same_features():
 
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     assert_table_equality_wo_index(
@@ -98,11 +128,40 @@ def test_fuzzy_match_same_features():
        b |    b  |   0.5
        c |    c  |   0.5
     """,
+        ).with_columns(
+            right=nodes.pointer_from(pw.this.right),
+            left=nodes.pointer_from(pw.this.left),
         ),
     )
 
 
 def test_fuzzy_match_many_to_many():
+    nodes = T(
+        """
+        name
+        0
+        1
+        2
+        3
+        4
+        5
+        6
+        7
+        8
+        9
+        10
+        11
+        12
+        13
+        14
+        15
+        16
+        17
+        18
+        19
+        """,
+        id_from=["name"],
+    )
     features = T(
         """
       | weight
@@ -125,7 +184,8 @@ def test_fuzzy_match_many_to_many():
         9 |       1 |    1.0
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     node_feature_right = T(
@@ -143,21 +203,35 @@ def test_fuzzy_match_many_to_many():
        19 |       1 |    1.0
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
+
     assert_table_equality_wo_index(
         fuzzy_match(node_feature_left, node_feature_right, features),
         T(
             """
     right | left | weight
-       19 |    9 | 0.03125
+       15 |    6 | 0.03125
     """,
+        ).with_columns(
+            right=nodes.pointer_from(pw.this.right),
+            left=nodes.pointer_from(pw.this.left),
         ),
     )
 
 
 def test_fuzzy_self_match_simple():
+    nodes = T(
+        """
+    name
+    a
+    b
+    c
+    """,
+        id_from=["name"],
+    )
     features = T(
         """
       | weight
@@ -174,10 +248,10 @@ def test_fuzzy_self_match_simple():
         a |       2 |    1.0
         b |       2 |    1.0
         c |       3 |    1.0
-
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     assert_table_equality_wo_index(
@@ -185,13 +259,41 @@ def test_fuzzy_self_match_simple():
         T(
             """
     right | left | weight
-        b |    a | 0.5
+        a |    b | 0.5
     """,
+        ).with_columns(
+            right=nodes.pointer_from(pw.this.right),
+            left=nodes.pointer_from(pw.this.left),
         ),
     )
 
 
 def test_fuzzy_self_match_many_to_many():
+    nodes = T(
+        """
+        name
+        0
+        1
+        2
+        3
+        4
+        5
+        6
+        7
+        8
+        9
+        10
+        11
+        12
+        13
+        14
+        15
+        16
+        17
+        18
+        19
+        """
+    )
     features = T(
         """
       | weight
@@ -214,7 +316,8 @@ def test_fuzzy_self_match_many_to_many():
         9 |       1 |    1.0
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     assert_table_equality_wo_index(
@@ -222,8 +325,11 @@ def test_fuzzy_self_match_many_to_many():
         T(
             """
     right |left |  weight
-       9 |    8 | 0.0625
+       6 |    5 | 0.0625
     """,
+        ).with_columns(
+            right=nodes.pointer_from(pw.this.right),
+            left=nodes.pointer_from(pw.this.left),
         ),
     )
 
@@ -258,8 +364,8 @@ def test_smart():
         ret.select(
             left=tab.ix(ret.left).name, right=tab.ix(ret.right).name, weight=ret.weight
         ).with_columns(
-            left=apply_with_type(min, str, this.left, this.right),
-            right=apply_with_type(max, str, this.left, this.right),
+            left=apply_with_type(min, str, pw.this.left, pw.this.right),
+            right=apply_with_type(max, str, pw.this.left, pw.this.right),
         ),
         expected,
     )
@@ -531,6 +637,17 @@ def test_fuzzy_match_tables_concat_columns():
 
 
 def test_fuzzy_match_with_hint():
+    nodes = T(
+        """
+    name
+    a
+    b
+    c
+    AA
+    BB
+    CC""",
+        id_from=["name"],
+    )
     features = T(
         """
       | weight
@@ -549,7 +666,8 @@ def test_fuzzy_match_with_hint():
 
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     node_feature_right = T(
@@ -561,7 +679,8 @@ def test_fuzzy_match_with_hint():
 
     """,
     ).with_columns(
-        feature=features.pointer_from(this.feature),
+        node=nodes.pointer_from(pw.this.node),
+        feature=features.pointer_from(pw.this.feature),
         weight=pw.cast(float, pw.this.weight),
     )
     by_hand_match = T(
@@ -570,7 +689,11 @@ def test_fuzzy_match_with_hint():
       a  |    BB |    1.0
 
     """,
-    ).with_columns(weight=pw.cast(float, pw.this.weight))
+    ).with_columns(
+        weight=pw.cast(float, pw.this.weight),
+        left=nodes.pointer_from(pw.this.left),
+        right=nodes.pointer_from(pw.this.right),
+    )
     assert_table_equality_wo_index(
         fuzzy_match_with_hint(
             node_feature_left, node_feature_right, features, by_hand_match
@@ -581,5 +704,8 @@ def test_fuzzy_match_with_hint():
        BB |   a  |    1.0
        CC |   c  |    0.5
     """,
+        ).with_columns(
+            left=nodes.pointer_from(pw.this.left),
+            right=nodes.pointer_from(pw.this.right),
         ),
     )

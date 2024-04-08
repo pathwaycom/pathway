@@ -198,7 +198,15 @@ def get_binary_operators_mapping(op, left, right):
     if isinstance(left, dt.Array) and isinstance(right, dt.Array):
         left, right = dt.coerce_arrays_pair(left, right)
     if isinstance(left, dt.Pointer) and isinstance(right, dt.Pointer):
-        dt.types_lca(left, right, raising=True)
+        try:
+            dt.types_lca(left, right, raising=True)
+        except TypeError:
+            raise TypeError(
+                "Incompatible types in for a binary operator.\n"
+                + f"The types are: {left} and {right}. "
+                + "You might try casting the expressions to Any type to circumvent this,"
+                + " but this is most probably an error."
+            )
     return _binary_operators_mapping.get(
         (op, dt.normalize_dtype(left), dt.normalize_dtype(right))
     )

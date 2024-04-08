@@ -21,14 +21,14 @@ class Feature(pw.Schema):
 
 
 class Edge(pw.Schema):
-    node: pw.Pointer[Any]
-    feature: pw.Pointer[Any]
+    node: pw.Pointer[Node]
+    feature: pw.Pointer[Feature]
     weight: float
 
 
 class JoinResult(pw.Schema):
-    left: pw.Pointer[Any]
-    right: pw.Pointer[Any]
+    left: pw.Pointer[Node]
+    right: pw.Pointer[Node]
     weight: float
 
 
@@ -302,17 +302,19 @@ def _filter_out_matched_by_hand(
     symmetric: bool,
     by_hand_match: pw.Table[JoinResult],
 ):
-    filter_left = edges_left.select(cond=True) << edges_left.join(
-        by_hand_match, edges_left.node == by_hand_match.left, id=edges_left.id
-    ).select(cond=False)
-    edges_left = edges_left.filter(filter_left.cond)
+    edges_left = edges_left.difference(
+        edges_left.join(
+            by_hand_match, edges_left.node == by_hand_match.left, id=edges_left.id
+        ).select()
+    )
     if not symmetric:
-        filter_right = edges_right.select(cond=True) << edges_right.join(
-            by_hand_match,
-            edges_right.node == by_hand_match.right,
-            id=edges_right.id,
-        ).select(cond=False)
-        edges_right = edges_right.filter(filter_right.cond)
+        edges_right = edges_right.difference(
+            edges_right.join(
+                by_hand_match,
+                edges_right.node == by_hand_match.right,
+                id=edges_right.id,
+            ).select()
+        )
     return edges_left, edges_right
 
 
@@ -326,6 +328,19 @@ def _fuzzy_match(
 ) -> pw.Table[JoinResult]:
     if symmetric:
         assert edges_left is edges_right
+
+    edges_left = edges_left.update_types(
+        node=pw.Pointer[Node], feature=pw.Pointer[Feature]
+    )
+    if not symmetric:
+        edges_right = edges_right.update_types(
+            node=pw.Pointer[Node], feature=pw.Pointer[Feature]
+        )
+
+    if by_hand_match is not None:
+        by_hand_match = by_hand_match.update_types(
+            left=pw.Pointer[Node], right=pw.Pointer[Node]
+        )
 
     # TODO do a more integrated approach for accommodating by_hand_match.
     if by_hand_match is not None:

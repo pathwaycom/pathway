@@ -811,7 +811,17 @@ class UpdateRowsContext(Context):
         return self.union_ids[0].universe
 
     def id_column_type(self) -> dt.DType:
-        return dt.types_lca_many(*[arg.dtype for arg in self.union_ids], raising=True)
+        try:
+            return dt.types_lca_many(
+                *[arg.dtype for arg in self.union_ids], raising=True
+            )
+        except TypeError:
+            raise TypeError(
+                "Incompatible types for a update_rows operation.\n"
+                + f"The types are: {[arg.dtype for arg in self.union_ids]}. "
+                + "You might try casting the respective columns to Any type to circumvent this,"
+                + " but this is most probably an error."
+            )
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.union_ids]
@@ -859,7 +869,17 @@ class ConcatUnsafeContext(Context):
         return self.union_ids[0].universe
 
     def id_column_type(self) -> dt.DType:
-        return dt.types_lca_many(*[arg.dtype for arg in self.union_ids], raising=True)
+        try:
+            return dt.types_lca_many(
+                *[arg.dtype for arg in self.union_ids], raising=True
+            )
+        except TypeError:
+            raise TypeError(
+                "Incompatible types for a concat operation.\n"
+                + f"The types are: {[arg.dtype for arg in self.union_ids]}. "
+                + "You might try casting the respective columns to Any type to circumvent this,"
+                + " but this is most probably an error."
+            )
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.union_ids]

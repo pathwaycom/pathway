@@ -1047,8 +1047,16 @@ def validate_shape(cond: expr.ColumnExpression) -> expr.ColumnBinaryOpExpression
 def validate_join_condition(
     cond: expr.ColumnExpression, left: Table, right: Table
 ) -> tuple[expr.ColumnReference, expr.ColumnReference, expr.ColumnBinaryOpExpression]:
-    eval_type(cond)
     cond = validate_shape(cond)
+    try:
+        eval_type(cond)
+    except TypeError:
+        raise TypeError(
+            "Incompatible types in a join condition.\n"
+            + f"The types are: {eval_type(cond._left)} and {eval_type(cond._right)}. "
+            + "You might try casting the respective columns to Any type to circumvent this,"
+            + " but this is most probably an error."
+        )
     cond_left = cast(expr.ColumnReference, cond._left)
     cond_right = cast(expr.ColumnReference, cond._right)
     if cond_left.table == right and cond_right.table == left:

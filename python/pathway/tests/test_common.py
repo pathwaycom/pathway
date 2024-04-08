@@ -6145,14 +6145,31 @@ def test_gruopby_caching_doesnt_explode():
 
 
 def test_error_when_changing_incompatible_types():
-    with pytest.raises(TypeError):
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Cannot change type from INT to STR.\n"
+            + "Table.update_types() should be used only for type narrowing or type extending.\n"
+            + "Occurred here:\n"
+            + "    Line: pw.Table.empty(foo=int).update_types(foo=str)\n"
+        ),
+    ):
         pw.Table.empty(foo=int).update_types(foo=str)
 
 
 def test_error_when_wrong_indexing():
     tab = pw.Table.empty(a=int)
     index = tab.groupby(pw.this.a).reduce(*pw.this)
-    with pytest.raises(TypeError):
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Indexing a table with a Pointer type with probably mismatched primary keys."
+            + " Type used was Pointer(INT, INT)."
+            + " Indexed id type was Pointer(INT).\n"
+            + "Occurred here:\n"
+            + "    Line: index.ix_ref(tab.a, tab.a)\n"
+        ),
+    ):
         index.ix_ref(tab.a, tab.a)
 
 
@@ -6160,3 +6177,89 @@ def test_groupby_pointer_type():
     tab = pw.Table.empty(a=int)
     index = tab.groupby(pw.this.a).reduce()
     assert index.schema.id.dtype == dt.Pointer(dt.INT)
+
+
+def test_concat_id_type_exception():
+    a = pw.Table.empty().update_id_type(pw.Pointer[int])
+    b = pw.Table.empty().update_id_type(pw.Pointer[str])
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Incompatible types for a concat operation.\n"
+            + "The types are: [Pointer(INT), Pointer(STR)]."
+            + " You might try casting the respective columns to Any type to circumvent this,"
+            + " but this is most probably an error.\n"
+            + "Occurred here:\n"
+            + "    Line: pw.Table.concat(a, b)\n"
+        ),
+    ):
+        pw.Table.concat(a, b)
+
+
+def test_concat_id_type_no_exception():
+    a = pw.Table.empty().update_id_type(pw.Pointer[int])
+    b = pw.Table.empty().update_id_type(pw.Pointer[Any])
+    assert pw.Table.concat(a, b)._id_column.dtype.typehint == pw.Pointer[Any]
+
+
+def test_concat_reindex_id_type_no_exception():
+    a = pw.Table.empty().update_id_type(pw.Pointer[int])
+    b = pw.Table.empty().update_id_type(pw.Pointer[str])
+    assert pw.Table.concat_reindex(a, b)._id_column.dtype.typehint == pw.Pointer
+
+
+def test_join_pointer_types_join_exception():
+    a = pw.Table.empty(col=pw.Pointer[int])
+    b = pw.Table.empty(col=pw.Pointer[str])
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Incompatible types in a join condition.\n"
+            + "The types are: Pointer(INT) and Pointer(STR)."
+            + " You might try casting the respective columns to Any type to circumvent this,"
+            + " but this is most probably an error.\n"
+            + "Occurred here:\n    "
+            + "Line: a.join(b, a.col == b.col).select()\n"
+        ),
+    ):
+        a.join(b, a.col == b.col).select()
+
+
+def test_join_pointer_types_select_exception():
+    a = pw.Table.empty(col=pw.Pointer[int])
+    b = pw.Table.empty(col=pw.Pointer[str]).with_universe_of(a)
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Incompatible types in for a binary operator.\n"
+            + "The types are: Pointer(INT) and Pointer(STR)."
+            + " You might try casting the expressions to Any type to circumvent this,"
+            + " but this is most probably an error.\n"
+            + "Occurred here:\n    "
+            + "Line: a.filter(a.col == b.col)\n"
+        ),
+    ):
+        a.filter(a.col == b.col)
+
+
+def test_join_pointer_int_float_types_select_exception():
+    a = pw.Table.empty(col=pw.Pointer[int])
+    b = pw.Table.empty(col=pw.Pointer[float]).with_universe_of(a)
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Incompatible types in for a binary operator.\n"
+            + "The types are: Pointer(INT) and Pointer(FLOAT)."
+            + " You might try casting the expressions to Any type to circumvent this,"
+            + " but this is most probably an error.\n"
+            + "Occurred here:\n    "
+            + "Line: a.filter(a.col == b.col)\n"
+        ),
+    ):
+        a.filter(a.col == b.col)
+
+
+def test_join_pointer_types_no_exception():
+    a = pw.Table.empty(col=pw.Pointer[int])
+    b = pw.Table.empty(col=pw.Pointer[Any])
+    assert a.join(b, a.col == b.col).select()._id_column.dtype.typehint == pw.Pointer

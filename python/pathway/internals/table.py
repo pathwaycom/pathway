@@ -1328,6 +1328,27 @@ id_type=<class 'pathway.engine.Pointer'>>
                     "columns do not match in the argument of Table.concat()"
                 )
 
+        for key in self.keys():
+            try:
+                dt.types_lca_many(
+                    self.schema._dtypes()[key],
+                    *[other.schema._dtypes()[key] for other in others],
+                    raising=True,
+                )
+            except TypeError:
+                raise TypeError(
+                    "Incompatible types for a concat operation.\n"
+                    + "The types are: "
+                    + str(
+                        [
+                            self.schema._dtypes()[key],
+                            *[other.schema._dtypes()[key] for other in others],
+                        ]
+                    )
+                    + ". "
+                    + "You might try casting the respective columns to Any type to circumvent this,"
+                    + " but this is most probably an error."
+                )
         schema = {
             key: dt.types_lca_many(
                 self.schema._dtypes()[key],
@@ -1416,6 +1437,21 @@ id_type=<class 'pathway.engine.Pointer'>>
                 stacklevel=_stacklevel + 4,
             )
             return self.with_columns(*(other[name] for name in other))
+
+        for key in other.keys():
+            try:
+                dt.types_lca(
+                    self.schema.__dtypes__[key],
+                    other.schema.__dtypes__[key],
+                    raising=True,
+                )
+            except TypeError:
+                raise TypeError(
+                    "Incompatible types for an update_cells operation.\n"
+                    + f"The types are: {self.schema.__dtypes__[key]} and {other.schema.__dtypes__[key]}. "
+                    + "You might try casting the expressions to Any type to circumvent this, "
+                    + "but this is most probably an error."
+                )
 
         schema = {
             key: dt.types_lca(

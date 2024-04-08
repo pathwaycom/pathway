@@ -348,7 +348,15 @@ class TypeInterpreter(IdentityTransform):
         ret_type = dtypes[0]
         non_optional_arg = False
         for dtype in dtypes:
-            ret_type = dt.types_lca(dtype, ret_type, raising=True)
+            try:
+                ret_type = dt.types_lca(dtype, ret_type, raising=True)
+            except TypeError:
+                raise TypeError(
+                    "Incompatible types in for a coalesce expression.\n"
+                    + f"The types are: {dtypes}. "
+                    + "You might try casting the expressions to Any type to circumvent this, "
+                    + "but this is most probably an error."
+                )
             if not isinstance(dtype, dt.Optional):
                 # FIXME: do we want to be more radical and return now?
                 # Maybe with a warning that some args are skipped?
@@ -430,7 +438,12 @@ class TypeInterpreter(IdentityTransform):
 
         then_dtype = then_._dtype
         else_dtype = else_._dtype
-        lca = dt.types_lca(then_dtype, else_dtype, raising=True)
+        try:
+            lca = dt.types_lca(then_dtype, else_dtype, raising=True)
+        except TypeError:
+            raise TypeError(
+                f"Cannot perform pathway.if_else on columns of types {then_dtype.typehint} and {else_dtype.typehint}."
+            )
         if lca is dt.ANY:
             raise TypeError(
                 f"Cannot perform pathway.if_else on columns of types {then_dtype.typehint} and {else_dtype.typehint}."

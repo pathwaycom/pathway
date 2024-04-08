@@ -590,8 +590,12 @@ FLOAT_ARRAY_1D: DType = Array(n_dim=1, wrapped=FLOAT)
 FLOAT_ARRAY_2D: DType = Array(n_dim=2, wrapped=FLOAT)
 
 
-def dtype_equivalence(left: DType, right: DType) -> bool:
-    return dtype_issubclass(left, right) and dtype_issubclass(right, left)
+def dtype_equivalence(
+    left: DType, right: DType, int_float_compatible: bool = True
+) -> bool:
+    return dtype_issubclass(
+        left, right, int_float_compatible=int_float_compatible
+    ) and dtype_issubclass(right, left, int_float_compatible=int_float_compatible)
 
 
 def broadcast_tuples(
@@ -622,13 +626,18 @@ def broadcast_tuples(
     return (largs, rargs)
 
 
-def dtype_tuple_issubclass(left: Tuple | List, right: Tuple | List) -> bool:
+def dtype_tuple_issubclass(
+    left: Tuple | List, right: Tuple | List, int_float_compatible: bool = True
+) -> bool:
     if left == ANY_TUPLE or right == ANY_TUPLE:
         return True
     largs, rargs = broadcast_tuples(left, right)
     if len(largs) != len(rargs):
         return False
-    return all(dtype_issubclass(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
+    return all(
+        dtype_issubclass(l_arg, r_arg, int_float_compatible=int_float_compatible)
+        for l_arg, r_arg in zip(largs, rargs)
+    )
 
 
 def dtype_pointer_issubclass(left: Pointer, right: Pointer) -> bool:
@@ -638,7 +647,10 @@ def dtype_pointer_issubclass(left: Pointer, right: Pointer) -> bool:
     rargs = right.args
     if len(largs) != len(rargs):
         return False
-    return all(dtype_issubclass(l_arg, r_arg) for l_arg, r_arg in zip(largs, rargs))
+    return all(
+        dtype_issubclass(l_arg, r_arg, int_float_compatible=False)
+        for l_arg, r_arg in zip(largs, rargs)
+    )
 
 
 def dtype_array_equivalence(left: Array, right: Array) -> bool:
@@ -651,27 +663,37 @@ def dtype_array_equivalence(left: Array, right: Array) -> bool:
     return dim_compatible and wrapped_compatible
 
 
-def dtype_issubclass(left: DType, right: DType) -> bool:
+def dtype_issubclass(
+    left: DType, right: DType, *, int_float_compatible: bool = True
+) -> bool:
     if right == ANY:  # catch the case, when left=Optional[T] and right=Any
         return True
     elif isinstance(left, Optional):
         if isinstance(right, Optional):
-            return dtype_issubclass(unoptionalize(left), unoptionalize(right))
+            return dtype_issubclass(
+                unoptionalize(left),
+                unoptionalize(right),
+                int_float_compatible=int_float_compatible,
+            )
         else:
             return False
     elif left == NONE:
         return isinstance(right, Optional) or right == NONE
     elif isinstance(right, Optional):
-        return dtype_issubclass(left, unoptionalize(right))
+        return dtype_issubclass(
+            left, unoptionalize(right), int_float_compatible=int_float_compatible
+        )
     elif isinstance(left, (Tuple, List)) and isinstance(right, (Tuple, List)):
-        return dtype_tuple_issubclass(left, right)
+        return dtype_tuple_issubclass(
+            left, right, int_float_compatible=int_float_compatible
+        )
     elif isinstance(left, Array) and isinstance(right, Array):
         return dtype_array_equivalence(left, right)
     elif isinstance(left, Pointer) and isinstance(right, Pointer):
         return dtype_pointer_issubclass(left, right)
     elif isinstance(left, _SimpleDType) and isinstance(right, _SimpleDType):
         if left == INT and right == FLOAT:
-            return True
+            return int_float_compatible
         elif left == BOOL and right == INT:
             return False
         else:
@@ -681,17 +703,31 @@ def dtype_issubclass(left: DType, right: DType) -> bool:
     return left == right
 
 
-def types_lca(left: DType, right: DType, *, raising: bool) -> DType:
+def types_lca(
+    left: DType, right: DType, *, raising: bool, int_float_compatible: bool = True
+) -> DType:
     """LCA of two types."""
     if isinstance(left, Optional) or isinstance(right, Optional):
         return Optional(
-            types_lca(unoptionalize(left), unoptionalize(right), raising=raising)
+            types_lca(
+                unoptionalize(left),
+                unoptionalize(right),
+                raising=raising,
+                int_float_compatible=int_float_compatible,
+            )
         )
     elif isinstance(left, (Tuple, List)) and isinstance(right, (Tuple, List)):
         if left == ANY_TUPLE or right == ANY_TUPLE:
             return ANY_TUPLE
         if isinstance(left, List) and isinstance(right, List):
-            return List(types_lca(left.wrapped, right.wrapped, raising=raising))
+            return List(
+                types_lca(
+                    left.wrapped,
+                    right.wrapped,
+                    raising=raising,
+                    int_float_compatible=int_float_compatible,
+                )
+            )
         largs, rargs = broadcast_tuples(left, right)
         if len(largs) != len(rargs):
             if raising:
@@ -700,7 +736,12 @@ def types_lca(left: DType, right: DType, *, raising: bool) -> DType:
                 return ANY_TUPLE
         return Tuple(
             *[
-                types_lca(l_arg, r_arg, raising=raising)
+                types_lca(
+                    l_arg,
+                    r_arg,
+                    raising=raising,
+                    int_float_compatible=int_float_compatible,
+                )
                 for l_arg, r_arg in zip(largs, rargs)
             ]
         )
@@ -731,13 +772,13 @@ def types_lca(left: DType, right: DType, *, raising: bool) -> DType:
                 return ANY_POINTER
         return Pointer(
             *[
-                types_lca(left, right, raising=False)
+                types_lca(left, right, raising=raising, int_float_compatible=False)
                 for left, right in zip(left.args, right.args)
             ]
         )
-    if dtype_issubclass(left, right):
+    if dtype_issubclass(left, right, int_float_compatible=int_float_compatible):
         return right
-    elif dtype_issubclass(right, left):
+    elif dtype_issubclass(right, left, int_float_compatible=int_float_compatible):
         return left
 
     if left == NONE:
@@ -754,7 +795,9 @@ def types_lca(left: DType, right: DType, *, raising: bool) -> DType:
 
 
 def types_lca_many(*args: DType, raising: bool) -> DType:
-    return functools.reduce(lambda x, y: types_lca(x, y, raising=raising), args)
+    return functools.reduce(
+        lambda x, y: types_lca(x, y, raising=raising, int_float_compatible=True), args
+    )
 
 
 def unoptionalize(dtype: DType) -> DType:
