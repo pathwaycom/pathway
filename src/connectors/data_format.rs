@@ -14,7 +14,7 @@ use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::ReaderContext::{Diff, KeyValue, PreparedEvent, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
 use crate::engine::error::DynError;
-use crate::engine::{Key, Result, Type, Value};
+use crate::engine::{Key, Result, Timestamp, Type, Value};
 
 use itertools::Itertools;
 use log::error;
@@ -224,7 +224,7 @@ pub trait Formatter: Send {
         &mut self,
         key: &Key,
         values: &[Value],
-        time: u64,
+        time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError>;
 
@@ -696,7 +696,7 @@ impl Formatter for DsvFormatter {
         &mut self,
         key: &Key,
         values: &[Value],
-        time: u64,
+        time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
         if values.len() != self.settings.value_column_names.len() {
@@ -1292,7 +1292,7 @@ impl Formatter for PsqlUpdatesFormatter {
         &mut self,
         key: &Key,
         values: &[Value],
-        time: u64,
+        time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
         if values.len() != self.value_field_names.len() {
@@ -1383,7 +1383,7 @@ impl Formatter for PsqlSnapshotFormatter {
         &mut self,
         key: &Key,
         values: &[Value],
-        time: u64,
+        time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
         if values.len() != self.value_field_names.len() {
@@ -1456,7 +1456,7 @@ impl Formatter for JsonLinesFormatter {
         &mut self,
         key: &Key,
         values: &[Value],
-        time: u64,
+        time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
         let mut serializer = serde_json::Serializer::new(Vec::<u8>::new());
@@ -1498,7 +1498,7 @@ impl Formatter for NullFormatter {
         &mut self,
         key: &Key,
         _values: &[Value],
-        _time: u64,
+        _time: Timestamp,
         _diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
         Ok(FormatterContext::new(Vec::new(), *key, Vec::new()))

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connectors::data_storage::StorageType;
 use crate::connectors::{OffsetKey, OffsetValue};
+use crate::engine::Timestamp;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::frontier::OffsetAntichainCollection;
 use crate::persistence::metadata_backends::{Error, MetadataBackend};
@@ -18,21 +19,27 @@ use crate::persistence::PersistentId;
 
 const EXPECTED_KEY_PARTS: usize = 3;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StoredMetadata {
     frontiers: OffsetAntichainCollection,
     storage_types: HashMap<PersistentId, StorageType>,
-    last_advanced_timestamp: u64,
+    last_advanced_timestamp: Timestamp,
 }
 
 #[derive(Debug)]
 pub struct MetadataAccessor {
     backend: Box<dyn MetadataBackend>,
     internal_state: StoredMetadata,
-    past_runs_threshold_times: HashMap<usize, u64>,
+    past_runs_threshold_times: HashMap<usize, Timestamp>,
 
     current_key_to_use: String,
     next_key_to_use: String,
+}
+
+impl Default for StoredMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StoredMetadata {
@@ -40,7 +47,7 @@ impl StoredMetadata {
         Self {
             frontiers: OffsetAntichainCollection::new(),
             storage_types: HashMap::new(),
-            last_advanced_timestamp: 0,
+            last_advanced_timestamp: Timestamp(0),
         }
     }
 
@@ -138,7 +145,7 @@ impl MetadataAccessor {
                     Ok(block) => {
                         past_runs_threshold_times
                             .entry(other_worker_id)
-                            .and_modify(|timestamp: &mut u64| {
+                            .and_modify(|timestamp: &mut Timestamp| {
                                 *timestamp = max(*timestamp, block.last_advanced_timestamp);
                             })
                             .or_insert(block.last_advanced_timestamp);
@@ -174,7 +181,7 @@ impl MetadataAccessor {
         })
     }
 
-    pub fn past_runs_threshold_times(&self) -> &HashMap<usize, u64> {
+    pub fn past_runs_threshold_times(&self) -> &HashMap<usize, Timestamp> {
         &self.past_runs_threshold_times
     }
 
@@ -207,11 +214,11 @@ impl MetadataAccessor {
         );
     }
 
-    pub fn accept_finalized_timestamp(&mut self, timestamp: u64) {
+    pub fn accept_finalized_timestamp(&mut self, timestamp: Timestamp) {
         self.internal_state.last_advanced_timestamp = timestamp;
     }
 
-    pub fn last_advanced_timestamp(&self) -> u64 {
+    pub fn last_advanced_timestamp(&self) -> Timestamp {
         self.internal_state.last_advanced_timestamp
     }
 

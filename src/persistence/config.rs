@@ -20,6 +20,7 @@ use crate::connectors::snapshot::{
 };
 use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
+use crate::engine::Timestamp;
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::metadata_backends::{
@@ -149,7 +150,7 @@ impl PersistenceManagerConfig {
     pub fn create_snapshot_readers(
         &self,
         persistent_id: PersistentId,
-        threshold_times: &HashMap<usize, u64>,
+        threshold_times: &HashMap<usize, Timestamp>,
     ) -> Result<Vec<SnapshotReader>, ReadError> {
         let mut result: Vec<SnapshotReader> = Vec::new();
         let reader_impls = match &self.stream_storage {
@@ -186,7 +187,7 @@ impl PersistenceManagerConfig {
             }
         };
 
-        let min_threshold_time = *threshold_times.values().min().unwrap_or(&0);
+        let min_threshold_time = *threshold_times.values().min().unwrap_or(&Timestamp(0));
         for (worker_id, reader_impl) in reader_impls {
             if matches!(self.persistence_mode, PersistenceMode::SelectivePersisting) {
                 result.push(SnapshotReader::new(reader_impl, min_threshold_time)?);
@@ -194,7 +195,7 @@ impl PersistenceManagerConfig {
             }
             let Some(threshold_time) = threshold_times.get(&worker_id) else {
                 // append the snapshot reader which would truncate snapshot straight away
-                result.push(SnapshotReader::new(reader_impl, 0)?);
+                result.push(SnapshotReader::new(reader_impl, Timestamp(0))?);
                 continue;
             };
             result.push(SnapshotReader::new(reader_impl, *threshold_time)?);

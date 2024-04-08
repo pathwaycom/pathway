@@ -27,6 +27,7 @@ use crate::connectors::data_storage::{
     CurrentlyProcessedS3Object, ReadError, S3Scanner, WriteError,
 };
 use crate::deepcopy::DeepCopy;
+use crate::engine::Timestamp;
 use crate::engine::{Key, Value};
 use crate::fs_helpers::ensure_directory;
 use crate::timestamp::current_unix_timestamp_ms;
@@ -36,7 +37,7 @@ pub enum Event {
     Insert(Key, Vec<Value>),
     Delete(Key, Vec<Value>),
     Upsert(Key, Option<Vec<Value>>),
-    AdvanceTime(u64),
+    AdvanceTime(Timestamp),
     Finished,
 }
 
@@ -83,7 +84,7 @@ pub struct LocalBinarySnapshotReader {
     root_path: PathBuf,
     reader: Option<BufReader<std::fs::File>>,
     next_file_idx: usize,
-    times_advanced: Vec<u64>,
+    times_advanced: Vec<Timestamp>,
 }
 
 impl LocalBinarySnapshotReader {
@@ -293,7 +294,7 @@ pub struct S3SnapshotReader {
     root_path: String,
     reader: Option<PipeReader>,
     next_object_idx: usize,
-    times_advanced: Vec<u64>,
+    times_advanced: Vec<Timestamp>,
 
     bucket: S3Bucket,
     current_state: Option<CurrentlyProcessedS3Object>,
@@ -572,16 +573,16 @@ impl SnapshotReaderImpl for MockSnapshotReader {
 #[allow(clippy::module_name_repetitions)]
 pub struct SnapshotReader {
     reader_impl: Box<dyn SnapshotReaderImpl>,
-    threshold_time: u64,
+    threshold_time: Timestamp,
     entries_read: usize,
 }
 
 impl SnapshotReader {
     pub fn new(
         mut reader_impl: Box<dyn SnapshotReaderImpl>,
-        threshold_time: u64,
+        threshold_time: Timestamp,
     ) -> Result<Self, ReadError> {
-        if threshold_time == 0 {
+        if threshold_time.0 == 0 {
             info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
             if let Err(e) = reader_impl.truncate() {
                 error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");

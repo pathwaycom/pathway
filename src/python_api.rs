@@ -77,6 +77,7 @@ use crate::engine::reduce::StatefulCombineFn;
 use crate::engine::time::DateTime;
 use crate::engine::Config as EngineTelemetryConfig;
 use crate::engine::ReducerData;
+use crate::engine::Timestamp;
 use crate::engine::{
     run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ColumnPath,
     ColumnProperties as EngineColumnProperties, DataRow, DateTimeNaive, DateTimeUtc, Duration,
@@ -3504,7 +3505,7 @@ impl PySnapshotEvent {
         SnapshotEvent::Delete(key, values)
     }
     #[staticmethod]
-    pub fn advance_time(timestamp: u64) -> SnapshotEvent {
+    pub fn advance_time(timestamp: Timestamp) -> SnapshotEvent {
         SnapshotEvent::AdvanceTime(timestamp)
     }
     #[classattr]
@@ -4440,7 +4441,10 @@ impl Done {
     }
 }
 
-impl<'source> FromPyObject<'source> for TotalFrontier<u64> {
+impl<'source, T> FromPyObject<'source> for TotalFrontier<T>
+where
+    T: FromPyObject<'source>,
+{
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
         if ob.is_instance_of::<Done>() {
             Ok(TotalFrontier::Done)
@@ -4450,7 +4454,10 @@ impl<'source> FromPyObject<'source> for TotalFrontier<u64> {
     }
 }
 
-impl IntoPy<PyObject> for TotalFrontier<u64> {
+impl<T> IntoPy<PyObject> for TotalFrontier<T>
+where
+    T: IntoPy<PyObject>,
+{
     fn into_py(self, py: Python<'_>) -> PyObject {
         match self {
             Self::At(i) => i.into_py(py),
@@ -4459,9 +4466,15 @@ impl IntoPy<PyObject> for TotalFrontier<u64> {
     }
 }
 
-impl ToPyObject for TotalFrontier<u64> {
+impl<T> ToPyObject for TotalFrontier<T>
+where
+    T: ToPyObject,
+{
     fn to_object(&self, py: Python<'_>) -> PyObject {
-        self.into_py(py)
+        match self {
+            Self::At(i) => i.to_object(py),
+            Self::Done => DONE.clone_ref(py).into_py(py),
+        }
     }
 }
 
@@ -4478,11 +4491,11 @@ impl PyExportedTable {
 
 #[pymethods]
 impl PyExportedTable {
-    fn frontier(&self) -> TotalFrontier<u64> {
+    fn frontier(&self) -> TotalFrontier<Timestamp> {
         self.inner.frontier()
     }
 
-    fn snapshot_at(&self, frontier: TotalFrontier<u64>) -> Vec<(Key, Vec<Value>)> {
+    fn snapshot_at(&self, frontier: TotalFrontier<Timestamp>) -> Vec<(Key, Vec<Value>)> {
         self.inner.snapshot_at(frontier)
     }
 

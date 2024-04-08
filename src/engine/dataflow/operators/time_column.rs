@@ -6,6 +6,8 @@ use crate::engine::dataflow::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp,
 use crate::engine::dataflow::operators::utils::{key_val_total_weight, CursorStorageWrapper};
 use crate::engine::dataflow::operators::MapWrapped;
 use crate::engine::dataflow::{ArrangedBySelf, Shard};
+use crate::engine::timestamp::Summary;
+use crate::engine::Timestamp;
 use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
@@ -28,7 +30,8 @@ use timely::order::TotalOrder;
 use timely::progress::frontier::AntichainRef;
 use timely::progress::timestamp::Refines;
 use timely::progress::Antichain;
-use timely::progress::{PathSummary, Timestamp};
+use timely::progress::PathSummary;
+use timely::progress::Timestamp as TimestampTrait;
 use timely::PartialOrder;
 type KeyValArr<G, K, V, R> =
     Arranged<G, TraceAgent<Spine<Rc<OrdValBatch<K, V, <G as ScopeParent>::Timestamp, R>>>>>;
@@ -78,7 +81,7 @@ impl<T: PartialOrder> PartialOrder for SelfCompactionTime<T> {
     }
 }
 
-impl<T: Timestamp> PathSummary<SelfCompactionTime<T>> for SelfCompactionTime<T::Summary> {
+impl<T: TimestampTrait> PathSummary<SelfCompactionTime<T>> for SelfCompactionTime<T::Summary> {
     fn results_in(&self, timestamp: &SelfCompactionTime<T>) -> Option<SelfCompactionTime<T>> {
         self.time
             .results_in(&timestamp.time)
@@ -98,18 +101,18 @@ impl<T: Timestamp> PathSummary<SelfCompactionTime<T>> for SelfCompactionTime<T::
     }
 }
 
-impl<T: Timestamp> Timestamp for SelfCompactionTime<T> {
+impl<T: TimestampTrait> TimestampTrait for SelfCompactionTime<T> {
     type Summary = SelfCompactionTime<T::Summary>;
     fn minimum() -> Self {
         SelfCompactionTime::original(T::minimum())
     }
 }
 
-impl<T: Timestamp> Refines<T> for SelfCompactionTime<T> {
+impl<T: TimestampTrait> Refines<T> for SelfCompactionTime<T> {
     fn to_inner(other: T) -> Self {
         SelfCompactionTime::original(other)
     }
-    fn to_outer(self: SelfCompactionTime<T>) -> T {
+    fn to_outer(self) -> T {
         self.time
     }
     fn summarize(path: SelfCompactionTime<T::Summary>) -> T::Summary {
@@ -117,13 +120,19 @@ impl<T: Timestamp> Refines<T> for SelfCompactionTime<T> {
     }
 }
 
-impl Refines<()> for SelfCompactionTime<i32> {
+#[allow(clippy::unused_unit, clippy::semicolon_if_nothing_returned)]
+impl Refines<()> for SelfCompactionTime<Timestamp> {
     fn to_inner(other: ()) -> Self {
-        SelfCompactionTime::original(<i32 as Refines<()>>::to_inner(other))
+        SelfCompactionTime::original(Refines::to_inner(other))
     }
-    fn to_outer(self: SelfCompactionTime<i32>) {}
 
-    fn summarize(_path: SelfCompactionTime<i32>) {}
+    fn to_outer(self) -> () {
+        ()
+    }
+
+    fn summarize(_path: SelfCompactionTime<Summary>) -> () {
+        ()
+    }
 }
 
 impl<T: Lattice> Lattice for SelfCompactionTime<T> {
@@ -160,8 +169,8 @@ where
     type IsTotal = NotTotal; // it can be sometimes total, but it is hard to express that here
 }
 
-pub trait Epsilon {
-    fn epsilon() -> Self;
+pub trait Epsilon: TimestampTrait {
+    fn epsilon() -> Self::Summary;
 }
 
 impl Epsilon for i32 {
@@ -218,35 +227,26 @@ where
     }
 }
 
-pub trait MaxTimestamp<T> {
-    fn get_max_timestamp() -> T;
+pub trait MaxTimestamp {
+    fn get_max_timestamp() -> Self;
 }
 
-impl MaxTimestamp<u64> for u64 {
+impl MaxTimestamp for u64 {
     fn get_max_timestamp() -> u64 {
         u64::MAX / 2 * 2
     }
 }
 
-impl MaxTimestamp<i32> for i32 {
+impl MaxTimestamp for i32 {
     fn get_max_timestamp() -> i32 {
         i32::MAX / 2 * 2
     }
 }
 
-impl MaxTimestamp<SelfCompactionTime<u64>> for SelfCompactionTime<u64> {
-    fn get_max_timestamp() -> SelfCompactionTime<u64> {
-        SelfCompactionTime {
-            time: u64::get_max_timestamp(),
-            retraction: false,
-        }
-    }
-}
-
-impl MaxTimestamp<SelfCompactionTime<i32>> for SelfCompactionTime<i32> {
-    fn get_max_timestamp() -> SelfCompactionTime<i32> {
-        SelfCompactionTime {
-            time: i32::get_max_timestamp(),
+impl<T: MaxTimestamp> MaxTimestamp for SelfCompactionTime<T> {
+    fn get_max_timestamp() -> Self {
+        Self {
+            time: T::get_max_timestamp(),
             retraction: false,
         }
     }
@@ -271,11 +271,7 @@ pub trait TimeColumnBuffer<
     ) -> Collection<G, (K, V), R>
     where
         G: MaybeTotalScope,
-        G::Timestamp: Timestamp<Summary = G::Timestamp>
-            + Default
-            + PathSummary<G::Timestamp>
-            + Epsilon
-            + MaxTimestamp<G::Timestamp>,
+        G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static;
 }
@@ -284,9 +280,7 @@ impl<G, K, V, R, CT, TTE, CTE> TimeColumnBuffer<G, K, V, R, CT, TTE, CTE>
     for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
-    G::Timestamp: Lattice,
-    SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>:
-        MaxTimestamp<SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>>,
+    G::Timestamp: Lattice + MaxTimestamp,
     K: ExchangeData + Shard,
     V: ExchangeData,
     CT: ExchangeData,
@@ -301,18 +295,14 @@ where
         flush_on_end: bool,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp: Timestamp<Summary = G::Timestamp>
-            + Default
-            + PathSummary<G::Timestamp>
-            + Epsilon
-            + MaxTimestamp<G::Timestamp>,
+        G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
     {
         scope.scoped::<SelfCompactionTime<G::Timestamp>, _, _>("buffer timespace", |inner| {
             let retractions = Variable::new(
                 inner,
-                SelfCompactionTime::retraction(<G::Timestamp as Epsilon>::epsilon()),
+                SelfCompactionTime::retraction(G::Timestamp::epsilon()),
             );
 
             let ret_in_buffer_timespace_col = postpone_core(
@@ -337,8 +327,8 @@ fn push_key_values_to_output<K, C: Cursor, P>(
     k: &K,
     time: &Option<C::Time>,
 ) where
-    K: Ord + Clone + Data + 'static,
-    C::Val: Ord + Clone + Data + 'static,
+    K: Data + 'static,
+    C::Val: Data + 'static,
     C::Time: Lattice + timely::progress::Timestamp,
     C::R: Clone + Abelian,
     P: Push<
@@ -388,7 +378,7 @@ fn move_cursor_to_key<
 // perhaps could be done while implementing support for complex times
 #[allow(clippy::too_many_lines)]
 pub fn postpone_core<
-    OT: Timestamp<Summary = OT> + Default + PathSummary<OT>,
+    OT,
     G: ScopeParent<Timestamp = SelfCompactionTime<OT>>,
     CT: ExchangeData,
     K: ExchangeData + Shard,
@@ -402,8 +392,8 @@ pub fn postpone_core<
 ) -> Collection<G, (K, V), R>
 where
     G: Scope,
-    OT: Timestamp + Lattice + Ord,
-    G::Timestamp: Lattice + Ord + MaxTimestamp<G::Timestamp>,
+    OT: TimestampTrait + Lattice,
+    G::Timestamp: Lattice + MaxTimestamp,
     CT: ExchangeData,
     K: ExchangeData,
     V: ExchangeData,
@@ -588,11 +578,7 @@ pub trait TimeColumnForget<
     ) -> Collection<G, (K, V), R>
     where
         G: MaybeTotalScope,
-        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp>,
-        SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>:
-            MaxTimestamp<SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>>,
-        <G as MaybeTotalScope>::MaybeTotalTimestamp:
-            MaxTimestamp<<G as MaybeTotalScope>::MaybeTotalTimestamp>,
+        G::Timestamp: MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static;
 }
@@ -600,7 +586,7 @@ pub trait TimeColumnForget<
 impl<G, K, V, R, CT, TTE, CTE> TimeColumnForget<G, K, V, R, CT, TTE, CTE>
     for Collection<G, (K, V), R>
 where
-    G: MaybeTotalScope<MaybeTotalTimestamp = u64>,
+    G: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
     K: ExchangeData + Shard,
     V: ExchangeData,
     CT: ExchangeData,
@@ -614,11 +600,7 @@ where
         mark_forgetting_records: bool,
     ) -> Collection<G, (K, V), R>
     where
-        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
-        SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>:
-            MaxTimestamp<SelfCompactionTime<<G as MaybeTotalScope>::MaybeTotalTimestamp>>,
-        <G as MaybeTotalScope>::MaybeTotalTimestamp:
-            MaxTimestamp<<G as MaybeTotalScope>::MaybeTotalTimestamp>,
+        G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
     {
@@ -632,7 +614,7 @@ where
             forgetting_stream
                 .inspect(|(_data, time, _diff)| {
                     assert!(
-                        time % 2 == 0,
+                        time.0 % 2 == 0,
                         "Neu time encountered at forget() buffer output."
                     );
                 })
@@ -640,14 +622,14 @@ where
                     // can be called on times other than appearing in records
                     // that's why assert is in inspect above
                     // if two times are ordered, they should have the same order once func is applied to them
-                    time + 1 // produce neu times
+                    Timestamp(time.0 + 1) // produce neu times
                 })
         } else {
             forgetting_stream
         };
         self.inner
             .inspect(|(_data, time, _diff)| {
-                assert!(time % 2 == 0, "Neu time encountered at forget() input.");
+                assert!(time.0 % 2 == 0, "Neu time encountered at forget() input.");
             })
             .as_collection()
             .concat(&forgetting_stream)
@@ -669,7 +651,7 @@ pub trait TimeColumnFreeze<
         current_column_extractor: CTE,
     ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
     where
-        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        G::Timestamp: Epsilon,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static;
 }
@@ -691,7 +673,7 @@ where
         current_time_extractor: CTE,
     ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
     where
-        G::Timestamp: Timestamp<Summary = G::Timestamp> + PathSummary<G::Timestamp> + Epsilon,
+        G::Timestamp: Epsilon,
         CTE: Fn(&V) -> CT + 'static,
         TTE: Fn(&V) -> CT + 'static,
     {

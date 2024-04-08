@@ -78,7 +78,7 @@ use timely::dataflow::scopes::Child;
 use timely::execute;
 use timely::order::{Product, TotalOrder};
 use timely::progress::timestamp::Refines;
-use timely::progress::{PathSummary, Timestamp};
+use timely::progress::Timestamp as TimestampTrait;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use self::complex_columns::complex_columns;
@@ -87,7 +87,7 @@ use self::maybe_total::{MaybeTotalScope, MaybeTotalTimestamp, NotTotal, Total};
 use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
-use self::operators::time_column::{MaxTimestamp, SelfCompactionTime, TimeColumnBuffer};
+use self::operators::time_column::{MaxTimestamp, TimeColumnBuffer};
 use self::operators::{ArrangeWithTypes, MapWithConsistentDeletions, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
@@ -112,7 +112,7 @@ use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
     Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable,
     OperatorStats, ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties,
-    UniverseHandle, Value,
+    Timestamp, UniverseHandle, Value,
 };
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
@@ -516,12 +516,12 @@ impl<S: MaybeTotalScope> Table<S> {
 }
 
 struct ErrorLogInner {
-    input_session: InputSession<u64, (Key, Value), isize>,
+    input_session: InputSession<Timestamp, (Key, Value), isize>,
     last_flush: Option<SystemTime>,
 }
 
 impl ErrorLogInner {
-    fn new(input_session: InputSession<u64, (Key, Value), isize>) -> Self {
+    fn new(input_session: InputSession<Timestamp, (Key, Value), isize>) -> Self {
         let mut log = ErrorLogInner {
             input_session,
             last_flush: None,
@@ -544,7 +544,7 @@ impl ErrorLogInner {
             let new_timestamp = u64::try_from(current_unix_timestamp_ms())
                 .expect("number of milliseconds should fit in 64 bits");
             let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
-            self.input_session.advance_to(new_timestamp);
+            self.input_session.advance_to(Timestamp(new_timestamp));
             self.input_session.flush();
         }
         self.last_flush.expect("last_flush should be set") + ERROR_LOG_FLUSH_PERIOD
@@ -557,7 +557,7 @@ struct ErrorLog {
 }
 
 impl ErrorLog {
-    fn new(input_session: InputSession<u64, (Key, Value), isize>) -> ErrorLog {
+    fn new(input_session: InputSession<Timestamp, (Key, Value), isize>) -> ErrorLog {
         let inner = ErrorLogInner::new(input_session);
         ErrorLog {
             inner: Rc::new(RefCell::new(inner)),
@@ -610,9 +610,9 @@ impl LogError for ErrorLogger {
 }
 
 struct Prober {
-    input_time: Option<u64>,
+    input_time: Option<Timestamp>,
     input_time_changed: Option<SystemTime>,
-    output_time: Option<u64>,
+    output_time: Option<Timestamp>,
     output_time_changed: Option<SystemTime>,
     intermediate_probes_required: bool,
     run_callback_every_time: bool,
@@ -639,14 +639,21 @@ impl Prober {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn create_stats(probe: &ProbeHandle<u64>, input_time: Option<u64>) -> OperatorStats {
+    fn create_stats(
+        probe: &ProbeHandle<Timestamp>,
+        input_time: Option<Timestamp>,
+    ) -> OperatorStats {
         let frontier = probe.with_frontier(|frontier| frontier.as_option().copied());
         if let Some(timestamp) = frontier {
             OperatorStats {
-                time: if timestamp > 0 { Some(timestamp) } else { None },
+                time: if timestamp.0 > 0 {
+                    Some(timestamp)
+                } else {
+                    None
+                },
                 lag: input_time.map(|input_time_unwrapped| {
                     if input_time_unwrapped >= timestamp {
-                        input_time_unwrapped - timestamp
+                        input_time_unwrapped.0 - timestamp.0
                     } else {
                         0
                     }
@@ -665,9 +672,9 @@ impl Prober {
     #[allow(clippy::cast_possible_truncation)]
     fn update(
         &mut self,
-        input_probe: &ProbeHandle<u64>,
-        output_probe: &ProbeHandle<u64>,
-        intermediate_probes: &HashMap<usize, ProbeHandle<u64>>,
+        input_probe: &ProbeHandle<Timestamp>,
+        output_probe: &ProbeHandle<Timestamp>,
+        intermediate_probes: &HashMap<usize, ProbeHandle<Timestamp>>,
         connector_monitors: &[Rc<RefCell<ConnectorMonitor>>],
     ) {
         let now = Lazy::new(SystemTime::now);
@@ -1543,9 +1550,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>
     where
-        <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + Epsilon,
+        S::MaybeTotalTimestamp: Epsilon,
     {
         let table = self
             .tables
@@ -1573,12 +1578,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>
     where
-        <S as MaybeTotalScope>::MaybeTotalTimestamp: Timestamp<Summary = <S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + PathSummary<<S as MaybeTotalScope>::MaybeTotalTimestamp>
-            + Epsilon
-            + MaxTimestamp<<S as MaybeTotalScope>::MaybeTotalTimestamp>,
-        SelfCompactionTime<<S as MaybeTotalScope>::MaybeTotalTimestamp>:
-            MaxTimestamp<SelfCompactionTime<<S as MaybeTotalScope>::MaybeTotalTimestamp>>,
+        S::MaybeTotalTimestamp: Epsilon + MaxTimestamp,
     {
         let table = self
             .tables
@@ -2779,7 +2779,7 @@ where
     }
 }
 
-impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S>
+impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S>
 where
     S::MaybeTotalTimestamp: TotalOrder,
 {
@@ -2918,12 +2918,12 @@ where
 
 #[derive(Debug, Clone)]
 enum OutputEvent {
-    Commit(Option<u64>),
-    Batch(OutputBatch<u64, (Key, Tuple), isize>),
+    Commit(Option<Timestamp>),
+    Batch(OutputBatch<Timestamp, (Key, Tuple), isize>),
 }
 
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
-impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
+impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> {
     fn empty_table(&mut self, table_properties: Arc<TableProperties>) -> Result<TableHandle> {
         self.static_table(Vec::new(), table_properties)
     }
@@ -3044,7 +3044,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                 .as_ref()
                 .map_or(SnapshotAccess::Full, |config| config.snapshot_access);
 
-            let connector = Connector::<S::Timestamp>::new(commit_duration, parser.column_count());
+            let connector = Connector::new(commit_duration, parser.column_count());
             let state = connector.run(
                 reader,
                 parser,
@@ -3149,13 +3149,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
         let forgetting_stream = table.values().negate().delay(|time| {
             // can be called on times other than appearing in records
-            time + 1 // produce neu times
+            Timestamp(time.0 + 1) // produce neu times
         });
         let new_table = table
             .values()
             .inner
             .inspect(|(_data, time, _diff)| {
-                assert!(time % 2 == 0, "Neu time encountered at forget() input.");
+                assert!(time.0 % 2 == 0, "Neu time encountered at forget() input.");
             })
             .as_collection()
             .concat(&forgetting_stream);
@@ -3177,7 +3177,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
         let new_table = table
             .values()
             .inner
-            .filter(|(_data, time, _diff)| time % 2 == 0)
+            .filter(|(_data, time, _diff)| time.0 % 2 == 0)
             .as_collection();
         Ok(self
             .tables
@@ -3186,7 +3186,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
     fn output_batch(
         stats: &mut OutputConnectorStats,
-        batch: OutputBatch<u64, (Key, Tuple), isize>,
+        batch: OutputBatch<Timestamp, (Key, Tuple), isize>,
         data_sink: &mut Box<dyn Writer>,
         data_formatter: &mut Box<dyn Formatter>,
         global_persistent_storage: &GlobalPersistentStorage,
@@ -3234,7 +3234,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
 
     fn commit_output_time(
         stats: &mut OutputConnectorStats,
-        t: Option<u64>,
+        t: Option<Timestamp>,
         worker_index: usize,
         sink_id: Option<usize>,
         global_persistent_storage: &GlobalPersistentStorage,
@@ -3249,7 +3249,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
                     t,
                 );
         }
-        stats.on_time_committed(t);
+        stats.on_time_committed(t.map(|t| t.0));
     }
 
     fn output_table(
@@ -3456,6 +3456,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> DataflowGraphInner<S> {
             }
         }
         scope.iterative::<u32, _, _>(|subscope| {
+            #[allow(clippy::default_trait_access)] // not really more readable
             let step = Product::new(Default::default(), 1);
             let subgraph = InnerDataflowGraph::new(
                 subscope.clone(),
@@ -3903,7 +3904,7 @@ where
 struct BeforeIterate<'g, O: MaybeTotalScope, I: MaybeTotalScope> {
     outer: &'g DataflowGraphInner<O>,
     inner: &'g mut DataflowGraphInner<I>,
-    step: <I::Timestamp as Timestamp>::Summary,
+    step: <I::Timestamp as TimestampTrait>::Summary,
     universe_cache: HashMap<UniverseHandle, UniverseHandle>,
     column_cache: HashMap<ColumnHandle, ColumnHandle>,
 }
@@ -4581,11 +4582,11 @@ where
     }
 }
 
-struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = u64>>(
+struct OuterDataflowGraph<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>>(
     RefCell<DataflowGraphInner<S>>,
 );
 
-impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
+impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> {
     pub fn new(
         scope: S,
         error_reporter: ErrorReporter,
@@ -4610,7 +4611,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> OuterDataflowGraph<S> {
     }
 }
 
-impl<S: MaybeTotalScope<MaybeTotalTimestamp = u64>> Graph for OuterDataflowGraph<S> {
+impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflowGraph<S> {
     fn worker_index(&self) -> usize {
         self.0.borrow().worker_index()
     }
@@ -5263,7 +5264,7 @@ where
                 progress_reporter_runner,
                 http_server_runner,
                 telemetry_runner,
-            ) = worker.dataflow::<u64, _, _>(|scope| {
+            ) = worker.dataflow::<Timestamp, _, _>(|scope| {
                 let graph = OuterDataflowGraph::new(
                     scope.clone(),
                     error_reporter.clone(),

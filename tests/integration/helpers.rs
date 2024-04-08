@@ -20,7 +20,7 @@ use pathway_engine::connectors::data_storage::{
 };
 use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
-use pathway_engine::engine::Key;
+use pathway_engine::engine::{Key, Timestamp};
 use pathway_engine::persistence::frontier::OffsetAntichain;
 use pathway_engine::persistence::sync::{
     SharedWorkersPersistenceCoordinator, WorkersPersistenceCoordinator,
@@ -50,7 +50,7 @@ pub fn full_cycle_read(
 ) -> FullReadResult {
     let maybe_persistent_id = reader.persistent_id();
 
-    let offsets = Arc::new(Mutex::new(HashMap::<u64, OffsetAntichain>::new()));
+    let offsets = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     if let Some(persistent_storage) = persistent_storage {
         if let Some(persistent_id) = reader.persistent_id() {
             persistent_storage.lock().unwrap().register_input_source(
@@ -63,15 +63,12 @@ pub fn full_cycle_read(
 
     let main_thread = thread::current();
     let (sender, receiver) = mpsc::channel();
-    let mut snapshot_writer = Connector::<u64>::snapshot_writer(
-        reader.as_ref(),
-        persistent_storage,
-        SnapshotAccess::Full,
-    )
-    .unwrap();
+    let mut snapshot_writer =
+        Connector::snapshot_writer(reader.as_ref(), persistent_storage, SnapshotAccess::Full)
+            .unwrap();
 
     let mut reader = reader.build().expect("building the reader failed");
-    Connector::<u64>::read_snapshot(
+    Connector::read_snapshot(
         &mut *reader,
         persistent_storage,
         &sender,
@@ -80,7 +77,7 @@ pub fn full_cycle_read(
     );
 
     let reporter = PanicErrorReporter::default();
-    Connector::<u64>::read_realtime_updates(&mut *reader, &sender, &main_thread, &reporter);
+    Connector::read_realtime_updates(&mut *reader, &sender, &main_thread, &reporter);
     let result = get_entries_in_receiver(receiver);
 
     let has_persistent_storage = persistent_storage.is_some();
@@ -114,7 +111,7 @@ pub fn full_cycle_read(
                             ParsedEvent::Delete((_, _)) | ParsedEvent::Upsert((_, _)) => {
                                 todo!("delete and upsert aren't supported in this test")
                             }
-                            ParsedEvent::AdvanceTime => SnapshotEvent::AdvanceTime(1),
+                            ParsedEvent::AdvanceTime => SnapshotEvent::AdvanceTime(Timestamp(1)),
                         };
                         snapshot_writer
                             .lock()
@@ -150,7 +147,7 @@ pub fn full_cycle_read(
         offsets
             .lock()
             .unwrap()
-            .insert(prev_finalized_time + 1, frontier);
+            .insert(Timestamp(prev_finalized_time.0 + 1), frontier);
 
         let last_sink_id = persistent_storage.unwrap().lock().unwrap().register_sink();
         for sink_id in 0..=last_sink_id {
@@ -159,7 +156,7 @@ pub fn full_cycle_read(
                 .unwrap()
                 .lock()
                 .unwrap()
-                .accept_finalized_timestamp(0, sink_id, Some(prev_finalized_time + 2));
+                .accept_finalized_timestamp(0, sink_id, Some(Timestamp(prev_finalized_time.0 + 2)));
         }
     }
 

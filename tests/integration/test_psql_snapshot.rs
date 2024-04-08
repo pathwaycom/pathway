@@ -7,7 +7,7 @@ use assert_matches::assert_matches;
 use pathway_engine::connectors::data_format::{
     Formatter, PsqlSnapshotFormatter, PsqlSnapshotFormatterError,
 };
-use pathway_engine::engine::{Key, Value};
+use pathway_engine::engine::{Key, Timestamp, Value};
 
 #[test]
 fn test_psql_format_snapshot_command() -> eyre::Result<()> {
@@ -30,7 +30,7 @@ fn test_psql_format_snapshot_command() -> eyre::Result<()> {
             Value::Bool(true),
             Value::from(1.23),
         ],
-        5,
+        Timestamp(5),
         -1,
     )?;
 
@@ -80,7 +80,7 @@ fn test_psql_format_snapshot_composite() -> eyre::Result<()> {
             Value::Bool(true),
             Value::from(1.23),
         ],
-        5,
+        Timestamp(5),
         1,
     )?;
 

@@ -9,13 +9,17 @@ use std::sync::{Arc, Mutex};
 use crate::connectors::data_storage::{ReadError, StorageType, WriteError};
 use crate::connectors::snapshot::{SnapshotReader, SnapshotWriterFlushFuture};
 use crate::connectors::PersistenceMode;
+use crate::engine::Timestamp;
 use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
-type FrontierByTimeForInputSources = Vec<(PersistentId, Arc<Mutex<HashMap<u64, OffsetAntichain>>>)>;
+type FrontierByTimeForInputSources = Vec<(
+    PersistentId,
+    Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
+)>;
 
 /// The main coordinator for state persistence within one worker
 /// It tracks offset frontiers and snapshots and commits them when the
@@ -25,7 +29,7 @@ pub struct SingleWorkerPersistentStorage {
     config: PersistenceManagerConfig,
 
     snapshot_writers: HashMap<PersistentId, SharedSnapshotWriter>,
-    sink_threshold_times: Vec<Option<u64>>,
+    sink_threshold_times: Vec<Option<Timestamp>>,
     input_sources: FrontierByTimeForInputSources,
 }
 
@@ -37,11 +41,11 @@ pub struct FrontierCommitData {
     snapshot_futures: Vec<SnapshotWriterFlushFuture>,
 
     // The timestamp which needs to be committed when saving is successful
-    timestamp: u64,
+    timestamp: Timestamp,
 }
 
 impl FrontierCommitData {
-    pub fn new(snapshot_futures: Vec<SnapshotWriterFlushFuture>, timestamp: u64) -> Self {
+    pub fn new(snapshot_futures: Vec<SnapshotWriterFlushFuture>, timestamp: Timestamp) -> Self {
         Self {
             snapshot_futures,
             timestamp,
@@ -90,7 +94,7 @@ impl SingleWorkerPersistentStorage {
         matches!(self.config.persistence_mode, PersistenceMode::Persisting)
     }
 
-    pub fn last_finalized_timestamp(&self) -> u64 {
+    pub fn last_finalized_timestamp(&self) -> Timestamp {
         self.metadata_storage.last_advanced_timestamp()
     }
 
@@ -98,7 +102,7 @@ impl SingleWorkerPersistentStorage {
         &mut self,
         persistent_id: PersistentId,
         storage_type: &StorageType,
-        source: Arc<Mutex<HashMap<u64, OffsetAntichain>>>,
+        source: Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
     ) {
         assert!(
             !self
@@ -118,7 +122,7 @@ impl SingleWorkerPersistentStorage {
     }
 
     pub fn register_sink(&mut self) -> usize {
-        self.sink_threshold_times.push(Some(0));
+        self.sink_threshold_times.push(Some(Timestamp(0)));
         self.sink_threshold_times.len() - 1
     }
 
@@ -129,8 +133,8 @@ impl SingleWorkerPersistentStorage {
     pub fn update_sink_finalized_time(
         &mut self,
         sink_id: usize,
-        reported_timestamp: Option<u64>,
-    ) -> Option<u64> {
+        reported_timestamp: Option<Timestamp>,
+    ) -> Option<Timestamp> {
         self.sink_threshold_times[sink_id] = reported_timestamp;
         self.finalized_time_within_worker()
     }
@@ -139,12 +143,13 @@ impl SingleWorkerPersistentStorage {
     /// If `timestamp` is `None` it means that all output within all workers has finished.
     pub fn accept_globally_finalized_timestamp(
         &mut self,
-        timestamp: Option<u64>,
+        timestamp: Option<Timestamp>,
     ) -> FrontierCommitData {
         /*
             Use the timestamp provided, or if it's None use the max timestamp across input sources
         */
-        let finalized_timestamp = timestamp.unwrap_or(self.last_known_input_time() + 1);
+        let finalized_timestamp =
+            timestamp.unwrap_or(Timestamp(self.last_known_input_time().0 + 1));
         let prev_finalized_timestamp = self.last_finalized_timestamp();
         if finalized_timestamp < prev_finalized_timestamp {
             error!("Time isn't in the increasing order. Got advancement to {finalized_timestamp} while last advanced timestamp was {}", self.last_finalized_timestamp());
@@ -244,11 +249,11 @@ impl SingleWorkerPersistentStorage {
         }
     }
 
-    pub fn finalized_time_within_worker(&self) -> Option<u64> {
+    pub fn finalized_time_within_worker(&self) -> Option<Timestamp> {
         self.sink_threshold_times.iter().flatten().min().copied()
     }
 
-    pub fn last_known_input_time(&self) -> u64 {
+    pub fn last_known_input_time(&self) -> Timestamp {
         let mut last_timestamp = self.last_finalized_timestamp();
         for (_, input_source) in &self.input_sources {
             let local_last_timestamp = *input_source

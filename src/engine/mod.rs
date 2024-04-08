@@ -48,3 +48,6 @@ pub mod telemetry;
 pub use telemetry::Config;
 
 pub mod external_index_wrappers;
+
+pub mod timestamp;
+pub use timestamp::Timestamp;

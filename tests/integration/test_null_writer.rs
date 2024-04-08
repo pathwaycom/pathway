@@ -1,6 +1,6 @@
 // Copyright © 2024 Pathway
 
-use pathway_engine::engine::Key;
+use pathway_engine::engine::{Key, Timestamp};
 
 use pathway_engine::connectors::data_format::{Formatter, FormatterContext, NullFormatter};
 use pathway_engine::connectors::data_storage::{NullWriter, Writer};
@@ -10,7 +10,7 @@ fn test_null_formatter_ok() -> eyre::Result<()> {
     let mut formatter = NullFormatter::new();
     let key = Key::random();
     let context = formatter
-        .format(&key, &Vec::new(), 1, 1)
+        .format(&key, &Vec::new(), Timestamp(1), 1)
         .expect("Formatter failed");
 
     assert_eq!(context.payloads, Vec::<Vec<u8>>::new());

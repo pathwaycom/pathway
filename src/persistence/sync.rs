@@ -4,6 +4,7 @@ use log::{error, info, warn};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use crate::engine::Timestamp;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
 
 #[derive(Default)]
@@ -11,7 +12,7 @@ pub struct WorkersPersistenceCoordinator {
     refresh_frequency: Duration,
     last_flush_at: Option<SystemTime>,
     worker_persistence_managers: Vec<Option<Arc<Mutex<SingleWorkerPersistentStorage>>>>,
-    last_timestamp_flushed: Option<u64>,
+    last_timestamp_flushed: Option<Timestamp>,
     expected_ready_workers: usize,
 }
 
@@ -26,7 +27,7 @@ impl WorkersPersistenceCoordinator {
             expected_ready_workers,
             last_flush_at: None,
             worker_persistence_managers: vec![None; num_workers],
-            last_timestamp_flushed: Some(0),
+            last_timestamp_flushed: Some(Timestamp(0)),
         }
     }
 
@@ -52,7 +53,7 @@ impl WorkersPersistenceCoordinator {
         &mut self,
         worker_id: usize,
         sink_id: usize,
-        reported_timestamp: Option<u64>,
+        reported_timestamp: Option<Timestamp>,
     ) {
         let worker_storage = self.worker_persistence_managers[worker_id]
             .as_ref()
@@ -127,7 +128,7 @@ impl WorkersPersistenceCoordinator {
         }
     }
 
-    pub fn global_closed_timestamp(&mut self) -> Option<u64> {
+    pub fn global_closed_timestamp(&mut self) -> Option<Timestamp> {
         let mut prepared_workers_count = 0;
         let mut min_closed_timestamp = None;
         for worker_pm in &self.worker_persistence_managers {
@@ -152,7 +153,7 @@ impl WorkersPersistenceCoordinator {
                 "Workers not ready: {prepared_workers_count} prepared out of {} expected",
                 self.expected_ready_workers
             );
-            return Some(0);
+            return Some(Timestamp(0));
         }
         min_closed_timestamp
     }

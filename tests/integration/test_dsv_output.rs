@@ -5,8 +5,8 @@ use assert_matches::assert_matches;
 use pathway_engine::connectors::data_format::{
     DsvFormatter, DsvSettings, Formatter, FormatterError,
 };
-use pathway_engine::engine::Key;
 use pathway_engine::engine::Value;
+use pathway_engine::engine::{Key, Timestamp};
 
 #[test]
 fn test_dsv_format_ok() -> eyre::Result<()> {
@@ -19,7 +19,7 @@ fn test_dsv_format_ok() -> eyre::Result<()> {
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
         &[Value::from("x"), Value::from("y")],
-        0,
+        Timestamp(0),
         1,
     )?;
 
@@ -42,7 +42,7 @@ fn test_dsv_columns_mismatch() -> eyre::Result<()> {
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
         &[Value::from("x"), Value::from("y")],
-        0,
+        Timestamp(0),
         1,
     );
     assert_matches!(result, Err(FormatterError::ColumnsValuesCountMismatch));

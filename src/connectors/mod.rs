@@ -15,7 +15,6 @@ use std::time::{Duration, SystemTime};
 
 use scopeguard::guard;
 use timely::dataflow::operators::probe::Handle;
-use timely::progress::Timestamp as TimelyTimestamp;
 
 pub mod adaptors;
 pub mod data_format;
@@ -32,6 +31,7 @@ use crate::engine::{Key, Value};
 use crate::connectors::adaptors::InputAdaptor;
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::engine::Error as EngineError;
+use crate::engine::Timestamp;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::SingleWorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
@@ -44,7 +44,7 @@ pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
 
-pub const ARTIFICIAL_TIME_ON_REWIND_START: u64 = 0;
+pub const ARTIFICIAL_TIME_ON_REWIND_START: Timestamp = Timestamp(0); // XXX
 
 /*
     Below is the custom reader stuff.
@@ -63,14 +63,14 @@ pub trait CustomReader {
     data source defined by reader.
 */
 
-pub struct StartedConnectorState<Timestamp> {
+pub struct StartedConnectorState {
     pub poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
     pub input_thread_handle: std::thread::JoinHandle<()>,
     pub offsets_by_time: Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
     pub connector_monitor: Rc<RefCell<ConnectorMonitor>>,
 }
 
-impl<Timestamp> StartedConnectorState<Timestamp> {
+impl StartedConnectorState {
     pub fn new(
         poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
         input_thread_handle: std::thread::JoinHandle<()>,
@@ -86,7 +86,7 @@ impl<Timestamp> StartedConnectorState<Timestamp> {
     }
 }
 
-pub struct Connector<Timestamp> {
+pub struct Connector {
     commit_duration: Option<Duration>,
     current_timestamp: Timestamp,
     num_columns: usize,
@@ -115,6 +115,7 @@ impl PersistenceMode {
         if matches!(self, PersistenceMode::Batch) {
             let timestamp = u64::try_from(current_unix_timestamp_ms())
                 .expect("number of milliseconds should fit in 64 bits");
+            let timestamp = Timestamp(timestamp);
             let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(timestamp)));
             if let Err(e) = send_res {
                 panic!("Failed to initialize time for batch replay: {e}");
@@ -164,11 +165,7 @@ impl SnapshotAccess {
     }
 }
 
-impl<Timestamp> Connector<Timestamp>
-where
-    Timestamp: TimelyTimestamp + Default + From<u64>,
-    u64: From<Timestamp>,
-{
+impl Connector {
     /*
         The implementation for pull model of data acquisition: we explicitly inquiry the source about the newly
         arrived data.
@@ -176,27 +173,28 @@ where
     pub fn new(commit_duration: Option<Duration>, num_columns: usize) -> Self {
         Connector {
             commit_duration,
-            current_timestamp: Default::default(), // default is 0 now. If changing, make sure it is even (required for alt-neu).
+            current_timestamp: Timestamp(0), // default is 0 now. If changing, make sure it is even (required for alt-neu).
             num_columns,
         }
     }
 
-    fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> u64 {
+    fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
         let new_timestamp = u64::try_from(current_unix_timestamp_ms())
             .expect("number of milliseconds should fit in 64 bits");
         let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
+        let new_timestamp = Timestamp(new_timestamp);
 
-        let timestamp_updated = self.current_timestamp.less_equal(&new_timestamp.into());
+        let timestamp_updated = self.current_timestamp <= new_timestamp;
         if timestamp_updated {
-            self.current_timestamp = new_timestamp.into();
+            self.current_timestamp = new_timestamp;
         } else {
             warn!("The current timestamp is lower than the last one saved");
         }
 
-        input_session.advance_to(self.current_timestamp.clone());
+        input_session.advance_to(self.current_timestamp);
         input_session.flush();
 
-        self.current_timestamp.clone().into()
+        self.current_timestamp
     }
 
     pub fn rewind_from_disk_snapshot(
@@ -367,7 +365,7 @@ where
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
-    ) -> Result<StartedConnectorState<Timestamp>, EngineError> {
+    ) -> Result<StartedConnectorState, EngineError> {
         assert_eq!(self.num_columns, parser.column_count());
 
         let main_thread = thread::current();
@@ -470,8 +468,9 @@ where
                     }
                     Ok(Entry::Snapshot(SnapshotEvent::AdvanceTime(new_timestamp))) => {
                         input_session.flush();
-                        let new_timestamp_even = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
-                        input_session.advance_to(new_timestamp_even.into());
+                        let new_timestamp_even = (new_timestamp.0 / 2) * 2; //use only even times (required by alt-neu)
+                        let new_timestamp_even = Timestamp(new_timestamp_even);
+                        input_session.advance_to(new_timestamp_even);
                         input_session.flush();
                         return ControlFlow::Continue(Some(iteration_start));
                     }
@@ -576,7 +575,7 @@ where
                         offsets_by_time_writer
                             .lock()
                             .unwrap()
-                            .entry(self.current_timestamp.clone())
+                            .entry(self.current_timestamp)
                             .or_default()
                             .advance_offset(offset_key, offset_value);
                     }
@@ -764,7 +763,7 @@ pub struct SnapshotReaderState {
 }
 
 pub fn read_persisted_state(
-    mut input_session: InputSession<u64, (Key, Vec<Value>), isize>,
+    mut input_session: InputSession<Timestamp, (Key, Vec<Value>), isize>,
     persistent_storage: Arc<Mutex<SingleWorkerPersistentStorage>>,
     external_persistent_id: &ExternalPersistentId,
     persistent_id: PersistentId,
@@ -775,7 +774,7 @@ pub fn read_persisted_state(
     let input_thread_handle = thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            Connector::<u64>::rewind_from_disk_snapshot(
+            Connector::rewind_from_disk_snapshot(
                 persistent_id,
                 &persistent_storage,
                 &sender,

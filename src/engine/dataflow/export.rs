@@ -7,11 +7,12 @@ use differential_dataflow::input::InputSession;
 use itertools::Itertools;
 use scopeguard::guard;
 use timely::dataflow::operators::{Inspect as _, Probe as _};
+use timely::progress::Timestamp as _;
 
 use crate::engine::report_error::ReportErrorExt as _;
 use crate::engine::{
     ColumnPath, DataRow, Error, ExportedTable as ExportedTableTrait, ExportedTableCallback, Result,
-    TableHandle, TableProperties, TotalFrontier, Value,
+    TableHandle, TableProperties, Timestamp, TotalFrontier, Value,
 };
 
 use super::maybe_total::MaybeTotalScope;
@@ -20,7 +21,7 @@ use super::{DataflowGraphInner, Table};
 struct ExportedTable {
     failed: AtomicBool,
     properties: Arc<TableProperties>,
-    frontier: Mutex<TotalFrontier<u64>>,
+    frontier: Mutex<TotalFrontier<Timestamp>>,
     data: Mutex<Vec<DataRow>>,
     consumers: Mutex<Vec<Box<dyn FnMut() -> ControlFlow<()> + Send>>>,
 }
@@ -28,7 +29,7 @@ struct ExportedTable {
 impl ExportedTable {
     fn new(properties: Arc<TableProperties>) -> Self {
         let failed = AtomicBool::new(false);
-        let frontier = Mutex::new(TotalFrontier::At(0));
+        let frontier = Mutex::new(TotalFrontier::At(Timestamp::minimum()));
         let data = Mutex::new(Vec::new());
         let consumers = Mutex::new(Vec::new());
 
@@ -56,7 +57,7 @@ impl ExportedTable {
         self.notify();
     }
 
-    fn advance(&self, new_frontier: TotalFrontier<u64>) {
+    fn advance(&self, new_frontier: TotalFrontier<Timestamp>) {
         let must_notify = {
             let mut frontier = self.frontier.lock().unwrap();
             if new_frontier > *frontier {
@@ -92,7 +93,7 @@ impl ExportedTableTrait for ExportedTable {
         self.properties.clone()
     }
 
-    fn frontier(&self) -> TotalFrontier<u64> {
+    fn frontier(&self) -> TotalFrontier<Timestamp> {
         *self.frontier.lock().unwrap()
     }
 
@@ -112,7 +113,7 @@ pub fn export_table<S>(
     column_paths: Vec<ColumnPath>,
 ) -> Result<Arc<dyn ExportedTableTrait>>
 where
-    S: MaybeTotalScope<MaybeTotalTimestamp = u64>,
+    S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
 {
     let table = graph
         .tables
@@ -159,7 +160,7 @@ pub fn import_table<S>(
     table: Arc<dyn ExportedTableTrait>,
 ) -> Result<TableHandle>
 where
-    S: MaybeTotalScope<MaybeTotalTimestamp = u64>,
+    S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
 {
     let mut input_session = InputSession::new();
     let values = input_session.to_collection(&mut graph.scope);

@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use tempfile::tempdir;
 
+use pathway_engine::engine::Timestamp;
+
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
 
 use pathway_engine::connectors::data_storage::StorageType;
@@ -218,7 +220,7 @@ fn test_rewind_for_empty_persistent_storage() -> eyre::Result<()> {
 
     let (sender, receiver) = mpsc::channel();
     let (tracker, _global_tracker) = create_persistence_manager(test_storage_path, false);
-    Connector::<u64>::rewind_from_disk_snapshot(1, &tracker, &sender, PersistenceMode::Batch);
+    Connector::rewind_from_disk_snapshot(1, &tracker, &sender, PersistenceMode::Batch);
     assert_eq!(get_entries_in_receiver::<Entry>(receiver).len(), 0); // We would not even start rewind when there is no frontier
 
     Ok(())
@@ -231,26 +233,38 @@ fn test_timestamp_advancement_in_tracker() -> eyre::Result<()> {
 
     let (tracker, global_tracker) = create_persistence_manager(test_storage_path, true);
 
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 0);
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(0)
+    );
     let mock_sink_id = tracker.lock().unwrap().register_sink();
 
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(1));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 1);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(1)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(1)
+    );
 
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(5));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 5);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(5)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(5)
+    );
 
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(15));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 15);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(15)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(15)
+    );
 
     Ok(())
 }
@@ -260,7 +274,7 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
 
-    let frontier = Arc::new(Mutex::new(HashMap::<u64, OffsetAntichain>::new()));
+    let frontier = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     let (tracker, global_tracker) = create_persistence_manager(test_storage_path, true);
 
     tracker
@@ -268,7 +282,10 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
         .unwrap()
         .register_input_source(1, &StorageType::FileSystem, frontier.clone());
 
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 0);
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(0)
+    );
 
     {
         let mut antichain = OffsetAntichain::new();
@@ -276,7 +293,7 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
         frontier
             .lock()
             .expect("Frontier acquisition failed")
-            .insert(2, antichain);
+            .insert(Timestamp(2), antichain);
     }
 
     {
@@ -291,7 +308,7 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
         frontier
             .lock()
             .expect("Frontier acquisition failed")
-            .insert(11, antichain);
+            .insert(Timestamp(11), antichain);
     }
     assert_eq!(frontier.lock().expect("Frontier access failed").len(), 2);
 
@@ -300,8 +317,11 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(3));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 3);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(3)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(3)
+    );
 
     {
         let storage_reread = create_metadata_storage(test_storage_path, false);
@@ -317,8 +337,11 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(10));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 10);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(10)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(10)
+    );
     {
         let storage_reread = create_metadata_storage(test_storage_path, false);
         let antichain = storage_reread.frontier_for(1).as_vec();
@@ -333,8 +356,11 @@ fn test_frontier_dumping_in_tracker() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(15));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 15);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(15)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(15)
+    );
 
     {
         let storage_reread = create_metadata_storage(test_storage_path, false);
@@ -446,7 +472,7 @@ fn test_global_finalized_timestamp() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
 
-    let frontiers_by_time = Arc::new(Mutex::new(HashMap::<u64, OffsetAntichain>::new()));
+    let frontiers_by_time = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     let (tracker, global_tracker) = create_persistence_manager(test_storage_path, true);
 
     tracker.lock().unwrap().register_input_source(
@@ -461,33 +487,42 @@ fn test_global_finalized_timestamp() -> eyre::Result<()> {
     frontiers_by_time
         .lock()
         .unwrap()
-        .insert(1, frontier.clone());
+        .insert(Timestamp(1), frontier.clone());
     frontiers_by_time
         .lock()
         .unwrap()
-        .insert(5, frontier.clone());
+        .insert(Timestamp(5), frontier.clone());
     frontiers_by_time
         .lock()
         .unwrap()
-        .insert(6, frontier.clone());
+        .insert(Timestamp(6), frontier.clone());
     frontiers_by_time
         .lock()
         .unwrap()
-        .insert(8, frontier.clone());
+        .insert(Timestamp(8), frontier.clone());
 
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 0);
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(0)
+    );
 
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(4));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 4);
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(4)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(4)
+    );
 
     global_tracker
         .lock()
         .unwrap()
         .accept_finalized_timestamp(0, mock_sink_id, None);
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 9);
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(9)
+    );
 
     Ok(())
 }
@@ -498,7 +533,7 @@ fn test_unique_persistent_id() {
     let test_storage = tempdir().unwrap();
     let test_storage_path = test_storage.path();
 
-    let frontiers_by_time = Arc::new(Mutex::new(HashMap::<u64, OffsetAntichain>::new()));
+    let frontiers_by_time = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     let (tracker, _global_tracker) = create_persistence_manager(test_storage_path, true);
     let mut tracker = tracker.lock().unwrap();
 
@@ -513,7 +548,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
 
     let (tracker, global_tracker) = create_persistence_manager(test_storage_path, true);
 
-    let frontiers_by_time = Arc::new(Mutex::new(HashMap::<u64, OffsetAntichain>::new()));
+    let frontiers_by_time = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     tracker.lock().unwrap().register_input_source(
         512,
         &StorageType::FileSystem,
@@ -526,28 +561,43 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, sink_id_1, Some(5));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 0);
+        .accept_finalized_timestamp(0, sink_id_1, Some(Timestamp(5)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(0)
+    );
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, sink_id_1, Some(7));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 0);
+        .accept_finalized_timestamp(0, sink_id_1, Some(Timestamp(7)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(0)
+    );
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, sink_id_2, Some(4));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 4);
+        .accept_finalized_timestamp(0, sink_id_2, Some(Timestamp(4)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(4)
+    );
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, sink_id_2, Some(10));
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 7);
+        .accept_finalized_timestamp(0, sink_id_2, Some(Timestamp(10)));
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(7)
+    );
     global_tracker
         .lock()
         .unwrap()
         .accept_finalized_timestamp(0, sink_id_2, None);
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 7);
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(7)
+    );
 
     /*
         No frontier updates at greater times, so the last finalized time
@@ -557,7 +607,10 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .accept_finalized_timestamp(0, sink_id_1, None);
-    assert_eq!(tracker.lock().unwrap().last_finalized_timestamp(), 8);
+    assert_eq!(
+        tracker.lock().unwrap().last_finalized_timestamp(),
+        Timestamp(8)
+    );
 
     Ok(())
 }

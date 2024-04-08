@@ -4,6 +4,7 @@ use super::helpers::create_persistence_manager;
 use super::helpers::get_entries_in_receiver;
 
 use assert_matches::assert_matches;
+use pathway_engine::engine::Timestamp;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -49,7 +50,7 @@ fn read_persistent_buffer_full(
 ) -> Vec<SnapshotEvent> {
     let (tracker, _global_tracker) = create_persistence_manager(chunks_root, false);
     let (sender, receiver) = mpsc::channel();
-    Connector::<u64>::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, persistence_mode);
+    Connector::rewind_from_disk_snapshot(persistent_id, &tracker, &sender, persistence_mode);
     let entries: Vec<Entry> = get_entries_in_receiver(receiver);
     let mut result = Vec::new();
     for entry in entries {
@@ -173,7 +174,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(1));
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(1)));
 
     let event1 =
         SnapshotEvent::Insert(Key::random(), vec![Value::Int(1), Value::Float(2.3.into())]);
@@ -191,13 +192,13 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     buffer
         .lock()
         .unwrap()
-        .write(&SnapshotEvent::AdvanceTime(2))
+        .write(&SnapshotEvent::AdvanceTime(Timestamp(2)))
         .unwrap();
 
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(2));
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(2)));
 
     assert_eq!(
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
@@ -207,7 +208,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     buffer
         .lock()
         .unwrap()
-        .write(&SnapshotEvent::AdvanceTime(10))
+        .write(&SnapshotEvent::AdvanceTime(Timestamp(10)))
         .unwrap();
     let event3 = SnapshotEvent::Insert(Key::random(), vec![Value::Int(3), Value::Bool(true)]);
     let event4 = SnapshotEvent::Insert(Key::random(), vec![Value::Int(4), Value::Bool(false)]);
@@ -247,13 +248,14 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         buffer
             .lock()
             .unwrap()
-            .write(&SnapshotEvent::AdvanceTime(1))
+            .write(&SnapshotEvent::AdvanceTime(Timestamp(1)))
             .unwrap();
 
-        global_tracker
-            .lock()
-            .unwrap()
-            .accept_finalized_timestamp(0, mock_sink_id, Some(2));
+        global_tracker.lock().unwrap().accept_finalized_timestamp(
+            0,
+            mock_sink_id,
+            Some(Timestamp(2)),
+        );
 
         assert_eq!(
             read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
@@ -272,17 +274,18 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         buffer
             .lock()
             .unwrap()
-            .write(&SnapshotEvent::AdvanceTime(2))
+            .write(&SnapshotEvent::AdvanceTime(Timestamp(2)))
             .unwrap();
         futures::executor::block_on(async {
             let flush_future = buffer.lock().unwrap().flush();
             flush_future.await.unwrap().unwrap();
         });
 
-        global_tracker
-            .lock()
-            .unwrap()
-            .accept_finalized_timestamp(0, mock_sink_id, Some(3));
+        global_tracker.lock().unwrap().accept_finalized_timestamp(
+            0,
+            mock_sink_id,
+            Some(Timestamp(3)),
+        );
 
         assert_eq!(
             read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
@@ -310,7 +313,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(1));
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(1)));
 
     let event1 =
         SnapshotEvent::Insert(Key::random(), vec![Value::Int(1), Value::Float(2.3.into())]);
@@ -318,7 +321,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
         Key::random(),
         vec![Value::Int(2), Value::String("abc".into())],
     );
-    let event3 = SnapshotEvent::AdvanceTime(2);
+    let event3 = SnapshotEvent::AdvanceTime(Timestamp(2));
     let event4 = SnapshotEvent::Insert(Key::random(), vec![Value::Int(3), Value::None]);
 
     assert_eq!(
@@ -333,7 +336,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
     global_tracker
         .lock()
         .unwrap()
-        .accept_finalized_timestamp(0, mock_sink_id, Some(3));
+        .accept_finalized_timestamp(0, mock_sink_id, Some(Timestamp(3)));
 
     assert_eq!(
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::SpeedrunReplay),

@@ -24,7 +24,7 @@ use crate::persistence::ExternalPersistentId;
 use super::error::{DynResult, Trace};
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
 use super::reduce::StatefulCombineFn;
-use super::{Error, Expression, Key, Reducer, Result, TotalFrontier, Type, Value};
+use super::{Error, Expression, Key, Reducer, Result, Timestamp, TotalFrontier, Type, Value};
 
 macro_rules! define_handle {
     ($handle:ident) => {
@@ -178,7 +178,7 @@ impl ColumnPath {
 pub struct DataRow {
     pub key: Key,
     pub values: Vec<Value>,
-    pub time: u64,
+    pub time: Timestamp,
     pub diff: isize,
     pub shard: Option<usize>,
 }
@@ -189,11 +189,17 @@ impl DataRow {
     #[pyo3(signature = (
         key,
         values,
-        time = 0,
+        time = Timestamp(0),
         diff = 1,
         shard = None,
     ))]
-    pub fn new(key: Key, values: Vec<Value>, time: u64, diff: isize, shard: Option<usize>) -> Self {
+    pub fn new(
+        key: Key,
+        values: Vec<Value>,
+        time: Timestamp,
+        diff: isize,
+        shard: Option<usize>,
+    ) -> Self {
         Self {
             key,
             values,
@@ -220,7 +226,7 @@ impl DataRow {
 }
 
 impl DataRow {
-    pub fn from_engine(key: Key, values: Vec<Value>, time: u64, diff: isize) -> Self {
+    pub fn from_engine(key: Key, values: Vec<Value>, time: Timestamp, diff: isize) -> Self {
         Self {
             key,
             values,
@@ -461,7 +467,7 @@ impl IxKeyPolicy {
 #[pyclass]
 pub struct OperatorStats {
     #[pyo3(get, set)]
-    pub time: Option<u64>,
+    pub time: Option<Timestamp>,
     #[pyo3(get, set)]
     pub lag: Option<u64>,
     #[pyo3(get, set)]
@@ -477,10 +483,10 @@ impl OperatorStats {
                     .as_millis(),
             )
             .unwrap();
-            if duration < time {
+            if duration < time.0 {
                 Some(0)
             } else {
-                Some(duration - time)
+                Some(duration - time.0)
             }
         } else {
             None
@@ -501,8 +507,8 @@ pub struct ProberStats {
     pub connector_stats: Vec<(String, ConnectorStats)>,
 }
 
-pub type OnDataFn = Box<dyn FnMut(Key, &[Value], u64, isize) -> DynResult<()>>;
-pub type OnTimeEndFn = Box<dyn FnMut(u64) -> DynResult<()>>;
+pub type OnDataFn = Box<dyn FnMut(Key, &[Value], Timestamp, isize) -> DynResult<()>>;
+pub type OnTimeEndFn = Box<dyn FnMut(Timestamp) -> DynResult<()>>;
 pub type OnEndFn = Box<dyn FnMut() -> DynResult<()>>;
 
 pub struct SubscribeCallbacks {
@@ -571,13 +577,13 @@ pub trait ExportedTable: Send + Sync + Any {
 
     fn properties(&self) -> Arc<TableProperties>;
 
-    fn frontier(&self) -> TotalFrontier<u64>;
+    fn frontier(&self) -> TotalFrontier<Timestamp>;
 
     fn data_from_offset(&self, offset: usize) -> (Vec<DataRow>, usize);
 
     fn subscribe(&self, callback: ExportedTableCallback);
 
-    fn snapshot_at(&self, frontier: TotalFrontier<u64>) -> Vec<(Key, Vec<Value>)> {
+    fn snapshot_at(&self, frontier: TotalFrontier<Timestamp>) -> Vec<(Key, Vec<Value>)> {
         let (mut data, _offset) = self.data_from_offset(0);
         data.retain(|row| frontier.is_time_done(&row.time));
         data.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.values.cmp(&b.values)));

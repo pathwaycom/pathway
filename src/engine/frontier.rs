@@ -4,7 +4,7 @@ use timely::progress::Antichain;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TotalFrontier<T: TotalOrder> {
+pub enum TotalFrontier<T> {
     At(T),
     Done,
 }
