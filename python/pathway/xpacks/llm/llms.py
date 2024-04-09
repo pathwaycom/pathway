@@ -514,7 +514,7 @@ def prompt_chat_single_qa(question: str) -> pw.Json:
     is converted into one-element list with a dictionary with keys `role` and `content`.
 
     Args:
-        question: a column with questions to be transformed into prompts
+        question (ColumnExpression[str]): a column with questions to be transformed into prompts
 
     Example:
 
