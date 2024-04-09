@@ -32,7 +32,7 @@ class ParseUnstructured(pw.UDF):
           When single, each document is parsed as one long text string.
           When elements, each document is split into unstructured's elements.
           When paged, each pages's text is separately extracted.
-        - post_processors: list of callables that will be applied ot all extracted texts.
+        - post_processors: list of callables that will be applied to all extracted texts.
         - **unstructured_kwargs: extra kwargs to be passed to unstructured.io's `partition` function
     """
 

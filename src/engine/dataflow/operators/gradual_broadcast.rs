@@ -417,19 +417,20 @@ where
                                 } else {
                                     // if -> new bucket covers lower values
                                     // else -> new bucket covers larger values
-                                    let (fake_triplet, ot) = if otr.lower == tr.upper {
-                                        (otr.to_lower_bound(), tr.to_upper_bound())
-                                    } else {
-                                        (otr.to_upper_bound(), tr.to_lower_bound())
-                                    };
+                                    let (fake_triplet, old_triplet_replacement) =
+                                        if otr.lower == tr.upper {
+                                            (otr.to_lower_bound(), tr.to_upper_bound())
+                                        } else {
+                                            (otr.to_upper_bound(), tr.to_lower_bound())
+                                        };
                                     // prepare new 'old_triplet', old 'old_triplet' is still in otr
-                                    old_triplet = Some(ot.clone());
+                                    old_triplet = Some(old_triplet_replacement.clone());
 
-                                    let thr1 = get_threshold(&fake_triplet, &K::max_value());
-                                    let thr2 = get_threshold(&otr, &K::max_value());
+                                    let threshold1 = get_threshold(&fake_triplet, &K::max_value());
+                                    let threshold2 = get_threshold(&otr, &K::max_value());
 
-                                    let from = min(&thr1, &thr2);
-                                    let to = max(&thr1, &thr2);
+                                    let from = min(&threshold1, &threshold2);
+                                    let to = max(&threshold1, &threshold2);
                                     replace_in_fragment(
                                         &mut input_cursor,
                                         &input_storage,
