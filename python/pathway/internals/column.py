@@ -427,6 +427,7 @@ class ExternalIndexAsOfNowContext(
     query_response_limit_column: ColumnWithExpression | None
     index_filter_data_column: ColumnWithExpression | None
     query_filter_column: ColumnWithExpression | None
+    res_type: dt.DType
 
     @property
     def universe(self) -> Universe:
@@ -461,7 +462,6 @@ class ExternalIndexAsOfNowContext(
 
     def intermediate_tables(self) -> Iterable[Table]:
         index_columns = self._index_columns()
-
         query_columns = self._query_columns()
 
         return [
@@ -475,17 +475,11 @@ class ExternalIndexAsOfNowContext(
             ),
         ]
 
-    # todo: when needed, add support for more general types;
-    # not sure yet how config is to be passed from method invocation,
-    # but that's the right place to configure what is returned, so the type(s)
-    # of columns should be inferred from there
-    #
-    # list of pointers is simply a reasonable default
     @cached_property
-    def matched_items(self):
+    def index_reply(self):
         return MaterializedColumn(
             self.query_table._universe,
-            cp.ColumnProperties(dtype=dt.List(dt.ANY_POINTER)),
+            cp.ColumnProperties(dtype=self.res_type),
         )
 
 

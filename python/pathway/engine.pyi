@@ -785,7 +785,14 @@ class TelemetryConfig:
 class ExternalIndexFactory:
     @staticmethod
     def usearch_knn_factory(
-        dimensions: int, reserved_space: int
+        *,
+        dimensions: int,
+        reserved_space: int,
+        metric: USearchMetricKind,
+        connectivity: int,
+        expansion_add: int,
+        expansion_search: int,
+        return_distance: bool,
     ) -> ExternalIndexFactory: ...
 
 @dataclasses.dataclass(frozen=True)
@@ -800,3 +807,14 @@ class ExternalIndexQuery:
     query_column: ColumnPath
     limit_column: ColumnPath | None
     filter_column: ColumnPath | None
+
+class USearchMetricKind(Enum):
+    IP: USearchMetricKind
+    L2SQ: USearchMetricKind
+    COS: USearchMetricKind
+    PEARSON: USearchMetricKind
+    HAVERSINE: USearchMetricKind
+    DIVERGENCE: USearchMetricKind
+    HAMMING: USearchMetricKind
+    TANIMOTO: USearchMetricKind
+    SORENSEN: USearchMetricKind

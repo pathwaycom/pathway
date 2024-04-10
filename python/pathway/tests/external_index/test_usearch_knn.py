@@ -1,7 +1,9 @@
 import json
 
 import pathway as pw
-from pathway.engine import ExternalIndexFactory
+from pathway.engine import ExternalIndexFactory, USearchMetricKind
+from pathway.internals import dtype as dt
+from pathway.stdlib.utils.col import unpack_col
 from pathway.tests.utils import assert_table_equality
 
 
@@ -46,17 +48,19 @@ def test_filter():
         schema=QuerySchema,
     ).with_columns(data=pw.apply(make_list, pw.this.data))
 
-    index_factory = ExternalIndexFactory.usearch_knn_factory(3, 10)
-
-    answers = index._external_index_as_of_now(
+    index_factory = ExternalIndexFactory.usearch_knn_factory(
+        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, False
+    )
+    rust_answers = index._external_index_as_of_now(
         queries,
         index_column=index.data,
         query_column=queries.data,
         index_factory=index_factory,
+        res_type=dt.List[pw.Pointer],
         query_responses_limit_column=queries.limit,
         index_filter_data_column=index.filter_data,
         query_filter_column=queries.filter_col,
-    ).select(match_len=pw.apply_with_type(len, int, pw.this.matched_items))
+    ).select(match_len=pw.apply_with_type(len, int, pw.this._pw_index_reply))
 
     class ExpectedSchema(pw.Schema):
         pk_source: int = pw.column_definition(primary_key=True)
@@ -72,7 +76,7 @@ def test_filter():
         schema=ExpectedSchema,
     ).without(pw.this.pk_source)
 
-    assert_table_equality(answers, expected)
+    assert_table_equality(rust_answers, expected)
 
 
 def test_auto_resize():
@@ -112,15 +116,16 @@ def test_auto_resize():
         schema=QuerySchema,
     ).with_columns(data=pw.apply(make_list, pw.this.data))
 
-    index_factory = ExternalIndexFactory.usearch_knn_factory(3, 2)
-
+    index_factory = ExternalIndexFactory.usearch_knn_factory(
+        3, 2, USearchMetricKind.L2SQ, 0, 0, 0, False
+    )
     answers = index._external_index_as_of_now(
         queries,
         index_column=index.data,
         query_column=queries.data,
         index_factory=index_factory,
         query_responses_limit_column=queries.limit,
-    ).select(match_len=pw.apply_with_type(len, int, pw.this.matched_items))
+    ).select(match_len=pw.apply_with_type(len, int, pw.this._pw_index_reply))
 
     class ExpectedSchema(pw.Schema):
         pk_source: int = pw.column_definition(primary_key=True)
@@ -175,10 +180,11 @@ def test_distance_simple():
     4        |0.05,0.1,0.1|4
     """,
         schema=QuerySchema,
-    ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
+    ).with_columns(data=pw.apply(make_list, pw.this.data))
 
-    index_factory = ExternalIndexFactory.usearch_knn_factory(3, 2)
-
+    index_factory = ExternalIndexFactory.usearch_knn_factory(
+        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, False
+    )
     answers = index._external_index_as_of_now(
         queries,
         index_column=index.data,
@@ -188,8 +194,8 @@ def test_distance_simple():
     ).with_columns(q_pk_source=queries.pk_source)
 
     ret = (
-        answers.flatten(pw.this.matched_items, pw.this.q_pk_source)
-        .asof_now_join(index, pw.left.matched_items == index.id)
+        answers.flatten(pw.this._pw_index_reply, pw.this.q_pk_source)
+        .join(index, pw.left._pw_index_reply == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
     )
@@ -215,6 +221,100 @@ def test_distance_simple():
     """,
         schema=ExpectedSchema,
     ).with_columns(data=pw.apply(make_list, pw.this.data))
+    assert_table_equality(ret, expected)
+
+
+def test_with_distance_simple():
+    class InputSchema(pw.Schema):
+        pk_source: int = pw.column_definition(primary_key=True)
+        data: str
+
+    class QuerySchema(pw.Schema):
+        pk_source: int = pw.column_definition(primary_key=True)
+        data: str
+        limit: int
+
+    # whitespaces in json string seems to be breaking table_from_markdown
+    index = pw.debug.table_from_markdown(
+        """
+    pk_source |data
+    1         | 1,0.1,0.1
+    2         | 2,0.1,0.1
+    3         | 3,0.1,0.1
+    4         | 4,0.1,0.1
+    5         | 5,0.1,0.1
+    6         | 6,0.1,0.1
+    7         | 7,0.1,0.1
+    8         | 8,0.1,0.1
+    9         | 9,0.1,0.1
+    """,
+        schema=InputSchema,
+    ).with_columns(data=pw.apply(make_list, pw.this.data))
+
+    queries = pw.debug.table_from_markdown(
+        """
+    pk_source|data        |limit
+    1        |0.5,0.1,0.1|1
+    2        |0.5,0.1,0.1|2
+    3        |0.5,0.1,0.1|3
+    4        |0.5,0.1,0.1|4
+    """,
+        schema=QuerySchema,
+    ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
+
+    index_factory = ExternalIndexFactory.usearch_knn_factory(
+        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, True
+    )
+    raw_ret = index._external_index_as_of_now(
+        queries,
+        index_column=index.data,
+        query_column=queries.data,
+        index_factory=index_factory,
+        res_type=dt.List[dt.Tuple[pw.Pointer, float]],
+        query_responses_limit_column=queries.limit,
+    ).with_columns(q_pk_source=queries.pk_source)
+
+    flattened_ret = raw_ret.flatten(pw.this._pw_index_reply, pw.this.q_pk_source)
+
+    class InnerSchema(pw.Schema):
+        matched_item_id: pw.Pointer
+        matched_item_distance: float
+
+    unpacked_ret = flattened_ret + unpack_col(
+        flattened_ret._pw_index_reply, schema=InnerSchema
+    )
+    ret = (
+        unpacked_ret.join(index, pw.left.matched_item_id == index.id)
+        .select(
+            pw.left.q_pk_source,
+            i_pk_source=pw.right.pk_source,
+            distance=pw.left.matched_item_distance,
+        )
+        .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
+        .with_columns(distance=pw.this.distance.num.round(2))
+    )
+
+    class ExpectedSchema(pw.Schema):
+        q_pk_source: int = pw.column_definition(primary_key=True)
+        i_pk_source: int = pw.column_definition(primary_key=True)
+        distance: float
+
+    expected = pw.debug.table_from_markdown(
+        """
+        q_pk_source | i_pk_source | distance
+        1           | 1           | 0.25
+        2           | 1           | 0.25
+        2           | 2           | 2.25
+        3           | 1           | 0.25
+        3           | 2           | 2.25
+        3           | 3           | 6.25
+        4           | 1           | 0.25
+        4           | 2           | 2.25
+        4           | 3           | 6.25
+        4           | 4           | 12.25
+    """,
+        schema=ExpectedSchema,
+    )
     assert_table_equality(ret, expected)
 
 
@@ -262,7 +362,9 @@ def test_distance_with_deletion():
         schema=QuerySchema,
     ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
 
-    index_factory = ExternalIndexFactory.usearch_knn_factory(3, 2)
+    index_factory = ExternalIndexFactory.usearch_knn_factory(
+        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, False
+    )
 
     answers = index._external_index_as_of_now(
         queries,
@@ -272,8 +374,8 @@ def test_distance_with_deletion():
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
     ret = (
-        answers.flatten(pw.this.matched_items, pw.this.q_pk_source)
-        .asof_now_join(index, pw.left.matched_items == index.id)
+        answers.flatten(pw.this._pw_index_reply, pw.this.q_pk_source)
+        .asof_now_join(index, pw.left._pw_index_reply == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
     )

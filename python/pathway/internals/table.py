@@ -589,6 +589,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         index_column: expr.ColumnExpression,
         query_column: expr.ColumnExpression,
         index_factory: ExternalIndexFactory,
+        res_type: dt.DType = dt.List(dt.ANY_POINTER),
         query_responses_limit_column: expr.ColumnExpression | None = None,
         index_filter_data_column: expr.ColumnExpression | None = None,
         query_filter_column: expr.ColumnExpression | None = None,
@@ -619,9 +620,10 @@ id_type=<class 'pathway.engine.Pointer'>>
             query_response_limit_column=ev_query_responses_limit_column,
             index_filter_data_column=ev_index_filter_data_column,
             query_filter_column=ev_query_filter_column,
+            res_type=res_type,
         )
         return Table(
-            _columns={"matched_items": context.matched_items}, _context=context
+            _columns={"_pw_index_reply": context.index_reply}, _context=context
         )
 
     @trace_user_frame

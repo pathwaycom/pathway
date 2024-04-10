@@ -53,10 +53,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
 
-use self::{
-    external_index_wrappers::{PyExternalIndexData, PyExternalIndexQuery},
-    threads::PythonThreadState,
+use self::external_index_wrappers::{
+    PyExternalIndexData, PyExternalIndexQuery, PyUSearchMetricKind,
 };
+use self::threads::PythonThreadState;
+
 use crate::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
     InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
@@ -4632,6 +4633,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyExternalIndexFactory>()?;
     m.add_class::<PyExternalIndexData>()?;
     m.add_class::<PyExternalIndexQuery>()?;
+    m.add_class::<PyUSearchMetricKind>()?;
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;

@@ -178,6 +178,10 @@ pub fn make_option_accessor(
 }
 
 /* usearch knn */
+
+#[derive(Clone, Copy)]
+pub struct USearchMetricKind(pub MetricKind);
+
 pub struct USearchKNNIndex {
     next_id: u64,
     id_to_key_map: HashMap<u64, Key>,
@@ -185,6 +189,12 @@ pub struct USearchKNNIndex {
     filter_data_map: HashMap<Key, Variable>,
     jmespath_runtime: JMESPathFilterWithGlobPattern,
     index: Arc<Index>,
+    return_distance: bool,
+}
+
+pub struct SingleMatch {
+    key: Key,
+    distance: f64,
 }
 
 // helper methods
@@ -200,16 +210,20 @@ impl USearchKNNIndex {
         id
     }
 
-    fn _search(&self, vector: &[f64], limit: usize) -> DynResult<Vec<Key>> {
-        Ok(self
-            .index
-            .search(vector, limit)?
+    fn _search(&self, vector: &[f64], limit: usize) -> DynResult<Vec<SingleMatch>> {
+        let matches = self.index.search(vector, limit)?;
+        Ok(matches
             .keys
             .into_iter()
-            .map(|k| self.id_to_key_map[&k])
+            .zip(matches.distances)
+            .map(|(k, d)| SingleMatch {
+                key: self.id_to_key_map[&k],
+                distance: f64::from(d),
+            })
             .collect())
     }
 }
+
 // index methods
 impl ExternalIndex for USearchKNNIndex {
     fn add(&mut self, key: Key, data: Value, filter_data: Option<Value>) -> DynResult<()> {
@@ -258,26 +272,30 @@ impl ExternalIndex for USearchKNNIndex {
             return Ok(Value::Tuple(
                 self._search(&vector, limit)?
                     .into_iter()
-                    .map(Value::from)
+                    .map(|sm| {
+                        if self.return_distance {
+                            Value::Tuple(Arc::new([Value::from(sm.key), Value::from(sm.distance)]))
+                        } else {
+                            Value::from(sm.key)
+                        }
+                    })
                     .collect(),
             ));
         }
 
         let filter_str = filter.as_ref().unwrap().as_string()?.to_string();
-
         let expr = self.jmespath_runtime.runtime.compile(&filter_str)?;
         let mut upper_bound = limit;
-
         let filtered = loop {
             let results = self._search(&vector, upper_bound)?;
             let res_len = results.len();
 
-            let res_with_expr: Vec<(Key, Rc<Variable>)> = results
+            let res_with_expr: Vec<(SingleMatch, Rc<Variable>)> = results
                 .into_iter()
-                .map(|k| expr.search(&self.filter_data_map[&k]).map(|r| (k, r)))
+                .map(|sm| expr.search(&self.filter_data_map[&sm.key]).map(|r| (sm, r)))
                 .try_collect()?;
 
-            let to_filter: Vec<(Key, bool)> = res_with_expr
+            let to_filter: Vec<(SingleMatch, bool)> = res_with_expr
                 .into_iter()
                 .map(|(k, e)| match e.as_boolean() {
                     Some(ret) => Ok((k, ret)),
@@ -287,7 +305,7 @@ impl ExternalIndex for USearchKNNIndex {
                 })
                 .try_collect()?;
 
-            let mut filtered: Vec<Key> = to_filter
+            let mut filtered: Vec<SingleMatch> = to_filter
                 .into_iter()
                 .filter_map(|(k, e)| if e { Some(k) } else { None })
                 .collect();
@@ -302,8 +320,18 @@ impl ExternalIndex for USearchKNNIndex {
             }
             upper_bound *= 2;
         };
+
         Ok(Value::Tuple(
-            filtered.into_iter().map(Value::from).collect(),
+            filtered
+                .into_iter()
+                .map(|sm| {
+                    if self.return_distance {
+                        Value::Tuple(Arc::new([Value::from(sm.key), Value::from(sm.distance)]))
+                    } else {
+                        Value::from(sm.key)
+                    }
+                })
+                .collect(),
         ))
     }
 }
@@ -312,13 +340,31 @@ impl ExternalIndex for USearchKNNIndex {
 pub struct USearchKNNIndexFactory {
     dimensions: usize,
     reserved_space: usize,
+    metric: MetricKind,
+    connectivity: usize,
+    expansion_add: usize,
+    expansion_search: usize,
+    return_distance: bool,
 }
 
 impl USearchKNNIndexFactory {
-    pub fn new(dimensions: usize, reserved_space: usize) -> USearchKNNIndexFactory {
+    pub fn new(
+        dimensions: usize,
+        reserved_space: usize,
+        metric: MetricKind,
+        connectivity: usize,
+        expansion_add: usize,
+        expansion_search: usize,
+        return_distance: bool,
+    ) -> USearchKNNIndexFactory {
         USearchKNNIndexFactory {
             dimensions,
             reserved_space,
+            metric,
+            connectivity,
+            expansion_add,
+            expansion_search,
+            return_distance,
         }
     }
 }
@@ -328,11 +374,11 @@ impl ExternalIndexFactory for USearchKNNIndexFactory {
     fn make_instance(&self) -> Box<dyn ExternalIndex> {
         let options = IndexOptions {
             dimensions: self.dimensions,
-            metric: MetricKind::L2sq,
+            metric: self.metric,
             quantization: ScalarKind::F16,
-            connectivity: 0,
-            expansion_add: 0,
-            expansion_search: 0,
+            connectivity: self.connectivity,
+            expansion_add: self.expansion_add,
+            expansion_search: self.expansion_search,
             multi: false,
         };
 
@@ -345,6 +391,7 @@ impl ExternalIndexFactory for USearchKNNIndexFactory {
             key_to_id_map: HashMap::new(),
             filter_data_map: HashMap::new(),
             jmespath_runtime: JMESPathFilterWithGlobPattern::new(),
+            return_distance: self.return_distance,
             index: Arc::from(index),
         })
     }
