@@ -5,11 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.8.6] - 2024-04-10
+
 ### Added
 - `pw.io.bigquery.write` connector for writing Pathway tables into Google BigQuery.
 - parameter `filepath_globpattern` to `query` method in `VectorStoreClient` for specifying which files should be considered in the query.
 - Improved compatibility of `pw.Json` with standard methods such as `len()`, `int()`, `float()`, `bool()`, `iter()`, `reversed()` when feasible.
-- Experimental `pw.stdlib.ml.hmm` with a reducer allowing for decoding a sequence of observation using a given Hidden Markov Model.
 
 ### Changed
 - `pw.io.postgres.write` can now parallelize writes to several threads if several workers are configured.
