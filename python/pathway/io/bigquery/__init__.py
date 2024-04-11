@@ -45,36 +45,35 @@ class _OutputBuffer:
 def write(
     table: Table, dataset_name: str, table_name: str, service_user_credentials_file: str
 ) -> None:
-    """
-    Writes ``table``'s stream of changes into the specified BigQuery table. Please note \
+    """Writes ``table``'s stream of changes into the specified BigQuery table. Please note \
 that the schema of the target table must correspond to the schema of the table that is \
 being outputted and include two additional fields: an integral field ``time``, denoting the \
 ID of the minibatch where the change occurred and an integral field ``diff`` which can be \
 either 1 or -1 and which denotes if the entry was inserted to the table or if it was deleted.
 
-Note that the modification of the row is denoted with a sequence of two operations: the \
-deletion operation (``diff = -1``) and the insertion operation (``diff = 1``).
+    Note that the modification of the row is denoted with a sequence of two operations:
+    the deletion operation (``diff = -1``) and the insertion operation (``diff = 1``).
 
     Args:
         table: The table to output.
         dataset_name: The name of the dataset where the table is located.
         table_name: The name of the table to be written.
-        service_user_credentials_file: Google API service user json file. Please follow the instructions
-            provided in the `developer's user guide
-            <https://pathway.com/developers/user-guide/connectors/gdrive-connector/#setting-up-google-drive>`_
-            to obtain them.
+        service_user_credentials_file: Google API service user json file. Please \
+follow the instructions provided in the `developer's user guide \
+<https://pathway.com/developers/user-guide/connectors/gdrive-connector/#setting-up-google-drive>`_ \
+to obtain them.
 
     Returns:
         None
 
     Example:
 
-    Suppose that there is a Google BigQuery project with a dataset named ``animals`` and \
-you want to output the Pathway table ``animal_measurements`` into this dataset's \
-table ``measurements``.
+    Suppose that there is a Google BigQuery project with a dataset named ``animals`` and
+    you want to output the Pathway table ``animal_measurements`` into this dataset's
+    table ``measurements``.
 
-    Consider that the credentials are stored in the file ``./credentials.json``. Then, \
-you can configure the output as follows:
+    Consider that the credentials are stored in the file ``./credentials.json``. Then,
+    you can configure the output as follows:
 
     >>> pw.io.bigquery.write(  # doctest: +SKIP
     ...     animal_measurements,
