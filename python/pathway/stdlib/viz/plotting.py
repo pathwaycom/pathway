@@ -123,13 +123,16 @@ def plot(
             else:
                 del integrated[key]
 
+        def on_time_end(time):
             if plot.document is not None:
                 if plot.document.session_context:
                     plot.document.add_next_tick_callback(stream_updates)
                 else:
                     stream_updates()
 
-        internal_subscribe(self, on_change=_update, skip_persisted_batch=True)
+        internal_subscribe(
+            self, on_change=_update, on_time_end=on_time_end, skip_persisted_batch=True
+        )
         pn.state.on_session_created(lambda _: stream_updates())
 
     return viz

@@ -127,24 +127,27 @@ def show(
                     integrated[key] = row
                 else:
                     del integrated[key]
-                df = (
-                    pd.DataFrame.from_dict(
-                        integrated, orient="index", columns=col_names
-                    )
-                    .sort_index()
-                    .reset_index(drop=True)
-                )
-                df = df[col_names]
 
-                df = df.map(_format_types)
-
-                dynamic_table.value = df
                 # todo: use async transformer to throttle updates
                 # dynamic_table.stream(
                 #     df.to_dict("list"), rollover=len(df)
                 # )  # alternative update method
 
-        internal_subscribe(self, on_change=update, skip_persisted_batch=True)
+        def on_time_end(time):
+            df = (
+                pd.DataFrame.from_dict(integrated, orient="index", columns=col_names)
+                .sort_index()
+                .reset_index(drop=True)
+            )
+            df = df[col_names]
+
+            df = df.map(_format_types)
+
+            dynamic_table.value = df
+
+        internal_subscribe(
+            self, on_change=update, on_time_end=on_time_end, skip_persisted_batch=True
+        )
 
     viz = pn.Column(
         pn.Row(
