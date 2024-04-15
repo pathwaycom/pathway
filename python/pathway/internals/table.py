@@ -1039,7 +1039,7 @@ id_type=<class 'pathway.engine.Pointer'>>
     def deduplicate(
         self,
         *,
-        value: expr.ColumnExpression,
+        value: expr.ColumnExpression | Value,
         instance: expr.ColumnExpression | None = None,
         acceptor: Callable[[T, T], bool],
         persistent_id: str | None = None,
@@ -1116,9 +1116,13 @@ id_type=<class 'pathway.engine.Pointer'>>
         """
         if instance is None:
             instance = expr.ColumnConstExpression(None)
-        self._validate_expression(value)
+        if not isinstance(value, expr.ColumnExpression):
+            _value: expr.ColumnExpression = expr.ColumnConstExpression(value)
+        else:
+            _value = value
+        self._validate_expression(_value)
         self._validate_expression(instance)
-        value_col = self._eval(value)
+        value_col = self._eval(_value)
         instance_col = self._eval(instance)
 
         context = clmn.DeduplicateContext(
@@ -2033,8 +2037,9 @@ id_type=<class 'pathway.engine.Pointer'>>
         return self._unsafe_promise_universe(other)
 
     @trace_user_frame
+    @desugar
     @check_arg_types
-    def flatten(self, *args: expr.ColumnReference, **kwargs: Any) -> Table:
+    def flatten(self, *args: expr.ColumnReference | Any, **kwargs: Any) -> Table:
         """Performs a flatmap operation on a column or expression given as a first
         argument. Datatype of this column or expression has to be iterable or Json array.
         Other columns specified in the method arguments are duplicated
