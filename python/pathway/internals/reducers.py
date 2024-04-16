@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import warnings
 from abc import ABC, abstractmethod
 from warnings import warn
 
@@ -31,6 +32,9 @@ class Reducer(ABC):
         self, context: GroupedContext
     ) -> builtins.tuple[ColumnExpression, ...]:
         return ()
+
+    def maybe_warn_in_windowby(self) -> None:
+        pass
 
 
 class UnaryReducer(Reducer):
@@ -80,6 +84,23 @@ class IdTypeUnaryReducer(UnaryReducerWithDefault):
 class TypePreservingUnaryReducer(UnaryReducerWithDefault):
     def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
         return arg_type
+
+
+class TimeBasedTypePreservingUnaryReducer(TypePreservingUnaryReducer):
+    alternative: str
+
+    def __init__(self, *, name: str, engine_reducer: api.Reducer, alternative: str):
+        super().__init__(name=name, engine_reducer=engine_reducer)
+        self.alternative = alternative
+
+    def maybe_warn_in_windowby(self) -> None:
+        warnings.warn(
+            f"{self.name} reducer uses processing time to choose elements"
+            + " while windowby uses data time to assign entries to windows."
+            + " Maybe it is not the behavior you want. To choose elements according"
+            + f" to their data time, you may use {self.alternative} reducer.",
+            stacklevel=12,
+        )
 
 
 class SumReducer(UnaryReducer):
@@ -190,16 +211,16 @@ def _tuple(skip_nones: bool):
     )
 
 
-_argmin = IdTypeUnaryReducer(
-    name="argmin",
-    engine_reducer=api.Reducer.ARG_MIN,
-)
-_argmax = IdTypeUnaryReducer(
-    name="argmax",
-    engine_reducer=api.Reducer.ARG_MAX,
-)
+_argmin = IdTypeUnaryReducer(name="argmin", engine_reducer=api.Reducer.ARG_MIN)
+_argmax = IdTypeUnaryReducer(name="argmax", engine_reducer=api.Reducer.ARG_MAX)
 _unique = TypePreservingUnaryReducer(name="unique", engine_reducer=api.Reducer.UNIQUE)
 _any = TypePreservingUnaryReducer(name="any", engine_reducer=api.Reducer.ANY)
+_earliest = TimeBasedTypePreservingUnaryReducer(
+    name="earliest", engine_reducer=api.Reducer.EARLIEST, alternative="min"
+)
+_latest = TimeBasedTypePreservingUnaryReducer(
+    name="latest", engine_reducer=api.Reducer.LATEST, alternative="max"
+)
 
 
 def _apply_unary_reducer(
@@ -587,3 +608,76 @@ def ndarray(expression: expr.ColumnExpression, *, skip_nones: bool = False):
     return apply_with_type(
         np.array, np.ndarray, tuple(expression, skip_nones=skip_nones)
     )
+
+
+def earliest(expression: expr.ColumnExpression) -> expr.ColumnExpression:
+    """
+    Returns the earliest of the aggregated values (the one with the lowest processing time).
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ...     a | b | __time__
+    ...     1 | 2 |     2
+    ...     2 | 3 |     2
+    ...     1 | 4 |     4
+    ...     2 | 2 |     6
+    ...     1 | 1 |     8
+    ... '''
+    ... )
+    >>> res = t.groupby(pw.this.a).reduce(
+    ...     pw.this.a,
+    ...     earliest=pw.reducers.earliest(pw.this.b),
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(res, include_id=False)
+    a | earliest | __time__ | __diff__
+    1 | 2        | 2        | 1
+    2 | 3        | 2        | 1
+    >>> pw.debug.compute_and_print(res, include_id=False)
+    a | earliest
+    1 | 2
+    2 | 3
+    """
+
+    return _apply_unary_reducer(_earliest, expression)
+
+
+def latest(expression: expr.ColumnExpression) -> expr.ColumnExpression:
+    """
+    Returns the latest of the aggregated values (the one with the greatest processing time).
+
+    Example:
+
+    >>> import pathway as pw
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ...     a | b | __time__
+    ...     1 | 2 |     2
+    ...     2 | 3 |     2
+    ...     1 | 4 |     4
+    ...     2 | 2 |     6
+    ...     1 | 1 |     8
+    ... '''
+    ... )
+    >>> res = t.groupby(pw.this.a).reduce(
+    ...     pw.this.a,
+    ...     latest=pw.reducers.latest(pw.this.b),
+    ... )
+    >>> pw.debug.compute_and_print_update_stream(res, include_id=False)
+    a | latest | __time__ | __diff__
+    1 | 2      | 2        | 1
+    2 | 3      | 2        | 1
+    1 | 2      | 4        | -1
+    1 | 4      | 4        | 1
+    2 | 3      | 6        | -1
+    2 | 2      | 6        | 1
+    1 | 4      | 8        | -1
+    1 | 1      | 8        | 1
+    >>> pw.debug.compute_and_print(res, include_id=False)
+    a | latest
+    1 | 1
+    2 | 2
+    """
+    return _apply_unary_reducer(_latest, expression)

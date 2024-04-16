@@ -153,6 +153,8 @@ class Reducer:
     COUNT: Reducer
     @staticmethod
     def stateful_many(combine_many: CombineMany[S]) -> Reducer: ...
+    EARLIEST: Reducer
+    LATEST: Reducer
 
 class UnaryOperator:
     INV: UnaryOperator

@@ -12,7 +12,12 @@ import pytest
 import pathway as pw
 from pathway.internals import dtype as dt
 from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
-from pathway.tests.utils import T, assert_table_equality_wo_index, deprecated_call_here
+from pathway.tests.utils import (
+    T,
+    assert_table_equality_wo_index,
+    deprecated_call_here,
+    warns_here,
+)
 
 
 def test_session_simple():
@@ -1191,3 +1196,35 @@ def test_intervals_over_with_reducer_over_ix():
         schema=pw.schema_from_types(_pw_window_location=int, v=list[int]),
     )
     assert_table_equality_wo_index(result, expected)
+
+
+def test_latest_reducer():
+    t = T(
+        """
+        t | a
+        1 | 1
+        2 | 2
+        3 | 3
+    """
+    )
+
+    msg = re.escape(
+        "latest reducer uses processing time to choose elements"
+        + " while windowby uses data time to assign entries to windows."
+        + " Maybe it is not the behavior you want. To choose elements according"
+        + " to their data time, you may use max reducer."
+    )
+    with warns_here(match=msg):
+        res = t.windowby(
+            pw.this.t, window=pw.temporal.sliding(hop=1, duration=2)
+        ).reduce(t=pw.this._pw_window_start, a=pw.reducers.latest(pw.this.a))
+    expected = T(
+        """
+        t | a
+        0 | 1
+        1 | 1
+        2 | 2
+        3 | 3
+    """
+    )
+    assert_table_equality_wo_index(res, expected)

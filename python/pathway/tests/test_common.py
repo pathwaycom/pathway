@@ -22,6 +22,7 @@ from pathway.internals.expression import NumbaApplyExpression
 from pathway.internals.table_io import empty_from_schema
 from pathway.tests.utils import (
     T,
+    assert_stream_equality,
     assert_table_equality,
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
@@ -3249,6 +3250,60 @@ def test_ndarray_reducer():
     )
 
     res = t.groupby(t.colA).reduce(tuple=pw.reducers.ndarray(t.colB))
+    assert_table_equality_wo_index(res, expected)
+
+
+def test_earliest_and_latest_reducer():
+    t = T(
+        """
+        a | b | __time__
+        1 | 2 |     2
+        2 | 3 |     2
+        1 | 4 |     4
+        2 | 2 |     6
+        1 | 1 |     8
+    """
+    )
+    res = t.groupby(pw.this.a).reduce(
+        pw.this.a,
+        earliest=pw.reducers.earliest(pw.this.b),
+        latest=pw.reducers.latest(pw.this.b),
+    )
+    expected = T(
+        """
+        a | earliest | latest | __time__ | __diff__
+        1 |     2    |    2   |     2    |     1
+        2 |     3    |    3   |     2    |     1
+        1 |     2    |    2   |     4    |    -1
+        1 |     2    |    4   |     4    |     1
+        2 |     3    |    3   |     6    |    -1
+        2 |     3    |    2   |     6    |     1
+        1 |     2    |    4   |     8    |    -1
+        1 |     2    |    1   |     8    |     1
+    """,
+        id_from=["a"],
+    )
+    assert_stream_equality(res, expected)
+
+
+def test_earliest_and_latest_reducer_tie():
+    t = T(
+        """
+        a
+        1
+        2
+        3
+    """
+    )
+    res = t.reduce(
+        earliest=pw.reducers.earliest(pw.this.a), latest=pw.reducers.latest(pw.this.a)
+    )
+    expected = T(
+        """
+        earliest | latest
+            2    |    1
+    """
+    )  # values from the row with the lowest key and greatest key respectively
     assert_table_equality_wo_index(res, expected)
 
 

@@ -926,6 +926,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
         instance: expr.ColumnReference | None = None,
+        _is_window: bool = False,
     ) -> groupbys.GroupedTable:
         """Groups table by columns from args.
 
@@ -992,6 +993,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             set_id=id is not None,
             sort_by=sort_by,
             _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
+            _is_window=_is_window,
         )
 
     @trace_user_frame

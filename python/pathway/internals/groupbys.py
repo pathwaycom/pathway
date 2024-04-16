@@ -90,6 +90,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     _set_id: bool
     _sort_by: expr.InternalColRef | None
     _filter_out_results_of_forgetting: bool
+    _is_window: bool
 
     def __init__(
         self,
@@ -98,12 +99,14 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         _set_id: bool = False,
         _sort_by: expr.InternalColRef | None = None,
         _filter_out_results_of_forgetting: bool = False,
+        _is_window: bool = False,
     ):
         super().__init__(Universe(), {thisclass.this: self}, _table)
         self._grouping_columns = StableSet(_grouping_columns)
         self._set_id = _set_id
         self._sort_by = _sort_by
         self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
+        self._is_window = _is_window
 
     @classmethod
     def create(
@@ -113,6 +116,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         set_id: bool = False,
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
+        _is_window: bool = False,
     ) -> GroupedTable:
         cols = tuple(arg._to_original()._to_internal() for arg in grouping_columns)
         col_sort_by = (
@@ -128,6 +132,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
                 _set_id=set_id,
                 _sort_by=col_sort_by,
                 _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
+                _is_window=_is_window,
             )
             G.cache[key] = result
         return G.cache[key]
@@ -193,6 +198,10 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             reduced = reduced._filter_out_results_of_forgetting()
         return reduced.select(**output_expressions)
 
+    def _maybe_warn(self, expression: expr.ColumnExpression) -> None:
+        if self._is_window and isinstance(expression, expr.ReducerExpression):
+            expression._reducer.maybe_warn_in_windowby()
+
     @contextualized_operator
     def _reduce(self, **kwargs: expr.ColumnExpression) -> table.Table:
         reduced_columns: dict[str, clmn.ColumnWithExpression] = {}
@@ -206,6 +215,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         )
 
         for column_name, value in kwargs.items():
+            self._maybe_warn(value)
             column = self._eval(value, context)
             reduced_columns[column_name] = column
 

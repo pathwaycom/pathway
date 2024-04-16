@@ -143,6 +143,7 @@ class _SessionWindow(Window):
             pw.this._pw_window_start,
             pw.this._pw_window_end,
             instance=pw.this._pw_instance,
+            _is_window=True,
         )
 
         return gb
@@ -427,6 +428,7 @@ class _SlidingWindow(Window):
             target._pw_window_end,
             instance=target._pw_instance,
             _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
+            _is_window=True,
         )
 
         return target
@@ -568,6 +570,7 @@ class _IntervalsOverWindow(Window):
                 pw.this._pw_window_end,
                 instance=pw.this._pw_instance,
                 sort_by=pw.this._pw_key,
+                _is_window=True,
             )
         )
 

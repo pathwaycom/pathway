@@ -17,7 +17,7 @@ use std::{cmp::Reverse, sync::Arc};
 use super::{Key, Value};
 
 pub type StatefulCombineFn =
-    Arc<dyn Fn(Option<&Value>, &[(Vec<Value>, isize)]) -> Option<Value> + Send + Sync>;
+    Arc<dyn Fn(Option<&Value>, Vec<(Vec<Value>, isize)>) -> Option<Value> + Send + Sync>;
 
 #[derive(Clone)]
 pub enum Reducer {
@@ -34,6 +34,8 @@ pub enum Reducer {
     Tuple { skip_nones: bool },
     Any,
     Stateful { combine_fn: StatefulCombineFn },
+    Earliest,
+    Latest,
 }
 
 pub trait SemigroupReducerImpl: 'static {
@@ -530,7 +532,13 @@ impl StatefulReducer {
         Self { combine_fn }
     }
 
-    pub fn combine(&self, state: Option<&Value>, data: &[(Vec<Value>, isize)]) -> Option<Value> {
+    pub fn combine(&self, state: Option<&Value>, data: Vec<(Vec<Value>, isize)>) -> Option<Value> {
         (self.combine_fn)(state, data)
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct LatestReducer;
+
+#[derive(Debug, Clone, Copy)]
+pub struct EarliestReducer;

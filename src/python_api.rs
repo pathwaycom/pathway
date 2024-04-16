@@ -641,6 +641,12 @@ impl PyReducer {
             combine_fn: wrap_stateful_combine(combine),
         }
     }
+
+    #[classattr]
+    pub const LATEST: Reducer = Reducer::Latest;
+
+    #[classattr]
+    pub const EARLIEST: Reducer = Reducer::Earliest;
 }
 
 fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {

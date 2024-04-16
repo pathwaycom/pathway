@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.reducers.latest` and `pw.reducers.earliest` that return the value with respectively maximal and minimal processing time assigned.
+
 ## [0.8.6] - 2024-04-10
 
 ### Added

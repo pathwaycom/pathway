@@ -99,9 +99,10 @@ use super::http_server::maybe_run_http_server_thread;
 use super::license::License;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
 use super::reduce::{
-    AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, FloatSumReducer,
-    IntSumReducer, MaxReducer, MinReducer, ReducerImpl, SemigroupReducerImpl, SortedTupleReducer,
-    StatefulCombineFn, StatefulReducer, TupleReducer, UniqueReducer,
+    AnyReducer, ArgMaxReducer, ArgMinReducer, ArraySumReducer, CountReducer, EarliestReducer,
+    FloatSumReducer, IntSumReducer, LatestReducer, MaxReducer, MinReducer, ReducerImpl,
+    SemigroupReducerImpl, SortedTupleReducer, StatefulCombineFn, StatefulReducer, TupleReducer,
+    UniqueReducer,
 };
 use super::report_error::{
     LogError, ReportError, ReportErrorExt, SpawnWithReporter, UnwrapWithErrorLogger,
@@ -2632,6 +2633,61 @@ where
     }
 }
 
+impl<S> DataflowReducer<S> for LatestReducer
+where
+    S: MaybeTotalScope,
+    S::MaybeTotalTimestamp: TotalOrder,
+{
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+        values
+            .map_named(
+                "LatestReducer::reduce::init",
+                |(source_key, result_key, values)| (result_key, (source_key, values)),
+            )
+            .stateful_reduce_named("LatestReducer::reduce::reduce", move |_state, values| {
+                let (_result_key, result_value) = values
+                    .into_iter()
+                    .map(|((key, values), diff)| {
+                        assert!(diff > 0, "deletion encountered in latest reducer");
+                        (key, values.into_iter().exactly_one().unwrap())
+                    })
+                    .max_by_key(|(key, _value)| *key)
+                    .expect("input values shouldn't be empty");
+                Some(result_value)
+            })
+            .into()
+    }
+}
+
+impl<S> DataflowReducer<S> for EarliestReducer
+where
+    S: MaybeTotalScope,
+    S::MaybeTotalTimestamp: TotalOrder,
+{
+    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+        values
+            .map_named(
+                "EarliestReducer::reduce::init",
+                |(source_key, result_key, values)| (result_key, (source_key, values)),
+            )
+            .stateful_reduce_named("EarliestReducer::reduce::reduce", move |state, values| {
+                if state.is_some() {
+                    return state.cloned();
+                }
+                let (_result_key, result_value) = values
+                    .into_iter()
+                    .map(|((key, values), diff)| {
+                        assert!(diff > 0, "deletion encountered in earliest reducer");
+                        (key, values.into_iter().exactly_one().unwrap())
+                    })
+                    .min_by_key(|(key, _value)| *key)
+                    .expect("input values shouldn't be empty");
+                Some(result_value)
+            })
+            .into()
+    }
+}
+
 trait CreateDataflowReducer<S: MaybeTotalScope> {
     fn create_dataflow_reducer(reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>>;
 }
@@ -2655,7 +2711,9 @@ where
             Reducer::Tuple { skip_nones } => Rc::new(TupleReducer::new(*skip_nones)),
 
             Reducer::Any => Rc::new(AnyReducer),
-            Reducer::Stateful { .. } => return Err(Error::NotSupportedInIteration),
+            Reducer::Stateful { .. } | Reducer::Earliest | Reducer::Latest => {
+                return Err(Error::NotSupportedInIteration)
+            }
         };
 
         Ok(res)
@@ -2670,6 +2728,8 @@ where
     fn create_dataflow_reducer(reducer: &Reducer) -> Result<Rc<dyn DataflowReducer<S>>> {
         let res: Rc<dyn DataflowReducer<S>> = match reducer {
             Reducer::Stateful { combine_fn } => Rc::new(StatefulReducer::new(combine_fn.clone())),
+            Reducer::Earliest => Rc::new(EarliestReducer),
+            Reducer::Latest => Rc::new(LatestReducer),
             other => NotTotal::create_dataflow_reducer(other)?,
         };
 

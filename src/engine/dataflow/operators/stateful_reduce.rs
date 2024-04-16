@@ -26,7 +26,7 @@ where
     #[track_caller]
     fn stateful_reduce<V2: Data>(
         &self,
-        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> Option<V2> + 'static,
+        logic: impl FnMut(Option<&V2>, Vec<(V, R)>) -> Option<V2> + 'static,
     ) -> Collection<S, (K, V2), R> {
         self.stateful_reduce_named("StatefulReduce", logic)
     }
@@ -34,7 +34,7 @@ where
     fn stateful_reduce_named<V2: Data>(
         &self,
         name: &str,
-        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> Option<V2> + 'static,
+        logic: impl FnMut(Option<&V2>, Vec<(V, R)>) -> Option<V2> + 'static,
     ) -> Collection<S, (K, V2), R>;
 }
 
@@ -50,7 +50,7 @@ where
     fn stateful_reduce_named<V2: Data>(
         &self,
         name: &str,
-        logic: impl FnMut(Option<&V2>, &[(V, R)]) -> Option<V2> + 'static,
+        logic: impl FnMut(Option<&V2>, Vec<(V, R)>) -> Option<V2> + 'static,
     ) -> Collection<S, (K, V2), R> {
         let arranged: ArrangedByKey<S, K, V, R> = self.arrange_named(&format!("Arrange: {name}"));
         arranged.stateful_reduce_named(name, logic)
@@ -70,7 +70,7 @@ where
     fn stateful_reduce_named<V2: Data>(
         &self,
         name: &str,
-        mut logic: impl FnMut(Option<&V2>, &[(Tr::Val, Tr::R)]) -> Option<V2> + 'static,
+        mut logic: impl FnMut(Option<&V2>, Vec<(Tr::Val, Tr::R)>) -> Option<V2> + 'static,
     ) -> Collection<S, (Tr::Key, V2), Tr::R> {
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
@@ -99,10 +99,13 @@ where
                                 }
                                 let mut state = state_by_key.remove(key);
                                 for (time, data) in data_by_time {
-                                    let new_state = logic(state.as_ref(), data.as_slice());
+                                    let new_state = logic(state.as_ref(), data);
+                                    if new_state == state {
+                                        continue;
+                                    }
                                     if let Some(state) = state {
                                         session.give((
-                                            (key.clone(), state.clone()),
+                                            (key.clone(), state),
                                             time.clone(),
                                             Tr::R::from(-1),
                                         ));
