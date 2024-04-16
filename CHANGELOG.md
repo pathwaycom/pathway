@@ -7,6 +7,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.reducers.latest` and `pw.reducers.earliest` that return the value with respectively maximal and minimal processing time assigned.
+- `pw.io.kafka.write` can now produce messages containing raw bytes in case the table consists of a single binary column and `raw` mode is specified. Similarly, this method will provide plaintext messages if `plaintext` mode is chosen and the table consists of a single string-typed column.
+
+### Changed
+- **BREAKING**: `pw.io.kafka.read` will not parse the messages from UTF-8 in case `raw` mode was specified. To preserve this behavior you can use the `plaintext` mode.
 
 ## [0.8.6] - 2024-04-10
 

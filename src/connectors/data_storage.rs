@@ -56,6 +56,7 @@ use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
 use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedProducer};
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
 use rdkafka::Message;
@@ -1998,9 +1999,21 @@ impl Drop for KafkaWriter {
 impl Writer for KafkaWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         let key_as_bytes = data.key.0.to_le_bytes().to_vec();
+
+        let headers = KafkaHeaders::new_with_capacity(2)
+            .insert(KafkaHeader {
+                key: "pathway_time",
+                value: Some(&data.time.to_string()),
+            })
+            .insert(KafkaHeader {
+                key: "pathway_diff",
+                value: Some(&data.diff.to_string()),
+            });
+
         for payload in &data.payloads {
             let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&self.topic)
                 .payload(payload)
+                .headers(headers.clone())
                 .key(&key_as_bytes);
             loop {
                 match self.producer.send(entry) {

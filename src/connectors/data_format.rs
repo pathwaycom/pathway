@@ -189,22 +189,40 @@ pub struct FormatterContext {
     pub payloads: Vec<Vec<u8>>,
     pub key: Key,
     pub values: Vec<Value>,
+    pub time: Timestamp,
+    pub diff: isize,
 }
 
 impl FormatterContext {
-    pub fn new(payloads: Vec<Vec<u8>>, key: Key, values: Vec<Value>) -> FormatterContext {
+    pub fn new(
+        payloads: Vec<Vec<u8>>,
+        key: Key,
+        values: Vec<Value>,
+        time: Timestamp,
+        diff: isize,
+    ) -> FormatterContext {
         FormatterContext {
             payloads,
             key,
             values,
+            time,
+            diff,
         }
     }
 
-    pub fn new_single_payload(payload: Vec<u8>, key: Key, values: Vec<Value>) -> FormatterContext {
+    pub fn new_single_payload(
+        payload: Vec<u8>,
+        key: Key,
+        values: Vec<Value>,
+        time: Timestamp,
+        diff: isize,
+    ) -> FormatterContext {
         FormatterContext {
             payloads: vec![payload],
             key,
             values,
+            time,
+            diff,
         }
     }
 }
@@ -217,6 +235,9 @@ pub enum FormatterError {
 
     #[error("value does not fit into data type")]
     ValueDoesNotFit,
+
+    #[error("this connector doesn't support this value type")]
+    UnsupportedValueType,
 }
 
 pub trait Formatter: Send {
@@ -601,15 +622,21 @@ impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
         let (event, key, value, metadata) = match data {
             RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes)?, None),
-            KeyValue((_key, value)) => match value {
-                Some(bytes) => (
-                    DataEventType::Insert,
-                    None,
-                    self.prepare_bytes(bytes)?,
-                    None,
-                ),
-                None => return Err(ParseError::EmptyKafkaPayload),
-            },
+            KeyValue((key, value)) => {
+                let prepared_key = match key {
+                    Some(bytes) => Some(vec![self.prepare_bytes(bytes)?]),
+                    None => None,
+                };
+                match value {
+                    Some(bytes) => (
+                        DataEventType::Insert,
+                        prepared_key,
+                        self.prepare_bytes(bytes)?,
+                        None,
+                    ),
+                    None => return Err(ParseError::EmptyKafkaPayload),
+                }
+            }
             Diff((addition, key, values, metadata)) => (
                 *addition,
                 key.as_ref().map(|k| vec![k.clone()]),
@@ -738,7 +765,48 @@ impl Formatter for DsvFormatter {
         .unwrap();
         payloads.push(line);
 
-        Ok(FormatterContext::new(payloads, *key, Vec::new()))
+        Ok(FormatterContext::new(
+            payloads,
+            *key,
+            Vec::new(),
+            time,
+            diff,
+        ))
+    }
+}
+
+#[derive(Default)]
+pub struct IdentityFormatter {}
+
+impl IdentityFormatter {
+    pub fn new() -> IdentityFormatter {
+        IdentityFormatter {}
+    }
+}
+
+impl Formatter for IdentityFormatter {
+    fn format(
+        &mut self,
+        key: &Key,
+        values: &[Value],
+        time: Timestamp,
+        diff: isize,
+    ) -> Result<FormatterContext, FormatterError> {
+        if values.len() != 1 {
+            return Err(FormatterError::ColumnsValuesCountMismatch);
+        }
+        let payload = match &values[0] {
+            Value::Bytes(bytes) => bytes.to_vec(),
+            Value::String(string) => string.as_bytes().to_vec(),
+            _ => return Err(FormatterError::UnsupportedValueType),
+        };
+        Ok(FormatterContext::new_single_payload(
+            payload,
+            *key,
+            values.to_vec(),
+            time,
+            diff,
+        ))
     }
 }
 
@@ -1315,6 +1383,8 @@ impl Formatter for PsqlUpdatesFormatter {
             result,
             *key,
             values.to_vec(),
+            time,
+            diff,
         ))
     }
 }
@@ -1436,6 +1506,8 @@ impl Formatter for PsqlSnapshotFormatter {
             result,
             *key,
             values.to_vec(),
+            time,
+            diff,
         ))
     }
 }
@@ -1475,6 +1547,8 @@ impl Formatter for JsonLinesFormatter {
             serializer.into_inner(),
             *key,
             Vec::new(),
+            time,
+            diff,
         ))
     }
 }
@@ -1498,9 +1572,15 @@ impl Formatter for NullFormatter {
         &mut self,
         key: &Key,
         _values: &[Value],
-        _time: Timestamp,
-        _diff: isize,
+        time: Timestamp,
+        diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
-        Ok(FormatterContext::new(Vec::new(), *key, Vec::new()))
+        Ok(FormatterContext::new(
+            Vec::new(),
+            *key,
+            Vec::new(),
+            time,
+            diff,
+        ))
     }
 }

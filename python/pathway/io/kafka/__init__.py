@@ -6,6 +6,7 @@ import uuid
 import warnings
 from typing import Any
 
+import pathway.internals.dtype as dt
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.api import PathwayType
@@ -17,9 +18,9 @@ from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import check_deprecated_kwargs, construct_schema_and_data_format
 
 SUPPORTED_INPUT_FORMATS: set[str] = {
-    "csv",
     "json",
     "raw",
+    "plaintext",
 }
 
 
@@ -45,14 +46,23 @@ def read(
 ) -> Table:
     """Generalized method to read the data from the given topic in Kafka.
 
-    There are three formats currently supported: "raw", "csv", and "json".
+    There are three formats currently supported: "plaintext", "raw", and "json".
+    If the "raw" format is chosen, the key and the payload are read from the topic as raw
+    bytes and used in the table "as is". If you choose the "plaintext" option, however,
+    they are parsed from the UTF-8 into the plaintext entries. In both cases, the
+    table consists of a primary key and a single column "data", denoting the payload read.
+
+    If "json" is chosen, the connector first parses the payload of the message
+    according to the JSON format and then creates the columns corresponding to the
+    schema defined by the ``schema`` parameter. The values of these columns are
+    taken from the respective parsed JSON fields.
 
     Args:
         rdkafka_settings: Connection settings in the format of `librdkafka
             <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic: Name of topic in Kafka from which the data should be read.
         schema: Schema of the resulting table.
-        format: format of the input data, "raw", "csv", or "json".
+        format: format of the input data, "raw", "plaintext", or "json".
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -244,7 +254,7 @@ def read(
         mode=api.ConnectorMode.STREAMING,
     )
     schema, data_format = construct_schema_and_data_format(
-        format,
+        "binary" if format == "raw" else format,
         schema=schema,
         csv_settings=None,
         json_field_paths=json_field_paths,
@@ -291,7 +301,16 @@ def simple_read(
     Read starts from the beginning of the topic, unless the `read_only_new` parameter is
     set to True.
 
-    There are three formats currently supported: "raw", "csv", and "json".
+    There are three formats currently supported: "plaintext", "raw", and "json".
+    If the "raw" format is chosen, the key and the payload are read from the topic as raw
+    bytes and used in the table "as is". If you choose the "plaintext" option, however,
+    they are parsed from the UTF-8 into the plaintext entries. In both cases, the
+    table consists of a primary key and a single column "data", denoting the payload read.
+
+    If "json" is chosen, the connector first parses the payload of the message
+    according to the JSON format and then creates the columns corresponding to the
+    schema defined by the ``schema`` parameter. The values of these columns are
+    taken from the respective parsed JSON fields.
 
     Args:
         server: Address of the server.
@@ -300,7 +319,7 @@ def simple_read(
 of the program will be read. Otherwise, the read will be done from the beginning of the\
 topic.
         schema: Schema of the resulting table.
-        format: format of the input data, "raw", "csv", or "json".
+        format: format of the input data, "raw", "plaintext", or "json".
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -380,7 +399,16 @@ def read_from_upstash(
     Read starts from the beginning of the topic, unless the `read_only_new` parameter is
     set to True.
 
-    There are three formats currently supported: "raw", "csv", and "json".
+    There are three formats currently supported: "plaintext", "raw", and "json".
+    If the "raw" format is chosen, the key and the payload are read from the topic as raw
+    bytes and used in the table "as is". If you choose the "plaintext" option, however,
+    they are parsed from the UTF-8 into the plaintext entries. In both cases, the
+    table consists of a primary key and a single column "data", denoting the payload read.
+
+    If "json" is chosen, the connector first parses the payload of the message
+    according to the JSON format and then creates the columns corresponding to the
+    schema defined by the ``schema`` parameter. The values of these columns are
+    taken from the respective parsed JSON fields.
 
     Args:
         endpoint: Upstash endpoint for the sought queue, which can be found on \
@@ -393,7 +421,7 @@ available on "Details" page.
 of the program will be read. Otherwise, the read will be done from the beginning of the\
 topic.
         schema: Schema of the resulting table.
-        format: format of the input data, "raw", "csv", or "json".
+        format: format of the input data, "raw", "plaintext", or "json".
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -474,21 +502,27 @@ def write(
 ) -> None:
     """Write a table to a given topic on a Kafka instance.
 
+    This message will consist of the key, corresponding to row's key, the value, \
+corresponding to the values of the table that are serialized according to the chosen \
+format and two headers: `time`, corresponding to the logical time of the entry and `diff` \
+that is either +1 or -1. Both header values are encoded in a little-endian way. The value \
+of `time` is an unsigned integer value, while the value of `diff` is a signed one.
+
     Args:
         table: the table to output.
         rdkafka_settings: Connection settings in the format of
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic_name: name of topic in Kafka to which the data should be sent.
-        format: format of the input data, currently "json" and "dsv" are supported.
+        format: format in which the data is put into Kafka. Currently "json", \
+"plaintext", "raw" and "dsv" are supported. If "raw" format is selected, \
+``table`` must contain exactly one binary column that will be dumped as it is into the \
+Kafka message. Similarly, if "plaintext" is chosen, the table should consist of a single \
+column of the string type.
         delimiter: field delimiter to be used in case of delimiter-separated values
             format.
 
     Returns:
         None
-
-    Limitations:
-
-    For future proofing, the format is configurable, but (for now) only JSON is available.
 
     Example:
 
@@ -548,6 +582,24 @@ def write(
             key_field_names=[],
             value_fields=_format_output_value_fields(table),
             delimiter=delimiter,
+        )
+    elif format == "raw" or format == "plaintext":
+        columns = list(table._columns.values())
+        if len(columns) != 1:
+            raise ValueError(
+                f"'{format}' format can only be used with single-column tables"
+            )
+
+        allowed_column_types = (dt.BYTES if format == "raw" else dt.STR, dt.ANY)
+        if columns[0].dtype not in allowed_column_types:
+            raise ValueError(
+                f"The column should be of the type '{allowed_column_types[0]}'"
+            )
+
+        data_format = api.DataFormat(
+            format_type="identity",
+            key_field_names=[],
+            value_fields=_format_output_value_fields(table),
         )
     else:
         raise ValueError(f"Unsupported format: {format}")

@@ -23,8 +23,13 @@ fn test_null_formatter_ok() -> eyre::Result<()> {
 #[test]
 fn test_null_writer_ok() -> eyre::Result<()> {
     let mut writer = NullWriter::new();
-    let context =
-        FormatterContext::new_single_payload(b"hello".to_vec(), Key::random(), Vec::new());
+    let context = FormatterContext::new_single_payload(
+        b"hello".to_vec(),
+        Key::random(),
+        Vec::new(),
+        Timestamp(1),
+        0,
+    );
     writer.write(context).unwrap();
     Ok(())
 }

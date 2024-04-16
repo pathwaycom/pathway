@@ -59,8 +59,8 @@ use self::external_index_wrappers::{
 use self::threads::PythonThreadState;
 
 use crate::connectors::data_format::{
-    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
-    InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
+    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityFormatter,
+    IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
     PsqlSnapshotFormatter, PsqlUpdatesFormatter, TransparentParser,
 };
 use crate::connectors::data_storage::{
@@ -4215,6 +4215,10 @@ impl DataFormat {
             }
             "null" => {
                 let formatter = NullFormatter::new();
+                Ok(Box::new(formatter))
+            }
+            "identity" => {
+                let formatter = IdentityFormatter::new();
                 Ok(Box::new(formatter))
             }
             _ => Err(PyValueError::new_err("Unknown data format")),

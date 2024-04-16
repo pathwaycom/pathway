@@ -128,7 +128,7 @@ def run_backfilling_program(
                     pw.io.kafka.read,
                     rdkafka_settings=kafka_context.default_rdkafka_settings(),
                     topic=kafka_context.input_topic,
-                    format="raw",
+                    format="plaintext",
                     autocommit_duration_ms=5,
                     persistent_id="1",
                 ),
