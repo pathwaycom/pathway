@@ -350,7 +350,7 @@ class _SlidingWindow(Window):
         key_dtype = eval_type(key)
         assign_windows = self._window_assignment_function(key_dtype)
 
-        target = table.select(
+        target = table.with_columns(
             _pw_window=pw.apply_with_type(
                 assign_windows,
                 dt.List(
@@ -365,7 +365,7 @@ class _SlidingWindow(Window):
             ),
             _pw_key=key,
         )
-        target = target.flatten(target._pw_window, _pw_key=target._pw_key, *table)
+        target = target.flatten(target._pw_window)
         target = target.with_columns(
             _pw_instance=pw.this._pw_window.get(0),
             _pw_window_start=pw.this._pw_window.get(1),
@@ -469,24 +469,24 @@ class _SlidingWindow(Window):
 
         assign_windows = self._window_assignment_function(time_expression_dtype)
 
-        left_window = left.select(
+        left_window = left.with_columns(
             _pw_window=pw.apply_with_type(
                 assign_windows, _pw_window_dtype, None, left_time_expression
             )
         )
-        left_window = left_window.flatten(left_window._pw_window, *left)
+        left_window = left_window.flatten(left_window._pw_window)
 
         left_window = left_window.with_columns(
             _pw_window_start=pw.this._pw_window.get(1),
             _pw_window_end=pw.this._pw_window.get(2),
         )
 
-        right_window = right.select(
+        right_window = right.with_columns(
             _pw_window=pw.apply_with_type(
                 assign_windows, _pw_window_dtype, None, right_time_expression
             )
         )
-        right_window = right_window.flatten(right_window._pw_window, *right)
+        right_window = right_window.flatten(right_window._pw_window)
 
         right_window = right_window.with_columns(
             _pw_window_start=pw.this._pw_window.get(1),

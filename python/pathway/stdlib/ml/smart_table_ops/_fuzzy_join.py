@@ -217,7 +217,7 @@ def smart_fuzzy_match(
     features: pw.Table | None = None
     for tab, col in zip(tabs, [left_col, right_col]):
         edges = tab.select(feature=pw.apply(feature_generation.generate, col)).flatten(
-            pw.this.feature, origin_id=pw.this.id
+            pw.this.feature, origin_id="origin_id"
         )
         features_tmp = edges.groupby(edges.feature).reduce(
             normalization_type=int(normalization),

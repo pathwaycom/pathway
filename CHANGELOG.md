@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - **BREAKING**: `pw.io.kafka.read` will not parse the messages from UTF-8 in case `raw` mode was specified. To preserve this behavior you can use the `plaintext` mode.
+- **BREAKING**: `Table.flatten` now flattens one column and spreads every other column of the table, instead of taking other columns from the argument list.
 
 ## [0.8.6] - 2024-04-10
 

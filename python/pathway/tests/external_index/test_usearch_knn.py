@@ -194,7 +194,7 @@ def test_distance_simple():
     ).with_columns(q_pk_source=queries.pk_source)
 
     ret = (
-        answers.flatten(pw.this._pw_index_reply, pw.this.q_pk_source)
+        answers.flatten(pw.this._pw_index_reply)
         .join(index, pw.left._pw_index_reply == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
@@ -274,7 +274,7 @@ def test_with_distance_simple():
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
 
-    flattened_ret = raw_ret.flatten(pw.this._pw_index_reply, pw.this.q_pk_source)
+    flattened_ret = raw_ret.flatten(pw.this._pw_index_reply)
 
     class InnerSchema(pw.Schema):
         matched_item_id: pw.Pointer
@@ -374,7 +374,7 @@ def test_distance_with_deletion():
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
     ret = (
-        answers.flatten(pw.this._pw_index_reply, pw.this.q_pk_source)
+        answers.flatten(pw.this._pw_index_reply)
         .asof_now_join(index, pw.left._pw_index_reply == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)

@@ -1012,7 +1012,7 @@ def test_flatten(dtype: Any):
         }
     )
     t1 = table_from_pandas(df)
-    t1 = t1.flatten(t1.array, t1.other)
+    t1 = t1.flatten(t1.array)
     expected = table_from_pandas(expected_df)
     assert_table_equality_wo_index(t1, expected)
 
@@ -1048,7 +1048,7 @@ def test_flatten_multidimensional(dtype: Any):
 
 
 def test_flatten_string():
-    df = pd.DataFrame({"string": ["abc", "defoimkm", "xyz"], "other": [0, 1, 2]})
+    df = pd.DataFrame({"string": ["abc", "defoimkm", "xyz"]})
     t1 = pw.debug.table_from_pandas(df)
     t1 = t1.flatten(t1.string)
     df_expected = pd.DataFrame({"string": list("abcdefoimkmxyz")})
@@ -1080,9 +1080,8 @@ def test_flatten_explode(mul: int, dtype: Any):
         dtype=dtype,
     )
     t1 = table_from_pandas(df)
-    t1 = t1.flatten(
-        t1.array,
-        other=mul * pw.cast({np.int64: int, np.float64: float}[dtype], t1.other),
+    t1 = t1.flatten(t1.array).with_columns(
+        other=mul * pw.cast({np.int64: int, np.float64: float}[dtype], pw.this.other),
     )
     expected = table_from_pandas(expected_df)
     assert_table_equality_wo_index(t1, expected)
@@ -1099,7 +1098,7 @@ def test_flatten_incorrect_type():
     )
     with pytest.raises(
         TypeError,
-        match=re.escape("Cannot flatten column <table1>.a of type INT."),
+        match=re.escape("Cannot flatten column of type INT."),
     ):
         t = t.flatten(t.a)
 

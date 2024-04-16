@@ -15,7 +15,7 @@ def test_flatten_simple():
     tab = T(pd.DataFrame.from_dict({"col": [[1, 2, 3, 4]]}), format="pandas")
 
     assert_table_equality_wo_index(
-        tab.flatten(this.col, origin_id=this.id),
+        tab.flatten(this.col, origin_id="origin_id"),
         T(
             """
     col | origin_id
@@ -49,7 +49,7 @@ def test_flatten_inner_repeats():
     tab = T(pd.DataFrame.from_dict({"col": [[1, 1, 1, 3]]}), format="pandas")
 
     assert_table_equality_wo_index(
-        tab.flatten(this.col, origin_id=this.id),
+        tab.flatten(this.col, origin_id="origin_id"),
         T(
             """
     col | origin_id
@@ -66,7 +66,7 @@ def test_flatten_more_repeats():
     tab = T(pd.DataFrame.from_dict({"col": [[1, 1, 1, 3], [1]]}), format="pandas")
 
     assert_table_equality_wo_index(
-        tab.flatten(this.col, origin_id=this.id),
+        tab.flatten(this.col, origin_id="origin_id"),
         T(
             """
     col | origin_id
@@ -84,6 +84,6 @@ def test_flatten_empty_lists():
     tab = T(pd.DataFrame.from_dict({"col": [[], []]}), format="pandas")
 
     assert_table_equality_wo_index(
-        tab.flatten(this.col, origin_id=this.id),
+        tab.flatten(this.col, origin_id="origin_id"),
         Table.empty(col=Any, origin_id=pw.Pointer),
     )

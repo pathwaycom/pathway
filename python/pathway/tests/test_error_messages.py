@@ -646,7 +646,10 @@ def test_update_types():
 
 def test_flatten():
     with _assert_error_trace(
-        ValueError, match=re.escape("Table.flatten() cannot have empty arguments list.")
+        TypeError,
+        match=re.escape(
+            "Table.flatten() missing 1 required positional argument: 'to_flatten'"
+        ),
     ):
         T(
             """

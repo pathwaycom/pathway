@@ -2041,14 +2041,18 @@ id_type=<class 'pathway.engine.Pointer'>>
     @trace_user_frame
     @desugar
     @check_arg_types
-    def flatten(self, *args: expr.ColumnReference | Any, **kwargs: Any) -> Table:
+    def flatten(
+        self,
+        to_flatten: expr.ColumnReference,
+        *,
+        origin_id: str | None = None,
+    ) -> Table:
         """Performs a flatmap operation on a column or expression given as a first
         argument. Datatype of this column or expression has to be iterable or Json array.
-        Other columns specified in the method arguments are duplicated
-        as many times as the length of the iterable.
+        Other columns of the table are duplicated as many times as the length of the iterable.
 
-        It is possible to get ids of source rows by using `table.id` column, e.g.
-        `table.flatten(table.column_to_be_flattened, original_id = table.id)`.
+        It is possible to get ids of source rows by passing `origin_id` argument, which is
+        a new name of the column with the source ids.
 
         Example:
 
@@ -2060,15 +2064,6 @@ id_type=<class 'pathway.engine.Pointer'>>
         ... ''')
         >>> t2 = t1.flatten(t1.pet)
         >>> pw.debug.compute_and_print(t2, include_id=False)
-        pet
-        C
-        D
-        a
-        g
-        o
-        t
-        >>> t3 = t1.flatten(t1.pet, t1.age)
-        >>> pw.debug.compute_and_print(t3, include_id=False)
         pet | age
         C   | 5
         D   | 2
@@ -2077,23 +2072,19 @@ id_type=<class 'pathway.engine.Pointer'>>
         o   | 2
         t   | 5
         """
-        intermediate_table = self.select(*args, **kwargs)
-        all_args = combine_args_kwargs(args, kwargs)
-        if not all_args:
-            raise ValueError("Table.flatten() cannot have empty arguments list.")
+        if origin_id is None:
+            intermediate_table = self
+        else:
+            intermediate_table = self.with_columns(**{origin_id: thisclass.this.id})
 
-        all_names_iter = iter(all_args.keys())
-        flatten_name = next(all_names_iter)
-        return intermediate_table._flatten(flatten_name)
+        return intermediate_table._flatten(to_flatten.name)
 
-    @desugar
     @contextualized_operator
     def _flatten(
         self,
         flatten_name: str,
     ) -> Table:
         flatten_column = self._columns[flatten_name]
-        assert isinstance(flatten_column, clmn.ColumnWithExpression)
 
         context = clmn.FlattenContext(
             orig_universe=self._universe,

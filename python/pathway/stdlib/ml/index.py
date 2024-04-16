@@ -176,7 +176,7 @@ class KNNIndex:
         )
         knns_ids = (
             self._query(queries, with_distances=True)
-            .flatten(pw.this.knns_ids_with_dists, pw.this.query_id)
+            .flatten(pw.this.knns_ids_with_dists)
             .select(
                 pw.this.query_id,
                 knn_id=pw.this.knns_ids_with_dists[0],

@@ -983,7 +983,7 @@ class FlattenContext(Context):
     """Context of `table.flatten() operation."""
 
     orig_universe: Universe
-    flatten_column: ColumnWithExpression
+    flatten_column: Column
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.flatten_column]
@@ -1009,9 +1009,7 @@ class FlattenContext(Context):
         elif dtype == dt.JSON:
             return dt.JSON
         else:
-            raise TypeError(
-                f"Cannot flatten column {self.flatten_column.expression!r} of type {dtype}."
-            )
+            raise TypeError(f"Cannot flatten column of type {dtype}.")
 
     @cached_property
     def universe(self) -> Universe:

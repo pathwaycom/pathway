@@ -84,7 +84,7 @@ def lsh(data: pw.Table, bucketer, origin_id="origin_id", include_data=True) -> p
     flat_data = data.select(
         buckets=pw.apply(lambda x: list(enumerate(bucketer(x))), data.data)
     )
-    flat_data = flat_data.flatten(pw.this.buckets, **{origin_id: pw.this.id})
+    flat_data = flat_data.flatten(pw.this.buckets, origin_id=origin_id)
     flat_data = flat_data.select(flat_data[origin_id]) + unpack_col(
         flat_data.buckets,
         pw.this.bucketing,

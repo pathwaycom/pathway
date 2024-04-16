@@ -26,7 +26,7 @@ def flatten_column(
     - origin_id: name of output column where to store id's of input rows
 
     Output:
-    - Table with columns: colname_to_flatten and origin_id (if not None)
+    - Table with flattened column `column` and other columns spread.
 
     Example:
 
@@ -38,13 +38,13 @@ def flatten_column(
     ... ''')
     >>> t2 = pw.utils.col.flatten_column(t1.pet)
     >>> pw.debug.compute_and_print(t2.without(pw.this.origin_id), include_id=False)
-    pet
-    C
-    D
-    a
-    g
-    o
-    t
+    pet | age
+    C   | 5
+    D   | 2
+    a   | 5
+    g   | 2
+    o   | 2
+    t   | 5
     """
 
     warnings.warn(
@@ -53,12 +53,7 @@ def flatten_column(
         stacklevel=5,
     )
     input_table = column.table
-    kwargs = {column.name: column}
-    if origin_id is not None:
-        origin_id_name = pw.this[origin_id].name
-        kwargs[origin_id_name] = input_table.id
-
-    return input_table.flatten(**kwargs)
+    return input_table.flatten(column, origin_id=origin_id)
 
 
 @overload
