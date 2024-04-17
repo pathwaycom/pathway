@@ -45,6 +45,7 @@ dependencies = [
     "fs >= 2.4.16",
     "async-lru >= 2.0.4",
     "networkx >= 3.2.1",
+    "google-cloud-pubsub >= 2.21.1",
 ]
 
 [project.optional-dependencies]

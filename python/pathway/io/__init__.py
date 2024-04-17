@@ -16,6 +16,7 @@ from pathway.io import (
     null,
     plaintext,
     postgres,
+    pubsub,
     pyfilesystem,
     python,
     redpanda,
@@ -54,4 +55,5 @@ __all__ = [
     "s3_csv",
     "gdrive",
     "sqlite",
+    "pubsub",
 ]
