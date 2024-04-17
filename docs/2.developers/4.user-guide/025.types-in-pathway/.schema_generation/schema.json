@@ -1,0 +1,11 @@
+{
+    "key": {
+        "dtype": "int",
+        "primary_key": true
+    },
+    "name": {
+        "dtype": "str",
+        "default_value": ""
+    },
+    "value": "int"
+}

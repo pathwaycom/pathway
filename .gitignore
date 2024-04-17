@@ -7,3 +7,10 @@ __pycache__/
 .test_*
 
 *.lcov
+
+/docs/**/article.md
+/docs/2.developers/?.API-docs
+/docs/2.developers/?.documentation
+.yarn
+*.csv
+!output_stream.csv

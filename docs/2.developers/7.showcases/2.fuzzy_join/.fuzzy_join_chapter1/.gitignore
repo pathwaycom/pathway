@@ -1,0 +1,3 @@
+*.csv*
+!transactionsA.csv
+!transactionsB.csv
