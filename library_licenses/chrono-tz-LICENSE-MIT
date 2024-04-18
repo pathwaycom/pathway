@@ -1,8 +1,9 @@
 Chrono-TZ is dual-licensed under the MIT License and Apache 2.0 Licence.
 The licenses do not apply to files in the tzdb folder which are in the
-public domain.
+public domain. parse-zoneinfo was forked from zoneinfo-parse, which
+was originally created by Benjamin Sago under the MIT license.
 
-Copyright (c) 2016 Djzin
+Copyright (c) 2016-2024 Benjamin Sago & the chronotope maintainers
 
 The MIT License
 

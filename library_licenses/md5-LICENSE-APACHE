@@ -11,7 +11,7 @@ The following two notices apply to every file of the project.
 ## The Apache License
 
 ```
-Copyright 2015–2019 The md5 Developers
+Copyright 2015–2024 The md5 Developers
 
 Licensed under the Apache License, Version 2.0 (the “License”); you may not use
 this file except in compliance with the License. You may obtain a copy of the
@@ -28,7 +28,7 @@ specific language governing permissions and limitations under the License.
 ## The MIT License
 
 ```
-Copyright 2015–2019 The md5 Developers
+Copyright 2015–2024 The md5 Developers
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the “Software”), to deal in
