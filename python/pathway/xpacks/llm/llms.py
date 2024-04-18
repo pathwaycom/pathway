@@ -285,7 +285,7 @@ class LiteLLMChat(pw.UDF):
         if model is not None:
             self.kwargs["model"] = model
 
-    async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
+    def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
         import litellm as litellm_mod
 
         if isinstance(messages, pw.Json):
@@ -302,7 +302,9 @@ class LiteLLMChat(pw.UDF):
         }
         logger.info(json.dumps(event))
 
-        ret = await litellm_mod.acompletion(messages=messages_decoded, **kwargs)
+        ret = litellm_mod.completion(
+            messages=messages_decoded, **kwargs
+        )  # temporarily disable async due to behavior difference while using `json` mode with Ollama
         response = ret.choices[0]["message"]["content"]
 
         event = {

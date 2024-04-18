@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.reducers.latest` and `pw.reducers.earliest` that return the value with respectively maximal and minimal processing time assigned.
 - `pw.io.kafka.write` can now produce messages containing raw bytes in case the table consists of a single binary column and `raw` mode is specified. Similarly, this method will provide plaintext messages if `plaintext` mode is chosen and the table consists of a single string-typed column.
 - `pw.io.pubsub.write` connector for publishing Pathway tables into Google PubSub.
+- Argument `strict_prompt` to `answer_with_geometric_rag_strategy` and `answer_with_geometric_rag_strategy_from_index` that allows optimizing prompts for smaller open-source LLM models.
+- Temporarily switch LiteLLMChat's generation method to sync version due to a bug while using `json` mode with Ollama.
 
 ### Changed
 - **BREAKING**: `pw.io.kafka.read` will not parse the messages from UTF-8 in case `raw` mode was specified. To preserve this behavior you can use the `plaintext` mode.

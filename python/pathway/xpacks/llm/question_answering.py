@@ -1,4 +1,5 @@
 # Copyright © 2024 Pathway
+import json
 
 import pathway.internals as pw
 from pathway.internals import ColumnReference, Table
@@ -13,24 +14,67 @@ def _limit_documents(documents: list[str], k: int) -> list[str]:
 
 
 _answer_not_known = "I could not find an answer."
+_answer_not_known_open_source = "No information available."
 
 
-def _query_chat(chat: pw.UDF, t: Table) -> pw.Table:
+def _query_chat_strict_json(chat: pw.UDF, t: Table) -> pw.Table:
+
+    t += t.select(
+        prompt=prompt_qa_geometric_rag(
+            t.query, t.documents, _answer_not_known_open_source, strict_prompt=True
+        )
+    )
+    answer = t.select(answer=chat(prompt_chat_single_qa(t.prompt)))
+
+    @pw.udf
+    def extract_answer(response: str) -> str:
+        response = response.strip()  # mistral-7b occasionally puts empty spaces
+        json_start, json_finish = response.find("{"), response.find(
+            "}"
+        )  # remove unparsable part, mistral sometimes puts `[sources]` after the json
+
+        unparsed_json = response[json_start : json_finish + 1]
+        answer_dict = json.loads(unparsed_json)
+        return " ".join(answer_dict.values())
+
+    answer = answer.select(answer=extract_answer(pw.this.answer))
+
+    @pw.udf
+    def check_no_information(pred: str) -> bool:
+        return "No information" in pred
+
+    answer = answer.select(
+        answer=pw.if_else(check_no_information(pw.this.answer), None, pw.this.answer)
+    )
+    return answer
+
+
+def _query_chat_gpt(chat: pw.UDF, t: Table) -> pw.Table:
     t += t.select(
         prompt=prompt_qa_geometric_rag(t.query, t.documents, _answer_not_known)
     )
     answer = t.select(answer=chat(prompt_chat_single_qa(t.prompt)))
+
     answer = answer.select(
         answer=pw.if_else(pw.this.answer == _answer_not_known, None, pw.this.answer)
     )
     return answer
 
 
-def _query_chat_with_k_documents(chat: pw.UDF, k: int, t: pw.Table) -> pw.Table:
+def _query_chat(chat: pw.UDF, t: Table, strict_prompt: bool) -> pw.Table:
+    if strict_prompt:
+        return _query_chat_strict_json(chat, t)
+    else:
+        return _query_chat_gpt(chat, t)
+
+
+def _query_chat_with_k_documents(
+    chat: pw.UDF, k: int, t: pw.Table, strict_prompt: bool
+) -> pw.Table:
     limited_documents = t.select(
         pw.this.query, documents=_limit_documents(t.documents, k)
     )
-    result = _query_chat(chat, limited_documents)
+    result = _query_chat(chat, limited_documents, strict_prompt)
     return result
 
 
@@ -41,6 +85,7 @@ def answer_with_geometric_rag_strategy(
     n_starting_documents: int,
     factor: int,
     max_iterations: int,
+    strict_prompt: bool = False,
 ) -> ColumnReference:
     """
     Function for querying LLM chat while providing increasing number of documents until an answer
@@ -57,6 +102,8 @@ def answer_with_geometric_rag_strategy(
         factor: Factor by which a number of documents increases in each next query, if
             an answer is not found.
         max_iterations: Number of times to ask a question, with the increasing number of documents.
+        strict_prompt: If LLM should be instructed strictly to return json.
+            Increases performance in small open source models, not needed in OpenAI GPT models.
 
     Returns:
         A column with answers to the question. If answer is not found, then None is returned.
@@ -88,7 +135,7 @@ def answer_with_geometric_rag_strategy(
     for _ in range(max_iterations):
         rows_without_answer = t.filter(pw.this.answer.is_none())
         results = _query_chat_with_k_documents(
-            llm_chat_model, n_documents, rows_without_answer
+            llm_chat_model, n_documents, rows_without_answer, strict_prompt
         )
         new_answers = rows_without_answer.with_columns(answer=results.answer)
         t = t.update_rows(new_answers)
@@ -105,6 +152,7 @@ def answer_with_geometric_rag_strategy_from_index(
     factor: int,
     max_iterations: int,
     metadata_filter: pw.ColumnExpression | None = None,
+    strict_prompt: bool = False,
 ) -> ColumnReference:
     """
     Function for querying LLM chat while providing increasing number of documents until an answer
@@ -121,6 +169,8 @@ def answer_with_geometric_rag_strategy_from_index(
         factor: Factor by which a number of documents increases in each next query, if
             an answer is not found.
         max_iterations: Number of times to ask a question, with the increasing number of documents.
+        strict_prompt: If LLM should be instructed strictly to return json.
+            Increases performance in small open source models, not needed in OpenAI GPT models.
 
     Returns:
         A column with answers to the question. If answer is not found, then None is returned.
@@ -148,4 +198,5 @@ def answer_with_geometric_rag_strategy_from_index(
         n_starting_documents,
         factor,
         max_iterations,
+        strict_prompt=strict_prompt,
     )
