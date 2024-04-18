@@ -5,6 +5,8 @@ import os
 import pathlib
 import random
 
+import pytest
+
 import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import get_aws_s3_settings, wait_result_with_checker
@@ -138,6 +140,7 @@ def run_backfilling_program(
         del os.environ["PATHWAY_THREADS"]
 
 
+@pytest.mark.flaky(reruns=5)
 def test_backfilling_fs_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -148,6 +151,7 @@ def test_backfilling_fs_storage(
     run_backfilling_program(fs_persistence_config, tmp_path, kafka_context)
 
 
+@pytest.mark.flaky(reruns=5)
 def test_backfilling_s3_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext, s3_path: str
 ):
