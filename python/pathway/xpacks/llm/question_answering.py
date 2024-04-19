@@ -1,11 +1,14 @@
 # Copyright © 2024 Pathway
 import json
+from enum import Enum
 
-import pathway.internals as pw
+import pathway as pw
 from pathway.internals import ColumnReference, Table
 from pathway.stdlib.indexing import DataIndex
+from pathway.xpacks.llm import llms, prompts
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
+from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 
 @pw.udf
@@ -200,3 +203,268 @@ def answer_with_geometric_rag_strategy_from_index(
         max_iterations,
         strict_prompt=strict_prompt,
     )
+
+
+class AIResponseType(Enum):
+    SHORT = "short"
+    LONG = "long"
+
+
+@pw.udf
+def _filter_document_metadata(
+    docs: pw.Json, metadata_keys: list[str] = ["path"]
+) -> list[dict]:
+    """Utility function to filter context document metadata to keep the keys in the
+    provided `metadata_keys` list."""
+    doc_ls: list[dict[str, str | dict]] = docs.value  # type: ignore
+
+    filtered_docs = []
+    for doc in doc_ls:
+        filtered_doc = {"text": doc["text"]}
+        for key in metadata_keys:
+            if key in doc.get("metadata", {}):
+                assert isinstance(doc["metadata"], dict)
+                metadata_dict: dict = doc["metadata"]
+                filtered_doc[key] = metadata_dict[key]
+
+        filtered_docs.append(filtered_doc)
+
+    return filtered_docs
+
+
+class BaseRAGQuestionAnswerer:
+    """
+    Builds the logic and the API for basic RAG application.
+
+    Base class to build RAG app with Pathway vector store and Pathway components.
+    Gives the freedom to choose between two question answering strategies,
+    short (concise), and long (detailed) response, that can be set during the post request.
+    Allows for LLM agnosticity with freedom to choose from proprietary or open-source LLMs.
+
+    Args:
+        llm: LLM instance for question answering. See https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms for available models.
+        indexer: Indexing object for search & retrieval to be used for context augmentation.
+        default_llm_name: Default LLM model to be used in queries, only used if `model` parameter in post request is not specified.
+            Omitting or setting this as `None` will require `model` to be specified in each request.
+
+        short_prompt_template: Template for document question answering with short response.
+            A pw.udf function is expected. Defaults to `pathway.xpacks.llm.prompts.prompt_short_qa`.
+        long_prompt_template: Template for document question answering with long response.
+            A pw.udf function is expected. Defaults to `pathway.xpacks.llm.prompts.prompt_qa`.
+        summarize_template: Template for text summarization. Defaults to `pathway.xpacks.llm.prompts.prompt_summarize`.
+
+
+    Example:
+
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
+    >>> from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer  # doctest: +SKIP
+    >>> my_folder = pw.io.fs.read(
+    ...     path="/PATH/TO/MY/DATA/*",  # replace with your folder
+    ...     format="binary",
+    ...     with_metadata=True)  # doctest: +SKIP
+    >>> sources = [my_folder]  # doctest: +SKIP
+    >>> app_host = "0.0.0.0"  # doctest: +SKIP
+    >>> app_port = 8000  # doctest: +SKIP
+    >>> parser = parsers.ParseUnstructured()  # doctest: +SKIP
+    >>> text_splitter = splitters.TokenCountSplitter(max_tokens=400)  # doctest: +SKIP
+    >>> embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())  # doctest: +SKIP
+    >>> vector_server = VectorStoreServer(  # doctest: +SKIP
+    ...     *sources,
+    ...     embedder=embedder,
+    ...     splitter=text_splitter,
+    ...     parser=parser,
+    ... )
+    >>> DEFAULT_GPT_MODEL = "gpt-3.5-turbo"
+    >>> chat = llms.OpenAIChat(  # doctest: +SKIP
+    ...     model=DEFAULT_GPT_MODEL,
+    ...     retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6),
+    ...     cache_strategy=DiskCache(),
+    ...     temperature=0.05,
+    ... )
+    >>> app = BaseRAGQuestionAnswerer(  # doctest: +SKIP
+    ...     llm=chat,
+    ...     indexer=vector_server,
+    ...     default_llm_name=DEFAULT_GPT_MODEL,
+    ... )
+    >>> app.build_server(host=app_host, port=app_port)  # doctest: +SKIP
+    >>> app.run_server()  # doctest: +SKIP
+    """  # noqa: E501
+
+    def __init__(
+        self,
+        llm: pw.UDF,
+        indexer: VectorStoreServer,
+        *,
+        default_llm_name: str | None = None,
+        short_prompt_template: pw.UDF = prompts.prompt_short_qa,
+        long_prompt_template: pw.UDF = prompts.prompt_qa,
+        summarize_template: pw.UDF = prompts.prompt_summarize,
+    ) -> None:
+
+        self.llm = llm
+        self.indexer = indexer
+
+        self._init_schemas(default_llm_name)
+
+        self.short_prompt_template = short_prompt_template
+        self.long_prompt_template = long_prompt_template
+        self.summarize_template = summarize_template
+
+    def _init_schemas(self, default_llm_name: str | None = None) -> None:
+        """Initialize API schemas with optional and non-optional arguments."""
+
+        class PWAIQuerySchema(pw.Schema):
+            prompt: str
+            filters: str | None = pw.column_definition(default_value=None)
+            model: str | None = pw.column_definition(default_value=default_llm_name)
+            response_type: str = pw.column_definition(
+                default_value=AIResponseType.SHORT.value
+            )
+
+        class SummarizeQuerySchema(pw.Schema):
+            text_list: list[str]
+            model: str | None = pw.column_definition(default_value=default_llm_name)
+
+        self.PWAIQuerySchema = PWAIQuerySchema
+        self.SummarizeQuerySchema = SummarizeQuerySchema
+
+    @pw.table_transformer
+    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+        """Main function for RAG applications that answer questions
+        based on available information."""
+
+        pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
+            pw_ai_queries.select(
+                metadata_filter=pw.this.filters,
+                filepath_globpattern=pw.cast(str | None, None),
+                query=pw.this.prompt,
+                k=6,
+            )
+        ).select(
+            docs=pw.this.result,
+        )
+
+        pw_ai_results = pw_ai_results.select(
+            *pw.this, filtered_docs=_filter_document_metadata(pw.this.docs)
+        )
+
+        pw_ai_results += pw_ai_results.select(
+            rag_prompt=pw.if_else(
+                pw.this.response_type == AIResponseType.SHORT.value,
+                self.short_prompt_template(pw.this.prompt, pw.this.filtered_docs),
+                self.long_prompt_template(pw.this.prompt, pw.this.filtered_docs),
+            )
+        )
+
+        pw_ai_results += pw_ai_results.select(
+            result=self.llm(
+                llms.prompt_chat_single_qa(pw.this.rag_prompt),
+                model=pw.this.model,
+            )
+        )
+        return pw_ai_results
+
+    @pw.table_transformer
+    def summarize_query(self, summarize_queries: pw.Table) -> pw.Table:
+        """Function for summarizing given texts."""
+
+        summarize_results = summarize_queries.select(
+            pw.this.model,
+            prompt=self.summarize_template(pw.this.text_list),
+        )
+        summarize_results += summarize_results.select(
+            result=self.llm(
+                llms.prompt_chat_single_qa(pw.this.prompt),
+                model=pw.this.model,
+            )
+        )
+        return summarize_results
+
+    # connect http endpoint to output writer
+    def serve(self, route, schema, handler, webserver, **additional_endpoint_kwargs):
+
+        queries, writer = pw.io.http.rest_connector(
+            webserver=webserver,
+            route=route,
+            schema=schema,
+            autocommit_duration_ms=50,
+            delete_completed_queries=True,
+            **additional_endpoint_kwargs,
+        )
+        writer(handler(queries))
+
+    def build_server(
+        self,
+        host: str,
+        port: int,
+        **rest_kwargs,
+    ) -> None:
+        """Adds HTTP connectors to input tables, connects them with table transformers."""
+
+        webserver = pw.io.http.PathwayWebserver(host=host, port=port)
+
+        self.serve(
+            "/v1/retrieve",
+            self.indexer.RetrieveQuerySchema,
+            self.indexer.retrieve_query,
+            webserver,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v1/statistics",
+            self.indexer.StatisticsQuerySchema,
+            self.indexer.statistics_query,
+            webserver,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v1/pw_list_documents",
+            self.indexer.InputsQuerySchema,
+            self.indexer.inputs_query,
+            webserver,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v1/pw_ai_answer",
+            self.PWAIQuerySchema,
+            self.pw_ai_query,
+            webserver,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v1/pw_ai_summary",
+            self.SummarizeQuerySchema,
+            self.summarize_query,
+            webserver,
+            **rest_kwargs,
+        )
+
+    def run_server(
+        self,
+        with_cache: bool = True,
+        cache_backend: (
+            pw.persistence.Backend | None
+        ) = pw.persistence.Backend.filesystem("./Cache"),
+    ):
+        """Start the app with cache configs. Enabling persistence will cache the embedding,
+        and LLM requests between the runs."""
+
+        if with_cache:
+            if cache_backend is None:
+                raise ValueError(
+                    "Cache usage was requested but the backend is unspecified"
+                )
+            persistence_config = pw.persistence.Config.simple_config(
+                cache_backend,
+                persistence_mode=pw.PersistenceMode.UDF_CACHING,
+            )
+        else:
+            persistence_config = None
+
+        pw.run(
+            monitoring_level=pw.MonitoringLevel.NONE,
+            persistence_config=persistence_config,
+        )

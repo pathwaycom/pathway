@@ -91,11 +91,11 @@ class VectorStoreServer:
     def __init__(
         self,
         *docs: pw.Table,
-        embedder: Callable[[str], list[float] | Coroutine],
-        parser: Callable[[bytes], list[tuple[str, dict]]] | None = None,
-        splitter: Callable[[str], list[tuple[str, dict]]] | None = None,
+        embedder: Callable[[str], list[float] | Coroutine] | pw.UDF,
+        parser: Callable[[bytes], list[tuple[str, dict]]] | pw.UDF | None = None,
+        splitter: Callable[[str], list[tuple[str, dict]]] | pw.UDF | None = None,
         doc_post_processors: (
-            list[Callable[[str, dict], tuple[str, dict]]] | None
+            list[Callable[[str, dict], tuple[str, dict]] | pw.UDF] | None
         ) = None,
         index_params: dict | None = None,
     ):

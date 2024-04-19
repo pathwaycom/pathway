@@ -184,7 +184,7 @@ def prompt_qa_geometric_rag(
 
 
 @pw.udf
-def prompt_summarize(text_list: list[str]):
+def prompt_summarize(text_list: list[str]) -> str:
     """
     Generate a summarization prompt with the list of texts.
 
