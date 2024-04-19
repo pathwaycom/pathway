@@ -66,9 +66,6 @@ class UniverseSolver:
         self.solver.add_clause([result_var, *[-arg_var for arg_var in args_var]])
 
     def get_intersection(self, *args: Universe) -> Universe:
-        for arg in args:
-            if all(arg.is_subset_of(other) for other in args):
-                return arg
         result = Universe()
         self.register_as_intersection(result, *args)
         return result
@@ -83,9 +80,6 @@ class UniverseSolver:
         self.solver.add_clause([-result_var, *args_var])
 
     def get_union(self, *args: Universe) -> Universe:
-        for arg in args:
-            if all(other.is_subset_of(arg) for other in args):
-                return arg
         result = Universe()
         self.register_as_union(result, *args)
         return result
@@ -114,6 +108,12 @@ class UniverseSolver:
             for j in range(i):
                 # varI => ~varJ
                 self.solver.add_clause([-vars[i], -vars[j]])
+
+    def query_is_empty(self, setA: Universe) -> bool:
+        varA = self.universe_vars[setA]
+        if self.solver.solve(assumptions=[varA]):
+            return False
+        return True
 
     def register_as_empty(self, setA: Universe) -> None:
         varA = self.universe_vars[setA]

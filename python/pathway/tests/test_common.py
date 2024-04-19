@@ -3365,6 +3365,24 @@ def test_intersect():
     )
 
 
+def test_intersect_empty():
+    t1 = T(
+        """
+            | col
+        1   | 11
+        2   | 12
+        3   | 13
+        """
+    )
+    ret = t1.intersect()
+
+    assert_table_equality(
+        ret,
+        t1,
+    )
+    assert ret == t1
+
+
 def test_intersect_many_tables():
     t1 = T(
         """
@@ -3466,7 +3484,7 @@ def test_intersect_subset():
             """
         ),
     )
-    assert res._universe == t2._universe
+    assert res._universe != t2._universe
 
 
 def test_update_cells():
@@ -6240,9 +6258,8 @@ def test_concat_id_type_exception():
         TypeError,
         match=re.escape(
             "Incompatible types for a concat operation.\n"
-            + "The types are: [Pointer(INT), Pointer(STR)]."
-            + " You might try casting the respective columns to Any type to circumvent this,"
-            + " but this is most probably an error.\n"
+            + "The types are: (Pointer(INT), Pointer(STR)). You might try casting the id type to pw.Pointer"
+            + " to circumvent this, but this is most probably an error.\n"
             + "Occurred here:\n"
             + "    Line: pw.Table.concat(a, b)\n"
         ),

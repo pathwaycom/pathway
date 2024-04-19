@@ -771,7 +771,6 @@ id_type=<class 'pathway.engine.Pointer'>>
         )
         return self._table_with_context(context)
 
-    @contextualized_operator
     @check_arg_types
     def intersect(self, *tables: Table) -> Table[TSchema]:
         """Restrict self universe to keys appearing in all of the tables.
@@ -804,25 +803,35 @@ id_type=<class 'pathway.engine.Pointer'>>
         8   | Alice | 2
         9   | Bob   | 1
         """
-        intersecting_universes = (
-            self._universe,
-            *tuple(table._universe for table in tables),
-        )
+        if len(tables) == 0:
+            warnings.warn("Empty argument list for Table.intersect().", stacklevel=5)
+            return self
+        all_args: list[Table] = [self, *tables]
+        intersecting_universes = [tab._universe for tab in all_args]
         universe = self._get_universe_solver().get_intersection(*intersecting_universes)
-        if universe in intersecting_universes:
-            context: clmn.Context = clmn.RestrictContext(self._id_column, universe)
-        else:
-            intersecting_ids = (
-                self._id_column,
-                *tuple(table._id_column for table in tables),
-            )
-            context = clmn.IntersectContext(
-                intersecting_ids=intersecting_ids,
-            )
+        if self._get_universe_solver().query_are_equal(universe, self._universe):
+            warnings.warn("Unnecessary call to Table.intersect().", stacklevel=5)
+        for tab in tables:
+            if self._get_universe_solver().query_are_equal(universe, tab._universe):
+                warnings.warn(
+                    "Table.intersect() can be replaced with Table.restrict() operation.",
+                    stacklevel=5,
+                )
+                break
+        return self._intersect(*tables)
+
+    @contextualized_operator
+    def _intersect(self, *tables: Table) -> Table[TSchema]:
+        intersecting_ids = (
+            self._id_column,
+            *(table._id_column for table in tables),
+        )
+        context = clmn.IntersectContext(
+            intersecting_ids=intersecting_ids,
+        )
 
         return self._table_with_context(context)
 
-    @contextualized_operator
     @check_arg_types
     def restrict(self, other: TableLike) -> Table[TSchema]:
         """Restrict self universe to keys appearing in other.
@@ -860,6 +869,9 @@ id_type=<class 'pathway.engine.Pointer'>>
         8   | Alice | 2
         9   | Bob   | 1
         """
+        if self._universe == other._universe:
+            warnings.warn("Identical universes for Table.restrict().", stacklevel=5)
+            return self
         if not self._get_universe_solver().query_is_subset(
             other._universe, self._universe
         ):
@@ -867,6 +879,15 @@ id_type=<class 'pathway.engine.Pointer'>>
                 "Table.restrict(): other universe has to be a subset of self universe."
                 + "Consider using Table.promise_universe_is_subset_of() to assert it."
             )
+        if self._get_universe_solver().query_are_equal(other._universe, self._universe):
+            warnings.warn(
+                "Unnecessary call to Table.restrict(), consider using Table.with_universe_of().",
+                stacklevel=5,
+            )
+        return self._restrict(other)
+
+    @contextualized_operator
+    def _restrict(self, other: TableLike) -> Table[TSchema]:
         context = clmn.RestrictContext(self._id_column, other._universe)
 
         columns = {
@@ -1335,40 +1356,23 @@ id_type=<class 'pathway.engine.Pointer'>>
                 raise ValueError(
                     "columns do not match in the argument of Table.concat()"
                 )
+        schema = {}
+        all_args: list[Table] = [self, *others]
 
         for key in self.keys():
-            try:
-                dt.types_lca_many(
-                    self.schema._dtypes()[key],
-                    *[other.schema._dtypes()[key] for other in others],
-                    raising=True,
-                )
-            except TypeError:
-                raise TypeError(
-                    "Incompatible types for a concat operation.\n"
-                    + "The types are: "
-                    + str(
-                        [
-                            self.schema._dtypes()[key],
-                            *[other.schema._dtypes()[key] for other in others],
-                        ]
-                    )
-                    + ". "
-                    + "You might try casting the respective columns to Any type to circumvent this,"
-                    + " but this is most probably an error."
-                )
-        schema = {
-            key: dt.types_lca_many(
-                self.schema._dtypes()[key],
-                *[other.schema._dtypes()[key] for other in others],
-                raising=True,
+            schema[key] = _types_lca_with_error(
+                *[arg.schema._dtypes()[key] for arg in all_args],
+                function_name="a concat",
+                pointers=False,
             )
-            for key in self.keys()
-        }
+        id_type = _types_lca_with_error(
+            *[arg.schema._id_dtype for arg in all_args],
+            function_name="a concat",
+            pointers=True,
+        )
 
         return Table._concat(
-            self.cast_to_types(**schema),
-            *[other.cast_to_types(**schema) for other in others],
+            *[tab.cast_to_types(**schema).update_id_type(id_type) for tab in all_args]
         )
 
     @trace_user_frame
@@ -1446,27 +1450,15 @@ id_type=<class 'pathway.engine.Pointer'>>
             )
             return self.with_columns(*(other[name] for name in other))
 
+        schema = {}
         for key in other.keys():
-            try:
-                dt.types_lca(
-                    self.schema.__dtypes__[key],
-                    other.schema.__dtypes__[key],
-                    raising=True,
-                )
-            except TypeError:
-                raise TypeError(
-                    "Incompatible types for an update_cells operation.\n"
-                    + f"The types are: {self.schema.__dtypes__[key]} and {other.schema.__dtypes__[key]}. "
-                    + "You might try casting the expressions to Any type to circumvent this, "
-                    + "but this is most probably an error."
-                )
-
-        schema = {
-            key: dt.types_lca(
-                self.schema.__dtypes__[key], other.schema.__dtypes__[key], raising=True
+            schema[key] = _types_lca_with_error(
+                self.schema._dtypes()[key],
+                other.schema._dtypes()[key],
+                function_name="an update_cells",
+                pointers=False,
             )
-            for key in other.keys()
-        }
+
         return Table._update_cells(
             self.cast_to_types(**schema), other.cast_to_types(**schema)
         )
@@ -1540,21 +1532,31 @@ id_type=<class 'pathway.engine.Pointer'>>
             )
             return other
 
-        schema = {
-            key: dt.types_lca(
-                self.schema.__dtypes__[key], other.schema.__dtypes__[key], raising=True
+        schema = {}
+
+        for key in self.keys():
+            schema[key] = _types_lca_with_error(
+                self.schema._dtypes()[key],
+                other.schema._dtypes()[key],
+                function_name="an update_rows",
+                pointers=False,
             )
-            for key in self.keys()
-        }
-        union_universes = (self._universe, other._universe)
-        universe = self._get_universe_solver().get_union(*union_universes)
-        if universe == self._universe:
+
+        id_type = _types_lca_with_error(
+            self._id_column.dtype,
+            other._id_column.dtype,
+            function_name="an update_rows",
+            pointers=True,
+        )
+
+        if self._get_universe_solver().query_is_subset(other._universe, self._universe):
             return Table._update_cells(
                 self.cast_to_types(**schema), other.cast_to_types(**schema)
             )
         else:
             return Table._update_rows(
-                self.cast_to_types(**schema), other.cast_to_types(**schema)
+                self.cast_to_types(**schema).update_id_type(id_type),
+                other.cast_to_types(**schema).update_id_type(id_type),
             )
 
     @trace_user_frame
@@ -2581,3 +2583,27 @@ def groupby(
     Bob   | 1
     """
     return grouped.groupby(*args, id=id, **kwargs)
+
+
+def _types_lca_with_error(*dtypes, function_name: str, pointers: bool):
+    try:
+        return dt.types_lca_many(
+            *dtypes,
+            raising=True,
+        )
+    except TypeError:
+        msg = (
+            f"Incompatible types for {function_name} operation.\n"
+            + f"The types are: {dtypes}. "
+        )
+        if pointers:
+            msg += (
+                "You might try casting the id type to pw.Pointer to circumvent this, "
+                + "but this is most probably an error."
+            )
+        else:
+            msg += (
+                "You might try casting the expressions to Any type to circumvent this, "
+                + "but this is most probably an error."
+            )
+        raise TypeError(msg)

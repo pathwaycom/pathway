@@ -797,6 +797,7 @@ class UpdateRowsContext(Context):
 
     def __post_init__(self):
         assert len(self.union_ids) > 0
+        assert all(arg.dtype == self.union_ids[0].dtype for arg in self.union_ids)
 
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([self.updates[ref.name]])
@@ -805,17 +806,7 @@ class UpdateRowsContext(Context):
         return self.union_ids[0].universe
 
     def id_column_type(self) -> dt.DType:
-        try:
-            return dt.types_lca_many(
-                *[arg.dtype for arg in self.union_ids], raising=True
-            )
-        except TypeError:
-            raise TypeError(
-                "Incompatible types for a update_rows operation.\n"
-                + f"The types are: {[arg.dtype for arg in self.union_ids]}. "
-                + "You might try casting the respective columns to Any type to circumvent this,"
-                + " but this is most probably an error."
-            )
+        return self.union_ids[0].dtype
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.union_ids]
@@ -855,6 +846,7 @@ class ConcatUnsafeContext(Context):
 
     def __post_init__(self):
         assert len(self.union_ids) > 0
+        assert all(arg.dtype == self.union_ids[0].dtype for arg in self.union_ids)
 
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([update[ref.name] for update in self.updates])
@@ -863,17 +855,7 @@ class ConcatUnsafeContext(Context):
         return self.union_ids[0].universe
 
     def id_column_type(self) -> dt.DType:
-        try:
-            return dt.types_lca_many(
-                *[arg.dtype for arg in self.union_ids], raising=True
-            )
-        except TypeError:
-            raise TypeError(
-                "Incompatible types for a concat operation.\n"
-                + f"The types are: {[arg.dtype for arg in self.union_ids]}. "
-                + "You might try casting the respective columns to Any type to circumvent this,"
-                + " but this is most probably an error."
-            )
+        return self.union_ids[0].dtype
 
     def universe_dependencies(self) -> Iterable[Universe]:
         return [c.universe for c in self.union_ids]
