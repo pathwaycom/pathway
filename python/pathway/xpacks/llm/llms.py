@@ -31,9 +31,10 @@ class OpenAIChat(pw.UDF):
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-            is enabled, operations will be cached using the persistence layer.
-            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
         - model: ID of the model to use. See the
             `model endpoint compatibility <https://platform.openai.com/docs/models/model-endpoint-compatibility>`_
             table for details on which models work with the Chat API.
@@ -226,9 +227,10 @@ class LiteLLMChat(pw.UDF):
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-            is enabled, operations will be cached using the persistence layer.
-            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
         - model: ID of the model to use. Check the
             `providers supported by LiteLLM <https://docs.litellm.ai/docs/providers>`_
             for details on which models work with the LiteLLM API.
@@ -410,9 +412,10 @@ class CohereChat(pw.UDF):
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-            is enabled, operations will be cached using the persistence layer.
-            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
         - model: name of the model to use. Check the
             `available models <https://docs.cohere.com/docs/command-beta>`_
             for details.

@@ -64,9 +64,10 @@ class OpenAIEmbedder(pw.UDF):
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-            is enabled, operations will be cached using the persistence layer.
-            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
         - model: ID of the model to use. You can use the
             `List models <https://platform.openai.com/docs/api-reference/models/list>`_ API to
             see all of your available models, or see
@@ -154,9 +155,10 @@ class LiteLLMEmbedder(pw.UDF):
             Defaults to None, indicating no specific limit.
         - retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. If set to None and a persistency
-            is enabled, operations will be cached using the persistence layer.
-            Defaults to None.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
         - model: The embedding model to use.
         - timeout: The timeout value for the API call, default 10 mins
         - litellm_call_id: The call ID for litellm logging.
