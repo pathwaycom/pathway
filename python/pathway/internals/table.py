@@ -296,9 +296,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             arg = next(iter(all_args.values()))
             table: Table = arg.table
             for arg in all_args.values():
-                if not Table._get_universe_solver().query_are_equal(
-                    table._universe, arg.table._universe
-                ):
+                if not table._universe.is_equal_to(arg.table._universe):
                     raise ValueError(
                         "Universes of all arguments of Table.from_columns() have to be equal.\n"
                         + "Consider using Table.promise_universes_are_equal() to assert it.\n"
@@ -371,7 +369,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         from pathway.internals import table_io
 
         ret = table_io.empty_from_schema(schema_from_types(None, **kwargs))
-        Table._get_universe_solver().register_as_empty(ret._universe)
+        ret._universe.register_as_empty(no_warn=True)
         return ret
 
     @trace_user_frame
@@ -455,9 +453,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         Cat | 3
         Dog | 10
         """
-        if not self._get_universe_solver().query_are_equal(
-            self._universe, other._universe
-        ):
+        if not self._universe.is_equal_to(other._universe):
             raise ValueError(
                 "Universes of all arguments of Table.__add__() have to be equal.\n"
                 + "Consider using Table.promise_universes_are_equal() to assert it.\n"
@@ -809,10 +805,10 @@ id_type=<class 'pathway.engine.Pointer'>>
         all_args: list[Table] = [self, *tables]
         intersecting_universes = [tab._universe for tab in all_args]
         universe = self._get_universe_solver().get_intersection(*intersecting_universes)
-        if self._get_universe_solver().query_are_equal(universe, self._universe):
+        if universe.is_equal_to(self._universe):
             warnings.warn("Unnecessary call to Table.intersect().", stacklevel=5)
         for tab in tables:
-            if self._get_universe_solver().query_are_equal(universe, tab._universe):
+            if universe.is_equal_to(tab._universe):
                 warnings.warn(
                     "Table.intersect() can be replaced with Table.restrict() operation.",
                     stacklevel=5,
@@ -872,14 +868,12 @@ id_type=<class 'pathway.engine.Pointer'>>
         if self._universe == other._universe:
             warnings.warn("Identical universes for Table.restrict().", stacklevel=5)
             return self
-        if not self._get_universe_solver().query_is_subset(
-            other._universe, self._universe
-        ):
+        if not other._universe.is_subset_of(self._universe):
             raise ValueError(
                 "Table.restrict(): other universe has to be a subset of self universe."
                 + "Consider using Table.promise_universe_is_subset_of() to assert it."
             )
-        if self._get_universe_solver().query_are_equal(other._universe, self._universe):
+        if other._universe.is_equal_to(self._universe):
             warnings.warn(
                 "Unnecessary call to Table.restrict(), consider using Table.with_universe_of().",
                 stacklevel=5,
@@ -1549,7 +1543,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             pointers=True,
         )
 
-        if self._get_universe_solver().query_is_subset(other._universe, self._universe):
+        if other._universe.is_subset_of(self._universe):
             return Table._update_cells(
                 self.cast_to_types(**schema), other.cast_to_types(**schema)
             )

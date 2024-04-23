@@ -205,6 +205,10 @@ class RestrictUniverseDesugaring(DesugaringTransform):
     def eval_column_val(
         self, expression: expr.ColumnReference, **kwargs
     ) -> expr.ColumnReference:
+        from pathway.internals.thisclass import ThisMetaclass
+
+        if isinstance(expression.table, ThisMetaclass):
+            return expression
         if self.table_like._universe.is_subset_of(
             expression.table._universe
         ) and not self.table_like._universe.is_equal_to(expression.table._universe):

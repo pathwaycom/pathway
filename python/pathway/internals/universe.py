@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import itertools
-
 from pathway.internals import column
 from pathway.internals.helpers import SetOnceProperty
 
 
 class Universe:
-    id: int
-    _id_sequence = itertools.count()
     lineage: SetOnceProperty[column.Lineage] = SetOnceProperty()
-
-    def __init__(self) -> None:
-        self.id = next(Universe._id_sequence)
 
     def subset(self) -> Universe:
         from pathway.internals.parse_graph import G
@@ -33,3 +26,13 @@ class Universe:
 
     def is_equal_to(self, other: Universe) -> bool:
         return self.is_subset_of(other) and other.is_subset_of(self)
+
+    def is_empty(self) -> bool:
+        from pathway.internals.parse_graph import G
+
+        return G.universe_solver.query_is_empty(self)
+
+    def register_as_empty(self, no_warn: bool = True) -> None:
+        from pathway.internals.parse_graph import G
+
+        G.universe_solver.register_as_empty(self, no_warn=no_warn)

@@ -7,6 +7,7 @@ import inspect
 import os
 import pathlib
 import re
+import warnings
 from typing import Any, Optional
 from unittest import mock
 
@@ -6209,7 +6210,7 @@ def test_pw_run_signature():
     assert inspect.signature(pw.run) == inspect.signature(pw.run_all)
 
 
-def test_gruopby_caching_doesnt_explode():
+def test_groupby_caching_doesnt_explode():
     # minimal failing example for a particular bug in caching
     tab = pw.Table.empty(a=int)
     tab.groupby(pw.this.a)
@@ -6334,3 +6335,33 @@ def test_join_pointer_types_no_exception():
     a = pw.Table.empty(col=pw.Pointer[int])
     b = pw.Table.empty(col=pw.Pointer[Any])
     assert a.join(b, a.col == b.col).select()._id_column.dtype.typehint == pw.Pointer
+
+
+def test_warns_empty_univ():
+    a = T(
+        """col
+            1"""
+    )
+    with pytest.warns(
+        match=re.escape(
+            "Found universe that is always empty, but wasn't declared as such"
+            + " -- this is potentially a bug."
+        )
+    ):
+        a.promise_universes_are_disjoint(a)
+
+
+def test_no_warn():
+    with warnings.catch_warnings():
+        pw.Table.empty(foo=int)
+
+
+def test_warns_no_second_warning():
+    a = T(
+        """col
+            1"""
+    )
+
+    a.promise_universes_are_disjoint(a)
+    with warnings.catch_warnings():
+        a.promise_universes_are_disjoint(a)

@@ -527,7 +527,10 @@ class GroupedContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        return Universe()
+        ret = Universe()
+        if self.inner_context.universe.is_empty():
+            ret.register_as_empty(no_warn=False)
+        return ret
 
 
 @dataclass(eq=False, frozen=True)
@@ -680,7 +683,10 @@ class ReindexContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        return Universe()
+        ret = Universe()
+        if self.input_universe().is_empty():
+            ret.register_as_empty(no_warn=False)
+        return ret
 
 
 @dataclass(eq=False, frozen=True)
@@ -995,7 +1001,10 @@ class FlattenContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        return Universe()
+        ret = Universe()
+        if self.orig_universe.is_empty():
+            ret.register_as_empty(no_warn=False)
+        return ret
 
     @cached_property
     def flatten_result_column(self) -> Column:

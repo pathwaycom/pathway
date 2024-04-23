@@ -580,7 +580,24 @@ class JoinResult(Joinable, OperatorInput):
                 raise KeyError("Cannot assign id's for this join type.")
         else:
             assert id is None
-            return Universe()
+            ret = Universe()
+            if (
+                (
+                    mode in [JoinMode.LEFT, JoinMode.INNER]
+                    and left_table._universe.is_empty()
+                )
+                or (
+                    mode in [JoinMode.RIGHT, JoinMode.INNER]
+                    and right_table._universe.is_empty()
+                )
+                or (
+                    mode is JoinMode.OUTER
+                    and left_table._universe.is_empty()
+                    and right_table._universe.is_empty()
+                )
+            ):
+                ret.register_as_empty(no_warn=False)
+            return ret
 
     def _subtables(self) -> StableSet[Table]:
         return self._original_left._subtables() | self._original_right._subtables()
