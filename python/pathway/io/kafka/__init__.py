@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import functools
 import uuid
 import warnings
-from typing import Any
+from typing import Any, Iterable
 
 import pathway.internals.dtype as dt
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.api import PathwayType
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -489,6 +491,27 @@ topic.
     )
 
 
+def check_raw_and_plaintext_only_kwargs(f):
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if kwargs.get("format") not in ("raw", "plaintext"):
+            unexpected_params = [
+                "key",
+                "value",
+                "headers",
+            ]
+            for param in unexpected_params:
+                if param in kwargs and kwargs[param] is not None:
+                    raise ValueError(
+                        f"Unsupported argument for {format} format: {param}"
+                    )
+
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+@check_raw_and_plaintext_only_kwargs
 @check_arg_types
 @trace_user_frame
 def write(
@@ -498,33 +521,60 @@ def write(
     *,
     format: str = "json",
     delimiter: str = ",",
-    **kwargs,
+    key: ColumnReference | None = None,
+    value: ColumnReference | None = None,
+    headers: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Write a table to a given topic on a Kafka instance.
 
-    This message will consist of the key, corresponding to row's key, the value, \
-corresponding to the values of the table that are serialized according to the chosen \
-format and two headers: `time`, corresponding to the logical time of the entry and `diff` \
-that is either +1 or -1. Both header values are encoded in a little-endian way. The value \
-of `time` is an unsigned integer value, while the value of `diff` is a signed one.
+    The produced messages consist of the key, corresponding to row's key, the value,
+    corresponding to the values of the table that are serialized according to the chosen
+    format and two headers: ``pathway_time``, corresponding to the logical time of the entry
+    and ``pathway_diff`` that is either 1 or -1. Both header values are provided as UTF-8
+    encoded strings.
+
+    There are several serialization formats supported: 'json', 'dsv', 'plaintext' and 'raw'.
+    The format defines how the message is formed. In case of JSON and DSV (delimiter
+    separated values), the message is formed in accordance with the respective data format.
+
+    If the selected format is either 'plaintext' or 'raw', you also need to specify, which
+    columns of the table correspond to the key and the value of the produced Kafka
+    message. It can be done by providing ``key`` and ``value`` parameters. In order to
+    output extra values from the table in these formats, Kafka headers can be used. You
+    can specify the column references in the ``headers`` parameter, which leads to
+    serializing the extracted fields into UTF-8 strings and passing them as additional
+    Kafka headers.
 
     Args:
         table: the table to output.
         rdkafka_settings: Connection settings in the format of
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic_name: name of topic in Kafka to which the data should be sent.
-        format: format in which the data is put into Kafka. Currently "json", \
-"plaintext", "raw" and "dsv" are supported. If "raw" format is selected, \
-``table`` must contain exactly one binary column that will be dumped as it is into the \
-Kafka message. Similarly, if "plaintext" is chosen, the table should consist of a single \
-column of the string type.
+        format: format in which the data is put into Kafka. Currently "json",
+            "plaintext", "raw" and "dsv" are supported. If the "raw" format is selected,
+            ``table`` must either contain exactly one binary column that will be dumped as it is into the
+            Kafka message, or the reference to the target binary column must be specified explicitly
+            in the ``value`` parameter. Similarly, if "plaintext" is chosen, the table should consist
+            of a single column of the string type.
         delimiter: field delimiter to be used in case of delimiter-separated values
             format.
+        key: reference to the column that should be used as a key in the
+            produced message in 'plaintext' or 'raw' format. If left empty, an internal primary key will
+            be used.
+        value: reference to the column that should be used as a value in
+            the produced message in 'plaintext' or 'raw' format. It can be deduced automatically if the
+            table has exactly one column. Otherwise it must be specified directly. It also has to be
+            explicitly specified, if ``key`` is set.
+        headers: references to the table fields that must be provided as message
+            headers. These headers are named in the same way as fields that are forwarded and correspond
+            to the string representations of the respective values encoded in UTF-8. If a binary
+            column is requested, it will be produced "as is" in the respective header.
+
 
     Returns:
         None
 
-    Example:
+    Examples:
 
     Consider there is a queue in Kafka, running locally on port 9092. Our queue can
     use SASL-SSL authentication over a SCRAM-SHA-256 mechanism. You can set up a queue
@@ -540,13 +590,13 @@ column of the string type.
     ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
 
-    You want to send a Pathway table t to the Kafka instance.
+    You want to send a Pathway table ``t`` to the Kafka instance.
 
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
 
-    To connect to the topic "animals" and send messages, the connector must be used \
-        as follows, depending on the format:
+    To connect to the topic "animals" and send messages, the connector must be used as
+    follows, depending on the format:
 
     JSON version:
 
@@ -557,19 +607,70 @@ column of the string type.
     ...    format="json",
     ... )
 
-    All the updates of table t will be sent to the Kafka instance.
+    All the updates of table ``t`` will be sent to the Kafka instance.
+
+    Another thing to be demonstated is the usage of 'raw' format in the output. Please
+    note that the same rules will be applicable for the 'plaintext' with the only difference
+    being the requirement for the columns to have the ``string`` type.
+
+    Now consider that a table ``t2`` contains two binary columns ``foo`` and ``bar``, and
+    a numerical column ``baz``. That is, the schema of this table looks as follows:
+
+    >>> class T2Schema(pw.Schema):
+    ...     foo: bytes
+    ...     bar: bytes
+    ...     baz: int
+
+    This table can be generated with a Python input connector as follows:
+
+    >>> class T2GenerationSubject(pw.python.ConnectorSubject):
+    ...     def run(self) -> None:
+    ...         # TODO: define generation logic
+    ...         pass
+    >>> t2 = pw.io.python.read(T2GenerationSubject(), schema=T2Schema)
+
+    Since is more than one column, you need to specify which one you want to use in the
+    output, when using the 'raw' format. If this is the column ``foo``, you may output this
+    table as follows:
+
+    >>> pw.io.kafka.write(
+    ...    t2,
+    ...    rdkafka_settings,
+    ...    "test",
+    ...    format="raw",
+    ...    value=t2.foo,
+    ... )
+
+    If at the same time you would prefer to have the key of the produced messages to be
+    defined by the value of another binary column ``bar``, you can use the ``key`` parameter as
+    follows:
+
+    >>> pw.io.kafka.write(
+    ...    t2,
+    ...    rdkafka_settings,
+    ...    "test",
+    ...    format="raw",
+    ...    key=t2.bar,
+    ...    value=t2.foo,
+    ... )
+
+    Still, the table has three fields and the field ``baz`` is not produced. You can do it
+    with the usage of headers. To pass it to the header with the same name ``baz``, you need to
+    specify it:
+
+    >>> pw.io.kafka.write(
+    ...    t2,
+    ...    rdkafka_settings,
+    ...    "test",
+    ...    format="raw",
+    ...    key=t2.bar,
+    ...    value=t2.foo,
+    ...    headers=[t2.baz],
+    ... )
     """
 
-    check_deprecated_kwargs(
-        kwargs, ["commit_frequency_ms", "commit_frequency_in_messages"]
-    )
-
-    data_storage = api.DataStorage(
-        storage_type="kafka",
-        rdkafka_settings=rdkafka_settings,
-        topic=topic_name,
-    )
-
+    key_field_index = None
+    header_fields: dict[str, int] = {}
     if format == "json":
         data_format = api.DataFormat(
             format_type="jsonlines",
@@ -584,24 +685,86 @@ column of the string type.
             delimiter=delimiter,
         )
     elif format == "raw" or format == "plaintext":
-        columns = list(table._columns.values())
-        if len(columns) != 1:
-            raise ValueError(
-                f"'{format}' format can only be used with single-column tables"
+        value_field_index = None
+        extracted_field_indices: dict[str, int] = {}
+        columns_to_extract: list[ColumnReference] = []
+        allowed_column_types = (dt.BYTES if format == "raw" else dt.STR, dt.ANY)
+
+        if key is not None:
+            if value is None:
+                raise ValueError("'value' must be specified if 'key' is not None")
+            key_field_index = _add_column_reference_to_extract(
+                key, columns_to_extract, extracted_field_indices
+            )
+        if value is not None:
+            value_field_index = _add_column_reference_to_extract(
+                value, columns_to_extract, extracted_field_indices
+            )
+        else:
+            column_names = list(table._columns.keys())
+            if len(column_names) != 1:
+                raise ValueError(
+                    f"'{format}' format without explicit 'value' specification "
+                    "can only be used with single-column tables"
+                )
+            value = table[column_names[0]]
+            value_field_index = _add_column_reference_to_extract(
+                value, columns_to_extract, extracted_field_indices
             )
 
-        allowed_column_types = (dt.BYTES if format == "raw" else dt.STR, dt.ANY)
-        if columns[0].dtype not in allowed_column_types:
+        if headers is not None:
+            for header in headers:
+                header_fields[header.name] = _add_column_reference_to_extract(
+                    header, columns_to_extract, extracted_field_indices
+                )
+
+        table = table.select(*columns_to_extract)
+
+        if (
+            key is not None
+            and table[key._name]._column.dtype not in allowed_column_types
+        ):
             raise ValueError(
-                f"The column should be of the type '{allowed_column_types[0]}'"
+                f"The key column should be of the type '{allowed_column_types[0]}'"
+            )
+        if table[value._name]._column.dtype not in allowed_column_types:
+            raise ValueError(
+                f"The value column should be of the type '{allowed_column_types[0]}'"
             )
 
         data_format = api.DataFormat(
-            format_type="identity",
+            format_type="single_column",
             key_field_names=[],
             value_fields=_format_output_value_fields(table),
+            value_field_index=value_field_index,
         )
     else:
         raise ValueError(f"Unsupported format: {format}")
 
+    data_storage = api.DataStorage(
+        storage_type="kafka",
+        rdkafka_settings=rdkafka_settings,
+        topic=topic_name,
+        key_field_index=key_field_index,
+        header_fields=[item for item in header_fields.items()],
+    )
+
     table.to(datasink.GenericDataSink(data_storage, data_format, datasink_name="kafka"))
+
+
+def _add_column_reference_to_extract(
+    column_reference: ColumnReference,
+    selection_list: list[ColumnReference],
+    field_indices: dict[str, int],
+):
+    column_name = column_reference.name
+
+    index_in_new_table = field_indices.get(column_name)
+    if index_in_new_table is not None:
+        # This column will already be selected, no need to do anything
+        return index_in_new_table
+
+    index_in_new_table = len(selection_list)
+    field_indices[column_name] = index_in_new_table
+    selection_list.append(column_reference)
+    return index_in_new_table

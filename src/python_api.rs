@@ -59,9 +59,9 @@ use self::external_index_wrappers::{
 use self::threads::PythonThreadState;
 
 use crate::connectors::data_format::{
-    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityFormatter,
-    IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
-    PsqlSnapshotFormatter, PsqlUpdatesFormatter, TransparentParser,
+    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
+    InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
+    PsqlSnapshotFormatter, PsqlUpdatesFormatter, SingleColumnFormatter, TransparentParser,
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, DataEventType, ElasticSearchWriter, FileWriter,
@@ -3350,6 +3350,8 @@ pub struct DataStorage {
     mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
     table_name: Option<String>,
     column_names: Option<Vec<String>>,
+    header_fields: Vec<(String, usize)>,
+    key_field_index: Option<usize>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -3624,6 +3626,7 @@ pub struct DataFormat {
     parse_utf8: bool,
     debezium_db_type: DebeziumDBType,
     session_type: SessionType,
+    value_field_index: Option<usize>,
 }
 
 #[pymethods]
@@ -3649,6 +3652,8 @@ impl DataStorage {
         mock_events = None,
         table_name = None,
         column_names = None,
+        header_fields = Vec::new(),
+        key_field_index = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3671,6 +3676,8 @@ impl DataStorage {
         mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
         table_name: Option<String>,
         column_names: Option<Vec<String>>,
+        header_fields: Vec<(String, usize)>,
+        key_field_index: Option<usize>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -3692,6 +3699,8 @@ impl DataStorage {
             mock_events,
             table_name,
             column_names,
+            header_fields,
+            key_field_index,
         }
     }
 }
@@ -3711,6 +3720,7 @@ impl DataFormat {
         parse_utf8 = true,
         debezium_db_type = DebeziumDBType::Postgres,
         session_type = SessionType::Native,
+        value_field_index = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3724,6 +3734,7 @@ impl DataFormat {
         parse_utf8: bool,
         debezium_db_type: DebeziumDBType,
         session_type: SessionType,
+        value_field_index: Option<usize>,
     ) -> Self {
         DataFormat {
             format_type,
@@ -3736,6 +3747,7 @@ impl DataFormat {
             parse_utf8,
             debezium_db_type,
             session_type,
+            value_field_index,
         }
     }
 }
@@ -4094,7 +4106,12 @@ impl DataStorage {
                     };
 
                 let topic = self.kafka_topic()?;
-                let writer = KafkaWriter::new(producer, topic.to_string());
+                let writer = KafkaWriter::new(
+                    producer,
+                    topic.to_string(),
+                    self.header_fields.clone(),
+                    self.key_field_index,
+                );
 
                 Ok(Box::new(writer))
             }
@@ -4246,8 +4263,11 @@ impl DataFormat {
                 let formatter = NullFormatter::new();
                 Ok(Box::new(formatter))
             }
-            "identity" => {
-                let formatter = IdentityFormatter::new();
+            "single_column" => {
+                let index = self
+                    .value_field_index
+                    .ok_or_else(|| PyValueError::new_err("Payload column not specified"))?;
+                let formatter = SingleColumnFormatter::new(index);
                 Ok(Box::new(formatter))
             }
             _ => Err(PyValueError::new_err("Unknown data format")),

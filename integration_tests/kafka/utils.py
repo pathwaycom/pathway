@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
+from kafka.consumer.fetcher import ConsumerRecord
 
 kafka_settings = {"bootstrap_servers": "kafka:9092"}
 
@@ -51,7 +52,7 @@ class KafkaTestContext:
             self.send(msg)
         self._producer.flush()
 
-    def read_topic(self, topic, poll_timeout_ms: int = 1000) -> list[str]:
+    def read_topic(self, topic, poll_timeout_ms: int = 1000) -> list[ConsumerRecord]:
         consumer = KafkaConsumer(
             topic,
             auto_offset_reset="earliest",
@@ -69,10 +70,19 @@ class KafkaTestContext:
                 messages += new_messages
         return messages
 
-    def read_output_topic(self, poll_timeout_ms: int = 1000) -> list[str]:
-        return self.read_topic(self._output_topic, poll_timeout_ms)
+    def read_output_topic(
+        self,
+        poll_timeout_ms: int = 1000,
+        expected_headers=("pathway_time", "pathway_diff"),
+    ) -> list[ConsumerRecord]:
+        messages = self.read_topic(self._output_topic, poll_timeout_ms)
+        for message in messages:
+            headers = {header_key for header_key, _ in message.headers}
+            for header in expected_headers:
+                assert header in headers, headers
+        return messages
 
-    def read_input_topic(self, poll_timeout_ms: int = 1000) -> list[str]:
+    def read_input_topic(self, poll_timeout_ms: int = 1000) -> list[ConsumerRecord]:
         return self.read_topic(self._input_topic, poll_timeout_ms)
 
     def teardown(self) -> None:

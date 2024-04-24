@@ -233,6 +233,9 @@ pub enum FormatterError {
     #[error("count of value columns and count of values mismatch")]
     ColumnsValuesCountMismatch,
 
+    #[error("incorrect column index")]
+    IncorrectColumnIndex,
+
     #[error("value does not fit into data type")]
     ValueDoesNotFit,
 
@@ -775,16 +778,17 @@ impl Formatter for DsvFormatter {
     }
 }
 
-#[derive(Default)]
-pub struct IdentityFormatter {}
+pub struct SingleColumnFormatter {
+    value_field_index: usize,
+}
 
-impl IdentityFormatter {
-    pub fn new() -> IdentityFormatter {
-        IdentityFormatter {}
+impl SingleColumnFormatter {
+    pub fn new(value_field_index: usize) -> SingleColumnFormatter {
+        SingleColumnFormatter { value_field_index }
     }
 }
 
-impl Formatter for IdentityFormatter {
+impl Formatter for SingleColumnFormatter {
     fn format(
         &mut self,
         key: &Key,
@@ -792,10 +796,10 @@ impl Formatter for IdentityFormatter {
         time: Timestamp,
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
-        if values.len() != 1 {
-            return Err(FormatterError::ColumnsValuesCountMismatch);
-        }
-        let payload = match &values[0] {
+        let payload = match &values
+            .get(self.value_field_index)
+            .ok_or(FormatterError::IncorrectColumnIndex)?
+        {
             Value::Bytes(bytes) => bytes.to_vec(),
             Value::String(string) => string.as_bytes().to_vec(),
             _ => return Err(FormatterError::UnsupportedValueType),

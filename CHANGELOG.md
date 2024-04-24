@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - Pathway now warns when unintentionally creating Table with empty universe.
+- `pw.io.kafka.write` in `raw` and `plaintext` formats now supports output for tables with multiple columns. For such tables, it requires the specification of the column that must be used as a value of the produced Kafka messages and gives a possibility to provide column which must be used as a key.
+- `pw.io.kafka.write` can now output values from the table using Kafka message headers in 'raw' and 'plaintext' output format.
 
 ### Changed
 - `instance` arguments to `groupby`, `join`, `with_id_from` now determine how entries are distributed between machines.

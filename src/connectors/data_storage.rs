@@ -404,6 +404,9 @@ pub enum WriteError {
     #[error("integer value {0} out of range")]
     IntOutOfRange(i64),
 
+    #[error("value {0} can't be used as a key because it's neither 'bytes' nor 'string'")]
+    IncorrectKeyFieldType(Value),
+
     #[error("query {query:?} failed: {error}")]
     PsqlQueryFailed {
         query: String,
@@ -1982,11 +1985,23 @@ impl Reader for S3CsvReader {
 pub struct KafkaWriter {
     producer: ThreadedProducer<DefaultProducerContext>,
     topic: String,
+    header_fields: Vec<(String, usize)>,
+    key_field_index: Option<usize>,
 }
 
 impl KafkaWriter {
-    pub fn new(producer: ThreadedProducer<DefaultProducerContext>, topic: String) -> KafkaWriter {
-        KafkaWriter { producer, topic }
+    pub fn new(
+        producer: ThreadedProducer<DefaultProducerContext>,
+        topic: String,
+        header_fields: Vec<(String, usize)>,
+        key_field_index: Option<usize>,
+    ) -> KafkaWriter {
+        KafkaWriter {
+            producer,
+            topic,
+            header_fields,
+            key_field_index,
+        }
     }
 }
 
@@ -1998,17 +2013,38 @@ impl Drop for KafkaWriter {
 
 impl Writer for KafkaWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        let key_as_bytes = data.key.0.to_le_bytes().to_vec();
+        let key_as_bytes = match self.key_field_index {
+            Some(index) => match &data.values[index] {
+                Value::Bytes(bytes) => bytes.to_vec(),
+                Value::String(string) => string.as_bytes().to_vec(),
+                _ => {
+                    return Err(WriteError::IncorrectKeyFieldType(
+                        data.values[index].clone(),
+                    ))
+                }
+            },
+            None => data.key.0.to_le_bytes().to_vec(),
+        };
 
-        let headers = KafkaHeaders::new_with_capacity(2)
+        let mut headers = KafkaHeaders::new_with_capacity(self.header_fields.len() + 2)
             .insert(KafkaHeader {
                 key: "pathway_time",
-                value: Some(&data.time.to_string()),
+                value: Some(data.time.to_string().as_bytes()),
             })
             .insert(KafkaHeader {
                 key: "pathway_diff",
-                value: Some(&data.diff.to_string()),
+                value: Some(data.diff.to_string().as_bytes()),
             });
+        for (name, position) in &self.header_fields {
+            let value: Vec<u8> = match &data.values[*position] {
+                Value::Bytes(b) => (*b).to_vec(),
+                other => (*other.to_string().as_bytes()).to_vec(),
+            };
+            headers = headers.insert(KafkaHeader {
+                key: name,
+                value: Some(&value),
+            });
+        }
 
         for payload in &data.payloads {
             let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&self.topic)

@@ -2815,3 +2815,60 @@ def test_glob_pattern_nothing_matched(tmp_path: pathlib.Path):
     pw.run()
 
     assert FileLinesNumberChecker(output_path, 0)()
+
+
+def test_raw_kafka_raises_no_value_specified_for_key():
+    table = pw.Table.empty(data=bytes, _metadata=dict)
+    with pytest.raises(
+        ValueError,
+        match="'value' must be specified if 'key' is not None",
+    ):
+        pw.io.kafka.write(
+            table,
+            topic_name="test",
+            rdkafka_settings={},
+            format="raw",
+            key=table.data,
+        )
+
+
+def test_raw_kafka_raises_no_column_selected():
+    table = pw.Table.empty(data=bytes, _metadata=dict)
+    with pytest.raises(
+        ValueError,
+        match="'raw' format without explicit 'value' specification can only be used with single-column tables",
+    ):
+        pw.io.kafka.write(
+            table,
+            topic_name="test",
+            rdkafka_settings={},
+            format="raw",
+        )
+
+
+def test_raw_kafka_raises_wrong_type():
+    table = pw.Table.empty(data=bytes, _metadata=dict)
+    with pytest.raises(
+        ValueError,
+        match="The key column should be of the type 'BYTES'",
+    ):
+        pw.io.kafka.write(
+            table,
+            topic_name="test",
+            rdkafka_settings={},
+            format="raw",
+            key=table._metadata,
+            value=table.data,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="The value column should be of the type 'BYTES'",
+    ):
+        pw.io.kafka.write(
+            table,
+            topic_name="test",
+            rdkafka_settings={},
+            format="raw",
+            value=table._metadata,
+        )

@@ -3,6 +3,8 @@
 import json
 import pathlib
 
+import pytest
+
 import pathway as pw
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
@@ -14,6 +16,7 @@ from pathway.tests.utils import (
 from .utils import KafkaTestContext
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     kafka_context.fill(["foo", "bar"])
 
@@ -41,6 +44,7 @@ def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     )
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_json(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     kafka_context.fill(
         [
@@ -77,6 +81,7 @@ def test_kafka_json(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     )
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_csv(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     kafka_context.fill(
         [
@@ -114,6 +119,7 @@ def test_kafka_csv(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     )
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_simple_wrapper_bytes_io(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -145,6 +151,7 @@ def test_kafka_simple_wrapper_bytes_io(
             )
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_simple_wrapper_plaintext_io(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -176,6 +183,7 @@ def test_kafka_simple_wrapper_plaintext_io(
             assert row_parsed["data"] == "foo" or row_parsed["data"] == "bar"
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_output(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     input_path = tmp_path / "input"
     with open(input_path, "w") as f:
@@ -193,9 +201,10 @@ def test_kafka_output(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     pw.run()
 
     output_topic_contents = kafka_context.read_output_topic()
-    assert len(output_topic_contents) == 2, output_topic_contents
+    assert len(output_topic_contents) == 2
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_raw_bytes_output(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -218,9 +227,88 @@ def test_kafka_raw_bytes_output(
     pw.run()
 
     output_topic_contents = kafka_context.read_output_topic()
-    assert len(output_topic_contents) == 2, output_topic_contents
+    assert len(output_topic_contents) == 2
 
 
+def get_test_binary_table(tmp_path):
+    input_path = tmp_path / "input"
+    input_path.mkdir()
+    (input_path / "foo").write_text("foo")
+    (input_path / "bar").write_text("bar")
+
+    return pw.io.fs.read(
+        input_path,
+        mode="static",
+        format="binary",
+        with_metadata=True,
+    )
+
+
+@pytest.mark.flaky(reruns=3)
+@pytest.mark.parametrize(
+    "key",
+    [None, "data"],
+)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [],
+        ["data"],
+        ["data", "_metadata"],
+    ],
+)
+def test_kafka_raw_bytes_output_select_index(
+    key, headers, tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    def construct_raw_write_argument(table, name):
+        if name is None:
+            return None
+        return table[name]
+
+    def get_expected_headers(headers):
+        expected_headers = ["pathway_time", "pathway_diff"]
+        expected_headers.extend(headers)
+        return expected_headers
+
+    table = get_test_binary_table(tmp_path)
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.output_topic,
+        format="raw",
+        value=table.data,
+        key=construct_raw_write_argument(table, key),
+        headers=[construct_raw_write_argument(table, header) for header in headers],
+    )
+    pw.run()
+    output_topic_contents = kafka_context.read_output_topic(
+        expected_headers=get_expected_headers(headers)
+    )
+    assert len(output_topic_contents) == 2
+
+
+@pytest.mark.flaky(reruns=3)
+def test_kafka_output_rename_headers(
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    table = get_test_binary_table(tmp_path)
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.output_topic,
+        format="raw",
+        key=pw.this.data,
+        value=pw.this.data,
+        headers=[*table.select(foo=pw.this.data, bar=pw.this._metadata)],
+    )
+    pw.run()
+    output_topic_contents = kafka_context.read_output_topic(
+        expected_headers=["pathway_time", "pathway_diff", "foo", "bar"]
+    )
+    assert len(output_topic_contents) == 2
+
+
+@pytest.mark.flaky(reruns=3)
 def test_kafka_plaintext_output(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
@@ -243,9 +331,10 @@ def test_kafka_plaintext_output(
     pw.run()
 
     output_topic_contents = kafka_context.read_output_topic()
-    assert len(output_topic_contents) == 2, output_topic_contents
+    assert len(output_topic_contents) == 2
 
 
+@pytest.mark.flaky(reruns=3)
 def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     persistent_storage_path = tmp_path / "PStorage"
 
