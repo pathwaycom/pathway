@@ -13,6 +13,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `flatten` results remain on the same machine as their source entries.
 - `join` sends each record between machines at most once.
 - **BREAKING**: `flatten`, `join`, `groupby` (if used with `instance`), `with_id_from` (if used with `instance`) generate IDs of the produced rows differently than in the previous versions.
+- `pathway spawn` with multiple workers prints only output from the first worker.
 
 ## [0.9.0] - 2024-04-18
 

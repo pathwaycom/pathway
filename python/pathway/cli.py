@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 import uuid
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 
@@ -15,6 +15,13 @@ def plural(n, singular, plural):
     if n == 1:
         return f"1 {singular}"
     return f"{n} {plural}"
+
+
+def get_output_handle(process_id: int) -> Any:
+    if process_id == 0:
+        return None
+    else:
+        return subprocess.DEVNULL
 
 
 def spawn_program(threads, processes, first_port, program, arguments, env_base):
@@ -31,7 +38,14 @@ def spawn_program(threads, processes, first_port, program, arguments, env_base):
             env["PATHWAY_FIRST_PORT"] = str(first_port)
             env["PATHWAY_PROCESS_ID"] = str(process_id)
             env["PATHWAY_RUN_ID"] = str(run_id)
-            handle = subprocess.Popen([program] + list(arguments), env=env)
+            output_handle = get_output_handle(process_id)
+            # TODO: print all logs when monitoring is disabled, not only from the first worker
+            handle = subprocess.Popen(
+                [program] + list(arguments),
+                env=env,
+                stdout=output_handle,
+                stderr=output_handle,
+            )
             process_handles.append(handle)
         for handle in process_handles:
             handle.wait()
