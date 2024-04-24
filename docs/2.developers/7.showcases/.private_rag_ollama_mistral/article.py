@@ -14,12 +14,12 @@
 
 # # Private RAG with Adaptive Retrieval using Mistral, Ollama and Pathway
 
-# In our previous [Adaptive RAG](https://pathway.com/developers/showcases/adaptive-rag) showcase, we showed how to improve traditional RAG in terms of accuracy while maintaining cost and time efficiency. We used OpenAI LLM and embedder in that article. This showcase is replicating that work with local embedders and LLMs.
+# In our previous [Adaptive RAG](https://pathway.com/developers/showcases/adaptive-rag) showcase, we demonstrated how to improve RAG accuracy while maintaining cost and time efficiency. We achieved this using OpenAI LLM and `text-embedding-ada-002` embedder. This showcase replicates the same technique with locally-hosted LLMs and embedders.
 #
 # In this showcase, we explore how to set up a private RAG pipeline with adaptive retrieval using [Pathway](https://pathway.com/developers/api-docs/pathway), and Ollama. 
-# Our pipeline answers questions from the Stanford Question Answering Dataset [(SQUAD)](https://rajpurkar.github.io/SQuAD-explorer/) using a selection of Wikipedia pages from the same dataset, splitted into paragraphs.
+# Our pipeline answers questions from the Stanford Question Answering Dataset [(SQUAD)](https://rajpurkar.github.io/SQuAD-explorer/) using a selection of Wikipedia pages from the same dataset as the context, splitted into paragraphs.
 #
-# We use a local Mistral model as the LLM of choice, deployed with Ollama. We chose Mistral 7B for its performance and small weight footprint, allowing it to be more accessible and faster.
+# We use a locally-deployed Mistral 7B, chosen for its performance and efficient size. 
 #
 # We set up our vector store using Pathway with an open source embedding model from the HuggingFace.
 #
@@ -97,8 +97,8 @@ from pathway.xpacks.llm.llms import LiteLLMChat
 from pathway.xpacks.llm.question_answering import answer_with_geometric_rag_strategy_from_index
 
 
-# For the embeddings, we provide few selected models that can be used to replicate the work
-# In case you have access to limited computation, we also provide snippet on how to use Mistral embeddings from the API below
+# For the embeddings, we provide few selected models that can be used to replicate the work.
+# In case you have access to limited computation, and want to use an embedder over the API, we also provide snippet on how to use Mistral embeddings below.
 
 
 # +
@@ -112,9 +112,9 @@ from pathway.xpacks.llm.question_answering import answer_with_geometric_rag_stra
 
 
 # Here are few embedding models that have performed well in our tests
-# These models were selected from the [MTEB Leaderboard](https://huggingface.co/spaces/mteb/leaderboard)
+# These models were selected from the [MTEB Leaderboard](https://huggingface.co/spaces/mteb/leaderboard).
 #
-# We use `pathway.xpacks.llm.embedders` module to load open source embedding models from the HuggingFace
+# We use `pathway.xpacks.llm.embedders` module to load open source embedding models from the HuggingFace.
 
 
 # +
@@ -155,7 +155,7 @@ query = pw.debug.table_from_pandas(df)
 
 
 # +
-# Uncomment line below, if you want to check if documents are correctly loaded
+# check if documents are correctly loaded
 # documents  
 # -
 
@@ -177,6 +177,8 @@ query = pw.debug.table_from_pandas(df)
 #  }'
 # ```
 
+
+# Initialize the LLM instance that will call our local model.
 
 # +
 # we specifically instruct LLM to return json. in this format, LLM follows the instructions more strictly
