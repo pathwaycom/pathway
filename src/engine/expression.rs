@@ -19,6 +19,7 @@ use super::error::{DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
 use super::value::SimpleType;
 use super::{Error, Key, Type, Value};
+use crate::engine::ShardPolicy;
 use crate::mat_mul::mat_mul;
 
 #[derive(Debug)]
@@ -106,6 +107,7 @@ pub enum AnyExpression {
     ),
     IfElse(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     OptionalPointerFrom(Expressions),
+    OptionalPointerWithInstanceFrom(Expressions, Arc<Expression>),
     MakeTuple(Expressions),
     TupleGetItemChecked(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     TupleGetItemUnchecked(Arc<Expression>, Arc<Expression>),
@@ -278,6 +280,7 @@ pub enum StringExpression {
 #[derive(Debug)]
 pub enum PointerExpression {
     PointerFrom(Expressions),
+    PointerWithInstanceFrom(Expressions, Arc<Expression>),
 }
 
 #[derive(Debug)]
@@ -517,6 +520,15 @@ impl AnyExpression {
                     Value::None
                 } else {
                     Value::from(Key::for_values(&args))
+                }
+            }
+            Self::OptionalPointerWithInstanceFrom(args, instance) => {
+                let mut args = args.eval(values)?.to_vec();
+                args.push(instance.eval(values)?);
+                if args.iter().any(|a| matches!(a, Value::None)) {
+                    Value::None
+                } else {
+                    Value::from(ShardPolicy::LastKeyColumn.generate_key(&args))
                 }
             }
             Self::MakeTuple(args) => {
@@ -1000,6 +1012,11 @@ impl PointerExpression {
     pub fn eval(&self, values: &[Value]) -> DynResult<Key> {
         match self {
             Self::PointerFrom(args) => Ok(Key::for_values(&args.eval(values)?)),
+            Self::PointerWithInstanceFrom(args, instance) => {
+                let mut args = args.eval(values)?.to_vec();
+                args.push(instance.eval(values)?);
+                Ok(ShardPolicy::LastKeyColumn.generate_key(&args))
+            }
         }
     }
 }

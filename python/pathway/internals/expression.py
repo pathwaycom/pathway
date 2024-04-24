@@ -958,20 +958,30 @@ class IsNotNoneExpression(ColumnExpression):
 class PointerExpression(ColumnExpression):
     _table: Table
     _args: tuple[ColumnExpression, ...]
+    _instance: ColumnExpression | None
     _optional: bool
 
     def __init__(
-        self, table: Table, *args: ColumnExpression | Value, optional=False
+        self,
+        table: Table,
+        *args: ColumnExpression | Value,
+        optional: bool = False,
+        instance: ColumnExpression | None,
     ) -> None:
         super().__init__()
 
         self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
         self._optional = optional
+        self._instance = instance
         self._table = table
 
     def _to_internal(self) -> InternalColExpr:
         return InternalColExpr.build(
-            type(self), self._table, *self._args, optional=self._optional
+            type(self),
+            self._table,
+            *self._args,
+            instance=self._instance,
+            optional=self._optional,
         )
 
     @property

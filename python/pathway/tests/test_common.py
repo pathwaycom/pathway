@@ -3995,6 +3995,33 @@ def test_groupby_foreign_column():
     )
 
 
+def test_groupby_instance():
+    t = T(
+        """
+        a | b | col
+        0 | 0 |   1
+        0 | 0 |   2
+        1 | 0 |   3
+        1 | 0 |   4
+        0 | 1 |   5
+        0 | 1 |   6
+        """
+    )
+    expected = T(
+        """
+        a | b | col
+        0 | 0 |   3
+        1 | 0 |   7
+        0 | 1 |  11
+        """
+    ).with_id_from(pw.this.b, instance=pw.this.a)
+
+    res = t.groupby(pw.this.b, instance=pw.this.a).reduce(
+        pw.this.a, pw.this.b, col=pw.reducers.sum(pw.this.col)
+    )
+    assert_table_equality(res, expected)
+
+
 def test_join_ix():
     left = T(
         """

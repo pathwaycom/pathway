@@ -118,8 +118,10 @@ class ThisMetaclass(type):
     def __call__(self):
         raise TypeError("You cannot instantiate `this` class.")
 
-    def pointer_from(self, *args: Any, optional=False):
-        return expr.PointerExpression(self, *args, optional=optional)  # type: ignore
+    def pointer_from(
+        self, *args: Any, optional=False, instance: expr.ColumnReference | None = None
+    ):
+        return expr.PointerExpression(self, *args, optional=optional, instance=instance)  # type: ignore[arg-type]
 
     def _base_this(self) -> ThisMetaclass:
         raise NotImplementedError

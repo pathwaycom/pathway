@@ -226,8 +226,17 @@ class IdentityTransform(ExpressionVisitor):
         self, expression: expr.PointerExpression, **kwargs
     ) -> expr.PointerExpression:
         expr_args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
+        if expression._instance is not None:
+            instance = self.eval_expression(expression._instance, **kwargs)
+        else:
+            instance = None
         optional = expression._optional
-        return expr.PointerExpression(expression._table, *expr_args, optional=optional)
+        return expr.PointerExpression(
+            expression._table,
+            *expr_args,
+            optional=optional,
+            instance=instance,
+        )
 
     def eval_call(
         self, expression: expr.ColumnCallExpression, **kwargs

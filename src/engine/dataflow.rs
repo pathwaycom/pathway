@@ -111,9 +111,9 @@ use super::report_error::{
 use super::telemetry::maybe_run_telemetry_thread;
 use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
-    Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinType, Key, LegacyTable,
-    OperatorStats, ProberStats, Reducer, ReducerData, Result, TableHandle, TableProperties,
-    Timestamp, UniverseHandle, Value,
+    Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinData, JoinType, Key,
+    LegacyTable, OperatorStats, ProberStats, Reducer, ReducerData, Result, ShardPolicy,
+    TableHandle, TableProperties, Timestamp, UniverseHandle, Value,
 };
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
@@ -1850,8 +1850,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
             .unwrap_with_reporter(&error_reporter);
             wrapped.into_iter().enumerate().map(move |(i, entry)| {
+                let new_key_parts = [Value::from(key), Value::from(i64::try_from(i).unwrap())];
                 (
-                    Key::for_values(&[Value::from(key), Value::from(i64::try_from(i).unwrap())]),
+                    Key::for_values(&new_key_parts).with_shard_of(key),
                     Value::Tuple([values.clone(), entry].into_iter().collect()),
                 )
             })
@@ -2226,23 +2227,23 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
     #[allow(clippy::too_many_lines)]
     fn join_tables(
         &mut self,
-        left_table_handle: TableHandle,
-        right_table_handle: TableHandle,
-        left_column_paths: Vec<ColumnPath>,
-        right_column_paths: Vec<ColumnPath>,
+        left_data: JoinData,
+        right_data: JoinData,
+        shard_policy: ShardPolicy,
         join_type: JoinType,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        fn extract_join_keys(
-            key: Key,
-            values: Value,
+        fn extract_join_key(
+            key: &Key,
+            values: &Value,
             column_paths: &[ColumnPath],
+            shard_policy: ShardPolicy,
             error_reporter: &ErrorReporter,
             error_logger: &mut dyn LogError,
-        ) -> Option<(Key, (Key, Value))> {
+        ) -> Option<Key> {
             let join_key_parts: Result<Vec<_>> = column_paths
                 .iter()
-                .map(|path| path.extract(&key, &values))
+                .map(|path| path.extract(key, values))
                 .collect::<Result<Vec<_>>>()
                 .unwrap_with_reporter(error_reporter)
                 .into_iter()
@@ -2250,8 +2251,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .collect::<Result<Vec<_>>>();
             match join_key_parts {
                 Ok(join_key_parts) => {
-                    let join_key = Key::for_values(&join_key_parts);
-                    Some((join_key, (key, values)))
+                    let join_key = shard_policy.generate_key(&join_key_parts);
+                    Some(join_key)
                 }
                 Err(error) => {
                     error_logger.log_error(error);
@@ -2262,11 +2263,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let left_table = self
             .tables
-            .get(left_table_handle)
+            .get(left_data.table_handle)
             .ok_or(Error::InvalidTableHandle)?;
         let right_table = self
             .tables
-            .get(right_table_handle)
+            .get(right_data.table_handle)
             .ok_or(Error::InvalidTableHandle)?;
 
         let error_reporter_left = self.error_reporter.clone();
@@ -2275,25 +2276,39 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let mut error_logger_left = self.create_error_logger()?;
         let mut error_logger_right = self.create_error_logger()?;
 
-        let join_left = left_table.values().flat_map(move |(key, values)| {
-            extract_join_keys(
-                key,
-                values,
-                &left_column_paths,
-                &error_reporter_left,
-                error_logger_left.as_mut(),
-            )
-        });
+        let left_with_join_key =
+            left_table
+                .values()
+                .map_named("join::extract_keys", move |(key, values)| {
+                    let join_key = extract_join_key(
+                        &key,
+                        &values,
+                        &left_data.column_paths,
+                        shard_policy,
+                        &error_reporter_left,
+                        error_logger_left.as_mut(),
+                    );
+                    (join_key, (key, values))
+                });
+        let join_left = left_with_join_key
+            .flat_map(|(join_key, left_key_values)| Some((join_key?, left_key_values)));
         let join_left_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_left.arrange();
-        let join_right = right_table.values().flat_map(move |(key, values)| {
-            extract_join_keys(
-                key,
-                values,
-                &right_column_paths,
-                &error_reporter_right,
-                error_logger_right.as_mut(),
-            )
-        });
+        let right_with_join_key =
+            right_table
+                .values()
+                .map_named("join::extract_keys", move |(key, values)| {
+                    let join_key = extract_join_key(
+                        &key,
+                        &values,
+                        &right_data.column_paths,
+                        shard_policy,
+                        &error_reporter_right,
+                        error_logger_right.as_mut(),
+                    );
+                    (join_key, (key, values))
+                });
+        let join_right = right_with_join_key
+            .flat_map(|(join_key, right_key_values)| Some((join_key?, right_key_values)));
         let join_right_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_right.arrange();
 
         let join_left_right = join_left_arranged
@@ -2301,17 +2316,20 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 once((*join_key, left_key.clone(), right_key.clone()))
             });
 
-        let left_right_to_result_fn = match join_type {
-            JoinType::LeftKeysFull | JoinType::LeftKeysSubset => |(left_key, _right_key)| left_key,
-            _ => |(left_key, right_key)| {
+        let join_left_right_to_result_fn = match join_type {
+            JoinType::LeftKeysFull | JoinType::LeftKeysSubset => {
+                |_join_key, left_key, _right_key| left_key
+            }
+            _ => |join_key, left_key, right_key| {
                 Key::for_values(&[Value::from(left_key), Value::from(right_key)])
+                    .with_shard_of(join_key)
             },
         };
         let result_left_right = join_left_right.map_named(
             "join::result_left_right",
-            move |(_join_key, (left_key, left_values), (right_key, right_values))| {
+            move |(join_key, (left_key, left_values), (right_key, right_values))| {
                 (
-                    left_right_to_result_fn((left_key, right_key)),
+                    join_left_right_to_result_fn(join_key, left_key, right_key),
                     Value::from(
                         [
                             Value::Pointer(left_key),
@@ -2326,29 +2344,33 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         );
 
         let left_outer = || {
-            left_table.values().concat(
+            left_with_join_key.concat(
                 &join_left_right
                     .map_named(
                         "join::left_outer_res",
-                        |(_join_key, left_key_values, _right_key_values)| left_key_values,
+                        |(join_key, left_key_values, _right_key_values)| {
+                            (join_key, left_key_values)
+                        },
                     )
                     .distinct()
-                    .negate(),
+                    .negate()
+                    .map_named("join::left_outer_wrap", |(key, values)| (Some(key), values)),
             )
         };
         let result_left_outer = match join_type {
             JoinType::LeftOuter | JoinType::FullOuter => Some(left_outer().map_named(
                 "join::result_left_outer",
-                |(left_key, left_values)| {
-                    let result_key = Key::for_values(&[Value::from(left_key), Value::None]);
+                |(join_key, (left_key, left_values))| {
+                    let result_key = Key::for_values(&[Value::from(left_key), Value::None])
+                        .with_shard_of(join_key.unwrap_or(left_key));
+                    // unwrap_or needed for rows with Value::Error in join condition
                     (left_key, left_values, result_key)
                 },
             )),
-            JoinType::LeftKeysFull => Some(
-                left_outer().map_named("join::result_left_outer", |(left_key, left_values)| {
-                    (left_key, left_values, left_key)
-                }),
-            ),
+            JoinType::LeftKeysFull => Some(left_outer().map_named(
+                "join::result_left_outer",
+                |(_join_key, (left_key, left_values))| (left_key, left_values, left_key),
+            )),
             _ => None,
         }
         .map(|result_left_outer| {
@@ -2377,21 +2399,26 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         };
 
         let right_outer = || {
-            right_table.values().concat(
+            right_with_join_key.concat(
                 &join_left_right
                     .map_named(
                         "join::right_outer_res",
-                        |(_join_key, _left_key, right_key_values)| right_key_values,
+                        |(join_key, _left_key, right_key_values)| (join_key, right_key_values),
                     )
                     .distinct()
-                    .negate(),
+                    .negate()
+                    .map_named("join::right_outer_wrap", |(key, values)| {
+                        (Some(key), values)
+                    }),
             )
         };
         let result_right_outer = match join_type {
             JoinType::RightOuter | JoinType::FullOuter => Some(right_outer().map_named(
                 "join::right_result_outer",
-                |(right_key, right_values)| {
-                    let result_key = Key::for_values(&[Value::None, Value::from(right_key)]);
+                |(join_key, (right_key, right_values))| {
+                    let result_key = Key::for_values(&[Value::None, Value::from(right_key)])
+                        .with_shard_of(join_key.unwrap_or(right_key));
+                    // unwrap_or needed for rows with Value::Error in join condition
                     (
                         result_key,
                         Value::from(
@@ -2745,6 +2772,7 @@ where
         &mut self,
         table_handle: TableHandle,
         grouping_columns_paths: Vec<ColumnPath>,
+        shard_policy: ShardPolicy,
         reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: Arc<TableProperties>,
@@ -2783,7 +2811,7 @@ where
                             .as_pointer()
                             .unwrap_with_reporter(&error_reporter_1)
                     } else {
-                        Key::for_values(&new_key_parts)
+                        shard_policy.generate_key(&new_key_parts)
                     };
                     (key, new_key, values)
                 });
@@ -4445,6 +4473,7 @@ where
         &self,
         table_handle: TableHandle,
         grouping_columns_paths: Vec<ColumnPath>,
+        shard_policy: ShardPolicy,
         reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: Arc<TableProperties>,
@@ -4452,6 +4481,7 @@ where
         self.0.borrow_mut().group_by_table(
             table_handle,
             grouping_columns_paths,
+            shard_policy,
             reducers,
             set_id,
             table_properties,
@@ -4523,18 +4553,16 @@ where
 
     fn join_tables(
         &self,
-        left_table_handle: TableHandle,
-        right_table_handle: TableHandle,
-        left_column_paths: Vec<ColumnPath>,
-        right_column_paths: Vec<ColumnPath>,
+        left_data: JoinData,
+        right_data: JoinData,
+        shard_policy: ShardPolicy,
         join_type: JoinType,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().join_tables(
-            left_table_handle,
-            right_table_handle,
-            left_column_paths,
-            right_column_paths,
+            left_data,
+            right_data,
+            shard_policy,
             join_type,
             table_properties,
         )
@@ -5044,6 +5072,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         &self,
         table_handle: TableHandle,
         grouping_columns_paths: Vec<ColumnPath>,
+        shard_policy: ShardPolicy,
         reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: Arc<TableProperties>,
@@ -5051,6 +5080,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0.borrow_mut().group_by_table(
             table_handle,
             grouping_columns_paths,
+            shard_policy,
             reducers,
             set_id,
             table_properties,
@@ -5129,18 +5159,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
 
     fn join_tables(
         &self,
-        left_table_handle: TableHandle,
-        right_table_handle: TableHandle,
-        left_column_paths: Vec<ColumnPath>,
-        right_column_paths: Vec<ColumnPath>,
+        left_data: JoinData,
+        right_data: JoinData,
+        shard_policy: ShardPolicy,
         join_type: JoinType,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().join_tables(
-            left_table_handle,
-            right_table_handle,
-            left_column_paths,
-            right_column_paths,
+            left_data,
+            right_data,
+            shard_policy,
             join_type,
             table_properties,
         )

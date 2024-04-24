@@ -35,6 +35,8 @@ cfg_if! {
     }
 }
 
+pub const SHARD_MASK: KeyImpl = (1 << 16) - 1;
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Key(pub KeyImpl);
 
@@ -76,6 +78,11 @@ impl Key {
     pub fn salted_with(self, seed: KeyImpl) -> Self {
         Self(self.0 ^ seed)
     }
+
+    #[must_use]
+    pub fn with_shard_of(self, other: Key) -> Self {
+        Self((self.0 & (!SHARD_MASK)) | (other.0 & SHARD_MASK))
+    }
 }
 
 impl Display for Key {
@@ -88,6 +95,31 @@ impl Display for Key {
 impl Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ShardPolicy {
+    WholeKey,
+    LastKeyColumn,
+}
+
+impl ShardPolicy {
+    pub fn from_last_column_is_instance(last_column_is_instance: bool) -> Self {
+        if last_column_is_instance {
+            Self::LastKeyColumn
+        } else {
+            Self::WholeKey
+        }
+    }
+
+    pub fn generate_key(&self, values: &[Value]) -> Key {
+        match self {
+            Self::WholeKey => Key::for_values(values),
+            Self::LastKeyColumn => {
+                Key::for_values(values).with_shard_of(Key::for_value(values.last().unwrap()))
+            }
+        }
     }
 }
 

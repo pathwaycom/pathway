@@ -963,8 +963,10 @@ class JoinResult(Joinable, OperatorInput):
         common_column_names: StableSet[str] = StableSet()
         if left_instance is not None and right_instance is not None:
             on = (*on, left_instance == right_instance)
+            last_column_is_instance = True
         else:
             assert left_instance is None and right_instance is None
+            last_column_is_instance = False
 
         on_ = tuple(validate_shape(cond) for cond in on)
 
@@ -1013,6 +1015,7 @@ class JoinResult(Joinable, OperatorInput):
                 left_table,
                 right_context_table,
                 left_context_table,
+                last_column_is_instance,
                 id_column is not None,
                 mode in [JoinMode.RIGHT, JoinMode.OUTER],
                 mode in [JoinMode.LEFT, JoinMode.OUTER],
@@ -1024,6 +1027,7 @@ class JoinResult(Joinable, OperatorInput):
                 right_table,
                 left_context_table,
                 right_context_table,
+                last_column_is_instance,
                 id_column is not None,
                 mode in [JoinMode.LEFT, JoinMode.OUTER],
                 mode in [JoinMode.RIGHT, JoinMode.OUTER],

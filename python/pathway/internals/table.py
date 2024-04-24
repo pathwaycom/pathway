@@ -1005,6 +1005,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         return groupbys.GroupedTable.create(
             table=self,
             grouping_columns=args,
+            last_column_is_instance=instance is not None,
             set_id=id is not None,
             sort_by=sort_by,
             _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
@@ -2330,10 +2331,13 @@ id_type=<class 'pathway.engine.Pointer'>>
         True
         True
         """
-        if instance is not None:
-            args = (*args, instance)
         # XXX verify types for the table primary_keys
-        return expr.PointerExpression(self, *args, optional=optional)
+        return expr.PointerExpression(
+            self,
+            *args,
+            instance=instance,
+            optional=optional,
+        )
 
     @trace_user_frame
     def ix_ref(

@@ -496,6 +496,7 @@ class GroupedContext(Context):
 
     table: pw.Table
     grouping_columns: tuple[InternalColRef, ...]
+    last_column_is_instance: bool
     set_id: bool
     """Whether id should be set based on grouping column."""
     inner_context: RowwiseContext
@@ -519,11 +520,10 @@ class GroupedContext(Context):
             )
 
     def column_dependencies_external(self) -> Iterable[Column]:
+        deps = list(self.grouping_columns)
         if self.sort_by is not None:
-            sort_by = [self.sort_by._column]
-        else:
-            sort_by = []
-        return sort_by + [int_colref._column for int_colref in self.grouping_columns]
+            deps.append(self.sort_by)
+        return [dep._column for dep in deps]
 
     @cached_property
     def universe(self) -> Universe:
@@ -901,6 +901,7 @@ class JoinContext(Context):
     right_table: pw.Table
     on_left: ContextTable
     on_right: ContextTable
+    last_column_is_instance: bool
     assign_id: bool
     left_ear: bool
     right_ear: bool

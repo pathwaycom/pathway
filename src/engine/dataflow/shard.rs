@@ -1,4 +1,5 @@
 // Copyright © 2024 Pathway
+use crate::engine::value::SHARD_MASK;
 
 use crate::engine::Key;
 
@@ -14,7 +15,7 @@ pub trait Shard {
 impl Shard for Key {
     #[allow(clippy::cast_possible_truncation)]
     fn shard(&self) -> u64 {
-        self.0 as u64
+        (self.0 & SHARD_MASK) as u64
     }
 }
 

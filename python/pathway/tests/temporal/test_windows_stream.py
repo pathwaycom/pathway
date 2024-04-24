@@ -125,10 +125,9 @@ def test_keep_results_manual():
                 "_pw_window": window,
                 "_pw_window_start": _pw_window_start,
                 "_pw_window_end": _pw_window_end,
-                "_pw_instance": shard,
             }
 
-            entry_id = DiffEntry.create_id_from(gb, pk_row)
+            entry_id = DiffEntry.create_id_from(gb, pk_row, instance=shard)
 
             max_value = value
             max_time = time
@@ -141,7 +140,14 @@ def test_keep_results_manual():
                     int, old_entry_state.row["_pw_window_end"]
                 ):
                     expected_entries.append(
-                        DiffEntry.create(gb, pk_row, order, False, old_entry_state.row)
+                        DiffEntry.create(
+                            gb,
+                            pk_row,
+                            order,
+                            False,
+                            old_entry_state.row,
+                            instance=shard,
+                        )
                     )
                 max_value = max(
                     max_value, typing.cast(int, old_entry_state.row["max_value"])
@@ -155,7 +161,9 @@ def test_keep_results_manual():
                 "max_value": max_value,
                 "max_time": max_time,
             }
-            insert_entry = DiffEntry.create(gb, pk_row, order, True, row)
+            insert_entry = DiffEntry.create(
+                gb, pk_row, order, True, row, instance=shard
+            )
 
             if max_global_time < typing.cast(int, insert_entry.row["_pw_window_end"]):
                 simulated_state[entry_id] = insert_entry
@@ -228,10 +236,9 @@ def generate_expected(duration, hop, delay, cutoff, keep_results, result_table):
             "_pw_window": window,
             "_pw_window_start": window[1],
             "_pw_window_end": window[2],
-            "_pw_instance": window[0],
         }
 
-        entry_id = DiffEntry.create_id_from(result_table, pk_row)
+        entry_id = DiffEntry.create_id_from(result_table, pk_row, instance=window[0])
 
         order = in_entry["value"]
         max_value = in_entry["value"]
@@ -242,7 +249,12 @@ def generate_expected(duration, hop, delay, cutoff, keep_results, result_table):
         if old_entry_state is not None:
             expected_entries.append(
                 DiffEntry.create(
-                    result_table, pk_row, order, False, old_entry_state.row
+                    result_table,
+                    pk_row,
+                    order,
+                    False,
+                    old_entry_state.row,
+                    instance=window[0],
                 )
             )
 
@@ -258,7 +270,9 @@ def generate_expected(duration, hop, delay, cutoff, keep_results, result_table):
             "max_value": max_value,
             "max_time": max_window_time,
         }
-        insert_entry = DiffEntry.create(result_table, pk_row, order, True, row)
+        insert_entry = DiffEntry.create(
+            result_table, pk_row, order, True, row, instance=window[0]
+        )
 
         simulated_state[entry_id] = insert_entry
         expected_entries.append(insert_entry)
@@ -327,7 +341,6 @@ def _create_expected_for_exactly_once(result):
             "_pw_window": (None, window_end - duration, window_end),
             "_pw_window_start": window_end - duration,
             "_pw_window_end": window_end,
-            "_pw_instance": None,
         }
 
         row: dict = {
@@ -336,7 +349,7 @@ def _create_expected_for_exactly_once(result):
             "max_value": 2 * window_end - 1,
         }
 
-        expected.append(DiffEntry.create(result, pk_row, i, True, row))
+        expected.append(DiffEntry.create(result, pk_row, i, True, row, instance=None))
 
     # flush buffer
     row: dict = {
@@ -348,9 +361,8 @@ def _create_expected_for_exactly_once(result):
         "_pw_window": (None, 17 - duration, 17),
         "_pw_window_start": 17 - duration,
         "_pw_window_end": 17,
-        "_pw_instance": None,
     }
-    expected.append(DiffEntry.create(result, pk_row, 17, True, row))
+    expected.append(DiffEntry.create(result, pk_row, 17, True, row, instance=None))
 
     row: dict = {
         "_pw_window_end": 20,
@@ -361,9 +373,8 @@ def _create_expected_for_exactly_once(result):
         "_pw_window": (None, 20 - duration, 20),
         "_pw_window_start": 20 - duration,
         "_pw_window_end": 20,
-        "_pw_instance": None,
     }
-    expected.append(DiffEntry.create(result, pk_row, 20, True, row))
+    expected.append(DiffEntry.create(result, pk_row, 20, True, row, instance=None))
     return expected
 
 

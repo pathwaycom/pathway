@@ -135,7 +135,7 @@ class KNNIndex:
         >>> pw.debug.compute_and_print(relevant_docs)
                     | document                     | embeddings
         ^YYY4HAB... | ()                           | ()
-        ^X1MXHYY... | ('document 3', 'document 2') | ((0, 0, 1), (1, 1, 0))
+        ^X1MXHYY... | ('document 2', 'document 3') | ((1, 1, 0), (0, 0, 1))
         >>> index = KNNIndex(documents.embeddings, documents, n_dimensions=3, metadata=documents.metadata)
         >>> relevant_docs_meta = index.get_nearest_items(queries.embeddings, k=2, metadata_filter="foo >= `3`")
         >>> pw.debug.compute_and_print(relevant_docs_meta)
@@ -169,7 +169,7 @@ class KNNIndex:
         (1, 1)  | ((0, 0), (2, 2))  | 6        | 1
         (-3, 1) | ((0, 0), (2, 2))  | 8        | 1
         (-3, 1) | ((0, 0), (2, 2))  | 10       | -1
-        (-3, 1) | ((-3, 3), (0, 0)) | 10       | 1
+        (-3, 1) | ((0, 0), (-3, 3)) | 10       | 1
         """
         queries = query_embedding.table.select(
             data=query_embedding, k=k, metadata_filter=metadata_filter

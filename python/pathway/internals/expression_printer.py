@@ -78,6 +78,8 @@ class ExpressionFormatter(ExpressionVisitor):
 
     def eval_pointer(self, expression: expr.PointerExpression):
         kwargs: dict[str, expr.ColumnExpression] = {}
+        if expression._instance is not None:
+            kwargs["instance"] = expression._instance
         if expression._optional:
             import pathway.internals.expression as expr
 

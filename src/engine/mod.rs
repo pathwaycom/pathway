@@ -10,7 +10,7 @@ pub use self::error::{Error, Result};
 pub mod report_error;
 
 pub mod value;
-pub use self::value::{Key, KeyImpl, Type, Value};
+pub use self::value::{Key, KeyImpl, ShardPolicy, Type, Value};
 
 pub mod reduce;
 pub use reduce::Reducer;
@@ -19,9 +19,9 @@ pub mod graph;
 pub use graph::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Computer,
     ConcatHandle, Context, DataRow, ErrorLogHandle, ExportedTable, ExportedTableCallback,
-    ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle, JoinType, LegacyTable,
-    OperatorStats, ProberStats, ReducerData, ScopedGraph, TableHandle, TableProperties,
-    UniverseHandle,
+    ExpressionData, Graph, IterationLogic, IxKeyPolicy, IxerHandle, JoinData, JoinType,
+    LegacyTable, OperatorStats, ProberStats, ReducerData, ScopedGraph, TableHandle,
+    TableProperties, UniverseHandle,
 };
 
 pub mod http_server;

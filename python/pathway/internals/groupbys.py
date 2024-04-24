@@ -86,6 +86,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     """
 
     _grouping_columns: StableSet[expr.InternalColRef]
+    _last_column_is_instance: bool
     _joinable_to_group: table.Table
     _set_id: bool
     _sort_by: expr.InternalColRef | None
@@ -96,6 +97,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         self,
         _table: table.Table,
         _grouping_columns: tuple[expr.InternalColRef, ...],
+        _last_column_is_instance: bool,
         _set_id: bool = False,
         _sort_by: expr.InternalColRef | None = None,
         _filter_out_results_of_forgetting: bool = False,
@@ -103,6 +105,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     ):
         super().__init__(Universe(), {thisclass.this: self}, _table)
         self._grouping_columns = StableSet(_grouping_columns)
+        self._last_column_is_instance = _last_column_is_instance
         self._set_id = _set_id
         self._sort_by = _sort_by
         self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
@@ -113,6 +116,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         cls,
         table: table.Table,
         grouping_columns: tuple[expr.ColumnReference, ...],
+        last_column_is_instance: bool,
         set_id: bool = False,
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
@@ -129,6 +133,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             result = GroupedTable(
                 _table=table,
                 _grouping_columns=cols,
+                _last_column_is_instance=last_column_is_instance,
                 _set_id=set_id,
                 _sort_by=col_sort_by,
                 _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
@@ -209,6 +214,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         context = clmn.GroupedContext(
             table=self._joinable_to_group,
             grouping_columns=tuple(self._grouping_columns),
+            last_column_is_instance=self._last_column_is_instance,
             set_id=self._set_id,
             inner_context=self._joinable_to_group._rowwise_context,
             sort_by=self._sort_by,

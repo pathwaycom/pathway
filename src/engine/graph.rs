@@ -24,7 +24,9 @@ use crate::persistence::ExternalPersistentId;
 use super::error::{DynResult, Trace};
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
 use super::reduce::StatefulCombineFn;
-use super::{Error, Expression, Key, Reducer, Result, Timestamp, TotalFrontier, Type, Value};
+use super::{
+    Error, Expression, Key, Reducer, Result, ShardPolicy, Timestamp, TotalFrontier, Type, Value,
+};
 
 macro_rules! define_handle {
     ($handle:ident) => {
@@ -260,6 +262,20 @@ impl ReducerData {
     pub fn new(reducer: Reducer, column_paths: Vec<ColumnPath>) -> Self {
         ReducerData {
             reducer,
+            column_paths,
+        }
+    }
+}
+
+pub struct JoinData {
+    pub table_handle: TableHandle,
+    pub column_paths: Vec<ColumnPath>,
+}
+
+impl JoinData {
+    pub fn new(table_handle: TableHandle, column_paths: Vec<ColumnPath>) -> Self {
+        JoinData {
+            table_handle,
             column_paths,
         }
     }
@@ -821,6 +837,7 @@ pub trait Graph {
         &self,
         table_handle: TableHandle,
         grouping_columns_paths: Vec<ColumnPath>,
+        shard_policy: ShardPolicy,
         reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: Arc<TableProperties>,
@@ -865,10 +882,9 @@ pub trait Graph {
 
     fn join_tables(
         &self,
-        left_table_handle: TableHandle,
-        right_table_handle: TableHandle,
-        left_column_paths: Vec<ColumnPath>,
-        right_column_paths: Vec<ColumnPath>,
+        left_data: JoinData,
+        right_data: JoinData,
+        shard_policy: ShardPolicy,
         join_type: JoinType,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
@@ -1366,6 +1382,7 @@ impl Graph for ScopedGraph {
         &self,
         table_handle: TableHandle,
         grouping_columns_paths: Vec<ColumnPath>,
+        shard_policy: ShardPolicy,
         reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: Arc<TableProperties>,
@@ -1374,6 +1391,7 @@ impl Graph for ScopedGraph {
             g.group_by_table(
                 table_handle,
                 grouping_columns_paths,
+                shard_policy,
                 reducers,
                 set_id,
                 table_properties,
@@ -1444,19 +1462,17 @@ impl Graph for ScopedGraph {
 
     fn join_tables(
         &self,
-        left_table_handle: TableHandle,
-        right_table_handle: TableHandle,
-        left_column_paths: Vec<ColumnPath>,
-        right_column_paths: Vec<ColumnPath>,
+        left_data: JoinData,
+        right_data: JoinData,
+        shard_policy: ShardPolicy,
         join_type: JoinType,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.join_tables(
-                left_table_handle,
-                right_table_handle,
-                left_column_paths,
-                right_column_paths,
+                left_data,
+                right_data,
+                shard_policy,
                 join_type,
                 table_properties,
             )

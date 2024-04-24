@@ -7,7 +7,7 @@
 
 use crate::engine::graph::{ErrorLogHandle, ExportedTable, SubscribeCallbacksBuilder};
 use crate::engine::license::License;
-use crate::engine::{Computer as EngineComputer, Expressions, TotalFrontier};
+use crate::engine::{Computer as EngineComputer, Expressions, ShardPolicy, TotalFrontier};
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -77,13 +77,13 @@ use crate::engine::progress_reporter::MonitoringLevel;
 use crate::engine::reduce::StatefulCombineFn;
 use crate::engine::time::DateTime;
 use crate::engine::Config as EngineTelemetryConfig;
-use crate::engine::ReducerData;
 use crate::engine::Timestamp;
 use crate::engine::{
     run_with_new_dataflow_graph, BatchWrapper, ColumnHandle, ColumnPath,
     ColumnProperties as EngineColumnProperties, DataRow, DateTimeNaive, DateTimeUtc, Duration,
-    ExpressionData, IxKeyPolicy, JoinType, Key, KeyImpl, PointerExpression, Reducer, ScopedGraph,
-    TableHandle, TableProperties as EngineTableProperties, Type, UniverseHandle, Value,
+    ExpressionData, IxKeyPolicy, JoinData, JoinType, Key, KeyImpl, PointerExpression, Reducer,
+    ReducerData, ScopedGraph, TableHandle, TableProperties as EngineTableProperties, Type,
+    UniverseHandle, Value,
 };
 use crate::engine::{AnyExpression, Context as EngineContext};
 use crate::engine::{BoolExpression, Error as EngineError};
@@ -1133,21 +1133,30 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (*args, optional = false))]
-    fn pointer_from(args: Vec<PyRef<PyExpression>>, optional: bool) -> Self {
+    #[pyo3(signature = (*args, optional = false, instance = None))]
+    fn pointer_from(
+        args: Vec<PyRef<PyExpression>>,
+        optional: bool,
+        instance: Option<&PyExpression>,
+    ) -> Self {
         let gil = args.iter().any(|a| a.gil);
         let args = args
             .into_iter()
             .map(|expr| expr.inner.clone())
             .collect_vec();
-        let expr = if optional {
-            Arc::new(Expression::Any(AnyExpression::OptionalPointerFrom(
+        let expr = match (optional, instance) {
+            (false, None) => Arc::new(Expression::Pointer(PointerExpression::PointerFrom(
                 args.into(),
-            )))
-        } else {
-            Arc::new(Expression::Pointer(PointerExpression::PointerFrom(
+            ))),
+            (false, Some(instance)) => Arc::new(Expression::Pointer(
+                PointerExpression::PointerWithInstanceFrom(args.into(), instance.inner.clone()),
+            )),
+            (true, None) => Arc::new(Expression::Any(AnyExpression::OptionalPointerFrom(
                 args.into(),
-            )))
+            ))),
+            (true, Some(instance)) => Arc::new(Expression::Any(
+                AnyExpression::OptionalPointerWithInstanceFrom(args.into(), instance.inner.clone()),
+            )),
         };
         Self::new(expr, gil)
     }
@@ -2553,10 +2562,12 @@ impl Scope {
         LegacyTable::new(universe, columns)
     }
 
+    #[pyo3(signature = (table, grouping_columns_paths, last_column_is_instance, reducers, set_id, table_properties))]
     pub fn group_by_table(
         self_: &PyCell<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
+        last_column_is_instance: bool,
         #[pyo3(from_py_with = "from_py_iterable")] reducers: Vec<(Reducer, Vec<ColumnPath>)>,
         set_id: bool,
         table_properties: TableProperties,
@@ -2568,6 +2579,7 @@ impl Scope {
         let table_handle = self_.borrow().graph.group_by_table(
             table.handle,
             grouping_columns_paths,
+            ShardPolicy::from_last_column_is_instance(last_column_is_instance),
             reducers,
             set_id,
             table_properties.0,
@@ -2616,14 +2628,16 @@ impl Scope {
         Table::new(self_, result_table_handle)
     }
 
-    #[pyo3(signature = (left_table, right_table, left_column_paths, right_column_paths, table_properties, assign_id = false, left_ear = false, right_ear = false))]
+    #[pyo3(signature = (left_table, right_table, left_column_paths, right_column_paths, *, last_column_is_instance, table_properties, assign_id = false, left_ear = false, right_ear = false))]
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::fn_params_excessive_bools)]
     pub fn join_tables(
         self_: &PyCell<Self>,
         left_table: PyRef<Table>,
         right_table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] left_column_paths: Vec<ColumnPath>,
         #[pyo3(from_py_with = "from_py_iterable")] right_column_paths: Vec<ColumnPath>,
+        last_column_is_instance: bool,
         table_properties: TableProperties,
         assign_id: bool,
         left_ear: bool,
@@ -2631,10 +2645,9 @@ impl Scope {
     ) -> PyResult<Py<Table>> {
         let join_type = JoinType::from_assign_left_right(assign_id, left_ear, right_ear)?;
         let table_handle = self_.borrow().graph.join_tables(
-            left_table.handle,
-            right_table.handle,
-            left_column_paths,
-            right_column_paths,
+            JoinData::new(left_table.handle, left_column_paths),
+            JoinData::new(right_table.handle, right_column_paths),
+            ShardPolicy::from_last_column_is_instance(last_column_is_instance),
             join_type,
             table_properties.0,
         )?;
@@ -3003,6 +3016,22 @@ pub fn ref_scalar(values: &PyTuple, optional: bool) -> PyResult<Option<Key>> {
         return Ok(None);
     }
     let key = Key::for_values(&from_py_iterable(values)?);
+    Ok(Some(key))
+}
+
+#[pyfunction]
+#[pyo3(signature = (*values, instance, optional = false))]
+pub fn ref_scalar_with_instance(
+    values: &PyTuple,
+    instance: Value,
+    optional: bool,
+) -> PyResult<Option<Key>> {
+    if optional && (values.iter().any(PyAny::is_none) || matches!(instance, Value::None)) {
+        return Ok(None);
+    }
+    let mut values_with_instance: Vec<Value> = from_py_iterable(values)?;
+    values_with_instance.push(instance);
+    let key = ShardPolicy::LastKeyColumn.generate_key(&values_with_instance);
     Ok(Some(key))
 }
 
@@ -4647,6 +4676,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;
+    m.add_function(wrap_pyfunction!(ref_scalar_with_instance, m)?)?;
     #[allow(clippy::unsafe_removed_from_name)] // false positive
     m.add_function(wrap_pyfunction!(unsafe_make_pointer, m)?)?;
 

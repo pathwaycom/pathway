@@ -55,13 +55,19 @@ class ThisDesugaring(DesugaringTransform):
         self, expression: expr.PointerExpression, **kwargs
     ) -> expr.PointerExpression:
         args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
+        instance = expression._instance
         optional = expression._optional
         desugared_table = self._desugar_table(expression._table)
         from pathway.internals.table import Table
 
         assert isinstance(desugared_table, Table)
 
-        return expr.PointerExpression(desugared_table, *args, optional=optional)
+        return expr.PointerExpression(
+            desugared_table,
+            *args,
+            optional=optional,
+            instance=instance,
+        )
 
     def _desugar_table(
         self, table: table.Joinable | thisclass.ThisMetaclass

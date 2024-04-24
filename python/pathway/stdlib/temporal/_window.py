@@ -845,12 +845,12 @@ def intervals_over(
     ...     pw.temporal.windowby(t, t.t, window=pw.temporal.intervals_over(
     ...         at=probes.t, lower_bound=-2, upper_bound=1
     ...      ))
-    ...     .reduce(pw.this._pw_window_location, v=pw.reducers.tuple(pw.this.v))
+    ...     .reduce(pw.this._pw_window_location, v=pw.reducers.sorted_tuple(pw.this.v))
     ... )
     >>> pw.debug.compute_and_print(result, include_id=False)
     _pw_window_location | v
-    2                   | (9, 10, 16, 1)
-    4                   | (16, 1, 3)
+    2                   | (1, 9, 10, 16)
+    4                   | (1, 3, 16)
     6                   | (3,)
     8                   | (2, 4)
     10                  | (2, 4, 8)

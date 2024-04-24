@@ -1118,12 +1118,12 @@ def test_intervals_over_outer():
         window=pw.temporal.intervals_over(
             at=probes.t, lower_bound=-2, upper_bound=1, is_outer=True
         ),
-    ).reduce(pw.this._pw_window_location, v=pw.reducers.tuple(pw.this.v))
+    ).reduce(pw.this._pw_window_location, v=pw.reducers.sorted_tuple(pw.this.v))
 
     df = pd.DataFrame(
         {
             "_pw_window_location": [2, 4, 6, 8, 10],
-            "v": [(9, 10, 16, 1, 3), (16, 1, 3), (None,), (2, 4), (2, 4, 8)],
+            "v": [(1, 3, 9, 10, 16), (1, 3, 16), (None,), (2, 4), (2, 4, 8)],
         }
     )
     expected = pw.debug.table_from_pandas(

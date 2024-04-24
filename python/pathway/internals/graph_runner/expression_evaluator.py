@@ -646,8 +646,16 @@ class RowwiseEvaluator(
             )
             for arg in expression._args
         ]
+        if expression._instance is not None:
+            instance = self.eval_expression(expression._instance, eval_state=eval_state)
+        else:
+            instance = None
         optional = expression._optional
-        return api.Expression.pointer_from(*expressions, optional=optional)
+        return api.Expression.pointer_from(
+            *expressions,
+            optional=optional,
+            instance=instance,
+        )
 
     def eval_make_tuple(
         self,
@@ -1071,10 +1079,11 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             self.state.get_table(right_input_storage._universe),
             left_paths,
             right_paths,
-            properties,
-            self.context.assign_id,
-            self.context.left_ear,
-            self.context.right_ear,
+            last_column_is_instance=self.context.last_column_is_instance,
+            table_properties=properties,
+            assign_id=self.context.assign_id,
+            left_ear=self.context.left_ear,
+            right_ear=self.context.right_ear,
         )
         self.state.set_table(output_storage, output_engine_table)
 
@@ -1137,6 +1146,7 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
         reduced_engine_table = self.scope.group_by_table(
             self.state.get_table(input_storage._universe),
             groupby_columns_paths,
+            self.context.last_column_is_instance,
             reducers,
             self.context.set_id,
             properties,

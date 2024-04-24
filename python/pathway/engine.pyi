@@ -22,6 +22,7 @@ class Pointer(Generic[_T]):
     pass
 
 def ref_scalar(*args, optional=False) -> Pointer: ...
+def ref_scalar_with_instance(*args, instance: Value, optional=False) -> Pointer: ...
 
 class PathwayType(Enum):
     ANY: PathwayType
@@ -332,7 +333,11 @@ class Expression:
         expr: Expression, true_list: list[str], false_list: list[str], optional: bool
     ) -> Expression: ...
     @staticmethod
-    def pointer_from(*args: Expression, optional: bool) -> Expression: ...
+    def pointer_from(
+        *args: Expression,
+        optional: bool,
+        instance: Expression | None = None,
+    ) -> Expression: ...
     @staticmethod
     def make_tuple(*args: Expression) -> Expression: ...
     @staticmethod
@@ -542,6 +547,7 @@ class Scope:
         self,
         table: Table,
         grouping_columns: list[ColumnPath],
+        last_column_is_instance: bool,
         reducers: list[tuple[Reducer, list[ColumnPath]]],
         by_id: bool,
         table_properties: TableProperties,
@@ -570,6 +576,8 @@ class Scope:
         right_storage: Table,
         left_paths: list[ColumnPath],
         right_paths: list[ColumnPath],
+        *,
+        last_column_is_instance: bool,
         table_properties: TableProperties,
         assign_id: bool = False,
         left_ear: bool = False,
