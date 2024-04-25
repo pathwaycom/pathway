@@ -1,5 +1,7 @@
 # Realtime Twitter Analysis App with Pathway
 
+> ⚠️ Twitter has turned off its free tier streaming API.
+
 An example usage of Pathway, the programming framework for handling streaming data updates.
 The application allows for streaming twitter data on a given topic, performs sentiment analysis and visualizes the results.
 
