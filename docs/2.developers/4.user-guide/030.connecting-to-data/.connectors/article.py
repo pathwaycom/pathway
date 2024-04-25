@@ -37,6 +37,8 @@
 #                 <span class="block"><a href="/developers/api-docs/pathway-io/plaintext">Plain text</a></span>
 #                 <span class="block"><a href="/developers/user-guide/connectors/fs-connector">File System</a></span>
 #                 <span class="block"><a href="/developers/api-docs/pathway-io/sqlite">SQLite</a></span>
+#                 <span class="block"><a href="/developers/api-docs/pathway-io/gdrive">Google Drive</a></span>
+#                 <span class="block"><a href="/developers/api-docs/pathway-io/minio">MinIO</a></span>
 #             </td>
 #             <td class="text-center !align-middle">
 #                 <span class="block"><a href="/developers/api-docs/debug#pathway.debug.table_from_markdown">Markdown</a></span>
@@ -45,6 +47,8 @@
 #                 <span class="block"><a href="/developers/api-docs/pathway-io/s3">Amazon S3</a></span>
 #                 <span class="block"><a href="/developers/user-guide/connectors/jsonlines-connector">JSON Lines</a></span>
 #                 <span class="block"><a href="/developers/user-guide/connectors/fs-connector">File System</a></span>
+#                 <span class="block"><a href="/developers/api-docs/pathway-io/gdrive">Google Drive</a></span>
+#                 <span class="block"><a href="/developers/api-docs/pathway-io/minio">MinIO</a></span>
 #             </td>
 #         </tr>
 #         <tr>
@@ -60,6 +64,7 @@
 #                 <span class="block"><a href="/developers/api-docs/pathway-io/logstash">Logstash</a></span>
 #                 <span class="block"><a href="/developers/user-guide/connectors/slack_send_alerts">Slack</a></span>
 #                 <span class="block"><a href="/developers/user-guide/connectors/fs-connector">File System</a></span>
+#                 <span class="block"><a href="/developers/api-docs/pathway-io/pubsub">Google PubSub</a></span>
 #             </td>
 #             <td class="text-center !align-middle">
 #                 <span class="block"><a href="/developers/api-docs/debug#pathway.debug.compute_and_print">pw.debug.compute_and_print</a></span>
@@ -154,6 +159,8 @@ pw.debug.compute_and_print(t)
 # * [Switch from Kafka to Redpanda](/developers/user-guide/connectors/switching-to-redpanda/)
 # * [Python input connector](/developers/user-guide/connectors/custom-python-connectors)
 # * [Python output connector](/developers/user-guide/connectors/python-output-connectors)
+# * [Google Drive connector](/developers/user-guide/connectors/gdrive-connector)
+
 
 # ## Conclusion
 #
