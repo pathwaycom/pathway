@@ -7,7 +7,9 @@ import pytest
 from .base import FS_STORAGE_NAME, S3_STORAGE_NAME, do_test_failure_recovery_static
 
 
-@pytest.mark.parametrize("n_cpus", [1, 2, 4])
+@pytest.mark.parametrize(
+    "n_threads,n_processes", [(1, 1), (2, 1), (4, 1), (1, 4), (1, 2), (2, 2)]
+)
 @pytest.mark.parametrize("pstorage_type", [S3_STORAGE_NAME, FS_STORAGE_NAME])
 @pytest.mark.parametrize(
     "n_backfilling_runs,min_work_time,max_work_time",
@@ -22,17 +24,21 @@ from .base import FS_STORAGE_NAME, S3_STORAGE_NAME, do_test_failure_recovery_sta
 )
 def test_integration_failure_recovery(
     n_backfilling_runs,
-    n_cpus,
+    n_threads,
+    n_processes,
     min_work_time,
     max_work_time,
     pstorage_type,
     tmp_path: pathlib.Path,
+    port: int,
 ):
     do_test_failure_recovery_static(
-        n_backfilling_runs,
-        n_cpus,
-        tmp_path,
-        min_work_time,
-        max_work_time,
-        pstorage_type,
+        n_backfilling_runs=n_backfilling_runs,
+        n_threads=n_threads,
+        n_processes=n_processes,
+        tmp_path=tmp_path,
+        min_work_time=min_work_time,
+        max_work_time=max_work_time,
+        pstorage_type=pstorage_type,
+        first_port=port,
     )

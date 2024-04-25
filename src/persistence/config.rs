@@ -16,18 +16,17 @@ use crate::connectors::data_storage::S3CommandName;
 use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::connectors::snapshot::{
     Event, LocalBinarySnapshotReader, LocalBinarySnapshotWriter, MockSnapshotReader,
-    S3SnapshotReader, S3SnapshotWriter, SnapshotReader, SnapshotReaderImpl,
+    ReadSnapshotEvent, S3SnapshotReader, S3SnapshotWriter, SnapshotReader,
 };
 use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
-use crate::engine::Timestamp;
+use crate::engine::{Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::metadata_backends::{
     FilesystemKVStorage, MetadataBackend, MockKVStorage, S3KVStorage,
 };
 use crate::persistence::state::MetadataAccessor;
-use crate::persistence::sync::WorkersPersistenceCoordinator;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
@@ -90,18 +89,6 @@ impl PersistenceManagerOuterConfig {
     pub fn into_inner(self, worker_id: usize, total_workers: usize) -> PersistenceManagerConfig {
         PersistenceManagerConfig::new(self, worker_id, total_workers)
     }
-
-    pub fn create_workers_persistence_coordinator(
-        &self,
-        num_workers: usize,
-        expected_ready_workers: usize,
-    ) -> WorkersPersistenceCoordinator {
-        WorkersPersistenceCoordinator::new(
-            self.snapshot_interval,
-            num_workers,
-            expected_ready_workers,
-        )
-    }
 }
 
 /// The main persistent manager config, which, however can only be
@@ -114,7 +101,47 @@ pub struct PersistenceManagerConfig {
     pub persistence_mode: PersistenceMode,
     pub continue_after_replay: bool,
     pub worker_id: usize,
+    pub snapshot_interval: Duration,
     total_workers: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum ReadersQueryPurpose {
+    ReadSnapshot,
+    ReconstructFrontier,
+}
+
+impl ReadersQueryPurpose {
+    pub fn includes_worker(
+        &self,
+        other_worker_id: usize,
+        worker_id: usize,
+        total_workers: usize,
+    ) -> bool {
+        match self {
+            ReadersQueryPurpose::ReadSnapshot => {
+                if other_worker_id % total_workers == worker_id {
+                    if other_worker_id != worker_id {
+                        info!(
+                            "Assigning snapshot from the former worker {other_worker_id} to worker {} due to reduced number of worker threads",
+                            worker_id
+                        );
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            ReadersQueryPurpose::ReconstructFrontier => true,
+        }
+    }
+
+    pub fn truncate_at_end(&self) -> bool {
+        match self {
+            ReadersQueryPurpose::ReadSnapshot => true,
+            ReadersQueryPurpose::ReconstructFrontier => false,
+        }
+    }
 }
 
 impl PersistenceManagerConfig {
@@ -129,6 +156,7 @@ impl PersistenceManagerConfig {
             snapshot_access: outer_config.snapshot_access,
             persistence_mode: outer_config.persistence_mode,
             continue_after_replay: outer_config.continue_after_replay,
+            snapshot_interval: outer_config.snapshot_interval,
             worker_id,
             total_workers,
         }
@@ -150,23 +178,28 @@ impl PersistenceManagerConfig {
     pub fn create_snapshot_readers(
         &self,
         persistent_id: PersistentId,
-        threshold_times: &HashMap<usize, Timestamp>,
+        threshold_times: &HashMap<usize, TotalFrontier<Timestamp>>,
+        query_purpose: ReadersQueryPurpose,
     ) -> Result<Vec<SnapshotReader>, ReadError> {
         let mut result: Vec<SnapshotReader> = Vec::new();
         let reader_impls = match &self.stream_storage {
             StreamStorageConfig::Filesystem(root_path) => {
-                let mut reader_impls = HashMap::<usize, Box<dyn SnapshotReaderImpl>>::new();
+                let mut reader_impls = HashMap::<usize, Box<dyn ReadSnapshotEvent>>::new();
                 let assigned_snapshot_paths =
-                    self.assigned_snapshot_paths(root_path, persistent_id)?;
+                    self.assigned_snapshot_paths(root_path, persistent_id, query_purpose)?;
                 for (worker_id, path) in assigned_snapshot_paths {
                     reader_impls.insert(worker_id, Box::new(LocalBinarySnapshotReader::new(path)?));
                 }
                 reader_impls
             }
             StreamStorageConfig::S3 { bucket, root_path } => {
-                let mut reader_impls = HashMap::<usize, Box<dyn SnapshotReaderImpl>>::new();
-                let assigned_snapshot_paths =
-                    self.assigned_s3_snapshot_paths(&bucket.deep_copy(), root_path, persistent_id)?;
+                let mut reader_impls = HashMap::<usize, Box<dyn ReadSnapshotEvent>>::new();
+                let assigned_snapshot_paths = self.assigned_s3_snapshot_paths(
+                    &bucket.deep_copy(),
+                    root_path,
+                    persistent_id,
+                    query_purpose,
+                )?;
                 for (worker_id, path) in assigned_snapshot_paths {
                     reader_impls.insert(
                         worker_id,
@@ -176,7 +209,7 @@ impl PersistenceManagerConfig {
                 reader_impls
             }
             StreamStorageConfig::Mock(event_map) => {
-                let mut reader_impls = HashMap::<usize, Box<dyn SnapshotReaderImpl>>::new();
+                let mut reader_impls = HashMap::<usize, Box<dyn ReadSnapshotEvent>>::new();
                 let events = event_map
                     .get(&(persistent_id, self.worker_id))
                     .unwrap_or(&vec![])
@@ -187,18 +220,21 @@ impl PersistenceManagerConfig {
             }
         };
 
-        let min_threshold_time = *threshold_times.values().min().unwrap_or(&Timestamp(0));
-        for (worker_id, reader_impl) in reader_impls {
-            if matches!(self.persistence_mode, PersistenceMode::SelectivePersisting) {
-                result.push(SnapshotReader::new(reader_impl, min_threshold_time)?);
-                continue;
-            }
-            let Some(threshold_time) = threshold_times.get(&worker_id) else {
-                // append the snapshot reader which would truncate snapshot straight away
-                result.push(SnapshotReader::new(reader_impl, Timestamp(0))?);
-                continue;
-            };
-            result.push(SnapshotReader::new(reader_impl, *threshold_time)?);
+        // FIXME: it may incorrectly work with variable number of workers between runs.
+        // Example: three runs, 8 workers-4 workers-4 workers.
+        // The last run will use the values generated by workers 5, 6, 7, 8 in the first
+        // run.
+        let min_threshold_time = *threshold_times.values().min().unwrap_or(&TotalFrontier::<
+            Timestamp,
+        >::At(
+            Timestamp(0)
+        ));
+        for (_, reader_impl) in reader_impls {
+            result.push(SnapshotReader::new(
+                reader_impl,
+                min_threshold_time,
+                query_purpose.truncate_at_end(),
+            )?);
         }
 
         Ok(result)
@@ -209,17 +245,17 @@ impl PersistenceManagerConfig {
         persistent_id: PersistentId,
     ) -> Result<SharedSnapshotWriter, WriteError> {
         match &self.stream_storage {
-            StreamStorageConfig::Filesystem(root_path) => {
-                Ok(Arc::new(Mutex::new(LocalBinarySnapshotWriter::new(
+            StreamStorageConfig::Filesystem(root_path) => Ok(Arc::new(Mutex::new(Box::new(
+                LocalBinarySnapshotWriter::new(
                     &self.snapshot_writer_path(root_path, persistent_id)?,
-                )?)))
-            }
+                )?,
+            )))),
             StreamStorageConfig::S3 { bucket, root_path } => {
                 let snapshot_path = self.s3_snapshot_path(root_path, persistent_id);
-                Ok(Arc::new(Mutex::new(S3SnapshotWriter::new(
+                Ok(Arc::new(Mutex::new(Box::new(S3SnapshotWriter::new(
                     bucket.deep_copy(),
                     &snapshot_path,
-                ))))
+                )))))
             }
             StreamStorageConfig::Mock(_) => {
                 unreachable!()
@@ -253,6 +289,7 @@ impl PersistenceManagerConfig {
         &self,
         root_path: &Path,
         persistent_id: PersistentId,
+        query_purpose: ReadersQueryPurpose,
     ) -> Result<HashMap<usize, PathBuf>, ReadError> {
         ensure_directory(root_path)?;
 
@@ -279,11 +316,12 @@ impl PersistenceManagerConfig {
                     }
                 };
 
-                if parsed_worker_id % self.total_workers != self.worker_id {
+                if !query_purpose.includes_worker(
+                    parsed_worker_id,
+                    self.worker_id,
+                    self.total_workers,
+                ) {
                     continue;
-                }
-                if parsed_worker_id != self.worker_id {
-                    info!("Assigning snapshot from the former worker {parsed_worker_id} to worker {} due to reduced number of worker threads", self.worker_id);
                 }
 
                 let snapshot_path = streams_dir.join(format!("{parsed_worker_id}/{persistent_id}"));
@@ -301,6 +339,7 @@ impl PersistenceManagerConfig {
         bucket: &S3Bucket,
         root_path: &str,
         persistent_id: PersistentId,
+        query_purpose: ReadersQueryPurpose,
     ) -> Result<HashMap<usize, String>, ReadError> {
         let snapshots_root_path = format!(
             "{}/streams/",
@@ -333,11 +372,12 @@ impl PersistenceManagerConfig {
                     }
                 };
 
-                if parsed_worker_id % self.total_workers != self.worker_id {
+                if !query_purpose.includes_worker(
+                    parsed_worker_id,
+                    self.worker_id,
+                    self.total_workers,
+                ) {
                     continue;
-                }
-                if parsed_worker_id != self.worker_id {
-                    info!("Assigning snapshot from the former worker {parsed_worker_id} to worker {} due to reduced number of worker threads", self.worker_id);
                 }
 
                 let snapshot_path =

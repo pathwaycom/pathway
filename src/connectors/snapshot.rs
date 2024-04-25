@@ -27,22 +27,22 @@ use crate::connectors::data_storage::{
     CurrentlyProcessedS3Object, ReadError, S3Scanner, WriteError,
 };
 use crate::deepcopy::DeepCopy;
-use crate::engine::Timestamp;
 use crate::engine::{Key, Value};
+use crate::engine::{Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
+use crate::persistence::frontier::OffsetAntichain;
 use crate::timestamp::current_unix_timestamp_ms;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Event {
     Insert(Key, Vec<Value>),
     Delete(Key, Vec<Value>),
     Upsert(Key, Option<Vec<Value>>),
-    AdvanceTime(Timestamp),
+    AdvanceTime(Timestamp, OffsetAntichain),
     Finished,
 }
 
-#[allow(clippy::module_name_repetitions)]
-pub trait SnapshotReaderImpl {
+pub trait ReadSnapshotEvent {
     /// This method will be called every so often to read the persisted snapshot.
     /// When there are no entries left, it must return `Event::Finished`.
     fn read(&mut self) -> Result<Event, ReadError>;
@@ -66,8 +66,7 @@ pub trait SnapshotReaderImpl {
 #[allow(clippy::module_name_repetitions)]
 pub type SnapshotWriterFlushFuture = OneShotReceiver<Result<(), WriteError>>;
 
-#[allow(clippy::module_name_repetitions)]
-pub trait SnapshotWriter: Send {
+pub trait WriteSnapshotEvent: Send {
     /// A non-blocking call, pushing an entry in the buffer.
     /// The buffer should not be flushed in the same thread.
     fn write(&mut self, event: &Event) -> Result<(), WriteError>;
@@ -114,7 +113,7 @@ impl LocalBinarySnapshotReader {
     }
 }
 
-impl SnapshotReaderImpl for LocalBinarySnapshotReader {
+impl ReadSnapshotEvent for LocalBinarySnapshotReader {
     fn read(&mut self) -> Result<Event, ReadError> {
         loop {
             match &mut self.reader {
@@ -186,7 +185,7 @@ impl LocalBinarySnapshotWriter {
     }
 }
 
-impl SnapshotWriter for LocalBinarySnapshotWriter {
+impl WriteSnapshotEvent for LocalBinarySnapshotWriter {
     fn write(&mut self, event: &Event) -> Result<(), WriteError> {
         let writer = {
             if let Some(lazy_writer) = &mut self.lazy_writer {
@@ -342,7 +341,7 @@ impl S3SnapshotReader {
     }
 }
 
-impl SnapshotReaderImpl for S3SnapshotReader {
+impl ReadSnapshotEvent for S3SnapshotReader {
     fn read(&mut self) -> Result<Event, ReadError> {
         loop {
             match &mut self.reader {
@@ -387,6 +386,7 @@ impl SnapshotReaderImpl for S3SnapshotReader {
                 }
             }
         }
+        warn!("Attempted reading after the end of snapshot, returning finish event");
         Ok(Event::Finished)
     }
 
@@ -513,7 +513,7 @@ impl S3SnapshotWriter {
     }
 }
 
-impl SnapshotWriter for S3SnapshotWriter {
+impl WriteSnapshotEvent for S3SnapshotWriter {
     fn write(&mut self, event: &Event) -> Result<(), WriteError> {
         self.current_chunk.push(event.clone());
         if self.current_chunk.len() == MAX_CHUNK_LEN {
@@ -552,7 +552,7 @@ impl MockSnapshotReader {
     }
 }
 
-impl SnapshotReaderImpl for MockSnapshotReader {
+impl ReadSnapshotEvent for MockSnapshotReader {
     fn read(&mut self) -> Result<Event, ReadError> {
         if let Some(event) = self.events.next() {
             Ok(event)
@@ -572,38 +572,56 @@ impl SnapshotReaderImpl for MockSnapshotReader {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct SnapshotReader {
-    reader_impl: Box<dyn SnapshotReaderImpl>,
-    threshold_time: Timestamp,
+    reader_impl: Box<dyn ReadSnapshotEvent>,
+    threshold_time: TotalFrontier<Timestamp>,
     entries_read: usize,
+    last_frontier: OffsetAntichain,
+    truncate_at_end: bool,
 }
 
 impl SnapshotReader {
     pub fn new(
-        mut reader_impl: Box<dyn SnapshotReaderImpl>,
-        threshold_time: Timestamp,
+        mut reader_impl: Box<dyn ReadSnapshotEvent>,
+        threshold_time: TotalFrontier<Timestamp>,
+        truncate_at_end: bool,
     ) -> Result<Self, ReadError> {
-        if threshold_time.0 == 0 {
+        if threshold_time == TotalFrontier::At(Timestamp(0)) {
             info!("No time has been advanced in the previous run, therefore no data read from the snapshot");
-            if let Err(e) = reader_impl.truncate() {
-                error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                return Err(e);
+            if truncate_at_end {
+                if let Err(e) = reader_impl.truncate() {
+                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                    return Err(e);
+                }
             }
         }
 
         Ok(Self {
             reader_impl,
             threshold_time,
+            last_frontier: OffsetAntichain::new(),
             entries_read: 0,
+            truncate_at_end,
         })
+    }
+
+    pub fn last_frontier(&self) -> &OffsetAntichain {
+        &self.last_frontier
     }
 
     pub fn read(&mut self) -> Result<Event, ReadError> {
         let event = self.reader_impl.read()?;
-        if let Event::AdvanceTime(new_time) = event {
-            if self.reader_impl.check_threshold_from_metadata() && new_time >= self.threshold_time {
-                if let Err(e) = self.reader_impl.truncate() {
-                    error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
-                    return Err(e);
+        if matches!(event, Event::Finished) {
+            return Ok(event);
+        }
+        if let Event::AdvanceTime(new_time, ref frontier) = event {
+            let read_finished = TotalFrontier::At(new_time) >= self.threshold_time;
+            self.last_frontier = frontier.clone();
+            if self.reader_impl.check_threshold_from_metadata() && read_finished {
+                if self.truncate_at_end {
+                    if let Err(e) = self.reader_impl.truncate() {
+                        error!("Failed to truncate the snapshot, the next re-run may provide incorrect results: {e}");
+                        return Err(e);
+                    }
                 }
                 info!("Reached the greater logical time than preserved ({new_time}). Exiting the rewind after reading {} entries", self.entries_read);
                 return Ok(Event::Finished);

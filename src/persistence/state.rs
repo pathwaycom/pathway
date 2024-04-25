@@ -10,10 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::connectors::data_storage::StorageType;
-use crate::connectors::{OffsetKey, OffsetValue};
-use crate::engine::Timestamp;
-use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::frontier::OffsetAntichainCollection;
+use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::metadata_backends::{Error, MetadataBackend};
 use crate::persistence::PersistentId;
 
@@ -21,33 +18,25 @@ const EXPECTED_KEY_PARTS: usize = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoredMetadata {
-    frontiers: OffsetAntichainCollection,
     storage_types: HashMap<PersistentId, StorageType>,
-    last_advanced_timestamp: Timestamp,
+    last_advanced_timestamp: TotalFrontier<Timestamp>,
 }
 
 #[derive(Debug)]
 pub struct MetadataAccessor {
     backend: Box<dyn MetadataBackend>,
     internal_state: StoredMetadata,
-    past_runs_threshold_times: HashMap<usize, Timestamp>,
+    past_runs_threshold_times: HashMap<usize, TotalFrontier<Timestamp>>,
 
     current_key_to_use: String,
     next_key_to_use: String,
 }
 
-impl Default for StoredMetadata {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl StoredMetadata {
     pub fn new() -> Self {
         Self {
-            frontiers: OffsetAntichainCollection::new(),
             storage_types: HashMap::new(),
-            last_advanced_timestamp: Timestamp(0),
+            last_advanced_timestamp: TotalFrontier::At(Timestamp(0)),
         }
     }
 
@@ -61,17 +50,19 @@ impl StoredMetadata {
         serde_json::to_string(&self).unwrap()
     }
 
-    pub fn merge(&mut self, other: StoredMetadata) {
+    pub fn merge(&mut self, other: &StoredMetadata) {
         self.storage_types.extend(other.storage_types.iter());
-        self.frontiers
-            .update_with_collection(other.frontiers, &other.storage_types);
-        self.last_advanced_timestamp =
-            max(self.last_advanced_timestamp, other.last_advanced_timestamp);
+    }
+}
+
+impl Default for StoredMetadata {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 struct MetadataKey {
-    timestamp: u128,
+    version: u128,
     worker_id: usize,
     rotation_id: usize,
 }
@@ -84,8 +75,8 @@ impl MetadataKey {
             return None;
         }
 
-        let Ok(timestamp) = key_parts[0].parse::<u128>() else {
-            error!("Timestamp is unparsable from the key {key}");
+        let Ok(version) = key_parts[0].parse::<u128>() else {
+            error!("Version is unparsable from the key {key}");
             return None;
         };
 
@@ -100,15 +91,15 @@ impl MetadataKey {
         };
 
         Some(Self {
-            timestamp,
+            version,
             worker_id,
             rotation_id,
         })
     }
 
-    fn from_components(timestamp: u128, worker_id: usize, rotation_id: usize) -> Self {
+    fn from_components(version: u128, worker_id: usize, rotation_id: usize) -> Self {
         Self {
-            timestamp,
+            version,
             worker_id,
             rotation_id,
         }
@@ -120,7 +111,7 @@ impl Display for MetadataKey {
         write!(
             f,
             "{}-{}-{}",
-            self.timestamp, self.worker_id, self.rotation_id
+            self.version, self.worker_id, self.rotation_id
         )
     }
 }
@@ -130,27 +121,49 @@ impl MetadataAccessor {
         let (internal_state, past_runs_threshold_times) = {
             let mut internal_state = StoredMetadata::new();
             let mut past_runs_threshold_times = HashMap::new();
+            let mut last_version_per_worker = HashMap::new();
 
             let keys = backend.list_keys()?;
+            for key in &keys {
+                let metadata_key = MetadataKey::from_str(key);
+                let Some(metadata_key) = metadata_key else {
+                    continue;
+                };
+                last_version_per_worker
+                    .entry(metadata_key.worker_id)
+                    .and_modify(|version: &mut u128| {
+                        *version = max(*version, metadata_key.version);
+                    })
+                    .or_insert(metadata_key.version);
+            }
+
             for key in keys {
                 let metadata_key = MetadataKey::from_str(&key);
                 let Some(metadata_key) = metadata_key else {
                     continue;
                 };
-                let other_worker_id = metadata_key.worker_id;
 
+                // last versions for all known worker ids are calculated above
+                let target_version = last_version_per_worker
+                    .get(&metadata_key.worker_id)
+                    .expect("no version for worker");
+                if metadata_key.version < *target_version {
+                    continue;
+                }
+
+                let other_worker_id = metadata_key.worker_id;
                 let raw_block = backend.get_value(&key)?;
                 let block_result = StoredMetadata::parse(&raw_block);
                 match block_result {
                     Ok(block) => {
                         past_runs_threshold_times
                             .entry(other_worker_id)
-                            .and_modify(|timestamp: &mut Timestamp| {
+                            .and_modify(|timestamp: &mut TotalFrontier<Timestamp>| {
                                 *timestamp = max(*timestamp, block.last_advanced_timestamp);
                             })
                             .or_insert(block.last_advanced_timestamp);
                         info!("Merge the current state with block: {block:?}");
-                        internal_state.merge(block);
+                        internal_state.merge(&block);
                     }
                     Err(e) => {
                         warn!("Broken offsets block with key {key}. Error: {e}");
@@ -181,14 +194,8 @@ impl MetadataAccessor {
         })
     }
 
-    pub fn past_runs_threshold_times(&self) -> &HashMap<usize, Timestamp> {
+    pub fn past_runs_threshold_times(&self) -> &HashMap<usize, TotalFrontier<Timestamp>> {
         &self.past_runs_threshold_times
-    }
-
-    pub fn frontier_for(&self, persistent_id: PersistentId) -> OffsetAntichain {
-        self.internal_state
-            .frontiers
-            .antichain_for_storage(persistent_id)
     }
 
     pub fn register_input_source(
@@ -201,24 +208,11 @@ impl MetadataAccessor {
             .insert(persistent_id, *storage_type);
     }
 
-    pub fn save_offset(
-        &mut self,
-        persistent_id: PersistentId,
-        offset_key: &OffsetKey,
-        offset_value: &OffsetValue,
-    ) {
-        self.internal_state.frontiers.advance_offset(
-            persistent_id,
-            offset_key.clone(),
-            offset_value.clone(),
-        );
-    }
-
-    pub fn accept_finalized_timestamp(&mut self, timestamp: Timestamp) {
+    pub fn accept_finalized_timestamp(&mut self, timestamp: TotalFrontier<Timestamp>) {
         self.internal_state.last_advanced_timestamp = timestamp;
     }
 
-    pub fn last_advanced_timestamp(&self) -> Timestamp {
+    pub fn last_advanced_timestamp(&self) -> TotalFrontier<Timestamp> {
         self.internal_state.last_advanced_timestamp
     }
 
@@ -228,13 +222,5 @@ impl MetadataAccessor {
             .put_value(&self.current_key_to_use, &serialized_state)?;
         swap(&mut self.current_key_to_use, &mut self.next_key_to_use);
         Ok(())
-    }
-}
-
-impl Drop for MetadataAccessor {
-    fn drop(&mut self) {
-        if let Err(e) = self.save_current_state() {
-            error!("Unsuccessful termination of metadata storage. Data may duplicate in the re-run. Error: {e}");
-        }
     }
 }

@@ -8,6 +8,7 @@ import os
 import pathlib
 import re
 import sys
+import threading
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Hashable, Iterable, Mapping
@@ -49,6 +50,40 @@ xfail_on_multiple_threads = pytest.mark.xfail(
 def skip_on_multiple_workers() -> None:
     if os.environ.get("PATHWAY_THREADS", "1") != "1":
         pytest.skip()
+
+
+class UniquePortDispenser:
+    """
+    Tests are run simultaneously by several workers.
+    Since they involve running a web server, they shouldn't interfere, so they
+    should occupy distinct ports.
+    This class automates unique port assignments for different tests.
+    """
+
+    def __init__(
+        self,
+        range_start: int = 12345,
+        worker_range_size: int = 1000,
+        step_size: int = 1,
+    ):
+        # the main worker is sometimes 'master', sometimes just not defined
+        pytest_worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
+        if pytest_worker_id == "master":
+            worker_id = 0
+        elif pytest_worker_id.startswith("gw"):
+            worker_id = int(pytest_worker_id[2:])
+        else:
+            raise ValueError(f"Unknown xdist worker id: {pytest_worker_id}")
+
+        self._step_size = step_size
+        self._next_available_port = range_start + worker_id * worker_range_size
+        self._lock = threading.Lock()
+
+    def get_unique_port(self) -> int:
+        with self._lock:
+            result = self._next_available_port
+            self._next_available_port += self._step_size
+        return result
 
 
 @dataclass(order=True)

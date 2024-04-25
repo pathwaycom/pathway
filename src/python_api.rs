@@ -8,6 +8,7 @@
 use crate::engine::graph::{ErrorLogHandle, ExportedTable, SubscribeCallbacksBuilder};
 use crate::engine::license::License;
 use crate::engine::{Computer as EngineComputer, Expressions, ShardPolicy, TotalFrontier};
+use crate::persistence::frontier::OffsetAntichain;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -23,8 +24,8 @@ use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
 use postgres::{Client, NoTls};
 use pyo3::exceptions::{
-    PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyNotImplementedError,
-    PyRuntimeError, PyTypeError, PyValueError, PyZeroDivisionError,
+    PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyRuntimeError, PyTypeError,
+    PyValueError, PyZeroDivisionError,
 };
 use pyo3::marker::Ungil;
 use pyo3::prelude::*;
@@ -2945,14 +2946,6 @@ pub fn run_with_new_graph(
         .map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg.to_string()))?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
-            if config.processes() > 1
-                && matches!(
-                    persistence_config.persistence_mode,
-                    PersistenceMode::Persisting
-                )
-            {
-                return Err(PyNotImplementedError::new_err("Persistence mode is not supported in multiprocessing mode. Please use SelectivePersistence mode or switch to the enterprise version of Pathway."));
-            }
             Some(persistence_config.prepare(py)?)
         } else {
             None
@@ -3544,7 +3537,7 @@ impl PySnapshotEvent {
     }
     #[staticmethod]
     pub fn advance_time(timestamp: Timestamp) -> SnapshotEvent {
-        SnapshotEvent::AdvanceTime(timestamp)
+        SnapshotEvent::AdvanceTime(timestamp, OffsetAntichain::new())
     }
     #[classattr]
     pub const FINISHED: SnapshotEvent = SnapshotEvent::Finished;

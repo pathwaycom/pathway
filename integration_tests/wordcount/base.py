@@ -179,31 +179,66 @@ def check_output_correctness(
 
 
 def start_pw_computation(
-    n_cpus, input_path, output_path, pstorage_path, mode, pstorage_type
+    *,
+    n_threads,
+    n_processes,
+    input_path,
+    output_path,
+    pstorage_path,
+    mode,
+    pstorage_type,
+    first_port,
 ):
     pw_wordcount_path = (
         "/".join(os.path.abspath(__file__).split("/")[:-1])
         + f"/pw_wordcount.py --input {input_path} --output {output_path} --pstorage {pstorage_path} "
-        + f"--n-cpus {n_cpus} --mode {mode} --pstorage-type {pstorage_type}"
+        + f"--mode {mode} --pstorage-type {pstorage_type}"
     )
-
+    n_cpus = n_threads * n_processes
     cpu_list = ",".join([str(x) for x in range(n_cpus)])
     command = f"taskset --cpu-list {cpu_list} python {pw_wordcount_path}"
     run_args = command.split()
 
-    return subprocess.Popen(run_args)
+    run_id = uuid.uuid4()
+    process_handles = []
+    for process_id in range(n_processes):
+        env = os.environ.copy()
+        env["PATHWAY_THREADS"] = str(n_threads)
+        env["PATHWAY_PROCESSES"] = str(n_processes)
+        env["PATHWAY_FIRST_PORT"] = str(first_port)
+        env["PATHWAY_PROCESS_ID"] = str(process_id)
+        env["PATHWAY_RUN_ID"] = str(run_id)
+        handle = subprocess.Popen(run_args, env=env)
+        process_handles.append(handle)
+
+    return process_handles
 
 
 def get_pw_program_run_time(
-    n_cpus, input_path, output_path, pstorage_path, mode, pstorage_type
+    *,
+    n_threads,
+    n_processes,
+    input_path,
+    output_path,
+    pstorage_path,
+    mode,
+    pstorage_type,
+    first_port,
 ):
     needs_pw_program_launch = True
     n_retries = 0
     while needs_pw_program_launch:
         needs_pw_program_launch = False
         time_start = time.time()
-        popen = start_pw_computation(
-            n_cpus, input_path, output_path, pstorage_path, mode, pstorage_type
+        process_handles = start_pw_computation(
+            n_threads=n_threads,
+            n_processes=n_processes,
+            input_path=input_path,
+            output_path=output_path,
+            pstorage_path=pstorage_path,
+            mode=mode,
+            pstorage_type=pstorage_type,
+            first_port=first_port,
         )
         try:
             needs_polling = mode == STREAMING_MODE_NAME
@@ -223,15 +258,26 @@ def get_pw_program_run_time(
                         raise
                     continue
                 if modified_at > time_start and time.time() - modified_at > 60:
-                    popen.kill()
+                    for process_handle in process_handles:
+                        process_handle.kill()
                     needs_polling = False
         finally:
-            if mode == STREAMING_MODE_NAME:
-                pw_exit_code = popen.poll()
-                if not pw_exit_code:
-                    popen.kill()
-            else:
-                pw_exit_code = popen.wait()
+            pw_exit_code = 0
+            for process_handle in process_handles:
+                if mode == STATIC_MODE_NAME:
+                    try:
+                        local_exit_code = process_handle.wait(timeout=600)
+                    except subprocess.TimeoutExpired:
+                        process_handle.kill()
+                        local_exit_code = 255
+                else:
+                    local_exit_code = process_handle.poll()
+                    if local_exit_code is None:
+                        # In streaming mode the code never ends, so it's the expected
+                        # behavior
+                        process_handle.kill()
+                        local_exit_code = 0
+                pw_exit_code = max(pw_exit_code, local_exit_code)
 
             if pw_exit_code is not None and pw_exit_code != 0:
                 warnings.warn(
@@ -245,22 +291,33 @@ def get_pw_program_run_time(
 
 
 def run_pw_program_suddenly_terminate(
-    n_cpus,
+    *,
+    n_threads,
+    n_processes,
     input_path,
     output_path,
     pstorage_path,
     min_work_time,
     max_work_time,
     pstorage_type,
+    first_port,
 ):
-    popen = start_pw_computation(
-        n_cpus, input_path, output_path, pstorage_path, STATIC_MODE_NAME, pstorage_type
+    process_handles = start_pw_computation(
+        n_threads=n_threads,
+        n_processes=n_processes,
+        input_path=input_path,
+        output_path=output_path,
+        pstorage_path=pstorage_path,
+        mode=STATIC_MODE_NAME,
+        pstorage_type=pstorage_type,
+        first_port=first_port,
     )
     try:
         wait_time = random.uniform(min_work_time, max_work_time)
         time.sleep(wait_time)
     finally:
-        popen.kill()
+        for process_handle in process_handles:
+            process_handle.kill()
 
 
 def reset_runtime(inputs_path, output_path, pstorage_path, pstorage_type):
@@ -330,7 +387,14 @@ def generate_next_input(inputs_path):
 
 
 def do_test_persistent_wordcount(
-    n_backfilling_runs, n_cpus, tmp_path, mode, pstorage_type
+    *,
+    n_backfilling_runs,
+    n_threads,
+    n_processes,
+    tmp_path,
+    mode,
+    pstorage_type,
+    first_port,
 ):
     inputs_path = tmp_path / "inputs"
     output_path = tmp_path / "table.csv"
@@ -343,7 +407,14 @@ def do_test_persistent_wordcount(
 
             print(f"Run {n_run}: running pathway program")
             elapsed = get_pw_program_run_time(
-                n_cpus, inputs_path, output_path, pstorage_path, mode, pstorage_type
+                n_threads=n_threads,
+                n_processes=n_processes,
+                input_path=inputs_path,
+                output_path=output_path,
+                pstorage_path=pstorage_path,
+                mode=mode,
+                pstorage_type=pstorage_type,
+                first_port=first_port,
             )
             print(f"Run {n_run}: pathway time elapsed {elapsed}")
 
@@ -353,7 +424,15 @@ def do_test_persistent_wordcount(
 
 
 def do_test_failure_recovery_static(
-    n_backfilling_runs, n_cpus, tmp_path, min_work_time, max_work_time, pstorage_type
+    *,
+    n_backfilling_runs,
+    n_threads,
+    n_processes,
+    tmp_path,
+    min_work_time,
+    max_work_time,
+    pstorage_type,
+    first_port,
 ):
     inputs_path = tmp_path / "inputs"
     output_path = tmp_path / "table.csv"
@@ -367,13 +446,15 @@ def do_test_failure_recovery_static(
 
             print(f"Run {n_run}: running pathway program")
             run_pw_program_suddenly_terminate(
-                n_cpus,
-                inputs_path,
-                output_path,
-                pstorage_path,
-                min_work_time,
-                max_work_time,
-                pstorage_type,
+                n_threads=n_threads,
+                n_processes=n_processes,
+                input_path=inputs_path,
+                output_path=output_path,
+                pstorage_path=pstorage_path,
+                min_work_time=min_work_time,
+                max_work_time=max_work_time,
+                pstorage_type=pstorage_type,
+                first_port=first_port,
             )
 
             finished_in_this_run = check_output_correctness(
@@ -386,12 +467,14 @@ def do_test_failure_recovery_static(
             print("The program finished during one of interrupted runs")
         else:
             elapsed = get_pw_program_run_time(
-                n_cpus,
-                inputs_path,
-                output_path,
-                pstorage_path,
-                STATIC_MODE_NAME,
-                pstorage_type,
+                n_threads=n_threads,
+                n_processes=n_processes,
+                input_path=inputs_path,
+                output_path=output_path,
+                pstorage_path=pstorage_path,
+                mode=STATIC_MODE_NAME,
+                pstorage_type=pstorage_type,
+                first_port=first_port,
             )
             print("Time elapsed for non-interrupted run:", elapsed)
             print("Checking correctness at the end")

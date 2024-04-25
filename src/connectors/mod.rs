@@ -3,7 +3,6 @@
 use differential_dataflow::input::InputSession;
 use log::{error, info, warn};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::env;
 use std::ops::ControlFlow;
 use std::rc::Rc;
@@ -32,8 +31,9 @@ use crate::connectors::adaptors::InputAdaptor;
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
+use crate::persistence::config::ReadersQueryPurpose;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::tracker::SingleWorkerPersistentStorage;
+use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
 use crate::timestamp::current_unix_timestamp_ms;
 
@@ -66,7 +66,6 @@ pub trait CustomReader {
 pub struct StartedConnectorState {
     pub poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
     pub input_thread_handle: std::thread::JoinHandle<()>,
-    pub offsets_by_time: Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
     pub connector_monitor: Rc<RefCell<ConnectorMonitor>>,
 }
 
@@ -74,13 +73,11 @@ impl StartedConnectorState {
     pub fn new(
         poller: Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>,
         input_thread_handle: std::thread::JoinHandle<()>,
-        offsets_by_time: Arc<Mutex<HashMap<Timestamp, OffsetAntichain>>>,
         connector_monitor: Rc<RefCell<ConnectorMonitor>>,
     ) -> Self {
         Self {
             poller,
             input_thread_handle,
-            offsets_by_time,
             connector_monitor,
         }
     }
@@ -90,12 +87,13 @@ pub struct Connector {
     commit_duration: Option<Duration>,
     current_timestamp: Timestamp,
     num_columns: usize,
+    current_frontier: OffsetAntichain,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum Entry {
     Snapshot(SnapshotEvent),
-    RewindFinishSentinel,
+    RewindFinishSentinel(OffsetAntichain),
     Realtime(ReadResult),
 }
 
@@ -116,7 +114,10 @@ impl PersistenceMode {
             let timestamp = u64::try_from(current_unix_timestamp_ms())
                 .expect("number of milliseconds should fit in 64 bits");
             let timestamp = Timestamp(timestamp);
-            let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(timestamp)));
+            let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(
+                timestamp,
+                OffsetAntichain::new(),
+            )));
             if let Err(e) = send_res {
                 panic!("Failed to initialize time for batch replay: {e}");
             }
@@ -175,6 +176,7 @@ impl Connector {
             commit_duration,
             current_timestamp: Timestamp(0), // default is 0 now. If changing, make sure it is even (required for alt-neu).
             num_columns,
+            current_frontier: OffsetAntichain::new(),
         }
     }
 
@@ -199,14 +201,17 @@ impl Connector {
 
     pub fn rewind_from_disk_snapshot(
         persistent_id: PersistentId,
-        persistent_storage: &Arc<Mutex<SingleWorkerPersistentStorage>>,
+        persistent_storage: &Arc<Mutex<WorkerPersistentStorage>>,
         sender: &Sender<Entry>,
         persistence_mode: PersistenceMode,
     ) {
+        // TODO: note that here we read snapshots again.
+        // If it's slow, some kind of snapshot reader memoization may be a good idea
+        // (also note it will require some communication between workers)
         let snapshot_readers = persistent_storage
             .lock()
             .unwrap()
-            .create_snapshot_readers(persistent_id);
+            .create_snapshot_readers(persistent_id, ReadersQueryPurpose::ReadSnapshot);
 
         if let Ok(snapshot_readers) = snapshot_readers {
             for mut snapshot_reader in snapshot_readers {
@@ -228,13 +233,44 @@ impl Connector {
                                 error!("Failed to send rewind entry: {e}");
                             }
                         }
-                        SnapshotEvent::AdvanceTime(_) => {
+                        SnapshotEvent::AdvanceTime(_, _) => {
                             persistence_mode.handle_snapshot_time_advancement(sender, entry_read);
                         }
                     }
                 }
             }
         }
+    }
+
+    pub fn frontier_for(
+        reader: &mut dyn Reader,
+        persistent_id: PersistentId,
+        persistent_storage: &Arc<Mutex<WorkerPersistentStorage>>,
+    ) -> OffsetAntichain {
+        let snapshot_readers = persistent_storage
+            .lock()
+            .unwrap()
+            .create_snapshot_readers(persistent_id, ReadersQueryPurpose::ReconstructFrontier);
+
+        let mut frontier = OffsetAntichain::new();
+
+        if let Ok(snapshot_readers) = snapshot_readers {
+            for mut snapshot_reader in snapshot_readers {
+                loop {
+                    let entry_read = snapshot_reader.read();
+                    let Ok(entry_read) = entry_read else { break };
+                    if matches!(entry_read, SnapshotEvent::Finished) {
+                        break;
+                    }
+                }
+
+                frontier = reader
+                    .storage_type()
+                    .merge_two_frontiers(&frontier, snapshot_reader.last_frontier());
+            }
+        }
+
+        frontier
     }
 
     pub fn read_realtime_updates(
@@ -284,11 +320,12 @@ impl Connector {
 
     pub fn read_snapshot(
         reader: &mut dyn Reader,
-        persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
+        persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
         sender: &Sender<Entry>,
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
     ) {
+        let mut frontier = OffsetAntichain::new();
         if snapshot_access.is_replay_allowed() {
             persistence_mode.on_before_reading_snapshot(sender);
             // Rewind the data source
@@ -301,11 +338,7 @@ impl Connector {
                         persistence_mode,
                     );
 
-                    let frontier = persistent_storage
-                        .lock()
-                        .unwrap()
-                        .frontier_for(persistent_id);
-
+                    frontier = Self::frontier_for(reader, persistent_id, persistent_storage);
                     info!("Seek the data source to the frontier {frontier:?}");
                     if let Err(e) = reader.seek(&frontier) {
                         error!("Failed to seek to frontier: {e}");
@@ -314,7 +347,7 @@ impl Connector {
             }
         }
         // Report that rewind has finished, so that autocommits start to work
-        let send_res = sender.send(Entry::RewindFinishSentinel);
+        let send_res = sender.send(Entry::RewindFinishSentinel(frontier));
         if let Err(e) = send_res {
             panic!("Failed to switch from persisted to realtime: {e}");
         }
@@ -322,7 +355,7 @@ impl Connector {
 
     pub fn snapshot_writer(
         reader: &dyn ReaderBuilder,
-        persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
+        persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
         snapshot_access: SnapshotAccess,
     ) -> Result<Option<SharedSnapshotWriter>, WriteError> {
         if !snapshot_access.is_snapshot_writing_allowed() {
@@ -358,7 +391,7 @@ impl Connector {
         mut input_session: Box<dyn InputAdaptor<Timestamp>>,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key + 'static,
         probe: Handle<Timestamp>,
-        persistent_storage: Option<Arc<Mutex<SingleWorkerPersistentStorage>>>,
+        persistent_storage: Option<Arc<Mutex<WorkerPersistentStorage>>>,
         connector_id: usize,
         realtime_reader_needed: bool,
         external_persistent_id: Option<&ExternalPersistentId>,
@@ -411,9 +444,6 @@ impl Connector {
             })
             .expect("connector thread creation failed");
 
-        let offsets_by_time = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
-        let offsets_by_time_writer = offsets_by_time.clone();
-
         let mut next_commit_at = self.commit_duration.map(|x| SystemTime::now() + x);
         let mut backfilling_finished = false;
 
@@ -461,12 +491,22 @@ impl Connector {
                 }
                 match receiver.try_recv() {
                     Ok(Entry::Realtime(ReadResult::Finished)) => {
+                        if let Some(snapshot_writer) = &snapshot_writer {
+                            let snapshot_event = SnapshotEvent::AdvanceTime(
+                                Timestamp(self.current_timestamp.0 + 2),
+                                self.current_frontier.clone(),
+                            );
+                            info!("Input source has ended. Terminating with snapshot event: {snapshot_event:?}");
+                            if let Err(e) = snapshot_writer.lock().unwrap().write(&snapshot_event) {
+                                error!("Failed to save finalization event in persistent buffer. Error: {e}");
+                            }
+                        }
                         if backfilling_finished {
                             (*connector_monitor).borrow_mut().finish();
                             return ControlFlow::Break(());
                         }
                     }
-                    Ok(Entry::Snapshot(SnapshotEvent::AdvanceTime(new_timestamp))) => {
+                    Ok(Entry::Snapshot(SnapshotEvent::AdvanceTime(new_timestamp, _))) => {
                         input_session.flush();
                         let new_timestamp_even = (new_timestamp.0 / 2) * 2; //use only even times (required by alt-neu)
                         let new_timestamp_even = Timestamp(new_timestamp_even);
@@ -482,7 +522,6 @@ impl Connector {
                             input_session.as_mut(),
                             &mut values_to_key,
                             &mut snapshot_writer,
-                            &offsets_by_time_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
                             &mut commit_allowed,
                         );
@@ -498,7 +537,6 @@ impl Connector {
         Ok(StartedConnectorState::new(
             poller,
             input_thread_handle,
-            offsets_by_time,
             cloned_connector_monitor,
         ))
     }
@@ -512,7 +550,6 @@ impl Connector {
         input_session: &mut dyn InputAdaptor<Timestamp>,
         values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
-        offsets_by_time_writer: &Mutex<HashMap<Timestamp, OffsetAntichain>>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
         commit_allowed: &mut bool,
     ) {
@@ -572,18 +609,16 @@ impl Connector {
                     let (offset_key, offset_value) = offset;
                     if has_persistent_storage {
                         assert!(*backfilling_finished);
-                        offsets_by_time_writer
-                            .lock()
-                            .unwrap()
-                            .entry(self.current_timestamp)
-                            .or_default()
+                        self.current_frontier
                             .advance_offset(offset_key, offset_value);
                     }
                 }
             },
-            Entry::RewindFinishSentinel => {
+            Entry::RewindFinishSentinel(restored_frontier) => {
                 assert!(!*backfilling_finished);
                 *backfilling_finished = true;
+
+                self.current_frontier = restored_frontier;
                 let parsed_entries = vec![ParsedEvent::AdvanceTime];
                 self.on_parsed_data(
                     parsed_entries,
@@ -606,7 +641,7 @@ impl Connector {
                     SnapshotEvent::Upsert(key, value) => {
                         Self::on_upsert(key, value, input_session);
                     }
-                    SnapshotEvent::AdvanceTime(_) | SnapshotEvent::Finished => {
+                    SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => {
                         unreachable!()
                     }
                 };
@@ -743,10 +778,14 @@ impl Connector {
                         connector_monitor.commit();
                     }
                     if let Some(snapshot_writer) = snapshot_writer {
-                        if let Err(e) = snapshot_writer
-                            .lock()
-                            .unwrap()
-                            .write(&SnapshotEvent::AdvanceTime(time_advanced))
+                        if let Err(e) =
+                            snapshot_writer
+                                .lock()
+                                .unwrap()
+                                .write(&SnapshotEvent::AdvanceTime(
+                                    time_advanced,
+                                    self.current_frontier.clone(),
+                                ))
                         {
                             error!("Failed to save time advancement ({time_advanced}) in persistent buffer. Error: {e}");
                         }
@@ -764,7 +803,7 @@ pub struct SnapshotReaderState {
 
 pub fn read_persisted_state(
     mut input_session: InputSession<Timestamp, (Key, Vec<Value>), isize>,
-    persistent_storage: Arc<Mutex<SingleWorkerPersistentStorage>>,
+    persistent_storage: Arc<Mutex<WorkerPersistentStorage>>,
     external_persistent_id: &ExternalPersistentId,
     persistent_id: PersistentId,
 ) -> SnapshotReaderState {
@@ -780,7 +819,7 @@ pub fn read_persisted_state(
                 &sender,
                 PersistenceMode::Persisting,
             );
-            let send_res = sender.send(Entry::RewindFinishSentinel);
+            let send_res = sender.send(Entry::RewindFinishSentinel(OffsetAntichain::new()));
             if let Err(e) = send_res {
                 panic!("Failed to read the state of deduplicate operator: {e}");
             }
@@ -793,11 +832,11 @@ pub fn read_persisted_state(
                 SnapshotEvent::Insert(key, values) => input_session.insert((key, values)),
                 SnapshotEvent::Delete(key, values) => input_session.remove((key, values)),
                 SnapshotEvent::Upsert(_, _)
-                | SnapshotEvent::AdvanceTime(_)
+                | SnapshotEvent::AdvanceTime(_, _)
                 | SnapshotEvent::Finished => unreachable!(),
             },
             Ok(Entry::Realtime(_)) => unreachable!(),
-            Ok(Entry::RewindFinishSentinel) | Err(_) => return ControlFlow::Break(()),
+            Ok(Entry::RewindFinishSentinel(_)) | Err(_) => return ControlFlow::Break(()),
         }
     });
 

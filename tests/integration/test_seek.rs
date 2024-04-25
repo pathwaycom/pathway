@@ -17,8 +17,7 @@ use pathway_engine::connectors::data_storage::{
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
-use pathway_engine::persistence::sync::SharedWorkersPersistenceCoordinator;
-use pathway_engine::persistence::tracker::SingleWorkerPersistentStorage;
+use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 enum TestedFormat {
     Csv,
@@ -64,14 +63,13 @@ fn json_reader_parser_pair(input_path: &str) -> (Box<dyn ReaderBuilder>, Box<dyn
 fn full_cycle_read_kv(
     format: TestedFormat,
     input_path: &Path,
-    persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
-    global_tracker: Option<&SharedWorkersPersistenceCoordinator>,
+    persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
 ) -> FullReadResult {
     let (reader, mut parser) = match format {
         TestedFormat::Csv => csv_reader_parser_pair(input_path.to_str().unwrap()),
         TestedFormat::Json => json_reader_parser_pair(input_path.to_str().unwrap()),
     };
-    full_cycle_read(reader, parser.as_mut(), persistent_storage, global_tracker)
+    full_cycle_read(reader, parser.as_mut(), persistent_storage)
 }
 
 #[test]
@@ -84,13 +82,8 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
 
     std::fs::write(&input_path, "key,value\n1,2\na,b").unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Csv,
-            &input_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, true);
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &input_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -108,13 +101,8 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
 
     std::fs::write(&input_path, "key,value\n1,2\na,b\nc,d\n55,66").unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Csv,
-            &input_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, false);
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &input_path, Some(&tracker));
         eprintln!("data stream after: {:?}", data_stream.new_parsed_entries);
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -151,13 +139,8 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
     .unwrap();
 
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Csv,
-            &inputs_dir_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, true);
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -192,13 +175,8 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Csv,
-            &inputs_dir_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, false);
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![ParsedEvent::Insert((
@@ -226,13 +204,8 @@ fn test_json_file_recovery() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Json,
-            &input_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, true);
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -250,13 +223,8 @@ fn test_json_file_recovery() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Json,
-            &input_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, false);
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![ParsedEvent::Insert((
@@ -291,13 +259,8 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Json,
-            &inputs_dir_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, true);
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -322,13 +285,8 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Json,
-            &inputs_dir_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, false);
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -364,13 +322,8 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Json,
-            &inputs_dir_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, true);
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -393,13 +346,8 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
     )
     .unwrap();
     {
-        let (tracker, global_tracker) = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(
-            TestedFormat::Json,
-            &inputs_dir_path,
-            Some(&tracker),
-            Some(&global_tracker),
-        );
+        let tracker = create_persistence_manager(&pstorage_root_path, false);
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![

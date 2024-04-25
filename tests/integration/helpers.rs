@@ -10,9 +10,7 @@ use pathway_engine::engine::{report_error::ReportError, Error};
 use pathway_engine::persistence::config::{
     MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
 };
-use pathway_engine::persistence::metadata_backends::FilesystemKVStorage;
-use pathway_engine::persistence::state::MetadataAccessor;
-use pathway_engine::persistence::tracker::SingleWorkerPersistentStorage;
+use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 use pathway_engine::connectors::data_format::{ParsedEvent, Parser};
 use pathway_engine::connectors::data_storage::{
@@ -20,11 +18,8 @@ use pathway_engine::connectors::data_storage::{
 };
 use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
-use pathway_engine::engine::{Key, Timestamp};
+use pathway_engine::engine::{Key, Timestamp, TotalFrontier};
 use pathway_engine::persistence::frontier::OffsetAntichain;
-use pathway_engine::persistence::sync::{
-    SharedWorkersPersistenceCoordinator, WorkersPersistenceCoordinator,
-};
 
 #[derive(Debug)]
 pub struct FullReadResult {
@@ -45,19 +40,17 @@ impl ReportError for PanicErrorReporter {
 pub fn full_cycle_read(
     reader: Box<dyn ReaderBuilder>,
     parser: &mut dyn Parser,
-    persistent_storage: Option<&Arc<Mutex<SingleWorkerPersistentStorage>>>,
-    global_tracker: Option<&SharedWorkersPersistenceCoordinator>,
+    persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
 ) -> FullReadResult {
     let maybe_persistent_id = reader.persistent_id();
 
     let offsets = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     if let Some(persistent_storage) = persistent_storage {
         if let Some(persistent_id) = reader.persistent_id() {
-            persistent_storage.lock().unwrap().register_input_source(
-                persistent_id,
-                &reader.storage_type(),
-                offsets.clone(),
-            );
+            persistent_storage
+                .lock()
+                .unwrap()
+                .register_input_source(persistent_id, &reader.storage_type());
         }
     }
 
@@ -89,7 +82,7 @@ pub fn full_cycle_read(
     for entry in &result {
         match entry {
             Entry::Realtime(_) => assert!(rewind_finish_sentinel_seen),
-            Entry::RewindFinishSentinel => {
+            Entry::RewindFinishSentinel(_) => {
                 assert!(!rewind_finish_sentinel_seen);
                 rewind_finish_sentinel_seen = true;
             }
@@ -111,7 +104,9 @@ pub fn full_cycle_read(
                             ParsedEvent::Delete((_, _)) | ParsedEvent::Upsert((_, _)) => {
                                 todo!("delete and upsert aren't supported in this test")
                             }
-                            ParsedEvent::AdvanceTime => SnapshotEvent::AdvanceTime(Timestamp(1)),
+                            ParsedEvent::AdvanceTime => {
+                                SnapshotEvent::AdvanceTime(Timestamp(1), frontier.clone())
+                            }
                         };
                         snapshot_writer
                             .lock()
@@ -129,11 +124,20 @@ pub fn full_cycle_read(
             Entry::Snapshot(snapshot_entry) => {
                 snapshot_entries.push(snapshot_entry.clone());
             }
-            Entry::RewindFinishSentinel => {
+            Entry::RewindFinishSentinel(_) => {
                 rewind_finish_sentinel_seen = true;
             }
             _ => {}
         }
+    }
+
+    if let Some(ref mut snapshot_writer) = snapshot_writer {
+        let finished_event = SnapshotEvent::AdvanceTime(Timestamp(1), frontier.clone());
+        snapshot_writer
+            .lock()
+            .unwrap()
+            .write(&finished_event)
+            .unwrap();
     }
 
     assert!(rewind_finish_sentinel_seen);
@@ -144,6 +148,11 @@ pub fn full_cycle_read(
             .lock()
             .unwrap()
             .last_finalized_timestamp();
+
+        let TotalFrontier::At(prev_finalized_time) = prev_finalized_time else {
+            panic!("expected finite time");
+        };
+
         offsets
             .lock()
             .unwrap()
@@ -151,12 +160,12 @@ pub fn full_cycle_read(
 
         let last_sink_id = persistent_storage.unwrap().lock().unwrap().register_sink();
         for sink_id in 0..=last_sink_id {
-            global_tracker
+            persistent_storage
                 .as_ref()
                 .unwrap()
                 .lock()
                 .unwrap()
-                .accept_finalized_timestamp(0, sink_id, Some(Timestamp(prev_finalized_time.0 + 2)));
+                .update_sink_finalized_time(sink_id, Some(Timestamp(prev_finalized_time.0 + 2)));
         }
     }
 
@@ -196,22 +205,13 @@ pub fn read_data_from_reader(
 pub fn create_persistence_manager(
     fs_path: &Path,
     recreate: bool,
-) -> (
-    Arc<Mutex<SingleWorkerPersistentStorage>>,
-    SharedWorkersPersistenceCoordinator,
-) {
+) -> Arc<Mutex<WorkerPersistentStorage>> {
     if recreate {
         let _ = std::fs::remove_dir_all(fs_path);
     }
 
-    let global_tracker = Arc::new(Mutex::new(WorkersPersistenceCoordinator::new(
-        Duration::ZERO,
-        1,
-        1,
-    )));
-
-    let tracker = Arc::new(Mutex::new(
-        SingleWorkerPersistentStorage::new(
+    Arc::new(Mutex::new(
+        WorkerPersistentStorage::new(
             PersistenceManagerOuterConfig::new(
                 Duration::ZERO,
                 MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
@@ -223,22 +223,7 @@ pub fn create_persistence_manager(
             .into_inner(0, 1),
         )
         .expect("Failed to create persistence manager"),
-    ));
-    global_tracker
-        .lock()
-        .unwrap()
-        .register_worker(tracker.clone());
-
-    (tracker, global_tracker)
-}
-
-pub fn create_metadata_storage(fs_path: &Path, recreate: bool) -> MetadataAccessor {
-    if recreate {
-        let _ = std::fs::remove_dir_all(fs_path);
-    }
-
-    let backend = Box::new(FilesystemKVStorage::new(fs_path).expect("Backend creation failed"));
-    MetadataAccessor::new(backend, 0).expect("Storage creation failed")
+    ))
 }
 
 pub fn get_entries_in_receiver<T>(receiver: Receiver<T>) -> Vec<T> {

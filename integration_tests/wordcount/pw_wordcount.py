@@ -11,12 +11,9 @@ if __name__ == "__main__":
     parser.add_argument("--input", type=str)
     parser.add_argument("--output", type=str)
     parser.add_argument("--pstorage", type=str)
-    parser.add_argument("--n-cpus", type=int)
     parser.add_argument("--mode", type=str)
     parser.add_argument("--pstorage-type", type=str)
     args = parser.parse_args()
-
-    os.environ["PATHWAY_THREADS"] = str(args.n_cpus)
 
     if args.pstorage_type == "fs":
         pstorage_config = pw.persistence.Config.simple_config(
