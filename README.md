@@ -215,7 +215,7 @@ If you want to scale your Pathway application, you may be interested in our Path
 Pathway for Enterprise is specially tailored towards end-to-end data processing and real time intelligent analytics.
 It scales using distributed computing on the cloud and supports distributed Kubernetes deployment, with external persistence setup.
 
-You can learn more about the features of Pathway for Enterprise on our [website](https://pathway.com/features).
+You can easily deploy Pathway using services like Render: see [how to deploy Pathway in a few clicks](https://pathway.com/developers/user-guide/deployment/render-deploy/).
 
 If you are interested, don't hesitate to [contact us](mailto:contact@pathway.com) to learn more.
 
