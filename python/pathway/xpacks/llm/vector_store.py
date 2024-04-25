@@ -77,7 +77,6 @@ def _coerce_sync(func: Callable) -> Callable:
 
 
 class VectorStoreServer:
-    embedder_config: dict[str, Any]
     """
     Builds a document indexing pipeline and starts an HTTP REST server for nearest neighbors queries.
 
@@ -87,6 +86,8 @@ class VectorStoreServer:
         - parser: callable that parses file contents into a list of documents
         - splitter: callable that splits long documents
     """
+
+    embedder_config: dict[str, Any]
 
     def __init__(
         self,
