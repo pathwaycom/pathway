@@ -6,7 +6,7 @@
 #     thumbnail: '/assets/content/blog/local-adaptive-rag/local_adaptive.png'
 #     tags: ['showcase', 'llm']
 #     date: '2024-04-23'
-#     related: false
+#     related: ['/developers/showcases/adaptive-rag', '/developers/showcases/llamaindex-pathway']
 # notebook_export_path: notebooks/showcases/mistral_adaptive_rag_question_answering.ipynb
 # author: 'berke'
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag']
@@ -14,75 +14,92 @@
 
 # # Private RAG with Adaptive Retrieval using Mistral, Ollama and Pathway
 
-# In our previous [Adaptive RAG](https://pathway.com/developers/showcases/adaptive-rag) showcase, we demonstrated how to improve RAG accuracy while maintaining cost and time efficiency. We achieved this using OpenAI LLM and `text-embedding-ada-002` embedder. This showcase replicates the same technique with locally hosted LLMs and embedders.
+# Retrieval Augmented Generation (RAG) is a powerful way to answer questions based on your own, private, knowledge database.
+# However, data security is key: sensitive information like R&D secrets, GDPR-protected data, and internal documents cannot be entrusted to third parties.
 #
-# Pathway brings support for real-time data synchronization pipelines out of the box, and possibility of secure private document handling with enterprise connectors for synchronizing Sharepoint and Google Drive incrementally. Here, we use Pathway's built-in vector index.
+# Most of the existing RAG solutions rely on LLM APIs that send your data, at least a part of it, to the LLM provider.
+# For example, if your RAG solution uses ChatGPT, you will have to send your data to OpenAI through OpenAI API.
 #
-# In this showcase, we explore how to set up a private RAG pipeline with adaptive retrieval using Pathway, Mistral, and Ollama.
-# Our pipeline answers questions from the Stanford Question Answering Dataset [(SQUAD)](https://rajpurkar.github.io/SQuAD-explorer/) using a selection of Wikipedia pages from the same dataset as the context, split into paragraphs.
+# Fortunately, there is a solution to keep your data private: deploying a local LLM.
+# By deploying everything locally, your data remains secure within own infrastructure.
+# It eliminates the risk of sensitive information ever leaving your control.
 #
-# We use a locally deployed Mistral 7B, chosen for its performance and efficient size.
+# While this seems quite an engineering feat, don't worry Pathway provides you everything you need to make this as easy as possible.
+#
+# In this showcase, you will learn how to set up a private RAG pipeline with adaptive retrieval using Pathway, Mistral, and Ollama.
+# The pipeline answers questions from the Stanford Question Answering Dataset [(SQUAD)](https://rajpurkar.github.io/SQuAD-explorer/) using a selection of Wikipedia pages from the same dataset as the context, split into paragraphs.
+# **This RAG pipeline runs without any API access or any data leaving the local machine with Pathway**.
 #
 # ![Reference architecture](/assets/content/blog/local-adaptive-rag/local_adaptive.png)
 #
-# Many organizations are concerned with data privacy while building LLM or RAG applications using proprietary models over the API. When we released the Adaptive RAG showcase, we got multiple requests for redoing it in a fully private setup, this is the key motivation behind this showcase. Here, we explore how to build a RAG application without any API access or any data leaving the local machine with Pathway.
+# Our RAG app will use a Mistral 7B, locally deployed using Ollama. Mistral 7B is chosen for its performance and efficient size.
+# The pipeline uses Pathway vector store & live document indexing pipeline with an open-source embedding model from the HuggingFace.
 #
-#
-# We set up our vector store & live document indexing pipeline using Pathway with an open-source embedding model from the HuggingFace.
+# Pathway brings support for real-time data synchronization pipelines out of the box, and possibility of secure private document handling with enterprise connectors for synchronizing Sharepoint and Google Drive incrementally.
+# Here, Pathway's built-in vector index is used.
 #
 # If you are not familiar with the Pathway, refer to [overview of Pathway's LLM xpack](https://pathway.com/developers/user-guide/llm-xpack/overview) and [its documentation](https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms).
+# This article is an extension of our previous [Adaptive RAG showcase](/developers/showcases/adaptive-rag) on how to improve RAG accuracy while maintaining cost and time efficiency.
+# The main difference is that showcase was using OpenAI LLM and `text-embedding-ada-002 embedder` while in the following the pipeline will use locally-hosted LLMs and embedders.
 #
-# We explore how to use Pathway to;
+# You will explore how to use Pathway to:
 # - load and index documents
 # - connect to our local LLM
 # - prompt our LLM with relevant context, and adaptively add more documents as needed
-# - combine everything, and orchestrate the RAG pipeline
+# - combine everything, and orchestrate the RAG pipeline.
 
 
-# ## Introduction
-#
-# Retrieval Augmented Generation (RAG) allows Large Language Models (LLMs) to answer questions based on knowledge not present in the original training set. At [Pathway](https://pathway.com/) we use RAG to build [document intelligence solutions](/solutions/rag-pipelines) that answer questions based on private document collections, such as a repository of legal contracts. We are constantly working on improving the accuracy and explainability of our models while keeping the costs low. In this blog post, we share a trick that helped us reach those goals.
-#
-# A typical RAG Question Answering procedure works in two steps. First, the question is analyzed and a number of relevant documents are retrieved from a database, typically using a similarity search inside a vector space created by a neural embedding model. Second, retrieved documents are pasted, along with the original question, into a prompt which is sent to the LLM. Thus, the LLM answers the question within a relevant context.
-#
-# Practical implementations of the RAG procedure need to specify the number of documents put into the prompt. A large number of documents increases the ability of the LLM to provide a correct answer but also increases LLM costs, which typically grow linearly with the length of the provided prompt. The prompt size also influences model explainability: retrieved context documents explain and justify the answer of the LLM and the fewer context documents are needed, the easier it is to verify and trust model outputs.
-#
-# Thus the context size, given by the number of considered documents in a RAG setup, must be chosen to balance costs, desired answer quality, and explainability. However, can we do better than using the same context size regardless of the question to be answered? Intuitively, not all questions are equally hard and some can be answered using a small number of supporting documents, while some may require the LLM to consult a larger prompt. We can confirm this by running a question-answering experiment.
-#
-# ## Adaptive RAG
-# We can use the model’s refusal to answer questions as a form of model introspection which enables an adaptive RAG question-answering strategy:
-#
-# ::card
-# #title
-# Adaptive Rag Idea
-# #description
-# Ask the LLM with a small number of context documents. If it refuses to answer, repeat the question with a larger prompt.
-# ::
-#
-# This RAG scheme adapts to the hardness of the question and the quality of the retrieved supporting documents using the feedback from the LLM - for most documents a single LLM call with a small prompt is sufficient, and there is no need for an auxiliary LLM calls to e.g. guess an initial supporting document count for a question. However, a fraction of questions will require re-asking or rere-asking the LLM.
-#
-# To solve it, we can use a geometric series to expand the prompt with retrieved documents.
-#
-# To learn more about how we do it, and the observed benefits, please see the original work [here.](https://pathway.com/developers/showcases/adaptive-rag)
-#
-# ## What is (local) private RAG, do I need it?
+# ## What is Private RAG and Why Do You Need It?
 #
 # Most of the RAG applications require you to send your documents & data to propriety APIs. This is a concern for most organizations as data privacy with sensitive documents becomes an issue. Generally, you need to send your documents during the indexing and LLM question-answering stages.
 #
-# To tackle this, you can use locally deployed LLMs and embedders in your RAG pipeline. We eliminate the need to go to proprietary APIs with the help of Ollama, HuggingFace and Pathway.
+# To tackle this, you can use a **private RAG: locally deployed LLMs and embedders in your RAG pipeline**.
+# You don't need to go to proprietary APIs with the help of Ollama, HuggingFace and Pathway.
 # Everything is staying local on your machine.
 #
-# ### Why use local LLMs?
+# ### Why use Local LLMs?
 #
-# There are several reasons why you may want to use local or open-source LLMs over propriety ones.
-# - Building RAG applications require documents to be sent to the LLM, this may be an issue in some organizations with sensitive data.
-# - We have observed that some LLMs that are served over the API are regressing in terms of accuracy, with local models, this won't be an issue.
-# - It is possible to fine-tune local LLMs to behave in certain ways or achieve domain adaptation.
+# There are several advantages to using local LLMs (Large Language Models) over cloud-based APIs:
+# - **Data Privacy**: Local LLMs keep your sensitive data on your machines.
+# - **Accuracy**: Cloud-based LLM accuracy can sometimes regress, whereas you can fine-tune local models for better performance.
+# - **Customization**: Local LLMs allow for fine-tuning to achieve specific behaviors or domain adaptation.
+#
+# ### Mistral and Ollama for privacy
+#
+# **Mistral 7B** is publicly available LLM model release by [Mistral AI](https://mistral.ai/).
+# Its (relative) small size of 7.3B parameters and impressive performances make Mistral 7B a perfect candidate for a local deployment.
+#
+# The pipeline relies on **Ollama** to deploy the Mistral 7B model.
+# [Ollama](https://ollama.com/) is a tool to create, manage, and run LLM models.
+# Ollama is used to download and configure locally the Mistral 7B model.
+#
+# ## Pathway Adaptive RAG
+#
+# Standard RAG process first retrieves a fixed number of documents to answer the question and then build a personalized prompt using the documents to allow the LLM to answer the question with a relevant context.
+# The number of retrieved document is a tradeoff: a large number of documents increases the ability of the LLM to provide a correct answer but also increases LLM costs.
+#
+# Pathway Adaptive RAG improves this tradeoff by adapting the number of retrieved documents depending on the difficulty of the question.
+# First, a small number of context documents is retrieved and if the LLM refuses to answer, repeat the question with a larger prompt.
+# This process is repeated until the LLM got a answer.
+#
+# To learn more about how we do it, and the observed benefits, please see the original work [here](/developers/showcases/adaptive-rag).
 
 
-# ## Using Adaptive RAG locally with Pathway
+# ## Private RAG with Pathway Adaptive RAG
 #
-# In the cell below, we install Pathway into a Python 3.10+ Linux runtime.
+# This section provides a step-by-step guide on how to set up Private RAG with Adaptive Retrieval using Pathway, a framework for building LLM applications. The guide covers:
+# 1. **Installation**: Installing Pathway and required libraries.
+# 2. **Data Loading**: Loading documents for which answer retrieval will be performed.
+# 3. **Embedding Model Selection**: Choosing an open-source embedding model from Hugging Face.
+# 4. **Local LLM Deployment**: Instructions on deploying a local LLM using Ollama, a lightweight container runtime.
+# 5. **LLM Initialization**: Setting up the LLM instance to interact with the local model.
+# 6. **Vector Document Index Creation**: Building an index for efficient document retrieval using the embedding model.
+# 7. **Adaptive RAG Table Creation**: Defining the parameters for the Adaptive RAG strategy.
+# 8. **Pipeline Execution**: Running the Private RAG pipeline with your data.
+#
+# ### 1. Installation
+#
+# You install Pathway into a Python 3.10+ Linux runtime with a simple pip command:
 
 
 # %%capture --no-display
@@ -90,6 +107,7 @@
 # !pip install "litellm>=1.35"
 
 
+# ### 2. Data Loading
 # Download `adaptive-rag-contexts.jsonl` with ~1000 contexts from the SQUAD dataset
 
 
@@ -106,6 +124,8 @@ from pathway.xpacks.llm.question_answering import (
 )
 
 
+# ### 3. Embedding Model Selection
+#
 # For the embeddings, we provide a few selected models that can be used to replicate the work.
 # In case you have access to limited computation, and want to use an embedder over the API, we also provide a snippet on how to use Mistral embeddings below.
 
@@ -172,8 +192,8 @@ df = pd.DataFrame(
 query = pw.debug.table_from_pandas(df)
 
 
-# #### Deploying and using a local LLM
-# Due to its popularity and ease of use, we decided to run the `Mistral 7B` on `Ollama`
+# #### 4. Local LLM Deployement
+# Due to its size, performances, and ease of use, we decided to run the `Mistral 7B` on `Ollama`
 #
 # In order to run local LLM, refer to these steps:
 # - Download Ollama from [ollama.com/download](https://ollama.com/download)
@@ -190,6 +210,8 @@ query = pw.debug.table_from_pandas(df)
 # ```
 
 
+# ### 5. LLM Initialization
+#
 # Initialize the LLM instance that will call our local model.
 
 # +
@@ -206,6 +228,7 @@ model = LiteLLMChat(
 # -
 
 
+# ### 6. Vector Document Index Creation
 # Create the index with documents and embedding model
 
 
@@ -214,7 +237,8 @@ index = VectorDocumentIndex(
 )
 
 
-# Create the adaptive rag table with created index, LLM, embedder, documents, and hyperparameters
+# ### 7. Adaptive RAG Table Creation
+# Create the adaptive rag table with created index, LLM, embedder, documents, and hyperparameters:
 
 
 result = query.select(
@@ -232,7 +256,8 @@ result = query.select(
 )
 
 
-# Run the pipeline
+# ### 8. Pipeline Execution
+# You can run the pipeline and print the results table with `pw.debug.compute_and_print`:
 
 
 # _MD_COMMENT_START_
@@ -245,18 +270,19 @@ Extensive genetic studies were conducted during the 2010s which indicated that d
 # _MD_SHOW_pw.debug.compute_and_print(result)
 
 
-# # Going to production
+# # Going to Production
 
-# This showcase demonstrates how you can improve the core RAG logic with adaptive retrieval. Pathway also enables you to easily build & deploy your RAG application in production, including serving the endpoints. 
+# Now you have an fully private adaptive RAG. Not only the adaptive retrieval improve the accuracy of the RAG, but by using a local LLM model, all your data remain safe on your system.
+# You can go further by building and deploying your RAG application in production with Pathway, including serving the endpoints. 
 #
 # To learn more, check out our [question answering demo](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/demo-question-answering) for brief introduction on how to use Pathway to build a full RAG application.
 
-# # Conclusion
+# # Key Takeaways
 
-# In the prior showcase, we have shown that adaptive RAG provides a good balance between cost-efficiency and accuracy, and makes improvements over the naive RAG.
-# In this showcase, we demonstrate how to replicate the [Adaptive RAG](https://pathway.com/developers/showcases/adaptive-rag) strategy with a fully local setup, including local embedder and LLM. To achieve this, we had to make some modifications to the original prompts, and the LLM inference parameters.
+# While [Adaptive RAG](https://pathway.com/developers/showcases/adaptive-rag) provides a good balance between cost-efficiency and accuracy, and makes improvements over the naive RAG, it was relying -as most of the RAG solutions- on third parties API.
+# In this showcase, you have learned how to do design a **fully local and private adaptive RAG** setup, including local embedder and LLM.
+# Using Pathway, only small modifications to the original prompts and parameters were needed to provide privacy to the RAG pipeline.
 #
 # To ensure stricter adherence to instructions, especially with smaller open-source LLMs, we employed the `json` mode for LLM outputs. This approach enhances control over the model's response, leading to more predictable behavior.
 #
-#
-# Notably, this setup can be run entirely locally with open-source LLMs, making it ideal for organizations with sensitive data or who have already deployed local LLMs.
+# **This private RAG setup can be run entirely locally with open-source LLMs, making it ideal for organizations with sensitive data or who have already deployed local LLMs.**
