@@ -24,7 +24,7 @@
 # This guide is about basic data types in Pathway: it covers the list of basic data types that can be used in Pathway, explores several available conversion methods, and wraps up with examples of operators that require a column of specific data type as input.
 
 # Currently, Pathway allows using the following basic Python types: `bool`, `str`, `int`, `float`, and `bytes`. Additionally, there is support for types `datetime` and `duration` from `datetime` module, distinguishing between `utc datetimes` and `naive datetimes`. Finally, Pathway also introduces an additional type for columns representing pointers, called `Pointer`. Below, you can find an example table with six columns, one example column for each of the basic Python types, and one column of type Pointer. The complex types (as datetime) need some conversion, and they are covered in [the later part of the article](/developers/user-guide/types-in-pathway/datatypes#temporal-data-types).
-# The standard way to define a type in Pathway is to use a [`schema`](/developers/api-docs/pathway/#pathway.Schema) (you can learn more about schemas in this [article](/developers/user-guide/types-in-pathway/schema/)):
+# The standard way to define a type in Pathway is to use a [`schema`](/developers/api-docs/pathway#pathway.Schema) (you can learn more about schemas in this [article](/developers/user-guide/types-in-pathway/schema/)):
 # %%
 import datetime
 
@@ -77,10 +77,10 @@ print(example_table.schema)
 # Similarly, the special columns produced by some of the Pathway operators (examples in the later part of the article) have fixed types and as such, you don't need to bother with the types of those columns.
 
 # ## Apply With Type
-# Sometimes you may want to compute a value of a column, using e.g. a function from an external library, that does not define the output type explicitly. In this case, you can use either [`pw.apply`](/developers/api-docs/pathway/#pathway.apply) or [`pw.apply_with_type`](/developers/api-docs/pathway/#pathway.apply_with_type). The first creates a new column of type `any` and the other requires you to specify the type of the output of function that is applied. <!-- You can find examples of `pw.apply` or `pw.apply_with_type` in the remainder of this article, and in other dedicated article [link needed]. -->
+# Sometimes you may want to compute a value of a column, using e.g. a function from an external library, that does not define the output type explicitly. In this case, you can use either [`pw.apply`](/developers/api-docs/pathway#pathway.apply) or [`pw.apply_with_type`](/developers/api-docs/pathway#pathway.apply_with_type). The first creates a new column of type `any` and the other requires you to specify the type of the output of function that is applied. <!-- You can find examples of `pw.apply` or `pw.apply_with_type` in the remainder of this article, and in other dedicated article [link needed]. -->
 
 # ## Data types for columns storing text and unstructured data
-# In Pathway you can store unstructured data either as `str` or as `bytes`. Both can be converted to other data types, either by built in methods (some examples in this article) or by user defined functions (i.e. via [`pw.apply`](/developers/api-docs/pathway/#pathway.apply) or [`pw.apply_with_type`](/developers/api-docs/pathway/#pathway.apply_with_type)).
+# In Pathway you can store unstructured data either as `str` or as `bytes`. Both can be converted to other data types, either by built in methods (some examples in this article) or by user defined functions (i.e. via [`pw.apply`](/developers/api-docs/pathway#pathway.apply) or [`pw.apply_with_type`](/developers/api-docs/pathway#pathway.apply_with_type)).
 
 # ### Type `str`
 # %%
@@ -106,7 +106,7 @@ pw.debug.compute_and_print(str_table, include_id=False)
 print(str_table.schema)
 # %% [markdown]
 # ### Module `str`
-# Furthermore, Pathway provides a [string module](/developers/api-docs/pathway/#pathway.internals.expressions.StringNamespace) containing string operations. Among other things, it provides several methods that allow parsing converting `str` to other simple types, accessible via the `str` namespace of column (e.g. `table_name.column_name.str.parse_*`). You can find examples of usage of those methods in the [remaining part of this article](/developers/user-guide/types-in-pathway/datatypes#parse-numbers-from-str).
+# Furthermore, Pathway provides a [string module](/developers/api-docs/pathway#pathway.internals.expressions.StringNamespace) containing string operations. Among other things, it provides several methods that allow parsing converting `str` to other simple types, accessible via the `str` namespace of column (e.g. `table_name.column_name.str.parse_*`). You can find examples of usage of those methods in the [remaining part of this article](/developers/user-guide/types-in-pathway/datatypes#parse-numbers-from-str).
 
 # ### Type `bytes`
 # %%
@@ -191,7 +191,7 @@ print(float_table.schema)
 
 # %% [markdown]
 # ### Parse numbers from `str`
-# Below, you can find an application of the parsing methods from the `str` namespace ([`parse_int`](/developers/api-docs/pathway/#pathway.internals.expressions.StringNamespace.parse_int) and [`parse_float`](/developers/api-docs/pathway/#pathway.internals.expressions.StringNamespace.parse_float)) to parse ints and floats for columns of type `str`.
+# Below, you can find an application of the parsing methods from the `str` namespace ([`parse_int`](/developers/api-docs/pathway#pathway.internals.expressions.StringNamespace.parse_int) and [`parse_float`](/developers/api-docs/pathway#pathway.internals.expressions.StringNamespace.parse_float)) to parse ints and floats for columns of type `str`.
 
 # %%
 class StrNumberExampleInputSchema(pw.Schema):
@@ -221,13 +221,13 @@ print(str_number_table.schema)
 
 # %% [markdown]
 # ### Numerical Module
-# In case you need to use some basic operations on columns of numerical type, Pathway provides a [module](/developers/api-docs/pathway/#pathway.internals.expressions.NumericalNamespace) containing functions over numerical data types such as [`abs`](/developers/api-docs/pathway/#pathway.internals.expressions.NumericalNamespace.abs) or [`round`](/developers/api-docs/pathway/#pathway.internals.expressions.NumericalNamespace.round).
+# In case you need to use some basic operations on columns of numerical type, Pathway provides a [module](/developers/api-docs/pathway#pathway.internals.expressions.NumericalNamespace) containing functions over numerical data types such as [`abs`](/developers/api-docs/pathway#pathway.internals.expressions.NumericalNamespace.abs) or [`round`](/developers/api-docs/pathway#pathway.internals.expressions.NumericalNamespace.round).
 
 # %% [markdown]
 # ## Temporal Data Types
 # In Pathway, temporal data types (`datetime.datetime`) are complex data types with some representation as some simple type (as `int` or `str`). As such, you first need to load the input as simple type, and only then convert it to temporal type.
-# Similarly to Python, Pathway distinguishes between [naive datetime](/developers/api-docs/pathway/#pathway.DateTimeNaive) (not aware of timezones) and [UTC datetime](/developers/api-docs/pathway/#pathway.DateTimeUtc) (aware of time zones).
-# Below, you can find examples of reading both kinds of datetime, initially provided as `str` and `int`, using methods from the Pathway [`dt` module](/developers/api-docs/pathway/#pathway.internals.expressions.DateTimeNamespace):
+# Similarly to Python, Pathway distinguishes between [naive datetime](/developers/api-docs/pathway#pathway.DateTimeNaive) (not aware of timezones) and [UTC datetime](/developers/api-docs/pathway#pathway.DateTimeUtc) (aware of time zones).
+# Below, you can find examples of reading both kinds of datetime, initially provided as `str` and `int`, using methods from the Pathway [`dt` module](/developers/api-docs/pathway#pathway.internals.expressions.DateTimeNamespace):
 
 # %%
 class DatetimeNaiveExampleInputSchema(pw.Schema):

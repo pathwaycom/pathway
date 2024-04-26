@@ -27,7 +27,7 @@
 #
 # Let's consider a simple example in which you join two tables in Pathway. Here, a table is built from a simulated stream of changes to its rows. The value in the `__time__` column represents the arrival time of the record to the engine. Rows with the same value in the `__time__` column belong to a single batch.
 #
-# To use an example with a real streaming source it is enough to replace [`pw.debug.table_from_markdown`](/developers/api-docs/debug/#pathway.debug.table_from_markdown) with an appropriate [connector](/developers/user-guide/connecting-to-data/connectors/) (like Redpanda or Kafka connector).
+# To use an example with a real streaming source it is enough to replace [`pw.debug.table_from_markdown`](/developers/api-docs/debug#pathway.debug.table_from_markdown) with an appropriate [connector](/developers/user-guide/connecting-to-data/connectors/) (like Redpanda or Kafka connector).
 #
 # The tables are joined on the `instance` column.
 
@@ -107,7 +107,7 @@ pw.debug.compute_and_print(answers)
 
 # %% [markdown]
 # ## Asof now join
-# Monitoring changes of answers to your queries might not be what you want. Especially if you have **a lot of** queries. If you want to get an answer for a query once, and then forget it, you can use [`asof_now_join`](/developers/api-docs/temporal/#pathway.stdlib.temporal.asof_now_join). Its left side is a queries table and the right side is the data you want to query. Note that the right side is still a table dynamically streaming row changes. You can update it but the updates will only affect future queries - no old answers will be updated.
+# Monitoring changes of answers to your queries might not be what you want. Especially if you have **a lot of** queries. If you want to get an answer for a query once, and then forget it, you can use [`asof_now_join`](/developers/api-docs/temporal#pathway.stdlib.temporal.asof_now_join). Its left side is a queries table and the right side is the data you want to query. Note that the right side is still a table dynamically streaming row changes. You can update it but the updates will only affect future queries - no old answers will be updated.
 #
 # Let's see what `asof_now_join` would return in the example above:
 
@@ -173,9 +173,9 @@ pw.debug.compute_and_print(answers)
 
 # %% [markdown]
 # ## KNN Index
-# An approximate [K Nearest Neighbors (KNN) Index](/developers/showcases/lsh/lsh_chapter1) behaves similarly to a join. The default method [`get_nearest_items`](/developers/api-docs/ml/#pathway.stdlib.ml.index.KNNIndex.get_nearest_items) maintains always up-to-date answers to all queries when the set of indexed documents changes. In fact, it uses a join under the hood.
+# An approximate [K Nearest Neighbors (KNN) Index](/developers/showcases/lsh/lsh_chapter1) behaves similarly to a join. The default method [`get_nearest_items`](/developers/api-docs/ml#pathway.stdlib.ml.index.KNNIndex.get_nearest_items) maintains always up-to-date answers to all queries when the set of indexed documents changes. In fact, it uses a join under the hood.
 #
-# If you don't want answers to your queries to be updated, you can use [`get_nearest_items_asof_now`](/developers/api-docs/ml/#pathway.stdlib.ml.index.KNNIndex.get_nearest_items_asof_now) (experimental). It'll return the closest points once and will forget the query. However, it'll monitor the stream containing index data and update the index if new data arrives (but won't update old queries). As a result, if you ask the same query again and the index has changed in the meantime, you can get a different answer. This behavior is used in our [llm-app](/developers/user-guide/llm-xpack/llm-app-pathway/) to answer queries using an always up-to-date index of documents.
+# If you don't want answers to your queries to be updated, you can use [`get_nearest_items_asof_now`](/developers/api-docs/ml#pathway.stdlib.ml.index.KNNIndex.get_nearest_items_asof_now) (experimental). It'll return the closest points once and will forget the query. However, it'll monitor the stream containing index data and update the index if new data arrives (but won't update old queries). As a result, if you ask the same query again and the index has changed in the meantime, you can get a different answer. This behavior is used in our [llm-app](/developers/user-guide/llm-xpack/llm-app-pathway/) to answer queries using an always up-to-date index of documents.
 #
 # To understand better the differences between the methods, you can analyze the examples below. In the first example, `index.get_nearest_items` is used which leads to updating the answers. In the second example, `index.get_nearest_items_asof_now` is used and thus the answers are not updated.
 # Streams of changes to tables are simulated using `pw.debug.table_from_markdown` which, as earlier, uses `__time__` column to split the data into batches.
@@ -245,7 +245,7 @@ class PointSchema(pw.Schema):
     y: int
 
 
-# To receive the queries, you can use the [`rest_connector`](/developers/api-docs/pathway-io/http/#pathway.io.http.rest_connector).
+# To receive the queries, you can use the [`rest_connector`](/developers/api-docs/pathway-io/http#pathway.io.http.rest_connector).
 # %%
 host = "0.0.0.0"  # set as needed
 port = 8080  # set as needed

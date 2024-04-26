@@ -32,8 +32,8 @@
 # To try out the temporal behaviors of windows you need an example Pathway Table with both processing time and event time. You can generate it using `pw.debug.table_from_markdown`, which takes a table specification in markdown format. If it has a column named `__time__`, Pathway will use it as a processing time, which allows you to see how the temporality of your data affects the outcome of the computation. The following code creates a table with logs. Other than the `__time__` column, it also has the `event_time`, which says when the event described by the log happened, and the `message` column. In this case, both `__time__` and `event_time` are given as timestamps.
 #
 # Remarks:
-# - while the processing time for the `table_from_markdown` method always needs to be given as a timestamp, the event_time can be any of [various types that are supported by the windowing mechanism](/developers/api-docs/pathway-stdlib-temporal/#pathway.stdlib.temporal.windowby)
-# - the `table_from_markdown` method needs the processing time to be passed in a column with a special name `__time__`, but the column holding event_time is passed as a parameter to the [`windowby`](/developers/api-docs/pathway-stdlib-temporal/#pathway.stdlib.temporal.windowby) function, and here it is called event_time just to keep the example self-explanatory.
+# - while the processing time for the `table_from_markdown` method always needs to be given as a timestamp, the event_time can be any of [various types that are supported by the windowing mechanism](/developers/api-docs/pathway-stdlib-temporal#pathway.stdlib.temporal.windowby)
+# - the `table_from_markdown` method needs the processing time to be passed in a column with a special name `__time__`, but the column holding event_time is passed as a parameter to the [`windowby`](/developers/api-docs/pathway-stdlib-temporal#pathway.stdlib.temporal.windowby) function, and here it is called event_time just to keep the example self-explanatory.
 
 import pathway as pw
 
@@ -66,11 +66,11 @@ result = t.windowby(
     n_logs=pw.reducers.count(),
 )
 
-# When you use [`pw.debug_compute_and_print`](/developers/api-docs/debug/#pathway.debug.compute_and_print) to print the results, you will only get the final result, after all input rows are processed.
+# When you use [`pw.debug_compute_and_print`](/developers/api-docs/debug#pathway.debug.compute_and_print) to print the results, you will only get the final result, after all input rows are processed.
 
 pw.debug.compute_and_print(result)
 
-# To understand how the result changed when new rows were processed, it is useful to use [`pw.debug.compute_and_print_update_stream`](/developers/api-docs/debug/#pathway.debug.compute_and_print_update_stream) function. It shows you every change made to the Table, with column `__diff__` denoting whether the row was added or removed.
+# To understand how the result changed when new rows were processed, it is useful to use [`pw.debug.compute_and_print_update_stream`](/developers/api-docs/debug#pathway.debug.compute_and_print_update_stream) function. It shows you every change made to the Table, with column `__diff__` denoting whether the row was added or removed.
 
 pw.debug.compute_and_print_update_stream(result)
 
@@ -80,7 +80,7 @@ pw.debug.compute_and_print_update_stream(result)
 
 # ## Common Behavior
 
-# The general way to define temporal behaviors in Pathway is by using `pw.temporal.common_behavior`. It allows you to set `delay`, `cutoff` and `keep_results` parameters. The `delay` and `cutoff` parameters represent time duration and their type should be compatible with the time column passed to `windowby`. This means that if your time column has type `int` or `float` then `delay` and `cutoff` should also have type, respectively, int or float. If instead, the time column has type [`DatetimeUtc`](/developers/api-docs/pathway/#pathway.DateTimeUtc) or [`DatetimeNaive`](/developers/api-docs/pathway/#pathway.DateTimeNaive), then `delay` and `cutoff` should have type [`Duration`](/developers/api-docs/pathway/#pathway.Duration). To understand the motivation of these parameters read our [guide on behaviors](/developers/user-guide/temporal-data/behaviors/).
+# The general way to define temporal behaviors in Pathway is by using `pw.temporal.common_behavior`. It allows you to set `delay`, `cutoff` and `keep_results` parameters. The `delay` and `cutoff` parameters represent time duration and their type should be compatible with the time column passed to `windowby`. This means that if your time column has type `int` or `float` then `delay` and `cutoff` should also have type, respectively, int or float. If instead, the time column has type [`DatetimeUtc`](/developers/api-docs/pathway#pathway.DateTimeUtc) or [`DatetimeNaive`](/developers/api-docs/pathway#pathway.DateTimeNaive), then `delay` and `cutoff` should have type [`Duration`](/developers/api-docs/pathway#pathway.Duration). To understand the motivation of these parameters read our [guide on behaviors](/developers/user-guide/temporal-data/behaviors/).
 
 # ### Delay
 
@@ -153,7 +153,7 @@ pw.debug.compute_and_print_update_stream(result_keep_results)
 
 # ## Exactly Once Behavior
 
-# For windows that you want to calculate exactly once, Pathway offers an easier way of defining behavior with `pw.temporal.exactly_once_behavior` function. It takes one optional argument, `shift`. Then a window will be calculated at time `_pw_window_end + shift`, and after that all changes to this window will be ignored. It is equivalent to using `pw.temporal.common_behavior` with `delay` set to `duration + shift` (`duration` is an argument to both [sliding](/developers/api-docs/temporal/#pathway.stdlib.temporal.sliding) and [tumbling](/developers/api-docs/temporal/#pathway.stdlib.temporal.tumbling) windows for setting the length of the window) and `cutoff` to `shift`.
+# For windows that you want to calculate exactly once, Pathway offers an easier way of defining behavior with `pw.temporal.exactly_once_behavior` function. It takes one optional argument, `shift`. Then a window will be calculated at time `_pw_window_end + shift`, and after that all changes to this window will be ignored. It is equivalent to using `pw.temporal.common_behavior` with `delay` set to `duration + shift` (`duration` is an argument to both [sliding](/developers/api-docs/temporal#pathway.stdlib.temporal.sliding) and [tumbling](/developers/api-docs/temporal#pathway.stdlib.temporal.tumbling) windows for setting the length of the window) and `cutoff` to `shift`.
 
 result_exactly_once = t.windowby(
     t.event_time,

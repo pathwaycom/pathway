@@ -100,7 +100,7 @@ if "OPENAI_API_KEY" not in os.environ:
 # %% [markdown]
 # We will now assemble the data vectorization pipeline, using a simple `UTF8` file parser, a  character splitter and an embedder from the [Pathway LLM xpack](/developers/user-guide/llm-xpack/overview).
 #
-# First, we define the data sources. We use the files-based one for simplicity, but any supported `pathway` [connector](/developers/api-docs/pathway-io/), such as [s3](/developers/api-docs/pathway-io/s3/) or [Google Drive](/developers/api-docs/pathway-io/gdrive/#pathway.io.gdrive.read) will also work.
+# First, we define the data sources. We use the files-based one for simplicity, but any supported `pathway` [connector](/developers/api-docs/pathway-io/), such as [s3](/developers/api-docs/pathway-io/s3/) or [Google Drive](/developers/api-docs/pathway-io/gdrive#pathway.io.gdrive.read) will also work.
 #
 # Then, we define the embedder and splitter.
 #
@@ -338,7 +338,7 @@ query = "What is Pathway?"
 # vector_server.run_server(..., with_cache=True)
 # ```
 #
-# The default cache configuration is the locally hosted disk cache, stored in the `./Cache` directory. However, it can be customized by explicitly specifying the caching backend chosen among several persistent backend [options](/developers/api-docs/persistence-api/#pathway.persistence.Backend).
+# The default cache configuration is the locally hosted disk cache, stored in the `./Cache` directory. However, it can be customized by explicitly specifying the caching backend chosen among several persistent backend [options](/developers/api-docs/persistence-api#pathway.persistence.Backend).
 
 
 # %% [markdown]

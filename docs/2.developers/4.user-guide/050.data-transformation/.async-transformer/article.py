@@ -20,7 +20,7 @@
 # without waiting for the previous batches to finish.
 # When the call is finished, its result is returned to the engine with a new processing time.
 #
-# To write an `AsyncTransformer` you need to inherit from [`pw.AsyncTransformer`](/developers/api-docs/pathway/#pathway.AsyncTransformer) and implement the [`invoke` method](/developers/api-docs/pathway/#pathway.AsyncTransformer.invoke) (it is a coroutine). The names of the arguments of the method have to be the same as the columns in the input table. You can use additional arguments but then you have to specify their default value (it might be useful if you want to use the same `AsyncTransformer` on multiple Pathway tables with different sets of columns). You have to use all columns from the input table. The order of columns/arguments doesn't matter as they are passed to the method as keyword arguments.
+# To write an `AsyncTransformer` you need to inherit from [`pw.AsyncTransformer`](/developers/api-docs/pathway#pathway.AsyncTransformer) and implement the [`invoke` method](/developers/api-docs/pathway#pathway.AsyncTransformer.invoke) (it is a coroutine). The names of the arguments of the method have to be the same as the columns in the input table. You can use additional arguments but then you have to specify their default value (it might be useful if you want to use the same `AsyncTransformer` on multiple Pathway tables with different sets of columns). You have to use all columns from the input table. The order of columns/arguments doesn't matter as they are passed to the method as keyword arguments.
 #
 # You also need to define the schema of a table that is produced. The `invoke` method has to return a dictionary containing values to put in all columns of the output table. The keys in the dictionary has to match fields from the output schema.
 # Let's create a simple `AsyncTransformer` that produces a Table with two output columns - `value` and `ret`.
@@ -44,7 +44,7 @@ class SimpleAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
 
 # %% [markdown]
 # Let's use the transformer on the example input table.
-# The result table containing only successful calls can be retrieved from the [`successful`](/developers/api-docs/pathway/#pathway.AsyncTransformer.successful) property of the transformer.
+# The result table containing only successful calls can be retrieved from the [`successful`](/developers/api-docs/pathway#pathway.AsyncTransformer.successful) property of the transformer.
 
 # %%
 table = pw.debug.table_from_markdown(
@@ -80,7 +80,7 @@ pw.debug.compute_and_print_update_stream(result)
 # ## Failing calls
 # The `invoke` method is usually written by an external user (like you) and it can contain bugs (unless you write bug-free code).
 # When the `invoke` call raises an exception or times out (see the [next section](#controlling-asynctransformer-behavior) for that), its output won't be included in the `successful` table.
-# The failed rows are put in the table accessible by the [`failed`](/developers/api-docs/pathway/#pathway.AsyncTransformer.failed) property.
+# The failed rows are put in the table accessible by the [`failed`](/developers/api-docs/pathway#pathway.AsyncTransformer.failed) property.
 # Let's define a new `AsyncTransformer` to check that.
 # Maybe we don't like the value $12$ and we fail our function whenever we get it as an argument.
 

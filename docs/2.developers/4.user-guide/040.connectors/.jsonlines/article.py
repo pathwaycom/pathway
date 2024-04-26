@@ -28,7 +28,7 @@
 #
 # ## Input connector
 #
-# To read a file or a directory, use the [`pw.io.jsonlines.read` function](/developers/api-docs/pathway-io/jsonlines/#pathway.io.jsonlines.read).
+# To read a file or a directory, use the [`pw.io.jsonlines.read` function](/developers/api-docs/pathway-io/jsonlines#pathway.io.jsonlines.read).
 # It takes several parameters, including:
 # - `path`: the path of the directory or the file to read.
 # - `schema` (optional): the schema of the resulting table.
@@ -102,7 +102,7 @@ pw.debug.compute_and_print(table)
 
 # ## Output connector
 #
-# To output a table in the JSON Lines format, you should use [`pw.io.jsonlines.write`](/developers/api-docs/pathway-io/jsonlines/#pathway.io.jsonlines.write).
+# To output a table in the JSON Lines format, you should use [`pw.io.jsonlines.write`](/developers/api-docs/pathway-io/jsonlines#pathway.io.jsonlines.write).
 # It takes two parameters:
 # - the table to output
 # - the filename.

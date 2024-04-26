@@ -26,7 +26,7 @@
 # In this **streaming mode**, Pathway assumes unbounded incoming updates.
 # To process the incoming data, Pathway maintains a [dataflow](/developers/user-guide/introduction/concepts#dataflow).
 # This mode requires input connectors listening to streaming data sources.
-# The computation runs indefinitely until the process is killed: the computation starts when [`pw.run`](/developers/api-docs/pathway/#pathway.run) is called and everything afterwards is unreachable code.
+# The computation runs indefinitely until the process is killed: the computation starts when [`pw.run`](/developers/api-docs/pathway#pathway.run) is called and everything afterwards is unreachable code.
 #
 # However, the streaming mode may not be the most convenient when testing or debugging.
 # For that purpose, Pathway provides a **static mode** in which static data may be attached to the connectors.
@@ -90,8 +90,8 @@ pw.debug.compute_and_print(t_name)
 #
 # ### Streaming mode
 # In the streaming mode, those tables would be obtained using one of the [connectors](/developers/user-guide/connecting-to-data/connectors/) provided by Pathway.
-# For example, we could use [`pw.io.kafka.read`](/developers/api-docs/pathway-io/kafka/#pathway.io.kafka.read) to obtain the table from Kafka.
-# The results should be taken out of Pathway using an output connector: we could send the data to postgresql using [`pw.io.progresql.write`](/developers/api-docs/pathway-io/postgres/#pathway.io.postgres.write) for instance.
+# For example, we could use [`pw.io.kafka.read`](/developers/api-docs/pathway-io/kafka#pathway.io.kafka.read) to obtain the table from Kafka.
+# The results should be taken out of Pathway using an output connector: we could send the data to postgresql using [`pw.io.progresql.write`](/developers/api-docs/pathway-io/postgres#pathway.io.postgres.write) for instance.
 # Otherwise, the way the data is manipulated is exactly the same in both modes.
 
 # ## Select and notations
@@ -107,7 +107,7 @@ pw.debug.compute_and_print(t_david.select(t_david.name))
 
 #  * **The bracket notation**: you can also use string to access the column **the bracket notation**. The previous example is equivalent to ```t_david.select(t_david["name"])```.
 
-#  * The **this notation**: to refer to the table currently manipulated you can use [`pw.this`](/developers/api-docs/pathway/#pathway.this). Our example becomes `t_david.select(pw.this.name)`.
+#  * The **this notation**: to refer to the table currently manipulated you can use [`pw.this`](/developers/api-docs/pathway#pathway.this). Our example becomes `t_david.select(pw.this.name)`.
 # This notation works for all standard transformers.
 #     > It can be used to refer to the table, even if it has not been given a name, for example in successive operations:
 
@@ -122,7 +122,7 @@ pw.debug.compute_and_print(t_new_age)
 
 # In this example, it would be impossible to refer to the table obtained after the first select (with the column `new_age`) without using `pw.this` as `t_david` still refers to the initial and unmodified table.
 
-#  * **left and right notations**: similarly to the this notation, [`pw.left`](/developers/api-docs/pathway/#pathway.left) and [`pw.right`](/developers/api-docs/pathway/#pathway.right) can be used to manipulate the different tables used in a [join](#working-with-multiples-tables-union-concatenation-join) ([`.join`](/developers/api-docs/pathway-table#pathway.Table.join)).
+#  * **left and right notations**: similarly to the this notation, [`pw.left`](/developers/api-docs/pathway#pathway.left) and [`pw.right`](/developers/api-docs/pathway#pathway.right) can be used to manipulate the different tables used in a [join](#working-with-multiples-tables-union-concatenation-join) ([`.join`](/developers/api-docs/pathway-table#pathway.Table.join)).
 #     > `left_table.join(right_table, pw.left.C1==pw.right.C2).select(pw.left.C3, pw.right.C4)`
 #
 # For more information about the join and the use of `pw.left` and `pw.right`, you can see the dedicated [section](#working-with-multiples-tables-union-concatenation-join) and [manual](/developers/user-guide/data-transformation/join-manual/).
@@ -232,7 +232,7 @@ pw.debug.compute_and_print(
 # You can do groupbys on multiple columns at once (e.g. `.groupby(t.colA, t.colB)`).
 # The list of all the available reducers can be found [here](/developers/api-docs/reducers).
 #
-# If you want to find out more about the [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby) and [`reduce`](/developers/api-docs/pathway/#pathway.GroupedTable.reduce) operations, you can read our [article](/developers/user-guide/data-transformation/groupby-reduce-manual/) about it.
+# If you want to find out more about the [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby) and [`reduce`](/developers/api-docs/pathway#pathway.GroupedTable.reduce) operations, you can read our [article](/developers/user-guide/data-transformation/groupby-reduce-manual/) about it.
 #
 # ## Working with multiples tables: union, concatenation, join
 #
@@ -327,7 +327,7 @@ pw.debug.compute_and_print(t_name.update_cells(t_updated_names))
 
 # ## Operations
 #
-# * **Row-centered operations** with [`pw.apply`](/developers/api-docs/pathway/#pathway.apply): you can apply a function to each value of a column (or more) by using `pw.apply` in a `select`.
+# * **Row-centered operations** with [`pw.apply`](/developers/api-docs/pathway#pathway.apply): you can apply a function to each value of a column (or more) by using `pw.apply` in a `select`.
 
 # _MD_COMMENT_START_
 pw.debug.compute_and_print(

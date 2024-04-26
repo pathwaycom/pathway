@@ -39,7 +39,7 @@
 #
 # In this notebook you will learn how to visualise a live data stream in real-time from the familiar context of a Jupyter Notebook. You will use Pathway, [Bokeh](https://bokeh.org/) and [Panel](https://panel.holoviz.org/) to build a real-time data visualisation that will alert you when the data hits a critical threshold. You can follow along on this page or run the code for yourself [in Colab](https://colab.research.google.com/github/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb) or [from Github](https://github.com/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb).
 #
-# Because Pathway [unites static and stream processing](/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming/#switching-from-batch-to-streaming) in a single syntax, you can use the exact same code for both batch and streaming. This way you can test your workflow with a static snapshot and then simply switch out the data source for a live stream when you want to visualise the full data flow in real-time.
+# Because Pathway [unites static and stream processing](/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming#switching-from-batch-to-streaming) in a single syntax, you can use the exact same code for both batch and streaming. This way you can test your workflow with a static snapshot and then simply switch out the data source for a live stream when you want to visualise the full data flow in real-time.
 #
 # Let's jump in! 🪂
 #
@@ -80,7 +80,7 @@ import pathway as pw
 # %% [markdown]
 # ## Data source setup
 #
-# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/#kafka-integration) or [Redpanda](/developers/user-guide/connectors/switching-to-redpanda/).
+# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connectors/switching-to-redpanda/).
 #
 # The `input_rate` parameter controls how fast the data is replayed.
 #
@@ -106,7 +106,7 @@ data = data.with_columns(t=data.t.dt.utc_from_timestamp(unit="ms"))
 #
 # Now it's time to build your trading algorithm. There is no need to fully understand the terminology or the math here. What's most important to grasp is how you are taking a stream of data and performing a windowing transformation to get more analytical value out of the raw data.
 #
-# Start by creating the first of our two Bollinger Bands: the 20-minute volatility measured as the Volume Weighted Standard Deviation. Use a [`sliding window`](/developers/user-guide/temporal-data/windows-manual/#temporal-sliding-windowing) to compute at every minute the volume weighted price mean and standard deviation aggregate on the past 20 minutes of data. The `behavior` option tells Pathway that the window should emit the statistics only when it is finished - we do not want to see incomplete results.
+# Start by creating the first of our two Bollinger Bands: the 20-minute volatility measured as the Volume Weighted Standard Deviation. Use a [`sliding window`](/developers/user-guide/temporal-data/windows-manual#temporal-sliding-windowing) to compute at every minute the volume weighted price mean and standard deviation aggregate on the past 20 minutes of data. The `behavior` option tells Pathway that the window should emit the statistics only when it is finished - we do not want to see incomplete results.
 #
 # To compute the standard deviation, use the identity:
 #

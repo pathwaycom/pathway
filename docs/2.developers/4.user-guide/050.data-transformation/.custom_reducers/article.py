@@ -23,7 +23,7 @@
 # %% [markdown]
 # # Writing simple custom reducer in Pathway
 #
-# Pathway supports natively aggregation using a wide range of [reducers](/developers/api-docs/reducers/), e.g., [`sum`](/developers/api-docs/reducers/#pathway.reducers.sum), [`count`](/developers/api-docs/reducers/#pathway.reducers.count), or [`max`](/developers/api-docs/reducers/#pathway.reducers.max). However, those might not cover all the necessary ways of aggregating values. In this tutorial, you learn how to write reducers implementing custom logic.
+# Pathway supports natively aggregation using a wide range of [reducers](/developers/api-docs/reducers/), e.g., [`sum`](/developers/api-docs/reducers#pathway.reducers.sum), [`count`](/developers/api-docs/reducers#pathway.reducers.count), or [`max`](/developers/api-docs/reducers#pathway.reducers.max). However, those might not cover all the necessary ways of aggregating values. In this tutorial, you learn how to write reducers implementing custom logic.
 #
 # For example, let's implement a custom `stdev` reducer that computes the standard deviation.
 # %%
@@ -62,12 +62,12 @@ class StdDevAccumulator(pw.BaseCustomAccumulator):
 
 stddev = pw.reducers.udf_reducer(StdDevAccumulator)
 # %% [markdown]
-# Above, the [`pw.BaseCustomAccumulator`](/developers/api-docs/pathway/#pathway.BaseCustomAccumulator) class is used as a base for the `StdDevAccumulator`, which describes the logic of the underlying accumulator. The accumulator class requires a few methods:
-# * [`from_row`](/developers/api-docs/pathway/#pathway.BaseCustomAccumulator.from_row), which constructs an accumulator from the values of a single row of a table (here, a single value since our reducer applies to a single column),
-# * [`update`](/developers/api-docs/pathway/#pathway.BaseCustomAccumulator.update), which updates one accumulator by another accumulator,
-# * [`compute_result`](/developers/api-docs/pathway/#pathway.BaseCustomAccumulator.compute_result), which produces the output based on the accumulator state,
-# * [`retract`](/developers/api-docs/pathway/#pathway.BaseCustomAccumulator.retract), is an optional method, which processes negative updates,
-# * [`neutral`](/developers/api-docs/pathway/#pathway.BaseCustomAccumulator.neutral), is an optional method, which returns state corresponding to consuming 0 rows.
+# Above, the [`pw.BaseCustomAccumulator`](/developers/api-docs/pathway#pathway.BaseCustomAccumulator) class is used as a base for the `StdDevAccumulator`, which describes the logic of the underlying accumulator. The accumulator class requires a few methods:
+# * [`from_row`](/developers/api-docs/pathway#pathway.BaseCustomAccumulator.from_row), which constructs an accumulator from the values of a single row of a table (here, a single value since our reducer applies to a single column),
+# * [`update`](/developers/api-docs/pathway#pathway.BaseCustomAccumulator.update), which updates one accumulator by another accumulator,
+# * [`compute_result`](/developers/api-docs/pathway#pathway.BaseCustomAccumulator.compute_result), which produces the output based on the accumulator state,
+# * [`retract`](/developers/api-docs/pathway#pathway.BaseCustomAccumulator.retract), is an optional method, which processes negative updates,
+# * [`neutral`](/developers/api-docs/pathway#pathway.BaseCustomAccumulator.neutral), is an optional method, which returns state corresponding to consuming 0 rows.
 #
 # Now, let's see the reducer in action.
 # %%

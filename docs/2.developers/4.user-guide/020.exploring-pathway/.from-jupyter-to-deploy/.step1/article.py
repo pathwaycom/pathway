@@ -23,7 +23,7 @@
 
 # %% [markdown]
 # # Part 1: Static data exploration in Jupyter
-# This notebook is part of the first part of the tutorial [From interactive data exploration to deployment](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/#part-1-static-data-exploration-in-jupyter).
+# This notebook is part of the first part of the tutorial [From interactive data exploration to deployment](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy#part-1-static-data-exploration-in-jupyter).
 
 
 # %%

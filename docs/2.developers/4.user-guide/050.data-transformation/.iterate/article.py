@@ -60,7 +60,7 @@ res = pw.iterate(collatz_step, t=table)
 pw.debug.compute_and_print(res)
 
 # %% [markdown]
-# The main part of the computation is the [`pw.iterate`](/developers/api-docs/pathway/#pathway.iterate) function. It takes a function as an argument - the `collatz_step` in this case. You need to pass all tables required by `collatz_step` as keyword arguments of `pw.iterate`. In general, `pw.iterate` can return a single table, a tuple or a named tuple of tables. It depends on what is returned from the user-defined function passed to `pw.iterate`. In this case, the `collatz_step` returns a single table and that's why `pw.iterate` also returns a single table.
+# The main part of the computation is the [`pw.iterate`](/developers/api-docs/pathway#pathway.iterate) function. It takes a function as an argument - the `collatz_step` in this case. You need to pass all tables required by `collatz_step` as keyword arguments of `pw.iterate`. In general, `pw.iterate` can return a single table, a tuple or a named tuple of tables. It depends on what is returned from the user-defined function passed to `pw.iterate`. In this case, the `collatz_step` returns a single table and that's why `pw.iterate` also returns a single table.
 #
 # As for the mechanism, inside the iteration records of the returned table `t` that have changed their values are passed to the beginning of the function and flow through the dataflow in `collatz_step` again as new records of `t`. The `iteration_limit` argument of `pw.iterate` was not set. That's why the computation continues until records stop updating. If the Collatz conjecture was not true for these numbers, the computation would not finish. Fortunately, it has finished, and this way we checked that it is true at least for these three numbers. You can check more numbers if you wish but don't expect anything fancy as all numbers up to $2^{69}$ have been [checked already](http://www.ericr.nl/wondrous/).
 #
@@ -175,7 +175,7 @@ def cc(vertices: pw.Table, edges: pw.Table) -> pw.Table:
 
 # %% [markdown]
 
-# In an iteration step, the `edges` table is joined with the `vertices` table to get the representatives of neighbors in the graph. Then `groupby` is performed on `edges_with_repr` to get a minimal representative for each vertex. A new ID is assigned based on column `a` - vertex label. It is assigned in exactly the same way it is done above when creating a table. It allows you to have the same set of keys in the `vertices_updated` table as in the `vertices` table. However, Pathway is not that clever to deduce that the keys are exactly the same in these two tables. That's why it has to be additionaly told they are the same, by using [`with_universe_of`](/developers/api-docs/pathway-table/#pathway.Table.with_universe_of).
+# In an iteration step, the `edges` table is joined with the `vertices` table to get the representatives of neighbors in the graph. Then `groupby` is performed on `edges_with_repr` to get a minimal representative for each vertex. A new ID is assigned based on column `a` - vertex label. It is assigned in exactly the same way it is done above when creating a table. It allows you to have the same set of keys in the `vertices_updated` table as in the `vertices` table. However, Pathway is not that clever to deduce that the keys are exactly the same in these two tables. That's why it has to be additionaly told they are the same, by using [`with_universe_of`](/developers/api-docs/pathway-table#pathway.Table.with_universe_of).
 
 # Preserving the set of keys is important in `iterate`. The iteration can stop only stop if there are no updates in any of the records. The records correspondence between iterations is determined using their IDs. If a record with one ID disappears and a record with a new ID appears, Pathway decides that something is still changing and the computation has to continue (even if the contents of the two rows are the same). It is possible to change the set of keys used in `iterate` but in the end the set of keys has to stop changing anyway. You can see that in the next example on computing shortest distances in a graph.
 
@@ -197,7 +197,7 @@ pw.debug.compute_and_print(result)
 # Now let's consider a graph that is updated over time and compute its connected components. The graph is presented below with deletions marked using red color and insertions using green color. Each event has a time associated with it. The initial vertices (at time $2$) are black-colored.
 # ![Graph with online updates](assets/content/tutorials/iterate/iterate_cc_2.svg)
 # <!-- https://docs.google.com/drawings/d/1oUQj2YZCQ20fg4GxeVTGoC368CQzLB4jXVpCm9Ejnig/edit?usp=sharing -->
-# You can simulate a stream by adding `__time__` and `__diff__` columns to [`table_from_markdown`](/developers/api-docs/debug/#pathway.debug.table_from_markdown). The `__time__` column simulates the time the record arrives to Pathway and the `__diff__` determines whether the record is inserted (`+1`, the default) or deleted (`-1`).
+# You can simulate a stream by adding `__time__` and `__diff__` columns to [`table_from_markdown`](/developers/api-docs/debug#pathway.debug.table_from_markdown). The `__time__` column simulates the time the record arrives to Pathway and the `__diff__` determines whether the record is inserted (`+1`, the default) or deleted (`-1`).
 
 # %%
 vertices = pw.debug.table_from_markdown(
@@ -241,7 +241,7 @@ edges = pw.Table.concat_reindex(
 )
 
 # %% [markdown]
-# You can now run the computations. To see the updates over time [`pw.debug.compute_and_print_update_stream`](/developers/api-docs/debug/#pathway.debug.compute_and_print_update_stream) was used. Apart from ordinary columns, it returns `__time__` and `__diff__` columns which say respectively, when the record was produced and whether it is an insertion or a deletion.
+# You can now run the computations. To see the updates over time [`pw.debug.compute_and_print_update_stream`](/developers/api-docs/debug#pathway.debug.compute_and_print_update_stream) was used. Apart from ordinary columns, it returns `__time__` and `__diff__` columns which say respectively, when the record was produced and whether it is an insertion or a deletion.
 
 # %%
 result = pw.iterate(cc, vertices=pw.iterate_universe(vertices), edges=edges)
@@ -296,7 +296,7 @@ edges = pw.Table.concat_reindex(
 # %% [markdown]
 # To make the updates easier, self-loops with weight zero are added. Thanks to them, there is no need to compare distances computed in the previous and the current iteration (the only vertex that would need them is the starting vertex).
 #
-# In a single iteration step, for each vertex, the length of paths via each of its neighbors is computed and the smallest one is chosen. Computing path length from the starting point via each neighbor is done using a [`join`](/developers/api-docs/pathway-table#pathway.Table.join) and taking the minimal length is done by a [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby), [`reduce`](/developers/api-docs/pathway/#pathway.GroupedTable.reduce) pair.
+# In a single iteration step, for each vertex, the length of paths via each of its neighbors is computed and the smallest one is chosen. Computing path length from the starting point via each neighbor is done using a [`join`](/developers/api-docs/pathway-table#pathway.Table.join) and taking the minimal length is done by a [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby), [`reduce`](/developers/api-docs/pathway#pathway.GroupedTable.reduce) pair.
 
 
 # %%
@@ -312,7 +312,7 @@ def bellman_ford(vertices: pw.Table, edges: pw.Table) -> pw.Table:
 
 
 # %% [markdown]
-# Now you can use the `bellman_ford` in iterate. Note the [`pw.iterate_universe`](/developers/api-docs/pathway/#pathway.iterate_universe) wrapper for the `vertices` table. It is needed to tell `pw.iterate` that the vertices table changes its set of IDs.
+# Now you can use the `bellman_ford` in iterate. Note the [`pw.iterate_universe`](/developers/api-docs/pathway#pathway.iterate_universe) wrapper for the `vertices` table. It is needed to tell `pw.iterate` that the vertices table changes its set of IDs.
 
 # %%
 res = pw.iterate(bellman_ford, vertices=pw.iterate_universe(vertices), edges=edges)

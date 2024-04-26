@@ -25,7 +25,7 @@
 #
 # JSON is a widely used format for data interchange due to its simplicity and readability. Upon finishing this article, managing JSON in Pathway should become effortlessly intuitive.
 #
-# As an example, we'll use JSON objects loaded directly from python list. However, JSON data can come from various sources that support this format, such as [Kafka](/developers/user-guide/connectors/kafka_connectors) or an [HTTP connector](/developers/api-docs/pathway-io/http/#pathway.io.http.rest_connector).
+# As an example, we'll use JSON objects loaded directly from python list. However, JSON data can come from various sources that support this format, such as [Kafka](/developers/user-guide/connectors/kafka_connectors) or an [HTTP connector](/developers/api-docs/pathway-io/http#pathway.io.http.rest_connector).
 # %%
 rows = [
     (
@@ -68,7 +68,7 @@ rows = [
 import logging
 
 # %% [markdown]
-# Each JSON object carries information about an author and their associated books. To load it, let's establish a [schema](/developers/user-guide/types-in-pathway/schema/#understanding-data-types-and-schemas) reflecting the data's structure and then proceed to load this data into a table.
+# Each JSON object carries information about an author and their associated books. To load it, let's establish a [schema](/developers/user-guide/types-in-pathway/schema#understanding-data-types-and-schemas) reflecting the data's structure and then proceed to load this data into a table.
 # %%
 import pathway as pw
 
@@ -97,7 +97,7 @@ pw.debug.compute_and_print(table)
 #
 # ### Accessing JSON fields
 #
-# A column of type [`pw.Json`](/developers/api-docs/pathway/#pathway.Json) enables access to its attributes using the index operator (`[]`). This operator accepts an index in the form of a string for JSON objects, an integer for JSON arrays, or an expression evaluating to one of these types. If there's no element at the index or if the value is `pw.Json.NULL`, it returns `pw.Json.NULL`, making this operator convenient for chaining.
+# A column of type [`pw.Json`](/developers/api-docs/pathway#pathway.Json) enables access to its attributes using the index operator (`[]`). This operator accepts an index in the form of a string for JSON objects, an integer for JSON arrays, or an expression evaluating to one of these types. If there's no element at the index or if the value is `pw.Json.NULL`, it returns `pw.Json.NULL`, making this operator convenient for chaining.
 
 # %%
 books = table.select(author=pw.this.data["author"]["name"], books=pw.this.data["books"])
@@ -125,7 +125,7 @@ pw.debug.compute_and_print(sample)
 # %% [markdown]
 # ### Converting to simple types
 #
-# `JSON` column can be converted into `Optional[T]` where `T` is one of the simple types, using methods: [`as_int()`](/developers/api-docs/pathway/#pathway.ColumnExpression.as_int), [`as_str()`](/developers/api-docs/pathway/#pathway.ColumnExpression.as_str), [`as_float()`](/developers/api-docs/pathway/#pathway.ColumnExpression.as_float), [`as_bool()`](/developers/api-docs/pathway/#pathway.ColumnExpression.as_bool).
+# `JSON` column can be converted into `Optional[T]` where `T` is one of the simple types, using methods: [`as_int()`](/developers/api-docs/pathway#pathway.ColumnExpression.as_int), [`as_str()`](/developers/api-docs/pathway#pathway.ColumnExpression.as_str), [`as_float()`](/developers/api-docs/pathway#pathway.ColumnExpression.as_float), [`as_bool()`](/developers/api-docs/pathway#pathway.ColumnExpression.as_bool).
 
 # %%
 books.select(author=pw.unwrap(pw.this.author.as_str()).str.upper())
@@ -138,7 +138,7 @@ pw.debug.compute_and_print(
 # %% [markdown]
 # ### Flatten
 #
-# You can utilize the [`flatten()`](/developers/api-docs/pathway-table/#pathway.internals.table.Table.flatten) operator specifically on columns that contain JSON arrays. It's a useful tool when working with complex JSON structures.
+# You can utilize the [`flatten()`](/developers/api-docs/pathway-table#pathway.internals.table.Table.flatten) operator specifically on columns that contain JSON arrays. It's a useful tool when working with complex JSON structures.
 
 # %%
 flat_list = books.flatten(pw.this.books)
@@ -152,7 +152,7 @@ pw.debug.compute_and_print(flat_list)
 
 
 # %% [markdown]
-# Pathway enables manipulation of JSON using [user-defined functions](/developers/api-docs/pathway/#pathway.udf). Just like with expressions, the index operator (`[]`) and methods allowing conversion into specific types are available.  It's crucial to note that this conversion is strict— attempting to convert incompatible data will result in an exception.
+# Pathway enables manipulation of JSON using [user-defined functions](/developers/api-docs/pathway#pathway.udf). Just like with expressions, the index operator (`[]`) and methods allowing conversion into specific types are available.  It's crucial to note that this conversion is strict— attempting to convert incompatible data will result in an exception.
 
 
 # %%
@@ -169,4 +169,4 @@ pw.debug.compute_and_print(
 # _MD_SHOW_flat_list.select(title=pw.this.books["title"], metadata=transform(pw.this.books))
 
 # %% [markdown]
-# Further details about `pw.Json` functionality are available in the dedicated [API documentation](/developers/api-docs/pathway/#pathway.Json).
+# Further details about `pw.Json` functionality are available in the dedicated [API documentation](/developers/api-docs/pathway#pathway.Json).

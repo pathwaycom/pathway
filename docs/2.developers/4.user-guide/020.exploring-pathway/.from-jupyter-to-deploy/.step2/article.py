@@ -23,7 +23,7 @@
 
 # %% [markdown]
 # # Part 2: From static data exploration to interactive dashboard prototyping
-# This notebook is part of the second part of the tutorial [From interactive data exploration to deployment](https://pathway.com/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/#part-2-from-static-data-exploration-to-interactive-dashboard-prototyping).
+# This notebook is part of the second part of the tutorial [From interactive data exploration to deployment](/user-guide/exploring-pathway/from-jupyter-to-deploy#part-2-from-static-data-exploration-to-interactive-dashboard-prototyping).
 
 # %%
 # Download CSV file

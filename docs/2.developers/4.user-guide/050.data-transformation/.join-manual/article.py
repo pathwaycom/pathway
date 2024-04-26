@@ -121,7 +121,7 @@ pw.debug.compute_and_print(bad_match)
 # #
 # As you can see, the result is a table of life-threatening pairs.
 #
-# The [`select`](/developers/api-docs/pathway/#pathway.JoinResult.select) function works here similarly as [`select`](/developers/api-docs/pathway-table#pathway.Table.select) on a table. The difference is
+# The [`select`](/developers/api-docs/pathway#pathway.JoinResult.select) function works here similarly as [`select`](/developers/api-docs/pathway-table#pathway.Table.select) on a table. The difference is
 # that here, you can use columns of both tables as arguments, e.g.
 
 # +
@@ -141,7 +141,7 @@ pw.debug.compute_and_print(bad_match_note)
 
 # ### On self joins
 # In order to perform a self join (a join of table with itself),
-# you need to create a copy with [`.copy`](/developers/api-docs/pathway-table/#pathway.Table.copy).
+# you need to create a copy with [`.copy`](/developers/api-docs/pathway-table#pathway.Table.copy).
 
 # +
 same_allergies = (
@@ -206,7 +206,7 @@ pw.debug.compute_and_print(forbidden_breakfast)
 
 # ### Removing duplicates
 # If you really want to have a table without the 'reason' column and without
-# duplicates, you can achieve that with extra [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby) and [`reduce`](/developers/api-docs/pathway/#pathway.GroupedTable.reduce) :
+# duplicates, you can achieve that with extra [`groupby`](/developers/api-docs/pathway-table#pathway.Table.groupby) and [`reduce`](/developers/api-docs/pathway#pathway.GroupedTable.reduce) :
 
 # +
 forbidden_breakfast = people_allergies.join_left(
@@ -225,7 +225,7 @@ pw.debug.compute_and_print(forbidden_breakfast_no_duplicates)
 # can be found in the reduce-groupby [manual](/developers/user-guide/data-transformation/groupby-reduce-manual/).
 
 # ### Expressions for unmatched rows
-# Because [`join_left`](/developers/api-docs/pathway-table/#pathway.Table.join_left) operation returns rows from the left table, even if there is no
+# Because [`join_left`](/developers/api-docs/pathway-table#pathway.Table.join_left) operation returns rows from the left table, even if there is no
 # match in the right column, some input columns for functions might have no defined value.
 #
 # **The left join sets the undefined input cells to `None` and the function needs to
@@ -293,7 +293,7 @@ pw.debug.compute_and_print(basic_customer_info)
 #
 
 # ### On right joins
-# In the examples above, you only relied on `join_left`. The [`join_right`](/developers/api-docs/pathway-table/#pathway.Table.join_right) operation is quite
+# In the examples above, you only relied on `join_left`. The [`join_right`](/developers/api-docs/pathway-table#pathway.Table.join_right) operation is quite
 # similar in its behavior. Namely,
 
 # +
@@ -327,7 +327,7 @@ pw.debug.compute_and_print(people_allergies)
 # used in the `join_left`.
 
 # ### On full outer joins
-# The [`join_outer`](/developers/api-docs/pathway-table/#pathway.Table.join_outer) operation is a full outer join, which means that
+# The [`join_outer`](/developers/api-docs/pathway-table#pathway.Table.join_outer) operation is a full outer join, which means that
 
 # +
 # _MD_SHOW_left.join_outer(right, *on)
@@ -474,7 +474,7 @@ pw.debug.compute_and_print(friends)
 pw.debug.compute_and_print(menu)
 
 #
-# To handle joins using those columns, you can use [`pointer_from`](/developers/api-docs/pathway-table/#pathway.Table.pointer_from) function
+# To handle joins using those columns, you can use [`pointer_from`](/developers/api-docs/pathway-table#pathway.Table.pointer_from) function
 
 likes += likes.select(
     f_id_ptr=friends.pointer_from(likes.f_id),
@@ -486,12 +486,12 @@ pw.debug.compute_and_print(likes)
 # is presented the next section on chaining joins.
 
 # ## Chaining joins:
-# Pathway provides two ways of chaining joins. The first relies on usage of [`pw.this`](/developers/api-docs/pathway/#pathway.this),
+# Pathway provides two ways of chaining joins. The first relies on usage of [`pw.this`](/developers/api-docs/pathway#pathway.this),
 # the second allows for slightly more compact code. Below, let's focus on chaining joins
 # using `pw.left`.
 #
 #  ### Simple join chaining
-# Below, you will do chain joins using [`pw.left`](/developers/api-docs/pathway/#pathway.left) and [`pw.right`](/developers/api-docs/pathway/#pathway.right). To show how it can be used, let's revisit
+# Below, you will do chain joins using [`pw.left`](/developers/api-docs/pathway#pathway.left) and [`pw.right`](/developers/api-docs/pathway#pathway.right). To show how it can be used, let's revisit
 # the first example of `join_left`, in which you computed a `join_left` on a table
 # that was obtained by another `join_left`. Instead of storing the result of the first
 # `join_left` in `people_allergies`, you can use the following:
@@ -570,7 +570,7 @@ pw.debug.compute_and_print(
     ).reduce(*pw.this[["name", "dish", "budget", "price"]])
 )
 
-# Furthermore, one can make this piece of code more compact, using the [* notation](/developers/user-guide/data-transformation/table-operations/#select-and-notations).
+# Furthermore, one can make this piece of code more compact, using the [* notation](/developers/user-guide/data-transformation/table-operations#select-and-notations).
 
 pw.debug.compute_and_print(
     friends.join(likes, friends.id == likes.f_id_ptr)

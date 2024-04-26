@@ -81,7 +81,7 @@ poll = pw.debug.table_from_markdown(
 # It takes a list of columns `*C` as argument and groups the row according to their values in those columns.
 # In other words, all the rows with the same values, column-wise, in each column of `*C` are put into the same group.
 #
-# As a result, it returns a [`GroupedTable`](/developers/api-docs/pathway/#pathway.GroupedTable) object, which stores
+# As a result, it returns a [`GroupedTable`](/developers/api-docs/pathway#pathway.GroupedTable) object, which stores
 # a single row for each unique tuple from columns in `*C` and a collection
 # of grouped items corresponding to each column that is not in `*C`.
 #
@@ -93,7 +93,7 @@ poll = pw.debug.table_from_markdown(
 # with the `reduce` operation.
 #
 # ## Reduce Syntax
-# The [`reduce`](/developers/api-docs/pathway/#pathway.GroupedTable.reduce) function behaves a little bit like [`select`](/developers/api-docs/pathway-table#pathway.Table.select), and it also takes
+# The [`reduce`](/developers/api-docs/pathway#pathway.GroupedTable.reduce) function behaves a little bit like [`select`](/developers/api-docs/pathway-table#pathway.Table.select), and it also takes
 # two kinds of arguments:
 
 # +
@@ -117,7 +117,7 @@ poll = pw.debug.table_from_markdown(
 # The `reduce` operation allows us to apply a reducer to transform a group into a value.
 #
 # ## Counting Votes With Groupby-Reduce
-# Below, you can see an example that uses the [`sum`](/developers/api-docs/reducers/#pathway.reducers.sum) reducer to compute the sum of all
+# Below, you can see an example that uses the [`sum`](/developers/api-docs/reducers#pathway.reducers.sum) reducer to compute the sum of all
 # votes and the sum of all fractional votes.
 
 # +
@@ -184,13 +184,13 @@ pw.debug.compute_and_print(
 # -
 
 # More examples of joins (including another example of a join over a foreign key)
-# can be found in the join manual ([full article](/developers/user-guide/data-transformation/join-manual/), [foreign key example](/developers/user-guide/data-transformation/join-manual/#joins-on-a-foreign-key)).
+# can be found in the join manual ([full article](/developers/user-guide/data-transformation/join-manual/), [foreign key example](/developers/user-guide/data-transformation/join-manual#joins-on-a-foreign-key)).
 #
 
 # ## More Examples
 # ### Recent activity with max reducer
 # Below, you can see a piece of code that finds the latest votes that were submitted to the poll.
-# It is done with `groupby`-`reduce` operations chained with [`join`](/developers/api-docs/pathway-table#pathway.Table.join) and [`filter`](/developers/api-docs/pathway-table#pathway.Table.filter), using [`pw.this`](/developers/api-docs/pathway/#pathway.this).
+# It is done with `groupby`-`reduce` operations chained with [`join`](/developers/api-docs/pathway-table#pathway.Table.join) and [`filter`](/developers/api-docs/pathway-table#pathway.Table.filter), using [`pw.this`](/developers/api-docs/pathway#pathway.this).
 #
 #
 
@@ -259,7 +259,7 @@ pw.debug.compute_and_print(relative_score)
 # Below, we present a snippet of code, that in the context of a poll,
 # finds the most obvious information: which label got the most votes.
 
-# Let's take a look on what exactly is the result of [`argmax`](/developers/api-docs/reducers/#pathway.reducers.argmax) reducer:
+# Let's take a look on what exactly is the result of [`argmax`](/developers/api-docs/reducers#pathway.reducers.argmax) reducer:
 
 pw.debug.compute_and_print(
     relative_score.groupby(relative_score.food_item).reduce(
@@ -294,4 +294,4 @@ pw.debug.compute_and_print(
     )
 )
 
-# You can read more about [joins](/developers/user-guide/data-transformation/join-manual/), [*.ix](/developers/api-docs/pathway/#property-ix) and [ID-s](/developers/user-guide/data-transformation/table-operations/#manipulating-the-table) in other places.
+# You can read more about [joins](/developers/user-guide/data-transformation/join-manual/), [*.ix](/developers/api-docs/pathway#property-ix) and [ID-s](/developers/user-guide/data-transformation/table-operations#manipulating-the-table) in other places.

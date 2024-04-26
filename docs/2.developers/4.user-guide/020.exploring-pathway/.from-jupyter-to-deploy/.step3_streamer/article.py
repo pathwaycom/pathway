@@ -24,7 +24,7 @@
 # %% [markdown]
 # # Part 3: Kafka integration and alerts forwarding (Producer)
 #
-# This notebook is a helper notebook for the third part of the tutorial [From interactive data exploration to deployment](https://pathway.com/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/#part-3-kafka-integration-and-alerts-forwarding).
+# This notebook is a helper notebook for the third part of the tutorial [From interactive data exploration to deployment](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy#part-3-kafka-integration-and-alerts-forwarding).
 
 # %%
 # Download CSV file

@@ -24,14 +24,14 @@
 # This guide explains the [fs connectors](/developers/api-docs/pathway-io/fs) that connect Pathway to your file system to read and write data with the following basic formats: binary, plaintext, CSV, and JSON.
 #
 # The first part of this guide focuses on defining the source of the data for our connector (using plaintext data format to keep things simple). The second part explains additional configuration that can (or needs to) be defined for all simple data formats.
-# In particular we show the input connectors ([`pw.io.fs.read`](/developers/api-docs/pathway-io/fs/#pathway.io.fs.read)) reading data in:
-# - [`CSV` format](/developers/user-guide/connectors/fs-connector/#csv),
-# - [`JSON` format](/developers/user-guide/connectors/fs-connector/#json),
-# - [`plaintext`, `plaintext_by_file`, and `binary` formats](/developers/user-guide/connectors/fs-connector/#unstructured-data).
+# In particular we show the input connectors ([`pw.io.fs.read`](/developers/api-docs/pathway-io/fs#pathway.io.fs.read)) reading data in:
+# - [`CSV` format](/developers/user-guide/connectors/fs-connector#csv),
+# - [`JSON` format](/developers/user-guide/connectors/fs-connector#json),
+# - [`plaintext`, `plaintext_by_file`, and `binary` formats](/developers/user-guide/connectors/fs-connector#unstructured-data).
 #
-# The output connectors ([`pw.io.fs.write`](/developers/api-docs/pathway-io/fs/#pathway.io.fs.write)) write data in:
-# - [`CSV` format](/developers/user-guide/connectors/fs-connector/#csv),
-# - [`JSON` format](/developers/user-guide/connectors/fs-connector/#json).
+# The output connectors ([`pw.io.fs.write`](/developers/api-docs/pathway-io/fs#pathway.io.fs.write)) write data in:
+# - [`CSV` format](/developers/user-guide/connectors/fs-connector#csv),
+# - [`JSON` format](/developers/user-guide/connectors/fs-connector#json).
 #
 # File system connectors work both in streaming and static modes. Be careful as the use of connectors differs depending on the chosen mode: see the [differences](/developers/user-guide/connecting-to-data/streaming-and-static-modes).
 # For simplicity, all the examples below are in the "static" mode but can easily be changed to "streaming" mode by changing the `mode` parameter.
@@ -46,7 +46,7 @@
 ! echo -e "test2\ndata2" > plain_input/in2.txt
 # %% [markdown]
 # ### Specify the input and output with `path` and `filename`.
-# Below, you can find the simplest examples of input ([`pw.io.fs.read`](/developers/api-docs/pathway-io/fs/#pathway.io.fs.read)) and output ([`pw.io.fs.write`](/developers/api-docs/pathway-io/fs/#pathway.io.fs.write)) connectors. Both examples use plaintext as the input format (more on that [later](/developers/user-guide/connectors/fs-connector#data-formats)). The `path` parameter can point either to a directory or a particular file. If it point so a directory, it reads all files that are inside. Otherwise it reads only the file that is specified (and as such it makes sense only in the static mode).
+# Below, you can find the simplest examples of input ([`pw.io.fs.read`](/developers/api-docs/pathway-io/fs#pathway.io.fs.read)) and output ([`pw.io.fs.write`](/developers/api-docs/pathway-io/fs#pathway.io.fs.write)) connectors. Both examples use plaintext as the input format (more on that [later](/developers/user-guide/connectors/fs-connector#data-formats)). The `path` parameter can point either to a directory or a particular file. If it point so a directory, it reads all files that are inside. Otherwise it reads only the file that is specified (and as such it makes sense only in the static mode).
 
 # %%
 %%capture
