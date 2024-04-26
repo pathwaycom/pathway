@@ -59,4 +59,9 @@ impl MetadataBackend for FilesystemKVStorage {
         std::fs::write(self.root_path.join(key), value)?;
         Ok(())
     }
+
+    fn remove_key(&self, key: &str) -> Result<(), Error> {
+        std::fs::remove_file(self.root_path.join(key))?;
+        Ok(())
+    }
 }

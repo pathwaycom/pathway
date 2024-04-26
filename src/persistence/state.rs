@@ -148,6 +148,10 @@ impl MetadataAccessor {
                     .get(&metadata_key.worker_id)
                     .expect("no version for worker");
                 if metadata_key.version < *target_version {
+                    info!("Removing obsolete metadata block: {metadata_key}. Actual version: {target_version}");
+                    if let Err(e) = backend.remove_key(&key) {
+                        error!("Failed to remove obsolete metadata block: {e}");
+                    }
                     continue;
                 }
 

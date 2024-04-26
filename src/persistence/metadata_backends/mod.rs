@@ -34,4 +34,5 @@ pub trait MetadataBackend: Send + Debug {
     fn list_keys(&self) -> Result<Vec<String>, Error>;
     fn get_value(&self, key: &str) -> Result<String, Error>;
     fn put_value(&mut self, key: &str, value: &str) -> Result<(), Error>;
+    fn remove_key(&self, key: &str) -> Result<(), Error>;
 }

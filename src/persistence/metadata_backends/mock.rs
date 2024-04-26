@@ -18,4 +18,8 @@ impl MetadataBackend for MockKVStorage {
     fn put_value(&mut self, _key: &str, _value: &str) -> Result<(), Error> {
         Ok(())
     }
+
+    fn remove_key(&self, _key: &str) -> Result<(), Error> {
+        Ok(())
+    }
 }

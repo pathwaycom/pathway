@@ -57,4 +57,10 @@ impl MetadataBackend for S3KVStorage {
         let _ = self.bucket.put_object(full_key_path, value.as_bytes())?;
         Ok(())
     }
+
+    fn remove_key(&self, key: &str) -> Result<(), Error> {
+        let full_key_path = self.full_key_path(key);
+        let _ = self.bucket.delete_object(full_key_path)?;
+        Ok(())
+    }
 }
