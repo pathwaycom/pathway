@@ -377,26 +377,19 @@ fn move_cursor_to_key<
 //TODO: maybe we can separate out some blocks to remove the allow(clippy::too_many_lines)
 // perhaps could be done while implementing support for complex times
 #[allow(clippy::too_many_lines)]
-pub fn postpone_core<
-    OT,
-    G: ScopeParent<Timestamp = SelfCompactionTime<OT>>,
-    CT: ExchangeData,
-    K: ExchangeData + Shard,
-    V,
-    R: ExchangeData + Abelian + Diff,
-    CTE,
->(
+pub fn postpone_core<OT, G, CT, K, V, R, CTE>(
     mut input_arrangement: KeyValArr<G, TimeKey<CT, K>, V, R>,
     current_time_extractor: CTE,
     flush_on_end: bool,
 ) -> Collection<G, (K, V), R>
 where
-    G: Scope,
     OT: TimestampTrait + Lattice,
+    G: Scope<Timestamp = SelfCompactionTime<OT>>,
     G::Timestamp: Lattice + MaxTimestamp,
     CT: ExchangeData,
-    K: ExchangeData,
+    K: ExchangeData + Shard,
     V: ExchangeData,
+    R: ExchangeData + Abelian + Diff,
     CTE: Fn(&V) -> CT + 'static,
 {
     let stream = {
@@ -497,7 +490,7 @@ where
                             }
                             last_arrangement_key = local_last_arrangement_key;
 
-                            already_released_column_time = release_threshold_column_time.clone();
+                            already_released_column_time.clone_from(&release_threshold_column_time);
 
                             release_threshold_column_time = [
                                 &release_threshold_column_time,
@@ -681,15 +674,7 @@ where
     }
 }
 
-pub fn ignore_late<
-    G: ScopeParent,
-    CT: ExchangeData,
-    K: ExchangeData + Shard,
-    V,
-    R: ExchangeData + Abelian + Diff,
-    CTE,
-    TTE,
->(
+pub fn ignore_late<G, CT, K, V, R, CTE, TTE>(
     input_collection: &Collection<G, (K, V), R>,
     threshold_time_extractor: TTE,
     current_time_extractor: CTE,
@@ -698,8 +683,9 @@ where
     G: MaybeTotalScope,
     G::Timestamp: Lattice + Ord,
     CT: ExchangeData,
-    K: ExchangeData,
+    K: ExchangeData + Shard,
     V: ExchangeData,
+    R: ExchangeData + Abelian + Diff,
     TTE: Fn(&V) -> CT + 'static,
     CTE: Fn(&V) -> CT + 'static,
 {

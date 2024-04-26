@@ -2424,7 +2424,7 @@ impl SqliteReader {
                             ParsedEvent::Insert((Some(key), values.clone())),
                             EMPTY_OFFSET,
                         ));
-                        *current_values = values.clone();
+                        current_values.clone_from(&values);
                     }
                 })
                 .or_insert_with(|| {

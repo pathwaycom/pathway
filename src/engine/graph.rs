@@ -88,7 +88,8 @@ impl ScopedContext {
         // SAFETY: we will only allow to dereference the pointer after casting into a lifetime
         // outlived by 'a
         #[allow(clippy::transmute_ptr_to_ptr)] // the cast doesn't seem to be enough
-        let new = unsafe { std::mem::transmute(value as *const dyn Context) };
+        let new =
+            unsafe { std::mem::transmute::<*const (dyn Context + 'a), *const dyn Context>(value) };
         let old = self.0.replace(Some(new));
         defer! {
             self.0.set(old);
@@ -973,7 +974,8 @@ impl ScopedGraph {
         // SAFETY: we will only allow to dereference the pointer after casting into a lifetime
         // outlived by 'a
         #[allow(clippy::transmute_ptr_to_ptr)] // the cast doesn't seem to be enough
-        let new = unsafe { std::mem::transmute(value as *const dyn Graph) };
+        let new =
+            unsafe { std::mem::transmute::<*const (dyn Graph + 'a), *const dyn Graph>(value) };
         let old = self.0.replace(Some(new));
         defer! {
             self.0.set(old);

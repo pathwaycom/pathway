@@ -800,10 +800,6 @@ impl Deref for Tuple {
 
 trait AsValueSlice {
     fn as_value_slice(&self) -> &[Value];
-
-    fn key(&self) -> Key {
-        Key::for_values(self.as_value_slice())
-    }
 }
 
 impl AsValueSlice for () {
@@ -3638,7 +3634,6 @@ trait InnerUniverse {
     ) -> Result<UniverseHandle>;
 
     fn inner_handle(&self) -> UniverseHandle;
-    fn outer_handle(&self) -> UniverseHandle;
 }
 
 struct ImportedUniverse<O, I> {
@@ -3700,15 +3695,10 @@ where
     fn inner_handle(&self) -> UniverseHandle {
         self.inner_handle
     }
-
-    fn outer_handle(&self) -> UniverseHandle {
-        self.outer_handle
-    }
 }
 
 struct IteratedUniverse<O, I: MaybeTotalScope> {
     outer: PhantomData<*mut O>,
-    outer_handle: UniverseHandle,
     inner_handle: UniverseHandle,
     keys_var: KeysVar<I>,
 }
@@ -3739,7 +3729,6 @@ impl<'c, S: MaybeTotalScope> InnerUniverse
 
         Ok(Self {
             outer: PhantomData,
-            outer_handle,
             inner_handle,
             keys_var,
         })
@@ -3747,10 +3736,6 @@ impl<'c, S: MaybeTotalScope> InnerUniverse
 
     fn inner_handle(&self) -> UniverseHandle {
         self.inner_handle
-    }
-
-    fn outer_handle(&self) -> UniverseHandle {
-        self.outer_handle
     }
 
     fn finish(
@@ -3787,13 +3772,11 @@ trait InnerColumn {
         Self: Sized;
 
     fn inner_handle(&self) -> ColumnHandle;
-    fn outer_handle(&self) -> ColumnHandle;
 }
 
 struct ImportedColumn<O, I> {
     outer: PhantomData<*mut O>,
     inner: PhantomData<*mut I>,
-    outer_handle: ColumnHandle,
     inner_handle: ColumnHandle,
 }
 
@@ -3831,7 +3814,6 @@ where
         Ok(Self {
             outer: PhantomData,
             inner: PhantomData,
-            outer_handle,
             inner_handle,
         })
     }
@@ -3839,15 +3821,10 @@ where
     fn inner_handle(&self) -> ColumnHandle {
         self.inner_handle
     }
-
-    fn outer_handle(&self) -> ColumnHandle {
-        self.outer_handle
-    }
 }
 
 struct IteratedColumn<O, I: MaybeTotalScope> {
     outer: PhantomData<*mut O>,
-    outer_handle: ColumnHandle,
     inner_handle: ColumnHandle,
     values_var: ValuesVar<I>,
 }
@@ -3881,7 +3858,6 @@ where
 
         Ok(Self {
             outer: PhantomData,
-            outer_handle,
             inner_handle,
             values_var,
         })
@@ -3889,10 +3865,6 @@ where
 
     fn inner_handle(&self) -> ColumnHandle {
         self.inner_handle
-    }
-
-    fn outer_handle(&self) -> ColumnHandle {
-        self.outer_handle
     }
 }
 
@@ -5290,9 +5262,12 @@ where
     if !env::var("PATHWAY_SKIP_START_LOG").is_ok_and(|v| v == "1") {
         info!("Preparing Pathway computation");
     }
+
+    #[allow(unknown_lints, clippy::const_is_empty)]
     if !YOLO.is_empty() {
         info!("Running in YOLO mode: {}", YOLO.iter().format(", "));
     }
+
     let config = Arc::new(config);
     let (error_reporter, error_receiver) = ErrorReporter::create();
     let failed = Arc::new(AtomicBool::new(false));

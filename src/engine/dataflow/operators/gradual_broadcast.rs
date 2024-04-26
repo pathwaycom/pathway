@@ -105,7 +105,7 @@ pub trait HasMaxValue {
 
 impl HasMaxValue for Key {
     fn max_value() -> Key {
-        Key(KeyImpl::max_value())
+        Key(KeyImpl::MAX)
     }
 }
 
@@ -125,11 +125,11 @@ impl Scale<Key> for OrderedFloat<f64> {
     }
 }
 
-fn get_threshold<V: Debug, N: Debug>(triplet: &ApxToBroadcast<V>, range: &N) -> N
+fn get_threshold<V, N>(triplet: &ApxToBroadcast<V>, range: &N) -> N
 where
-    V: Sub<Output = V> + Div + Clone,
+    V: Sub<Output = V> + Div + Clone + Debug,
     <V as Div>::Output: Scale<N>,
-    N: Clone,
+    N: Clone + Debug,
 {
     Scale::<N>::scale(
         (triplet.value.clone() - triplet.lower.clone())
@@ -139,16 +139,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_to_fragment<
-    K: ExchangeData + HasMaxValue,
-    V: ExchangeData,
-    T: ExchangeData + Timestamp + Lattice,
-    R: ExchangeData + Abelian,
-    St,
-    Sc: 'static + Debug,
-    C: Cursor<Key = K, Val = V, Time = T, R = R, Storage = St>,
-    P,
->(
+fn apply_to_fragment<K, V, T, R, St, Sc, C, P>(
     input_cursor: &mut C,
     input_storage: &St,
     triplet: &ApxToBroadcast<Sc>,
@@ -159,8 +150,13 @@ fn apply_to_fragment<
     time: &Option<T>,
     capability: &Capability<T>,
 ) where
-    Sc: Sub<Output = Sc> + Div + Clone,
+    K: ExchangeData + HasMaxValue,
+    V: ExchangeData,
+    T: ExchangeData + Timestamp + Lattice,
+    R: ExchangeData + Abelian,
+    Sc: 'static + Debug + Sub<Output = Sc> + Div + Clone,
     <Sc as Div>::Output: Scale<K>,
+    C: Cursor<Key = K, Val = V, Time = T, R = R, Storage = St>,
     P: Push<
         timely::communication::Message<
             timely::dataflow::channels::Message<C::Time, std::vec::Vec<((K, (V, Sc)), T, R)>>,
@@ -209,16 +205,7 @@ fn apply_to_fragment<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn replace_in_fragment<
-    K: ExchangeData + HasMaxValue,
-    V: ExchangeData,
-    T: ExchangeData + Timestamp + Lattice,
-    R: ExchangeData + Abelian,
-    St,
-    Sc: 'static + Debug,
-    C: Cursor<Key = K, Val = V, Time = T, R = R, Storage = St>,
-    P,
->(
+fn replace_in_fragment<K, V, T, R, St, Sc, C, P>(
     input_cursor: &mut C,
     input_storage: &St,
     old_triplet: &ApxToBroadcast<Sc>,
@@ -229,8 +216,13 @@ fn replace_in_fragment<
     time: &Option<T>,
     capability: &Capability<T>,
 ) where
-    Sc: Sub<Output = Sc> + Div + Clone,
+    K: ExchangeData + HasMaxValue,
+    V: ExchangeData,
+    T: ExchangeData + Timestamp + Lattice,
+    R: ExchangeData + Abelian,
+    Sc: 'static + Debug + Sub<Output = Sc> + Div + Clone,
     <Sc as Div>::Output: Scale<K>,
+    C: Cursor<Key = K, Val = V, Time = T, R = R, Storage = St>,
     P: Push<
         timely::communication::Message<
             timely::dataflow::channels::Message<C::Time, std::vec::Vec<((K, (V, Sc)), T, R)>>,
@@ -397,7 +389,7 @@ where
                         let cap2 = cap2.retain();
                         data.swap(&mut input2_buffer);
 
-                        old_triplet = triplet.clone();
+                        old_triplet.clone_from(&triplet);
 
                         let processed = get_new_triplet_from_input_vec(&triplet, &input2_buffer);
                         if processed.is_none() {

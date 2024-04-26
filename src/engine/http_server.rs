@@ -35,7 +35,7 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
                 if let Ok(latency_converted) = i64::try_from(latency) {
                     latency_converted
                 } else {
-                    std::i64::MAX
+                    i64::MAX
                 }
             } else {
                 -1
@@ -53,7 +53,7 @@ fn metrics_from_stats(stats: &Arc<ArcSwapOption<ProberStats>>) -> String {
                 if let Ok(latency_converted) = i64::try_from(latency) {
                     latency_converted
                 } else {
-                    std::i64::MAX
+                    i64::MAX
                 }
             } else {
                 -1
