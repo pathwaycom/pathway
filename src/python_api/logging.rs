@@ -61,19 +61,6 @@ impl OwnedRecord {
 
 impl From<&Record<'_>> for OwnedRecord {
     fn from(record: &Record<'_>) -> Self {
-        let file = if cfg!(debug_assertions) {
-            record
-                .file_static()
-                .map(Cow::Borrowed)
-                .or_else(|| record.file().map(|s| Cow::Owned(s.to_owned())))
-        } else {
-            None
-        };
-        let line = if cfg!(debug_assertions) {
-            record.line()
-        } else {
-            None
-        };
         Self {
             msg: record.args().to_string(),
             metadata: record.metadata().into(),
@@ -81,8 +68,12 @@ impl From<&Record<'_>> for OwnedRecord {
                 .module_path_static()
                 .map(Cow::Borrowed)
                 .or_else(|| record.module_path().map(|s| Cow::Owned(s.to_owned()))),
-            file: file.or(Some(Cow::Borrowed("<none>"))),
-            line,
+            file: record
+                .file_static()
+                .map(Cow::Borrowed)
+                .or_else(|| record.file().map(|s| Cow::Owned(s.to_owned())))
+                .or(Some(Cow::Borrowed("<none>"))),
+            line: record.line(),
         }
     }
 }
