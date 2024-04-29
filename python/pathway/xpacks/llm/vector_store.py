@@ -514,6 +514,27 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         return retrieval_results
 
+    @pw.table_transformer
+    def query(
+        self,
+        query_column: pw.ColumnReference,
+        number_of_matches: pw.ColumnExpression | int = 3,
+        collapse_rows: bool = True,
+        with_distances: bool = False,
+        metadata_filter: pw.ColumnExpression | None = None,
+    ):
+        embedder = self._graph["embedder"]
+        knn_index = self._graph["knn_index"]
+
+        query_embedding = query_column.table.select(embeddings=embedder(query_column))
+        return knn_index.get_nearest_items(
+            query_embedding.embeddings,
+            number_of_matches,
+            collapse_rows,
+            with_distances,
+            metadata_filter,
+        )
+
     def run_server(
         self,
         host,

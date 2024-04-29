@@ -468,3 +468,55 @@ class BaseRAGQuestionAnswerer:
             monitoring_level=pw.MonitoringLevel.NONE,
             persistence_config=persistence_config,
         )
+
+
+class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
+    def __init__(
+        self,
+        llm: pw.UDF,
+        indexer: VectorStoreServer,
+        *,
+        default_llm_name: str | None = None,
+        short_prompt_template: pw.UDF = prompts.prompt_short_qa,
+        long_prompt_template: pw.UDF = prompts.prompt_qa,
+        summarize_template: pw.UDF = prompts.prompt_summarize,
+        n_starting_documents: int = 2,
+        factor: int = 2,
+        max_iterations: int = 4,
+        strict_prompt: bool = False,
+    ) -> None:
+        super().__init__(
+            llm,
+            indexer,
+            default_llm_name=default_llm_name,
+            short_prompt_template=short_prompt_template,
+            long_prompt_template=long_prompt_template,
+            summarize_template=summarize_template,
+        )
+        self.n_starting_documents = n_starting_documents
+        self.factor = factor
+        self.max_iterations = max_iterations
+        self.strict_prompt = strict_prompt
+
+    @pw.table_transformer
+    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+        """Create RAG response with adaptive retrieval."""
+
+        index = self.indexer
+
+        result = pw_ai_queries.select(
+            *pw.this,
+            result=answer_with_geometric_rag_strategy_from_index(
+                pw_ai_queries.prompt,
+                index,  # type: ignore
+                "data",  # knn index returns result in this column
+                self.llm,
+                n_starting_documents=self.n_starting_documents,
+                factor=self.factor,
+                max_iterations=self.max_iterations,
+                strict_prompt=self.strict_prompt,
+                metadata_filter=pw_ai_queries.filters,
+            ),
+        )
+
+        return result
