@@ -54,6 +54,12 @@ pub enum Error {
     #[error("invalid column path")]
     InvalidColumnPath,
 
+    #[error("properties of two columns with the same path are not equal")]
+    InconsistentColumnProperties,
+
+    #[error("it is not allowed to use ids when creating table properties")]
+    IdInTableProperties,
+
     #[error("graph not in scope")]
     GraphNotInScope,
 
@@ -75,44 +81,14 @@ pub enum Error {
     #[error("operation is not supported inside iterate")]
     NotSupportedInIteration,
 
-    #[error("wrong id assignment")]
-    BadIdAssign,
-
-    #[error("cannot compute empty intersection")]
-    EmptyIntersection,
-
     #[error("length mismatch")]
     LengthMismatch,
-
-    #[error("value missing")]
-    ValueMissing,
 
     #[error("different lengths of join condition")]
     DifferentJoinConditionLengths,
 
     #[error("universe mismatch")]
     UniverseMismatch,
-
-    #[error("type mismatch: expected {expected}, got {value:?}")]
-    TypeMismatch {
-        expected: &'static str,
-        value: Value,
-    },
-
-    #[error("column type mismatch: expected {expected}, got {actual}")]
-    ColumnTypeMismatch {
-        expected: &'static str,
-        actual: &'static str,
-    },
-
-    #[error("key missing in universe: {0}")]
-    KeyMissingInUniverse(Key),
-
-    #[error("key missing in column: {0}")]
-    KeyMissingInColumn(Key),
-
-    #[error("duplicate key: {0}")]
-    DuplicateKey(Key),
 
     #[error("worker panic: {0}")]
     WorkerPanic(String),
@@ -125,18 +101,6 @@ pub enum Error {
 
     #[error("this method cannot extract from key, use extract instead")]
     ExtractFromValueNotSupportedForKey,
-
-    #[error("division by zero")]
-    DivisionByZero,
-
-    #[error("parse error: {0}")]
-    ParseError(String),
-
-    #[error("date time conversion error")]
-    DateTimeConversionError,
-
-    #[error("value error: {0}")]
-    ValueError(String),
 
     #[error("persistent metadata backend failed: {0}")]
     PersistentStorageError(#[from] MetadataBackendError),
@@ -172,20 +136,8 @@ pub enum Error {
     #[error("operator_id not set")]
     OperatorIdNotSet,
 
-    #[error("Error value in column")]
-    ErrorInValue,
-
-    #[error("Error value encountered in filter condition, skipping the row")]
-    ErrorInFilter,
-
-    #[error("Error value encountered in reindex as new id, skipping the row")]
-    ErrorInReindex,
-
-    #[error("Error value encountered in join condition, skipping the row")]
-    ErrorInJoin,
-
-    #[error("Error value encountered in output, skipping the row")]
-    ErrorInOutput,
+    #[error(transparent)]
+    DataError(DataError),
 }
 
 impl Error {
@@ -222,8 +174,17 @@ impl From<DynError> for Error {
     fn from(value: DynError) -> Self {
         match value.downcast::<Self>() {
             Ok(this) => *this,
-            Err(other) => Self::Other(other),
+            Err(other) => match other.downcast::<DataError>() {
+                Ok(data_error) => Self::DataError(*data_error),
+                Err(other) => Self::Other(other),
+            },
         }
+    }
+}
+
+impl From<DataError> for Error {
+    fn from(value: DataError) -> Self {
+        Self::DataError(value)
     }
 }
 
@@ -253,6 +214,88 @@ impl fmt::Display for Trace {
                 "Occurred here:\n \tLine: {line}\n \tFile: {file_name}:{line_number}\n \tFunction: {function}"
             ),
             Self::Empty => write!(f, ""),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+#[allow(clippy::module_name_repetitions)]
+pub enum DataError {
+    #[error("value missing")]
+    ValueMissing,
+
+    #[error("key missing in input table: {0}")]
+    KeyMissingInInputTable(Key),
+
+    #[error("key missing in output table: {0}")]
+    KeyMissingInOutputTable(Key),
+
+    #[error("missing key: {0}")]
+    MissingKey(Key),
+
+    #[error("duplicate key: {0}")]
+    DuplicateKey(Key),
+
+    #[error("value error: {0}")]
+    ValueError(String),
+
+    #[error("type mismatch: expected {expected}, got {value:?}")]
+    TypeMismatch {
+        expected: &'static str,
+        value: Value,
+    },
+
+    #[error("column type mismatch: expected {expected}, got {actual}")]
+    ColumnTypeMismatch {
+        expected: &'static str,
+        actual: &'static str,
+    },
+
+    #[error("index out of bounds")]
+    IndexOutOfBounds,
+
+    #[error("division by zero")]
+    DivisionByZero,
+
+    #[error("parse error: {0}")]
+    ParseError(String),
+
+    #[error("date time conversion error")]
+    DateTimeConversionError,
+
+    #[error("Error value in column")]
+    ErrorInValue,
+
+    #[error("Error value encountered in filter condition, skipping the row")]
+    ErrorInFilter,
+
+    #[error("Error value encountered in reindex as new id, skipping the row")]
+    ErrorInReindex,
+
+    #[error("Error value encountered in join condition, skipping the row")]
+    ErrorInJoin,
+
+    #[error("Error value encountered in grouping columns, skipping the row")]
+    ErrorInGroupby,
+
+    #[error("Error value encountered in deduplicate instance, skipping the row")]
+    ErrorInDeduplicate,
+
+    #[error("Error value encountered in output, skipping the row")]
+    ErrorInOutput,
+
+    #[error(transparent)]
+    Other(DynError),
+}
+
+pub type DataResult<T, E = DataError> = result::Result<T, E>;
+
+impl From<DynError> for DataError {
+    fn from(value: DynError) -> Self {
+        match value.downcast::<Self>() {
+            Ok(this) => *this,
+            Err(other) => Self::Other(other),
         }
     }
 }

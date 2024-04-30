@@ -5,7 +5,7 @@
 use std::panic::{catch_unwind, panic_any, AssertUnwindSafe};
 use std::{io, thread};
 
-use super::error::{DynError, DynResult, Error, Result, Trace};
+use super::error::{DataError, DataResult, DynError, DynResult, Error, Result, Trace};
 
 pub trait ReportError: Send {
     fn report(&self, error: Error);
@@ -139,12 +139,12 @@ impl SpawnWithReporter for thread::Builder {
 }
 
 pub trait LogError {
-    fn log_error(&self, error: Error);
+    fn log_error(&self, error: DataError);
     fn log_error_with_trace(&self, error: DynError, trace: &Trace);
 }
 
 impl<T: ReportError> LogError for T {
-    fn log_error(&self, error: Error) {
+    fn log_error(&self, error: DataError) {
         self.report_and_panic(error);
     }
 
@@ -185,7 +185,7 @@ impl<T> UnwrapWithErrorLogger<T> for DynResult<T> {
     }
 }
 
-impl<T> UnwrapWithErrorLogger<T> for Result<T> {
+impl<T> UnwrapWithErrorLogger<T> for DataResult<T> {
     #[track_caller]
     fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T {
         self.unwrap_or_else(|err| {

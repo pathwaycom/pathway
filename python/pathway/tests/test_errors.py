@@ -24,27 +24,26 @@ def test_division_by_zero():
 
     t4 = t1.select(pw.this.a, x=pw.fill_error(t2.x, -1), y=pw.fill_error(t3.y, -1))
 
+    expected = T(
+        """
+        a |  x |  y
+        3 |  1 |  3
+        4 | -1 |  2
+        5 |  1 | -1
+        6 |  3 |  2
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+        division by zero
+    """,
+        split_on_whitespace=False,
+    )
     assert_table_equality_wo_index(
         (t4, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-            a |  x |  y
-            3 |  1 |  3
-            4 | -1 |  2
-            5 |  1 | -1
-            6 |  3 |  2
-            """
-            ),
-            T(
-                """
-            message
-            division by zero
-            division by zero
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -62,25 +61,25 @@ def test_removal_of_error():
 
     t2 = t1.with_columns(c=pw.this.a // pw.this.b)
 
+    expected = T(
+        """
+        a | b | c
+        4 | 2 | 2
+        6 | 2 | 3
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+        division by zero
+    """,
+        split_on_whitespace=False,
+    )
+
     assert_table_equality_wo_index(
         (t2, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-            a | b | c
-            4 | 2 | 2
-            6 | 2 | 3
-        """
-            ),
-            T(
-                """
-            message
-            division by zero
-            division by zero
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -97,28 +96,27 @@ def test_filter_with_error_in_condition():
     )
 
     t2 = t1.with_columns(x=pw.this.a // pw.this.b)
-
     res = t2.filter(pw.this.x > 0)
+
+    expected = T(
+        """
+        a | b | x
+        3 | 3 | 1
+        5 | 5 | 1
+        6 | 2 | 3
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+        Error value encountered in filter condition, skipping the row
+    """,
+        split_on_whitespace=False,
+    )
     assert_table_equality_wo_index(
         (res, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-            a | b | x
-            3 | 3 | 1
-            5 | 5 | 1
-            6 | 2 | 3
-        """
-            ),
-            T(
-                """
-            message
-            division by zero
-            Error value encountered in filter condition, skipping the row
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -136,29 +134,29 @@ def test_filter_with_error_in_other_column():
 
     t2 = t1.with_columns(x=pw.this.a // pw.this.b)
     res = t2.filter(pw.this.a > 0)
+
+    expected = T(
+        """
+        a | b |  x
+        3 | 3 |  1
+        4 | 0 | -1
+        5 | 5 |  1
+        6 | 2 |  3
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+    """,
+        split_on_whitespace=False,
+    )
     assert_table_equality_wo_index(
         (
             res.with_columns(x=pw.fill_error(pw.this.x, -1)),
             pw.global_error_log().select(pw.this.message),
         ),
-        (
-            T(
-                """
-            a | b |  x
-            3 | 3 |  1
-            4 | 0 | -1
-            5 | 5 |  1
-            6 | 2 |  3
-        """
-            ),
-            T(
-                """
-            message
-            division by zero
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -181,25 +179,25 @@ def test_inner_join_with_error_in_condition():
     """
     )
     res = t1.join(t2, pw.left.a == pw.right.b).select(pw.left.a, pw.left.c, pw.right.b)
+
+    expected = T(
+        """
+        a | c | b
+        1 | 1 | 1
+        1 | 1 | 1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+        Error value encountered in join condition, skipping the row
+    """,
+        split_on_whitespace=False,
+    )
     assert_table_equality_wo_index(
         (res, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-                 a | c | b
-                 1 | 1 | 1
-                 1 | 1 | 1
-        """
-            ),
-            T(
-                """
-            message
-            division by zero
-            Error value encountered in join condition, skipping the row
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -225,67 +223,27 @@ def test_left_join_with_error_in_condition():
     res = t1.join_left(t2, pw.left.a == pw.right.b).select(
         a=pw.fill_error(pw.left.a, -1), c=pw.left.c, b=pw.right.b
     )
-    assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-                 a | c | b
-                 1 | 1 | 1
-                 1 | 1 | 1
-                 1 | 1 | 1
-                -1 | 0 |
-                 3 | 1 |
+    expected = T(
         """
-            ),
-            T(
-                """
-            message
-            division by zero
-            Error value encountered in join condition, skipping the row
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
-        terminate_on_error=False,
-    )
-
-    t1 = T(
-        """
-        a | b | c
-        3 | 3 | 1
-        4 | 0 | 2
-        5 | 5 | 0
-        6 | 2 | 3
+        a | c | b
+        1 | 1 | 1
+        1 | 1 | 1
+        1 | 1 | 1
+       -1 | 0 |
+        3 | 1 |
     """
     )
-
-    t2 = t1.select(x=pw.this.a // pw.this.b)
-    t3 = t1.select(y=pw.this.a // pw.this.c)
-
-    t4 = t1.select(pw.this.a, x=pw.fill_error(t2.x, -1), y=pw.fill_error(t3.y, -1))
-
+    expected_errors = T(
+        """
+        message
+        division by zero
+        Error value encountered in join condition, skipping the row
+    """,
+        split_on_whitespace=False,
+    )
     assert_table_equality_wo_index(
-        (t4, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-            a |  x |  y
-            3 |  1 |  3
-            4 | -1 |  2
-            5 |  1 | -1
-            6 |  3 |  2
-            """
-            ),
-            T(
-                """
-            message
-            division by zero
-            division by zero
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -403,26 +361,208 @@ def test_udf(sync: bool) -> None:
 
     res = t2.with_columns(x=pw.fill_error(pw.this.x, -1))
 
+    expected = T(
+        """
+        a |  x
+        3 |  1
+        4 | -1
+        5 |  1
+        6 |  3
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        ZeroDivisionError: integer division or modulo by zero
+    """,
+        split_on_whitespace=False,
+    )
     assert_table_equality_wo_index(
         (res, pw.global_error_log().select(pw.this.message)),
-        (
-            T(
-                """
-            a |  x
-            3 |  1
-            4 | -1
-            5 |  1
-            6 |  3
-            """
-            ),
-            T(
-                """
-            message
-            ZeroDivisionError: integer division or modulo by zero
-            """,
-                split_on_whitespace=False,
-            ),
-        ),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_concat():
+    t1 = pw.debug.table_from_markdown(
+        """
+          | a | b
+        1 | 1 | 2
+        2 | 2 | 5
+        3 | 3 | 1
+    """
+    )
+
+    t2 = pw.debug.table_from_markdown(
+        """
+          | a | b
+        1 | 1 | 3
+        4 | 4 | 3
+        5 | 5 | 1
+    """
+    )
+    pw.universes.promise_are_pairwise_disjoint(t1, t2)
+    res = t1.concat(t2).with_columns(
+        a=pw.fill_error(pw.this.a, -1), b=pw.fill_error(pw.this.b, -1)
+    )
+    expected = pw.debug.table_from_markdown(
+        """
+         a | b
+        -1 | -1
+         2 | 5
+         3 | 1
+         4 | 3
+         5 | 1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        duplicate key: ^YYY4HABTRW7T8VX2Q429ZYV70W
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_left_join_preserving_id():
+    t1 = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+    """
+    )
+    t2 = pw.debug.table_from_markdown(
+        """
+        b
+        1
+        1
+        1
+        2
+    """
+    )
+    res = (
+        t1.join_left(t2, pw.left.a == pw.right.b, id=pw.left.id)
+        .select(pw.left.a, pw.right.b)
+        .with_columns(b=pw.fill_error(pw.this.b, -1))
+    )
+    expected = pw.debug.table_from_markdown(
+        """
+        a |  b
+        1 | -1
+        2 |  2
+        3 |
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        duplicate key: ^X1MXHYYG4YM0DB900V28XN5T4W
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_restrict():
+    t1 = pw.debug.table_from_markdown(
+        """
+          | a | b
+        1 | 6 | 2
+        2 | 5 | 5
+        3 | 4 | 1
+        4 | 3 | 3
+    """
+    )
+    t2 = pw.debug.table_from_markdown(
+        """
+          | c
+        1 | 1
+        2 | 2
+        3 | 3
+        5 | 4
+    """
+    )
+    pw.universes.promise_is_subset_of(t2, t1)
+    res = t1.restrict(t2)
+    res = res.select(a=pw.fill_error(res.a, -1), b=pw.fill_error(res.b, -1), c=t2.c)
+    expected = pw.debug.table_from_markdown(
+        """
+          |  a |  b | c
+        1 |  6 |  2 | 1
+        2 |  5 |  5 | 2
+        3 |  4 |  1 | 3
+        5 | -1 | -1 | 4
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_with_universe_of():
+    t1 = pw.debug.table_from_markdown(
+        """
+          | a | b
+        1 | 6 | 2
+        2 | 5 | 5
+        3 | 4 | 1
+        4 | 3 | 3
+    """
+    )
+
+    t2 = pw.debug.table_from_markdown(
+        """
+          | c
+        1 | 1
+        2 | 2
+        3 | 3
+        5 | 5
+    """
+    )
+    res = t1.with_universe_of(t2)
+    res = res.select(a=pw.fill_error(res.a, -1), b=pw.fill_error(res.b, -1), c=t2.c)
+    expected = pw.debug.table_from_markdown(
+        """
+          |  a |  b | c
+        1 |  6 |  2 | 1
+        2 |  5 |  5 | 2
+        3 |  4 |  1 | 3
+        5 | -1 | -1 | 5
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4
+        key missing in input table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4
+        key missing in output table: ^3HN31E1PBT7YHH5PWVKTZCPRJ8
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
         terminate_on_error=False,
     )
 
@@ -487,5 +627,121 @@ def test_remove_errors_identity():
             6 | 3 | 2
             """
         ),
+        terminate_on_error=False,
+    )
+
+
+def test_reindex_with_duplicate_key():
+    t = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 3
+        2 | 4
+        3 | 5
+        3 | 6
+    """
+    )
+    res = t.with_id_from(pw.this.a).with_columns(
+        a=pw.fill_error(pw.this.a, -1), b=pw.fill_error(pw.this.b, -1)
+    )
+    expected = (
+        pw.debug.table_from_markdown(
+            """
+        a | b
+        1 | 3
+        2 | 4
+        3 | -1
+    """
+        )
+        .with_id_from(pw.this.a)
+        .with_columns(a=pw.if_else(pw.this.a == 3, -1, pw.this.a))
+    )
+    expected_errors = T(
+        """
+        message
+        duplicate key: ^3CZ78B48PASGNT231ZECWPER90
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_groupby_with_error_in_grouping_column():
+    t1 = T(
+        """
+        a | b | c
+        3 | 3 | 1
+        4 | 0 | 2
+        5 | 5 | 0
+        6 | 2 | 3
+        6 | 6 | 2
+    """
+    )
+    t2 = t1.select(x=pw.this.a // pw.this.b, y=pw.this.a // pw.this.c)
+    res = t2.groupby(pw.this.x, pw.this.y).reduce(
+        pw.this.x, pw.this.y, cnt=pw.reducers.count()
+    )
+    expected = T(
+        """
+        x | y | cnt
+        1 | 3 |  2
+        3 | 2 |  1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+        division by zero
+        Error value encountered in grouping columns, skipping the row
+        Error value encountered in grouping columns, skipping the row
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_deduplicate_with_error_in_instance():
+    t1 = T(
+        """
+        a | b | __time__
+        2 | 1 |     2
+        2 | 2 |     4
+        5 | 0 |     6
+        3 | 2 |     8
+        1 | 1 |    10
+    """
+    )
+
+    def acceptor(new_value, old_value) -> bool:
+        return new_value > old_value
+
+    res = t1.deduplicate(value=pw.this.a, instance=2 / pw.this.b, acceptor=acceptor)
+    expected = T(
+        """
+        a | b
+        3 | 2
+        2 | 1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+        Error value encountered in deduplicate instance, skipping the row
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
         terminate_on_error=False,
     )

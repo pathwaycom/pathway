@@ -247,7 +247,7 @@ impl ExternalIndex for USearchKNNIndex {
         let key_id = self
             .key_to_id_map
             .remove(&key)
-            .ok_or(crate::engine::Error::KeyMissingInUniverse(key))?;
+            .ok_or(crate::engine::DataError::MissingKey(key))?;
         self.id_to_key_map.remove(&key_id);
         self.filter_data_map.remove(&key);
         self.index.remove(key_id)?;
@@ -299,7 +299,7 @@ impl ExternalIndex for USearchKNNIndex {
                 .into_iter()
                 .map(|(k, e)| match e.as_boolean() {
                     Some(ret) => Ok((k, ret)),
-                    None => Err(crate::engine::Error::ValueError(
+                    None => Err(crate::engine::DataError::ValueError(
                         "jmespath filter expression did not return a boolean value".to_string(),
                     )),
                 })

@@ -7,9 +7,8 @@ use std::mem::{align_of, size_of};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use super::error::{DynError, DynResult};
+use super::error::{DataError, DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
-use super::Error;
 
 use arcstr::ArcStr;
 use cfg_if::cfg_if;
@@ -248,7 +247,7 @@ impl Value {
     #[inline(never)]
     #[cold]
     fn type_mismatch(&self, expected: &'static str) -> DynError {
-        DynError::from(Error::TypeMismatch {
+        DynError::from(DataError::TypeMismatch {
             expected,
             value: self.clone(),
         })
@@ -344,7 +343,7 @@ impl Value {
 
     pub fn into_result(self) -> DynResult<Self> {
         match self {
-            Self::Error => Err(Error::ErrorInValue.into()),
+            Self::Error => Err(DataError::ErrorInValue.into()),
             value => Ok(value),
         }
     }

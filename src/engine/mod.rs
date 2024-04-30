@@ -5,7 +5,7 @@
 
 pub mod error;
 pub mod license;
-pub use self::error::{Error, Result};
+pub use self::error::{DataError, Error, Result};
 
 pub mod report_error;
 

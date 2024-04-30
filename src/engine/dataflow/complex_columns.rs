@@ -318,7 +318,7 @@ pub(super) fn complex_columns<S: MaybeTotalScope>(
                 .output_index
                 .map(|output_index| outputs[output_index].to_column_handle(graph, &events))
         })
-        .collect();
+        .collect::<Result<_>>()?;
     Ok(column_handles)
 }
 
@@ -339,7 +339,7 @@ impl Output {
         &self,
         graph: &mut DataflowGraphInner<S>,
         events: &Collection<S, Event>,
-    ) -> ColumnHandle {
+    ) -> Result<ColumnHandle> {
         match *self {
             Self::Attribute {
                 column_index,
@@ -358,10 +358,10 @@ impl Output {
                     }
                     _ => None,
                 });
-                graph.assert_keys_match_values(universe.keys(), &values);
-                graph
+                graph.assert_input_keys_match_output_keys(universe.keys(), &values)?;
+                Ok(graph
                     .columns
-                    .alloc(Column::from_collection(universe_handle, values))
+                    .alloc(Column::from_collection(universe_handle, values)))
             }
             Self::Method {
                 ref data,
@@ -375,9 +375,9 @@ impl Output {
                         let value = Value::from([data.clone(), Value::from(key)].as_slice());
                         (key, value)
                     });
-                graph
+                Ok(graph
                     .columns
-                    .alloc(Column::from_collection(universe_handle, values))
+                    .alloc(Column::from_collection(universe_handle, values)))
             }
         }
     }

@@ -91,7 +91,7 @@ use self::operators::time_column::{MaxTimestamp, TimeColumnBuffer};
 use self::operators::{ArrangeWithTypes, MapWithConsistentDeletions, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
-use super::error::{DynError, DynResult, Trace};
+use super::error::{DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
 use super::graph::{DataRow, ExportedTable, SubscribeCallbacks};
@@ -579,8 +579,8 @@ struct ErrorLogger {
 }
 
 impl ErrorLogger {
-    fn inner_log(&self, error: &Error, trace: Option<String>) {
-        if matches!(error, Error::ErrorInValue) {
+    fn inner_log(&self, error: &DataError, trace: Option<String>) {
+        if matches!(error, DataError::ErrorInValue) {
             return;
         }
         let trace = trace.unwrap_or_default();
@@ -600,7 +600,7 @@ impl ErrorLogger {
 }
 
 impl LogError for ErrorLogger {
-    fn log_error(&self, error: Error) {
+    fn log_error(&self, error: DataError) {
         self.inner_log(&error, None);
     }
 
@@ -887,6 +887,34 @@ impl<S: MaybeTotalScope> TupleCollection<S> {
     }
 }
 
+trait ReplaceDuplicatesWithError {
+    fn replace_duplicates_with_error(
+        &self,
+        error_logic: impl FnMut(&Value) -> Value + 'static,
+        error_logger: Box<dyn LogError>,
+    ) -> Self;
+}
+
+impl<S: MaybeTotalScope> ReplaceDuplicatesWithError for Collection<S, (Key, Value)> {
+    fn replace_duplicates_with_error(
+        &self,
+        mut error_logic: impl FnMut(&Value) -> Value + 'static,
+        error_logger: Box<dyn LogError>,
+    ) -> Self {
+        self.reduce(move |key, input, output| {
+            let res = match input {
+                [(value, 1)] => (*value).clone(),
+                [] => unreachable!(),
+                [(value, _), ..] => {
+                    error_logger.log_error(DataError::DuplicateKey(*key));
+                    error_logic(value)
+                }
+            };
+            output.push((res, 1));
+        })
+    }
+}
+
 trait FilterOutErrors {
     fn filter_out_errors(&self, error_logger: Option<Box<dyn LogError>>) -> Self;
 }
@@ -897,7 +925,7 @@ impl<S: MaybeTotalScope> FilterOutErrors for Collection<S, (Key, Tuple)> {
             let contains_errors = values.as_value_slice().contains(&Value::Error);
             if contains_errors {
                 if let Some(error_logger) = error_logger.as_ref() {
-                    error_logger.log_error(Error::ErrorInOutput);
+                    error_logger.log_error(DataError::ErrorInOutput);
                 }
             }
             !contains_errors
@@ -1013,61 +1041,42 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &self,
         left: &Collection<S, V1>,
         right: &Collection<S, V2>,
-    ) {
-        let error_reporter = self.error_reporter.clone();
+    ) -> Result<()> {
+        let error_logger = self.create_error_logger()?;
         left.map_named("assert_collections_same_size::left", |_| ())
             .negate()
             .concat(&right.map_named("assert_collections_same_size::right", |_| ()))
             .consolidate()
             .inspect(move |(_data, _time, diff)| {
                 assert_ne!(diff, &0);
-                error_reporter.report_and_panic(Error::ValueMissing);
+                error_logger.log_error(DataError::ValueMissing);
             });
+        Ok(())
     }
 
     #[track_caller]
-    fn assert_keys_match_values(
+    fn assert_input_keys_match_output_keys(
         &self,
-        keys: &Keys<S>,
-        values: impl Deref<Target = Collection<S, (Key, Value)>>,
-    ) {
-        let error_reporter = self.error_reporter.clone();
-        keys.concat(
-            &values
-                .map_named("assert_keys_match_values", |(k, _)| k)
-                .negate(),
-        )
-        .consolidate()
-        .inspect(move |(key, _time, diff)| {
-            assert_ne!(diff, &0);
-            if diff > &0 {
-                error_reporter.report_and_panic(Error::KeyMissingInColumn(*key));
-            } else {
-                error_reporter.report_and_panic(Error::KeyMissingInUniverse(*key));
-            }
-        });
-    }
-
-    #[track_caller]
-    fn assert_keys_match(&self, keys: &Keys<S>, other_keys: &Keys<S>) {
-        let error_reporter = self.error_reporter.clone();
-        keys.concat(&other_keys.negate())
+        input_keys: &Keys<S>,
+        output_collection: impl Deref<Target = Collection<S, (Key, Value)>>,
+    ) -> Result<()> {
+        let error_logger = self.create_error_logger()?;
+        input_keys
+            .concat(
+                &output_collection
+                    .map_named("assert_input_keys_match_output_keys", |(k, _)| k)
+                    .negate(),
+            )
             .consolidate()
             .inspect(move |(key, _time, diff)| {
                 assert_ne!(diff, &0);
-                error_reporter.report_and_panic(Error::KeyMissingInUniverse(*key));
+                if diff > &0 {
+                    error_logger.log_error(DataError::KeyMissingInOutputTable(*key));
+                } else {
+                    error_logger.log_error(DataError::KeyMissingInInputTable(*key));
+                }
             });
-    }
-
-    #[track_caller]
-    fn assert_keys_are_distinct(&self, keys: &Keys<S>) {
-        let error_reporter = self.error_reporter.clone();
-        keys.concat(&keys.distinct().negate())
-            .consolidate()
-            .inspect(move |(key, _time, diff)| {
-                assert_ne!(diff, &0);
-                error_reporter.report_and_panic(Error::DuplicateKey(*key));
-            });
+        Ok(())
     }
 
     fn static_universe(&mut self, keys: Vec<Key>) -> Result<UniverseHandle> {
@@ -1106,7 +1115,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         if !self.ignore_asserts {
             // verify the universe
-            self.assert_keys_match_values(universe.keys(), &values);
+            self.assert_input_keys_match_output_keys(universe.keys(), &values)?;
         };
 
         let column_handle = self.columns.alloc(
@@ -1513,7 +1522,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .extract(&key, &values)
                 .unwrap_with_reporter(&error_reporter)
                 .into_result()
-                .map_err(|_err| Error::ErrorInFilter)
+                .map_err(|_err| DataError::ErrorInFilter)
                 .unwrap_or_log(error_logger.as_ref(), Value::Bool(false))
                 .as_bool()
                 .unwrap_with_reporter(&error_reporter)
@@ -1606,7 +1615,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .keys_arranged()
             .join_core(column.values_arranged(), |k, (), v| once((*k, v.clone())));
         if !self.ignore_asserts {
-            self.assert_keys_match_values(universe.keys(), &new_values);
+            self.assert_input_keys_match_output_keys(universe.keys(), &new_values)?;
         };
         let new_column_handle = self
             .columns
@@ -1631,7 +1640,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .get(new_table_handle)
             .ok_or(Error::InvalidTableHandle)?;
 
-        let new_values = new_table.values_arranged().join_core(
+        let result = new_table.values_arranged().join_core(
             original_table.values_arranged(),
             |key, new_values, orig_values| {
                 once((
@@ -1640,17 +1649,37 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 ))
             },
         );
+        let leftover_values = new_table.values().concat(
+            &result
+                .map_named(
+                    "restrict_or_override_table_universe::compare",
+                    |(key, values)| {
+                        (
+                            key,
+                            values.as_tuple().expect("values should be a tuple")[0].clone(),
+                        )
+                    },
+                )
+                .distinct()
+                .negate(),
+        );
+        let error_logger = self.create_error_logger()?;
 
-        if !self.ignore_asserts {
-            self.assert_keys_match_values(new_table.keys(), &new_values);
-            if same_universes {
-                self.assert_keys_match_values(original_table.keys(), &new_values);
-            }
+        let result = result.concat(&leftover_values.consolidate().map_named(
+            "restrict_or_override_table_universe::fill",
+            move |(key, new_values)| {
+                error_logger.log_error(DataError::KeyMissingInOutputTable(key));
+                (key, Value::from([new_values, Value::Error].as_slice()))
+            },
+        ));
+
+        if !self.ignore_asserts && same_universes {
+            self.assert_input_keys_match_output_keys(original_table.keys(), &result)?;
         };
 
         Ok(self
             .tables
-            .alloc(Table::from_collection(new_values).with_properties(table_properties)))
+            .alloc(Table::from_collection(result).with_properties(table_properties)))
     }
 
     fn intersect_tables(
@@ -1704,7 +1733,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .unwrap_with_reporter(&error_reporter);
             match value {
                 Value::Error => {
-                    error_logger.log_error(Error::ErrorInReindex);
+                    error_logger.log_error(DataError::ErrorInReindex);
                     None
                 }
                 value => Some((
@@ -1714,9 +1743,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
         });
 
-        if !self.ignore_asserts {
-            let new_keys = new_values.map_named("reindex_table:new_keys", |(key, _)| key);
-            self.assert_keys_are_distinct(&new_keys);
+        let new_values = if self.ignore_asserts {
+            new_values
+        } else {
+            let error_logger = self.create_error_logger()?;
+            new_values.replace_duplicates_with_error(|_| Value::Error, error_logger)
         };
 
         Ok(self
@@ -1767,11 +1798,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 Ok(table.values().as_generic().clone())
             })
             .collect::<Result<_>>()?;
-        let table = Table::from_collection(concatenate(&mut self.scope, table_collections))
-            .with_properties(table_properties);
-        if !self.ignore_asserts {
-            self.assert_keys_are_distinct(table.keys());
+        let result = concatenate(&mut self.scope, table_collections);
+        let result = if self.ignore_asserts {
+            result
+        } else {
+            let error_logger = self.create_error_logger()?;
+            result.replace_duplicates_with_error(|_| Value::Error, error_logger)
         };
+        let table = Table::from_collection(result).with_properties(table_properties);
         let table_handle = self.tables.alloc(table);
         Ok(table_handle)
     }
@@ -1823,17 +1857,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         Ok(array.into_iter().map(Value::from).collect())
                     } else {
                         let repr = json.to_string();
-                        error_logger.log_error(Error::ValueError(format!(
+                        Err(DataError::ValueError(format!(
                             "Pathway can't flatten this Json: {repr}"
-                        )));
-                        Ok(vec![])
+                        )))
                     }
                 }
-                value => Err(Error::ValueError(format!(
+                value => Err(DataError::ValueError(format!(
                     "Pathway can't flatten this value {value:?}"
                 ))),
             }
-            .unwrap_with_reporter(&error_reporter);
+            .unwrap_or_log(error_logger.as_ref(), vec![]);
             wrapped.into_iter().enumerate().map(move |(i, entry)| {
                 let new_key_parts = [Value::from(key), Value::from(i64::try_from(i).unwrap())];
                 (
@@ -2156,7 +2189,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             _ => new_table,
         };
         if !self.ignore_asserts && ix_key_policy != IxKeyPolicy::SkipMissing {
-            self.assert_collections_same_size(key_table.values(), &new_table);
+            self.assert_collections_same_size(key_table.values(), &new_table)?;
         };
 
         Ok(self
@@ -2226,14 +2259,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             error_reporter: &ErrorReporter,
             error_logger: &mut dyn LogError,
         ) -> Option<Key> {
-            let join_key_parts: Result<Vec<_>> = column_paths
+            let join_key_parts: DataResult<Vec<_>> = column_paths
                 .iter()
                 .map(|path| path.extract(key, values))
                 .collect::<Result<Vec<_>>>()
                 .unwrap_with_reporter(error_reporter)
                 .into_iter()
-                .map(|v| v.into_result().map_err(|_err| Error::ErrorInJoin))
-                .collect::<Result<Vec<_>>>();
+                .map(|v| v.into_result().map_err(|_err| DataError::ErrorInJoin))
+                .try_collect();
             match join_key_parts {
                 Ok(join_key_parts) => {
                     let join_key = shard_policy.generate_key(&join_key_parts);
@@ -2244,6 +2277,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     None
                 }
             }
+        }
+
+        if left_data.column_paths.len() != right_data.column_paths.len() {
+            return Err(Error::DifferentJoinConditionLengths);
         }
 
         let left_table = self
@@ -2426,16 +2463,29 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             result_left_right
         };
 
-        let result_table =
-            Table::from_collection(result_left_right).with_properties(table_properties);
+        let result = if matches!(join_type, JoinType::LeftKeysFull | JoinType::LeftKeysSubset) {
+            let error_logger = self.create_error_logger()?;
+            let error_reporter = self.error_reporter.clone();
+            result_left_right.replace_duplicates_with_error(
+                move |value| {
+                    let tuple = value.as_tuple().unwrap_with_reporter(&error_reporter);
+                    Value::from(
+                        [
+                            tuple[0].clone(), // left key
+                            tuple[1].clone(), // left value
+                            Value::Error,
+                            Value::Error,
+                        ]
+                        .as_slice(),
+                    )
+                },
+                error_logger,
+            )
+        } else {
+            result_left_right
+        };
 
-        match join_type {
-            JoinType::LeftKeysFull => {
-                self.assert_keys_match(left_table.keys(), result_table.keys());
-            }
-            JoinType::LeftKeysSubset => self.assert_keys_are_distinct(result_table.keys()),
-            _ => {}
-        }
+        let result_table = Table::from_collection(result).with_properties(table_properties);
 
         Ok(self.tables.alloc(result_table))
     }
@@ -2780,26 +2830,29 @@ where
             })
             .try_collect()?;
 
-        let with_new_key =
-            table
-                .values()
-                .map_named("group_by_table::new_key", move |(key, values)| {
-                    let new_key_parts: Vec<_> = grouping_columns_paths
-                        .iter()
-                        .map(|path| path.extract(&key, &values))
-                        .collect::<Result<_>>()
-                        .unwrap_with_reporter(&error_reporter_1);
-                    let new_key = if set_id {
-                        new_key_parts
-                            .first()
-                            .unwrap()
-                            .as_pointer()
-                            .unwrap_with_reporter(&error_reporter_1)
-                    } else {
-                        shard_policy.generate_key(&new_key_parts)
-                    };
-                    (key, new_key, values)
-                });
+        let error_logger = self.create_error_logger()?;
+        let with_new_key = table.values().flat_map(move |(key, values)| {
+            let new_key_parts: Vec<Value> = grouping_columns_paths
+                .iter()
+                .map(|path| path.extract(&key, &values))
+                .collect::<Result<_>>()
+                .unwrap_with_reporter(&error_reporter_1);
+            let new_key = if new_key_parts.contains(&Value::Error) {
+                error_logger.log_error(DataError::ErrorInGroupby);
+                None
+            } else if set_id {
+                Some(
+                    new_key_parts
+                        .first()
+                        .unwrap()
+                        .as_pointer()
+                        .unwrap_with_reporter(&error_reporter_1),
+                )
+            } else {
+                Some(shard_policy.generate_key(&new_key_parts))
+            };
+            Some((key, new_key?, values))
+        });
 
         let reduced_columns: Vec<_> = reducer_impls
             .iter()
@@ -2890,23 +2943,29 @@ where
 
         let persistent_id = external_persistent_id.clone().into_persistent_id();
 
+        let error_logger = self.create_error_logger()?;
         let with_new_keys = table
             .values()
-            .map_named("deduplicate::new_key", move |(key, values)| {
+            .flat_map(move |(key, values)| {
                 let new_key_parts: Vec<_> = grouping_columns_paths
                     .iter()
                     .map(|path| path.extract(&key, &values))
                     .collect::<Result<_>>()
                     .unwrap_with_reporter(&error_reporter);
 
-                let new_values: Vec<_> = reduced_column_paths
-                    .iter()
-                    .map(|path| path.extract(&key, &values))
-                    .collect::<Result<_>>()
-                    .unwrap_with_reporter(&error_reporter);
+                if new_key_parts.contains(&Value::Error) {
+                    error_logger.log_error(DataError::ErrorInDeduplicate);
+                    None
+                } else {
+                    let new_values: Vec<_> = reduced_column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter);
 
-                let new_key = Key::for_values(&new_key_parts);
-                (new_key, new_values)
+                    let new_key = Key::for_values(&new_key_parts);
+                    Some((new_key, new_values))
+                }
             })
             .inner // skip artificial time created by a normal persistence
             .filter(|((_key, _values), time, _diff)| *time != ARTIFICIAL_TIME_ON_REWIND_START)

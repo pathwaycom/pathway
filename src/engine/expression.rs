@@ -15,10 +15,10 @@ use derivative::Derivative;
 use itertools::Itertools;
 use smallvec::SmallVec;
 
-use super::error::{DynError, DynResult};
+use super::error::{DataError, DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
 use super::value::SimpleType;
-use super::{Error, Key, Type, Value};
+use super::{Key, Type, Value};
 use crate::engine::ShardPolicy;
 use crate::mat_mul::mat_mul;
 
@@ -54,7 +54,7 @@ impl Expressions {
             Self::Arguments(range) => {
                 let values = &values[range.clone()];
                 if values.contains(&Value::Error) {
-                    Err(Error::ErrorInValue.into())
+                    Err(DataError::ErrorInValue.into())
                 } else {
                     Ok(MaybeOwnedValues::Borrowed(values))
                 }
@@ -375,7 +375,7 @@ fn get_array_element(
         Value::IntArray(array) => get_ndarray_element(&array, index),
         Value::FloatArray(array) => get_ndarray_element(&array, index),
         Value::Tuple(tuple) => get_tuple_element(&tuple, index),
-        _ => Err(DynError::from(Error::ValueError(format!(
+        _ => Err(DynError::from(DataError::ValueError(format!(
             "Can't get element at index {index} out of {value:?}"
         )))),
     }
@@ -396,7 +396,7 @@ fn get_json_item(
         },
         Value::String(index) => json.get(index.as_str()),
         _ => {
-            return Err(DynError::from(Error::ValueError(format!(
+            return Err(DynError::from(DataError::ValueError(format!(
                 "json index must be string or integer, got {index}"
             ))))
         }
@@ -417,7 +417,7 @@ where
             lhs.shape(),
             rhs.shape()
         );
-        Err(DynError::from(Error::ValueError(msg)))
+        Err(DynError::from(DataError::ValueError(msg)))
     }
 }
 
@@ -440,7 +440,7 @@ fn are_tuples_equal(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<bool> {
                     let msg = format!(
                         "equality not supported between instances of '{type_l:?}' and '{type_r:?}'",
                     );
-                    Err(DynError::from(Error::ValueError(msg)))
+                    Err(DynError::from(DataError::ValueError(msg)))
                 }
             }
         }?;
@@ -471,7 +471,7 @@ fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering>
                     let msg = format!(
                         "comparison not supported between instances of '{type_l:?}' and '{type_r:?}'",
                     );
-                    Err(DynError::from(Error::ValueError(msg)))
+                    Err(DynError::from(DataError::ValueError(msg)))
                 } else {
                     Ok(val_l.cmp(val_r))
                 }
@@ -494,7 +494,7 @@ impl AnyExpression {
         let res = match self {
             Self::Argument(i) => values
                 .get(*i)
-                .ok_or(Error::IndexOutOfBounds)?
+                .ok_or(DataError::IndexOutOfBounds)?
                 .clone()
                 .into_result()?,
             Self::Const(v) => v.clone(),
@@ -547,7 +547,7 @@ impl AnyExpression {
                 if let Some(entry) = get_array_element(tuple, index, values)? {
                     Ok(entry)
                 } else {
-                    Err(DynError::from(Error::IndexOutOfBounds))
+                    Err(DynError::from(DataError::IndexOutOfBounds))
                 }?
             }
             Self::JsonGetItem(tuple, index, default) => {
@@ -565,7 +565,7 @@ impl AnyExpression {
                     parse_result.unwrap_or(Value::None)
                 } else {
                     parse_result.map_err(|e| {
-                        DynError::from(Error::ParseError(format!(
+                        DynError::from(DataError::ParseError(format!(
                             "cannot parse {val:?} to int: {e}"
                         )))
                     })?
@@ -579,7 +579,7 @@ impl AnyExpression {
                     parse_result.unwrap_or(Value::None)
                 } else {
                     parse_result.map_err(|e| {
-                        DynError::from(Error::ParseError(format!(
+                        DynError::from(DataError::ParseError(format!(
                             "cannot parse {val:?} to float: {e}"
                         )))
                     })?
@@ -595,7 +595,7 @@ impl AnyExpression {
                 } else if *optional {
                     Ok(Value::None)
                 } else {
-                    Err(DynError::from(Error::ParseError(format!(
+                    Err(DynError::from(DataError::ParseError(format!(
                         "cannot parse {val:?} to bool"
                     ))))
                 }?
@@ -604,7 +604,7 @@ impl AnyExpression {
                 #[allow(clippy::cast_possible_truncation)]
                 Value::Float(f) => Ok((*f as i64).into()),
                 Value::None => Ok(Value::None),
-                val => Err(DynError::from(Error::ValueError(format!(
+                val => Err(DynError::from(DataError::ValueError(format!(
                     "Cannot cast to int from {val:?}"
                 )))),
             }?,
@@ -612,7 +612,7 @@ impl AnyExpression {
                 #[allow(clippy::cast_precision_loss)]
                 Value::Int(i) => Ok((i as f64).into()),
                 Value::None => Ok(Value::None),
-                val => Err(DynError::from(Error::ValueError(format!(
+                val => Err(DynError::from(DataError::ValueError(format!(
                     "Cannot cast to float from {val:?}"
                 )))),
             }?,
@@ -627,20 +627,20 @@ impl AnyExpression {
                             Type::Bool => json.as_bool().map(Value::from),
                             Type::String => json.as_str().map(Value::from),
                             _ => {
-                                return Err(DynError::from(Error::ValueError(format!(
+                                return Err(DynError::from(DataError::ValueError(format!(
                                     "Cannot convert json {json} to {type_:?}"
                                 ))))
                             }
                         };
                         val.ok_or_else(|| {
-                            DynError::from(Error::ValueError(format!(
+                            DynError::from(DataError::ValueError(format!(
                                 "Cannot convert json {json} to {type_:?}"
                             )))
                         })
                     }
                 }
                 Value::None => Ok(Value::None),
-                val => Err(DynError::from(Error::ValueError(format!(
+                val => Err(DynError::from(DataError::ValueError(format!(
                     "Expected Json or None, found {val:?}"
                 )))),
             }?,
@@ -653,7 +653,7 @@ impl AnyExpression {
                     (lhs_val, rhs_val) => {
                         let lhs_type = lhs_val.simple_type();
                         let rhs_type = rhs_val.simple_type();
-                        Err(DynError::from(Error::ValueError(format!(
+                        Err(DynError::from(DataError::ValueError(format!(
                             "can't perform matrix multiplication on {lhs_type:?} and {rhs_type:?}",
                         ))))
                     }
@@ -662,7 +662,7 @@ impl AnyExpression {
             Self::Unwrap(e) => {
                 let val = e.eval(values)?;
                 if val == Value::None {
-                    Err(DynError::from(Error::ValueError(String::from(
+                    Err(DynError::from(DataError::ValueError(String::from(
                         "cannot unwrap if there is None value",
                     ))))
                 } else {
@@ -847,7 +847,7 @@ impl IntExpression {
             Self::FloorDiv(lhs, rhs) => {
                 let rhs_val = rhs.eval_as_int(values)?;
                 if rhs_val == 0 {
-                    Err(DynError::from(Error::DivisionByZero))
+                    Err(DynError::from(DataError::DivisionByZero))
                 } else {
                     Ok(Integer::div_floor(&lhs.eval_as_int(values)?, &rhs_val))
                 }
@@ -855,7 +855,7 @@ impl IntExpression {
             Self::Mod(lhs, rhs) => {
                 let rhs_val = rhs.eval_as_int(values)?;
                 if rhs_val == 0 {
-                    Err(DynError::from(Error::DivisionByZero))
+                    Err(DynError::from(DataError::DivisionByZero))
                 } else {
                     Ok(Integer::mod_floor(&lhs.eval_as_int(values)?, &rhs_val))
                 }
@@ -915,7 +915,7 @@ impl IntExpression {
                 let val = e.eval(values)?;
                 let val_str = val.as_string()?.trim();
                 val_str.parse().map_err(|_| {
-                    DynError::from(Error::ParseError(format!(
+                    DynError::from(DataError::ParseError(format!(
                         "Cannot cast to int from {val_str}.",
                     )))
                 })
@@ -936,7 +936,7 @@ impl FloatExpression {
             Self::FloorDiv(lhs, rhs) => {
                 let rhs_val = rhs.eval_as_float(values)?;
                 if rhs_val == 0.0f64 {
-                    Err(DynError::from(Error::DivisionByZero))
+                    Err(DynError::from(DataError::DivisionByZero))
                 } else {
                     Ok((lhs.eval_as_float(values)? / rhs_val).floor())
                 }
@@ -944,7 +944,7 @@ impl FloatExpression {
             Self::TrueDiv(lhs, rhs) => {
                 let rhs_val = rhs.eval_as_float(values)?;
                 if rhs_val == 0.0f64 {
-                    Err(DynError::from(Error::DivisionByZero))
+                    Err(DynError::from(DataError::DivisionByZero))
                 } else {
                     Ok(lhs.eval_as_float(values)? / rhs_val)
                 }
@@ -957,7 +957,7 @@ impl FloatExpression {
                 let lhs_val = lhs.eval_as_float(values)?;
                 let rhs_val = rhs.eval_as_float(values)?;
                 if rhs_val == 0.0f64 {
-                    return Err(DynError::from(Error::DivisionByZero));
+                    return Err(DynError::from(DataError::DivisionByZero));
                 }
                 let mut modulo = lhs_val % rhs_val;
                 if modulo == 0.0f64 {
@@ -978,7 +978,7 @@ impl FloatExpression {
             Self::IntTrueDiv(lhs, rhs) => {
                 let rhs_val = rhs.eval_as_int(values)?;
                 if rhs_val == 0 {
-                    Err(DynError::from(Error::DivisionByZero))
+                    Err(DynError::from(DataError::DivisionByZero))
                 } else {
                     Ok(lhs.eval_as_int(values)? as f64 / rhs_val as f64)
                 }
@@ -999,7 +999,7 @@ impl FloatExpression {
                 let val = e.eval(values)?;
                 let val_str = val.as_string()?.trim();
                 val_str.parse().map_err(|_| {
-                    DynError::from(Error::ParseError(format!(
+                    DynError::from(DataError::ParseError(format!(
                         "Cannot cast to float from {val}."
                     )))
                 })
@@ -1198,7 +1198,7 @@ impl Expression {
             Self::Duration(_) => "Duration",
             Self::Any(_) => "unknown type",
         };
-        DynError::from(Error::ColumnTypeMismatch { expected, actual })
+        DynError::from(DataError::ColumnTypeMismatch { expected, actual })
     }
 
     pub fn eval_as_bool(&self, values: &[Value]) -> DynResult<bool> {

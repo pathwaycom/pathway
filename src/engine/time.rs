@@ -9,6 +9,7 @@ use num_integer::Integer;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 
+use super::error::{DataError, DataResult};
 use super::{Error, Result};
 
 #[allow(clippy::module_name_repetitions)]
@@ -89,12 +90,12 @@ pub trait DateTime {
             .unwrap()
     }
 
-    fn sanitize_format_string(format: &str) -> Result<String> {
+    fn sanitize_format_string(format: &str) -> DataResult<String> {
         let format = format.replace(".%f", "%.f");
         if format.matches("%f").count() == format.matches("%%f").count() {
             Ok(format)
         } else {
-            Err(Error::ParseError(format!(
+            Err(DataError::ParseError(format!(
                 "cannot use format {format:?}: using \"%f\" without the leading dot is not supported"
             )))
         }
@@ -108,13 +109,13 @@ pub trait DateTime {
     }
 }
 
-fn get_unit_multiplier(unit: &str) -> Result<i64, Error> {
+fn get_unit_multiplier(unit: &str) -> DataResult<i64> {
     match unit {
         "s" => Ok(1_000_000_000),
         "ms" => Ok(1_000_000),
         "us" => Ok(1_000),
         "ns" => Ok(1),
-        _ => Err(Error::ValueError(format!(
+        _ => Err(DataError::ValueError(format!(
             "unit has to be one of s, ms, us, ns but is {unit:?}"
         ))),
     }
@@ -130,7 +131,7 @@ impl DateTimeNaive {
         Self { timestamp }
     }
 
-    pub fn strptime(date_string: &str, format: &str) -> Result<Self> {
+    pub fn strptime(date_string: &str, format: &str) -> DataResult<Self> {
         let format = Self::sanitize_format_string(format)?;
         if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(date_string, &format) {
             Ok(datetime.into())
@@ -143,13 +144,13 @@ impl DateTimeNaive {
                 .and_time(time);
             Ok(datetime.into())
         } else {
-            Err(Error::ParseError(format!(
+            Err(DataError::ParseError(format!(
                 "cannot parse date {date_string:?} using format {format:?}"
             )))
         }
     }
 
-    pub fn to_utc_from_timezone(&self, timezone: &str) -> Result<DateTimeUtc> {
+    pub fn to_utc_from_timezone(&self, timezone: &str) -> DataResult<DateTimeUtc> {
         match timezone.parse::<Tz>() {
             Ok(tz) => {
                 let naive_local = self.as_chrono_datetime();
@@ -169,12 +170,12 @@ impl DateTimeNaive {
                         if let LocalResult::Single(localized) = localized {
                             Ok(localized.into())
                         } else {
-                            Err(Error::DateTimeConversionError)
+                            Err(DataError::DateTimeConversionError)
                         }
                     }
                 }
             }
-            Err(e) => Err(Error::ParseError(format!(
+            Err(e) => Err(DataError::ParseError(format!(
                 "cannot parse time zone {timezone:?}: {e}"
             ))),
         }
@@ -267,17 +268,17 @@ impl DateTimeUtc {
         Self { timestamp }
     }
 
-    pub fn strptime(date_string: &str, format: &str) -> Result<Self> {
+    pub fn strptime(date_string: &str, format: &str) -> DataResult<Self> {
         let format = Self::sanitize_format_string(format)?;
         match chrono::DateTime::parse_from_str(date_string, &format) {
             Ok(datetime) => Ok(datetime.into()),
-            Err(e) => Err(Error::ParseError(format!(
+            Err(e) => Err(DataError::ParseError(format!(
                 "cannot parse date {date_string:?} using format {format:?}: {e}"
             ))),
         }
     }
 
-    pub fn to_naive_in_timezone(&self, timezone: &str) -> Result<DateTimeNaive> {
+    pub fn to_naive_in_timezone(&self, timezone: &str) -> DataResult<DateTimeNaive> {
         match timezone.parse::<Tz>() {
             Ok(tz) => {
                 let naive_utc = self.as_chrono_datetime();
@@ -285,7 +286,7 @@ impl DateTimeUtc {
                 let naive_local = localized.naive_local();
                 Ok(naive_local.into())
             }
-            Err(e) => Err(Error::ParseError(format!(
+            Err(e) => Err(DataError::ParseError(format!(
                 "cannot parse time zone {timezone:?}: {e}"
             ))),
         }
@@ -406,17 +407,17 @@ impl Duration {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    pub fn true_div(self, other: Self) -> Result<f64> {
+    pub fn true_div(self, other: Self) -> DataResult<f64> {
         if other.duration == 0 {
-            Err(Error::DivisionByZero)
+            Err(DataError::DivisionByZero)
         } else {
             Ok(self.duration as f64 / other.duration as f64)
         }
     }
 
-    pub fn true_div_by_i64(self, other: i64) -> Result<Self> {
+    pub fn true_div_by_i64(self, other: i64) -> DataResult<Self> {
         if other == 0 {
-            Err(Error::DivisionByZero)
+            Err(DataError::DivisionByZero)
         } else {
             Ok(Self::new(self.duration / other))
         }
@@ -476,11 +477,11 @@ impl Mul<f64> for Duration {
 }
 
 impl Div for Duration {
-    type Output = Result<i64>;
+    type Output = DataResult<i64>;
 
     fn div(self, other: Self) -> Self::Output {
         if other.duration == 0 {
-            Err(Error::DivisionByZero)
+            Err(DataError::DivisionByZero)
         } else {
             Ok(Integer::div_floor(&self.duration, &other.duration))
         }
@@ -488,11 +489,11 @@ impl Div for Duration {
 }
 
 impl Div<i64> for Duration {
-    type Output = Result<Duration>;
+    type Output = DataResult<Duration>;
 
     fn div(self, other: i64) -> Self::Output {
         if other == 0 {
-            Err(Error::DivisionByZero)
+            Err(DataError::DivisionByZero)
         } else {
             Ok(Duration {
                 duration: Integer::div_floor(&self.duration, &other),
@@ -502,13 +503,13 @@ impl Div<i64> for Duration {
 }
 
 impl Div<f64> for Duration {
-    type Output = Result<Duration>;
+    type Output = DataResult<Duration>;
 
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_precision_loss)]
     fn div(self, other: f64) -> Self::Output {
         if other == 0.0 {
-            Err(Error::DivisionByZero)
+            Err(DataError::DivisionByZero)
         } else {
             Ok(Duration {
                 duration: (self.duration as f64 / other) as i64,
@@ -518,11 +519,11 @@ impl Div<f64> for Duration {
 }
 
 impl Rem for Duration {
-    type Output = Result<Duration>;
+    type Output = DataResult<Duration>;
 
     fn rem(self, other: Self) -> Self::Output {
         if other.duration == 0 {
-            Err(Error::DivisionByZero)
+            Err(DataError::DivisionByZero)
         } else {
             Ok(Duration {
                 duration: Integer::mod_floor(&self.duration, &other.duration),

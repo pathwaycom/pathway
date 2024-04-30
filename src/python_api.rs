@@ -72,7 +72,7 @@ use crate::connectors::data_storage::{
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
-use crate::engine::error::{DynError, DynResult, Trace as EngineTrace};
+use crate::engine::error::{DataError, DynError, DynResult, Trace as EngineTrace};
 use crate::engine::graph::ScopedContext;
 use crate::engine::progress_reporter::MonitoringLevel;
 use crate::engine::reduce::StatefulCombineFn;
@@ -493,17 +493,23 @@ impl From<EngineError> for PyErr {
                 return PyErr::from_type(ENGINE_ERROR_WITH_TRACE_TYPE.as_ref(py), args);
             }
             let exception_type = match error {
-                EngineError::TypeMismatch { .. } => PyTypeError::type_object(py),
-                EngineError::DuplicateKey(_)
-                | EngineError::ValueMissing
-                | EngineError::KeyMissingInColumn(_)
-                | EngineError::KeyMissingInUniverse(_) => PyKeyError::type_object(py),
-                EngineError::DivisionByZero => PyZeroDivisionError::type_object(py),
+                EngineError::DataError(ref error) => match error {
+                    DataError::TypeMismatch { .. } => PyTypeError::type_object(py),
+                    DataError::DuplicateKey(_)
+                    | DataError::ValueMissing
+                    | DataError::KeyMissingInOutputTable(_)
+                    | DataError::KeyMissingInInputTable(_) => PyKeyError::type_object(py),
+                    DataError::DivisionByZero => PyZeroDivisionError::type_object(py),
+                    DataError::ParseError(_) | DataError::ValueError(_) => {
+                        PyValueError::type_object(py)
+                    }
+                    DataError::IndexOutOfBounds => PyIndexError::type_object(py),
+                    _ => ENGINE_ERROR_TYPE.as_ref(py),
+                },
                 EngineError::IterationLimitTooSmall
-                | EngineError::ValueError(_)
                 | EngineError::NoPersistentStorage(_)
-                | EngineError::ParseError(_) => PyValueError::type_object(py),
-                EngineError::IndexOutOfBounds => PyIndexError::type_object(py),
+                | EngineError::InconsistentColumnProperties
+                | EngineError::IdInTableProperties => PyValueError::type_object(py),
                 EngineError::ReaderFailed(_) => PyRuntimeError::type_object(py),
                 _ => ENGINE_ERROR_TYPE.as_ref(py),
             };

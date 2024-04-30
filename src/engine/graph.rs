@@ -131,8 +131,9 @@ impl ColumnPath {
             Self::ValuePath(path) => {
                 let mut value = value;
                 for i in path {
-                    if *value == Value::None {
-                        break; // FIXME needed in outer joins. Maybe have it as a separate function?
+                    if *value == Value::None || *value == Value::Error {
+                        break;
+                        // needed in outer joins and replacing rows with duplicated ids with error
                     }
                     value = value.as_tuple()?.get(*i).ok_or(Error::InvalidColumnPath)?;
                 }
@@ -359,9 +360,7 @@ impl TableProperties {
                 for (_path, other) in &props[1..] {
                     assert_eq!(first, other);
                     if first != other {
-                        return Err(Error::ValueError(
-                            "Properties of two columns with the same path are not equal".into(),
-                        ));
+                        return Err(Error::InconsistentColumnProperties);
                     }
                 }
                 return Ok(first.clone());
@@ -394,9 +393,7 @@ impl TableProperties {
             .into_iter()
             .map(|(path, props)| match path {
                 ColumnPath::ValuePath(path) => Ok((path, props)),
-                ColumnPath::Key => Err(Error::ValueError(
-                    "It is not allowed to use ids when creating table properties".into(),
-                )),
+                ColumnPath::Key => Err(Error::IdInTableProperties),
             })
             .collect::<Result<_>>()?;
 
