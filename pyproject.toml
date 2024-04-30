@@ -67,6 +67,7 @@ tests = [
     "langchain_core == 0.1.30",
     "langchain == 0.1.11",
     "unstructured[all-docs] == 0.10.28",
+    "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
     "python-magic",
     "cohere ~= 5.1.0",
 ]
