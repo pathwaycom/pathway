@@ -5,11 +5,13 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.10.1] - 2024-04-30
+
 ### Added
 - `query` method to VectorStoreServer to enable compatible API with `DataIndex`.
 - `AdaptiveRAGQuestionAnswerer` to xpacks.question_answering. End-to-end pipeline and accompanying code for `Private RAG` showcase.
 
-## [0.10.0 - 2024-04-24]
+## [0.10.0] - 2024-04-24
 
 ### Added
 - Pathway now warns when unintentionally creating Table with empty universe.
