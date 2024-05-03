@@ -94,6 +94,12 @@
 # _MD_SHOW_!pip install "litellm>=1.35"
 # -
 
+# Lastly, we install [Sentence-Transformers](https://sbert.net/) for embedding the chunked texts.
+
+# +
+# _MD_SHOW_!pip install sentence-transformers
+# -
+
 # ### 2. Data Loading
 # We will start by testing our solution with a static sample of knowledge data. We have prepared a sample for download for use in the  [adaptive-rag-contexts.jsonl](https://public-pathway-releases.s3.eu-central-1.amazonaws.com/data/adaptive-rag-contexts.jsonl) file, with ~1000 contexts from the SQUAD dataset, taken from Wikipedia texts.
 
