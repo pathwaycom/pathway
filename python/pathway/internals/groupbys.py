@@ -91,6 +91,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
     _set_id: bool
     _sort_by: expr.InternalColRef | None
     _filter_out_results_of_forgetting: bool
+    _skip_errors: bool
     _is_window: bool
 
     def __init__(
@@ -101,6 +102,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         _set_id: bool = False,
         _sort_by: expr.InternalColRef | None = None,
         _filter_out_results_of_forgetting: bool = False,
+        _skip_errors: bool = True,
         _is_window: bool = False,
     ):
         super().__init__(Universe(), {thisclass.this: self}, _table)
@@ -109,6 +111,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         self._set_id = _set_id
         self._sort_by = _sort_by
         self._filter_out_results_of_forgetting = _filter_out_results_of_forgetting
+        self._skip_errors = _skip_errors
         self._is_window = _is_window
 
     @classmethod
@@ -120,6 +123,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         set_id: bool = False,
         sort_by: expr.ColumnReference | None = None,
         _filter_out_results_of_forgetting: bool = False,
+        _skip_errors: bool = True,
         _is_window: bool = False,
     ) -> GroupedTable:
         cols = tuple(arg._to_original()._to_internal() for arg in grouping_columns)
@@ -137,6 +141,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
                 _set_id=set_id,
                 _sort_by=col_sort_by,
                 _filter_out_results_of_forgetting=_filter_out_results_of_forgetting,
+                _skip_errors=_skip_errors,
                 _is_window=_is_window,
             )
             G.cache[key] = result
@@ -218,6 +223,7 @@ class GroupedTable(GroupedJoinable, OperatorInput):
             set_id=self._set_id,
             inner_context=self._joinable_to_group._rowwise_context,
             sort_by=self._sort_by,
+            skip_errors=self._skip_errors,
         )
 
         for column_name, value in kwargs.items():
@@ -385,15 +391,6 @@ class _ReducerExpressionSplitter(IdentityTransform):
             return evaluated_table[expression.name]
         assert eval_state is not None
         expression = eval_state.add_dependency(expression)
-        return eval_state.add_reducer(expression)
-
-    def eval_count(  # type: ignore
-        self,
-        expression: expr.CountExpression,
-        eval_state: _ReducerExpressionState | None = None,
-        **kwargs,
-    ) -> expr.ColumnReference:
-        assert eval_state is not None
         return eval_state.add_reducer(expression)
 
     def eval_reducer(  # type: ignore

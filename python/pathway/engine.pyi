@@ -157,6 +157,12 @@ class Reducer:
     EARLIEST: Reducer
     LATEST: Reducer
 
+@dataclasses.dataclass
+class ReducerData:
+    reducer: Reducer
+    skip_errors: bool
+    column_paths: list[ColumnPath]
+
 class UnaryOperator:
     INV: UnaryOperator
     NEG: UnaryOperator
@@ -548,7 +554,7 @@ class Scope:
         table: Table,
         grouping_columns: list[ColumnPath],
         last_column_is_instance: bool,
-        reducers: list[tuple[Reducer, list[ColumnPath]]],
+        reducers: list[ReducerData],
         by_id: bool,
         table_properties: TableProperties,
     ) -> Table: ...

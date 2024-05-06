@@ -31,6 +31,7 @@ def groupby_handler(
     sort_by=None,
     _filter_out_results_of_forgetting=False,
     instance=None,
+    _skip_errors=True,
     _is_window=False,
     **kwargs,
 ):
@@ -44,6 +45,7 @@ def groupby_handler(
         "sort_by": sort_by,
         "_filter_out_results_of_forgetting": _filter_out_results_of_forgetting,
         "instance": instance,
+        "_skip_errors": _skip_errors,
         "_is_window": _is_window,
     }
 

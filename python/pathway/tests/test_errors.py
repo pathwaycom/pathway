@@ -5,7 +5,12 @@ from unittest import mock
 import pytest
 
 import pathway as pw
-from pathway.tests.utils import T, assert_table_equality_wo_index, run
+from pathway.tests.utils import (
+    T,
+    assert_stream_equality_wo_index,
+    assert_table_equality_wo_index,
+    run,
+)
 
 
 def test_division_by_zero():
@@ -745,3 +750,275 @@ def test_deduplicate_with_error_in_instance():
         (expected, expected_errors),
         terminate_on_error=False,
     )
+
+
+def test_groupby_skip_errors():
+
+    @pw.reducers.stateful_single  # type: ignore[arg-type]
+    def stateful_sum(state: int | None, val: int) -> int:
+        if state is None:
+            return val
+        return state + val
+
+    t = T(
+        """
+        a | b |  c  | d | e
+        1 | 1 | 1.5 | 1 | 1
+        1 | 2 | 2.5 | 0 | 1
+        1 | 3 | 3.5 | 1 | 0
+        2 | 4 | 4.5 | 1 | 1
+        2 | 5 | 5.5 | 1 | 0
+    """
+    ).with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+    res = (
+        t.groupby(
+            pw.this.a,
+            _skip_errors=True,
+        )
+        .reduce(
+            pw.this.a,
+            i_sum=pw.reducers.sum(pw.this.b),
+            i_avg=pw.reducers.avg(pw.this.b),
+            i_min=pw.reducers.min(pw.this.b),
+            f_sum=pw.reducers.sum(pw.this.c),
+            f_avg=pw.reducers.avg(pw.this.c),
+            f_min=pw.reducers.min(pw.this.c),
+            cnt=pw.reducers.count(),
+            st_sum=stateful_sum(pw.this.b),
+        )
+        .update_types(st_sum=int)
+    )
+    expected = T(
+        """
+        a | i_sum | i_avg | i_min | f_sum | f_avg | f_min | cnt | st_sum
+        1 |   4   |   2   |   1   |   4   |   2   |  1.5  |  3  |   4
+        2 |   9   |  4.5  |   4   |  4.5  |  4.5  |  4.5  |  2  |   9
+    """
+    )
+    assert_table_equality_wo_index(res, expected, terminate_on_error=False)
+
+
+def test_groupby_propagate_errors():
+
+    @pw.reducers.stateful_single  # type: ignore[arg-type]
+    def stateful_sum(state: int | None, val: int) -> int:
+        if state is None:
+            return val
+        return state + val
+
+    t = T(
+        """
+        a | b |  c  | d | e
+        1 | 1 | 1.5 | 1 | 1
+        1 | 2 | 2.5 | 0 | 1
+        1 | 3 | 3.5 | 1 | 0
+        2 | 4 | 4.5 | 1 | 1
+        2 | 5 | 5.5 | 1 | 0
+    """
+    ).with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+    res = (
+        t.groupby(pw.this.a, _skip_errors=False)
+        .reduce(
+            pw.this.a,
+            i_sum=pw.fill_error(pw.reducers.sum(pw.this.b), -1),
+            i_avg=pw.fill_error(pw.reducers.avg(pw.this.b), -1),
+            i_min=pw.fill_error(pw.reducers.min(pw.this.b), -1),
+            f_sum=pw.fill_error(pw.reducers.sum(pw.this.c), -1),
+            f_avg=pw.fill_error(pw.reducers.avg(pw.this.c), -1),
+            f_min=pw.fill_error(pw.reducers.min(pw.this.c), -1),
+            cnt=pw.reducers.count(),
+            st_sum=pw.fill_error(stateful_sum(pw.this.b), -1),
+        )
+        .update_types(st_sum=int)
+    )
+    expected = T(
+        """
+        a | i_sum | i_avg | i_min | f_sum | f_avg | f_min | cnt | st_sum
+        1 |  -1   |  -1   |  -1   |  -1   |  -1   |  -1   |  3  |  -1
+        2 |   9   |  4.5  |   4   |  -1   |  -1   |  -1   |  2  |   9
+    """
+    ).update_types(f_sum=float, f_avg=float, f_min=float)
+    assert_table_equality_wo_index(res, expected, terminate_on_error=False)
+
+
+def test_groupby_stateful_with_error():
+    @pw.reducers.stateful_single  # type: ignore[arg-type]
+    def stateful_sum(state: int | None, val: int) -> int:
+        if val == 2:
+            raise ValueError("Value 2 encountered")
+        if state is None:
+            return val
+        return state + val
+
+    t = T(
+        """
+        a | b
+        1 | 1
+        2 | 2
+        1 | 3
+        2 | 4
+        1 | 5
+    """
+    )
+    res = (
+        t.groupby(pw.this.a)
+        .reduce(pw.this.a, b=pw.fill_error(stateful_sum(pw.this.b), -1))
+        .update_types(b=int)
+    )
+    expected = T(
+        """
+        a |  b
+        1 |  9
+        2 | -1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        ValueError: Value 2 encountered
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_groupby_recovers_from_errors():
+
+    @pw.reducers.stateful_single  # type: ignore[arg-type]
+    def stateful_sum(state: int | None, val: int) -> int:
+        if state is None:
+            return val
+        return state + val
+
+    t = T(
+        """
+          | b |  c  | d | e | __time__ | __diff__
+        1 | 1 | 1.5 | 1 | 1 |     2    |     1
+        2 | 2 | 2.5 | 0 | 1 |     4    |     1
+        3 | 3 | 3.5 | 1 | 0 |     6    |     1
+        2 | 2 | 2.5 | 0 | 1 |     8    |    -1
+        3 | 3 | 3.5 | 1 | 0 |    10    |    -1
+    """
+    ).with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+    res = (
+        t.groupby(_skip_errors=False)
+        .reduce(
+            i_sum=pw.fill_error(pw.reducers.sum(pw.this.b), -1),
+            i_avg=pw.fill_error(pw.reducers.avg(pw.this.b), -1),
+            i_min=pw.fill_error(pw.reducers.min(pw.this.b), -1),
+            f_sum=pw.fill_error(pw.reducers.sum(pw.this.c), -1),
+            f_avg=pw.fill_error(pw.reducers.avg(pw.this.c), -1),
+            f_min=pw.fill_error(pw.reducers.min(pw.this.c), -1),
+            cnt=pw.reducers.count(),
+            st_sum=pw.fill_error(
+                stateful_sum(pw.this.b), -1
+            ),  # does not recover from errors
+        )
+        .update_types(st_sum=int)
+    )
+    expected = T(
+        """
+          | i_sum | i_avg | i_min | f_sum | f_avg | f_min | cnt | st_sum | __time__ | __diff__
+        1 |   1   |   1   |   1   |  1.5  |  1.5  |  1.5  |  1  |   1    |     2    |     1
+        1 |   1   |   1   |   1   |  1.5  |  1.5  |  1.5  |  1  |   1    |     4    |    -1
+        1 |  -1   |  -1   |  -1   |  4.0  |  2.0  |  1.5  |  2  |  -1    |     4    |     1
+        1 |  -1   |  -1   |  -1   |  4.0  |  2.0  |  1.5  |  2  |  -1    |     6    |    -1
+        1 |  -1   |  -1   |  -1   | -1.0  | -1.0  | -1.0  |  3  |  -1    |     6    |     1
+        1 |  -1   |  -1   |  -1   | -1.0  | -1.0  | -1.0  |  3  |  -1    |     8    |    -1
+        1 |   4   |   2   |   1   | -1.0  | -1.0  | -1.0  |  2  |  -1    |     8    |     1
+        1 |   4   |   2   |   1   | -1.0  | -1.0  | -1.0  |  2  |  -1    |    10    |    -1
+        1 |   1   |   1   |   1   |  1.5  |  1.5  |  1.5  |  1  |  -1    |    10    |     1
+    """
+    ).update_types(i_avg=float)
+    assert_stream_equality_wo_index(res, expected, terminate_on_error=False)
+
+
+def test_deduplicate_with_error_in_value():
+    t1 = T(
+        """
+        a | b | __time__
+        2 | 1 |     2
+        4 | 0 |     4
+        3 | 1 |     6
+    """
+    ).select(a=pw.this.a // pw.this.b)
+
+    def acceptor(new_value, old_value) -> bool:
+        return new_value > old_value
+
+    res = t1.deduplicate(value=pw.this.a, acceptor=acceptor)
+    expected = T(
+        """
+          | a | __time__ | __diff__
+        1 | 2 |     2    |     1
+        1 | 2 |     6    |    -1
+        1 | 3 |     6    |     1
+    """
+    )
+    assert_table_equality_wo_index(res, expected, terminate_on_error=False)
+
+
+def test_deduplicate_with_error_in_acceptor():
+    t1 = T(
+        """
+        a | __time__
+        2 |     2
+        4 |     4
+        3 |     6
+    """
+    )
+
+    def acceptor(new_value, old_value) -> bool:
+        if new_value == 4:
+            raise ValueError("encountered 4")
+        return new_value > old_value
+
+    res = t1.deduplicate(value=pw.this.a, acceptor=acceptor)
+    expected = T(
+        """
+          | a | __time__ | __diff__
+        1 | 2 |     2    |     1
+        1 | 2 |     6    |    -1
+        1 | 3 |     6    |     1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        ValueError: encountered 4
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_unique_reducer():
+    t = T(
+        """
+          | a | __time__ | __diff__
+        1 | 1 |     2    |     1
+        2 | 1 |     2    |     1
+        3 | 2 |     4    |     1
+        3 | 2 |     6    |    -1
+    """
+    )
+    res = t.groupby().reduce(a=pw.fill_error(pw.reducers.unique(pw.this.a), -1))
+    expected = T(
+        """
+          |  a | __time__ | __diff__
+        1 |  1 |     2    |     1
+        1 |  1 |     4    |    -1
+        1 | -1 |     4    |     1
+        1 | -1 |     6    |    -1
+        1 |  1 |     6    |     1
+    """
+    )
+    assert_stream_equality_wo_index(res, expected, terminate_on_error=False)

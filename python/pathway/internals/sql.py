@@ -36,12 +36,6 @@ class ReducerDetector(IdentityTransform):
         self.contains_reducers = True
         return super().eval_reducer(expression, **kwargs)
 
-    def eval_count(
-        self, expression: expr.CountExpression, **kwargs
-    ) -> expr.CountExpression:
-        self.contains_reducers = True
-        return super().eval_count(expression, **kwargs)
-
 
 _expression_handlers: dict[type[sql_expr.Expression], Callable] = {}
 
@@ -471,9 +465,6 @@ class _ReducersGatherer(IdentityTransform):
             return super().eval_column_val(expression, **kwargs)
         else:
             return self.add_expression(expression)
-
-    def eval_count(self, expression: expr.CountExpression, **kwargs):
-        return self.add_expression(expression)
 
     def eval_reducer(self, expression: expr.ReducerExpression, **kwargs):
         return self.add_expression(expression)

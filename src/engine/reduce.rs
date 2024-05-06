@@ -9,15 +9,14 @@ use differential_dataflow::{
 };
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
-use std::iter::repeat;
 use std::num::NonZeroUsize;
-use std::ops::Add;
+use std::{any::type_name, iter::repeat};
 use std::{cmp::Reverse, sync::Arc};
 
-use super::{Key, Value};
+use super::{error::DynResult, DataError, Key, Value};
 
 pub type StatefulCombineFn =
-    Arc<dyn Fn(Option<&Value>, Vec<(Vec<Value>, isize)>) -> Option<Value> + Send + Sync>;
+    Arc<dyn Fn(Option<&Value>, Vec<(Vec<Value>, isize)>) -> DynResult<Option<Value>> + Send + Sync>;
 
 #[derive(Clone)]
 pub enum Reducer {
@@ -41,7 +40,9 @@ pub enum Reducer {
 pub trait SemigroupReducerImpl: 'static {
     type State: ExchangeData + Semigroup + Multiply<isize>;
 
-    fn init(&self, key: &Key, value: &Value) -> Option<Self::State>;
+    fn init(&self, key: &Key, value: &Value) -> DynResult<Self::State>;
+
+    fn init_error(&self) -> Self::State;
 
     fn finish(&self, state: Self::State) -> Value;
 }
@@ -49,12 +50,12 @@ pub trait SemigroupReducerImpl: 'static {
 pub trait ReducerImpl: 'static {
     type State: ExchangeData;
 
-    fn init(&self, key: &Key, values: &[Value]) -> Option<Self::State>;
+    fn init(&self, key: &Key, values: &[Value]) -> DynResult<Self::State>;
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State;
+    ) -> DynResult<Self::State>;
 
     fn finish(&self, state: Self::State) -> Value;
 }
@@ -62,26 +63,26 @@ pub trait ReducerImpl: 'static {
 pub trait UnaryReducerImpl: 'static {
     type State: ExchangeData;
 
-    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State>;
+    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State>;
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State;
+    ) -> DynResult<Self::State>;
 
     fn finish(&self, state: Self::State) -> Value;
 }
 
 impl<T: UnaryReducerImpl> ReducerImpl for T {
     type State = <Self as UnaryReducerImpl>::State;
-    fn init(&self, key: &Key, values: &[Value]) -> Option<Self::State> {
+    fn init(&self, key: &Key, values: &[Value]) -> DynResult<Self::State> {
         self.init_unary(key, &values[0])
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> <Self as UnaryReducerImpl>::State {
+    ) -> DynResult<<Self as UnaryReducerImpl>::State> {
         <Self as UnaryReducerImpl>::combine(self, values)
     }
 
@@ -94,16 +95,18 @@ impl<T: UnaryReducerImpl> ReducerImpl for T {
 pub struct IntSumState {
     count: isize,
     sum: i64,
+    error_count: isize,
 }
 
 impl Semigroup for IntSumState {
     fn is_zero(&self) -> bool {
-        self.count.is_zero() && self.sum.is_zero()
+        self.count.is_zero() && self.sum.is_zero() && self.error_count.is_zero()
     }
 
     fn plus_equals(&mut self, rhs: &Self) {
         self.count.plus_equals(&rhs.count);
         self.sum.plus_equals(&rhs.sum);
+        self.error_count.plus_equals(&rhs.error_count);
     }
 }
 
@@ -112,13 +115,29 @@ impl Multiply<isize> for IntSumState {
     fn multiply(self, rhs: &isize) -> Self::Output {
         let count = self.count * rhs;
         let sum = self.sum * i64::try_from(*rhs).unwrap();
-        Self { count, sum }
+        let error_count = self.error_count * rhs;
+        Self {
+            count,
+            sum,
+            error_count,
+        }
     }
 }
 
 impl IntSumState {
     pub fn single(val: i64) -> Self {
-        Self { count: 1, sum: val }
+        Self {
+            count: 1,
+            sum: val,
+            error_count: 0,
+        }
+    }
+    pub fn error() -> Self {
+        Self {
+            count: 0,
+            sum: 0,
+            error_count: 1,
+        }
     }
 }
 
@@ -128,15 +147,29 @@ pub struct IntSumReducer;
 impl SemigroupReducerImpl for IntSumReducer {
     type State = IntSumState;
 
-    fn init(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
         match value {
-            Value::Int(i) => Some(IntSumState::single(*i)),
-            _ => panic!("unsupported type for int_sum"),
+            Value::Int(i) => Ok(IntSumState::single(*i)),
+            value => Err(DataError::ReducerInitializationError {
+                reducer_type: type_name::<Self>().to_string(),
+                value: value.clone(),
+                source_key: *key,
+            }
+            .into()),
         }
     }
 
+    fn init_error(&self) -> Self::State {
+        IntSumState::error()
+    }
+
+    #[allow(clippy::cast_precision_loss)]
     fn finish(&self, state: Self::State) -> Value {
-        Value::Int(state.sum)
+        if state.error_count != 0 {
+            Value::Error
+        } else {
+            Value::Int(state.sum)
+        }
     }
 }
 
@@ -149,22 +182,27 @@ pub struct FloatSumReducer;
 impl UnaryReducerImpl for FloatSumReducer {
     type State = OrderedFloat<f64>;
 
-    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
         match value {
-            Value::Float(f) => Some(*f),
-            _ => None,
+            Value::Float(f) => Ok(*f),
+            value => Err(DataError::ReducerInitializationError {
+                reducer_type: type_name::<Self>().to_string(),
+                value: value.clone(),
+                source_key: *key,
+            }
+            .into()),
         }
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
+    ) -> DynResult<Self::State> {
         #[allow(clippy::cast_precision_loss)]
-        values
+        Ok(values
             .into_iter()
             .map(|(value, cnt)| *value * cnt.get() as f64)
-            .sum()
+            .sum())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -182,42 +220,49 @@ enum ArraySumState<'a> {
 }
 
 impl<'a> ArraySumState<'a> {
-    fn new(value: &'a Value, cnt: NonZeroUsize) -> Self {
+    fn new(value: &'a Value, cnt: NonZeroUsize) -> DynResult<Self> {
         match value {
             #[allow(clippy::cast_precision_loss)]
             Value::IntArray(array) => {
                 if cnt.get() == 1 {
-                    Self::IntArray(CowArray::from(&**array))
+                    Ok(Self::IntArray(CowArray::from(&**array)))
                 } else {
-                    Self::IntArray(CowArray::from(&**array * i64::try_from(cnt.get()).unwrap()))
+                    Ok(Self::IntArray(CowArray::from(
+                        &**array * i64::try_from(cnt.get()).unwrap(),
+                    )))
                 }
             }
             #[allow(clippy::cast_precision_loss)]
             Value::FloatArray(array) => {
                 if cnt.get() == 1 {
-                    Self::FloatArray(CowArray::from(&**array))
+                    Ok(Self::FloatArray(CowArray::from(&**array)))
                 } else {
-                    Self::FloatArray(CowArray::from(&**array * cnt.get() as f64))
+                    Ok(Self::FloatArray(CowArray::from(
+                        &**array * cnt.get() as f64,
+                    )))
                 }
             }
-            _ => panic!("unsupported type for npsum"),
+            value => Err(DataError::TypeMismatch {
+                expected: "Array",
+                value: value.clone(),
+            }
+            .into()),
         }
     }
 }
 
-impl<'a> Add for ArraySumState<'a> {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self {
-        match (self, rhs) {
-            (Self::IntArray(lhs), Self::IntArray(rhs)) => {
-                Self::IntArray(CowArray::from(lhs.into_owned() + &rhs))
-            }
-            (Self::FloatArray(lhs), Self::FloatArray(rhs)) => {
-                Self::FloatArray(CowArray::from(lhs.into_owned() + &rhs))
-            }
-            _ => panic!("mixing types in npsum is not allowed"),
-        }
+fn add_array_sum_states<'a>(
+    lhs: DynResult<ArraySumState<'a>>,
+    rhs: DynResult<ArraySumState<'a>>,
+) -> DynResult<ArraySumState<'a>> {
+    match (lhs?, rhs?) {
+        (ArraySumState::IntArray(lhs), ArraySumState::IntArray(rhs)) => Ok(
+            ArraySumState::IntArray(CowArray::from(lhs.into_owned() + &rhs)),
+        ),
+        (ArraySumState::FloatArray(lhs), ArraySumState::FloatArray(rhs)) => Ok(
+            ArraySumState::FloatArray(CowArray::from(lhs.into_owned() + &rhs)),
+        ),
+        _ => Err(DataError::MixingTypesInNpSum.into()),
     }
 }
 
@@ -233,20 +278,20 @@ impl<'a> From<ArraySumState<'a>> for Value {
 impl UnaryReducerImpl for ArraySumReducer {
     type State = Value;
 
-    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
-        Some(value.clone())
+    fn init_unary(&self, _key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok(value.clone())
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .map(|(value, cnt)| ArraySumState::new(value, cnt))
-            .reduce(|a, b| a + b)
-            .expect("values should not be empty")
-            .into()
+            .reduce(add_array_sum_states)
+            .expect("values should not be empty")?
+            .into())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -258,30 +303,31 @@ impl UnaryReducerImpl for ArraySumReducer {
 pub struct UniqueReducer;
 
 impl UnaryReducerImpl for UniqueReducer {
-    type State = Option<Value>;
+    type State = Value;
 
-    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
-        Some(Some(value.clone()))
+    fn init_unary(&self, _key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok(value.clone())
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
+    ) -> DynResult<Self::State> {
         let mut values = values.into_iter();
         let (state, _cnt) = values.next().unwrap();
-        assert!(
-            values.next().is_none(),
-            "More than one distinct value passed to the unique reducer."
-        );
-        state.clone()
+        if let Some((next_value, _next_cnt)) = values.next() {
+            Err(DataError::MoreThanOneValueInUniqueReducer {
+                value_1: state.clone(),
+                value_2: next_value.clone(),
+            }
+            .into())
+        } else {
+            Ok(state.clone())
+        }
     }
 
     fn finish(&self, state: Self::State) -> Value {
-        match state {
-            Some(v) => v,
-            None => Value::None,
-        }
+        state
     }
 }
 
@@ -291,20 +337,20 @@ pub struct MinReducer;
 impl UnaryReducerImpl for MinReducer {
     type State = Value;
 
-    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
-        Some(value.clone())
+    fn init_unary(&self, _key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok(value.clone())
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .map(|(val, _cnt)| val)
             .min()
             .unwrap()
-            .clone()
+            .clone())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -318,20 +364,20 @@ pub struct ArgMinReducer;
 impl UnaryReducerImpl for ArgMinReducer {
     type State = (Value, Key);
 
-    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State> {
-        Some((value.clone(), *key))
+    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok((value.clone(), *key))
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .map(|(val, _cnt)| val)
             .min()
             .unwrap()
-            .clone()
+            .clone())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -354,20 +400,20 @@ pub struct AnyReducer;
 impl UnaryReducerImpl for AnyReducer {
     type State = (Key, Value);
 
-    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State> {
-        Some((*key, value.clone()))
+    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok((*key, value.clone()))
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .map(|(val, _cnt)| val)
             .min_by_key(|(key, value)| (key.salted_with(SALT), value))
             .unwrap()
-            .clone()
+            .clone())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -381,20 +427,20 @@ pub struct MaxReducer;
 impl UnaryReducerImpl for MaxReducer {
     type State = Value;
 
-    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
-        Some(value.clone())
+    fn init_unary(&self, _key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok(value.clone())
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .map(|(val, _cnt)| val)
             .max()
             .unwrap()
-            .clone()
+            .clone())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -408,20 +454,20 @@ pub struct ArgMaxReducer;
 impl UnaryReducerImpl for ArgMaxReducer {
     type State = (Value, Key);
 
-    fn init_unary(&self, key: &Key, value: &Value) -> Option<Self::State> {
-        Some((value.clone(), *key))
+    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
+        Ok((value.clone(), *key))
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .map(|(val, _cnt)| val)
             .max_by_key(|(value, key)| (value, Reverse(key)))
             .unwrap()
-            .clone()
+            .clone())
     }
 
     fn finish(&self, state: Self::State) -> Value {
@@ -443,19 +489,19 @@ impl SortedTupleReducer {
 impl UnaryReducerImpl for SortedTupleReducer {
     type State = Vec<Value>;
 
-    fn init_unary(&self, _key: &Key, value: &Value) -> Option<Self::State> {
+    fn init_unary(&self, _key: &Key, value: &Value) -> DynResult<Self::State> {
         if *value == Value::None && self.skip_nones {
-            Some(vec![])
+            Ok(vec![])
         } else {
-            Some(vec![value.clone()])
+            Ok(vec![value.clone()])
         }
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .flat_map(|(state, cnt)| {
                 state
@@ -463,7 +509,7 @@ impl UnaryReducerImpl for SortedTupleReducer {
                     .flat_map(move |v| repeat(v).take(cnt.get()))
                     .cloned()
             })
-            .collect()
+            .collect())
     }
 
     fn finish(&self, mut state: Self::State) -> Value {
@@ -486,21 +532,21 @@ impl TupleReducer {
 impl ReducerImpl for TupleReducer {
     type State = Vec<(Option<Value>, Key, Value)>;
 
-    fn init(&self, key: &Key, values: &[Value]) -> Option<Self::State> {
+    fn init(&self, key: &Key, values: &[Value]) -> DynResult<Self::State> {
         if values[0] == Value::None && self.skip_nones {
-            Some(vec![])
+            Ok(vec![])
         } else if values.len() > 1 {
-            Some(vec![(Some(values[1].clone()), *key, values[0].clone())])
+            Ok(vec![(Some(values[1].clone()), *key, values[0].clone())])
         } else {
-            Some(vec![(None, *key, values[0].clone())])
+            Ok(vec![(None, *key, values[0].clone())])
         }
     }
 
     fn combine<'a>(
         &self,
         values: impl IntoIterator<Item = (&'a Self::State, NonZeroUsize)>,
-    ) -> Self::State {
-        values
+    ) -> DynResult<Self::State> {
+        Ok(values
             .into_iter()
             .flat_map(|(state, cnt)| {
                 state
@@ -508,7 +554,7 @@ impl ReducerImpl for TupleReducer {
                     .flat_map(move |v| repeat(v).take(cnt.get()))
                     .cloned()
             })
-            .collect()
+            .collect())
     }
 
     fn finish(&self, mut state: Self::State) -> Value {
@@ -532,7 +578,11 @@ impl StatefulReducer {
         Self { combine_fn }
     }
 
-    pub fn combine(&self, state: Option<&Value>, data: Vec<(Vec<Value>, isize)>) -> Option<Value> {
+    pub fn combine(
+        &self,
+        state: Option<&Value>,
+        data: Vec<(Vec<Value>, isize)>,
+    ) -> DynResult<Option<Value>> {
         (self.combine_fn)(state, data)
     }
 }

@@ -570,7 +570,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         response = await self._fetch_response(id, event)
         if self._delete_completed_queries:
             self._remove(id, data)
-        if response == api.ERROR:
+        if response is api.ERROR:
             return web.json_response(status=500)
         return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
 

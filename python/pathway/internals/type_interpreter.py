@@ -231,15 +231,6 @@ class TypeInterpreter(IdentityTransform):
     def _pointer_type(self):
         return dt.ANY_POINTER
 
-    def eval_count(
-        self,
-        expression: expr.CountExpression,
-        state: TypeInterpreterState | None = None,
-        **kwargs,
-    ) -> expr.CountExpression:
-        expression = super().eval_count(expression, state=state, **kwargs)
-        return _wrap(expression, dt.INT)
-
     def eval_apply(
         self,
         expression: expr.ApplyExpression,

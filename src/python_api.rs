@@ -662,19 +662,30 @@ fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {
             let combine = combine.as_ref(py);
             let state = state.to_object(py);
             let values = values.to_object(py);
-            combine
-                .call1((state, values))
-                .unwrap_or_else(|e| {
-                    Python::with_gil(|py| e.print(py));
-                    panic!("python error");
-                })
-                .extract()
-                .unwrap_or_else(|e| {
-                    Python::with_gil(|py| e.print(py));
-                    panic!("python error");
-                })
+            Ok(combine.call1((state, values))?.extract()?)
         })
     })
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "ReducerData")]
+struct PyReducerData(ReducerData);
+
+#[pymethods]
+impl PyReducerData {
+    #[new]
+    fn new(reducer: Reducer, skip_errors: bool, column_paths: Vec<ColumnPath>) -> Self {
+        Self(ReducerData {
+            reducer,
+            skip_errors,
+            column_paths,
+        })
+    }
+}
+
+impl<'source> FromPyObject<'source> for ReducerData {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyReducerData>>()?.0.clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2575,14 +2586,10 @@ impl Scope {
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
         last_column_is_instance: bool,
-        #[pyo3(from_py_with = "from_py_iterable")] reducers: Vec<(Reducer, Vec<ColumnPath>)>,
+        #[pyo3(from_py_with = "from_py_iterable")] reducers: Vec<ReducerData>,
         set_id: bool,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let reducers = reducers
-            .into_iter()
-            .map(|(reducer, paths)| ReducerData::new(reducer, paths))
-            .collect();
         let table_handle = self_.borrow().graph.group_by_table(
             table.handle,
             grouping_columns_paths,
@@ -4647,6 +4654,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
     m.add_class::<Pointer>()?;
     m.add_class::<PyReducer>()?;
+    m.add_class::<PyReducerData>()?;
     m.add_class::<PyUnaryOperator>()?;
     m.add_class::<PyBinaryOperator>()?;
     m.add_class::<PyExpression>()?;

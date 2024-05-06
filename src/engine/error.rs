@@ -285,6 +285,19 @@ pub enum DataError {
     #[error("Error value encountered in output, skipping the row")]
     ErrorInOutput,
 
+    #[error("{reducer_type}::init() failed for {value:?} of key {source_key:?}")]
+    ReducerInitializationError {
+        reducer_type: String,
+        value: Value,
+        source_key: Key,
+    },
+
+    #[error("More than one distinct value passed to the unique reducer: {value_1:?}, {value_2:?}")]
+    MoreThanOneValueInUniqueReducer { value_1: Value, value_2: Value },
+
+    #[error("mixing types in npsum is not allowed")]
+    MixingTypesInNpSum,
+
     #[error(transparent)]
     Other(DynError),
 }

@@ -30,7 +30,6 @@ use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId};
 use crate::timestamp::current_unix_timestamp_ms;
 
-use std::any::type_name;
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
 use std::cmp::min;
@@ -2604,20 +2603,30 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 }
 
 trait DataflowReducer<S: MaybeTotalScope> {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S>;
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        error_logger: Rc<dyn LogError>,
+    ) -> Values<S>;
 }
 
 impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        error_logger: Rc<dyn LogError>,
+    ) -> Values<S> {
         let initialized = values.map_named("DataFlowReducer::reduce::init", {
             let self_ = self.clone();
+            let error_logger = error_logger.clone();
             move |(source_key, result_key, values)| {
-                let state = self_.init(&source_key, &values).unwrap_or_else(|| {
-                    panic!(
-                        "{reducer_type}::init() failed for {values:?} of key {source_key:?}",
-                        reducer_type = type_name::<R>()
-                    )
-                }); // XXX
+                let state = if values.contains(&Value::Error) {
+                    None
+                } else {
+                    self_
+                        .init(&source_key, &values)
+                        .ok_with_logger(error_logger.as_ref())
+                };
                 (result_key, state)
             }
         });
@@ -2626,31 +2635,50 @@ impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
             .reduce({
                 let self_ = self.clone();
                 move |_key, input, output| {
-                    let result = self_.combine(input.iter().map(|&(state, cnt)| {
-                        (state, usize::try_from(cnt).unwrap().try_into().unwrap())
-                    }));
+                    let result = if input.iter().any(|&(state, _)| state.is_none()) {
+                        None // None means that the state for a given key contains Value::Error
+                    } else {
+                        self_
+                            .combine(input.iter().map(|&(state, cnt)| {
+                                (
+                                    state.as_ref().unwrap(),
+                                    usize::try_from(cnt).unwrap().try_into().unwrap(),
+                                )
+                            }))
+                            .ok_with_logger(error_logger.as_ref())
+                    };
                     output.push((result, 1));
                 }
             })
             .map_named("DataFlowReducer::reduce", move |(key, state)| {
-                (key, self.finish(state))
+                let result = if let Some(state) = state {
+                    self.finish(state)
+                } else {
+                    Value::Error
+                };
+                (key, result)
             })
             .into()
     }
 }
 
 impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        error_logger: Rc<dyn LogError>,
+    ) -> Values<S> {
         values
             .map_named("IntSumReducer::reduce::init", {
                 let self_ = self.clone();
                 move |(source_key, result_key, values)| {
-                    let state = self_.init(&source_key, &values[0]).unwrap_or_else(|| {
-                        panic!(
-                            "{reducer_type}::init() failed for {values:?} of key {source_key:?}",
-                            reducer_type = "IntSumReducer"
-                        )
-                    }); // XXX
+                    let state = if values.contains(&Value::Error) {
+                        self_.init_error()
+                    } else {
+                        self_
+                            .init(&source_key, &values[0])
+                            .unwrap_or_else_log(error_logger.as_ref(), || self_.init_error())
+                    };
                     (result_key, state)
                 }
             })
@@ -2664,7 +2692,11 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
 }
 
 impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        _error_logger: Rc<dyn LogError>,
+    ) -> Values<S> {
         values
             .map_named(
                 "CountReducer::reduce::init",
@@ -2682,14 +2714,25 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for StatefulReducer
 where
     S::MaybeTotalTimestamp: TotalOrder,
 {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        error_logger: Rc<dyn LogError>,
+    ) -> Values<S> {
         values
             .map_named(
                 "StatefulReducer::reduce::init",
                 |(_source_key, result_key, values)| (result_key, values),
             )
             .stateful_reduce_named("StatefulReducer::reduce::reduce", move |state, values| {
-                self.combine(state, values)
+                let contains_errors = state == Some(&Value::Error)
+                    || values.iter().any(|(row, _cnt)| row.contains(&Value::Error));
+                if contains_errors {
+                    Some(Value::Error)
+                } else {
+                    self.combine(state, values)
+                        .unwrap_or_log(error_logger.as_ref(), Some(Value::Error))
+                }
             })
             .into()
     }
@@ -2700,7 +2743,11 @@ where
     S: MaybeTotalScope,
     S::MaybeTotalTimestamp: TotalOrder,
 {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        _error_logger: Rc<dyn LogError>,
+    ) -> Values<S> {
         values
             .map_named(
                 "LatestReducer::reduce::init",
@@ -2726,7 +2773,11 @@ where
     S: MaybeTotalScope,
     S::MaybeTotalTimestamp: TotalOrder,
 {
-    fn reduce(self: Rc<Self>, values: &Collection<S, (Key, Key, Vec<Value>)>) -> Values<S> {
+    fn reduce(
+        self: Rc<Self>,
+        values: &Collection<S, (Key, Key, Vec<Value>)>,
+        _error_logger: Rc<dyn LogError>,
+    ) -> Values<S> {
         values
             .map_named(
                 "EarliestReducer::reduce::init",
@@ -2853,29 +2904,29 @@ where
             };
             Some((key, new_key?, values))
         });
-
         let reduced_columns: Vec<_> = reducer_impls
             .iter()
             .zip(reducers)
             .map(|(reducer_impl, data)| {
                 let error_reporter_2 = self.error_reporter.clone();
-                let with_extracted_value = with_new_key.map_named(
-                    "group_by_table::reducers",
-                    move |(key, new_key, values)| {
-                        (
-                            key,
-                            new_key,
-                            data.column_paths
-                                .iter()
-                                .map(|path| path.extract(&key, &values))
-                                .try_collect()
-                                .unwrap_with_reporter(&error_reporter_2),
-                        )
-                    },
-                );
-                reducer_impl.clone().reduce(&with_extracted_value)
+                let with_extracted_value = with_new_key.flat_map(move |(key, new_key, values)| {
+                    let new_values: Vec<_> = data
+                        .column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .try_collect()
+                        .unwrap_with_reporter(&error_reporter_2);
+                    if new_values.contains(&Value::Error) && data.skip_errors {
+                        None
+                    } else {
+                        Some((key, new_key, new_values))
+                    }
+                });
+                Ok(reducer_impl
+                    .clone()
+                    .reduce(&with_extracted_value, self.create_error_logger()?.into()))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let new_values = if let Some(first) = reduced_columns.first() {
             let mut joined: Collection<S, (Key, Arc<[Value]>)> = first
                 .map_named("group_by_table::join", |(key, value)| {
@@ -2987,10 +3038,17 @@ where
         } else {
             with_new_keys
         };
-        let new_values = with_persisted_state
-            .stateful_reduce_named("deduplicate::reduce", move |state, values| {
-                (combine_fn)(state, values)
-            });
+        let error_logger = self.create_error_logger()?;
+        let new_values = with_persisted_state.stateful_reduce_named(
+            "deduplicate::reduce",
+            move |state, values| match (combine_fn)(state, values) {
+                Ok(new_state) => new_state,
+                Err(error) => {
+                    error_logger.log_error(error.into());
+                    state.cloned()
+                }
+            },
+        );
 
         let new_values_persisted = if table_persistence_enabled {
             let error_reporter = self.error_reporter.clone();

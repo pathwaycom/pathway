@@ -10,7 +10,7 @@ from warnings import warn
 import numpy as np
 
 from pathway.internals import api, dtype as dt, expression as expr
-from pathway.internals.column import ColumnExpression, GroupedContext
+from pathway.internals.column import ColumnExpression, GroupedContext, IdColumn
 
 
 class Reducer(ABC):
@@ -142,6 +142,14 @@ class SortedTupleWrappingReducer(UnaryReducerWithDefault):
         return dt.List(arg_type)
 
 
+class CountReducer(Reducer):
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
+        return dt.INT
+
+    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
+        return api.Reducer.COUNT
+
+
 class TupleWrappingReducer(Reducer):
     _skip_nones: bool
     _engine_reducer: api.Reducer
@@ -193,6 +201,7 @@ class StatefulManyReducer(Reducer):
 _min = TypePreservingUnaryReducer(name="min", engine_reducer=api.Reducer.MIN)
 _max = TypePreservingUnaryReducer(name="max", engine_reducer=api.Reducer.MAX)
 _sum = SumReducer(name="sum")
+_count = CountReducer(name="count")
 
 
 def _sorted_tuple(skip_nones: bool):
@@ -536,12 +545,16 @@ def count(*args):
     3
     3
     """
-    if args:
+    if (
+        args
+        and len(args) == 1
+        and isinstance(args[0], expr.ColumnReference)
+        and isinstance(args[0]._column, IdColumn)
+    ):
         warn(
-            "Passing argument to pathway.reducers.count() is deprecated, use pathway.reducers.count() "
-            + "without any arguments."
+            "Passing IdColumn to pathway.reducers.count() is excessive, as id is never error."
         )
-    return expr.CountExpression()
+    return expr.ReducerExpression(_count, *args)
 
 
 def avg(expression: expr.ColumnExpression) -> expr.ColumnExpression:
@@ -566,7 +579,7 @@ def avg(expression: expr.ColumnExpression) -> expr.ColumnExpression:
     0.6666666666666666
     5.0
     """
-    return sum(expression) / count()
+    return sum(expression) / count(expression)
 
 
 def int_sum(expression: expr.ColumnExpression):

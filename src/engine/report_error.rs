@@ -154,21 +154,36 @@ impl<T: ReportError> LogError for T {
 }
 
 pub trait UnwrapWithErrorLogger<T> {
-    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T;
+    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T
+    where
+        Self: Sized,
+    {
+        self.unwrap_or_else_log(error_logger, || default)
+    }
+    fn unwrap_or_else_log<F: FnOnce() -> T>(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        op: F,
+    ) -> T;
     fn unwrap_or_log_with_trace(
         self,
         error_logger: &(impl LogError + ?Sized),
         trace: &Trace,
         default: T,
     ) -> T;
+    fn ok_with_logger(self, error_logger: &(impl LogError + ?Sized)) -> Option<T>;
 }
 
 impl<T> UnwrapWithErrorLogger<T> for DynResult<T> {
     #[track_caller]
-    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T {
+    fn unwrap_or_else_log<F: FnOnce() -> T>(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        op: F,
+    ) -> T {
         self.unwrap_or_else(|err| {
             error_logger.log_error(err.into());
-            default
+            op()
         })
     }
     #[track_caller]
@@ -183,14 +198,21 @@ impl<T> UnwrapWithErrorLogger<T> for DynResult<T> {
             default
         })
     }
+    fn ok_with_logger(self, error_logger: &(impl LogError + ?Sized)) -> Option<T> {
+        Some(self).transpose().unwrap_or_log(error_logger, None)
+    }
 }
 
 impl<T> UnwrapWithErrorLogger<T> for DataResult<T> {
     #[track_caller]
-    fn unwrap_or_log(self, error_logger: &(impl LogError + ?Sized), default: T) -> T {
+    fn unwrap_or_else_log<F: FnOnce() -> T>(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        op: F,
+    ) -> T {
         self.unwrap_or_else(|err| {
             error_logger.log_error(err);
-            default
+            op()
         })
     }
     #[track_caller]
@@ -204,5 +226,8 @@ impl<T> UnwrapWithErrorLogger<T> for DataResult<T> {
             error_logger.log_error_with_trace(err.into(), trace);
             default
         })
+    }
+    fn ok_with_logger(self, error_logger: &(impl LogError + ?Sized)) -> Option<T> {
+        Some(self).transpose().unwrap_or_log(error_logger, None)
     }
 }

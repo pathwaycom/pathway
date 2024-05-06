@@ -741,15 +741,6 @@ class ReducerExpression(ColumnExpression):
         )
 
 
-class CountExpression(ColumnExpression):
-    def _to_internal(self) -> InternalColExpr:
-        return InternalColExpr.build(type(self))
-
-    @property
-    def _deps(self) -> tuple[ColumnExpression, ...]:
-        return ()
-
-
 class ApplyExpression(ColumnExpression):
     _return_type: dt.DType
     _propagate_none: bool

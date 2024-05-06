@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pathway.engine import ExternalIndexData, ExternalIndexQuery
 from pathway.internals import (
@@ -627,13 +627,6 @@ class RowwiseEvaluator(
     ):
         raise RuntimeError("RowwiseEvaluator encountered ReducerExpression")
 
-    def eval_count(
-        self,
-        expression: expr.CountExpression,
-        eval_state: RowwiseEvalState | None = None,
-    ):
-        raise RuntimeError("RowwiseEvaluator encountered CountExpression")
-
     def eval_pointer(
         self,
         expression: expr.PointerExpression,
@@ -1134,7 +1127,13 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
                 input_storage.get_path(input_column)
                 for input_column in reducer_data.input_columns
             ]
-            reducers.append((reducer_data.reducer, inner_paths))
+            reducers.append(
+                api.ReducerData(
+                    reducer=reducer_data.reducer,
+                    skip_errors=self.context.skip_errors,
+                    column_paths=inner_paths,
+                )
+            )
 
         groupby_columns_paths = [
             input_storage.get_path(col_ref._column)
@@ -1158,7 +1157,6 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
         impl: dict[type, Callable] = {
             expr.ColumnReference: self.eval_column_val,
             expr.ReducerExpression: self.eval_reducer,
-            expr.CountExpression: self.eval_count,
         }
         if type(expression) not in impl:
             raise RuntimeError(f"GroupedEvaluator encountered {type(expression)}")
@@ -1180,12 +1178,6 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
         expression: expr.ColumnReference,
     ) -> ReducerData:
         return self._reducer_data(api.Reducer.UNIQUE, [expression])
-
-    def eval_count(
-        self,
-        expression: expr.CountExpression,
-    ) -> ReducerData:
-        return self._reducer_data(api.Reducer.COUNT, [])
 
     def eval_reducer(
         self,
@@ -1220,10 +1212,11 @@ class DeduplicateEvaluator(ExpressionEvaluator, context_type=clmn.DeduplicateCon
         properties = self._table_properties(output_storage)
 
         def is_different_with_state(
-            state: tuple[Any, ...] | None, rows: Iterable[tuple[list[api.Value], int]]
+            state: tuple[api.Value, ...] | None,
+            rows: Iterable[tuple[list[api.Value], int]],
         ) -> tuple[api.Value, ...] | None:
             for [col, *cols], difference in rows:
-                if difference <= 0:
+                if difference <= 0 or col is api.ERROR:
                     continue
                 state_val = state[0] if state is not None else None
                 if state_val is None or self.context.acceptor(col, state_val):

@@ -19,7 +19,6 @@ class ExpressionVisitor(ABC):
             expr.ColumnUnaryOpExpression: self.eval_unary_op,
             expr.ColumnBinaryOpExpression: self.eval_binary_op,
             expr.ReducerExpression: self.eval_reducer,
-            expr.CountExpression: self.eval_count,
             expr.ApplyExpression: self.eval_apply,
             expr.ColumnConstExpression: self.eval_const,
             expr.ColumnCallExpression: self.eval_call,
@@ -58,9 +57,6 @@ class ExpressionVisitor(ABC):
 
     @abstractmethod
     def eval_reducer(self, expression: expr.ReducerExpression): ...
-
-    @abstractmethod
-    def eval_count(self, expression: expr.CountExpression): ...
 
     @abstractmethod
     def eval_apply(self, expression: expr.ApplyExpression): ...
@@ -163,11 +159,6 @@ class IdentityTransform(ExpressionVisitor):
     ) -> expr.ReducerExpression:
         args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
         return expr.ReducerExpression(expression._reducer, *args, **expression._kwargs)
-
-    def eval_count(
-        self, expression: expr.CountExpression, **kwargs
-    ) -> expr.CountExpression:
-        return expr.CountExpression()
 
     def eval_apply(
         self, expression: expr.ApplyExpression, **kwargs

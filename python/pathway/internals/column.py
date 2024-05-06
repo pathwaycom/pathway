@@ -501,6 +501,7 @@ class GroupedContext(Context):
     """Whether id should be set based on grouping column."""
     inner_context: RowwiseContext
     """Original context of grouped table."""
+    skip_errors: bool
     sort_by: InternalColRef | None = None
 
     def _get_type_interpreter(self):

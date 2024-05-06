@@ -61,9 +61,6 @@ class ExpressionFormatter(ExpressionVisitor):
         name = expression._reducer.name
         return f"pathway.reducers.{name}({args})"
 
-    def eval_count(self, expression: expr.CountExpression):
-        return "pathway.reducers.count()"
-
     def eval_apply(self, expression: expr.ApplyExpression):
         args = self._eval_args_kwargs(expression._args, expression._kwargs)
         return f"pathway.apply({expression._fun.__name__}, {args})"
