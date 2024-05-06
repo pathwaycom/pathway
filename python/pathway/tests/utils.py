@@ -14,8 +14,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Generator, Hashable, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from types import EllipsisType
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -100,7 +99,7 @@ class DiffEntry:
         order: int,
         insertion: bool,
         row: dict[str, api.Value],
-        instance: api.Value | EllipsisType = ...,
+        instance: api.Value | None = None,
     ) -> DiffEntry:
         key = DiffEntry.create_id_from(pk_table, pk_columns, instance=instance)
         return DiffEntry(key, order, insertion, row)
@@ -112,13 +111,12 @@ class DiffEntry:
     def create_id_from(
         pk_table: pw.Table,
         pk_columns: dict[str, api.Value],
-        instance: api.Value | EllipsisType = ...,
+        instance: api.Value | None = None,
     ) -> api.Pointer:
         values = list(pk_columns.values())
-        if instance is ...:
+        if instance is None:
             return api.ref_scalar(*values)
         else:
-            instance = cast(api.Value, instance)
             return api.ref_scalar_with_instance(*values, instance=instance)
 
 

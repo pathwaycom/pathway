@@ -142,7 +142,8 @@ class _SessionWindow(Window):
             pw.this._pw_window,
             pw.this._pw_window_start,
             pw.this._pw_window_end,
-            instance=pw.this._pw_instance,
+            pw.this._pw_instance,
+            instance=pw.this._pw_instance if instance is not None else None,
             _is_window=True,
         )
 
@@ -426,7 +427,8 @@ class _SlidingWindow(Window):
             target._pw_window,
             target._pw_window_start,
             target._pw_window_end,
-            instance=target._pw_instance,
+            pw.this._pw_instance,
+            instance=target._pw_instance if instance is not None else None,
             _filter_out_results_of_forgetting=filter_out_results_of_forgetting,
             _is_window=True,
         )
@@ -568,7 +570,8 @@ class _IntervalsOverWindow(Window):
                 pw.this._pw_window_location,
                 pw.this._pw_window_start,
                 pw.this._pw_window_end,
-                instance=pw.this._pw_instance,
+                pw.this._pw_instance,
+                instance=pw.this._pw_instance if instance is not None else None,
                 sort_by=pw.this._pw_key,
                 _is_window=True,
             )
