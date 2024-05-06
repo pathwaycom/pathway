@@ -410,6 +410,55 @@ pw.debug.compute_and_print(result)
 #
 # Note that accidentally you created a sleepsort. Values in the `finishing` messages are sorted! As an exercise, you can try sorting also other values.
 #
+# As a more advanced example, you can create a UDF that queries [REST Countries](https://restcountries.com/) service to get the capital of a country.
+# It uses `requests` library that on its own is not asynchronous. However, if you set `executor=pw.udfs.async_executor()`
+# even though `requests.get` is not a coroutine, the function `find_capital` will be executed in a [ThreadPoolExecutor](https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.ThreadPoolExecutor),
+# so it'll be possible to have more than one function started at once.
+
+# %%
+import requests
+
+
+@pw.udf(executor=pw.udfs.async_executor())
+def find_capital(country: str) -> str:
+    result = requests.get(
+        f"https://restcountries.com/v3.1/name/{country}?fields=capital",
+        timeout=1,
+    )
+    result.raise_for_status()
+    return result.json()[0]["capital"][0]
+
+
+# _MD_COMMENT_START_
+
+
+@pw.udf
+def find_capital(country: str) -> str:
+    return {
+        "Poland": "Warsaw",
+        "Germany": "Berlin",
+        "Austria": "Vienna",
+        "USA": "Washington, D.C.",
+        "France": "Paris",
+    }[country]
+
+
+# _MD_COMMENT_END_
+
+countries = pw.debug.table_from_markdown(
+    """
+    country
+    Poland
+    Germany
+    Austria
+    USA
+    France
+"""
+)
+countries_with_capitals = countries.with_columns(capital=find_capital(pw.this.country))
+pw.debug.compute_and_print(countries_with_capitals)
+
+# %% [markdown]
 # ### AsyncExecutor
 # It is possible to control the behavior of asynchronous UDFs using the parameters of `async_executor`:
 # - `capacity` - the maximum number of concurrent operations,
