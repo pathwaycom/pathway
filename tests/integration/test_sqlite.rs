@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use pathway_engine::connectors::data_format::ParseError;
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::OpenFlags as SqliteOpenFlags;
 
@@ -9,6 +10,8 @@ use pathway_engine::connectors::data_format::{ParsedEvent, Parser, TransparentPa
 use pathway_engine::connectors::data_storage::{ReadResult, Reader, SqliteReader};
 use pathway_engine::connectors::offset::EMPTY_OFFSET;
 use pathway_engine::engine::Value;
+
+use crate::helpers::ReplaceErrors;
 
 #[test]
 fn test_sqlite_read_table() -> eyre::Result<()> {
@@ -94,7 +97,8 @@ fn test_sqlite_read_table_with_parser() -> eyre::Result<()> {
         let entry = reader.read()?;
         let is_last_entry = matches!(entry, ReadResult::FinishedSource { .. });
         if let ReadResult::Data(entry, _) = entry {
-            for event in parser.parse(&entry)? {
+            for event in parser.parse(&entry).map_err(ParseError::from)? {
+                let event = event.replace_errors();
                 parsed_events.push(event);
             }
         }

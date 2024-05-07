@@ -1,5 +1,7 @@
 // Copyright © 2024 Pathway
 
+use crate::helpers::ErrorPlacement;
+
 use super::helpers::{assert_error_shown, read_data_from_reader};
 
 use std::collections::HashMap;
@@ -73,6 +75,7 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
         Box::new(reader),
         Box::new(parser),
         r#"field d with no JsonPointer path specified is absent in {"a":"abc","b":7,"c":15}"#,
+        ErrorPlacement::Key,
     );
 
     Ok(())
@@ -124,6 +127,7 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
         Box::new(reader),
         Box::new(parser),
         r#"field qqq with no JsonPointer path specified is absent in {"a":"abc","b":7,"c":15}"#,
+        ErrorPlacement::Value(1),
     );
 
     Ok(())
@@ -274,6 +278,7 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
         Box::new(reader),
         Box::new(parser),
         r#"field pet_height with path /pet/measurements/height is absent in {"name":"John","pet":{"animal":"dog","measurements":[200,400,600],"name":"Alice"}}"#,
+        ErrorPlacement::Value(3),
     );
 
     Ok(())
@@ -340,6 +345,7 @@ fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
         Box::new(reader),
         Box::new(parser),
         r#"field d with no JsonPointer path specified is absent in {"a":"abc","b":7,"c":15}"#,
+        ErrorPlacement::Key,
     );
 
     Ok(())
@@ -370,6 +376,7 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
         Box::new(reader),
         Box::new(parser),
         r#"field d with path /non/existent/path is absent in {"a":"abc","b":7,"c":15}"#,
+        ErrorPlacement::Key,
     );
 
     Ok(())
@@ -396,7 +403,8 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
     assert_error_shown(
         Box::new(reader),
         Box::new(parser),
-        r#"failed to parse field "pet" from the following json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
+        r#"failed to parse field "pet" with type Any from the following json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
+        ErrorPlacement::Value(0),
     );
 
     Ok(())

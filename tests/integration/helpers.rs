@@ -6,19 +6,22 @@ use std::sync::{mpsc, mpsc::Receiver, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use pathway_engine::engine::error::DynError;
 use pathway_engine::engine::{report_error::ReportError, Error};
 use pathway_engine::persistence::config::{
     MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
 };
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
-use pathway_engine::connectors::data_format::{ParsedEvent, Parser};
+use pathway_engine::connectors::data_format::{
+    ErrorRemovalLogic, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser,
+};
 use pathway_engine::connectors::data_storage::{
     DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
 };
 use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
-use pathway_engine::engine::{Key, Timestamp, TotalFrontier};
+use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;
 
 #[derive(Debug)]
@@ -95,6 +98,7 @@ pub fn full_cycle_read(
 
                 let events = parser.parse(raw_data).unwrap();
                 for event in events {
+                    let event = event.replace_errors();
                     if let Some(ref mut snapshot_writer) = snapshot_writer {
                         let snapshot_event = match event {
                             ParsedEvent::Insert((_, ref values)) => {
@@ -188,6 +192,7 @@ pub fn read_data_from_reader(
                 let parse_result = parser.parse(&bytes);
                 if let Ok(entries) = parse_result {
                     for entry in entries {
+                        let entry = entry.replace_errors();
                         read_lines.push(entry);
                     }
                 } else {
@@ -234,31 +239,58 @@ pub fn get_entries_in_receiver<T>(receiver: Receiver<T>) -> Vec<T> {
     result
 }
 
-pub fn data_parsing_fails(
-    mut reader: Box<dyn Reader>,
-    mut parser: Box<dyn Parser>,
-) -> eyre::Result<bool> {
-    loop {
-        let read_result = reader.read()?;
-        match read_result {
-            ReadResult::Data(bytes, _) => {
-                let parse_result = parser.parse(&bytes);
-                if parse_result.is_err() {
-                    return Ok(true);
-                }
-            }
-            ReadResult::FinishedSource { .. } => continue,
-            ReadResult::NewSource(metadata) => parser.on_new_source_started(metadata.as_ref()),
-            ReadResult::Finished => break,
+pub enum ErrorPlacement {
+    Message,
+    Key,
+    Value(usize),
+}
+
+impl ErrorPlacement {
+    fn extract_errors(&self, parse_result: ParseResult) -> Vec<DynError> {
+        match self {
+            Self::Message => vec![parse_result
+                .expect_err("error should be in the message but it is not present there")],
+            Self::Key => parse_result
+                .expect("error should be contained in key, not in message")
+                .into_iter()
+                .map(|result| match result {
+                    ParsedEventWithErrors::Insert((key, _))
+                    | ParsedEventWithErrors::Delete((key, _))
+                    | ParsedEventWithErrors::Upsert((key, _)) => key
+                        .expect("key has to be Some to contain error")
+                        .expect_err("error should be in the key but it is not present there"),
+                    ParsedEventWithErrors::AdvanceTime => {
+                        panic!("expected error, found AdvanceTime")
+                    }
+                })
+                .collect(),
+            Self::Value(i) => parse_result
+                .expect("error should be contained in values, not in message")
+                .into_iter()
+                .map(|result| match result {
+                    ParsedEventWithErrors::Insert((_, values))
+                    | ParsedEventWithErrors::Delete((_, values))
+                    | ParsedEventWithErrors::Upsert((_, Some(values))) => {
+                        values.into_iter().nth(*i).unwrap().expect_err(
+                            format!(
+                                "error should be in the values[{}] but it is not present there",
+                                *i
+                            )
+                            .as_str(),
+                        )
+                    }
+                    _ => panic!("expected event with data"),
+                })
+                .collect(),
         }
     }
-    Ok(false)
 }
 
 pub fn assert_error_shown(
     mut reader: Box<dyn Reader>,
     parser: Box<dyn Parser>,
     error_formatted_text: &str,
+    error_placement: ErrorPlacement,
 ) {
     let _ = reader
         .read()
@@ -268,7 +300,12 @@ pub fn assert_error_shown(
         .expect("first line read event should not fail");
     match row_read_result {
         ReadResult::Data(bytes, _) => {
-            assert_error_shown_for_reader_context(&bytes, parser, error_formatted_text);
+            assert_error_shown_for_reader_context(
+                &bytes,
+                parser,
+                error_formatted_text,
+                error_placement,
+            );
         }
         _ => panic!("row_read_result is not Data"),
     }
@@ -278,13 +315,14 @@ pub fn assert_error_shown_for_reader_context(
     context: &ReaderContext,
     mut parser: Box<dyn Parser>,
     error_formatted_text: &str,
+    error_placement: ErrorPlacement,
 ) {
     let row_parse_result = parser.parse(context);
-    if let Err(e) = row_parse_result {
+    println!("{:?}", row_parse_result);
+    let errors = error_placement.extract_errors(row_parse_result);
+    for e in errors {
         eprintln!("Error details: {e:?}");
         assert_eq!(format!("{e}"), error_formatted_text.to_string());
-    } else {
-        panic!("We were supposed to get an error, however, the read was successful");
     }
 }
 
@@ -292,10 +330,28 @@ pub fn assert_error_shown_for_raw_data(
     raw_data: &[u8],
     parser: Box<dyn Parser>,
     error_formatted_text: &str,
+    error_placement: ErrorPlacement,
 ) {
     assert_error_shown_for_reader_context(
         &ReaderContext::from_raw_bytes(DataEventType::Insert, raw_data.to_vec()),
         parser,
         error_formatted_text,
+        error_placement,
     );
+}
+
+pub trait ReplaceErrors {
+    fn replace_errors(self) -> ParsedEvent;
+}
+
+impl ReplaceErrors for ParsedEventWithErrors {
+    fn replace_errors(self) -> ParsedEvent {
+        let logic: ErrorRemovalLogic = Box::new(|values| {
+            values
+                .into_iter()
+                .map(|value| Ok(value.unwrap_or(Value::Error)))
+                .collect()
+        });
+        self.remove_errors(&logic).expect("key shouldn't be error")
+    }
 }

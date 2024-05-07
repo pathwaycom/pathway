@@ -3595,22 +3595,26 @@ pub struct ValueField {
     #[pyo3(get)]
     type_: Type,
     #[pyo3(get)]
+    is_optional: bool,
+    #[pyo3(get)]
     default: Option<Value>,
 }
 
 impl ValueField {
     fn as_inner_schema_field(&self) -> InnerSchemaField {
-        InnerSchemaField::new(self.type_, self.default.clone())
+        InnerSchemaField::new(self.type_, self.is_optional, self.default.clone())
     }
 }
 
 #[pymethods]
 impl ValueField {
     #[new]
-    fn new(name: String, type_: Type) -> Self {
+    #[pyo3(signature = (name, type_, is_optional=false))]
+    fn new(name: String, type_: Type, is_optional: bool) -> Self {
         ValueField {
             name,
             type_,
+            is_optional,
             default: None,
         }
     }

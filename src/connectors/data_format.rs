@@ -13,7 +13,7 @@ use std::str::{from_utf8, Utf8Error};
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::ReaderContext::{Diff, KeyValue, PreparedEvent, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
-use crate::engine::error::DynError;
+use crate::engine::error::{DynError, DynResult};
 use crate::engine::{Key, Result, Timestamp, Type, Value};
 
 use itertools::Itertools;
@@ -25,11 +25,44 @@ use serde_json::Value as JsonValue;
 const COMMIT_LITERAL: &str = "*COMMIT*";
 const DEBEZIUM_EMPTY_KEY_PAYLOAD: &str = "{\"payload\": {\"before\": {}, \"after\": {}}}";
 
-fn is_commit_literal(value: &Value) -> bool {
+fn is_commit_literal(value: &DynResult<Value>) -> bool {
     match value {
-        Value::String(arc_str) => arc_str.as_str() == COMMIT_LITERAL,
-        Value::Bytes(arc_bytes) => **arc_bytes == *COMMIT_LITERAL.as_bytes(),
+        Ok(Value::String(arc_str)) => arc_str.as_str() == COMMIT_LITERAL,
+        Ok(Value::Bytes(arc_bytes)) => **arc_bytes == *COMMIT_LITERAL.as_bytes(),
         _ => false,
+    }
+}
+
+type KeyFieldsWithErrors = Option<DynResult<Vec<Value>>>;
+type ValueFieldsWithErrors = Vec<DynResult<Value>>;
+pub type ErrorRemovalLogic = Box<dyn Fn(ValueFieldsWithErrors) -> DynResult<Vec<Value>>>;
+
+#[derive(Debug)]
+pub enum ParsedEventWithErrors {
+    AdvanceTime,
+    Insert((KeyFieldsWithErrors, ValueFieldsWithErrors)),
+
+    // None as Vec of values means that the record is removed
+    Upsert((KeyFieldsWithErrors, Option<ValueFieldsWithErrors>)),
+
+    // If None, finding the key for the provided values becomes responsibility of the connector
+    Delete((KeyFieldsWithErrors, ValueFieldsWithErrors)),
+}
+
+impl ParsedEventWithErrors {
+    pub fn remove_errors(self, logic: &ErrorRemovalLogic) -> DynResult<ParsedEvent> {
+        match self {
+            Self::AdvanceTime => Ok(ParsedEvent::AdvanceTime),
+            Self::Insert((key, values)) => key
+                .transpose()
+                .and_then(|key| Ok(ParsedEvent::Insert((key, logic(values)?)))),
+            Self::Upsert((key, values)) => key
+                .transpose()
+                .and_then(|key| Ok(ParsedEvent::Upsert((key, values.map(logic).transpose()?)))),
+            Self::Delete((key, values)) => key
+                .transpose()
+                .and_then(|key| Ok(ParsedEvent::Delete((key, logic(values)?)))),
+        }
     }
 }
 
@@ -69,6 +102,24 @@ impl ParsedEvent {
     }
 }
 
+impl From<ParsedEvent> for ParsedEventWithErrors {
+    fn from(value: ParsedEvent) -> Self {
+        match value {
+            ParsedEvent::AdvanceTime => Self::AdvanceTime,
+            ParsedEvent::Insert((key, values)) => {
+                Self::Insert((key.map(Ok), values.into_iter().map(Ok).collect()))
+            }
+            ParsedEvent::Upsert((key, values)) => Self::Upsert((
+                key.map(Ok),
+                values.map(|values| values.into_iter().map(Ok).collect()),
+            )),
+            ParsedEvent::Delete((key, values)) => {
+                Self::Delete((key.map(Ok), values.into_iter().map(Ok).collect()))
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -89,10 +140,12 @@ pub enum ParseError {
     #[error("too small number of csv tokens in the line: {0}")]
     UnexpectedNumberOfCsvTokens(usize),
 
-    #[error("failed to parse field {field_name:?} from the following json payload: {payload}")]
+    #[error("failed to parse field {field_name:?} with type {type_:?}{} from the following json payload: {payload}", if *is_optional {" | None"} else {""})]
     FailedToParseFromJson {
         field_name: String,
         payload: JsonValue,
+        type_: Type,
+        is_optional: bool,
     },
 
     #[error("key-value pair has unexpected number of tokens: {0} instead of 2")]
@@ -128,6 +181,9 @@ pub enum ParseError {
 
     #[error("parsing {0:?} from an external datasource is not supported")]
     UnparsableType(Type),
+
+    #[error("error in primary key, skipping the row: {0}")]
+    ErrorInKey(DynError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -142,18 +198,31 @@ pub enum DebeziumFormatError {
     IncorrectJsonRoot,
 }
 
-pub type ParseResult = Result<Vec<ParsedEvent>, ParseError>;
+impl From<DynError> for ParseError {
+    fn from(value: DynError) -> Self {
+        *value
+            .downcast::<Self>()
+            .expect("error should be ParseError")
+    }
+}
+
+pub type ParseResult = DynResult<Vec<ParsedEventWithErrors>>;
 type PrepareStringResult = Result<String, ParseError>;
 
 #[derive(Clone, Debug)]
 pub struct InnerSchemaField {
     type_: Type,
+    is_optional: bool,
     default: Option<Value>, // None means that there is no default for the field
 }
 
 impl InnerSchemaField {
-    pub fn new(type_: Type, default: Option<Value>) -> Self {
-        Self { type_, default }
+    pub fn new(type_: Type, is_optional: bool, default: Option<Value>) -> Self {
+        Self {
+            type_,
+            is_optional,
+            default,
+        }
     }
 }
 
@@ -161,6 +230,7 @@ impl Default for &InnerSchemaField {
     fn default() -> &'static InnerSchemaField {
         &InnerSchemaField {
             type_: Type::Any,
+            is_optional: false,
             default: None,
         }
     }
@@ -331,7 +401,7 @@ fn parse_with_type(
     raw_value: &str,
     schema: &InnerSchemaField,
     field_name: &str,
-) -> Result<Value, ParseError> {
+) -> DynResult<Value> {
     if let Some(default) = &schema.default {
         if raw_value.is_empty() && !matches!(schema.type_, Type::Any | Type::String) {
             return Ok(default.clone());
@@ -374,14 +444,14 @@ fn parse_with_type(
                 })?;
             Ok(Value::from(json))
         }
-        _ => Err(ParseError::UnparsableType(schema.type_)),
+        _ => Err(ParseError::UnparsableType(schema.type_).into()),
     }
 }
 
-fn parse_metadata(bytes: Option<&[u8]>) -> Result<Option<Value>, ParseError> {
+fn parse_metadata(bytes: Option<&[u8]>) -> DynResult<Option<Value>> {
     if let Some(bytes) = bytes {
         let Ok(parsed_value) = serde_json::from_slice::<JsonValue>(bytes) else {
-            return Err(ParseError::FailedToParseMetadata);
+            return Err(ParseError::FailedToParseMetadata.into());
         };
         Ok(Some(parsed_value.into()))
     } else {
@@ -477,7 +547,7 @@ impl DsvParser {
         }
 
         if line == COMMIT_LITERAL {
-            return Ok(vec![ParsedEvent::AdvanceTime]);
+            return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
         }
 
         let tokens: Vec<String> = line
@@ -493,26 +563,26 @@ impl DsvParser {
         indices: &[DsvColumnIndex],
         indexed_schema: &HashMap<usize, InnerSchemaField>,
         header: &[String],
-    ) -> Result<Vec<Value>, ParseError> {
+    ) -> ValueFieldsWithErrors {
         let mut parsed_tokens = Vec::with_capacity(indices.len());
         for index in indices {
             let token = match index {
                 DsvColumnIndex::Index(index) => {
                     let schema_item = indexed_schema.get(index).unwrap_or_default();
-                    parse_with_type(&tokens[*index], schema_item, &header[*index])?
+                    parse_with_type(&tokens[*index], schema_item, &header[*index])
                 }
-                DsvColumnIndex::Metadata => self.metadata_column_value.clone(),
+                DsvColumnIndex::Metadata => Ok(self.metadata_column_value.clone()),
             };
             parsed_tokens.push(token);
         }
-        Ok(parsed_tokens)
+        parsed_tokens
     }
 
     fn parse_tokenized_entries(&mut self, event: DataEventType, tokens: &[String]) -> ParseResult {
         if tokens.len() == 1 {
             let line = &tokens[0];
             if line == COMMIT_LITERAL {
-                return Ok(vec![ParsedEvent::AdvanceTime]);
+                return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
             }
         }
 
@@ -536,12 +606,11 @@ impl DsvParser {
         }
         if line_has_enough_tokens {
             let key = match &self.key_column_indices {
-                Some(indices) => Some(self.values_by_indices(
-                    tokens,
-                    indices,
-                    &self.indexed_schema,
-                    &self.header,
-                )?),
+                Some(indices) => Some(
+                    self.values_by_indices(tokens, indices, &self.indexed_schema, &self.header)
+                        .into_iter()
+                        .collect(),
+                ),
                 None => None,
             };
             let parsed_tokens = self.values_by_indices(
@@ -549,15 +618,15 @@ impl DsvParser {
                 &self.value_column_indices,
                 &self.indexed_schema,
                 &self.header,
-            )?;
+            );
             let parsed_entry = match event {
-                DataEventType::Insert => ParsedEvent::Insert((key, parsed_tokens)),
-                DataEventType::Delete => ParsedEvent::Delete((key, parsed_tokens)),
+                DataEventType::Insert => ParsedEventWithErrors::Insert((key, parsed_tokens)),
+                DataEventType::Delete => ParsedEventWithErrors::Delete((key, parsed_tokens)),
                 DataEventType::Upsert => unreachable!("readers can't send upserts to DsvParser"),
             };
             Ok(vec![parsed_entry])
         } else {
-            Err(ParseError::UnexpectedNumberOfCsvTokens(tokens.len()))
+            Err(ParseError::UnexpectedNumberOfCsvTokens(tokens.len()).into())
         }
     }
 }
@@ -571,9 +640,9 @@ impl Parser for DsvParser {
             }
             KeyValue((_key, value)) => match value {
                 Some(bytes) => self.parse_bytes_simple(DataEventType::Insert, bytes), // In Kafka we only have additions now
-                None => Err(ParseError::EmptyKafkaPayload),
+                None => Err(ParseError::EmptyKafkaPayload.into()),
             },
-            Diff(_) | PreparedEvent(_) => Err(ParseError::UnsupportedReaderContext),
+            Diff(_) | PreparedEvent(_) => Err(ParseError::UnsupportedReaderContext.into()),
         }
     }
 
@@ -612,7 +681,7 @@ impl IdentityParser {
         }
     }
 
-    fn prepare_bytes(&self, bytes: &[u8]) -> Result<Value, ParseError> {
+    fn prepare_bytes(&self, bytes: &[u8]) -> DynResult<Value> {
         if self.parse_utf8 {
             Ok(Value::String(prepare_plaintext_string(bytes)?.into()))
         } else {
@@ -624,52 +693,58 @@ impl IdentityParser {
 impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
         let (event, key, value, metadata) = match data {
-            RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes)?, None),
+            RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes), Ok(None)),
             KeyValue((key, value)) => {
-                let prepared_key = match key {
-                    Some(bytes) => Some(vec![self.prepare_bytes(bytes)?]),
-                    None => None,
-                };
+                let prepared_key = key
+                    .as_ref()
+                    .map(|bytes| self.prepare_bytes(bytes).map(|k| vec![k]));
                 match value {
                     Some(bytes) => (
                         DataEventType::Insert,
                         prepared_key,
-                        self.prepare_bytes(bytes)?,
-                        None,
+                        self.prepare_bytes(bytes),
+                        Ok(None),
                     ),
-                    None => return Err(ParseError::EmptyKafkaPayload),
+                    None => return Err(ParseError::EmptyKafkaPayload.into()),
                 }
             }
             Diff((addition, key, values, metadata)) => (
                 *addition,
-                key.as_ref().map(|k| vec![k.clone()]),
-                self.prepare_bytes(values)?,
-                parse_metadata(metadata.as_deref())?,
+                key.as_ref().map(|k| Ok(vec![k.clone()])),
+                self.prepare_bytes(values),
+                parse_metadata(metadata.as_deref()),
             ),
             TokenizedEntries(_, _) | PreparedEvent(_) => {
-                return Err(ParseError::UnsupportedReaderContext)
+                return Err(ParseError::UnsupportedReaderContext.into())
             }
         };
 
         let is_commit = is_commit_literal(&value);
 
         let event = if is_commit {
-            ParsedEvent::AdvanceTime
+            ParsedEventWithErrors::AdvanceTime
         } else {
             let mut values = Vec::new();
-            let metadata = metadata.as_ref().unwrap_or(&self.metadata_column_value);
+            let mut metadata = Some(metadata);
+            let mut value = Some(value);
             for field in &self.value_fields {
-                if field == METADATA_FIELD_NAME {
-                    values.push(metadata.clone());
+                let to_insert = if field == METADATA_FIELD_NAME {
+                    metadata
+                        .take()
+                        .expect("metadata column should be used exactly once in IdentityParser")
+                        .map(|metadata| metadata.unwrap_or(self.metadata_column_value.clone()))
                 } else {
-                    values.push(value.clone());
-                }
+                    value
+                        .take()
+                        .expect("value column should be used exactly once in IdentityParser")
+                };
+                values.push(to_insert);
             }
             match self.session_type {
                 SessionType::Native => {
                     match event {
-                        DataEventType::Insert => ParsedEvent::Insert((key, values)),
-                        DataEventType::Delete => ParsedEvent::Delete((key, values)),
+                        DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
+                        DataEventType::Delete => ParsedEventWithErrors::Delete((key, values)),
                         DataEventType::Upsert => {
                             panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session")
                         }
@@ -678,8 +753,8 @@ impl Parser for IdentityParser {
                 SessionType::Upsert => {
                     match event {
                         DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
-                        DataEventType::Delete => ParsedEvent::Upsert((key, None)),
-                        DataEventType::Upsert => ParsedEvent::Upsert((key, Some(values))),
+                        DataEventType::Delete => ParsedEventWithErrors::Upsert((key, None)),
+                        DataEventType::Upsert => ParsedEventWithErrors::Upsert((key, Some(values))),
                     }
                 }
             }
@@ -837,8 +912,7 @@ fn parse_value_from_json(value: &JsonValue) -> Option<Value> {
             } else if let Some(parsed_i64) = v.as_i64() {
                 Some(Value::Int(parsed_i64))
             } else {
-                v.as_f64()
-                    .map(|parsed_float| Value::Float(ordered_float::OrderedFloat(parsed_float)))
+                v.as_f64().map(Value::from)
             }
         }
         JsonValue::Bool(v) => Some(Value::Bool(*v)),
@@ -850,6 +924,27 @@ fn parse_value_from_json(value: &JsonValue) -> Option<Value> {
             Some(Value::Tuple(tuple.into()))
         }
         JsonValue::Object(_) => None,
+    }
+}
+
+fn value_matches_type(value: &Value, type_: Type) -> bool {
+    if type_ == Type::Any {
+        true
+    } else if let Some(self_type) = value.simple_type().to_type() {
+        type_ == self_type
+    } else {
+        false
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn convert_value_to_proper_type(value: Value, type_: Type, is_optional: bool) -> Option<Value> {
+    if value_matches_type(&value, type_) || (is_optional && value == Value::None) {
+        return Some(value);
+    }
+    match (value, type_) {
+        (Value::Int(i), Type::Float) => Some(Value::from(i as f64)),
+        (_, _) => None,
     }
 }
 
@@ -904,73 +999,89 @@ fn values_by_names_from_json(
     field_absence_is_error: bool,
     schema: &HashMap<String, InnerSchemaField>,
     metadata_column_value: &Value,
-) -> Result<Vec<Value>, ParseError> {
+) -> ValueFieldsWithErrors {
     let mut parsed_values = Vec::with_capacity(field_names.len());
     for value_field in field_names {
-        let (default_value, dtype) = {
+        let (default_value, dtype, dtype_is_optional) = {
             if let Some(schema_item) = schema.get(value_field) {
-                if let Some(default) = &schema_item.default {
-                    (Some(default), schema_item.type_)
-                } else {
-                    (None, schema_item.type_)
-                }
+                (
+                    schema_item.default.as_ref(),
+                    schema_item.type_,
+                    schema_item.is_optional,
+                )
             } else {
-                (None, Type::Any)
+                (None, Type::Any, false)
             }
         };
 
         let value = if value_field == METADATA_FIELD_NAME {
-            metadata_column_value.clone()
+            Ok(metadata_column_value.clone())
         } else if let Some(path) = column_paths.get(value_field) {
             if let Some(value) = payload.pointer(path) {
                 match dtype {
-                    Type::Json => Value::from(value.clone()),
-                    _ => parse_value_from_json(value).ok_or_else(|| {
-                        ParseError::FailedToParseFromJson {
-                            field_name: value_field.to_string(),
-                            payload: value.clone(),
-                        }
-                    })?,
+                    Type::Json => Ok(Value::from(value.clone())),
+                    _ => parse_value_from_json(value)
+                        .and_then(|value| {
+                            convert_value_to_proper_type(value, dtype, dtype_is_optional)
+                        })
+                        .ok_or_else(|| {
+                            ParseError::FailedToParseFromJson {
+                                field_name: value_field.to_string(),
+                                payload: value.clone(),
+                                type_: dtype,
+                                is_optional: dtype_is_optional,
+                            }
+                            .into()
+                        }),
                 }
             } else if let Some(default) = default_value {
-                default.clone()
+                Ok(default.clone())
             } else if field_absence_is_error {
-                return Err(ParseError::FailedToExtractJsonField {
+                Err(ParseError::FailedToExtractJsonField {
                     field_name: value_field.to_string(),
                     path: Some(path.to_string()),
                     payload: payload.clone(),
-                });
+                }
+                .into())
             } else {
-                Value::None
+                Ok(Value::None)
             }
         } else {
             let value_specified_in_json = payload.get(value_field).is_some();
 
             if value_specified_in_json {
                 match dtype {
-                    Type::Json => Value::from(payload[&value_field].clone()),
-                    _ => parse_value_from_json(&payload[&value_field]).ok_or_else(|| {
-                        ParseError::FailedToParseFromJson {
-                            field_name: value_field.to_string(),
-                            payload: payload[&value_field].clone(),
-                        }
-                    })?,
+                    Type::Json => Ok(Value::from(payload[&value_field].clone())),
+                    _ => parse_value_from_json(&payload[&value_field])
+                        .and_then(|value| {
+                            convert_value_to_proper_type(value, dtype, dtype_is_optional)
+                        })
+                        .ok_or_else(|| {
+                            ParseError::FailedToParseFromJson {
+                                field_name: value_field.to_string(),
+                                payload: payload[&value_field].clone(),
+                                type_: dtype,
+                                is_optional: dtype_is_optional,
+                            }
+                            .into()
+                        }),
                 }
             } else if let Some(default) = default_value {
-                default.clone()
+                Ok(default.clone())
             } else if field_absence_is_error {
-                return Err(ParseError::FailedToExtractJsonField {
+                Err(ParseError::FailedToExtractJsonField {
                     field_name: value_field.to_string(),
                     path: None,
                     payload: payload.clone(),
-                });
+                }
+                .into())
             } else {
-                Value::None
+                Ok(Value::None)
             }
         };
         parsed_values.push(value);
     }
-    Ok(parsed_values)
+    parsed_values
 }
 
 impl DebeziumMessageParser {
@@ -997,7 +1108,7 @@ impl DebeziumMessageParser {
         key: &JsonValue,
         value: &JsonValue,
         event: DataEventType,
-    ) -> Result<ParsedEvent, ParseError> {
+    ) -> Result<ParsedEventWithErrors, ParseError> {
         // in case of MongoDB, the message is always string
         let prepared_value: JsonValue = {
             if let JsonValue::String(serialized_json) = &value {
@@ -1010,17 +1121,18 @@ impl DebeziumMessageParser {
             }
         };
 
-        let key = match &self.key_field_names {
-            None => None,
-            Some(names) => Some(values_by_names_from_json(
+        let key = self.key_field_names.as_ref().map(|names| {
+            values_by_names_from_json(
                 key,
                 names,
                 &HashMap::new(),
                 true,
                 &HashMap::new(),
                 &Value::None,
-            )?),
-        };
+            )
+            .into_iter()
+            .collect()
+        });
 
         let parsed_values = values_by_names_from_json(
             &prepared_value,
@@ -1029,12 +1141,12 @@ impl DebeziumMessageParser {
             true,
             &HashMap::new(),
             &Value::None,
-        )?;
+        );
 
         match event {
-            DataEventType::Insert => Ok(ParsedEvent::Insert((key, parsed_values))),
-            DataEventType::Delete => Ok(ParsedEvent::Delete((key, parsed_values))),
-            DataEventType::Upsert => Ok(ParsedEvent::Upsert((key, Some(parsed_values)))),
+            DataEventType::Insert => Ok(ParsedEventWithErrors::Insert((key, parsed_values))),
+            DataEventType::Delete => Ok(ParsedEventWithErrors::Delete((key, parsed_values))),
+            DataEventType::Upsert => Ok(ParsedEventWithErrors::Upsert((key, Some(parsed_values)))),
         }
     }
 
@@ -1056,18 +1168,19 @@ impl DebeziumMessageParser {
                 self.parse_event(key, &value["before"], DataEventType::Delete)?
             }
             DebeziumDBType::MongoDB => {
-                let key = match &self.key_field_names {
-                    None => None,
-                    Some(names) => Some(values_by_names_from_json(
+                let key = self.key_field_names.as_ref().map(|names| {
+                    values_by_names_from_json(
                         key,
                         names,
                         &HashMap::new(),
                         true,
                         &HashMap::new(),
                         &Value::None,
-                    )?),
-                };
-                ParsedEvent::Upsert((key, None))
+                    )
+                    .into_iter()
+                    .collect()
+                });
+                ParsedEventWithErrors::Upsert((key, None))
             }
         };
         Ok(vec![event])
@@ -1105,7 +1218,7 @@ impl Parser for DebeziumMessageParser {
 
                 let key_and_value: Vec<&str> = line.trim().split(&self.separator).collect();
                 if key_and_value.len() != 2 {
-                    return Err(ParseError::KeyValueTokensIncorrect(key_and_value.len()));
+                    return Err(ParseError::KeyValueTokensIncorrect(key_and_value.len()).into());
                 }
                 (key_and_value[0].to_string(), key_and_value[1].to_string())
             }
@@ -1114,24 +1227,24 @@ impl Parser for DebeziumMessageParser {
                     Some(bytes) => prepare_plaintext_string(bytes)?,
                     None => {
                         if self.key_field_names.is_some() {
-                            return Err(ParseError::EmptyKafkaPayload);
+                            return Err(ParseError::EmptyKafkaPayload.into());
                         }
                         DEBEZIUM_EMPTY_KEY_PAYLOAD.to_string()
                     }
                 };
                 let value = match v {
                     Some(bytes) => prepare_plaintext_string(bytes)?,
-                    None => return Err(ParseError::EmptyKafkaPayload),
+                    None => return Err(ParseError::EmptyKafkaPayload.into()),
                 };
                 (key, value)
             }
             Diff(_) | TokenizedEntries(_, _) | PreparedEvent(_) => {
-                return Err(ParseError::UnsupportedReaderContext);
+                return Err(ParseError::UnsupportedReaderContext.into());
             }
         };
 
         let Ok(value_change) = serde_json::from_str(&raw_value_change) else {
-            return Err(ParseError::FailedToParseJson(raw_value_change));
+            return Err(ParseError::FailedToParseJson(raw_value_change).into());
         };
 
         let change_payload = match value_change {
@@ -1140,18 +1253,20 @@ impl Parser for DebeziumMessageParser {
             _ => {
                 return Err(ParseError::DebeziumFormatViolated(
                     DebeziumFormatError::IncorrectJsonRoot,
-                ))
+                )
+                .into())
             }
         };
 
         let Ok(change_key) = serde_json::from_str::<JsonValue>(&raw_key_change) else {
-            return Err(ParseError::FailedToParseJson(raw_key_change));
+            return Err(ParseError::FailedToParseJson(raw_key_change).into());
         };
 
         if !change_payload.contains_key("payload") {
             return Err(ParseError::DebeziumFormatViolated(
                 DebeziumFormatError::NoPayloadAtTopLevel,
-            ));
+            )
+            .into());
         }
 
         match &change_payload["payload"]["op"] {
@@ -1161,11 +1276,12 @@ impl Parser for DebeziumMessageParser {
                 }
                 "u" => self.parse_update(&change_key["payload"], &change_payload["payload"]),
                 "d" => self.parse_delete(&change_key["payload"], &change_payload["payload"]),
-                _ => Err(ParseError::UnsupportedDebeziumOperation(op.to_string())),
+                _ => Err(ParseError::UnsupportedDebeziumOperation(op.to_string()).into()),
             },
             _ => Err(ParseError::DebeziumFormatViolated(
                 DebeziumFormatError::OperationFieldMissing,
-            )),
+            )
+            .into()),
         }
     }
 
@@ -1230,16 +1346,16 @@ impl Parser for JsonLinesParser {
                     let line = prepare_plaintext_string(line)?;
                     (DataEventType::Insert, None, line)
                 } else {
-                    return Err(ParseError::EmptyKafkaPayload);
+                    return Err(ParseError::EmptyKafkaPayload.into());
                 }
             }
             Diff((event, key, line, _)) => {
                 let line = prepare_plaintext_string(line)?;
-                let key = key.as_ref().map(|k| vec![k.clone()]);
+                let key = key.as_ref().map(|k| Ok(vec![k.clone()]));
                 (*event, key, line)
             }
             TokenizedEntries(..) | PreparedEvent(_) => {
-                return Err(ParseError::UnsupportedReaderContext);
+                return Err(ParseError::UnsupportedReaderContext.into());
             }
         };
 
@@ -1248,23 +1364,27 @@ impl Parser for JsonLinesParser {
         }
 
         if line == COMMIT_LITERAL {
-            return Ok(vec![ParsedEvent::AdvanceTime]);
+            return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
         }
 
         let payload: JsonValue = match serde_json::from_str(&line) {
             Ok(json_value) => json_value,
-            Err(_) => return Err(ParseError::FailedToParseJson(line)),
+            Err(_) => return Err(ParseError::FailedToParseJson(line).into()),
         };
 
         let key = key.or(match &self.key_field_names {
-            Some(key_field_names) => Some(values_by_names_from_json(
-                &payload,
-                key_field_names,
-                &self.column_paths,
-                self.field_absence_is_error,
-                &self.schema,
-                &self.metadata_column_value,
-            )?),
+            Some(key_field_names) => Some(
+                values_by_names_from_json(
+                    &payload,
+                    key_field_names,
+                    &self.column_paths,
+                    self.field_absence_is_error,
+                    &self.schema,
+                    &self.metadata_column_value,
+                )
+                .into_iter()
+                .collect(),
+            ),
             None => None, // use method from the different PR
         });
 
@@ -1275,21 +1395,21 @@ impl Parser for JsonLinesParser {
             self.field_absence_is_error,
             &self.schema,
             &self.metadata_column_value,
-        )?;
+        );
 
         let event = match self.session_type {
             SessionType::Native => {
                 match data_event {
-                    DataEventType::Insert => ParsedEvent::Insert((key, values)),
-                    DataEventType::Delete => ParsedEvent::Delete((key, values)),
+                    DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
+                    DataEventType::Delete => ParsedEventWithErrors::Delete((key, values)),
                     DataEventType::Upsert => panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session"),
                 }
             }
             SessionType::Upsert => {
                 match data_event {
                     DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
-                    DataEventType::Delete => ParsedEvent::Upsert((key, None)),
-                    DataEventType::Upsert => ParsedEvent::Upsert((key, Some(values))),
+                    DataEventType::Delete => ParsedEventWithErrors::Upsert((key, None)),
+                    DataEventType::Upsert => ParsedEventWithErrors::Upsert((key, Some(values))),
                 }
             }
         };
@@ -1332,8 +1452,8 @@ impl TransparentParser {
 impl Parser for TransparentParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
         match data {
-            PreparedEvent(result) => Ok(vec![result.clone()]),
-            _ => Err(ParseError::UnsupportedReaderContext),
+            PreparedEvent(result) => Ok(vec![result.clone().into()]),
+            _ => Err(ParseError::UnsupportedReaderContext.into()),
         }
     }
 

@@ -495,6 +495,26 @@ pub enum SimpleType {
     Error,
 }
 
+impl SimpleType {
+    pub fn to_type(&self) -> Option<Type> {
+        match self {
+            SimpleType::None | SimpleType::Error => None,
+            SimpleType::Bool => Some(Type::Bool),
+            SimpleType::Int => Some(Type::Int),
+            SimpleType::Float => Some(Type::Float),
+            SimpleType::Pointer => Some(Type::Pointer),
+            SimpleType::String => Some(Type::String),
+            SimpleType::Tuple => Some(Type::Tuple),
+            SimpleType::IntArray | SimpleType::FloatArray => Some(Type::Array),
+            SimpleType::DateTimeNaive => Some(Type::DateTimeNaive),
+            SimpleType::DateTimeUtc => Some(Type::DateTimeUtc),
+            SimpleType::Duration => Some(Type::Duration),
+            SimpleType::Bytes => Some(Type::Bytes),
+            SimpleType::Json => Some(Type::Json),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     #[default]

@@ -16,7 +16,6 @@ import pytest
 from fs import open_fs
 
 import pathway as pw
-from pathway.engine import ref_scalar
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
@@ -29,7 +28,6 @@ from pathway.tests.utils import (
     assert_table_equality,
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
-    assert_table_equality_wo_types,
     deprecated_call_here,
     needs_multiprocessing_fork,
     run,
@@ -47,7 +45,7 @@ def start_streaming_inputs(inputs_path, n_files, stream_interval, data_format):
         for i in range(n_files):
             file_path = inputs_path / f"{i}.csv"
             if data_format == "json":
-                payload = {"k": i, "v": i}
+                payload = {"k": str(i), "v": i}
                 with open(file_path, "w") as streamed_file:
                     json.dump(payload, streamed_file)
             elif data_format == "csv":
@@ -574,7 +572,7 @@ def test_json_default_values(tmp_path: pathlib.Path):
     class InputSchema(pw.Schema):
         k: str = pw.column_definition(primary_key=True)
         b: int = pw.column_definition(default_value=0)
-        c: str = pw.column_definition(default_value="default")
+        c: str | None = pw.column_definition(default_value="default")
 
     table = pw.io.jsonlines.read(
         str(input_path),
@@ -582,7 +580,7 @@ def test_json_default_values(tmp_path: pathlib.Path):
         mode="static",
     )
 
-    assert_table_equality_wo_types(
+    assert_table_equality(
         table,
         T(
             """
@@ -1924,11 +1922,11 @@ def test_mock_snapshot_reader():
     events = {
         ("1", 0): [
             api.SnapshotEvent.advance_time(2),
-            api.SnapshotEvent.insert(ref_scalar(0), [1]),
-            api.SnapshotEvent.insert(ref_scalar(1), [1]),
+            api.SnapshotEvent.insert(api.ref_scalar(0), [1]),
+            api.SnapshotEvent.insert(api.ref_scalar(1), [1]),
             api.SnapshotEvent.advance_time(4),
-            api.SnapshotEvent.insert(ref_scalar(2), [4]),
-            api.SnapshotEvent.delete(ref_scalar(0), [1]),
+            api.SnapshotEvent.insert(api.ref_scalar(2), [4]),
+            api.SnapshotEvent.delete(api.ref_scalar(0), [1]),
             api.SnapshotEvent.FINISHED,
         ]
     }
@@ -1956,25 +1954,25 @@ def test_mock_snapshot_reader():
     on_change.assert_has_calls(
         [
             mock.call.on_change(
-                key=ref_scalar(0),
+                key=api.ref_scalar(0),
                 row={"number": 1},
                 time=2,
                 is_addition=True,
             ),
             mock.call.on_change(
-                key=ref_scalar(1),
+                key=api.ref_scalar(1),
                 row={"number": 1},
                 time=2,
                 is_addition=True,
             ),
             mock.call.on_change(
-                key=ref_scalar(2),
+                key=api.ref_scalar(2),
                 row={"number": 4},
                 time=4,
                 is_addition=True,
             ),
             mock.call.on_change(
-                key=ref_scalar(0),
+                key=api.ref_scalar(0),
                 row={"number": 1},
                 time=4,
                 is_addition=False,

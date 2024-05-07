@@ -90,7 +90,9 @@ class AwsS3Settings:
 def _format_output_value_fields(table: Table) -> list[api.ValueField]:
     value_fields = []
     for column_name in table._columns.keys():
-        value_fields.append(api.ValueField(column_name, api.PathwayType.ANY))
+        value_fields.append(
+            api.ValueField(column_name, api.PathwayType.ANY, is_optional=True)
+        )
 
     return value_fields
 
@@ -102,13 +104,17 @@ def _form_value_fields(schema: type[schema.Schema]) -> list[api.ValueField]:
 
     # XXX fix mapping schema types to PathwayType
     types = {
-        name: dt.unoptionalize(dtype).to_engine()
+        name: (dt.unoptionalize(dtype).to_engine(), isinstance(dtype, dt.Optional))
         for name, dtype in schema._dtypes().items()
     }
 
     for f in schema.column_names():
-        simple_type = types.get(f, api.PathwayType.ANY)
-        value_field = api.ValueField(f, simple_type)
+        simple_type, is_optional = types.get(f, (None, False))
+        if (
+            simple_type is None
+        ):  # types can contain None if there is field of type None in the schema
+            simple_type = api.PathwayType.ANY
+        value_field = api.ValueField(f, simple_type, is_optional=is_optional)
         if f in default_values:
             value_field.set_default(default_values[f])
         result.append(value_field)

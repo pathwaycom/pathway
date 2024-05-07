@@ -7,6 +7,8 @@ use pathway_engine::connectors::data_storage::{
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 
+use crate::helpers::ReplaceErrors;
+
 fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
     let mut reader =
         FilesystemReader::new(path, ConnectorMode::Static, None, ReadMethod::Full, "*")?;
@@ -21,6 +23,7 @@ fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
                 assert!(row_parse_result.is_ok());
 
                 for event in row_parse_result.expect("entries should parse correctly") {
+                    let event = event.replace_errors();
                     events.push(event);
                 }
             }

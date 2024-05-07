@@ -1,6 +1,7 @@
 // Copyright © 2024 Pathway
 
 use differential_dataflow::input::InputSession;
+use itertools::Itertools;
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::env;
@@ -24,8 +25,11 @@ pub mod offset;
 pub mod snapshot;
 
 use crate::connectors::monitoring::ConnectorMonitor;
-use crate::engine::report_error::{ReportError, SpawnWithReporter};
-use crate::engine::{Key, Value};
+use crate::engine::error::{DynError, Trace};
+use crate::engine::report_error::{
+    LogError, ReportError, SpawnWithReporter, UnwrapWithErrorLogger,
+};
+use crate::engine::{DataError, Key, Value};
 
 use crate::connectors::adaptors::InputAdaptor;
 use crate::connectors::snapshot::Event as SnapshotEvent;
@@ -37,7 +41,7 @@ use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
 use crate::timestamp::current_unix_timestamp_ms;
 
-use data_format::{ParseResult, ParsedEvent, Parser};
+use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
 use data_storage::{DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError};
 
 pub use adaptors::SessionType;
@@ -88,6 +92,8 @@ pub struct Connector {
     current_timestamp: Timestamp,
     num_columns: usize,
     current_frontier: OffsetAntichain,
+    skip_all_errors: bool,
+    error_logger: Rc<dyn LogError>,
 }
 
 #[derive(Debug)]
@@ -171,12 +177,19 @@ impl Connector {
         The implementation for pull model of data acquisition: we explicitly inquiry the source about the newly
         arrived data.
     */
-    pub fn new(commit_duration: Option<Duration>, num_columns: usize) -> Self {
+    pub fn new(
+        commit_duration: Option<Duration>,
+        num_columns: usize,
+        skip_all_errors: bool,
+        error_logger: Rc<dyn LogError>,
+    ) -> Self {
         Connector {
             commit_duration,
             current_timestamp: Timestamp(0), // default is 0 now. If changing, make sure it is even (required for alt-neu).
             num_columns,
             current_frontier: OffsetAntichain::new(),
+            skip_all_errors,
+            error_logger,
         }
     }
 
@@ -468,7 +481,7 @@ impl Connector {
 
                             The end of this batch is determined by the AdvanceTime event.
                         */
-                        let parsed_entries = vec![ParsedEvent::AdvanceTime];
+                        let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
                         self.on_parsed_data(
                             parsed_entries,
                             None, // no key generation for time advancement
@@ -563,7 +576,7 @@ impl Connector {
                 } => {
                     *commit_allowed = commit_allowed_external;
                     if *commit_allowed {
-                        let parsed_entries = vec![ParsedEvent::AdvanceTime];
+                        let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
                         self.on_parsed_data(
                             parsed_entries,
                             None, // no key generation for time advancement
@@ -588,13 +601,13 @@ impl Connector {
                     let mut parsed_entries = match parser.parse(&reader_context) {
                         Ok(entries) => entries,
                         Err(e) => {
-                            error!("Read data parsed unsuccessfully. {e}");
+                            self.log_parse_error(e);
                             return;
                         }
                     };
 
                     if !*backfilling_finished {
-                        parsed_entries.retain(|x| !matches!(x, ParsedEvent::AdvanceTime));
+                        parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
                     }
 
                     self.on_parsed_data(
@@ -617,9 +630,8 @@ impl Connector {
             Entry::RewindFinishSentinel(restored_frontier) => {
                 assert!(!*backfilling_finished);
                 *backfilling_finished = true;
-
                 self.current_frontier = restored_frontier;
-                let parsed_entries = vec![ParsedEvent::AdvanceTime];
+                let parsed_entries = vec![ParsedEventWithErrors::AdvanceTime];
                 self.on_parsed_data(
                     parsed_entries,
                     None, // no key generation for time advancement
@@ -726,14 +738,33 @@ impl Connector {
     #[allow(clippy::too_many_arguments)]
     fn on_parsed_data(
         &mut self,
-        parsed_entries: Vec<ParsedEvent>,
+        parsed_entries: Vec<ParsedEventWithErrors>,
         offset: Option<&Offset>,
         input_session: &mut dyn InputAdaptor<Timestamp>,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
     ) {
+        let error_logger = self.error_logger.clone();
+        let error_handling_logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
+            Box::new(move |values| values.into_iter().try_collect())
+        } else {
+            Box::new(move |values| {
+                Ok(values
+                    .into_iter()
+                    .map(|value| value.unwrap_or_log(error_logger.as_ref(), Value::Error))
+                    .collect())
+            })
+        }; // logic to handle errors in values
         for entry in parsed_entries {
+            let entry = match entry.remove_errors(&error_handling_logic) {
+                Ok(entry) => entry,
+                Err(err) => {
+                    // if there is an error in key
+                    self.log_parse_error(ParseError::ErrorInKey(err).into());
+                    continue;
+                }
+            };
             let key = entry.key(&mut values_to_key, offset);
             if let Some(key) = key {
                 // true for Insert, Remove, Upsert
@@ -794,6 +825,14 @@ impl Connector {
             };
         }
     }
+
+    fn log_parse_error(&self, error: DynError) {
+        if self.skip_all_errors {
+            error!("Parse error: {error}");
+        } else {
+            self.error_logger.log_error(error.into());
+        }
+    }
 }
 
 pub struct SnapshotReaderState {
@@ -843,5 +882,34 @@ pub fn read_persisted_state(
     SnapshotReaderState {
         poller,
         input_thread_handle,
+    }
+}
+
+impl<T> UnwrapWithErrorLogger<T> for Result<T, ParseError> {
+    #[track_caller]
+    fn unwrap_or_else_log<F: FnOnce() -> T>(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        op: F,
+    ) -> T {
+        self.unwrap_or_else(|err| {
+            error_logger.log_error(DataError::Other(err.into()));
+            op()
+        })
+    }
+    #[track_caller]
+    fn unwrap_or_log_with_trace(
+        self,
+        error_logger: &(impl LogError + ?Sized),
+        trace: &Trace,
+        default: T,
+    ) -> T {
+        self.unwrap_or_else(|err| {
+            error_logger.log_error_with_trace(err.into(), trace);
+            default
+        })
+    }
+    fn ok_with_logger(self, error_logger: &(impl LogError + ?Sized)) -> Option<T> {
+        Some(self).transpose().unwrap_or_log(error_logger, None)
     }
 }

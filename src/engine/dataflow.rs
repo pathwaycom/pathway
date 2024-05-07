@@ -3234,7 +3234,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 .as_ref()
                 .map_or(SnapshotAccess::Full, |config| config.snapshot_access);
 
-            let connector = Connector::new(commit_duration, parser.column_count());
+            let connector = Connector::new(
+                commit_duration,
+                parser.column_count(),
+                self.terminate_on_error,
+                self.create_error_logger()?.into(),
+            );
             let state = connector.run(
                 reader,
                 parser,

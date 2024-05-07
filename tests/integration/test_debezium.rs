@@ -1,5 +1,7 @@
 // Copyright © 2024 Pathway
 
+use crate::helpers::{ErrorPlacement, ReplaceErrors};
+
 use super::helpers::{assert_error_shown_for_raw_data, read_data_from_reader};
 
 use std::fs::File;
@@ -8,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::{
-    DebeziumDBType, DebeziumMessageParser, ParsedEvent, Parser,
+    DebeziumDBType, DebeziumMessageParser, ParseError, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, FilesystemReader, ReadMethod, ReaderContext,
@@ -65,6 +67,7 @@ fn test_debezium_unparsable_json() -> eyre::Result<()> {
         incorrect_json_pair,
         Box::new(parser),
         r#"received message is not json: "b""#,
+        ErrorPlacement::Message,
     );
 
     Ok(())
@@ -79,7 +82,7 @@ fn test_debezium_json_format_incorrect() -> eyre::Result<()> {
         "        ".to_string(),
         DebeziumDBType::Postgres,
     );
-    assert_error_shown_for_raw_data(incorrect_json_pair, Box::new(parser), "received message doesn't comply with debezium format: there is no payload at the top level of value json");
+    assert_error_shown_for_raw_data(incorrect_json_pair, Box::new(parser), "received message doesn't comply with debezium format: there is no payload at the top level of value json", ErrorPlacement::Message);
     Ok(())
 }
 
@@ -92,7 +95,7 @@ fn test_debezium_json_no_operation_specified() -> eyre::Result<()> {
         "        ".to_string(),
         DebeziumDBType::Postgres,
     );
-    assert_error_shown_for_raw_data(incorrect_json_pair, Box::new(parser), "received message doesn't comply with debezium format: incorrect type of payload.op field or it is missing");
+    assert_error_shown_for_raw_data(incorrect_json_pair, Box::new(parser), "received message doesn't comply with debezium format: incorrect type of payload.op field or it is missing", ErrorPlacement::Message);
     Ok(())
 }
 
@@ -109,6 +112,7 @@ fn test_debezium_json_unsupported_operation() -> eyre::Result<()> {
         incorrect_json_pair,
         Box::new(parser),
         r#"unknown debezium operation "a""#,
+        ErrorPlacement::Message,
     );
     Ok(())
 }
@@ -126,6 +130,7 @@ fn test_debezium_json_incomplete_data() -> eyre::Result<()> {
         incorrect_json_pair,
         Box::new(parser),
         "field id with no JsonPointer path specified is absent in null",
+        ErrorPlacement::Key,
     );
     Ok(())
 }
@@ -143,6 +148,7 @@ fn test_debezium_tokens_amt_mismatch() -> eyre::Result<()> {
         incorrect_json_pair,
         Box::new(parser),
         "key-value pair has unexpected number of tokens: 1 instead of 2",
+        ErrorPlacement::Message,
     );
 
     let incorrect_json_pair = b"a        b        c";
@@ -156,6 +162,7 @@ fn test_debezium_tokens_amt_mismatch() -> eyre::Result<()> {
         incorrect_json_pair,
         Box::new(parser),
         "key-value pair has unexpected number of tokens: 3 instead of 2",
+        ErrorPlacement::Message,
     );
 
     Ok(())
@@ -228,7 +235,12 @@ fn test_postgres_with_empty_pkey() -> eyre::Result<()> {
     let value = key_value[1];
 
     let context = ReaderContext::KeyValue((None, Some(value.into())));
-    let parse_result = parser.parse(&context)?;
+    let parse_result: Vec<_> = parser
+        .parse(&context)
+        .map_err(ParseError::from)?
+        .into_iter()
+        .map(|entry| entry.replace_errors())
+        .collect();
     assert_eq!(
         parse_result,
         vec![ParsedEvent::Insert((

@@ -1,6 +1,6 @@
 // Copyright © 2024 Pathway
 
-use super::helpers::{data_parsing_fails, read_data_from_reader};
+use super::helpers::read_data_from_reader;
 
 use std::collections::HashMap;
 
@@ -22,7 +22,7 @@ fn test_dsv_with_default_end_of_line() -> eyre::Result<()> {
 
     schema.insert(
         "number".to_string(),
-        InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
+        InnerSchemaField::new(Type::Int, false, Some(Value::Int(42))),
     );
 
     let reader = CsvFilesystemReader::new(
@@ -76,7 +76,7 @@ fn test_dsv_with_default_middle_of_line() -> eyre::Result<()> {
 
     schema.insert(
         "number".to_string(),
-        InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
+        InnerSchemaField::new(Type::Int, false, Some(Value::Int(42))),
     );
 
     let reader = CsvFilesystemReader::new(
@@ -127,7 +127,10 @@ fn test_dsv_fails_without_default() -> eyre::Result<()> {
     builder.has_headers(false);
 
     let mut schema = HashMap::new();
-    schema.insert("number".to_string(), InnerSchemaField::new(Type::Int, None));
+    schema.insert(
+        "number".to_string(),
+        InnerSchemaField::new(Type::Int, false, None),
+    );
 
     let reader = CsvFilesystemReader::new(
         "tests/data/dsv_with_skips.txt",
@@ -145,7 +148,28 @@ fn test_dsv_fails_without_default() -> eyre::Result<()> {
         schema,
     );
 
-    assert!(data_parsing_fails(Box::new(reader), Box::new(parser))?);
+    let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
+    assert_eq!(
+        read_lines,
+        vec![
+            ParsedEvent::Insert((
+                Some(vec![Value::String("1".into())]),
+                vec![
+                    Value::String("some_key".into()),
+                    Value::String("some_value".into()),
+                    Value::Error,
+                ]
+            )),
+            ParsedEvent::Insert((
+                Some(vec![Value::String("2".into())]),
+                vec![
+                    Value::String("".into()),
+                    Value::String("some_value".into()),
+                    Value::Int(1)
+                ]
+            ))
+        ]
+    );
 
     Ok(())
 }
@@ -159,7 +183,7 @@ fn test_dsv_with_default_nullable() -> eyre::Result<()> {
 
     schema.insert(
         "number".to_string(),
-        InnerSchemaField::new(Type::Int, Some(Value::None)),
+        InnerSchemaField::new(Type::Int, false, Some(Value::None)),
     );
 
     let reader = CsvFilesystemReader::new(
@@ -222,7 +246,25 @@ fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
         SessionType::Native,
     );
 
-    assert!(data_parsing_fails(Box::new(reader), Box::new(parser))?);
+    let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
+    assert_eq!(
+        read_lines,
+        vec![
+            ParsedEvent::Insert((
+                Some(vec![Value::String("abc".into())]),
+                vec![Value::Int(7), Value::Int(15), Value::Error]
+            )),
+            ParsedEvent::Insert((
+                Some(vec![Value::String("def".into())]),
+                vec![Value::Int(1), Value::Int(3), Value::Error]
+            )),
+            ParsedEvent::Insert((
+                Some(vec![Value::String("ghi".into())]),
+                vec![Value::Int(2), Value::Int(4), Value::Error]
+            )),
+            ParsedEvent::AdvanceTime
+        ]
+    );
 
     Ok(())
 }
@@ -232,7 +274,7 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
     let mut schema = HashMap::new();
     schema.insert(
         "d".to_string(),
-        InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
+        InnerSchemaField::new(Type::Int, false, Some(Value::Int(42))),
     );
 
     let reader = FilesystemReader::new(
@@ -279,7 +321,7 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
     let mut schema = HashMap::new();
     schema.insert(
         "d".to_string(),
-        InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
+        InnerSchemaField::new(Type::Int, false, Some(Value::Int(42))),
     );
 
     let mut routes = HashMap::new();
@@ -332,7 +374,7 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
     let mut schema = HashMap::new();
     schema.insert(
         "d".to_string(),
-        InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
+        InnerSchemaField::new(Type::Int, true, Some(Value::Int(42))),
     );
 
     let reader = FilesystemReader::new(

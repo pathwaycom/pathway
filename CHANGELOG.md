@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **BREAKING**: `windowby` generates IDs of produced rows differently than in the previous version.
 - **BREAKING**: `pw.io.csv.write` prints printable non-ascii characters as regular text, not `\u{xxxx}`.
+- **BREAKING**: `pw.io.json.read` now checks the type of the input data. If it is inconsistent with the provided schema, the row is skipped and the error message is emitted.
 
 ## [0.10.1] - 2024-04-30
 

@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -1022,3 +1023,183 @@ def test_unique_reducer():
     """
     )
     assert_stream_equality_wo_index(res, expected, terminate_on_error=False)
+
+
+def generate_csv(path: Path):
+    with open(path, "w") as f:
+        f.write(
+            """a,b,c
+1,2,3
+2,x,3
+1,3,y
+6,z,t
+"""
+        )
+
+
+def generate_jsonlines(path: Path):
+    with open(path, "w") as f:
+        f.write(
+            """{"a": 1, "b": 2, "c": 3}
+{"a": 2, "b": "x", "c": 3}
+{"a": 1, "b": 3, "c": "y"}
+{"a": 6, "b": "1", "c": "t"}
+{"a": 7, "b": 1, "c": null}
+"""
+        )
+
+
+def test_csv_reading(tmp_path):
+    class InputSchema(pw.Schema):
+        a: int
+        b: int
+        c: int
+
+    path = tmp_path / "input.csv"
+    generate_csv(path)
+    input = pw.io.csv.read(path, schema=InputSchema, mode="static")
+    result = input.with_columns(
+        b=pw.fill_error(pw.this.b, 0), c=pw.fill_error(pw.this.c, 0)
+    )
+    expected = T(
+        """
+        a | b | c
+        1 | 2 | 3
+        2 | 0 | 3
+        1 | 3 | 0
+        6 | 0 | 0
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        failed to parse value "t" at field "c" according to the type Int in schema: invalid digit found in string
+        failed to parse value "x" at field "b" according to the type Int in schema: invalid digit found in string
+        failed to parse value "y" at field "c" according to the type Int in schema: invalid digit found in string
+        failed to parse value "z" at field "b" according to the type Int in schema: invalid digit found in string
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (result, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_csv_reading_pk(tmp_path):
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int = pw.column_definition(primary_key=True)
+        c: int
+
+    path = tmp_path / "input.csv"
+    generate_csv(path)
+    input = pw.io.csv.read(path, schema=InputSchema, mode="static")
+    result = input.with_columns(
+        b=pw.fill_error(pw.this.b, 0), c=pw.fill_error(pw.this.c, 0)
+    )
+    expected = T(
+        """
+        a | b | c
+        1 | 2 | 3
+        1 | 3 | 0
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        error in primary key, skipping the row: failed to parse value "x" at field "b" \
+according to the type Int in schema: invalid digit found in string
+        failed to parse value "y" at field "c" according to the type Int in schema: invalid digit found in string
+        error in primary key, skipping the row: failed to parse value "z" at field "b" \
+according to the type Int in schema: invalid digit found in string
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (result, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_jsonlines_reading(tmp_path):
+    class InputSchema(pw.Schema):
+        a: int
+        b: int
+        c: int | None
+
+    path = tmp_path / "input.jsonlines"
+    generate_jsonlines(path)
+    input = pw.io.jsonlines.read(path, schema=InputSchema, mode="static")
+    result = input.with_columns(
+        b=pw.fill_error(pw.this.b, 0), c=pw.fill_error(pw.this.c, 0)
+    )
+    expected = T(
+        """
+        a | b | c
+        1 | 2 | 3
+        2 | 0 | 3
+        1 | 3 | 0
+        6 | 0 | 0
+        7 | 1 |
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        failed to parse field "b" with type Int from the following json payload: "x"
+        failed to parse field "b" with type Int from the following json payload: "1"
+        failed to parse field "c" with type Int / None from the following json payload: "t"
+        failed to parse field "c" with type Int / None from the following json payload: "y"
+    """,
+        split_on_whitespace=False,
+    ).select(message=pw.this.message.str.replace("/", "|"))
+    # can't use | because it's a column sep
+
+    assert_table_equality_wo_index(
+        (result, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_jsonlines_reading_pk(tmp_path):
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int = pw.column_definition(primary_key=True)
+        c: int | None
+
+    path = tmp_path / "input.jsonlines"
+    generate_jsonlines(path)
+    input = pw.io.jsonlines.read(path, schema=InputSchema, mode="static")
+    result = input.with_columns(
+        b=pw.fill_error(pw.this.b, 0), c=pw.fill_error(pw.this.c, 0)
+    )
+    expected = T(
+        """
+        a | b | c
+        1 | 2 | 3
+        1 | 3 | 0
+        7 | 1 |
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        error in primary key, skipping the row: failed to parse field "b" \
+with type Int from the following json payload: "x"
+        error in primary key, skipping the row: failed to parse field "b" \
+with type Int from the following json payload: "1"
+        failed to parse field "c" with type Int / None from the following json payload: "y"
+    """,
+        split_on_whitespace=False,
+    ).select(message=pw.this.message.str.replace("/", "|"))
+    # can't use | because it's a column sep
+
+    assert_table_equality_wo_index(
+        (result, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )

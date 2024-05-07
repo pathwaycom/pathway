@@ -1,5 +1,8 @@
 // Copyright © 2024 Pathway
 
+use crate::helpers::ErrorPlacement;
+use crate::helpers::ReplaceErrors;
+
 use super::helpers::{assert_error_shown, assert_error_shown_for_reader_context};
 
 use std::collections::HashMap;
@@ -41,9 +44,14 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
 
     match row_read_result {
         Data(bytes, _) => {
-            let row_parse_result: ParseResult = parser.parse(&bytes);
+            let row_parse_result: Vec<_> = parser
+                .parse(&bytes)
+                .expect("entries should parse correctly")
+                .into_iter()
+                .map(|entry| entry.replace_errors())
+                .collect();
             assert_eq!(
-                row_parse_result.expect("entries should parse correctly"),
+                row_parse_result,
                 vec![ParsedEvent::Insert((
                     Some(vec![Value::from("0")]),
                     vec![Value::from("0")]
@@ -74,6 +82,7 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
         Box::new(reader),
         Box::new(parser),
         r#"some fields weren't found in the header (fields present in table: ["a", "b"], fields specified in connector: ["c"])"#,
+        ErrorPlacement::Message,
     );
 
     Ok(())
@@ -152,6 +161,7 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
             &ctx,
             Box::new(parser),
             "too small number of csv tokens in the line: 1",
+            ErrorPlacement::Message,
         );
     } else {
         panic!("Data enum element was expected");
@@ -184,6 +194,7 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
                 assert!(row_parse_result.is_ok());
 
                 for event in row_parse_result.expect("entries should parse correctly") {
+                    let event = event.replace_errors();
                     if let ParsedEvent::Insert((raw_key, _values)) = event {
                         let key = match raw_key {
                             None => Key::random(),
@@ -231,6 +242,7 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
                 assert!(row_parse_result.is_ok());
 
                 for event in row_parse_result.expect("entries should parse correctly") {
+                    let event = event.replace_errors();
                     if let ParsedEvent::Insert((raw_key, _values)) = event {
                         let key = match raw_key {
                             None => Key::random(),
@@ -257,15 +269,21 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
 #[test]
 fn test_dsv_read_schema_ok() -> eyre::Result<()> {
     let mut schema = HashMap::new();
-    schema.insert("bool".to_string(), InnerSchemaField::new(Type::Bool, None));
-    schema.insert("int".to_string(), InnerSchemaField::new(Type::Int, None));
+    schema.insert(
+        "bool".to_string(),
+        InnerSchemaField::new(Type::Bool, false, None),
+    );
+    schema.insert(
+        "int".to_string(),
+        InnerSchemaField::new(Type::Int, false, None),
+    );
     schema.insert(
         "float".to_string(),
-        InnerSchemaField::new(Type::Float, None),
+        InnerSchemaField::new(Type::Float, false, None),
     );
     schema.insert(
         "string".to_string(),
-        InnerSchemaField::new(Type::String, None),
+        InnerSchemaField::new(Type::String, false, None),
     );
 
     let mut reader = FilesystemReader::new(
@@ -303,9 +321,14 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
 
     match row_read_result {
         Data(bytes, _) => {
-            let row_parse_result: ParseResult = parser.parse(&bytes);
+            let row_parse_result: Vec<_> = parser
+                .parse(&bytes)
+                .expect("entries should parse correctly")
+                .into_iter()
+                .map(|entry| entry.replace_errors())
+                .collect();
             assert_eq!(
-                row_parse_result.expect("entries should parse correctly"),
+                row_parse_result,
                 vec![ParsedEvent::Insert((
                     Some(vec![Value::from("id")]),
                     vec![
@@ -326,15 +349,21 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
 #[test]
 fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
     let mut schema = HashMap::new();
-    schema.insert("bool".to_string(), InnerSchemaField::new(Type::Bool, None));
-    schema.insert("int".to_string(), InnerSchemaField::new(Type::Int, None));
+    schema.insert(
+        "bool".to_string(),
+        InnerSchemaField::new(Type::Bool, false, None),
+    );
+    schema.insert(
+        "int".to_string(),
+        InnerSchemaField::new(Type::Int, false, None),
+    );
     schema.insert(
         "float".to_string(),
-        InnerSchemaField::new(Type::Float, None),
+        InnerSchemaField::new(Type::Float, false, None),
     );
     schema.insert(
         "string".to_string(),
-        InnerSchemaField::new(Type::String, None),
+        InnerSchemaField::new(Type::String, false, None),
     );
 
     let mut reader = FilesystemReader::new(
@@ -372,15 +401,12 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
 
     match row_read_result {
         Data(bytes, _) => {
-            let row_parse_result: ParseResult = parser.parse(&bytes);
-            if let Err(e) = row_parse_result {
-                assert_eq!(
-                    format!("{e}"),
-                    r#"failed to parse value "zzz" at field "int" according to the type Int in schema: invalid digit found in string"#
-                );
-            } else {
-                panic!("The parsing should have been finished with error");
-            }
+            assert_error_shown_for_reader_context(
+                &bytes,
+                Box::new(parser),
+                r#"failed to parse value "zzz" at field "int" according to the type Int in schema: invalid digit found in string"#,
+                ErrorPlacement::Value(1),
+            );
         }
         _ => panic!("row_read_result is not Data"),
     }
