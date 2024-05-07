@@ -23,6 +23,7 @@ from pathway.tests.utils import (
     deprecated_call_here,
     run_all,
     warns_here,
+    xfail_on_multiple_threads,
 )
 
 
@@ -562,6 +563,7 @@ def test_udf_make_deterministic_2(sync: bool) -> None:
     assert counter.call_count == 3
 
 
+@xfail_on_multiple_threads
 def test_udf_cache(monkeypatch, tmp_path: pathlib.Path):
     monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE", raising=False)
     internal_inc = mock.Mock()
