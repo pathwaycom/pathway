@@ -201,7 +201,7 @@ import os
 import pandas as pd
 
 import pathway as pw
-from pathway.stdlib.indexing import VectorDocumentIndex
+from pathway.stdlib.indexing import default_vector_document_index
 from pathway.xpacks.llm.embedders import OpenAIEmbedder
 from pathway.xpacks.llm.llms import OpenAIChat
 from pathway.xpacks.llm.question_answering import (
@@ -276,8 +276,8 @@ query = pw.debug.table_from_pandas(df)
 # Main part of the code - creating index of documents and running adaptive RAG!
 
 # Index for finding closest documents
-index = VectorDocumentIndex(
-    documents.doc, documents, embedder, n_dimensions=embedding_dimension
+index = default_vector_document_index(
+    documents.doc, documents, embedder=embedder, dimensions=embedding_dimension
 )
 
 # Run Adaptive RAG

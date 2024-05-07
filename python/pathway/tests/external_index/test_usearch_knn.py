@@ -49,7 +49,13 @@ def test_filter():
     ).with_columns(data=pw.apply(make_list, pw.this.data))
 
     index_factory = ExternalIndexFactory.usearch_knn_factory(
-        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, False
+        dimensions=3,
+        reserved_space=10,
+        metric=USearchMetricKind.L2SQ,
+        connectivity=0,
+        expansion_add=0,
+        expansion_search=0,
+        return_distance=False,
     )
     rust_answers = index._external_index_as_of_now(
         queries,
@@ -117,7 +123,13 @@ def test_auto_resize():
     ).with_columns(data=pw.apply(make_list, pw.this.data))
 
     index_factory = ExternalIndexFactory.usearch_knn_factory(
-        3, 2, USearchMetricKind.L2SQ, 0, 0, 0, False
+        dimensions=3,
+        reserved_space=2,
+        metric=USearchMetricKind.L2SQ,
+        connectivity=0,
+        expansion_add=0,
+        expansion_search=0,
+        return_distance=False,
     )
     answers = index._external_index_as_of_now(
         queries,
@@ -183,7 +195,13 @@ def test_distance_simple():
     ).with_columns(data=pw.apply(make_list, pw.this.data))
 
     index_factory = ExternalIndexFactory.usearch_knn_factory(
-        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, False
+        dimensions=3,
+        reserved_space=10,
+        metric=USearchMetricKind.L2SQ,
+        connectivity=0,
+        expansion_add=0,
+        expansion_search=0,
+        return_distance=False,
     )
     answers = index._external_index_as_of_now(
         queries,
@@ -263,7 +281,13 @@ def test_with_distance_simple():
     ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
 
     index_factory = ExternalIndexFactory.usearch_knn_factory(
-        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, True
+        dimensions=3,
+        reserved_space=10,
+        metric=USearchMetricKind.L2SQ,
+        connectivity=0,
+        expansion_add=0,
+        expansion_search=0,
+        return_distance=True,
     )
     raw_ret = index._external_index_as_of_now(
         queries,
@@ -278,7 +302,7 @@ def test_with_distance_simple():
 
     class InnerSchema(pw.Schema):
         matched_item_id: pw.Pointer
-        matched_item_distance: float
+        matched_item_score: float
 
     unpacked_ret = flattened_ret + unpack_col(
         flattened_ret._pw_index_reply, schema=InnerSchema
@@ -288,7 +312,7 @@ def test_with_distance_simple():
         .select(
             pw.left.q_pk_source,
             i_pk_source=pw.right.pk_source,
-            distance=pw.left.matched_item_distance,
+            distance=-pw.left.matched_item_score,
         )
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
         .with_columns(distance=pw.this.distance.num.round(2))
@@ -363,7 +387,13 @@ def test_distance_with_deletion():
     ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
 
     index_factory = ExternalIndexFactory.usearch_knn_factory(
-        3, 10, USearchMetricKind.L2SQ, 0, 0, 0, False
+        dimensions=3,
+        reserved_space=10,
+        metric=USearchMetricKind.L2SQ,
+        connectivity=0,
+        expansion_add=0,
+        expansion_search=0,
+        return_distance=False,
     )
 
     answers = index._external_index_as_of_now(

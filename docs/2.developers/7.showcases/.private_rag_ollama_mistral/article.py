@@ -111,7 +111,7 @@
 
 import pandas as pd
 import pathway as pw
-from pathway.stdlib.indexing import VectorDocumentIndex
+from pathway.stdlib.indexing import default_vector_document_index
 from pathway.xpacks.llm import embedders
 from pathway.xpacks.llm.llms import LiteLLMChat
 from pathway.xpacks.llm.question_answering import (
@@ -228,8 +228,8 @@ model = LiteLLMChat(
 # We continue our pipeline code to specify the index with documents and embedding model to use when processing documents.
 
 
-index = VectorDocumentIndex(
-    documents.doc, documents, embedder, n_dimensions=embedding_dimension
+index = default_vector_document_index(
+    documents.doc, documents, embedder=embedder, dimensions=embedding_dimension
 )
 
 

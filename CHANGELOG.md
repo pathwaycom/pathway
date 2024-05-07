@@ -7,11 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - Embedders in the LLM xpack now have method `get_embedding_dimension` that returns number of dimension used by the chosen embedder.
+- `pathway.stdlib.indexing.nearest_neighbors`, with implementations of `pathway.stdlib.indexing.data_index.InnerIndex` based on k-NN via LSH (implemented in Pathway), and k-NN provided by USearch library
+- `pathway.stdlib.indexing.vector_document_index`, with a few predefined instances of `pathway.stdlib.indexing.data_index.DataIndex`
 
 ### Changed
 - **BREAKING**: `windowby` generates IDs of produced rows differently than in the previous version.
 - **BREAKING**: `pw.io.csv.write` prints printable non-ascii characters as regular text, not `\u{xxxx}`.
 - **BREAKING**: `pw.io.json.read` now checks the type of the input data. If it is inconsistent with the provided schema, the row is skipped and the error message is emitted.
+- **BREAKING**: `query` and `query_as_of_now` methods of `pathway.stdlib.indexing.data_index.DataIndex` now return `pathway.JoinResult`, to allow resolving column name conflicts (between columns in the table with queries and table with index data).
+- **BREAKING**: DataIndex methods `query` and `query_as_of_now` now return score in a column named `_pw_index_reply_score` (defined as `_SCORE` variable in `pathway.stdlib.indexing.colnames.py`)
+
+### Removed
+- **BREAKING**: `pathway.stdlib.indexing.data_index.VectorDocumentIndex` class, some predefined instances are now meant to be obtained via methods provided in `pathway.stdlib.indexing.vector_document_index`.
+- **BREAKING**: `with_distances` parameter of `query` and `query_as_of_now` methods in `pathway.stdlib.indexing.data_index.DataIndex`. Instead of 'distance', we now operate with a more general term 'score' (higher = better). For distance based indices score is usually defined as negative distance. Score is now always included in the answer, as long as underlying index returns something that indicates quality of a match.
 
 ## [0.10.1] - 2024-04-30
 

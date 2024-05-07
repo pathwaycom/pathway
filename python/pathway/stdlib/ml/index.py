@@ -248,19 +248,13 @@ class KNNIndex:
         """
 
         return _predict_asof_now(
-            lambda query, k, metadata_filter: self.get_nearest_items(
-                query,
-                k=k,
-                collapse_rows=collapse_rows,
-                with_distances=with_distances,
-                metadata_filter=metadata_filter,
-            ),
+            self.get_nearest_items, with_queries_universe=collapse_rows
+        )(
             query_embedding,
-            query_embedding.table.select(k=k).k,
-            query_embedding.table.select(
-                metadata_filter=metadata_filter
-            ).metadata_filter,
-            with_queries_universe=collapse_rows,
+            k=k,
+            collapse_rows=collapse_rows,
+            with_distances=with_distances,
+            metadata_filter=metadata_filter,
         )
 
     def _extract_data_collapsed_rows(self, knns_ids, queries, with_distances=False):

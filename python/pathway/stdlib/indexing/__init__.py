@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from .data_index import DataIndex, VectorDocumentIndex
+from .data_index import DataIndex
+from .nearest_neighbors import LshKnn, USearchKnn
 from .sorting import (
     SortedIndex,
     binsearch_oracle,
@@ -15,11 +16,21 @@ from .sorting import (
     retrieve_prev_next_values,
     sort_from_index,
 )
+from .vector_document_index import (
+    default_lsh_knn_document_index,
+    default_usearch_knn_document_index,
+    default_vector_document_index,
+)
 
 __all__ = [
     "DataIndex",
+    "InnerIndex",
+    "USearchKnn",
+    "LshKnn",
     "SortedIndex",
-    "VectorDocumentIndex",
+    "default_vector_document_index",
+    "default_lsh_knn_document_index",
+    "default_usearch_knn_document_index",
     "binsearch_oracle",
     "build_sorted_index",
     "filter_cmp_helper",

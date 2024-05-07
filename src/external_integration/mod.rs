@@ -274,7 +274,7 @@ impl ExternalIndex for USearchKNNIndex {
                     .into_iter()
                     .map(|sm| {
                         if self.return_distance {
-                            Value::Tuple(Arc::new([Value::from(sm.key), Value::from(sm.distance)]))
+                            Value::Tuple(Arc::new([Value::from(sm.key), Value::from(-sm.distance)]))
                         } else {
                             Value::from(sm.key)
                         }
@@ -326,7 +326,7 @@ impl ExternalIndex for USearchKNNIndex {
                 .into_iter()
                 .map(|sm| {
                     if self.return_distance {
-                        Value::Tuple(Arc::new([Value::from(sm.key), Value::from(sm.distance)]))
+                        Value::Tuple(Arc::new([Value::from(sm.key), Value::from(-sm.distance)]))
                     } else {
                         Value::from(sm.key)
                     }

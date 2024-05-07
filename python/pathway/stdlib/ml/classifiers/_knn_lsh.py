@@ -48,7 +48,7 @@ class DataPoint(pw.Schema):
 
 
 def _euclidean_distance(data_table: np.ndarray, query_table: np.ndarray) -> np.ndarray:
-    return np.sum((data_table - query_table) ** 2, axis=1)
+    return np.sum((data_table - query_table) ** 2, axis=1).astype(float)
 
 
 def compute_cosine_dist(data_table: np.ndarray, query_point: np.ndarray) -> np.ndarray:

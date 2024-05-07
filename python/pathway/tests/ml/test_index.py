@@ -1,11 +1,15 @@
 # Copyright © 2024 Pathway
 
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import pathway as pw
+from pathway.engine import USearchMetricKind
+from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
+from pathway.stdlib.indexing.nearest_neighbors import LshKnn, USearchKnn
 from pathway.stdlib.ml.index import KNNIndex
 from pathway.tests.utils import (
     T,
@@ -19,11 +23,14 @@ class PointSchema(pw.Schema):
     is_query: bool
 
 
-def sort_arrays(arrays: list[np.ndarray]) -> list[tuple[int, int]]:
+def sort_arrays(arrays: list[np.ndarray] | None) -> list[tuple[float, float]]:
+    if arrays is None:
+        return []
+
     return sorted([tuple(array) for array in arrays])
 
 
-def get_points() -> list[tuple[tuple[int, ...], bool]]:
+def get_points() -> list[tuple[tuple[float, ...], bool]]:
     points = [
         (2, 2, 0),
         (3, -2, 0),
@@ -39,14 +46,20 @@ def get_points() -> list[tuple[tuple[int, ...], bool]]:
     return [(point[:-1], point[-1] == 1) for point in points]
 
 
+def to_tuple_of_floats(input: Iterable[Any]) -> tuple[float, ...]:
+    return tuple(float(x) for x in input)
+
+
 def nn_as_table(
     to_table: list[tuple[tuple[int, int], tuple[tuple[int, int], ...]]]
 ) -> pw.Table:
     return pw.debug.table_from_pandas(
         pd.DataFrame(
             {
-                "coords": [point[0] for point in to_table],
-                "nn": [point[1] for point in to_table],
+                "coords": [to_tuple_of_floats(point[0]) for point in to_table],
+                "nn": [
+                    tuple(to_tuple_of_floats(x) for x in point[1]) for point in to_table
+                ],
             }
         )
     )
@@ -54,17 +67,42 @@ def nn_as_table(
 
 def nn_with_dists_as_table(
     to_table: list[
-        tuple[tuple[int, int], tuple[tuple[int, int], ...], tuple[float | int, ...]]
+        tuple[tuple[int, int], tuple[tuple[int, int], ...], tuple[float, ...]]
     ]
 ) -> pw.Table:
     return pw.debug.table_from_pandas(
         pd.DataFrame(
             {
-                "coords": [point[0] for point in to_table],
-                "dist": [point[2] for point in to_table],  # type: ignore
-                "nn": [point[1] for point in to_table],
+                "coords": [to_tuple_of_floats(point[0]) for point in to_table],
+                "dist": [to_tuple_of_floats(point[2]) for point in to_table],  # type: ignore
+                "nn": [
+                    tuple(to_tuple_of_floats(x) for x in point[1]) for point in to_table
+                ],
             }
         )
+    )
+
+
+def make_usearch_data_index(
+    data_column: pw.ColumnReference,
+    data_table: pw.Table,
+    dimensions: int,
+    *,
+    embedder: pw.UDF | None = None,
+    metadata_column: pw.ColumnExpression | None = None,
+):
+    inner_index = USearchKnn(
+        data_column=data_column,
+        metadata_column=metadata_column,
+        dimensions=dimensions,
+        reserved_space=1000,
+        metric=USearchMetricKind.L2SQ,
+    )
+
+    return DataIndex(
+        data_table=data_table,
+        inner_index=inner_index,
+        embedder=embedder,
     )
 
 
@@ -72,7 +110,7 @@ def test_all_at_once():
     data = get_points()
     df = pd.DataFrame(
         {
-            "coords": [point[0] for point in data],
+            "coords": [to_tuple_of_floats(point[0]) for point in data],
             "is_query": [point[1] for point in data],
         }
     )
@@ -83,6 +121,15 @@ def test_all_at_once():
     result = queries + index.get_nearest_items(queries.coords, k=2).select(
         nn=pw.apply(sort_arrays, pw.this.coords)
     )
+
+    knn_lsh_index = LshKnn(points.coords, None, dimensions=2, n_and=5)
+    index2 = DataIndex(points, knn_lsh_index)
+
+    queries = queries.with_columns(k=2)
+    result2 = index2.query(queries.coords, number_of_matches=queries.k).select(
+        coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords)
+    )
+
     expected = nn_as_table(
         [
             ((0, 0), ((-1, 0), (1, 2))),
@@ -91,20 +138,22 @@ def test_all_at_once():
             ((-2, -3), ((-1, 0), (1, -4))),
         ]
     )
+
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
 
 
 def test_all_at_once_metadata_filter():
     data = get_points()
 
     class InputSchema(pw.Schema):
-        coords: tuple[int, int]
+        coords: tuple[float, float]
         is_query: bool
         metadata: pw.Json
 
     df = pd.DataFrame(
         {
-            "coords": [point[0] for point in data],
+            "coords": [to_tuple_of_floats(point[0]) for point in data],
             "is_query": [point[1] for point in data],
             "metadata": [{"foo": i} for i, _ in enumerate(data)],
         }
@@ -125,6 +174,21 @@ def test_all_at_once_metadata_filter():
     ).select(
         nn=pw.apply(sort_arrays, pw.this.coords),
     )
+
+    knn_lsh_index = LshKnn(
+        points.coords,
+        points.metadata,
+        dimensions=2,
+        n_and=5,
+    )
+    index2 = DataIndex(points, knn_lsh_index)
+    queries = queries.with_columns(k=2)
+    result2 = index2.query(
+        queries.coords,
+        number_of_matches=queries.k,
+        metadata_filter=queries.metadata_filter,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     expected = nn_as_table(
         [
             ((0, 0), ((-3, 1), (1, 2))),
@@ -134,11 +198,13 @@ def test_all_at_once_metadata_filter():
         ]
     )
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
 
 
 def stream_points(with_k: bool = False) -> tuple[pw.Table, pw.Table]:
-    points = T(
-        """
+    points = (
+        T(
+            """
          x |  y | __time__
          2 |  2 |     2
          3 | -2 |     4
@@ -147,16 +213,23 @@ def stream_points(with_k: bool = False) -> tuple[pw.Table, pw.Table]:
         -3 |  1 |    16
          1 | -4 |    20
     """
-    ).select(coords=pw.make_tuple(pw.this.x, pw.this.y))
-    queries = T(
-        """
+        )
+        .with_columns(x=pw.cast(float, pw.this.x), y=pw.cast(float, pw.this.y))
+        .select(coords=pw.make_tuple(pw.this.x, pw.this.y))
+    )
+    queries = (
+        T(
+            """
          x |  y | k | __time__
          0 |  0 | 1 |     6
          2 | -2 | 2 |    10
         -1 |  1 | 3 |    14
         -2 | -3 | 0 |    18
     """
-    ).select(coords=pw.make_tuple(pw.this.x, pw.this.y), k=pw.this.k)
+        )
+        .with_columns(x=pw.cast(float, pw.this.x), y=pw.cast(float, pw.this.y))
+        .select(coords=pw.make_tuple(pw.this.x, pw.this.y), k=pw.this.k)
+    )
     if not with_k:
         queries = queries.without(pw.this.k)
     return points, queries
@@ -176,7 +249,22 @@ def test_update_old():
             ((-2, -3), ((-1, 0), (1, -4))),
         ]
     )
+
+    knn_lsh_index = LshKnn(
+        points.coords,
+        metadata_column=None,
+        dimensions=2,
+        n_and=5,
+    )
+    index2 = DataIndex(points, knn_lsh_index)
+    queries = queries.with_columns(k=2)
+    result2 = index2.query(
+        queries.coords,
+        number_of_matches=queries.k,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
 
 
 def test_asof_now():
@@ -193,7 +281,32 @@ def test_asof_now():
             ((-2, -3), ((-3, 1), (-1, 0))),
         ]
     )
+
+    knn_lsh_index = LshKnn(
+        points.coords,
+        metadata_column=None,
+        dimensions=2,
+        n_and=5,
+    )
+    index2 = DataIndex(points, knn_lsh_index)
+
+    index3 = make_usearch_data_index(
+        points.coords, data_table=points, dimensions=2, metadata_column=None
+    )
+
+    result2 = index2.query_as_of_now(
+        queries.coords,
+        number_of_matches=2,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
+    result3 = index3.query_as_of_now(
+        queries.coords,
+        number_of_matches=2,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
+    assert_table_equality_wo_index(result3, expected)
 
 
 def test_update_old_with_variable_k():
@@ -210,7 +323,21 @@ def test_update_old_with_variable_k():
             ((-2, -3), ()),
         ]
     )
+
+    knn_lsh_index = LshKnn(
+        points.coords,
+        None,
+        dimensions=2,
+        n_and=5,
+    )
+    index2 = DataIndex(points, knn_lsh_index)
+    result2 = index2.query(
+        queries.coords,
+        number_of_matches=queries.k,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
 
 
 def test_asof_now_with_variable_k():
@@ -227,14 +354,36 @@ def test_asof_now_with_variable_k():
             ((-2, -3), ()),
         ]
     )
+    knn_lsh_index = LshKnn(
+        points.coords,
+        metadata_column=None,
+        dimensions=2,
+        n_and=5,
+    )
+    index2 = DataIndex(points, knn_lsh_index)
+    result2 = index2.query_as_of_now(
+        queries.coords,
+        number_of_matches=queries.k,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
+    index3 = make_usearch_data_index(
+        points.coords, data_table=points, dimensions=2, metadata_column=None
+    )
+    result3 = index3.query_as_of_now(
+        queries.coords,
+        number_of_matches=queries.k,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
+    assert_table_equality_wo_index(result3, expected)
 
 
 def test_get_distances():
     data = get_points()
     df = pd.DataFrame(
         {
-            "coords": [point[0] for point in data],
+            "coords": [to_tuple_of_floats(point[0]) for point in data],
             "is_query": [point[1] for point in data],
         }
     )
@@ -257,21 +406,41 @@ def test_get_distances():
             ((-2, -3), ((1, -4), (-1, 0)), (10, 10)),
         ]
     )
-
     assert_table_equality_wo_index_types(result, expected)
+    knn_lsh_index = LshKnn(
+        points.coords,
+        metadata_column=None,
+        dimensions=2,
+        n_and=5,
+    )
+
+    @pw.udf
+    def negate_tuple(t):
+        return tuple(-x for x in t)
+
+    index2 = DataIndex(points, knn_lsh_index)
+    queries = queries.with_columns(k=2)
+    result2 = index2.query(
+        queries.coords,
+        number_of_matches=queries.k,
+    ).select(
+        coords=pw.left.coords, dist=negate_tuple(pw.right[_SCORE]), nn=pw.right.coords
+    )
+
+    assert_table_equality_wo_index_types(result2, expected)
 
 
 def test_incorrect_metadata_filter():
     data = get_points()
 
     class InputSchema(pw.Schema):
-        coords: tuple[int, int]
+        coords: tuple[float, float]
         is_query: bool
         metadata: pw.Json
 
     df = pd.DataFrame(
         {
-            "coords": [point[0] for point in data],
+            "coords": [to_tuple_of_floats(point[0]) for point in data],
             "is_query": [point[1] for point in data],
             "metadata": [{"foo": i} for i, _ in enumerate(data)],
         }
@@ -300,4 +469,44 @@ def test_incorrect_metadata_filter():
             ((-2, -3), ()),
         ]
     )
+    knn_lsh_index = LshKnn(
+        points.coords,
+        metadata_column=points.metadata,
+        dimensions=2,
+        n_and=5,
+    )
+    index2 = DataIndex(points, knn_lsh_index)
+    queries = queries.with_columns(k=2)
+    result2 = index2.query(
+        queries.coords,
+        number_of_matches=queries.k,
+        metadata_filter=queries.metadata_filter,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     assert_table_equality_wo_index(result, expected)
+    assert_table_equality_wo_index(result2, expected)
+
+
+def test_mismatched_type_error_message():
+    table = pw.debug.table_from_markdown(
+        """
+        text
+        aaa
+        bbb
+        ccc
+        ddd
+        """
+    )
+
+    knn_lsh_index = LshKnn(table.text, None, dimensions=2, n_and=5)
+    index = DataIndex(table, knn_lsh_index)
+
+    exp_message = (
+        "Some columns have types incompatible with expected types: "
+        + "data column should be compatible with type List\\(FLOAT\\) but is of type "
+        + "STR, query column should be compatible with type List\\(FLOAT\\) but is of type STR"
+    )
+    with pytest.raises(TypeError, match=exp_message):
+        index.query(table.text, number_of_matches=2).select(
+            coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords)
+        )
