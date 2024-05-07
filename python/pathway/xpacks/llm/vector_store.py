@@ -10,7 +10,6 @@ The client queries the server and returns matching documents.
 """
 
 import asyncio
-import functools
 import json
 import logging
 import threading
@@ -26,6 +25,7 @@ import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
 from pathway.stdlib.ml import index
 from pathway.stdlib.ml.classifiers import _knn_lsh
+from pathway.xpacks.llm._utils import _coerce_sync
 
 if TYPE_CHECKING:
     import langchain_core.documents
@@ -37,43 +37,6 @@ def _unwrap_udf(func):
     if isinstance(func, pw.UDF):
         return func.__wrapped__
     return func
-
-
-# https://stackoverflow.com/a/75094151
-class _RunThread(threading.Thread):
-    def __init__(self, coroutine):
-        self.coroutine = coroutine
-        self.result = None
-        super().__init__()
-
-    def run(self):
-        self.result = asyncio.run(self.coroutine)
-
-
-def _run_async(coroutine):
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        thread = _RunThread(coroutine)
-        thread.start()
-        thread.join()
-        return thread.result
-    else:
-        return asyncio.run(coroutine)
-
-
-def _coerce_sync(func: Callable) -> Callable:
-    if asyncio.iscoroutinefunction(func):
-
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            return _run_async(func(*args, **kwargs))
-
-        return wrapper
-    else:
-        return func
 
 
 class VectorStoreServer:

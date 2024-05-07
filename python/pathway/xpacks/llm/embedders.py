@@ -8,6 +8,7 @@ import openai as openai_mod
 
 import pathway as pw
 from pathway.internals import udfs
+from pathway.xpacks.llm._utils import _coerce_sync
 
 __all__ = ["OpenAIEmbedder", "LiteLLMEmbedder", "SentenceTransformerEmbedder"]
 
@@ -53,7 +54,18 @@ def _mokeypatch_openai_async():
         pass
 
 
-class OpenAIEmbedder(pw.UDF):
+class BaseEmbedder(pw.UDF):
+    def get_embedding_dimension(self, **kwargs):
+        """Computes number of embedder's dimensions by asking the embedder to embed `.`.
+
+        Args:
+            - **kwargs: parameters of the embedder, if unset defaults from the constructor
+              will be taken.
+        """
+        return len(_coerce_sync(self.__wrapped__)(".", **kwargs))
+
+
+class OpenAIEmbedder(BaseEmbedder):
     """Pathway wrapper for OpenAI Embedding services.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
@@ -143,7 +155,7 @@ class OpenAIEmbedder(pw.UDF):
         return ret.data[0].embedding
 
 
-class LiteLLMEmbedder(pw.UDF):
+class LiteLLMEmbedder(BaseEmbedder):
     """Pathway wrapper for `litellm.embedding`.
 
     Model has to be specified either in constructor call or in each application, no default
@@ -235,7 +247,7 @@ class LiteLLMEmbedder(pw.UDF):
         return ret.data[0]["embedding"]
 
 
-class SentenceTransformerEmbedder(pw.UDF):
+class SentenceTransformerEmbedder(BaseEmbedder):
     """
     Pathway wrapper for Sentence-Transformers embedder.
 

@@ -166,9 +166,7 @@ embedding_model = "avsolatorio/GIST-small-Embedding-v0"
 embedder = embedders.SentenceTransformerEmbedder(
     embedding_model, call_kwargs={"show_progress_bar": False}
 )  # disable verbose logs
-embedding_dimension: int = len(
-    embedder.__wrapped__(".")
-)  # call the model once to get the embedding_dim
+embedding_dimension: int = embedder.get_embedding_dimension()
 print("Embedding dimension:", embedding_dimension)
 # -
 

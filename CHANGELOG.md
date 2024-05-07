@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- Embedders in the LLM xpack now have method `get_embedding_dimension` that returns number of dimension used by the chosen embedder.
+
 ### Changed
 - **BREAKING**: `windowby` generates IDs of produced rows differently than in the previous version.
 - **BREAKING**: `pw.io.csv.write` prints printable non-ascii characters as regular text, not `\u{xxxx}`.
