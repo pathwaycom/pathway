@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - **BREAKING**: `windowby` generates IDs of produced rows differently than in the previous version.
+- **BREAKING**: `pw.io.csv.write` prints printable non-ascii characters as regular text, not `\u{xxxx}`.
 
 ## [0.10.1] - 2024-04-30
 

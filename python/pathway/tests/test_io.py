@@ -2872,3 +2872,29 @@ def test_raw_kafka_raises_wrong_type():
             format="raw",
             value=table._metadata,
         )
+
+
+def test_non_ascii_characters(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
+    @pw.udf
+    def replace_some_chars(a: str) -> str:
+        return a.replace("b", "\n")
+
+    t = pw.debug.table_from_markdown(
+        """
+        data
+        aba
+        ąęćśż
+        قطة
+    """
+    ).select(data=replace_some_chars(pw.this.data))
+    pw.io.csv.write(t, output_path)
+
+    run_all()
+
+    result = pd.read_csv(output_path)
+    answers = set(result["data"])
+    expected = ["a\\na", "ąęćśż", "قطة"]
+    for word in expected:
+        assert word in answers

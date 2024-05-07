@@ -357,7 +357,7 @@ impl Display for Value {
             Self::Int(i) => write!(fmt, "{i}"),
             Self::Float(OrderedFloat(f)) => write!(fmt, "{f:?}"),
             Self::Pointer(p) => write!(fmt, "{p}"),
-            Self::String(s) => write!(fmt, "\"{}\"", s.escape_default()),
+            Self::String(s) => write!(fmt, "{s:?}"),
             Self::Bytes(b) => write!(fmt, "{b:?}"),
             Self::Tuple(vals) => write!(fmt, "({})", vals.iter().format(", ")),
             Self::IntArray(array) => write!(fmt, "{array}"),
