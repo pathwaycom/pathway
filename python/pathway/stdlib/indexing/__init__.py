@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from .bm25 import TantivyBM25
 from .data_index import DataIndex
 from .nearest_neighbors import LshKnn, USearchKnn
 from .sorting import (
@@ -27,6 +28,7 @@ __all__ = [
     "InnerIndex",
     "USearchKnn",
     "LshKnn",
+    "TantivyBM25",
     "SortedIndex",
     "default_vector_document_index",
     "default_lsh_knn_document_index",

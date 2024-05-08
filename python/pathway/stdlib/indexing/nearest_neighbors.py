@@ -8,32 +8,14 @@ import pathway.internals as pw
 from pathway.engine import ExternalIndexFactory, USearchMetricKind
 from pathway.internals import dtype as dt
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.type_interpreter import eval_type
 from pathway.stdlib.indexing.colnames import _INDEX_REPLY, _NO_OF_MATCHES, _QUERY_ID
 from pathway.stdlib.indexing.data_index import InnerIndex
+from pathway.stdlib.indexing.typecheck_utils import check_column_reference_type
 
 # TODO fix the dependency: we should have one index that under the hood is used in both classifier
 # and here; current version is taken from existing impl, and fixing that is a separate task
 from pathway.stdlib.ml.classifiers import DistanceTypes, knn_lsh_classifier_train
 from pathway.stdlib.ml.utils import _predict_asof_now
-
-
-def check_column_reference_type(
-    parameters: list[Tuple[str, Tuple[pw.ColumnExpression, dt.DType]]]
-) -> None:
-
-    failed = [
-        (name, (expr, type))
-        for (name, (expr, type)) in parameters
-        if not dt.dtype_issubclass(eval_type(expr), type)
-    ]
-    if failed:
-        msg = "Some columns have types incompatible with expected types: " + ", ".join(
-            f"{name} should be compatible with type {type!r} but is of type {eval_type(expr)!r}"
-            for (name, (expr, type)) in failed
-        )
-
-        raise TypeError(msg)
 
 
 def check_default_knn_column_types(
@@ -92,7 +74,7 @@ class USearchKnn(InnerIndex):
     def query(
         self,
         query_column: pw.ColumnReference,
-        number_of_matches: pw.ColumnExpression | int | None = None,
+        number_of_matches: pw.ColumnExpression | int = 3,
         metadata_filter: pw.ColumnExpression | None = None,
     ) -> pw.Table:
         raise NotImplementedError(

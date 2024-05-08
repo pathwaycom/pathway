@@ -23,7 +23,6 @@ def test_filter():
         limit: int
         filter_col: str
 
-    # whitespaces in json string seems to be breaking table_from_markdown
     index = pw.debug.table_from_markdown(
         """
     pk_source |data         |filter_data
@@ -95,7 +94,6 @@ def test_auto_resize():
         data: str
         limit: int
 
-    # whitespaces in json string seems to be breaking table_from_markdown
     index = pw.debug.table_from_markdown(
         """
     pk_source |data
@@ -166,7 +164,6 @@ def test_distance_simple():
         data: str
         limit: int
 
-    # whitespaces in json string seems to be breaking table_from_markdown
     index = pw.debug.table_from_markdown(
         """
     pk_source |data
@@ -252,7 +249,6 @@ def test_with_distance_simple():
         data: str
         limit: int
 
-    # whitespaces in json string seems to be breaking table_from_markdown
     index = pw.debug.table_from_markdown(
         """
     pk_source |data
@@ -352,7 +348,6 @@ def test_distance_with_deletion():
         data: str
         limit: int
 
-    # whitespaces in json string seems to be breaking table_from_markdown
     index = pw.debug.table_from_markdown(
         """
     pk_source | data        | __time__ | __diff__

@@ -67,6 +67,7 @@ serde_with = "3.8.0"
 smallvec = { version = "1.13.2", features = ["union", "const_generics"] }
 syn = { version = "2.0.60", features = ["default", "full", "visit", "visit-mut"] } # Hack to keep features unified between normal and build deps
 sysinfo = "0.30.11"
+tantivy = "0.22.0"
 tempfile = "3.10.1"
 thiserror = "1.0.59"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }

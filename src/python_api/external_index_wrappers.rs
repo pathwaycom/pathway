@@ -8,9 +8,9 @@ use pyo3::{
 use usearch::ffi::MetricKind;
 
 use crate::engine::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
-use crate::external_integration::{
-    ExternalIndexFactory, USearchKNNIndexFactory, USearchMetricKind,
-};
+use crate::external_integration::tantivy_integration::TantivyIndexFactory;
+use crate::external_integration::usearch_integration::{USearchKNNIndexFactory, USearchMetricKind};
+use crate::external_integration::ExternalIndexFactory;
 use crate::{engine::ColumnPath, python_api::Table};
 
 #[derive(Clone)]
@@ -41,6 +41,21 @@ impl PyExternalIndexFactory {
                 expansion_add,
                 expansion_search,
                 return_distance,
+            )),
+        }
+    }
+
+    #[staticmethod]
+    fn tantivy_factory(
+        ram_budget: usize,
+        in_memory_index: bool,
+        return_scoring: bool,
+    ) -> PyExternalIndexFactory {
+        PyExternalIndexFactory {
+            inner: Arc::new(TantivyIndexFactory::new(
+                ram_budget,
+                in_memory_index,
+                return_scoring,
             )),
         }
     }

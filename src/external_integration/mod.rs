@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
-
+pub mod tantivy_integration;
+pub mod usearch_integration;
 use std::ops::Deref;
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
@@ -7,17 +8,13 @@ use glob::Pattern;
 use itertools::Itertools;
 use jmespath::functions::{ArgumentType, CustomFunction, Signature};
 use jmespath::{self, Context, ErrorReason, JmespathError, Rcvar, Runtime, ToJmespath, Variable};
-use usearch::ffi::{IndexOptions, MetricKind, ScalarKind};
-use usearch::{new_index, Index};
 
 use differential_dataflow::difference::Abelian;
 
 use crate::engine::dataflow::operators::external_index::Index as IndexTrait;
 use crate::engine::error::DynResult;
 use crate::engine::report_error::{ReportError, UnwrapWithReporter};
-use crate::engine::{ColumnPath, Key, Value};
-
-/* common parts */
+use crate::engine::{ColumnPath, Error, Key, Value};
 
 pub trait ExternalIndex {
     fn add(&mut self, key: Key, data: Value, filter_data: Option<Value>) -> DynResult<()>;
@@ -31,7 +28,7 @@ pub trait ExternalIndex {
 }
 
 pub trait ExternalIndexFactory: Send + Sync {
-    fn make_instance(&self) -> Box<dyn ExternalIndex>;
+    fn make_instance(&self) -> Result<Box<dyn ExternalIndex>, Error>;
 }
 
 pub struct IndexDerivedImpl {
@@ -113,6 +110,49 @@ impl<R: Abelian + CanBeRetraction> IndexTrait<Key, Value, R, Value, Value> for I
 }
 
 /* utils */
+
+//
+
+struct KeyToU64IdMapper {
+    next_id: u64,
+    id_to_key_map: HashMap<u64, Key>,
+    key_to_id_map: HashMap<Key, u64>,
+}
+
+impl KeyToU64IdMapper {
+    fn new() -> KeyToU64IdMapper {
+        KeyToU64IdMapper {
+            next_id: 1,
+            id_to_key_map: HashMap::new(),
+            key_to_id_map: HashMap::new(),
+        }
+    }
+
+    fn get_noncolliding_u64_id(&mut self, key: Key) -> u64 {
+        if let Some(ret) = self.key_to_id_map.get(&key) {
+            return *ret;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.id_to_key_map.insert(id, key);
+        self.key_to_id_map.insert(key, id);
+        id
+    }
+
+    fn get_key_for_id(&self, id: u64) -> Key {
+        self.id_to_key_map[&id]
+    }
+
+    fn remove_key(&mut self, key: Key) -> DynResult<u64> {
+        let key_id = self
+            .key_to_id_map
+            .remove(&key)
+            .ok_or(crate::engine::DataError::MissingKey(key))?;
+        self.id_to_key_map.remove(&key_id);
+        Ok(key_id)
+    }
+}
+
 // Create a new Runtime and register the builtin JMESPath functions.
 struct JMESPathFilterWithGlobPattern {
     pub runtime: Runtime,
@@ -177,80 +217,94 @@ pub fn make_option_accessor(
     }
 }
 
-/* usearch knn */
-
-#[derive(Clone, Copy)]
-pub struct USearchMetricKind(pub MetricKind);
-
-pub struct USearchKNNIndex {
-    next_id: u64,
-    id_to_key_map: HashMap<u64, Key>,
-    key_to_id_map: HashMap<Key, u64>,
-    filter_data_map: HashMap<Key, Variable>,
-    jmespath_runtime: JMESPathFilterWithGlobPattern,
-    index: Arc<Index>,
-    return_distance: bool,
-}
-
-pub struct SingleMatch {
+pub struct KeyScoreMatch {
     key: Key,
-    distance: f64,
+    score: Option<f64>,
 }
 
-// helper methods
-impl USearchKNNIndex {
-    fn get_noncolliding_u64_id(&mut self, key: Key) -> u64 {
-        if let Some(ret) = self.key_to_id_map.get(&key) {
-            return *ret;
+impl KeyScoreMatch {
+    fn key(&self) -> Key {
+        self.key
+    }
+
+    fn into_value(self) -> Value {
+        if let Some(score) = self.score {
+            Value::Tuple(Arc::new([Value::from(self.key), Value::from(score)]))
+        } else {
+            Value::from(self.key)
         }
-        let id = self.next_id;
-        self.next_id += 1;
-        self.id_to_key_map.insert(id, key);
-        self.key_to_id_map.insert(key, id);
-        id
-    }
-
-    fn _search(&self, vector: &[f64], limit: usize) -> DynResult<Vec<SingleMatch>> {
-        let matches = self.index.search(vector, limit)?;
-        Ok(matches
-            .keys
-            .into_iter()
-            .zip(matches.distances)
-            .map(|(k, d)| SingleMatch {
-                key: self.id_to_key_map[&k],
-                distance: f64::from(d),
-            })
-            .collect())
     }
 }
 
-// index methods
-impl ExternalIndex for USearchKNNIndex {
+/*data unpacking types, so that we can define unpacking from values to types by setting generic types*/
+
+pub trait Unpack<Type> {
+    fn unpack(self) -> DynResult<Type>;
+}
+
+// to vector of floats
+impl Unpack<Vec<f64>> for Value {
+    fn unpack(self) -> DynResult<Vec<f64>> {
+        self.as_tuple()?.iter().map(Value::as_float).try_collect()
+    }
+}
+
+// to JMESPath Variable
+impl Unpack<Variable> for Value {
+    fn unpack(self) -> DynResult<Variable> {
+        //can I do that without deref.clone()?
+        Ok(self.as_json()?.to_jmespath()?.deref().clone())
+    }
+}
+
+// to String
+impl Unpack<String> for Value {
+    fn unpack(self) -> DynResult<String> {
+        Ok(self.as_string()?.to_string())
+    }
+}
+
+pub trait NonFilteringExternalIndex<DataType, QueryType> {
+    fn add(&mut self, key: Key, data: DataType) -> DynResult<()>;
+    fn remove(&mut self, key: Key) -> DynResult<()>;
+    fn search(&self, data: &QueryType, limit: Option<usize>) -> DynResult<Vec<KeyScoreMatch>>;
+}
+
+pub struct DerivedFilteredSearchIndex<DataType, QueryType> {
+    // needed for derived filtering
+    jmespath_runtime: JMESPathFilterWithGlobPattern,
+    filter_data_map: HashMap<Key, Variable>,
+    // needed to be an index
+    inner: Box<dyn NonFilteringExternalIndex<DataType, QueryType>>,
+}
+
+impl<DataType, QueryType> DerivedFilteredSearchIndex<DataType, QueryType> {
+    pub fn new(
+        index: Box<dyn NonFilteringExternalIndex<DataType, QueryType>>,
+    ) -> DerivedFilteredSearchIndex<DataType, QueryType> {
+        DerivedFilteredSearchIndex {
+            jmespath_runtime: JMESPathFilterWithGlobPattern::new(),
+            filter_data_map: HashMap::new(),
+            inner: index,
+        }
+    }
+}
+
+impl<DataType, QueryType> ExternalIndex for DerivedFilteredSearchIndex<DataType, QueryType>
+where
+    Value: Unpack<DataType> + Unpack<QueryType>,
+{
     fn add(&mut self, key: Key, data: Value, filter_data: Option<Value>) -> DynResult<()> {
-        let key_id = self.get_noncolliding_u64_id(key);
-
         if let Some(f_data_un) = filter_data {
-            self.filter_data_map
-                .insert(key, f_data_un.as_json()?.to_jmespath()?.deref().clone());
+            self.filter_data_map.insert(key, f_data_un.unpack()?);
         };
-
-        let vector: Vec<f64> = (data.as_tuple()?.iter().map(Value::as_float).try_collect())?;
-
-        if self.index.size() + 1 > self.index.capacity() {
-            assert!(self.index.reserve(2 * self.index.capacity()).is_ok());
-        }
-
-        Ok(self.index.add(key_id, &vector)?)
+        let data_point: DataType = data.unpack()?;
+        self.inner.add(key, data_point)
     }
 
     fn remove(&mut self, key: Key) -> DynResult<()> {
-        let key_id = self
-            .key_to_id_map
-            .remove(&key)
-            .ok_or(crate::engine::DataError::MissingKey(key))?;
-        self.id_to_key_map.remove(&key_id);
+        self.inner.remove(key)?;
         self.filter_data_map.remove(&key);
-        self.index.remove(key_id)?;
         Ok(())
     }
 
@@ -260,42 +314,41 @@ impl ExternalIndex for USearchKNNIndex {
         limit: Option<&Value>,
         filter: Option<&Value>,
     ) -> DynResult<Value> {
+        //TODOs: replace with default limit elsewhere, adjust for distance-in-result (when other PR is merged)
         let limit = if let Some(wrapped) = limit {
             usize::try_from(wrapped.as_int()?)?
         } else {
             1
         };
 
-        let vector: Vec<f64> = (data.as_tuple()?.iter().map(Value::as_float).try_collect())?;
-
+        // maybe pass query as value and remove clone?
+        let query_point: QueryType = data.clone().unpack()?;
         if filter.is_none() {
             return Ok(Value::Tuple(
-                self._search(&vector, limit)?
+                self.inner
+                    .search(&query_point, Some(limit))?
                     .into_iter()
-                    .map(|sm| {
-                        if self.return_distance {
-                            Value::Tuple(Arc::new([Value::from(sm.key), Value::from(-sm.distance)]))
-                        } else {
-                            Value::from(sm.key)
-                        }
-                    })
+                    .map(KeyScoreMatch::into_value)
                     .collect(),
             ));
         }
 
-        let filter_str = filter.as_ref().unwrap().as_string()?.to_string();
-        let expr = self.jmespath_runtime.runtime.compile(&filter_str)?;
+        let filter_as_string: String = filter.cloned().unwrap().unpack()?;
+        let expr = self.jmespath_runtime.runtime.compile(&filter_as_string)?;
         let mut upper_bound = limit;
-        let filtered = loop {
-            let results = self._search(&vector, upper_bound)?;
-            let res_len = results.len();
 
-            let res_with_expr: Vec<(SingleMatch, Rc<Variable>)> = results
+        let filtered = loop {
+            let results: Vec<KeyScoreMatch> = self.inner.search(&query_point, Some(upper_bound))?;
+            let res_len = results.len();
+            let res_with_expr: Vec<(KeyScoreMatch, Rc<Variable>)> = results
                 .into_iter()
-                .map(|sm| expr.search(&self.filter_data_map[&sm.key]).map(|r| (sm, r)))
+                .map(|sm| {
+                    expr.search(&self.filter_data_map[&sm.key()])
+                        .map(|r| (sm, r))
+                })
                 .try_collect()?;
 
-            let to_filter: Vec<(SingleMatch, bool)> = res_with_expr
+            let to_filter: Vec<(KeyScoreMatch, bool)> = res_with_expr
                 .into_iter()
                 .map(|(k, e)| match e.as_boolean() {
                     Some(ret) => Ok((k, ret)),
@@ -305,7 +358,7 @@ impl ExternalIndex for USearchKNNIndex {
                 })
                 .try_collect()?;
 
-            let mut filtered: Vec<SingleMatch> = to_filter
+            let mut filtered: Vec<KeyScoreMatch> = to_filter
                 .into_iter()
                 .filter_map(|(k, e)| if e { Some(k) } else { None })
                 .collect();
@@ -320,79 +373,11 @@ impl ExternalIndex for USearchKNNIndex {
             }
             upper_bound *= 2;
         };
-
         Ok(Value::Tuple(
             filtered
                 .into_iter()
-                .map(|sm| {
-                    if self.return_distance {
-                        Value::Tuple(Arc::new([Value::from(sm.key), Value::from(-sm.distance)]))
-                    } else {
-                        Value::from(sm.key)
-                    }
-                })
+                .map(KeyScoreMatch::into_value)
                 .collect(),
         ))
-    }
-}
-
-// index factory structure
-pub struct USearchKNNIndexFactory {
-    dimensions: usize,
-    reserved_space: usize,
-    metric: MetricKind,
-    connectivity: usize,
-    expansion_add: usize,
-    expansion_search: usize,
-    return_distance: bool,
-}
-
-impl USearchKNNIndexFactory {
-    pub fn new(
-        dimensions: usize,
-        reserved_space: usize,
-        metric: MetricKind,
-        connectivity: usize,
-        expansion_add: usize,
-        expansion_search: usize,
-        return_distance: bool,
-    ) -> USearchKNNIndexFactory {
-        USearchKNNIndexFactory {
-            dimensions,
-            reserved_space,
-            metric,
-            connectivity,
-            expansion_add,
-            expansion_search,
-            return_distance,
-        }
-    }
-}
-
-// implement make_instance method, which then is used to produce instance of the index for each worker / operator
-impl ExternalIndexFactory for USearchKNNIndexFactory {
-    fn make_instance(&self) -> Box<dyn ExternalIndex> {
-        let options = IndexOptions {
-            dimensions: self.dimensions,
-            metric: self.metric,
-            quantization: ScalarKind::F16,
-            connectivity: self.connectivity,
-            expansion_add: self.expansion_add,
-            expansion_search: self.expansion_search,
-            multi: false,
-        };
-
-        let index = new_index(&options).unwrap();
-        assert!(index.reserve(self.reserved_space).is_ok());
-
-        Box::new(USearchKNNIndex {
-            next_id: 1,
-            id_to_key_map: HashMap::new(),
-            key_to_id_map: HashMap::new(),
-            filter_data_map: HashMap::new(),
-            jmespath_runtime: JMESPathFilterWithGlobPattern::new(),
-            return_distance: self.return_distance,
-            index: Arc::from(index),
-        })
     }
 }

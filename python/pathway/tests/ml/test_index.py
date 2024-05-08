@@ -8,6 +8,7 @@ import pytest
 
 import pathway as pw
 from pathway.engine import USearchMetricKind
+from pathway.stdlib.indexing.bm25 import TantivyBM25
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.nearest_neighbors import LshKnn, USearchKnn
 from pathway.stdlib.ml.index import KNNIndex
@@ -487,7 +488,7 @@ def test_incorrect_metadata_filter():
     assert_table_equality_wo_index(result2, expected)
 
 
-def test_mismatched_type_error_message():
+def test_mismatched_type_error_message_knn_lsh():
     table = pw.debug.table_from_markdown(
         """
         text
@@ -508,5 +509,79 @@ def test_mismatched_type_error_message():
     )
     with pytest.raises(TypeError, match=exp_message):
         index.query(table.text, number_of_matches=2).select(
+            coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords)
+        )
+
+
+def test_full_text_search():
+    index_data = pw.debug.table_from_markdown(
+        """
+        index_text                                                          | extra_info| __time__
+        Lorem ipsum dolor sit amet, consectetur adipiscing elit.            | 1         |     2
+        Cras ex lorem, luctus nec dui eu, pellentesque vestibulum velit.    | 2         |     2
+        Nunc laoreet tortor quis odio mattis vulputate.                     | 3         |     2
+        Quisque vel dictum neque, at efficitur nisi.                        | 4         |     2
+        Aliquam dui nibh, cursus ac porttitor nec, placerat quis nisi.      | 5         |     2
+        Curabitur vehicula enim vitae rhoncus feugiat.                      | 6         |     2
+        """,
+        split_on_whitespace=False,
+    )
+
+    queries = pw.debug.table_from_markdown(
+        """
+        query_text | __time__
+        nisi       | 2
+        elit       | 2
+        lorem      | 2
+        marchewka  | 2
+        """,
+        split_on_whitespace=False,
+    )
+
+    index = TantivyBM25(index_data.index_text, metadata_column=None)
+    data_index = DataIndex(index_data, index, embedder=None)
+    ret = data_index.query_as_of_now(
+        query_column=queries.query_text, number_of_matches=4
+    ).select(qtext=pw.left.query_text, info=pw.right.extra_info)
+
+    class ExpSchema(pw.Schema):
+        qtext: str
+        info: list[int] | None
+
+    df = pd.DataFrame(
+        {
+            "qtext": ["elit", "lorem", "marchewka", "nisi"],
+            "info": [(1,), (1, 2), None, (4, 5)],
+        },
+    )
+    expected = pw.debug.table_from_pandas(df, schema=ExpSchema)
+    assert_table_equality_wo_index(ret, expected)
+
+
+def test_mismatched_type_error_message_bm25():
+    class InputSchema(pw.Schema):
+        int_col: int
+
+    table = pw.debug.table_from_markdown(
+        """
+        int_col
+        1
+        2
+        3
+        4
+        """,
+        schema=InputSchema,
+    )
+
+    tantivy_index = TantivyBM25(table.int_col, None)
+    index = DataIndex(table, tantivy_index)
+
+    exp_message = (
+        "Some columns have types incompatible with expected types: "
+        + "data column should be compatible with type STR but is of type "
+        + "INT, query column should be compatible with type STR but is of type INT"
+    )
+    with pytest.raises(TypeError, match=exp_message):
+        index.query_as_of_now(table.int_col, number_of_matches=2).select(
             coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords)
         )

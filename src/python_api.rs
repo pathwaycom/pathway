@@ -2410,7 +2410,7 @@ impl Scope {
             index.to_external_index_data(),
             queries.to_external_index_query(),
             table_properties.0,
-            external_index_factory.inner.make_instance(),
+            external_index_factory.inner.make_instance()?,
         )?;
         Table::new(self_, new_table_handle)
     }

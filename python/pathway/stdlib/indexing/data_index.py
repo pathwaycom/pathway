@@ -166,7 +166,7 @@ class InnerIndex(ABC):
         self,
         query_column: pw.ColumnReference,
         *,
-        number_of_matches: pw.ColumnExpression | int | None = None,
+        number_of_matches: pw.ColumnExpression | int = 3,
         metadata_filter: pw.ColumnExpression | None = None,
     ) -> pw.Table:
         """
@@ -191,7 +191,7 @@ class InnerIndex(ABC):
         self,
         query_column: pw.ColumnReference,
         *,
-        number_of_matches: pw.ColumnExpression | int | None = None,
+        number_of_matches: pw.ColumnExpression | int = 3,
         metadata_filter: pw.ColumnExpression | None = None,
     ) -> pw.Table:
         """
@@ -288,7 +288,7 @@ class DataIndex:
         self,
         query_column: pw.ColumnReference,
         *,
-        number_of_matches: pw.ColumnExpression | int | None = None,
+        number_of_matches: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
         metadata_filter: pw.ColumnExpression | None = None,
     ) -> JoinResult:
@@ -314,7 +314,7 @@ class DataIndex:
         Args:
             query_column (pw.ColumnReference): A column containing the queries, needs
                 to be in the format compatible with ``self.inner_index`` (or ``self.embedder``).
-            number_of_matches (pw.ColumnExpression | int | None): The maximum number of
+            number_of_matches (pw.ColumnExpression | int ): The maximum number of
                 matches returned for each query.
             collapse_rows (bool): Indicates the format of the output. If set to ``True``,
                 the resulting table has exactly one row for each query, each column
@@ -352,7 +352,7 @@ class DataIndex:
     def query_as_of_now(
         self,
         query_column: pw.ColumnReference,
-        number_of_matches: pw.ColumnExpression | int | None = None,
+        number_of_matches: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
         metadata_filter: pw.ColumnExpression | None = None,
     ) -> JoinResult:
@@ -380,7 +380,7 @@ class DataIndex:
         Args:
             query_column (pw.ColumnReference): A column containing the queries, needs
                 to be in the format compatible with ``self.inner_index`` (or ``self.embedder``).
-            number_of_matches (pw.ColumnExpression | int | None): The maximum number of
+            number_of_matches (pw.ColumnExpression | int ): The maximum number of
                 matches returned for each query.
             collapse_rows (bool): Indicates the format of the output. If set to ``True``,
                 the resulting table has exactly one row for each query, each column

@@ -467,11 +467,11 @@ class ExternalIndexAsOfNowContext(
         return [
             _create_internal_table(
                 index_columns,
-                self.index_table._context,
+                self.index_table._rowwise_context,
             ),
             _create_internal_table(
                 query_columns,
-                self.query_table._context,
+                self.query_table._rowwise_context,
             ),
         ]
 

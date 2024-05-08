@@ -810,6 +810,13 @@ class ExternalIndexFactory:
         expansion_search: int,
         return_distance: bool,
     ) -> ExternalIndexFactory: ...
+    @staticmethod
+    def tantivy_factory(
+        *,
+        ram_budget: int,
+        in_memory_index: bool,
+        return_scoring: bool,
+    ) -> ExternalIndexFactory: ...
 
 @dataclasses.dataclass(frozen=True)
 class ExternalIndexData:
