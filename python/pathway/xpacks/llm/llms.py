@@ -12,10 +12,9 @@ import json
 import logging
 import uuid
 
-import openai as openai_mod
-
 import pathway as pw
 from pathway.internals import udfs
+from pathway.optional_import import optional_imports
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +170,8 @@ class OpenAIChat(pw.UDF):
         model: str | None = "gpt-3.5-turbo",
         **openai_kwargs,
     ):
+        with optional_imports("xpack-llm"):
+            import openai  # noqa:F401
         executor = udfs.async_executor(
             capacity=capacity,
             retry_strategy=retry_strategy,
@@ -184,8 +185,10 @@ class OpenAIChat(pw.UDF):
             self.kwargs["model"] = model
 
     async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
+        import openai
+
         if isinstance(messages, pw.Json):
-            messages_decoded: list[openai_mod.ChatCompletionMessageParam] = messages.value  # type: ignore
+            messages_decoded: list[openai.ChatCompletionMessageParam] = messages.value  # type: ignore
         else:
             messages_decoded = messages
 
@@ -202,7 +205,7 @@ class OpenAIChat(pw.UDF):
         }
         logger.info(json.dumps(event))
 
-        client = openai_mod.AsyncOpenAI(api_key=api_key)
+        client = openai.AsyncOpenAI(api_key=api_key)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
         response = ret.choices[0].message.content
 
@@ -270,10 +273,8 @@ class LiteLLMChat(pw.UDF):
         model: str | None = None,
         **litellm_kwargs,
     ):
-        try:
-            import litellm  # noqa
-        except ImportError:
-            raise ImportError("Please install litellm: `pip install litellm`")
+        with optional_imports("xpack-llm"):
+            import litellm  # noqa:F401
 
         executor = udfs.async_executor(
             capacity=capacity,
@@ -288,7 +289,7 @@ class LiteLLMChat(pw.UDF):
             self.kwargs["model"] = model
 
     def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
-        import litellm as litellm_mod
+        import litellm
 
         if isinstance(messages, pw.Json):
             messages_decoded: list[dict] = messages.as_list()
@@ -304,7 +305,7 @@ class LiteLLMChat(pw.UDF):
         }
         logger.info(json.dumps(event))
 
-        ret = litellm_mod.completion(
+        ret = litellm.completion(
             messages=messages_decoded, **kwargs
         )  # temporarily disable async due to behavior difference while using `json` mode with Ollama
         response = ret.choices[0]["message"]["content"]
@@ -357,12 +358,10 @@ class HFPipelineChat(pw.UDF):
         device: str = "cpu",
         **pipeline_kwargs,
     ):
-        try:
+        with optional_imports("xpack-llm-local"):
             import transformers
-        except ImportError:
-            raise ValueError("Please install transformers: `pip install transformers`")
-        super().__init__()
 
+        super().__init__()
         self.pipeline = transformers.pipeline(
             model=model, device=device, **pipeline_kwargs
         )
@@ -452,10 +451,8 @@ class CohereChat(pw.UDF):
         model: str | None = "command",
         **cohere_kwargs,
     ):
-        try:
-            import cohere  # noqa
-        except ImportError:
-            raise ImportError("Please install cohere with: `pip install cohere`")
+        with optional_imports("xpack-llm"):
+            import cohere  # noqa:F401
 
         executor = udfs.async_executor(
             capacity=capacity,
@@ -475,7 +472,7 @@ class CohereChat(pw.UDF):
         documents: list[dict] | pw.Json | tuple | None = None,
         **kwargs,
     ) -> tuple[str, list[dict]]:
-        import cohere  # noqa
+        import cohere
 
         if isinstance(messages, pw.Json):
             messages_decoded: list = messages.as_list()

@@ -10,6 +10,7 @@ from io import BytesIO
 from typing import Any
 
 import pathway as pw
+from pathway.optional_import import optional_imports
 
 
 class ParseUtf8(pw.UDF):
@@ -42,13 +43,9 @@ class ParseUnstructured(pw.UDF):
         post_processors: list[Callable] | None = None,
         **unstructured_kwargs: Any,
     ):
-        # lazy load to prevent unstructured from being a dependency on whole pathway
-        try:
-            import unstructured.partition.auto  # noqa
-        except ImportError:
-            raise ValueError(
-                "Please install unstructured with all documents support: `pip install unstructured[all-docs]`"
-            )
+        with optional_imports("xpack-llm-docs"):
+            import unstructured.partition.auto  # noqa:F401
+
         super().__init__()
         _valid_modes = {"single", "elements", "paged"}
         if mode not in _valid_modes:

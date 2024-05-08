@@ -4,10 +4,9 @@ Pathway embedder UDFs.
 """
 import asyncio
 
-import openai as openai_mod
-
 import pathway as pw
 from pathway.internals import udfs
+from pathway.optional_import import optional_imports
 from pathway.xpacks.llm._utils import _coerce_sync
 
 __all__ = ["OpenAIEmbedder", "LiteLLMEmbedder", "SentenceTransformerEmbedder"]
@@ -20,7 +19,7 @@ async def _safe_aclose(self):
         pass
 
 
-def _mokeypatch_openai_async():
+def _monkeypatch_openai_async():
     """Be more permissive on errors happening in httpx loop closing.
 
 
@@ -28,7 +27,8 @@ def _mokeypatch_openai_async():
     The errors can be ignored, but look scary.
     """
     try:
-        import openai._base_client
+        with optional_imports("xpack-llm"):
+            import openai._base_client
 
         if hasattr(openai._base_client, "OrigAsyncHttpxClientWrapper"):
             return
@@ -130,7 +130,10 @@ class OpenAIEmbedder(BaseEmbedder):
         model: str | None = "text-embedding-ada-002",
         **openai_kwargs,
     ):
-        _mokeypatch_openai_async()
+        with optional_imports("xpack-llm"):
+            import openai  # noqa:F401
+
+        _monkeypatch_openai_async()
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
             executor=executor,
@@ -148,9 +151,11 @@ class OpenAIEmbedder(BaseEmbedder):
             - **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
+        import openai
+
         kwargs = {**self.kwargs, **kwargs}
         api_key = kwargs.pop("api_key", None)
-        client = openai_mod.AsyncOpenAI(api_key=api_key)
+        client = openai.AsyncOpenAI(api_key=api_key)
         ret = await client.embeddings.create(input=[input or "."], **kwargs)
         return ret.data[0].embedding
 
@@ -217,12 +222,10 @@ class LiteLLMEmbedder(BaseEmbedder):
         model: str | None = None,
         **llmlite_kwargs,
     ):
-        try:
-            import litellm  # noqa
-        except ImportError:
-            raise ImportError("Please install litellm: `pip install litellm`")
+        with optional_imports("xpack-llm"):
+            import litellm  # noqa:F401
 
-        _mokeypatch_openai_async()
+        _monkeypatch_openai_async()
         executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
         super().__init__(
             executor=executor,
@@ -240,10 +243,10 @@ class LiteLLMEmbedder(BaseEmbedder):
             - **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
-        import litellm as litellm_mod
+        import litellm
 
         kwargs = {**self.kwargs, **kwargs}
-        ret = await litellm_mod.aembedding(input=[input or "."], **kwargs)
+        ret = await litellm.aembedding(input=[input or "."], **kwargs)
         return ret.data[0]["embedding"]
 
 
@@ -283,12 +286,8 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         device: str = "cpu",
         **sentencetransformer_kwargs,
     ):
-        try:
+        with optional_imports("xpack-llm-local"):
             from sentence_transformers import SentenceTransformer
-        except ImportError:
-            raise ValueError(
-                "Please install sentence_transformers: `pip install sentence_transformers`"
-            )
 
         super().__init__()
         self.model = SentenceTransformer(

@@ -6,6 +6,7 @@ A library of text spliiters - routines which slit a long text into smaller chunk
 import unicodedata
 
 import pathway as pw
+from pathway.optional_import import optional_imports
 
 
 @pw.udf
@@ -71,6 +72,9 @@ class TokenCountSplitter(pw.UDF):
         max_tokens: int = 500,
         encoding_name: str = "cl100k_base",
     ):
+        with optional_imports("xpack-llm"):
+            import tiktoken  # noqa:F401
+
         super().__init__()
         self.kwargs = dict(
             min_tokens=min_tokens, max_tokens=max_tokens, encoding_name=encoding_name

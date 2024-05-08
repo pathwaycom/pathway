@@ -49,27 +49,39 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+xpack-llm = [
+    "openai >= 1.6",
+    "litellm >= 1.0",
+    "cohere ~= 5.1.0",
+    "tiktoken >= 0.5",
+    "langchain_core == 0.1.30",
+    "langchain == 0.1.11",
+    "llama-index-core ~= 0.10.0",
+    "llama-index-readers-pathway ~= 0.1.0",
+    "llama-index-retrievers-pathway ~= 0.1.0",
+]
+xpack-llm-local = [
+    "sentence_transformers == 2.4.0", 
+    "transformers == 4.38.1"
+]
+xpack-llm-docs = [
+    "unstructured[all-docs] == 0.10.28",
+    "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
+]
+all = [
+    "pathway[xpack-llm]",
+    "pathway[xpack-llm-local]",
+    "pathway[xpack-llm-docs]",
+]
 tests = [
     "pytest >= 8.0.0, < 9.0.0",
     "pytest-xdist >= 3.3.1, < 4.0.0",
     "pytest-rerunfailures >= 13.0, < 14.0",
     "python-louvain",
     "openapi_spec_validator",
-    "openai >= 1.6",
     "kafka-python >= 2.0.2",
-    "litellm >= 1.0",
-    "llama-index-readers-pathway ~= 0.1.0",
-    "llama-index-retrievers-pathway ~= 0.1.0",
-    "llama-index-core ~= 0.10.0",
-    "tiktoken >= 0.5",
-    "sentence_transformers == 2.4.0",
-    "transformers == 4.38.1",
-    "langchain_core == 0.1.30",
-    "langchain == 0.1.11",
-    "unstructured[all-docs] == 0.10.28",
-    "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
     "python-magic",
-    "cohere ~= 5.1.0",
+    "pathway[all]",
 ]
 
 [project.urls]
