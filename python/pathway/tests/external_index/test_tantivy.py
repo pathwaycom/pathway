@@ -44,7 +44,7 @@ def test_filter():
     )
 
     index_factory = ExternalIndexFactory.tantivy_factory(
-        ram_budget=50000000, in_memory_index=True, return_scoring=False
+        ram_budget=50000000, in_memory_index=True
     )
 
     answers = index._external_index_as_of_now(
@@ -108,7 +108,7 @@ def test_score_simple():
     )
 
     index_factory = ExternalIndexFactory.tantivy_factory(
-        ram_budget=50000000, in_memory_index=True, return_scoring=True
+        ram_budget=50000000, in_memory_index=True
     )
 
     answers = index._external_index_as_of_now(
@@ -202,7 +202,7 @@ def test_score_with_deletion():
     )
 
     index_factory = ExternalIndexFactory.tantivy_factory(
-        ram_budget=50000000, in_memory_index=True, return_scoring=True
+        ram_budget=50000000, in_memory_index=True
     )
 
     answers = index._external_index_as_of_now(

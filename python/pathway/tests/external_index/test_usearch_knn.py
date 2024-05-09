@@ -2,7 +2,6 @@ import json
 
 import pathway as pw
 from pathway.engine import ExternalIndexFactory, USearchMetricKind
-from pathway.internals import dtype as dt
 from pathway.stdlib.utils.col import unpack_col
 from pathway.tests.utils import assert_table_equality
 
@@ -54,14 +53,12 @@ def test_filter():
         connectivity=0,
         expansion_add=0,
         expansion_search=0,
-        return_distance=False,
     )
     rust_answers = index._external_index_as_of_now(
         queries,
         index_column=index.data,
         query_column=queries.data,
         index_factory=index_factory,
-        res_type=dt.List[pw.Pointer],
         query_responses_limit_column=queries.limit,
         index_filter_data_column=index.filter_data,
         query_filter_column=queries.filter_col,
@@ -127,7 +124,6 @@ def test_auto_resize():
         connectivity=0,
         expansion_add=0,
         expansion_search=0,
-        return_distance=False,
     )
     answers = index._external_index_as_of_now(
         queries,
@@ -198,8 +194,12 @@ def test_distance_simple():
         connectivity=0,
         expansion_add=0,
         expansion_search=0,
-        return_distance=False,
     )
+
+    class InnerSchema(pw.Schema):
+        _pw_index_reply_id: pw.Pointer
+        _pw_index_reply_score: float
+
     answers = index._external_index_as_of_now(
         queries,
         index_column=index.data,
@@ -208,9 +208,11 @@ def test_distance_simple():
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
 
+    flattened = answers.flatten(pw.this._pw_index_reply)
+    unpacked = flattened + unpack_col(flattened._pw_index_reply, schema=InnerSchema)
+
     ret = (
-        answers.flatten(pw.this._pw_index_reply)
-        .join(index, pw.left._pw_index_reply == index.id)
+        unpacked.join(index, pw.left._pw_index_reply_id == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
     )
@@ -283,14 +285,12 @@ def test_with_distance_simple():
         connectivity=0,
         expansion_add=0,
         expansion_search=0,
-        return_distance=True,
     )
     raw_ret = index._external_index_as_of_now(
         queries,
         index_column=index.data,
         query_column=queries.data,
         index_factory=index_factory,
-        res_type=dt.List[dt.Tuple[pw.Pointer, float]],
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
 
@@ -388,7 +388,6 @@ def test_distance_with_deletion():
         connectivity=0,
         expansion_add=0,
         expansion_search=0,
-        return_distance=False,
     )
 
     answers = index._external_index_as_of_now(
@@ -398,9 +397,16 @@ def test_distance_with_deletion():
         index_factory=index_factory,
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
+
+    class InnerSchema(pw.Schema):
+        _pw_index_reply_id: pw.Pointer
+        _pw_index_reply_score: float
+
+    flattened = answers.flatten(pw.this._pw_index_reply)
+    unpacked = flattened + unpack_col(flattened._pw_index_reply, schema=InnerSchema)
+
     ret = (
-        answers.flatten(pw.this._pw_index_reply)
-        .asof_now_join(index, pw.left._pw_index_reply == index.id)
+        unpacked.asof_now_join(index, pw.left._pw_index_reply_id == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
     )

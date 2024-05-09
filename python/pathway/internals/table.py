@@ -585,7 +585,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         index_column: expr.ColumnExpression,
         query_column: expr.ColumnExpression,
         index_factory: ExternalIndexFactory,
-        res_type: dt.DType = dt.List(dt.ANY_POINTER),
+        res_type: dt.DType = dt.List(dt.Tuple(dt.ANY_POINTER, float)),
         query_responses_limit_column: expr.ColumnExpression | None = None,
         index_filter_data_column: expr.ColumnExpression | None = None,
         query_filter_column: expr.ColumnExpression | None = None,

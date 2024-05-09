@@ -107,9 +107,6 @@ class USearchKnn(InnerIndex):
             connectivity=self.connectivity,
             expansion_add=self.expansion_add,
             expansion_search=self.expansion_search,
-            # TODO remove return_distance parameter
-            # make it behave, as it is set to True
-            return_distance=True,
         )
 
         number_of_matches_ref = number_of_matches

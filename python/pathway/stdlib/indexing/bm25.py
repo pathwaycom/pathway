@@ -80,11 +80,9 @@ class TantivyBM25(InnerIndex):
         index = self.data_column.table
         queries = query_column.table
 
-        # TODO clean up return_score parameter from factory
         index_factory = ExternalIndexFactory.tantivy_factory(
             ram_budget=self.ram_budget,
             in_memory_index=self.in_memory_index,
-            return_scoring=True,
         )
 
         number_of_matches_ref = ColumnExpression._wrap(number_of_matches)

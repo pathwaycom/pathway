@@ -30,7 +30,6 @@ impl PyExternalIndexFactory {
         connectivity: usize,
         expansion_add: usize,
         expansion_search: usize,
-        return_distance: bool,
     ) -> PyExternalIndexFactory {
         PyExternalIndexFactory {
             inner: Arc::new(USearchKNNIndexFactory::new(
@@ -40,23 +39,14 @@ impl PyExternalIndexFactory {
                 connectivity,
                 expansion_add,
                 expansion_search,
-                return_distance,
             )),
         }
     }
 
     #[staticmethod]
-    fn tantivy_factory(
-        ram_budget: usize,
-        in_memory_index: bool,
-        return_scoring: bool,
-    ) -> PyExternalIndexFactory {
+    fn tantivy_factory(ram_budget: usize, in_memory_index: bool) -> PyExternalIndexFactory {
         PyExternalIndexFactory {
-            inner: Arc::new(TantivyIndexFactory::new(
-                ram_budget,
-                in_memory_index,
-                return_scoring,
-            )),
+            inner: Arc::new(TantivyIndexFactory::new(ram_budget, in_memory_index)),
         }
     }
 }

@@ -19,16 +19,9 @@ pub struct TantivyIndex {
     schema: Schema,
     query_parser: QueryParser,
     key_to_id_mapper: KeyToU64IdMapper,
-
-    // configurable parameters
-    return_scoring: bool,
 }
 impl TantivyIndex {
-    pub fn new(
-        ram_budget: usize,
-        in_memory_index: bool,
-        return_scoring: bool,
-    ) -> DynResult<TantivyIndex> {
+    pub fn new(ram_budget: usize, in_memory_index: bool) -> DynResult<TantivyIndex> {
         let mut schema_builder = Schema::builder();
         schema_builder.add_u64_field("id", INDEXED | STORED);
         schema_builder.add_text_field("data", TEXT);
@@ -56,7 +49,6 @@ impl TantivyIndex {
             schema,
             query_parser,
             key_to_id_mapper: KeyToU64IdMapper::new(),
-            return_scoring,
         })
     }
 }
@@ -104,14 +96,9 @@ impl NonFilteringExternalIndex<String, String> for TantivyIndex {
             let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
             let match_proxy_id = retrieved_doc.get_first(id_field).unwrap().as_u64().unwrap();
 
-            let score = if self.return_scoring {
-                Some(f64::from(score))
-            } else {
-                None
-            };
             ret_vec.push(KeyScoreMatch {
                 key: self.key_to_id_mapper.get_key_for_id(match_proxy_id),
-                score,
+                score: f64::from(score),
             });
         }
         Ok(ret_vec)
@@ -129,28 +116,20 @@ pub struct TantivyIndexFactory {
     // if set to true, the index is created in ram, otherwise it should be created in some default
     // storage place
     in_memory_index: bool,
-    //indicates whether to return the scoring
-    return_scoring: bool,
 }
 
 impl TantivyIndexFactory {
-    pub fn new(
-        ram_budget: usize,
-        in_memory_index: bool,
-        return_scoring: bool,
-    ) -> TantivyIndexFactory {
+    pub fn new(ram_budget: usize, in_memory_index: bool) -> TantivyIndexFactory {
         TantivyIndexFactory {
             ram_budget,
             in_memory_index,
-            return_scoring,
         }
     }
 }
 
 impl ExternalIndexFactory for TantivyIndexFactory {
     fn make_instance(&self) -> Result<Box<dyn ExternalIndex>, Error> {
-        let t_index =
-            TantivyIndex::new(self.ram_budget, self.in_memory_index, self.return_scoring)?;
+        let t_index = TantivyIndex::new(self.ram_budget, self.in_memory_index)?;
         Ok(Box::new(DerivedFilteredSearchIndex::new(Box::new(t_index))))
     }
 }

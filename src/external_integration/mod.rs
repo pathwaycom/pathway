@@ -219,7 +219,7 @@ pub fn make_option_accessor(
 
 pub struct KeyScoreMatch {
     key: Key,
-    score: Option<f64>,
+    score: f64,
 }
 
 impl KeyScoreMatch {
@@ -228,11 +228,7 @@ impl KeyScoreMatch {
     }
 
     fn into_value(self) -> Value {
-        if let Some(score) = self.score {
-            Value::Tuple(Arc::new([Value::from(self.key), Value::from(score)]))
-        } else {
-            Value::from(self.key)
-        }
+        Value::Tuple(Arc::new([Value::from(self.key), Value::from(self.score)]))
     }
 }
 

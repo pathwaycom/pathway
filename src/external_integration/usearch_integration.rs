@@ -18,7 +18,6 @@ pub struct USearchMetricKind(pub MetricKind);
 pub struct USearchKNNIndex {
     index: Arc<Index>,
     key_to_id_mapper: KeyToU64IdMapper,
-    return_distance: bool,
 }
 
 impl USearchKNNIndex {
@@ -29,7 +28,6 @@ impl USearchKNNIndex {
         connectivity: usize,
         expansion_add: usize,
         expansion_search: usize,
-        return_distance: bool,
     ) -> DynResult<USearchKNNIndex> {
         let options = IndexOptions {
             dimensions,
@@ -47,7 +45,6 @@ impl USearchKNNIndex {
         Ok(USearchKNNIndex {
             index: Arc::from(index),
             key_to_id_mapper: KeyToU64IdMapper::new(),
-            return_distance,
         })
     }
 }
@@ -69,28 +66,15 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for USearchKNNIndex {
 
     fn search(&self, data: &Vec<f64>, limit: Option<usize>) -> DynResult<Vec<KeyScoreMatch>> {
         let matches = self.index.search(data, limit.unwrap())?;
-
-        if self.return_distance {
-            Ok(matches
-                .keys
-                .into_iter()
-                .zip(matches.distances)
-                .map(|(k, d)| KeyScoreMatch {
-                    key: self.key_to_id_mapper.get_key_for_id(k),
-                    score: Some(-f64::from(d)),
-                })
-                .collect())
-        } else {
-            Ok(matches
-                .keys
-                .into_iter()
-                .zip(matches.distances)
-                .map(|(k, _)| KeyScoreMatch {
-                    key: self.key_to_id_mapper.get_key_for_id(k),
-                    score: None,
-                })
-                .collect())
-        }
+        Ok(matches
+            .keys
+            .into_iter()
+            .zip(matches.distances)
+            .map(|(k, d)| KeyScoreMatch {
+                key: self.key_to_id_mapper.get_key_for_id(k),
+                score: -f64::from(d),
+            })
+            .collect())
     }
 }
 
@@ -102,7 +86,6 @@ pub struct USearchKNNIndexFactory {
     connectivity: usize,
     expansion_add: usize,
     expansion_search: usize,
-    return_distance: bool,
 }
 
 impl USearchKNNIndexFactory {
@@ -113,7 +96,6 @@ impl USearchKNNIndexFactory {
         connectivity: usize,
         expansion_add: usize,
         expansion_search: usize,
-        return_distance: bool,
     ) -> USearchKNNIndexFactory {
         USearchKNNIndexFactory {
             dimensions,
@@ -122,7 +104,6 @@ impl USearchKNNIndexFactory {
             connectivity,
             expansion_add,
             expansion_search,
-            return_distance,
         }
     }
 }
@@ -137,7 +118,6 @@ impl ExternalIndexFactory for USearchKNNIndexFactory {
             self.connectivity,
             self.expansion_add,
             self.expansion_search,
-            self.return_distance,
         )?;
         Ok(Box::new(DerivedFilteredSearchIndex::new(Box::new(u_index))))
     }
