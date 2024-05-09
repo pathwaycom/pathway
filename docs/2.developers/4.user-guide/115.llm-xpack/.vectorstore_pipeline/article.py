@@ -312,7 +312,7 @@ query = "What is Pathway?"
 # %% [markdown]
 # ### Configuring the parser
 #
-# The vectorization pipeline supports pluggable parsers. If not provided, defaults to `UTF-8` parser. You can find available parsers [here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/parser.py).
+# The vectorization pipeline supports pluggable parsers. If not provided, defaults to `UTF-8` parser. You can find available parsers [here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/parsers.py).
 # An example parser that can read PDFs, Word documents and other formats is provided with `parsers.ParseUnstructured`:
 
 # %%
@@ -344,7 +344,7 @@ query = "What is Pathway?"
 # %% [markdown]
 # ### Running in production
 #
-# A production deployment will typically run the server in a separate process. We provide a template application under [`templates`](https://github.com/langchain-ai/langchain/tree/master/templates/rag-pathway). We recommend running the Pathway data indexing pipeline in a container-based deployment environment like Docker or Kubernetes. For more info, see [Pathway's deployment guide](/developers/user-guide/deployment/docker-deployment/).
+# A production deployment will typically run the server in a separate process. We recommend running the Pathway data indexing pipeline in a container-based deployment environment like Docker or Kubernetes. For more info, see [Pathway's deployment guide](/developers/user-guide/deployment/docker-deployment/).
 #
 # ::shoutout-banner
 # ---
