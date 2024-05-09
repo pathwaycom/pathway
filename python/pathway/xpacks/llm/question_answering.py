@@ -448,6 +448,8 @@ class BaseRAGQuestionAnswerer:
         cache_backend: (
             pw.persistence.Backend | None
         ) = pw.persistence.Backend.filesystem("./Cache"),
+        *args,
+        **kwargs,
     ):
         """Start the app with cache configs. Enabling persistence will cache the embedding,
         and LLM requests between the runs."""
@@ -467,6 +469,8 @@ class BaseRAGQuestionAnswerer:
         pw.run(
             monitoring_level=pw.MonitoringLevel.NONE,
             persistence_config=persistence_config,
+            *args,
+            **kwargs,
         )
 
 
