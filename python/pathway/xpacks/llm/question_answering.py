@@ -5,7 +5,7 @@ from enum import Enum
 import pathway as pw
 from pathway.internals import ColumnReference, Table
 from pathway.stdlib.indexing import DataIndex
-from pathway.xpacks.llm import llms, prompts
+from pathway.xpacks.llm import Doc, llms, prompts
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
 from pathway.xpacks.llm.vector_store import VectorStoreServer
@@ -212,11 +212,26 @@ class AIResponseType(Enum):
 
 @pw.udf
 def _filter_document_metadata(
-    docs: pw.Json, metadata_keys: list[str] = ["path"]
-) -> list[dict]:
-    """Utility function to filter context document metadata to keep the keys in the
-    provided `metadata_keys` list."""
-    doc_ls: list[dict[str, str | dict]] = docs.value  # type: ignore
+    docs: pw.Json | list[pw.Json] | list[Doc], metadata_keys: list[str] = ["path"]
+) -> list[Doc]:
+    """Filter context document metadata to keep the keys in the
+    provided `metadata_keys` list.
+
+    Works on both ColumnReference and list of pw.Json."""
+    if isinstance(docs, pw.Json):
+        doc_ls: list[Doc] = docs.as_list()
+    elif isinstance(docs, list) and all([isinstance(dc, dict) for dc in docs]):
+        doc_ls = docs  # type: ignore
+    elif all([isinstance(dc, pw.Json) for dc in docs]):
+        doc_ls = [dc.as_dict() for dc in docs]  # type: ignore
+    else:
+        raise ValueError(
+            """`docs` argument is not instance of (pw.Json | list[pw.Json] | list[Doc]).
+                         Please check your pipeline. Using `pw.reducers.tuple` may help."""
+        )
+
+    if isinstance(doc_ls[0], list | tuple):  # unpack if needed
+        doc_ls = doc_ls[0]
 
     filtered_docs = []
     for doc in doc_ls:

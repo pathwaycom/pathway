@@ -1,4 +1,5 @@
 # Copyright © 2024 Pathway
+from ._typing import Doc, DocTransformer, DocTransformerCallable  # isort: skip
 
 from . import (
     embedders,
@@ -6,6 +7,7 @@ from . import (
     parsers,
     prompts,
     question_answering,
+    rerankers,
     splitters,
     vector_store,
 )
@@ -17,5 +19,9 @@ __all__ = [
     "prompts",
     "question_answering",
     "splitters",
+    "rerankers",
     "vector_store",
+    "Doc",
+    "DocTransformer",
+    "DocTransformerCallable",
 ]
