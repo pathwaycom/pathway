@@ -15,7 +15,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **BREAKING**: `windowby` generates IDs of produced rows differently than in the previous version.
 - **BREAKING**: `pw.io.csv.write` prints printable non-ascii characters as regular text, not `\u{xxxx}`.
-- **BREAKING**: `pw.io.json.read` now checks the type of the input data. If it is inconsistent with the provided schema, the row is skipped and the error message is emitted.
+- **BREAKING**: Connector methods `pw.io.elasticsearch.read`, `pw.io.debezium.read`, `pw.io.fs.read`, `pw.io.jsonlines.read`, `pw.io.kafka.read`, `pw.io.python.read`, `pw.io.redpanda.read`, `pw.io.s3.read` now check the type of the input data. Previously it was not checked if the provided format was `"json"`/`"jsonlines"`. If the data is inconsistent with the provided schema, the row is skipped and the error message is emitted.
 - **BREAKING**: `query` and `query_as_of_now` methods of `pathway.stdlib.indexing.data_index.DataIndex` now return `pathway.JoinResult`, to allow resolving column name conflicts (between columns in the table with queries and table with index data).
 - **BREAKING**: DataIndex methods `query` and `query_as_of_now` now return score in a column named `_pw_index_reply_score` (defined as `_SCORE` variable in `pathway.stdlib.indexing.colnames.py`)
 
