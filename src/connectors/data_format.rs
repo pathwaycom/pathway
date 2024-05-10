@@ -120,6 +120,15 @@ impl From<ParsedEvent> for ParsedEventWithErrors {
     }
 }
 
+fn limit_length(mut s: String, max_length: usize) -> String {
+    if s.len() > max_length {
+        s.truncate(max_length);
+        s + "..."
+    } else {
+        s
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -140,7 +149,7 @@ pub enum ParseError {
     #[error("too small number of csv tokens in the line: {0}")]
     UnexpectedNumberOfCsvTokens(usize),
 
-    #[error("failed to parse field {field_name:?} with type {type_:?}{} from the following json payload: {payload}", if *is_optional {" | None"} else {""})]
+    #[error("failed to create a field {field_name:?} with type {type_:?}{} from the following json payload: {}", if *is_optional {" | None"} else {""}, limit_length(format!("{payload}"), 500))]
     FailedToParseFromJson {
         field_name: String,
         payload: JsonValue,

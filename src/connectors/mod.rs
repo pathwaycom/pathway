@@ -760,8 +760,13 @@ impl Connector {
             let entry = match entry.remove_errors(&error_handling_logic) {
                 Ok(entry) => entry,
                 Err(err) => {
-                    // if there is an error in key
-                    self.log_parse_error(ParseError::ErrorInKey(err).into());
+                    let err = if self.skip_all_errors {
+                        err
+                    } else {
+                        // if there is an error in key
+                        ParseError::ErrorInKey(err).into()
+                    };
+                    self.log_parse_error(err);
                     continue;
                 }
             };

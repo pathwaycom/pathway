@@ -403,7 +403,7 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
     assert_error_shown(
         Box::new(reader),
         Box::new(parser),
-        r#"failed to parse field "pet" with type Any from the following json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
+        r#"failed to create a field "pet" with type Any from the following json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
         ErrorPlacement::Value(0),
     );
 

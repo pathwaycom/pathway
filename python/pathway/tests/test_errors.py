@@ -1149,10 +1149,10 @@ def test_jsonlines_reading(tmp_path):
     expected_errors = T(
         """
         message
-        failed to parse field "b" with type Int from the following json payload: "x"
-        failed to parse field "b" with type Int from the following json payload: "1"
-        failed to parse field "c" with type Int / None from the following json payload: "t"
-        failed to parse field "c" with type Int / None from the following json payload: "y"
+        failed to create a field "b" with type Int from the following json payload: "x"
+        failed to create a field "b" with type Int from the following json payload: "1"
+        failed to create a field "c" with type Int / None from the following json payload: "t"
+        failed to create a field "c" with type Int / None from the following json payload: "y"
     """,
         split_on_whitespace=False,
     ).select(message=pw.this.message.str.replace("/", "|"))
@@ -1188,11 +1188,11 @@ def test_jsonlines_reading_pk(tmp_path):
     expected_errors = T(
         """
         message
-        error in primary key, skipping the row: failed to parse field "b" \
+        error in primary key, skipping the row: failed to create a field "b" \
 with type Int from the following json payload: "x"
-        error in primary key, skipping the row: failed to parse field "b" \
+        error in primary key, skipping the row: failed to create a field "b" \
 with type Int from the following json payload: "1"
-        failed to parse field "c" with type Int / None from the following json payload: "y"
+        failed to create a field "c" with type Int / None from the following json payload: "y"
     """,
         split_on_whitespace=False,
     ).select(message=pw.this.message.str.replace("/", "|"))
