@@ -10,6 +10,7 @@ from functools import cached_property
 from itertools import chain
 from typing import TYPE_CHECKING, Any, TypeVar
 
+import pathway.internals as pw
 import pathway.internals.row_transformer_table as tt
 from pathway.internals.arg_tuple import ArgTuple, as_arg_tuple
 from pathway.internals.helpers import (
@@ -150,10 +151,8 @@ class Operator(ABC):
             self._inputs[name] = input
 
     def _prepare_outputs(self, outputs: ArgTuple):
-        from pathway.internals.table import Table
-
         for name, value in outputs.items():
-            assert isinstance(value, Table)
+            assert isinstance(value, pw.Table)
             output = OutputHandle(self, name, value)
             value._set_source(output)
             self._outputs[name] = output
@@ -340,10 +339,8 @@ class IterateOperator(OperatorFromDef):
         iterated_with_universe_copy = ArgTuple.empty()
 
         # unwrap input and materialize input copy
-        from pathway.internals.table import Table
-
         for name, arg in input.items():
-            if isinstance(arg, Table):
+            if isinstance(arg, pw.Table):
                 input_copy[name] = self._copy_input_table(name, arg, unique=False)
             elif isinstance(arg, iterate_universe):
                 iterated_with_universe_copy[name] = self._copy_input_table(
@@ -353,7 +350,7 @@ class IterateOperator(OperatorFromDef):
             else:
                 raise TypeError(f"{name} has to be a Table instead of {type(arg)}")
 
-        assert all(isinstance(table, Table) for table in input)
+        assert all(isinstance(table, pw.Table) for table in input)
 
         # call iteration logic with copied input and sort result by input order
         raw_result = self.func_spec.func(**input_copy, **iterated_with_universe_copy)
@@ -364,8 +361,8 @@ class IterateOperator(OperatorFromDef):
                 "not all arguments marked as iterated returned from iteration"
             )
         for name, table in result.items():
-            input_table: Table = input[name]
-            assert isinstance(table, Table)
+            input_table: pw.Table = input[name]
+            assert isinstance(table, pw.Table)
             input_schema = input_table.schema._dtypes()
             result_schema = table.schema._dtypes()
             if input_schema != result_schema:

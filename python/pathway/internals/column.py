@@ -15,6 +15,7 @@ from pathway.engine import ExternalIndexFactory
 from pathway.internals import column_properties as cp, dtype as dt, trace
 from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
+from pathway.internals.parse_graph import G
 from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
@@ -730,8 +731,6 @@ class IntersectContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        from pathway.internals.parse_graph import G
-
         return G.universe_solver.get_intersection(
             *[c.universe for c in self.intersecting_ids]
         )
@@ -770,8 +769,6 @@ class DifferenceContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        from pathway.internals.parse_graph import G
-
         return G.universe_solver.get_difference(self.left.universe, self.right.universe)
 
 
@@ -820,8 +817,6 @@ class UpdateRowsContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        from pathway.internals.parse_graph import G
-
         return G.universe_solver.get_union(*[c.universe for c in self.union_ids])
 
 
@@ -869,8 +864,6 @@ class ConcatUnsafeContext(Context):
 
     @cached_property
     def universe(self) -> Universe:
-        from pathway.internals.parse_graph import G
-
         return G.universe_solver.get_union(*[c.universe for c in self.union_ids])
 
 

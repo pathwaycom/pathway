@@ -29,6 +29,7 @@ from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.joins import Joinable, JoinResult
 from pathway.internals.operator import DebugOperator, OutputHandle
 from pathway.internals.operator_input import OperatorInput
+from pathway.internals.parse_graph import G
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema, schema_from_columns, schema_from_types
 from pathway.internals.table_like import TableLike
@@ -256,8 +257,6 @@ id_type=<class 'pathway.engine.Pointer'>>
 
     @staticmethod
     def _get_universe_solver() -> UniverseSolver:
-        from pathway.internals.parse_graph import G
-
         return G.universe_solver
 
     @trace_user_frame
@@ -2287,8 +2286,6 @@ id_type=<class 'pathway.engine.Pointer'>>
         return StableSet([self])
 
     def debug(self, name: str):
-        from pathway.internals.parse_graph import G
-
         G.add_operator(
             lambda id: DebugOperator(name, id),
             lambda operator: operator(self),

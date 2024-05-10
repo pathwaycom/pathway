@@ -133,6 +133,7 @@ class ParseGraph:
         call_operator: Callable[[O], T],
         *,
         special: bool = False,
+        require_error_log: bool = True,
     ) -> T:
         """Adds an operator to current scope.
 
@@ -142,7 +143,9 @@ class ParseGraph:
         """
         node = create_node(next(self.node_id_sequence))
         node.set_graph(self)
-        node.set_error_log(self.error_log_stack[-1] if self.error_log_stack else None)
+        if require_error_log and not self.error_log_stack:
+            self.add_error_log(global_log=True)  # deferred global log creation
+        node.set_error_log(self.error_log_stack[-1] if require_error_log else None)
         result = call_operator(node)
         self._current_scope.add_node(node, special=special)
         return result
@@ -173,6 +176,27 @@ class ParseGraph:
         iterate_scope = self.new_scope()
         return self.add_operator(create_node, call_operator_in_scope)
 
+    def add_error_log(self, global_log: bool = False) -> Table[ErrorLogSchema]:
+        datasource = ErrorLogDataSource(schema=ErrorLogSchema)
+        from pathway.internals.table import Table
+
+        error_log: Table[ErrorLogSchema] = self.add_operator(
+            lambda id: operator.InputOperator(datasource, id),
+            lambda operator: operator(Table[ErrorLogSchema]),
+            require_error_log=not global_log,
+        )
+        self.error_log_stack.append(error_log)
+        return error_log
+
+    def remove_error_log(self, error_log: Table[ErrorLogSchema]) -> None:
+        assert self.error_log_stack[-1] == error_log
+        self.error_log_stack.pop()
+
+    def get_global_error_log(self) -> Table[ErrorLogSchema]:
+        if not self.error_log_stack:
+            self.add_error_log(global_log=True)
+        return self.error_log_stack[0]
+
     def clear(self) -> None:
         self.node_id_sequence = itertools.count()
         global_scope = Scope(self)
@@ -182,8 +206,6 @@ class ParseGraph:
         self.cache = {}
         self.static_tables_cache = {}
         self.error_log_stack = []
-        # error_log_stack has to exist when create_error_log is called
-        self.error_log_stack.append(create_error_log(self))
 
     def sig(self) -> str:
         return hashlib.sha256(repr(self).encode()).hexdigest()
@@ -209,16 +231,6 @@ class ErrorLogSchema(Schema):
     operator_id: int
     message: str
     trace: Json | None
-
-
-def create_error_log(parse_graph: ParseGraph) -> Table[ErrorLogSchema]:
-    datasource = ErrorLogDataSource(schema=ErrorLogSchema)
-    from pathway.internals.table import Table
-
-    return parse_graph.add_operator(
-        lambda id: operator.InputOperator(datasource, id),
-        lambda operator: operator(Table),
-    )
 
 
 G = ParseGraph()

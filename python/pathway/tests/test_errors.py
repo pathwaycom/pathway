@@ -6,9 +6,12 @@ from unittest import mock
 import pytest
 
 import pathway as pw
+from pathway.internals import table_io
+from pathway.internals.parse_graph import ErrorLogSchema, G
 from pathway.tests.utils import (
     T,
     assert_stream_equality_wo_index,
+    assert_table_equality,
     assert_table_equality_wo_index,
     run,
 )
@@ -1202,4 +1205,49 @@ with type Int from the following json payload: "1"
         (result, pw.global_error_log().select(pw.this.message)),
         (expected, expected_errors),
         terminate_on_error=False,
+    )
+
+
+def test_global_error_first_operator():
+    assert_table_equality(
+        pw.global_error_log(), table_io.empty_from_schema(ErrorLogSchema)
+    )
+
+
+def test_clear():
+    t1 = T(
+        """
+        a | b
+        1 | 0
+    """
+    )
+
+    res = t1.select(x=pw.this.a // pw.this.b).select(x=pw.fill_error(pw.this.x, -1))
+
+    expected = T(
+        """
+         x
+        -1
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        division by zero
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+    G.clear()
+    assert_table_equality_wo_index(
+        pw.global_error_log().select(pw.this.message), pw.Table.empty(message=str)
     )

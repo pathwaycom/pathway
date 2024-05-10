@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pathway.internals.parse_graph import G
+
 if TYPE_CHECKING:
     from pathway.internals import TableLike
 
@@ -39,8 +41,6 @@ def promise_are_pairwise_disjoint(self: TableLike, *others: TableLike) -> None:
     11  | Alice | 30
     12  | Tom   | 40
     """
-    from pathway.internals.parse_graph import G
-
     G.universe_solver.register_as_disjoint(
         self._universe, *(other._universe for other in others)
     )
@@ -76,8 +76,6 @@ def promise_is_subset_of(self: TableLike, *others: TableLike) -> None:
     9   | Bob   | 1
     10  | Alice | 30
     """
-    from pathway.internals.parse_graph import G
-
     for other in others:
         G.universe_solver.register_as_subset(self._universe, other._universe)
 
@@ -123,7 +121,5 @@ def promise_are_equal(self: TableLike, *others: TableLike) -> None:
     12  | Tom   | dog
     15  | Alice | tortoise
     """
-    from pathway.internals.parse_graph import G
-
     for other in others:
         G.universe_solver.register_as_equal(self._universe, other._universe)
