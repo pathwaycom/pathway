@@ -413,6 +413,11 @@ impl TableProperties {
     }
 }
 
+pub struct OperatorProperties {
+    pub id: usize,
+    pub depends_on_error_log: bool,
+}
+
 pub type IterationLogic<'a> = Box<
     dyn FnOnce(
             &dyn Graph,
@@ -928,7 +933,7 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
     ) -> Result<()>;
 
-    fn set_operator_id(&self, operator_id: usize) -> Result<()>;
+    fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()>;
 
     fn set_error_log(&self, error_log_handle: Option<ErrorLogHandle>) -> Result<()>;
 
@@ -1540,8 +1545,8 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.output_table(data_sink, data_formatter, table_handle, column_paths))
     }
 
-    fn set_operator_id(&self, operator_id: usize) -> Result<()> {
-        self.try_with(|g| g.set_operator_id(operator_id))
+    fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()> {
+        self.try_with(|g| g.set_operator_properties(operator_properties))
     }
 
     fn set_error_log(&self, error_log_handle: Option<ErrorLogHandle>) -> Result<()> {

@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import logging
 from pathlib import Path
 from unittest import mock
 
@@ -1251,3 +1252,86 @@ def test_clear():
     assert_table_equality_wo_index(
         pw.global_error_log().select(pw.this.message), pw.Table.empty(message=str)
     )
+
+
+def test_error_log_filtering():
+    t1 = T(
+        """
+        a | b | c
+        3 | 3 | a
+        4 | 0 | 2
+        5 | 5 | 0
+    """
+    )
+
+    res = t1.select(
+        a=pw.this.a, x=pw.this.a // pw.this.b, y=pw.this.c.str.parse_int()
+    ).with_columns(x=pw.fill_error(pw.this.x, -2), y=pw.fill_error(pw.this.y, -3))
+    res_errors = (
+        pw.global_error_log()
+        .filter(pw.this.message != "division by zero")
+        .select(pw.this.message)
+    )
+    expected = T(
+        """
+    a |  x |  y
+    3 |  1 | -3
+    4 | -2 |  2
+    5 |  1 |  0
+    """
+    )
+    expected_errors = T(
+        """
+    message
+    parse error: cannot parse "a" to int: invalid digit found in string
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, res_errors),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_error_in_error_log(caplog):
+    t1 = T(
+        """
+        a | b
+        1 | 0
+    """
+    )
+
+    res = t1.select(x=pw.this.a // pw.this.b).select(x=pw.fill_error(pw.this.x, -1))
+
+    res_errors = (
+        pw.global_error_log()
+        .select(m_int=pw.this.message.str.parse_int())
+        .select(m_int=pw.fill_error(pw.this.m_int, -1))
+    )
+    expected = T(
+        """
+         x
+        -1
+    """
+    )
+    expected_errors = T(
+        """
+        m_int
+         -1
+    """
+    )
+    assert_table_equality_wo_index(
+        (res, res_errors),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+    error_messages = [
+        "division by zero",
+        'parse error: cannot parse "division by zero" to int: invalid digit found in string',
+    ]
+    error_records = [
+        record for record in caplog.records if record.levelno == logging.ERROR
+    ]
+    for error_message, record in zip(error_messages, error_records, strict=True):
+        assert error_message in record.getMessage()

@@ -93,7 +93,7 @@ use self::shard::Shard;
 use super::error::{DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
-use super::graph::{DataRow, ExportedTable, SubscribeCallbacks};
+use super::graph::{DataRow, ExportedTable, OperatorProperties, SubscribeCallbacks};
 use super::http_server::maybe_run_http_server_thread;
 use super::license::License;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
@@ -778,7 +778,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     terminate_on_error: bool,
     default_error_log: Option<ErrorLog>,
     current_error_log: Option<ErrorLog>,
-    current_operator_id: Option<usize>,
+    current_operator_properties: Option<OperatorProperties>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1003,7 +1003,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             terminate_on_error,
             default_error_log,
             current_error_log: None,
-            current_operator_id: None,
+            current_operator_properties: None,
         })
     }
 
@@ -2550,22 +2550,28 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         if self.terminate_on_error {
             Ok(Box::new(self.error_reporter.clone()))
         } else {
-            let operator_id = self
-                .current_operator_id
+            let operator_properties = self
+                .current_operator_properties
+                .as_ref()
                 .ok_or_else(|| Error::OperatorIdNotSet)?;
-            let error_log = self
-                .current_error_log
-                .clone()
-                .or(self.default_error_log.clone());
+            let error_log = if operator_properties.depends_on_error_log {
+                None
+                // if the current operator depends on error log table, we can't insert errors from it
+                // to the log as it'll prevent dropping InputSession and timely will never finish
+            } else {
+                self.current_error_log
+                    .clone()
+                    .or(self.default_error_log.clone())
+            };
             Ok(Box::new(ErrorLogger {
-                operator_id: operator_id.try_into().map_err(DynError::from)?,
+                operator_id: operator_properties.id.try_into().map_err(DynError::from)?,
                 error_log,
             }))
         }
     }
 
-    fn set_operator_id(&mut self, operator_id: usize) -> Result<()> {
-        self.current_operator_id = Some(operator_id);
+    fn set_operator_properties(&mut self, operator_properties: OperatorProperties) -> Result<()> {
+        self.current_operator_properties = Some(operator_properties);
         Ok(())
     }
 
@@ -4690,8 +4696,10 @@ where
         Err(Error::IoNotPossible)
     }
 
-    fn set_operator_id(&self, operator_id: usize) -> Result<()> {
-        self.0.borrow_mut().set_operator_id(operator_id)
+    fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()> {
+        self.0
+            .borrow_mut()
+            .set_operator_properties(operator_properties)
     }
 
     fn set_error_log(&self, _error_log_handle: Option<ErrorLogHandle>) -> Result<()> {
@@ -5305,8 +5313,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             .output_table(data_sink, data_formatter, table_handle, column_paths)
     }
 
-    fn set_operator_id(&self, operator_id: usize) -> Result<()> {
-        self.0.borrow_mut().set_operator_id(operator_id)
+    fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()> {
+        self.0
+            .borrow_mut()
+            .set_operator_properties(operator_properties)
     }
 
     fn set_error_log(&self, error_log_handle: Option<ErrorLogHandle>) -> Result<()> {

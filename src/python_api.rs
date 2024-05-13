@@ -5,7 +5,9 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::engine::graph::{ErrorLogHandle, ExportedTable, SubscribeCallbacksBuilder};
+use crate::engine::graph::{
+    ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacksBuilder,
+};
 use crate::engine::license::License;
 use crate::engine::{Computer as EngineComputer, Expressions, ShardPolicy, TotalFrontier};
 use crate::persistence::frontier::OffsetAntichain;
@@ -2811,8 +2813,18 @@ impl Scope {
         Ok(())
     }
 
-    pub fn set_operator_id(self_: &PyCell<Self>, operator_id: usize) -> PyResult<()> {
-        Ok(self_.borrow().graph.set_operator_id(operator_id)?)
+    pub fn set_operator_properties(
+        self_: &PyCell<Self>,
+        operator_id: usize,
+        depends_on_error_log: bool,
+    ) -> PyResult<()> {
+        Ok(self_
+            .borrow()
+            .graph
+            .set_operator_properties(OperatorProperties {
+                id: operator_id,
+                depends_on_error_log,
+            })?)
     }
 
     pub fn set_error_log(self_: &PyCell<Self>, error_log: Option<PyRef<ErrorLog>>) -> PyResult<()> {

@@ -182,6 +182,14 @@ class Operator(ABC):
     def __repr__(self) -> str:
         return f"{self.id} [{self.label()}]"
 
+    @cached_property
+    def depends_on_error_log(self) -> bool:
+        return any(
+            dependency.depends_on_error_log
+            for handle in self.inputs
+            for dependency in handle.dependencies
+        )
+
 
 class OperatorFromDef(Operator, ABC):
     """Abstraction for operators created from python functions."""
@@ -267,6 +275,12 @@ class InputOperator(Operator):
         result = table_cls._from_schema(self.datasource.get_effective_schema())
         self._prepare_outputs(as_arg_tuple(result))
         return result
+
+    @cached_property
+    def depends_on_error_log(self) -> bool:
+        from pathway.internals.datasource import ErrorLogDataSource
+
+        return isinstance(self.datasource, ErrorLogDataSource)
 
 
 class OutputOperator(Operator):

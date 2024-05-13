@@ -80,7 +80,9 @@ class OperatorHandler(ABC, Generic[T]):
         output_storages: dict[Table, Storage],
     ):
         with trace.custom_trace(operator.trace):
-            self.scope.set_operator_id(self.operator_id)
+            self.scope.set_operator_properties(
+                self.operator_id, operator.depends_on_error_log
+            )
             if operator.error_log and not self.scope_context.inside_iterate:
                 self.scope.set_error_log(self.state.get_error_log(operator.error_log))
             self._run(operator, output_storages)
