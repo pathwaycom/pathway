@@ -7,6 +7,7 @@ import collections
 import functools
 import inspect
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -67,11 +68,13 @@ class _AsyncConnector(io.python.ConnectorSubject):
     _invoke: Callable[..., Awaitable[dict[str, Any]]]
     _instances: dict[api.Value, _Instance]
     _time_finished: int | None
+    _logger: logging.Logger
 
     def __init__(self, transformer: AsyncTransformer) -> None:
         super().__init__()
         self._transformer = transformer
         self._event_loop = asyncio.new_event_loop()
+        self._logger = logging.getLogger(__name__)
         self.set_options()
 
     def set_options(
@@ -135,6 +138,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
                             result = await self._invoke(**values)
                             self._check_result_against_schema(result)
                         except Exception:
+                            self._logger.error(
+                                "Exception in AsyncTransformer:", exc_info=True
+                            )
                             result = _AsyncStatus.FAILURE
                         # If there is a task pending for this key,
                         # let's wait for it and discard result to preserve order

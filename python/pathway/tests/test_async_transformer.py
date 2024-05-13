@@ -558,3 +558,36 @@ def test_requires_hashable_instance():
         ),
     ):
         TestAsyncTransformer(input_table=input_table, instance=pw.this.instance)
+
+
+def test_error_is_logged(caplog):
+    class OutputSchema(pw.Schema):
+        ret: int
+
+    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
+        async def invoke(self, value: float) -> dict[str, Any]:
+            if value == 11:
+                raise ValueError("incorrect value 11")
+            return dict(ret=value)
+
+    input_table = T(
+        """
+        value
+          1
+          2
+         11
+    """
+    )
+    transformer = TestAsyncTransformer(input_table=input_table)
+    expected = T(
+        """
+        ret
+         1
+         2
+    """
+    )
+    assert_table_equality(transformer.successful, expected)
+    assert any(
+        isinstance(record.exc_text, str) and "incorrect value 11" in record.exc_text
+        for record in caplog.records
+    )
