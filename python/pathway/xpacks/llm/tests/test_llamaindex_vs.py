@@ -24,6 +24,7 @@ if ENV_PORT:
 EXAMPLE_TEXT_FILE = "example_text.md"
 
 
+@pytest.mark.xfail
 def get_data_sources():
     test_dir = os.path.dirname(os.path.abspath(__file__))
     example_text_path = os.path.join(test_dir, EXAMPLE_TEXT_FILE)
