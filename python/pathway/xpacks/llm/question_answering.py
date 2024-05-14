@@ -230,7 +230,7 @@ def _filter_document_metadata(
                          Please check your pipeline. Using `pw.reducers.tuple` may help."""
         )
 
-    if isinstance(doc_ls[0], list | tuple):  # unpack if needed
+    if len(doc_ls) == 1 and isinstance(doc_ls[0], list | tuple):  # unpack if needed
         doc_ls = doc_ls[0]
 
     filtered_docs = []
