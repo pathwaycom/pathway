@@ -22,9 +22,15 @@ Additional Use Grant:
     number of worker threads and processes allowed by the configuration of the
     software runner of the distribution; and 
     (b) the additional right to use granted herein applies to the exclusion
-    of use of any modified or derivative Licensed Work, as well as to the
-    exclusion of use of the Licensed Work for a Stream Data Processing
-    Service; and 
+    of use of the Licensed Work for a Stream Data Processing Service, as well
+    as to the exclusion of use of any modified or derivative Licensed Work,
+    in particular:
+    - you may not move, change, disable, or circumvent any license key
+    or resource limiting functionality that may be present in the software,
+    and you may not remove or obscure any functionality in the software that
+    is protected by the license key or circumvent resource limits,
+    - you may not alter, remove, or obscure any licensing, copyright, or other
+    notices of the licensor in the software; 
     (c) the production use of modified Licensed Work is permitted only where
     the modifications of the Licensed Work are indispensable to fix bugs or
     vulnerabilities which might otherwise alter the scope of functionalities
