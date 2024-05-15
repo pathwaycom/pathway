@@ -193,6 +193,8 @@ class OpenAIChat(pw.UDF):
             messages_decoded = messages
 
         kwargs = {**self.kwargs, **kwargs}
+
+        verbose = kwargs.pop("verbose", False)
         api_key = kwargs.pop("api_key", None)
 
         msg_id = str(uuid.uuid4())[-8:]
@@ -201,7 +203,9 @@ class OpenAIChat(pw.UDF):
             "_type": "openai_chat_request",
             "kwargs": copy.deepcopy(kwargs),
             "id": msg_id,
-            "messages": messages_decoded,
+            "messages": (
+                messages_decoded if verbose else str(messages_decoded)[:100] + "..."
+            ),
         }
         logger.info(json.dumps(event))
 
@@ -211,7 +215,7 @@ class OpenAIChat(pw.UDF):
 
         event = {
             "_type": "openai_chat_response",
-            "response": response,
+            "response": response if verbose else str(messages_decoded)[:100] + "...",
             "id": msg_id,
         }
         logger.info(json.dumps(event))

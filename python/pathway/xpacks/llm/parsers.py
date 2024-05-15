@@ -5,12 +5,16 @@ A library for document parsers: functions that take raw bytes and return a list 
 chunks along with their metadata.
 """
 
+import logging
 from collections.abc import Callable
 from io import BytesIO
 from typing import Any
 
 import pathway as pw
+from pathway.internals import udfs
 from pathway.optional_import import optional_imports
+
+logger = logging.getLogger(__name__)
 
 
 class ParseUtf8(pw.UDF):
@@ -156,4 +160,57 @@ class ParseUnstructured(pw.UDF):
             docs = [(text, metadata)]
         else:
             raise ValueError(f"mode of {mode} not supported.")
+        return docs
+
+
+class OpenParse(pw.UDF):
+    """
+    Parse document using `https://github.com/Filimoa/open-parse <https://github.com/Filimoa/open-parse>`_.
+
+    `parsing_algorithm` can be one of `llm`, `unitable`, `pymupdf`, `table-transformers`.
+    While using in the VectorStoreServer, splitter can be set to `None` as OpenParse already chunks the documents.
+
+
+    Args:
+        - table_args: dict containing the table parser arguments.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid `CacheStrategy` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
+    """
+
+    def __init__(
+        self,
+        table_args: dict = {"parsing_algorithm": "llm"},
+        cache_strategy: udfs.CacheStrategy | None = None,
+    ):
+        with optional_imports("xpack-llm"):
+            import openparse  # noqa:F401
+            from pypdf import PdfReader  # noqa:F401
+
+            from ._parser_utils import CustomDocumentParser
+
+        super().__init__(cache_strategy=cache_strategy)
+
+        self.doc_parser = CustomDocumentParser(table_args=table_args)
+
+        self.kwargs = dict(table_args=table_args)
+
+    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        import openparse
+        from pypdf import PdfReader
+
+        reader = PdfReader(stream=BytesIO(contents))
+        doc = openparse.Pdf(file=reader)
+
+        parsed_content = self.doc_parser.parse(doc)
+        nodes = [i for i in parsed_content.nodes]
+
+        logger.info(
+            f"OpenParser completed parsing, total number of nodes: {len(nodes)}"
+        )
+
+        metadata: dict = {}
+        docs = list(map(lambda x: (x.dict()["text"], metadata), nodes))
+
         return docs
