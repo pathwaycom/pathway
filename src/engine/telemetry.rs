@@ -4,7 +4,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::{error::DynError, license::License, Error, Graph, ProberStats, Result};
+use super::{error::DynError, license::License, Graph, ProberStats, Result};
 use crate::env::parse_env_var;
 use arc_swap::ArcSwapOption;
 use itertools::Itertools;
@@ -174,32 +174,34 @@ pub enum Config {
 
 impl Config {
     pub fn create(
-        license: License,
+        license: &License,
         run_id: Option<String>,
         monitoring_server: Option<String>,
         trace_parent: Option<String>,
     ) -> Result<Self> {
         let run_id = run_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
+        if monitoring_server.is_some() {
+            license
+                .check_entitlements(vec!["monitoring".to_string()])
+                .map_err(DynError::from)?;
+        }
+
+        let telemetry_server = if license.telemetry_required() {
+            Some(PATHWAY_TELEMETRY_SERVER.to_string())
+        } else {
+            None
+        };
+
+        if monitoring_server.is_none() && telemetry_server.is_none() {
+            return Ok(Config::Disabled);
+        }
+
         match license {
-            License::Evaluation => Config::create_enabled(
-                run_id,
-                Some(PATHWAY_TELEMETRY_SERVER.to_string()),
-                monitoring_server,
-                trace_parent,
-            ),
-            License::DebugNoLimit => {
-                Config::create_enabled(run_id, None, monitoring_server, trace_parent)
+            License::LicenseKey(_) => {
+                Config::create_enabled(run_id, telemetry_server, monitoring_server, trace_parent)
             }
-            License::NoLicenseKey => {
-                if monitoring_server.is_some() {
-                    Err(Error::InsufficientLicense(
-                        "monitoring cannot be enabled".to_string(),
-                    ))
-                } else {
-                    Ok(Config::Disabled)
-                }
-            }
+            License::NoLicenseKey => Ok(Config::Disabled),
         }
     }
 

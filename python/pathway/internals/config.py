@@ -101,6 +101,12 @@ _pathway_config: ContextVar[PathwayConfig] = ContextVar(
 )
 
 
+def _check_entitlements(*args: str):
+    return api.check_entitlements(
+        license_key=get_pathway_config().license_key, entitlements=list(args)
+    )
+
+
 @contextmanager
 def local_pathway_config():
     config = PathwayConfig()

@@ -40,6 +40,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from pathway.internals import api
+from pathway.internals.trace import trace_user_frame
 
 propagator = TraceContextTextMapPropagator()
 
@@ -70,6 +71,7 @@ class Telemetry:
         )
 
     @classmethod
+    @trace_user_frame
     def create(
         cls,
         run_id: str,

@@ -5383,7 +5383,7 @@ pub fn run_with_new_dataflow_graph<R, R2>(
     monitoring_level: MonitoringLevel,
     with_http_server: bool,
     persistence_config: Option<PersistenceManagerOuterConfig>,
-    #[allow(unused)] license: License,
+    #[allow(unused)] license: &License,
     telemetry_config: TelemetryConfig,
     terminate_on_error: bool,
 ) -> Result<Vec<R2>>

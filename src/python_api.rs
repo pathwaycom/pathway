@@ -8,7 +8,7 @@
 use crate::engine::graph::{
     ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacksBuilder,
 };
-use crate::engine::license::License;
+use crate::engine::license::{Error as LicenseError, License};
 use crate::engine::{Computer as EngineComputer, Expressions, ShardPolicy, TotalFrontier};
 use crate::persistence::frontier::OffsetAntichain;
 use csv::ReaderBuilder as CsvReaderBuilder;
@@ -2976,9 +2976,9 @@ pub fn run_with_new_graph(
             None
         }
     };
-    let license = License::new(license_key)?;
+    let license = License::new(license_key);
     let telemetry_config =
-        EngineTelemetryConfig::create(license, run_id, monitoring_server, trace_parent)?;
+        EngineTelemetryConfig::create(&license, run_id, monitoring_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
         py.allow_threads(|| {
             run_with_new_dataflow_graph(
@@ -3008,7 +3008,7 @@ pub fn run_with_new_graph(
                 monitoring_level,
                 with_http_server,
                 persistence_config,
-                license,
+                &license,
                 telemetry_config,
                 terminate_on_error,
             )
@@ -3511,8 +3511,8 @@ impl TelemetryConfig {
         license_key: Option<String>,
         monitoring_server: Option<String>,
     ) -> PyResult<TelemetryConfig> {
-        let license = License::new(license_key)?;
-        let config = EngineTelemetryConfig::create(license, run_id, monitoring_server, None)?;
+        let license = License::new(license_key);
+        let config = EngineTelemetryConfig::create(&license, run_id, monitoring_server, None)?;
         Ok(config.into())
     }
 }
@@ -4662,6 +4662,26 @@ fn run_with_wakeup_receiver<R>(
 
 static LOGGING_RESET_HANDLE: Lazy<ResetHandle> = Lazy::new(logging::init);
 
+impl From<LicenseError> for PyErr {
+    fn from(error: LicenseError) -> Self {
+        Python::with_gil(|py| {
+            let message = error.to_string();
+            PyErr::from_type(PyRuntimeError::type_object(py), message)
+        })
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    *,
+    license_key,
+    entitlements,
+))]
+fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) -> PyResult<()> {
+    License::new(license_key).check_entitlements(entitlements)?;
+    Ok(())
+}
+
 #[pymodule]
 #[pyo3(name = "engine")]
 fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
@@ -4722,6 +4742,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ref_scalar_with_instance, m)?)?;
     #[allow(clippy::unsafe_removed_from_name)] // false positive
     m.add_function(wrap_pyfunction!(unsafe_make_pointer, m)?)?;
+    m.add_function(wrap_pyfunction!(check_entitlements, m)?)?;
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;

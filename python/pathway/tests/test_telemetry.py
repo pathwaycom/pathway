@@ -1,15 +1,11 @@
 import logging
+import re
 
 import pytest
 
 import pathway as pw
 from pathway.internals import api
 from pathway.tests.utils import run_all
-
-
-def test_license_invalid():
-    with pytest.raises(api.EngineError, match="invalid license key"):
-        run_all(license_key="invalid")
 
 
 @pytest.mark.parametrize("monitoring_endpoint", [None, "https://example.com"])
@@ -27,16 +23,19 @@ def test_telemetry(caplog, monitoring_endpoint):
 def test_telemetry_disabled(caplog):
     caplog.set_level(level=logging.DEBUG)
 
-    run_all(license_key="")
+    pw.set_license_key(None)
+    run_all()
 
     assert "Telemetry disabled" in caplog.text
 
 
 def test_monitoring_insufficient_license():
-    pw.set_license_key("")
+    pw.set_license_key(None)
     pw.set_monitoring_config(server_endpoint="https://example.com")
     with pytest.raises(
         api.EngineError,
-        match="insufficient license: monitoring cannot be enabled",
+        match=re.escape(
+            'one of the features you used ["monitoring"] requires upgrading your Pathway license'
+        ),
     ):
         run_all()

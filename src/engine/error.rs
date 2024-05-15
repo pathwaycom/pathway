@@ -124,12 +124,6 @@ pub enum Error {
     #[error("exception in Python subject: {0}")]
     ReaderFailed(#[source] ReadError),
 
-    #[error("invalid license key")]
-    InvalidLicenseKey,
-
-    #[error("insufficient license: {0}")]
-    InsufficientLicense(String),
-
     #[error("computation of imported table failed")]
     ImportedTableFailed,
 

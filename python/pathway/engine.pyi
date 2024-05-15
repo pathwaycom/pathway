@@ -839,3 +839,9 @@ class USearchMetricKind(Enum):
     HAMMING: USearchMetricKind
     TANIMOTO: USearchMetricKind
     SORENSEN: USearchMetricKind
+
+def check_entitlements(
+    *,
+    license_key: str | None,
+    entitlements: list[str],
+): ...
