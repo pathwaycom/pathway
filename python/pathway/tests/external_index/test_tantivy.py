@@ -1,3 +1,5 @@
+# Copyright © 2024 Pathway
+
 import json
 
 import pathway as pw
@@ -67,6 +69,74 @@ def test_filter():
         1        |2
         2        |2
         3        |1
+    """,
+        schema=ExpectedSchema,
+    ).without(pw.this.pk_source)
+
+    assert_table_equality(answers, expected)
+
+
+def test_optional_filter():
+    class InputSchema(pw.Schema):
+        pk_source: int = pw.column_definition(primary_key=True)
+        data: str
+        filter_data: str
+
+    class QuerySchema(pw.Schema):
+        pk_source: int = pw.column_definition(primary_key=True)
+        data: str
+        limit: int
+        filter_col: str | None
+
+    index = pw.debug.table_from_markdown(
+        """
+    pk_source |data        |filter_data
+    1         |example     |{"path":"foo/bar/"}
+    2         |example     |{"path":"foo/foo/"}
+    3         |example     |{"path":"bar/bar/"}
+    4         |example     |{"path":"Eyjafjallajoekull"}
+    """,
+        schema=InputSchema,
+    ).with_columns(
+        filter_data=pw.apply(json.loads, pw.this.filter_data),
+    )
+
+    queries = pw.debug.table_from_markdown(
+        """
+    pk_source|data        |limit|filter_col
+    1        |example     |4    |globmatch(`"**/foo/**"`,path)
+    2        |example     |4    |globmatch(`"**/bar/**"`,path)
+    3        |example     |4    |path=='Eyjafjallajoekull'
+    4        |example     |4    |
+    """,
+        schema=QuerySchema,
+    )
+
+    index_factory = ExternalIndexFactory.tantivy_factory(
+        ram_budget=50000000, in_memory_index=True
+    )
+
+    answers = index._external_index_as_of_now(
+        queries,
+        index_column=index.data,
+        query_column=queries.data,
+        index_factory=index_factory,
+        query_responses_limit_column=queries.limit,
+        index_filter_data_column=index.filter_data,
+        query_filter_column=queries.filter_col,
+    ).select(match_len=pw.apply_with_type(len, int, pw.this._pw_index_reply))
+
+    class ExpectedSchema(pw.Schema):
+        pk_source: int = pw.column_definition(primary_key=True)
+        match_len: int
+
+    expected = pw.debug.table_from_markdown(
+        """
+        pk_source|match_len
+        1        |2
+        2        |2
+        3        |1
+        4        |4
     """,
         schema=ExpectedSchema,
     ).without(pw.this.pk_source)

@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `query` and `query_as_of_now` of `pathway.stdlib.indexing.data_index.DataIndex` now accept in `metadata_column` parameter a column with data of type `str | None`.
+
 ## [0.11.0] - 2024-05-10
 
 ### Added

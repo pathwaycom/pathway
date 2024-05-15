@@ -302,7 +302,7 @@ class DataIndex:
         that are in the rows that have IDs indicated by the response of the ``InnerIndex``.
         It returns a :py:class:`~pathway.JoinResult` of a left join between query table
         (a table that holds ``query_column``) and the mentioned table of tuples (exactly
-        one row per query,vwith values not present if set of matching IDs is empty).
+        one row per query, with values not present if set of matching IDs is empty).
 
         Optionally, the method can skip the tupling step, and return a ``JoinResult`` of a left
         join between query table, and ``self.data_table``, using the result of ``InnerIndex`` to indicate
@@ -323,11 +323,14 @@ class DataIndex:
                 If set to ``False``, the result is a left join between the table holding the
                 ``query_column`` and ``self.data_index``, using the results from ``self.inner_index``
                 to indicate the matches between the IDs.
-            metadata_filter (pw.ColumnExpression | None): Optional, contains a boolean
-                JMESPath query that is used to filter the potential answers inside
-                ``self.inner_index`` - matching entries are included only when the filter function
-                specified in `metadata_filter`` returns ``True``, when run against data in
-                ``inner_index.metadata_column``, in a potentially matched row.
+            metadata_filter (pw.ColumnExpression [str | None] | pw.ColumnExpression [str] | None):
+                Optional, contains a boolean JMESPath query that is used to filter the potential
+                answers inside ``self.inner_index`` - matching entries are included only when
+                the filter function specified in `metadata_filter`` returns ``True``, when run
+                against data in ``inner_index.metadata_column``, in a potentially matched row.
+                Passing ``None`` as value in the column defined in the parameter ``metadata_filter``
+                indicates that all possible matches corresponding to this query pass
+                the filtering step.
 
         """
 
@@ -389,11 +392,14 @@ class DataIndex:
                 If set to ``False``, the result is a left join between the table holding the
                 ``query_column`` and ``self.data_index``, using the results from ``self.inner_index``
                 to indicate the matches between the IDs.
-            metadata_filter (pw.ColumnExpression | None): Optional, contains a boolean
-                JMESPath query that is used to filter the potential answers inside
-                ``self.inner_index`` - matching entries are included only when the filter function
-                specified in ``metadata_filter`` returns ``True``, when run against data in
-                ``inner_index.metadata_column``, in a potentially matched row.
+            metadata_filter (pw.ColumnExpression [str | None] | pw.ColumnExpression [str] | None):
+                Optional, contains a boolean JMESPath query that is used to filter the potential
+                answers inside ``self.inner_index`` - matching entries are included only when
+                the filter function specified in `metadata_filter`` returns ``True``, when run
+                against data in ``inner_index.metadata_column``, in a potentially matched row.
+                Passing ``None`` as value in the column defined in the parameter ``metadata_filter``
+                indicates that all possible matches corresponding to this query pass
+                the filtering step.
         """
 
         q_col = query_column

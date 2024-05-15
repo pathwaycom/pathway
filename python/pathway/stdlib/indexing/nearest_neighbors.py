@@ -30,7 +30,9 @@ def check_default_knn_column_types(
         typecheck_list.append(("metadata column", (metadata_column, dt.JSON)))
 
     if metadata_filter is not None:
-        typecheck_list.append(("metadata filter", (metadata_filter, dt.STR)))
+        typecheck_list.append(
+            ("metadata filter", (metadata_filter, dt.Optional(dt.STR)))
+        )
 
     if number_of_matches is not None and not isinstance(number_of_matches, int):
         typecheck_list.append(("number of matches", (number_of_matches, dt.INT)))

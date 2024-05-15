@@ -319,7 +319,7 @@ where
 
         // maybe pass query as value and remove clone?
         let query_point: QueryType = data.clone().unpack()?;
-        if filter.is_none() {
+        if filter.is_none() || filter == Some(&Value::None) {
             return Ok(Value::Tuple(
                 self.inner
                     .search(&query_point, Some(limit))?
