@@ -260,17 +260,17 @@ class BaseRAGQuestionAnswerer:
         llm: LLM instance for question answering. See https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms for available models.
         indexer: Indexing object for search & retrieval to be used for context augmentation.
         default_llm_name: Default LLM model to be used in queries, only used if `model` parameter in post request is not specified.
-            Omitting or setting this as `None` will require `model` to be specified in each request.
+            Omitting or setting this to `None` will default to the model name set during LLM's initialization.
 
         short_prompt_template: Template for document question answering with short response.
             A pw.udf function is expected. Defaults to `pathway.xpacks.llm.prompts.prompt_short_qa`.
         long_prompt_template: Template for document question answering with long response.
             A pw.udf function is expected. Defaults to `pathway.xpacks.llm.prompts.prompt_qa`.
         summarize_template: Template for text summarization. Defaults to `pathway.xpacks.llm.prompts.prompt_summarize`.
+        search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
 
 
     Example:
-
     >>> import pathway as pw  # doctest: +SKIP
     >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers  # doctest: +SKIP
     >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
@@ -292,7 +292,6 @@ class BaseRAGQuestionAnswerer:
     ...     splitter=text_splitter,
     ...     parser=parser,
     ... )
-    >>> DEFAULT_GPT_MODEL = "gpt-3.5-turbo"
     >>> chat = llms.OpenAIChat(  # doctest: +SKIP
     ...     model=DEFAULT_GPT_MODEL,
     ...     retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6),
@@ -302,7 +301,6 @@ class BaseRAGQuestionAnswerer:
     >>> app = BaseRAGQuestionAnswerer(  # doctest: +SKIP
     ...     llm=chat,
     ...     indexer=vector_server,
-    ...     default_llm_name=DEFAULT_GPT_MODEL,
     ... )
     >>> app.build_server(host=app_host, port=app_port)  # doctest: +SKIP
     >>> app.run_server()  # doctest: +SKIP
@@ -317,16 +315,22 @@ class BaseRAGQuestionAnswerer:
         short_prompt_template: pw.UDF = prompts.prompt_short_qa,
         long_prompt_template: pw.UDF = prompts.prompt_qa,
         summarize_template: pw.UDF = prompts.prompt_summarize,
+        search_topk: int = 6,
     ) -> None:
 
         self.llm = llm
         self.indexer = indexer
+
+        if default_llm_name is None:
+            default_llm_name = llm.kwargs.get("model", None)  # type: ignore
 
         self._init_schemas(default_llm_name)
 
         self.short_prompt_template = short_prompt_template
         self.long_prompt_template = long_prompt_template
         self.summarize_template = summarize_template
+
+        self.search_topk = search_topk
 
     def _init_schemas(self, default_llm_name: str | None = None) -> None:
         """Initialize API schemas with optional and non-optional arguments."""
@@ -356,7 +360,7 @@ class BaseRAGQuestionAnswerer:
                 metadata_filter=pw.this.filters,
                 filepath_globpattern=pw.cast(str | None, None),
                 query=pw.this.prompt,
-                k=6,
+                k=self.search_topk,
             )
         ).select(
             docs=pw.this.result,

@@ -48,6 +48,8 @@ class VectorStoreServer:
         - embedder: callable that embeds a single document
         - parser: callable that parses file contents into a list of documents
         - splitter: callable that splits long documents
+        - doc_post_processors: optional list of callables that modify parsed files and metadata.
+            any callable takes two arguments (text: str, metadata: dict) and returns them as a tuple.
     """
 
     embedder_config: dict[str, Any]
