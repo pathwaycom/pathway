@@ -64,8 +64,8 @@ jobs:
           rm -f LICENSE_*-LICENSE-*
           for filename in library_licenses/*; do cp "$filename" "LICENSE_$(basename "${filename}")"; done;
 
-      - name: Set package version
-        if: ${{ github.event_name == ('workflow_dispatch' || 'schedule') }}
+      - name: Set package version nightly
+        if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
         run: |
           BUILD_NUMBER="${{ github.run_number }}"
           PACKAGE_VERSION=$(perl -nle 'print $& while m{^version[[:space:]]*=[[:space:]]"\K[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+(?=")}g' Cargo.toml)
