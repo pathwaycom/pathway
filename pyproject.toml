@@ -59,7 +59,6 @@ xpack-llm = [
     "llama-index-core ~= 0.10.0",
     "llama-index-readers-pathway ~= 0.1.0",
     "llama-index-retrievers-pathway ~= 0.1.0",
-    "openparse == 0.5.6",
 ]
 xpack-llm-local = [
     "sentence_transformers == 2.4.0", 
