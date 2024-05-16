@@ -67,6 +67,7 @@ class Telemetry:
                 SERVICE_INSTANCE_ID: self.config.service_instance_id or "",
                 "run.id": self.config.run_id,
                 "python.version": sys.version,
+                "license.key": self.config.license_key or "",
             }
         )
 

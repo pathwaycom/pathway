@@ -4,6 +4,7 @@ use cached::proc_macro::cached;
 use log::info;
 use nix::sys::resource::Resource;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -45,6 +46,23 @@ impl License {
                     result.telemetry_required()
                 } else {
                     false
+                }
+            }
+        }
+    }
+
+    pub fn shortcut(&self) -> String {
+        match self {
+            License::NoLicenseKey => String::new(),
+            License::LicenseKey(key) => {
+                let pattern = r"^([^-\s]+-){4}[^-\s]+(-[^-\s]+)*$";
+                let re = Regex::new(pattern).unwrap();
+
+                if re.is_match(key) {
+                    let parts: Vec<&str> = key.split('-').collect();
+                    format!("{}-{}", parts[0], parts[1])
+                } else {
+                    String::new()
                 }
             }
         }

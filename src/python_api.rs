@@ -3495,6 +3495,7 @@ pub struct TelemetryConfig {
     service_namespace: Option<String>,
     service_instance_id: Option<String>,
     run_id: String,
+    license_key: Option<String>,
 }
 
 #[pymethods]
@@ -3529,6 +3530,7 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
                 service_namespace: Some(config.service_namespace),
                 service_instance_id: Some(config.service_instance_id),
                 run_id: config.run_id,
+                license_key: Some(config.license_key),
             },
             EngineTelemetryConfig::Disabled => Self::default(),
         }

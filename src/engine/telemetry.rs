@@ -46,6 +46,7 @@ const OUTPUT_LATENCY: &str = "latency.output";
 
 const ROOT_TRACE_ID: Key = Key::from_static_str("root.trace.id");
 const RUN_ID: Key = Key::from_static_str("run.id");
+const LICENSE_KEY: Key = Key::from_static_str("license.key");
 
 const LOCAL_DEV_NAMESPACE: &str = "local-dev";
 
@@ -68,6 +69,7 @@ impl Telemetry {
             SERVICE_NAMESPACE.string(self.config.service_namespace.clone()),
             ROOT_TRACE_ID.string(root_trace_id.to_string()),
             RUN_ID.string(self.config.run_id.clone()),
+            LICENSE_KEY.string(self.config.license_key.clone()),
         ])
     }
 
@@ -164,6 +166,7 @@ pub struct TelemetryEnabled {
     pub service_instance_id: String,
     pub run_id: String,
     pub trace_parent: Option<String>,
+    pub license_key: String,
 }
 
 #[derive(Clone, Debug)]
@@ -198,9 +201,13 @@ impl Config {
         }
 
         match license {
-            License::LicenseKey(_) => {
-                Config::create_enabled(run_id, telemetry_server, monitoring_server, trace_parent)
-            }
+            License::LicenseKey(_) => Config::create_enabled(
+                run_id,
+                telemetry_server,
+                monitoring_server,
+                trace_parent,
+                license,
+            ),
             License::NoLicenseKey => Ok(Config::Disabled),
         }
     }
@@ -210,6 +217,7 @@ impl Config {
         telemetry_server: Option<String>,
         monitoring_server: Option<String>,
         trace_parent: Option<String>,
+        license: &License,
     ) -> Result<Self> {
         let service_instance_id: String = parse_env_var("PATHWAY_SERVICE_INSTANCE_ID")
             .map_err(DynError::from)?
@@ -233,6 +241,7 @@ impl Config {
             service_instance_id,
             run_id,
             trace_parent,
+            license_key: license.shortcut(),
         })))
     }
 }

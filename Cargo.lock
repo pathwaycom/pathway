@@ -2211,6 +2211,7 @@ dependencies = [
  "pyo3-log",
  "rand",
  "rdkafka",
+ "regex",
  "reqwest 0.12.4",
  "rusqlite",
  "rust-s3",

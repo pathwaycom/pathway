@@ -790,6 +790,7 @@ class TelemetryConfig:
     service_namespace: str | None
     service_instance_id: str | None
     run_id: str
+    license_key: str | None
     @staticmethod
     def create(
         *,
