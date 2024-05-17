@@ -271,6 +271,7 @@ class BaseRAGQuestionAnswerer:
 
 
     Example:
+
     >>> import pathway as pw  # doctest: +SKIP
     >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers  # doctest: +SKIP
     >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
