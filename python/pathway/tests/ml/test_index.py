@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import json
 from typing import Any, Iterable
 
 import numpy as np
@@ -16,6 +17,7 @@ from pathway.tests.utils import (
     T,
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
+    xfail_on_multiple_threads,
 )
 
 
@@ -75,7 +77,7 @@ def nn_with_dists_as_table(
         pd.DataFrame(
             {
                 "coords": [to_tuple_of_floats(point[0]) for point in to_table],
-                "dist": [to_tuple_of_floats(point[2]) for point in to_table],  # type: ignore
+                "dist": [to_tuple_of_floats(point[2]) for point in to_table],
                 "nn": [
                     tuple(to_tuple_of_floats(x) for x in point[1]) for point in to_table
                 ],
@@ -585,3 +587,121 @@ def test_mismatched_type_error_message_bm25():
         index.query_as_of_now(table.int_col, number_of_matches=2).select(
             coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords)
         )
+
+
+@xfail_on_multiple_threads  # index duplicated across workers, more error messages
+def test_errors_on_index_input():
+    @pw.udf
+    def make_point(r: int) -> list[float]:
+        if r == 2 or r == 3:
+            raise ValueError("Encountered 2 or 3")
+        return [float(r), float(r)]
+
+    data = pw.debug.table_from_markdown(
+        """
+        r
+        1
+        3
+        5
+        8
+    """
+    ).with_columns(d=make_point(pw.this.r))
+    queries = pw.debug.table_from_markdown(
+        """
+        r
+        2
+        4
+        6
+    """
+    ).with_columns(d=make_point(pw.this.r))
+
+    index = make_usearch_data_index(data.d, data, dimensions=2)
+    result = index.query_as_of_now(
+        queries.d, number_of_matches=2, collapse_rows=False
+    ).select(l=pw.left.r, r=pw.right.r)
+    expected = pw.debug.table_from_markdown(
+        """
+        l | r
+        2 |
+        4 | 5
+        4 | 1
+        6 | 5
+        6 | 8
+    """
+    )
+    expected_err = pw.debug.table_from_markdown(
+        """
+        message
+        ValueError: Encountered 2 or 3
+        ValueError: Encountered 2 or 3
+        Error value encountered in index update, skipping the row
+        Error value encountered in index search, can't answer the query
+        value error: Pathway can't flatten this value Error
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (result, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_err),
+        terminate_on_error=False,
+    )
+
+
+def test_errors_in_index_filter():
+    @pw.udf
+    def make_point(r: int) -> list[float]:
+        return [float(r), float(r)]
+
+    @pw.udf
+    def load_json(s: str) -> pw.Json:
+        return json.loads(s)
+
+    data = pw.debug.table_from_markdown(
+        """
+        r | filter_data
+        1 | {"v":2}
+        5 | {"v":1}
+        8 | {"v":1}
+    """
+    ).with_columns(d=make_point(pw.this.r), filter_data=load_json(pw.this.filter_data))
+    queries = pw.debug.table_from_markdown(
+        """
+        r | filter_expr
+        4 | v==`1`
+        6 | p==0
+    """
+    ).with_columns(d=make_point(pw.this.r))
+
+    index = make_usearch_data_index(
+        data.d, data, dimensions=2, metadata_column=data.filter_data
+    )
+    result = index.query_as_of_now(
+        queries.d,
+        number_of_matches=2,
+        collapse_rows=False,
+        metadata_filter=queries.filter_expr,
+    ).select(l=pw.left.r, r=pw.right.r)
+    result_err = pw.global_error_log().select(
+        message=pw.this.message.str.replace("\n", "")
+    )
+    expected = pw.debug.table_from_markdown(
+        """
+        l | r
+        4 | 5
+        4 | 8
+        6 |
+    """
+    )
+    expected_err = pw.debug.table_from_markdown(
+        """
+        message
+        Parse error: Unexpected nud token -- found Number(0) (line 0, column 3)p==0   ^
+        value error: Pathway can't flatten this value Error
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (result, result_err),
+        (expected, expected_err),
+        terminate_on_error=False,
+    )

@@ -279,6 +279,12 @@ pub enum DataError {
     #[error("Error value encountered in output, skipping the row")]
     ErrorInOutput,
 
+    #[error("Error value encountered in index update, skipping the row")]
+    ErrorInIndexUpdate,
+
+    #[error("Error value encountered in index search, can't answer the query")]
+    ErrorInIndexSearch,
+
     #[error("{reducer_type}::init() failed for {value:?} of key {source_key:?}")]
     ReducerInitializationError {
         reducer_type: String,

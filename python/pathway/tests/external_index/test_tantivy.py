@@ -4,7 +4,6 @@ import json
 
 import pathway as pw
 from pathway.engine import ExternalIndexFactory
-from pathway.internals import dtype as dt
 from pathway.stdlib.utils.col import unpack_col
 from pathway.tests.utils import assert_table_equality
 
@@ -187,7 +186,6 @@ def test_score_simple():
         query_column=queries.data,
         index_factory=index_factory,
         query_responses_limit_column=queries.limit,
-        res_type=dt.List[dt.Tuple[pw.Pointer, float]],
     ).with_columns(q_pk_source=queries.pk_source)
 
     class InnerSchema(pw.Schema):
@@ -281,7 +279,6 @@ def test_score_with_deletion():
         query_column=queries.data,
         index_factory=index_factory,
         query_responses_limit_column=queries.limit,
-        res_type=dt.List[dt.Tuple[pw.Pointer, float]],
     ).with_columns(q_pk_source=queries.pk_source)
 
     class InnerSchema(pw.Schema):

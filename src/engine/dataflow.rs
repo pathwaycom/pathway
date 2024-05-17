@@ -2224,7 +2224,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let extended_external_index = Box::new(IndexDerivedImpl::new(
             external_index,
-            Box::new(self.error_reporter.clone()),
+            self.create_error_logger()?,
             data_acc,
             filter_data_acc,
             query_acc,

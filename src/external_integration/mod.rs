@@ -13,8 +13,10 @@ use differential_dataflow::difference::Abelian;
 
 use crate::engine::dataflow::operators::external_index::Index as IndexTrait;
 use crate::engine::error::DynResult;
-use crate::engine::report_error::{ReportError, UnwrapWithReporter};
-use crate::engine::{ColumnPath, Error, Key, Value};
+use crate::engine::report_error::{
+    LogError, ReportError, UnwrapWithErrorLogger, UnwrapWithReporter,
+};
+use crate::engine::{ColumnPath, DataError, Error, Key, Value};
 
 pub trait ExternalIndex {
     fn add(&mut self, key: Key, data: Value, filter_data: Option<Value>) -> DynResult<()>;
@@ -33,7 +35,7 @@ pub trait ExternalIndexFactory: Send + Sync {
 
 pub struct IndexDerivedImpl {
     inner: Box<dyn ExternalIndex>,
-    error_reporter: Box<dyn ReportError>,
+    error_logger: Box<dyn LogError>,
     data_accessor: Accessor,
     filter_data_accessor: OptionAccessor,
     query_accessor: Accessor,
@@ -44,7 +46,7 @@ pub struct IndexDerivedImpl {
 impl IndexDerivedImpl {
     pub fn new(
         inner: Box<dyn ExternalIndex>,
-        error_reporter: Box<dyn ReportError>,
+        error_logger: Box<dyn LogError>,
         data_accessor: Accessor,
         filter_data_accessor: OptionAccessor,
         query_accessor: Accessor,
@@ -53,7 +55,7 @@ impl IndexDerivedImpl {
     ) -> IndexDerivedImpl {
         IndexDerivedImpl {
             inner,
-            error_reporter,
+            error_logger,
             data_accessor,
             filter_data_accessor,
             query_accessor,
@@ -86,13 +88,21 @@ impl<R: Abelian + CanBeRetraction> IndexTrait<Key, Value, R, Value, Value> for I
         if diff.is_retraction() {
             self.inner
                 .remove(k)
-                .unwrap_with_reporter(&self.error_reporter);
+                .unwrap_or_log(self.error_logger.as_ref(), ());
         } else {
             let vec_as_val = (self.data_accessor)(&v);
             let filter_data = (self.filter_data_accessor)(&v);
-            self.inner
-                .add(k, vec_as_val, filter_data)
-                .unwrap_with_reporter(&self.error_reporter);
+            let contains_errors = [Some(&vec_as_val), filter_data.as_ref()]
+                .into_iter()
+                .flatten()
+                .contains(&Value::Error);
+            if contains_errors {
+                self.error_logger.log_error(DataError::ErrorInIndexUpdate);
+            } else {
+                self.inner
+                    .add(k, vec_as_val, filter_data)
+                    .unwrap_or_log(self.error_logger.as_ref(), ());
+            }
         }
     }
 
@@ -101,17 +111,28 @@ impl<R: Abelian + CanBeRetraction> IndexTrait<Key, Value, R, Value, Value> for I
         let query_response_limit = (self.query_limit_accessor)(v);
         let filter = (self.query_filter_accessor)(v);
 
-        let results = self
-            .inner
-            .search(&vec_as_val, query_response_limit.as_ref(), filter.as_ref())
-            .unwrap_with_reporter(&self.error_reporter);
+        let contains_errors = [
+            Some(&vec_as_val),
+            query_response_limit.as_ref(),
+            filter.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .contains(&Value::Error);
+
+        let results = if contains_errors {
+            self.error_logger.log_error(DataError::ErrorInIndexSearch);
+            Value::Error
+        } else {
+            self.inner
+                .search(&vec_as_val, query_response_limit.as_ref(), filter.as_ref())
+                .unwrap_or_log(self.error_logger.as_ref(), Value::Error)
+        };
         Value::Tuple(Arc::new([v.clone(), results]))
     }
 }
 
 /* utils */
-
-//
 
 struct KeyToU64IdMapper {
     next_id: u64,
@@ -147,7 +168,7 @@ impl KeyToU64IdMapper {
         let key_id = self
             .key_to_id_map
             .remove(&key)
-            .ok_or(crate::engine::DataError::MissingKey(key))?;
+            .ok_or(DataError::MissingKey(key))?;
         self.id_to_key_map.remove(&key_id);
         Ok(key_id)
     }
@@ -348,7 +369,7 @@ where
                 .into_iter()
                 .map(|(k, e)| match e.as_boolean() {
                     Some(ret) => Ok((k, ret)),
-                    None => Err(crate::engine::DataError::ValueError(
+                    None => Err(DataError::ValueError(
                         "jmespath filter expression did not return a boolean value".to_string(),
                     )),
                 })
