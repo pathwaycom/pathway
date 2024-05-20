@@ -174,18 +174,18 @@ query = "What is Pathway?"
 #
 # ### Langchain
 #
-# This currently is submitted to Langchain in [a PR](https://github.com/langchain-ai/langchain/pull/14859)
+# You can use a Pathway Vector Store in LangChain pipelines with `PathwayVectorClient`
+# and configure a `VectorStoreServer` using LangChain components. For more information see [our article](/developers/showcases/langchain-integration) or [LangChain documentation](https://python.langchain.com/v0.1/docs/integrations/vectorstores/pathway/).
 #
 
 # %%
 # _MD_SHOW_!pip install langchain
 # _MD_SHOW_!pip install langchain-openai
+# _MD_SHOW_!pip install langchain-community
 
 # %% [markdown]
 # ```python
-# # PathwayVectorClient in Langchain is waiting for merging
-# # in https://github.com/langchain-ai/langchain/pull/14859
-# from langchain.vectorstores import PathwayVectorClient
+# from langchain_community.vectorstores import PathwayVectorClient
 #
 # # PathwayVectorClient implements regular VectorStore API of LangChain
 # client = PathwayVectorClient(host="127.0.0.1", port=PATHWAY_PORT)
@@ -213,7 +213,7 @@ query = "What is Pathway?"
 # _MD_SHOW_time.sleep(30)  # colab workaround
 
 # %%
-# You can connect to the Pathway+LlamaIndex server using any client - Pathway's, Langchain's or LlamaIndex's!
+# You can connect to the Pathway+LangChain server using any client - Pathway's, Langchain's or LlamaIndex's!
 # _MD_SHOW_client = VectorStoreClient(
 # _MD_SHOW_    host="127.0.0.1",
 # _MD_SHOW_    port=PATHWAY_PORT+1,
@@ -283,10 +283,16 @@ query = "What is Pathway?"
 # ### Getting information on indexed files
 
 # %% [markdown]
-# `PathwayVectorClient.get_vectorstore_statistics()` gives essential statistics on the state of the vector store, like the number of indexed files and the timestamp of the last updated one. You can use it in your chains to tell the user how fresh your knowledge base is.
+# [`PathwayVectorClient.get_vectorstore_statistics()`](/developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreClient.get_vectorstore_statistics) gives essential statistics on the state of the vector store, like the number of indexed files and the timestamp of the last updated one. You can use it in your chains to tell the user how fresh your knowledge base is.
 
 # %%
 # _MD_SHOW_client.get_vectorstore_statistics()
+
+# %% [markdown]
+# You can also use [`PathwayVectorClient.get_input_files()`](/developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreClient.get_input_files) to get the list of indexed files along with the associated metadata.
+
+# %%
+# _MD_SHOW_client.get_input_files()
 
 # %% [markdown]
 # ### Filtering based on file metadata
