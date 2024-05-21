@@ -22,7 +22,6 @@ dependencies = [
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
     "sqlglot == 10.6.1",
-    "numba >= 0.56; python_version < '3.12'",
     "pyarrow >= 10.0.0",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",

@@ -456,23 +456,6 @@ class RowwiseEvaluator(
         eval_state.set_temporary_table(output_storage, engine_table)
         return self.eval_dependency(tmp_column, eval_state=eval_state)
 
-    def eval_numbaapply(
-        self,
-        expression: expr.NumbaApplyExpression,
-        eval_state: RowwiseEvalState | None = None,
-    ):
-        assert not expression._kwargs
-        if not expression._deterministic:
-            assert eval_state is not None
-            eval_state.set_non_deterministic()
-        return api.Expression.unsafe_numba_apply(
-            expression._fun,
-            *(
-                self.eval_expression(arg, eval_state=eval_state)
-                for arg in expression._args
-            ),
-        )
-
     def eval_cast(
         self,
         expression: expr.CastExpression,

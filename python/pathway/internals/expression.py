@@ -788,10 +788,6 @@ class ApplyExpression(ColumnExpression):
         )
 
 
-class NumbaApplyExpression(ApplyExpression):
-    pass
-
-
 class AsyncApplyExpression(ApplyExpression):
     pass
 

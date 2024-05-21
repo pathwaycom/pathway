@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Removed
+
+- Removed `pw.numba_apply` and `numba` dependency.
+
 ### Fixed
 
 - Fixed `pw.this` desugaring bug, where `__getitem__` in `.ix` context was not working properly.

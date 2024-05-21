@@ -69,10 +69,6 @@ class ExpressionFormatter(ExpressionVisitor):
         args = self._eval_args_kwargs(expression._args, expression._kwargs)
         return f"pathway.apply_async({expression._fun.__name__}, {args})"
 
-    def eval_numbaapply(self, expression: expr.NumbaApplyExpression):
-        args = self._eval_args_kwargs(expression._args, expression._kwargs)
-        return f"pathway.numba_apply({expression._fun.__name__}, {args})"
-
     def eval_pointer(self, expression: expr.PointerExpression):
         kwargs: dict[str, expr.ColumnExpression] = {}
         if expression._instance is not None:

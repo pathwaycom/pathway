@@ -240,15 +240,6 @@ class TypeInterpreter(IdentityTransform):
         expression = super().eval_apply(expression, state=state, **kwargs)
         return _wrap(expression, expression._return_type)
 
-    def eval_numbaapply(
-        self,
-        expression: expr.NumbaApplyExpression,
-        state: TypeInterpreterState | None = None,
-        **kwargs,
-    ) -> expr.NumbaApplyExpression:
-        expression = super().eval_numbaapply(expression, state=state, **kwargs)
-        return _wrap(expression, expression._return_type)
-
     def eval_async_apply(
         self,
         expression: expr.AsyncApplyExpression,

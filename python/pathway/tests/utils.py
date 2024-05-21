@@ -27,15 +27,6 @@ from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.schema import is_subschema, schema_from_columns
 from pathway.internals.table import Table
 
-try:
-    import numba  # noqa
-
-    _numba_missing = False
-except ImportError:
-    _numba_missing = True
-
-xfail_no_numba = pytest.mark.xfail(_numba_missing, reason="unable to import numba")
-
 needs_multiprocessing_fork = pytest.mark.xfail(
     sys.platform != "linux",
     reason="multiprocessing needs to use fork() for pw.run() to work",

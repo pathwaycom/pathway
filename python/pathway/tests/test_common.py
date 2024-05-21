@@ -19,7 +19,6 @@ import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
 from pathway.internals import dtype as dt
-from pathway.internals.expression import NumbaApplyExpression
 from pathway.internals.table_io import empty_from_schema
 from pathway.tests.utils import (
     T,
@@ -30,7 +29,6 @@ from pathway.tests.utils import (
     assert_table_equality_wo_types,
     run_all,
     warns_here,
-    xfail_no_numba,
 )
 
 
@@ -1776,146 +1774,6 @@ def test_apply_more_args():
             1
             7
             """
-        ),
-    )
-
-
-@xfail_no_numba
-def test_numba_apply():
-    a = T(
-        """
-        foo
-        1
-        2
-        3
-        """,
-    )
-    b = T(
-        """
-        bar
-        2
-        -1
-        4
-        """,
-    )
-
-    def add(x, y):
-        return x + y
-
-    expression = pw.numba_apply(add, "int64(int64,int64)", a.foo, b.bar)
-    assert isinstance(expression, NumbaApplyExpression)
-
-    result = a.select(ret=expression)
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            3
-            1
-            7
-            """,
-        ),
-    )
-
-
-@xfail_no_numba
-def test_numba_apply_lambda():
-    a = T(
-        """
-        foo
-        1
-        2
-        3
-        """,
-    )
-    b = T(
-        """
-        bar
-        2
-        -1
-        4
-        """,
-    )
-
-    expression = pw.numba_apply(lambda x, y: x + y, "int64(int64,int64)", a.foo, b.bar)
-
-    assert isinstance(expression, NumbaApplyExpression)
-    result = a.select(ret=expression)
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            3
-            1
-            7
-            """,
-        ),
-    )
-
-
-@xfail_no_numba
-def test_numba_composite():
-    a = T(
-        """
-        foo
-        1
-        2
-        3
-        """,
-    )
-    b = T(
-        """
-        bar
-        2
-        -1
-        4
-        """,
-    )
-
-    result = a.select(
-        ret=pw.numba_apply(lambda x, y: x + y, "int64(int64,int64)", a.foo - 1, 1)
-        + b.bar
-    )
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            3
-            1
-            7
-            """,
-        ),
-    )
-
-
-@xfail_no_numba
-def test_numba_more_signatures():
-    a = T(
-        """
-        foo
-        1
-        2
-        3
-        """,
-    )
-
-    result = a.select(ret=pw.numba_apply(lambda x: x + 0.5, "float64(int64,)", a.foo))
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            1.5
-            2.5
-            3.5
-            """,
         ),
     )
 

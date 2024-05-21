@@ -106,7 +106,6 @@ use s3::creds::Credentials as AwsCredentials;
 
 mod external_index_wrappers;
 mod logging;
-mod numba;
 pub mod threads;
 
 pub fn with_gil_and_pool<R>(f: impl FnOnce(Python) -> R + Ungil) -> R {
@@ -892,18 +891,6 @@ impl PyExpression {
             AnyExpression::Apply(func, args.into())
         };
         Self::new(Arc::new(Expression::Any(expression)), true)
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (function, *args))]
-    fn unsafe_numba_apply(function: &PyAny, args: Vec<PyRef<PyExpression>>) -> PyResult<Self> {
-        let args = args
-            .into_iter()
-            .map(|expr| expr.inner.clone())
-            .collect_vec();
-        let num_args = args.len();
-        let inner = unsafe { numba::get_numba_expression(function, args.into(), num_args) }?;
-        Ok(Self::new(inner, false))
     }
 
     #[staticmethod]

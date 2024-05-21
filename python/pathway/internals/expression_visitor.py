@@ -29,7 +29,6 @@ class ExpressionVisitor(ABC):
             expr.CoalesceExpression: self.eval_coalesce,
             expr.RequireExpression: self.eval_require,
             expr.IfElseExpression: self.eval_ifelse,
-            expr.NumbaApplyExpression: self.eval_numbaapply,
             expr.AsyncApplyExpression: self.eval_async_apply,
             expr.MakeTupleExpression: self.eval_make_tuple,
             expr.GetExpression: self.eval_get,
@@ -60,9 +59,6 @@ class ExpressionVisitor(ABC):
 
     @abstractmethod
     def eval_apply(self, expression: expr.ApplyExpression): ...
-
-    @abstractmethod
-    def eval_numbaapply(self, expression: expr.NumbaApplyExpression): ...
 
     @abstractmethod
     def eval_async_apply(self, expression: expr.AsyncApplyExpression): ...
@@ -176,23 +172,6 @@ class IdentityTransform(ExpressionVisitor):
             propagate_none=expression._propagate_none,
             deterministic=expression._deterministic,
             args=expr_args,
-            kwargs=expr_kwargs,
-        )
-
-    def eval_numbaapply(
-        self, expression: expr.NumbaApplyExpression, **kwargs
-    ) -> expr.NumbaApplyExpression:
-        expr_args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
-        expr_kwargs = {
-            name: self.eval_expression(arg, **kwargs)
-            for name, arg in expression._kwargs.items()
-        }
-        return expr.NumbaApplyExpression(
-            expression._fun,
-            expression._return_type,
-            propagate_none=expression._propagate_none,
-            deterministic=expression._deterministic,
-            args=tuple(expr_args),
             kwargs=expr_kwargs,
         )
 
