@@ -2583,6 +2583,36 @@ def test_ix_none():
     assert_table_equality(res, expected)
 
 
+def test_ix_this_getitem():
+    t_animals = T(
+        """
+            | genus      | epithet
+        1   | upupa      | epops
+        2   | acherontia | atropos
+        3   | bubo       | scandiacus
+        4   | dynastes   | hercules
+        """
+    )
+    t_birds = T(
+        """
+            | desc   | ptr
+        1   | hoopoe | 2
+        2   | owl    | 4
+        """
+    ).with_columns(ptr=t_animals.pointer_from(pw.this.ptr))
+
+    res = t_birds.select(*(t_animals.ix(pw.this.ptr)[["genus", "epithet"]]))
+
+    expected = T(
+        """
+            | genus         | epithet
+        1   | acherontia    | atropos
+        2   | dynastes      | hercules
+        """
+    )
+    assert_table_equality(res, expected)
+
+
 def test_ix_missing_key():
     t_animals = T(
         """

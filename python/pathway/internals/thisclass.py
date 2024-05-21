@@ -193,6 +193,15 @@ class _those(metaclass=ThisMetaclass):
                     op, expression=expression, name=name, qualname=qualname
                 )
 
+            @classmethod
+            def _create_mock(self, name, args, kwargs):
+                return self._delayed_op(
+                    lambda table, _: getattr(table.slice, name)(*args, **kwargs),
+                    expression=expression,
+                    qualname=f"{self.__qualname__}.{name}(...)",
+                    name=name,
+                )
+
         if name is not None:
             subclass.__name__ = name
         if qualname is not None:
