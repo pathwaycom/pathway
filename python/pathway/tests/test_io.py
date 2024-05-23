@@ -389,7 +389,7 @@ def test_python_connector_deletions_disabled_logs_error_on_upsert():
 
     with pytest.raises(
         RuntimeError,
-        match=r"Trying to modify a row in the Python connector but deletions_enabled is set to False",
+        match=r"Trying to modify a row in .* but deletions_enabled is set to False",
     ):
         run_all()
 
@@ -2351,6 +2351,58 @@ def test_python_connector_metadata():
         ),
         result,
     )
+
+
+def test_python_connector_values():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(a=pd.Timestamp("2021-03-21T18:34:12"), b="abc".encode())
+            self.next(a=pd.Timestamp("2022-04-01T11:12:12"), b="def".encode())
+            self.next(a=pd.Timestamp("2023-01-01T00:00:00"), b="x".encode())
+
+    class InputSchema(pw.Schema):
+        a: pw.DateTimeNaive
+        b: bytes
+
+    result = pw.io.python.read(TestSubject(), schema=InputSchema)
+
+    @pw.udf
+    def encode(data: str) -> bytes:
+        return data.encode()
+
+    expected = T(
+        """
+        a                   | b
+        2021-03-21T18:34:12 | abc
+        2022-04-01T11:12:12 | def
+        2023-01-01T00:00:00 | x
+    """
+    ).select(a=pw.this.a.dt.strptime("%Y-%m-%dT%H:%M:%S"), b=encode(pw.this.b))
+    assert_table_equality_wo_index(result, expected)
+
+
+def test_python_connector_defaults():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(a=1, b="one")
+            self.next(a=2)
+            self.next(b="three")
+
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(default_value=0)
+        b: str = pw.column_definition(default_value="default")
+
+    result = pw.io.python.read(TestSubject(), schema=InputSchema)
+
+    expected = T(
+        """
+        a | b
+        1 | one
+        2 | default
+        0 | three
+    """
+    )
+    assert_table_equality_wo_index(result, expected)
 
 
 def test_parse_to_table_deprecation():

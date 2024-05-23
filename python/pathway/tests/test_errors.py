@@ -1153,10 +1153,10 @@ def test_jsonlines_reading(tmp_path):
     expected_errors = T(
         """
         message
-        failed to create a field "b" with type Int from the following json payload: "x"
-        failed to create a field "b" with type Int from the following json payload: "1"
-        failed to create a field "c" with type Int / None from the following json payload: "t"
-        failed to create a field "c" with type Int / None from the following json payload: "y"
+        value "x" in field "b" is inconsistent with type Int from schema
+        value "1" in field "b" is inconsistent with type Int from schema
+        value "t" in field "c" is inconsistent with type Int / None from schema
+        value "y" in field "c" is inconsistent with type Int / None from schema
     """,
         split_on_whitespace=False,
     ).select(message=pw.this.message.str.replace("/", "|"))
@@ -1192,11 +1192,9 @@ def test_jsonlines_reading_pk(tmp_path):
     expected_errors = T(
         """
         message
-        error in primary key, skipping the row: failed to create a field "b" \
-with type Int from the following json payload: "x"
-        error in primary key, skipping the row: failed to create a field "b" \
-with type Int from the following json payload: "1"
-        failed to create a field "c" with type Int / None from the following json payload: "y"
+        error in primary key, skipping the row: value "x" in field "b" is inconsistent with type Int from schema
+        error in primary key, skipping the row: value "1" in field "b" is inconsistent with type Int from schema
+        value "y" in field "c" is inconsistent with type Int / None from schema
     """,
         split_on_whitespace=False,
     ).select(message=pw.this.message.str.replace("/", "|"))
@@ -1204,6 +1202,87 @@ with type Int from the following json payload: "1"
 
     assert_table_equality_wo_index(
         (result, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_python_connector():
+
+    class TestSchema(pw.Schema):
+        a: int
+        b: str
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+
+        def run(self):
+            self.next(a=10, b="a")
+            self.next(a=2.3, b="cdef")
+            self.next(a=3, b=11)
+            self.next(a=2)
+
+    t = pw.io.python.read(TestSubject(), schema=TestSchema).select(
+        a=pw.fill_error(pw.this.a, -1), b=pw.fill_error(pw.this.b, "e")
+    )
+    expected = T(
+        """
+         a | b
+        10 | a
+        -1 | cdef
+         3 | e
+         2 | e
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        value 2.3 in field "a" is inconsistent with type Int from schema
+        value 11 in field "b" is inconsistent with type String from schema
+        no value for "b" field and no default specified
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (t, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
+def test_python_connector_pk():
+    class TestSchema(pw.Schema):
+        a: int
+        b: str = pw.column_definition(primary_key=True)
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+
+        def run(self):
+            self.next(a=10, b="a")
+            self.next(a=2.3, b="cdef")
+            self.next(a=3, b=11)
+            self.next(a=2)
+
+    t = pw.io.python.read(TestSubject(), schema=TestSchema).select(
+        a=pw.fill_error(pw.this.a, -1), b=pw.fill_error(pw.this.b, "e")
+    )
+    expected = T(
+        """
+         a | b
+        10 | a
+        -1 | cdef
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        value 2.3 in field "a" is inconsistent with type Int from schema
+        error in primary key, skipping the row: value 11 in field "b" is inconsistent with type String from schema
+        error in primary key, skipping the row: no value for "b" field and no default specified
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (t, pw.global_error_log().select(pw.this.message)),
         (expected, expected_errors),
         terminate_on_error=False,
     )

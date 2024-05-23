@@ -16,6 +16,7 @@ mod test_jsonlines;
 mod test_metadata;
 mod test_null_writer;
 mod test_offsets_storage;
+mod test_parser;
 mod test_parser_errors;
 mod test_prev_next;
 mod test_psql_output;

@@ -36,7 +36,7 @@ use xxhash_rust::xxh3::Xxh3 as Hasher;
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
-use crate::connectors::{Offset, OffsetKey, OffsetValue, ParsedEvent};
+use crate::connectors::{Offset, OffsetKey, OffsetValue};
 use crate::deepcopy::DeepCopy;
 use crate::engine::Value;
 use crate::fs_helpers::ensure_directory;
@@ -146,13 +146,38 @@ pub enum DataEventType {
     Upsert,
 }
 
+const FINISH_LITERAL: &str = "*FINISH*";
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ValuesMap {
+    map: HashMap<String, Value>,
+    // TODO: use a vector if performance improvement is needed
+    // then Reader has to be aware of the columns order
+}
+
+impl ValuesMap {
+    const SPECIAL_FIELD_NAME: &'static str = "_pw_special";
+    pub fn is_special(&self, value: &str) -> bool {
+        self.map.len() == 1 && self.map.get(Self::SPECIAL_FIELD_NAME) == Some(&Value::from(value))
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.map.get(key)
+    }
+}
+
+impl From<HashMap<String, Value>> for ValuesMap {
+    fn from(value: HashMap<String, Value>) -> Self {
+        ValuesMap { map: value }
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub enum ReaderContext {
     RawBytes(DataEventType, Vec<u8>),
     TokenizedEntries(DataEventType, Vec<String>),
     KeyValue((Option<Vec<u8>>, Option<Vec<u8>>)),
-    Diff((DataEventType, Option<Value>, Vec<u8>, Option<Vec<u8>>)),
-    PreparedEvent(ParsedEvent),
+    Diff((DataEventType, Option<Vec<Value>>, ValuesMap)),
 }
 
 impl ReaderContext {
@@ -162,11 +187,10 @@ impl ReaderContext {
 
     pub fn from_diff(
         event: DataEventType,
-        key: Option<Value>,
-        raw_bytes: Vec<u8>,
-        metadata_bytes: Option<Vec<u8>>,
+        key: Option<Vec<Value>>,
+        values: ValuesMap,
     ) -> ReaderContext {
-        ReaderContext::Diff((event, key, raw_bytes, metadata_bytes))
+        ReaderContext::Diff((event, key, values))
     }
 
     pub fn from_tokenized_entries(
@@ -187,12 +211,6 @@ pub enum ReadResult {
     NewSource(Option<SourceMetadata>),
     FinishedSource { commit_allowed: bool },
     Data(ReaderContext, Offset),
-}
-
-impl ReadResult {
-    pub fn from_event(event: ParsedEvent, offset: Offset) -> Self {
-        ReadResult::Data(ReaderContext::PreparedEvent(event), offset)
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1399,18 +1417,15 @@ impl Reader for PythonReader {
         }
 
         with_gil_and_pool(|py| {
-            let (event, key, values, metadata): (
-                DataEventType,
-                Option<Value>,
-                Vec<u8>,
-                Option<Vec<u8>>,
-            ) = self
+            let (event, key, values): (DataEventType, Option<Value>, HashMap<String, Value>) = self
                 .subject
                 .borrow(py)
                 .read
                 .call0(py)?
                 .extract(py)
                 .map_err(ReadError::Py)?;
+            let key = key.map(|key| vec![key]);
+            let values: ValuesMap = values.into();
 
             if event != DataEventType::Insert && !self.subject.borrow(py).deletions_enabled {
                 return Err(ReadError::Py(PyValueError::new_err(
@@ -1418,7 +1433,7 @@ impl Reader for PythonReader {
                 )));
             }
 
-            if values == "*FINISH*".as_bytes() {
+            if values.is_special(FINISH_LITERAL) {
                 self.is_finished = true;
                 self.subject.borrow(py).end.call0(py)?;
                 Ok(ReadResult::Finished)
@@ -1434,7 +1449,7 @@ impl Reader for PythonReader {
                 );
 
                 Ok(ReadResult::Data(
-                    ReaderContext::from_diff(event, key, values, metadata),
+                    ReaderContext::from_diff(event, key, values),
                     offset,
                 ))
             }
@@ -2360,7 +2375,7 @@ pub struct SqliteReader {
     column_names: Vec<String>,
 
     last_saved_data_version: Option<i64>,
-    stored_state: HashMap<i64, Vec<Value>>,
+    stored_state: HashMap<i64, ValuesMap>,
     queued_updates: VecDeque<ReadResult>,
 }
 
@@ -2407,21 +2422,30 @@ impl SqliteReader {
         let mut present_rowids = HashSet::new();
         while let Some(row) = rows.next()? {
             let rowid: i64 = row.get(self.column_names.len())?;
-            let mut values = Vec::with_capacity(self.column_names.len());
-            for column_idx in 0..self.column_names.len() {
-                values.push(row.get(column_idx)?);
+            let mut values = HashMap::with_capacity(self.column_names.len());
+            for (column_idx, column_name) in self.column_names.iter().enumerate() {
+                values.insert(column_name.clone(), row.get(column_idx)?);
             }
+            let values: ValuesMap = values.into();
             self.stored_state
                 .entry(rowid)
                 .and_modify(|current_values| {
                     if current_values != &values {
                         let key = vec![Value::Int(rowid)];
-                        self.queued_updates.push_back(ReadResult::from_event(
-                            ParsedEvent::Delete((Some(key.clone()), take(current_values))),
+                        self.queued_updates.push_back(ReadResult::Data(
+                            ReaderContext::from_diff(
+                                DataEventType::Delete,
+                                Some(key.clone()),
+                                take(current_values),
+                            ),
                             EMPTY_OFFSET,
                         ));
-                        self.queued_updates.push_back(ReadResult::from_event(
-                            ParsedEvent::Insert((Some(key), values.clone())),
+                        self.queued_updates.push_back(ReadResult::Data(
+                            ReaderContext::from_diff(
+                                DataEventType::Insert,
+                                Some(key),
+                                values.clone(),
+                            ),
                             EMPTY_OFFSET,
                         ));
                         current_values.clone_from(&values);
@@ -2429,8 +2453,8 @@ impl SqliteReader {
                 })
                 .or_insert_with(|| {
                     let key = vec![Value::Int(rowid)];
-                    self.queued_updates.push_back(ReadResult::from_event(
-                        ParsedEvent::Insert((Some(key), values.clone())),
+                    self.queued_updates.push_back(ReadResult::Data(
+                        ReaderContext::from_diff(DataEventType::Insert, Some(key), values.clone()),
                         EMPTY_OFFSET,
                     ));
                     values
@@ -2443,8 +2467,8 @@ impl SqliteReader {
                 true
             } else {
                 let key = vec![Value::Int(*rowid)];
-                self.queued_updates.push_back(ReadResult::from_event(
-                    ParsedEvent::Delete((Some(key), take(values))),
+                self.queued_updates.push_back(ReadResult::Data(
+                    ReaderContext::from_diff(DataEventType::Delete, Some(key), take(values)),
                     EMPTY_OFFSET,
                 ));
                 false

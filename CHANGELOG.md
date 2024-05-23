@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `next` method to `pw.io.python.ConnectorSubject` (python connector) that enables passing values of any type to the engine, not only values that are json-serializable. The `next` method should be the preferred way of passing values from the python connector.
+
+### Changed
+- Deprecated passing `format` to `pw.io.python.read`. A format of the data is inferred from the method that is used (`next_json`, `next_str`, `next_bytes`) and from the provided schema.
+
 ### Removed
 
 - Removed `pw.numba_apply` and `numba` dependency.
@@ -12,6 +18,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 
 - Fixed `pw.this` desugaring bug, where `__getitem__` in `.ix` context was not working properly.
+- `pw.io.sqlite.read` now checks if the data matches the passed schema.
 
 ## [0.11.1] - 2024-05-16
 

@@ -3,6 +3,7 @@ import json
 import queue
 import threading
 import time
+import warnings
 from abc import ABC, abstractmethod
 from queue import Queue
 from typing import Any
@@ -40,8 +41,7 @@ class ConnectorSubject(ABC):
     :py:meth:`run` function responsible for filling the buffer with data.
     This function will be started by pathway engine in a separate thread.
 
-    In order to send a message one of the methods
-    :py:meth:`next_json`, :py:meth:`next_str`, :py:meth:`next_bytes` can be used.
+    In order to send a message :py:meth:`next` method can be used.
 
     If the subject won't delete records, set the class property ``deletions_enabled``
     to ``False`` as it may help to improve the performance.
@@ -59,7 +59,7 @@ class ConnectorSubject(ABC):
     >>> class MySubject(ConnectorSubject):
     ...     def run(self) -> None:
     ...         for i in range(4):
-    ...             self.next_json({"a": i, "b": f"x{i}"})
+    ...             self.next(a=i, b=f"x{i}")
     ...     @property
     ...     def _deletions_enabled(self) -> bool:
     ...         return False
@@ -80,6 +80,7 @@ class ConnectorSubject(ABC):
     _thread: threading.Thread | None
     _exception: BaseException | None
     _already_used: bool
+    _pw_format: str
 
     def __init__(self) -> None:
         self._buffer = Queue()
@@ -101,50 +102,95 @@ class ConnectorSubject(ABC):
         """
         return True
 
+    def next(self, **kwargs) -> None:
+        """Sends a message to the enigne.
+
+        The arguments should be compatible with the schema passed to :py:func:`~pathway.io.python.read`.
+        Values for all fields should be passed to this method unless they have a default value
+        specified in the schema.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import pandas as pd
+        >>>
+        >>> class InputSchema(pw.Schema):
+        ...     a: pw.DateTimeNaive
+        ...     b: bytes
+        ...     c: int
+        ...
+        >>> class InputSubject(pw.io.python.ConnectorSubject):
+        ...     def run(self):
+        ...         self.next(a=pd.Timestamp("2021-03-21T18:34:12"), b="abc".encode(), c=3)
+        ...         self.next(a=pd.Timestamp("2022-04-01T11:12:12"), b="def".encode(), c=42)
+        ...
+        >>> t = pw.io.python.read(InputSubject(), schema=InputSchema)
+        >>> pw.debug.compute_and_print(t, include_id=False)
+        a                   | b      | c
+        2021-03-21 18:34:12 | b'abc' | 3
+        2022-04-01 11:12:12 | b'def' | 42
+        """
+        self._add_inner(None, kwargs)
+
     def next_json(self, message: dict) -> None:
         """Sends a message.
 
         Args:
             message: Dict representing json.
         """
-        self.next_str(json.dumps(message, ensure_ascii=False))
+        if self._pw_format != "json":
+            warnings.warn(
+                f"Using `next_json` when format is {self._pw_format!r} is deprecated. Please use `next` instead.",
+                DeprecationWarning,
+            )
+        self._add(
+            None, json.dumps(message, ensure_ascii=False).encode(encoding="utf-8")
+        )
 
     def next_str(self, message: str) -> None:
         """Sends a message.
 
         Args:
-            message: json string.
+            message: a message represented as a string.
         """
-        self.next_bytes(message.encode(encoding="utf-8"))
+        if self._pw_format != "raw":
+            warnings.warn(
+                f"Using `next_str` when format is {self._pw_format!r} is deprecated. Please use `next` instead.",
+                DeprecationWarning,
+            )
+        self._add(None, message.encode(encoding="utf-8"))
 
     def next_bytes(self, message: bytes) -> None:
         """Sends a message.
 
         Args:
-            message: bytes encoded json string.
+            message: a message represented as bytes.
         """
+        if self._pw_format != "binary":
+            warnings.warn(
+                f"Using `next_bytes` when format is {self._pw_format!r} is deprecated. Please use `next` instead.",
+                DeprecationWarning,
+            )
         self._add(None, message)
 
     def commit(self) -> None:
         """Sends a commit message."""
-        event_type = (
-            DataEventType.INSERT
-            if self._session_type == SessionType.NATIVE
-            else DataEventType.UPSERT
-        )
-        self._buffer.put((event_type, None, b"*COMMIT*", None))
+        self._send_special_message("*COMMIT*")
 
     def close(self) -> None:
         """Sends a sentinel message.
 
         Should be called to indicate that no new messages will be sent.
         """
+        self._send_special_message("*FINISH*")
+
+    def _send_special_message(self, msg: str) -> None:
         event_type = (
             DataEventType.INSERT
             if self._session_type == SessionType.NATIVE
             else DataEventType.UPSERT
         )
-        self._buffer.put((event_type, None, b"*FINISH*", None))
+        self._buffer.put((event_type, None, {"_pw_special": msg}))
 
     def start(self) -> None:
         """Runs a separate thread with function feeding data into buffer.
@@ -178,25 +224,46 @@ class ConnectorSubject(ABC):
     def _add(
         self, key: Pointer | None, message: bytes, metadata: bytes | None = None
     ) -> None:
+        self._add_inner(key, self._get_values_dict(message, metadata))
+
+    def _get_values_dict(
+        self, message: bytes, metadata: bytes | None
+    ) -> dict[str, Any]:
+        match self._pw_format:
+            case "json":
+                values = json.loads(message.decode(encoding="utf-8"))
+            case "raw":
+                values = {"data": message.decode(encoding="utf-8")}
+            case _:
+                assert self._pw_format == "binary"
+                values = {"data": message}
+        if metadata is not None:
+            values["_metadata"] = json.loads(metadata.decode(encoding="utf-8"))
+        return values
+
+    def _add_inner(self, key: Pointer | None, values: dict[str, Any]) -> None:
         if self._session_type == SessionType.NATIVE:
-            self._buffer.put((DataEventType.INSERT, key, message, metadata))
+            self._buffer.put((DataEventType.INSERT, key, values))
         elif self._session_type == SessionType.UPSERT:
             if not self._deletions_enabled:
                 raise ValueError(
-                    f"Trying to upsert a row in {type(self)} but deletions_enabled is set to False."
+                    f"Trying to modify a row in {type(self)} but deletions_enabled is set to False."
                 )
-            self._buffer.put((DataEventType.UPSERT, key, message, metadata))
+            self._buffer.put((DataEventType.UPSERT, key, values))
         else:
             raise NotImplementedError(f"session type {self._session_type} not handled")
 
     def _remove(
         self, key: Pointer, message: bytes, metadata: bytes | None = None
     ) -> None:
+        self._remove_inner(key, self._get_values_dict(message, metadata))
+
+    def _remove_inner(self, key: Pointer | None, values: dict[str, Any]) -> None:
         if not self._deletions_enabled:
             raise ValueError(
                 f"Trying to delete a row in {type(self)} but deletions_enabled is set to False."
             )
-        self._buffer.put((DataEventType.DELETE, key, message, metadata))
+        self._buffer.put((DataEventType.DELETE, key, values))
 
     def _read(self) -> Any:
         """Allows to retrieve data from a buffer.
@@ -236,7 +303,7 @@ def read(
     subject: ConnectorSubject,
     *,
     schema: type[Schema] | None = None,
-    format: str = "json",
+    format: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data=None,
     value_columns: list[str] | None = None,
@@ -251,8 +318,9 @@ def read(
     Args:
         subject: An instance of a :py:class:`~pathway.python.ConnectorSubject`.
         schema: Schema of the resulting table.
-        format: Format of the data produced by a subject, "json", "raw" or "binary". In case of
-            a "raw" format, table with single "data" column will be produced.
+        format: Deprecated. Pass values of proper types to ``subject``'s ``next`` instead.
+            Format of the data produced by a subject, "json", "raw" or "binary". In case of
+            a "raw"/"binary" format, table with single "data" column will be produced.
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
@@ -277,12 +345,22 @@ computations from the moment they were terminated last time.
         Table: The table read.
     """
 
+    if format is None:
+        format = "json"  # previous default
+    else:
+        warnings.warn(
+            "Setting `format` in Python connector is deprecated."
+            + " Please just pass values of proper types to the `next` method.",
+            DeprecationWarning,
+        )
+
     if subject._already_used:
         raise ValueError(
             "You can't use the same ConnectorSubject object in more than one Python connector."
             + "If you want to use the same ConnectorSubject twice, create two separate objects of this class."
         )
     subject._already_used = True
+    subject._pw_format = format
 
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
@@ -306,9 +384,8 @@ computations from the moment they were terminated last time.
     )
     data_format = api.DataFormat(
         **api_schema,
-        format_type=data_format_type,
+        format_type="transparent",
         session_type=subject._session_type,
-        parse_utf8=(format != "binary"),
     )
     mode = (
         api.ConnectorMode.STREAMING

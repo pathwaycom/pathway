@@ -533,6 +533,57 @@ pub enum Type {
     Tuple,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CompoundType {
+    pub type_: Type,
+    pub is_optional: bool,
+}
+
+impl CompoundType {
+    pub fn new(type_: Type, is_optional: bool) -> Self {
+        Self { type_, is_optional }
+    }
+
+    pub fn matches(&self, value: &Value) -> bool {
+        if self.type_ == Type::Any {
+            true
+        } else if let Some(value_type) = value.simple_type().to_type() {
+            self.type_ == value_type
+        } else {
+            false
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn convert_value(&self, value: Value) -> DynResult<Value> {
+        if self.matches(&value) || self.is_optional && value == Value::None {
+            return Ok(value);
+        }
+        match (value, self.type_) {
+            (Value::Int(i), Type::Float) => Ok(Value::from(i as f64)),
+            (value, _) => Err(DataError::IncorrectType {
+                value,
+                type_: *self,
+            }
+            .into()),
+        }
+    }
+
+    pub fn get_main_type(&self) -> Type {
+        self.type_
+    }
+}
+
+impl Display for CompoundType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_optional {
+            write!(f, "{:?} | None", self.type_)
+        } else {
+            write!(f, "{:?}", self.type_)
+        }
+    }
+}
+
 impl Value {
     #[must_use]
     pub fn simple_type(&self) -> SimpleType {

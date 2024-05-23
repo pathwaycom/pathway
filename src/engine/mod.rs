@@ -10,7 +10,7 @@ pub use self::error::{DataError, Error, Result};
 pub mod report_error;
 
 pub mod value;
-pub use self::value::{Key, KeyImpl, ShardPolicy, Type, Value};
+pub use self::value::{CompoundType, Key, KeyImpl, ShardPolicy, Type, Value};
 
 pub mod reduce;
 pub use reduce::Reducer;

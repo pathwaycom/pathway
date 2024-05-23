@@ -5,6 +5,7 @@ use std::error;
 use std::fmt;
 use std::result;
 
+use super::CompoundType;
 use super::{Key, Value};
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
 
@@ -212,6 +213,15 @@ impl fmt::Display for Trace {
     }
 }
 
+pub fn limit_length(mut s: String, max_length: usize) -> String {
+    if s.len() > max_length {
+        s.truncate(max_length);
+        s + "..."
+    } else {
+        s
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 #[allow(clippy::module_name_repetitions)]
@@ -297,6 +307,9 @@ pub enum DataError {
 
     #[error("mixing types in npsum is not allowed")]
     MixingTypesInNpSum,
+
+    #[error("value {} is inconsistent with type {type_}", limit_length(format!("{value}"), 500))]
+    IncorrectType { value: Value, type_: CompoundType },
 
     #[error(transparent)]
     Other(DynError),

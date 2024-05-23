@@ -4192,7 +4192,7 @@ impl DataFormat {
         }
     }
 
-    fn schema(&self, py: pyo3::Python) -> HashMap<String, InnerSchemaField> {
+    fn schema(&self, py: pyo3::Python) -> PyResult<HashMap<String, InnerSchemaField>> {
         let mut types = HashMap::new();
         for field in &self.value_fields {
             let borrowed_field = field.borrow(py);
@@ -4201,14 +4201,21 @@ impl DataFormat {
                 borrowed_field.as_inner_schema_field(),
             );
         }
-        types
+        for name in self.key_field_names.as_ref().unwrap_or(&vec![]) {
+            if !types.contains_key(name) {
+                return Err(PyValueError::new_err(format!(
+                    "key field {name} not found in schema"
+                )));
+            }
+        }
+        Ok(types)
     }
 
     fn construct_parser(&self, py: pyo3::Python) -> PyResult<Box<dyn Parser>> {
         match self.format_type.as_ref() {
             "dsv" => {
                 let settings = self.construct_dsv_settings(py)?;
-                Ok(settings.parser(self.schema(py)))
+                Ok(settings.parser(self.schema(py)?))
             }
             "debezium" => {
                 let parser = DebeziumMessageParser::new(
@@ -4225,7 +4232,7 @@ impl DataFormat {
                     self.value_field_names(py),
                     self.column_paths.clone().unwrap_or_default(),
                     self.field_absence_is_error,
-                    self.schema(py),
+                    self.schema(py)?,
                     self.session_type,
                 );
                 Ok(Box::new(parser))
@@ -4235,7 +4242,12 @@ impl DataFormat {
                 self.parse_utf8,
                 self.session_type,
             ))),
-            "transparent" => Ok(Box::new(TransparentParser::new(self.value_fields.len()))),
+            "transparent" => Ok(Box::new(TransparentParser::new(
+                self.key_field_names.clone(),
+                self.value_field_names(py),
+                self.schema(py)?,
+                self.session_type,
+            ))),
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
     }

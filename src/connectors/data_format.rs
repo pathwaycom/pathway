@@ -11,10 +11,10 @@ use std::mem::take;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Diff, KeyValue, PreparedEvent, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{Diff, KeyValue, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
-use crate::engine::error::{DynError, DynResult};
-use crate::engine::{Key, Result, Timestamp, Type, Value};
+use crate::engine::error::{limit_length, DynError, DynResult};
+use crate::engine::{CompoundType, DataError, Key, Result, Timestamp, Type, Value};
 
 use itertools::Itertools;
 use log::error;
@@ -50,6 +50,29 @@ pub enum ParsedEventWithErrors {
 }
 
 impl ParsedEventWithErrors {
+    pub fn new(
+        session_type: SessionType,
+        data_event_type: DataEventType,
+        key: KeyFieldsWithErrors,
+        values: ValueFieldsWithErrors,
+    ) -> Self {
+        match session_type {
+            SessionType::Native => {
+                match data_event_type {
+                    DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
+                    DataEventType::Delete => ParsedEventWithErrors::Delete((key, values)),
+                    DataEventType::Upsert => panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session"),
+                }
+            }
+            SessionType::Upsert => {
+                match data_event_type {
+                    DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
+                    DataEventType::Delete => ParsedEventWithErrors::Upsert((key, None)),
+                    DataEventType::Upsert => ParsedEventWithErrors::Upsert((key, Some(values))),
+                }
+            }
+        }
+    }
     pub fn remove_errors(self, logic: &ErrorRemovalLogic) -> DynResult<ParsedEvent> {
         match self {
             Self::AdvanceTime => Ok(ParsedEvent::AdvanceTime),
@@ -102,33 +125,6 @@ impl ParsedEvent {
     }
 }
 
-impl From<ParsedEvent> for ParsedEventWithErrors {
-    fn from(value: ParsedEvent) -> Self {
-        match value {
-            ParsedEvent::AdvanceTime => Self::AdvanceTime,
-            ParsedEvent::Insert((key, values)) => {
-                Self::Insert((key.map(Ok), values.into_iter().map(Ok).collect()))
-            }
-            ParsedEvent::Upsert((key, values)) => Self::Upsert((
-                key.map(Ok),
-                values.map(|values| values.into_iter().map(Ok).collect()),
-            )),
-            ParsedEvent::Delete((key, values)) => {
-                Self::Delete((key.map(Ok), values.into_iter().map(Ok).collect()))
-            }
-        }
-    }
-}
-
-fn limit_length(mut s: String, max_length: usize) -> String {
-    if s.len() > max_length {
-        s.truncate(max_length);
-        s + "..."
-    } else {
-        s
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -138,23 +134,22 @@ pub enum ParseError {
         requested: Vec<String>,
     },
 
-    #[error("failed to parse value {value:?} at field {field_name:?} according to the type {type_:?} in schema: {error}")]
+    #[error("failed to parse value {value:?} at field {field_name:?} according to the type {type_} in schema: {error}")]
     SchemaNotSatisfied {
         value: String,
         field_name: String,
-        type_: Type,
+        type_: CompoundType,
         error: DynError,
     },
 
     #[error("too small number of csv tokens in the line: {0}")]
     UnexpectedNumberOfCsvTokens(usize),
 
-    #[error("failed to create a field {field_name:?} with type {type_:?}{} from the following json payload: {}", if *is_optional {" | None"} else {""}, limit_length(format!("{payload}"), 500))]
+    #[error("failed to create a field {field_name:?} with type {type_} from the following json payload: {}", limit_length(format!("{payload}"), 500))]
     FailedToParseFromJson {
         field_name: String,
         payload: JsonValue,
-        type_: Type,
-        is_optional: bool,
+        type_: CompoundType,
     },
 
     #[error("key-value pair has unexpected number of tokens: {0} instead of 2")]
@@ -188,11 +183,21 @@ pub enum ParseError {
     #[error("received plaintext message is not in utf-8 format: {0}")]
     Utf8DecodeFailed(#[from] Utf8Error),
 
-    #[error("parsing {0:?} from an external datasource is not supported")]
-    UnparsableType(Type),
+    #[error("parsing {0} from an external datasource is not supported")]
+    UnparsableType(CompoundType),
 
     #[error("error in primary key, skipping the row: {0}")]
     ErrorInKey(DynError),
+
+    #[error("no value for {field_name:?} field and no default specified")]
+    NoDefault { field_name: String },
+
+    #[error("value {} in field {field_name:?} is inconsistent with type {type_} from schema", limit_length(format!("{value}"), 500))]
+    IncorrectType {
+        value: Value,
+        field_name: String,
+        type_: CompoundType,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -218,29 +223,49 @@ impl From<DynError> for ParseError {
 pub type ParseResult = DynResult<Vec<ParsedEventWithErrors>>;
 type PrepareStringResult = Result<String, ParseError>;
 
-#[derive(Clone, Debug)]
+fn maybe_add_field_name(err: DynError, field_name: &str) -> DynError {
+    match err.into() {
+        DataError::IncorrectType { value, type_ } => ParseError::IncorrectType {
+            value,
+            field_name: field_name.to_string(),
+            type_,
+        }
+        .into(),
+        err => err.into(),
+    }
+}
+
+#[derive(Clone, Default, Debug)]
 pub struct InnerSchemaField {
-    type_: Type,
-    is_optional: bool,
+    type_: CompoundType,
     default: Option<Value>, // None means that there is no default for the field
 }
 
 impl InnerSchemaField {
     pub fn new(type_: Type, is_optional: bool, default: Option<Value>) -> Self {
         Self {
-            type_,
-            is_optional,
+            type_: CompoundType::new(type_, is_optional),
             default,
         }
     }
-}
 
-impl Default for &InnerSchemaField {
-    fn default() -> &'static InnerSchemaField {
-        &InnerSchemaField {
-            type_: Type::Any,
-            is_optional: false,
-            default: None,
+    pub fn adjust_value(&self, name: &str, value: Option<Value>) -> DynResult<Value> {
+        match value {
+            Some(value) => {
+                if self.type_.get_main_type() == Type::Json {
+                    Ok(Value::from(serialize_value_to_json(&value)?))
+                } else {
+                    self.type_
+                        .convert_value(value.clone())
+                        .map_err(|err| maybe_add_field_name(err, name))
+                }
+            }
+            None => self.default.clone().ok_or(
+                ParseError::NoDefault {
+                    field_name: name.to_string(),
+                }
+                .into(),
+            ),
         }
     }
 }
@@ -412,12 +437,13 @@ fn parse_with_type(
     field_name: &str,
 ) -> DynResult<Value> {
     if let Some(default) = &schema.default {
-        if raw_value.is_empty() && !matches!(schema.type_, Type::Any | Type::String) {
+        if raw_value.is_empty() && !matches!(schema.type_.get_main_type(), Type::Any | Type::String)
+        {
             return Ok(default.clone());
         }
     }
 
-    match schema.type_ {
+    match schema.type_.get_main_type() {
         Type::Any | Type::String => Ok(Value::from(raw_value)),
         Type::Bool => Ok(Value::Bool(parse_bool_advanced(raw_value).map_err(
             |e| ParseError::SchemaNotSatisfied {
@@ -454,17 +480,6 @@ fn parse_with_type(
             Ok(Value::from(json))
         }
         _ => Err(ParseError::UnparsableType(schema.type_).into()),
-    }
-}
-
-fn parse_metadata(bytes: Option<&[u8]>) -> DynResult<Option<Value>> {
-    if let Some(bytes) = bytes {
-        let Ok(parsed_value) = serde_json::from_slice::<JsonValue>(bytes) else {
-            return Err(ParseError::FailedToParseMetadata.into());
-        };
-        Ok(Some(parsed_value.into()))
-    } else {
-        Ok(None)
     }
 }
 
@@ -577,7 +592,13 @@ impl DsvParser {
         for index in indices {
             let token = match index {
                 DsvColumnIndex::Index(index) => {
-                    let schema_item = indexed_schema.get(index).unwrap_or_default();
+                    let default_schema;
+                    let schema_item = if let Some(schema_item) = indexed_schema.get(index) {
+                        schema_item
+                    } else {
+                        default_schema = InnerSchemaField::default();
+                        &default_schema
+                    };
                     parse_with_type(&tokens[*index], schema_item, &header[*index])
                 }
                 DsvColumnIndex::Metadata => Ok(self.metadata_column_value.clone()),
@@ -651,7 +672,7 @@ impl Parser for DsvParser {
                 Some(bytes) => self.parse_bytes_simple(DataEventType::Insert, bytes), // In Kafka we only have additions now
                 None => Err(ParseError::EmptyKafkaPayload.into()),
             },
-            Diff(_) | PreparedEvent(_) => Err(ParseError::UnsupportedReaderContext.into()),
+            Diff(_) => Err(ParseError::UnsupportedReaderContext.into()),
         }
     }
 
@@ -717,13 +738,7 @@ impl Parser for IdentityParser {
                     None => return Err(ParseError::EmptyKafkaPayload.into()),
                 }
             }
-            Diff((addition, key, values, metadata)) => (
-                *addition,
-                key.as_ref().map(|k| Ok(vec![k.clone()])),
-                self.prepare_bytes(values),
-                parse_metadata(metadata.as_deref()),
-            ),
-            TokenizedEntries(_, _) | PreparedEvent(_) => {
+            Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
             }
         };
@@ -936,27 +951,6 @@ fn parse_value_from_json(value: &JsonValue) -> Option<Value> {
     }
 }
 
-fn value_matches_type(value: &Value, type_: Type) -> bool {
-    if type_ == Type::Any {
-        true
-    } else if let Some(self_type) = value.simple_type().to_type() {
-        type_ == self_type
-    } else {
-        false
-    }
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn convert_value_to_proper_type(value: Value, type_: Type, is_optional: bool) -> Option<Value> {
-    if value_matches_type(&value, type_) || (is_optional && value == Value::None) {
-        return Some(value);
-    }
-    match (value, type_) {
-        (Value::Int(i), Type::Float) => Some(Value::from(i as f64)),
-        (_, _) => None,
-    }
-}
-
 fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
     match value {
         Value::None => Ok(JsonValue::Null),
@@ -1011,15 +1005,11 @@ fn values_by_names_from_json(
 ) -> ValueFieldsWithErrors {
     let mut parsed_values = Vec::with_capacity(field_names.len());
     for value_field in field_names {
-        let (default_value, dtype, dtype_is_optional) = {
+        let (default_value, dtype) = {
             if let Some(schema_item) = schema.get(value_field) {
-                (
-                    schema_item.default.as_ref(),
-                    schema_item.type_,
-                    schema_item.is_optional,
-                )
+                (schema_item.default.as_ref(), schema_item.type_)
             } else {
-                (None, Type::Any, false)
+                (None, CompoundType::default())
             }
         };
 
@@ -1027,21 +1017,19 @@ fn values_by_names_from_json(
             Ok(metadata_column_value.clone())
         } else if let Some(path) = column_paths.get(value_field) {
             if let Some(value) = payload.pointer(path) {
-                match dtype {
+                match dtype.get_main_type() {
                     Type::Json => Ok(Value::from(value.clone())),
                     _ => parse_value_from_json(value)
-                        .and_then(|value| {
-                            convert_value_to_proper_type(value, dtype, dtype_is_optional)
-                        })
                         .ok_or_else(|| {
                             ParseError::FailedToParseFromJson {
                                 field_name: value_field.to_string(),
                                 payload: value.clone(),
                                 type_: dtype,
-                                is_optional: dtype_is_optional,
                             }
                             .into()
-                        }),
+                        })
+                        .and_then(|value| dtype.convert_value(value))
+                        .map_err(|err| maybe_add_field_name(err, value_field)),
                 }
             } else if let Some(default) = default_value {
                 Ok(default.clone())
@@ -1059,21 +1047,19 @@ fn values_by_names_from_json(
             let value_specified_in_json = payload.get(value_field).is_some();
 
             if value_specified_in_json {
-                match dtype {
+                match dtype.get_main_type() {
                     Type::Json => Ok(Value::from(payload[&value_field].clone())),
                     _ => parse_value_from_json(&payload[&value_field])
-                        .and_then(|value| {
-                            convert_value_to_proper_type(value, dtype, dtype_is_optional)
-                        })
                         .ok_or_else(|| {
                             ParseError::FailedToParseFromJson {
                                 field_name: value_field.to_string(),
                                 payload: payload[&value_field].clone(),
                                 type_: dtype,
-                                is_optional: dtype_is_optional,
                             }
                             .into()
-                        }),
+                        })
+                        .and_then(|value| dtype.convert_value(value))
+                        .map_err(|err| maybe_add_field_name(err, value_field)),
                 }
             } else if let Some(default) = default_value {
                 Ok(default.clone())
@@ -1247,7 +1233,7 @@ impl Parser for DebeziumMessageParser {
                 };
                 (key, value)
             }
-            Diff(_) | TokenizedEntries(_, _) | PreparedEvent(_) => {
+            Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
         };
@@ -1358,12 +1344,7 @@ impl Parser for JsonLinesParser {
                     return Err(ParseError::EmptyKafkaPayload.into());
                 }
             }
-            Diff((event, key, line, _)) => {
-                let line = prepare_plaintext_string(line)?;
-                let key = key.as_ref().map(|k| Ok(vec![k.clone()]));
-                (*event, key, line)
-            }
-            TokenizedEntries(..) | PreparedEvent(_) => {
+            Diff(_) | TokenizedEntries(..) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
         };
@@ -1406,22 +1387,7 @@ impl Parser for JsonLinesParser {
             &self.metadata_column_value,
         );
 
-        let event = match self.session_type {
-            SessionType::Native => {
-                match data_event {
-                    DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
-                    DataEventType::Delete => ParsedEventWithErrors::Delete((key, values)),
-                    DataEventType::Upsert => panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session"),
-                }
-            }
-            SessionType::Upsert => {
-                match data_event {
-                    DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
-                    DataEventType::Delete => ParsedEventWithErrors::Upsert((key, None)),
-                    DataEventType::Upsert => ParsedEventWithErrors::Upsert((key, Some(values))),
-                }
-            }
-        };
+        let event = ParsedEventWithErrors::new(self.session_type, data_event, key, values);
 
         Ok(vec![event])
     }
@@ -1443,33 +1409,82 @@ impl Parser for JsonLinesParser {
     }
 }
 
-/// Receives `ParsedEvent` objects directly from Reader and passes them
-/// further without any changes.
+/// Receives values directly from a Reader and passes them
+/// further only making adjustments according to the schema.
 ///
-/// This is useful for cases where there is no benefit from Reader/Parser
-/// separation.
+/// It is useful when no raw values parsing is needed.
 pub struct TransparentParser {
-    column_count: usize,
+    key_field_names: Option<Vec<String>>,
+    value_field_names: Vec<String>,
+    schema: HashMap<String, InnerSchemaField>,
+    session_type: SessionType,
 }
 
 impl TransparentParser {
-    pub fn new(column_count: usize) -> Self {
-        Self { column_count }
+    pub fn new(
+        key_field_names: Option<Vec<String>>,
+        value_field_names: Vec<String>,
+        schema: HashMap<String, InnerSchemaField>,
+        session_type: SessionType,
+    ) -> TransparentParser {
+        TransparentParser {
+            key_field_names,
+            value_field_names,
+            schema,
+            session_type,
+        }
     }
 }
 
 impl Parser for TransparentParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        match data {
-            PreparedEvent(result) => Ok(vec![result.clone().into()]),
-            _ => Err(ParseError::UnsupportedReaderContext.into()),
+        let Diff((data_event, key, values)) = data else {
+            return Err(ParseError::UnsupportedReaderContext.into());
+        };
+        if values.is_special(COMMIT_LITERAL) {
+            return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
         }
+        let key = key
+            .clone()
+            .map(Ok)
+            .or(self.key_field_names.as_ref().map(|key_field_names| {
+                key_field_names
+                    .iter()
+                    .map(|name| {
+                        self.schema
+                        .get(name)
+                        .expect(
+                            "there should be an entry in the schema for name in key_field_names",
+                        )
+                        .adjust_value(name, values.get(name).cloned())
+                    })
+                    .collect()
+            }));
+
+        let values: Vec<_> = self
+            .value_field_names
+            .iter()
+            .map(|name| {
+                self.schema
+                    .get(name)
+                    .expect("there should be an entry in the schema for name in value_field_names")
+                    .adjust_value(name, values.get(name).cloned())
+            })
+            .collect();
+
+        let event = ParsedEventWithErrors::new(self.session_type, *data_event, key, values);
+
+        Ok(vec![event])
     }
 
     fn on_new_source_started(&mut self, _metadata: Option<&SourceMetadata>) {}
 
     fn column_count(&self) -> usize {
-        self.column_count
+        self.value_field_names.len()
+    }
+
+    fn session_type(&self) -> SessionType {
+        self.session_type
     }
 }
 
