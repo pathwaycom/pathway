@@ -39,11 +39,11 @@ dependencies = [
     "opentelemetry-api >= 1.22.0",
     "opentelemetry-sdk >= 1.22.0",
     "opentelemetry-exporter-otlp-proto-grpc >= 1.22.0",
-    "airbyte-serverless == 0.23",
     "fs >= 2.4.16",
     "async-lru >= 2.0.4",
     "networkx >= 3.2.1",
     "google-cloud-pubsub >= 2.21.1",
+    "google-cloud-bigquery",
 ]
 
 [project.optional-dependencies]
@@ -74,6 +74,7 @@ all = [
     "pathway[xpack-llm-local]",
     "pathway[xpack-llm-docs]",
     "pathway[xpack-sharepoint]",
+    "pathway[airbyte]",
 ]
 tests = [
     "pytest >= 8.0.0, < 9.0.0",
@@ -84,6 +85,12 @@ tests = [
     "kafka-python >= 2.0.2",
     "python-magic",
     "pathway[all]",
+]
+airbyte = [
+    "google-cloud-run",
+    "google-cloud-secret-manager",
+    "pyyaml",
+    "jinja2",
 ]
 
 [project.urls]

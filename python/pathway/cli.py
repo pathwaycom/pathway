@@ -9,6 +9,7 @@ from typing import Any, NoReturn
 import click
 
 import pathway as pw
+from pathway.optional_import import optional_imports
 
 
 def plural(n, singular, plural):
@@ -174,6 +175,32 @@ def replay(
     if continue_after_replay:
         env["PATHWAY_CONTINUE_AFTER_REPLAY"] = "true"
     spawn_program(threads, processes, first_port, program, arguments, env)
+
+
+@cli.group()
+def airbyte() -> None:
+    pass
+
+
+@airbyte.command()
+@click.argument("connection")
+@click.option(
+    "--image",
+    default="airbyte/source-faker:0.1.4",
+    help="Any Public Docker Airbyte Source. Example: `airbyte/source-faker:0.1.4`. "
+    '(see connectors list at: "https://hub.docker.com/search?q=airbyte%2Fsource-" )',
+)
+def create_source(connection, image):
+    with optional_imports("airbyte"):
+        from pathway.third_party.airbyte_serverless.connections import (
+            ConnectionFromFile,
+        )
+
+    connection = ConnectionFromFile(connection)
+    connection.init_yaml_config(image, "print", "cloud_run_job")
+    click.echo(
+        f"Connection `{connection.name}` with source `{image}` created successfully"
+    )
 
 
 def main() -> NoReturn:

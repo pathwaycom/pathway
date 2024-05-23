@@ -19,7 +19,7 @@ import pathway as pw
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
-from pathway.io.airbyte import _PathwayAirbyteDestination
+from pathway.io.airbyte.logic import _PathwayAirbyteDestination
 from pathway.tests.utils import (
     CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
