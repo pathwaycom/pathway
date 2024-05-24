@@ -2336,7 +2336,7 @@ def test_python_connector_metadata():
         pw.this.data, createdAt=pw.this._metadata["createdAt"].as_int()
     )
 
-    table.schema.assert_equal_to(OutputSchema)
+    table.schema.assert_matches_schema(OutputSchema)
     assert_table_equality(
         T(
             """

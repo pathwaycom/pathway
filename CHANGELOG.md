@@ -6,6 +6,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `pathway.assert_table_has_schema` and `pathway.table_transformer` now accept `allow_subtype` argument, which, if True, allows column types in the Table be subtypes of types in the Schema.
 - `next` method to `pw.io.python.ConnectorSubject` (python connector) that enables passing values of any type to the engine, not only values that are json-serializable. The `next` method should be the preferred way of passing values from the python connector.
 
 ### Changed

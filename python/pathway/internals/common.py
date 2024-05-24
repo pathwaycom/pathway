@@ -477,6 +477,7 @@ def assert_table_has_schema(
     *,
     allow_superset: bool = True,
     ignore_primary_keys: bool = True,
+    allow_subtype: bool = True,
 ) -> None:
     """
     Asserts that the schema of the table is equivalent to the schema given as an argument.
@@ -488,6 +489,8 @@ def assert_table_has_schema(
             in schema. The default value is True.
         ignore_primary_keys: if True, the assert won't check whether table and schema
             have the same primary keys. The default value is True.
+        allow_subtype: if True, types in the Table can be subtypes of types in the schema.
+            The default value is True.
 
     Example:
 
@@ -505,8 +508,11 @@ def assert_table_has_schema(
     ... )
     >>> pw.assert_table_has_schema(t2, schema)
     """
-    table.schema.assert_equal_to(
-        schema, allow_superset=allow_superset, ignore_primary_keys=ignore_primary_keys
+    table.schema.assert_matches_schema(
+        schema,
+        allow_superset=allow_superset,
+        ignore_primary_keys=ignore_primary_keys,
+        allow_subtype=allow_subtype,
     )
 
 
@@ -519,6 +525,7 @@ def table_transformer(
     *,
     allow_superset: bool | Mapping[str, bool] = True,
     ignore_primary_keys: bool | Mapping[str, bool] = True,
+    allow_subtype: bool | Mapping[str, bool] = True,
     locals: dict[str, Any] | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]: ...
 
@@ -528,6 +535,7 @@ def table_transformer(
     *,
     allow_superset: bool | Mapping[str, bool] = True,
     ignore_primary_keys: bool | Mapping[str, bool] = True,
+    allow_subtype: bool | Mapping[str, bool] = True,
     locals: dict[str, Any] | None = None,
 ) -> Callable[P, T] | Callable[[Callable[P, T]], Callable[P, T]]:
     """
@@ -539,15 +547,22 @@ def table_transformer(
     Args:
         allow_superset: if True, the columns of the table can be a superset of columns
             in schema. Can be given either as a bool, and this value is then used for
-            all tables, or for each argument separately, by providing a dict whose keys
+            all tables, or for each table separately, by providing a dict whose keys
             are names of arguments, and values are bools specifying value of allow_superset
             for this argument. In the latter case to provide value for return value, provide
             value for key "return". The default value is True.
         ignore_primary_keys: if True, the assert won't check whether table and schema
             have the same primary keys. Can be given either as a bool, and this value is then used for
-            all tables, or for each argument separately, by providing a dict whose keys
+            all tables, or for each table separately, by providing a dict whose keys
             are names of arguments, and values are bools specifying value of ignore_primary_keys
-            for this argument. The default value is True.
+            for this argument. In the latter case to provide value for return value,
+            provide value for key "return". The default value is True.
+        allow_subtype: if True, types in the Table can be subtypes of types in the schema.
+            Can be given either as a bool, and this value is then used for
+            all tables, or for each table separately, by providing a dict whose keys
+            are names of arguments, and values are bools specifying value of allow_subtype
+            for this argument. In the latter case to provide value for return value,
+            provide value for key "return". The default value is True.
         locals: when Schema class, which is used as a parameter to `pw.Table` is defined locally,
             you need to pass locals() as locals argument.
 
@@ -573,23 +588,19 @@ def table_transformer(
     5 | 2 | 7
     """
 
-    def decorator(f):
+    def decorator(f: Callable[P, T]) -> Callable[P, T]:
         annotations = get_type_hints(f, localns=locals)
         signature = inspect.signature(f)
 
-        if isinstance(allow_superset, bool):
-            allow_superset_dict: Mapping[str, bool] = defaultdict(
-                lambda: allow_superset
-            )
-        else:
-            allow_superset_dict = allow_superset
+        def convert_to_dict(value: bool | Mapping) -> Mapping:
+            if isinstance(value, bool):
+                return defaultdict(lambda: value)
+            else:
+                return value
 
-        if isinstance(ignore_primary_keys, bool):
-            ignore_primary_keys_dict: Mapping[str, bool] = defaultdict(
-                lambda: ignore_primary_keys
-            )
-        else:
-            ignore_primary_keys_dict = ignore_primary_keys
+        allow_superset_dict = convert_to_dict(allow_superset)
+        ignore_primary_keys_dict = convert_to_dict(ignore_primary_keys)
+        allow_subtype_dict = convert_to_dict(allow_subtype)
 
         def check_annotation(name, value):
             annotation = annotations.get(name, None)
@@ -600,6 +611,7 @@ def table_transformer(
                         get_args(annotation)[0],
                         allow_superset=allow_superset_dict.get(name, True),
                         ignore_primary_keys=ignore_primary_keys_dict.get(name, True),
+                        allow_subtype=allow_subtype_dict.get(name, True),
                     )
                 except AssertionError as exc:
                     raise AssertionError(

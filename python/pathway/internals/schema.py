@@ -531,15 +531,16 @@ class SchemaMetaclass(type):
         with open(path, mode="w") as f:
             f.write(class_definition)
 
-    def assert_equal_to(
+    def assert_matches_schema(
         self,
         other: type[Schema],
         *,
         allow_superset: bool = True,
         ignore_primary_keys: bool = True,
+        allow_subtype: bool = True,
     ) -> None:
-        self_dict = self.typehints()
-        other_dict = other.typehints()
+        self_dict = self._dtypes()
+        other_dict = other._dtypes()
 
         # Check if self has all columns of other
         if self_dict.keys() < other_dict.keys():
@@ -548,7 +549,9 @@ class SchemaMetaclass(type):
 
         # Check if types of columns are the same
         for col in other_dict:
-            assert other_dict[col] == self_dict[col], (
+            assert other_dict[col] == self_dict[col] or (
+                allow_subtype and dt.dtype_issubclass(self_dict[col], other_dict[col])
+            ), (
                 f"type of column {col} does not match - its type is {self_dict[col]} in {self.__name__}",
                 f" and {other_dict[col]} in {other.__name__}",
             )

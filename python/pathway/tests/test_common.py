@@ -5850,6 +5850,22 @@ def test_tuple_reducer_consistency():
             True,
             True,
         ),
+        (
+            {
+                "col_a": pw.column_definition(dtype=int),
+                "col_b": pw.column_definition(dtype=dt.NONE),
+                "col_c": pw.column_definition(dtype=Optional[int]),
+                "col_d": pw.column_definition(dtype=int | None),
+            },
+            {
+                "col_a": pw.column_definition(dtype=int | None),
+                "col_b": pw.column_definition(dtype=Optional[int]),
+                "col_c": pw.column_definition(dtype=int | None),
+                "col_d": pw.column_definition(dtype=Optional[int]),
+            },
+            True,
+            True,
+        ),
     ],
 )
 def test_assert_table_has_schema_passes(
@@ -5868,11 +5884,19 @@ def test_assert_table_has_schema_passes(
 
 
 @pytest.mark.parametrize(
-    "table_schema, schema, allow_superset, ignore_primary_keys",
+    "table_schema, schema, allow_superset, ignore_primary_keys, allow_subtype",
     [
         (
             {"col_a": pw.column_definition(dtype=int)},
+            {"col_a": pw.column_definition(dtype=str)},
+            False,
+            False,
+            True,
+        ),
+        (
+            {"col_a": pw.column_definition(dtype=int)},
             {"col_a": pw.column_definition(dtype=float)},
+            False,
             False,
             False,
         ),
@@ -5884,6 +5908,7 @@ def test_assert_table_has_schema_passes(
             {"col_a": pw.column_definition(dtype=int)},
             False,
             False,
+            True,
         ),
         (
             {"col_a": pw.column_definition(dtype=int, primary_key=True)},
@@ -5893,6 +5918,7 @@ def test_assert_table_has_schema_passes(
             },
             True,
             False,
+            True,
         ),
         (
             {
@@ -5902,11 +5928,26 @@ def test_assert_table_has_schema_passes(
             {"col_a": pw.column_definition(dtype=int)},
             True,
             False,
+            True,
+        ),
+        (
+            {"col_a": pw.column_definition(dtype=int | None)},
+            {"col_a": pw.column_definition(dtype=str | None)},
+            True,
+            True,
+            True,
+        ),
+        (
+            {"col_a": pw.column_definition(dtype=int | None)},
+            {"col_a": pw.column_definition(dtype=int)},
+            True,
+            True,
+            True,
         ),
     ],
 )
 def test_assert_table_has_schema_fails(
-    table_schema, schema, allow_superset, ignore_primary_keys
+    table_schema, schema, allow_superset, ignore_primary_keys, allow_subtype
 ):
     table_schema = pw.schema_builder(table_schema)
     table = empty_from_schema(table_schema)
@@ -5918,6 +5959,7 @@ def test_assert_table_has_schema_fails(
             schema,
             allow_superset=allow_superset,
             ignore_primary_keys=ignore_primary_keys,
+            allow_subtype=allow_subtype,
         )
 
 
