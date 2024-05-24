@@ -337,4 +337,4 @@ you can configure the connector this way:
         object_size_limit=object_size_limit,
     )
 
-    return pw.io.python.read(subject, format="binary")
+    return pw.io.python.read(subject, format="binary", name="sharepoint")
