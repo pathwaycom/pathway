@@ -7,7 +7,7 @@
 #   date: '2022-10-19'
 #   thumbnail: ''
 #   tags: ['tutorial', 'data-pipeline']
-# keywords: ['Fuzzy join', 'reconciliation', 'unstructured']
+# keywords: ['Fuzzy join', 'reconciliation', 'unstructured', 'notebook']
 # author: 'pathway'
 # jupyter:
 #   jupytext:

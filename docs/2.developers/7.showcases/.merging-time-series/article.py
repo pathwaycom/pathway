@@ -6,7 +6,7 @@
 #   date: '2023-04-28'
 #   thumbnail: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
 #   tags: ['Time Series']
-# keywords: ['time series', 'multiple data sources', 'interpolation', 'connectors']
+# keywords: ['time series', 'multiple data sources', 'interpolation', 'connectors', 'notebook']
 # author: 'olivier'
 # notebook_export_path: notebooks/tutorials/combining-time-series.ipynb
 # jupyter:

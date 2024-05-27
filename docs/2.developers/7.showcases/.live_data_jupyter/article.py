@@ -11,7 +11,7 @@
 #   date: '2023-11-29'
 #   thumbnail: ''
 #   tags: ['tutorial', 'data-pipeline', 'showcase']
-# keywords: ['Jupyter notebook', 'interactivity', 'bokeh', 'panel', 'Bollinger bands', 'vizualization', 'Weighted Average', 'rolling statistics', 'dashboard']
+# keywords: ['Jupyter notebook', 'interactivity', 'bokeh', 'panel', 'Bollinger bands', 'vizualization', 'Weighted Average', 'rolling statistics', 'dashboard', 'notebook', 'Docker']
 # notebook_export_path: notebooks/showcases/live-data-jupyter.ipynb
 # jupyter:
 #   jupytext:

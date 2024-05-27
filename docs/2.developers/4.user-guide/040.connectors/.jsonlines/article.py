@@ -3,7 +3,8 @@
 # description: 'Tutorial on the Pathway JSON Lines connectors.'
 # date: '2024-02-20'
 # tags: ['tutorial', 'connectors']
-# keywords: ['connector', 'JSON Lines', 'JSON']
+# keywords: ['connector', 'JSON Lines', 'JSON', 'input', 'output', 'static', 'streaming']
+# tech_icons: ["lets-icons:json"]
 # ---
 
 # # JSON Lines connectors

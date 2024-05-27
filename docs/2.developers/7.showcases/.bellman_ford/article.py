@@ -8,7 +8,7 @@
 #   tags: ['tutorial', 'machine-learning']
 # author: 'pathway'
 # notebook_export_path: notebooks/tutorials/bellman_ford.ipynb
-# keywords: ['iterate', 'fixed-point', 'shortest-path', 'graph']
+# keywords: ['iterate', 'fixed-point', 'shortest-path', 'graph', 'notebook']
 # jupyter:
 #   jupytext:
 #     formats: py:percent

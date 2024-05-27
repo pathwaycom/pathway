@@ -7,7 +7,7 @@
 #   date: '2022-11-07'
 #   thumbnail: '/assets/content/blog/th-computing-pagerank.png'
 #   tags: ['tutorial', 'machine-learning']
-# keywords: ['pagerank', 'graph']
+# keywords: ['pagerank', 'graph', 'notebook']
 # author: 'pathway'
 # jupyter:
 #   jupytext:

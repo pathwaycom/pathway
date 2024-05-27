@@ -9,7 +9,7 @@
 #   thumbnail: '/assets/content/tutorials/time_series/thumbnail-gaussian.png'
 #   tags: ['tutorial', 'Time Series']
 #   related: ['/blog/signal-processing', '/developers/showcases/upsampling']
-# keywords: ['signal processing', 'Gaussian filter', 'out-of-order data', 'irregular sampling', 'intervals_over', 'window']
+# keywords: ['signal processing', 'Gaussian filter', 'out-of-order data', 'irregular sampling', 'intervals_over', 'window', 'notebook']
 # ---
 
 # # Gaussian Filtering in Python: Working with out-of-order data points

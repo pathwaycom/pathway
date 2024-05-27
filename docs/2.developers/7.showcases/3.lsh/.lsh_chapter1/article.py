@@ -8,7 +8,7 @@
 #   date: '2022-10-25'
 #   thumbnail: '/assets/content/blog/th-realtime-classification.png'
 #   tags: ['tutorial', 'machine-learning']
-# keywords: ['Classification', 'KNN', 'LSH', 'index', 'Locality Sensitive Hashing', 'MNIST', 'euclidean distance', 'unstructured']
+# keywords: ['Classification', 'KNN', 'LSH', 'index', 'Locality Sensitive Hashing', 'MNIST', 'euclidean distance', 'unstructured', 'notebook']
 # jupyter:
 #   jupytext:
 #     formats: py:percent,ipynb

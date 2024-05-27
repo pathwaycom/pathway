@@ -8,7 +8,7 @@
 #   date: '2023-05-30'
 #   thumbnail: '/assets/content/blog/th-shield.png'
 #   tags: ['tutorial', 'machine-learning']
-# keywords: ['window', 'tumbling', 'alert']
+# keywords: ['window', 'tumbling', 'alert', 'notebook']
 # jupyter:
 #   jupytext:
 #     formats: py:percent

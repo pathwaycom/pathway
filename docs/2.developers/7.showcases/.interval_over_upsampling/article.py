@@ -9,7 +9,7 @@
 #   thumbnail: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
 #   tags: ['tutorial', 'Time Series']
 #   related: ['/blog/signal-processing', '/developers/showcases/gaussian_filtering_python']
-# keywords: ['signal processing', 'upsampling', 'out-of-order data', 'resampling', 'interpolation', 'intervals_over', 'window']
+# keywords: ['signal processing', 'upsampling', 'out-of-order data', 'resampling', 'interpolation', 'intervals_over', 'window', 'notebook']
 # ---
 
 # # Upsampling your Signal Processing Data: transforming multiple data streams.

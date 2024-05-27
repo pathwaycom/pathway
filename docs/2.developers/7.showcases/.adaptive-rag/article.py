@@ -14,7 +14,7 @@
 #   img: "/assets/authors/jan-chorowski.jpg"
 #   linkedin: "https://www.linkedin.com/in/janchorowski/"
 #   extra_info: joint work with Jacek Kowalski, Szymon Dudycz
-# keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability']
+# keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability', 'notebook']
 # ---
 
 # # Cheap RAGs up for grabs: How we cut LLM costs without sacrificing accuracy?

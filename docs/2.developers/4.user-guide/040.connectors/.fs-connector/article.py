@@ -3,7 +3,9 @@
 # description: An article explaining how to read from files and write to files in a few basic data formats.
 # date: '2024-01-26'
 # tags: ['tutorial', 'table']
-# keywords: ['connector', 'file system', 'csv', 'json']
+# tech_icons: ["lets-icons:file-fill"]
+# deployment_tag: ["jupyter", "docker"]
+# keywords: ['connector', 'file system', 'csv', 'json', 'input', 'output', 'static', 'streaming']
 # notebook_export_path: notebooks/tutorials/fs_connector.ipynb
 # jupyter:
 #   jupytext:
