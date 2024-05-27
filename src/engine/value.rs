@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::error::{DataError, DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
+use super::PyObjectWrapper;
 
 use arcstr::ArcStr;
 use cfg_if::cfg_if;
@@ -231,6 +232,7 @@ pub enum Value {
     )]
     Json(Handle<JsonValue>),
     Error,
+    PyObjectWrapper(Handle<PyObjectWrapper>),
 }
 
 const _: () = assert!(align_of::<Value>() <= 16);
@@ -367,6 +369,7 @@ impl Display for Value {
             Self::Duration(duration) => write!(fmt, "{duration}"),
             Self::Json(json) => write!(fmt, "{json}"),
             Self::Error => write!(fmt, "Error"),
+            Self::PyObjectWrapper(ob) => write!(fmt, "{ob}"),
         }
     }
 }
@@ -473,6 +476,12 @@ impl From<JsonValue> for Value {
     }
 }
 
+impl From<PyObjectWrapper> for Value {
+    fn from(ob: PyObjectWrapper) -> Self {
+        Self::PyObjectWrapper(Handle::new(ob))
+    }
+}
+
 // Please only append to this list, as the values here are used in hashing,
 // so changing them will result in changed IDs
 #[repr(u8)]
@@ -493,6 +502,7 @@ pub enum SimpleType {
     Bytes,
     Json,
     Error,
+    PyObjectWrapper,
 }
 
 impl SimpleType {
@@ -511,6 +521,7 @@ impl SimpleType {
             SimpleType::Duration => Some(Type::Duration),
             SimpleType::Bytes => Some(Type::Bytes),
             SimpleType::Json => Some(Type::Json),
+            SimpleType::PyObjectWrapper => Some(Type::PyObjectWrapper),
         }
     }
 }
@@ -531,6 +542,7 @@ pub enum Type {
     Array,
     Json,
     Tuple,
+    PyObjectWrapper,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -603,6 +615,7 @@ impl Value {
             Self::Duration(_) => SimpleType::Duration,
             Self::Json(_) => SimpleType::Json,
             Self::Error => SimpleType::Error,
+            Self::PyObjectWrapper(_) => SimpleType::PyObjectWrapper,
         }
     }
 }
@@ -746,6 +759,7 @@ impl HashInto for Value {
             Self::Duration(duration) => duration.hash_into(hasher),
             Self::Json(json) => json.hash_into(hasher),
             Self::Error => panic!("trying to hash error"), // FIXME
+            Self::PyObjectWrapper(ob) => ob.hash_into(hasher),
         }
     }
 }
@@ -753,5 +767,13 @@ impl HashInto for Value {
 impl HashInto for JsonValue {
     fn hash_into(&self, hasher: &mut Hasher) {
         (*self).to_string().hash_into(hasher);
+    }
+}
+
+impl HashInto for PyObjectWrapper {
+    fn hash_into(&self, hasher: &mut Hasher) {
+        self.as_bytes()
+            .expect("PyObjectWrapper serialization should not fail")
+            .hash_into(hasher);
     }
 }

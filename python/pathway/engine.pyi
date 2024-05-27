@@ -10,7 +10,13 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import Any, Generic, TypeVar, Union, final
 
-from pathway.internals.api import CapturedStream, CombineMany, S, Value
+from pathway.internals.api import (
+    CapturedStream,
+    CombineMany,
+    PyObjectWrapperSerializer,
+    S,
+    Value,
+)
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.dtype import DType
 from pathway.internals.monitoring import StatsMonitor
@@ -38,6 +44,7 @@ class PathwayType(Enum):
     JSON: PathwayType
     TUPLE: PathwayType
     BYTES: PathwayType
+    PY_OBJECT_WRAPPER: PathwayType
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode
@@ -844,3 +851,56 @@ def check_entitlements(
     license_key: str | None,
     entitlements: list[str],
 ): ...
+
+T = TypeVar("T")
+
+@dataclasses.dataclass(frozen=True)
+class PyObjectWrapper(Generic[T]):
+    """A wrapper over python objects of any type that enables passing them to the engine.
+
+    If you want to specify a custom serializer, ``pw.wrap_py_object`` should be used.
+
+    Args:
+        value: a python object to be wrapped
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from dataclasses import dataclass
+    >>>
+    >>> @dataclass
+    ... class Simple:
+    ...     a: int
+    ...     def add(self, x: int) -> int:
+    ...         return self.a + x
+    ...
+    >>> @pw.udf
+    ... def create_py_object(a: int) -> pw.PyObjectWrapper[Simple]:
+    ...     return pw.PyObjectWrapper(Simple(a))
+    ...
+    >>> @pw.udf
+    ... def use_py_object(a: int, b: pw.PyObjectWrapper[Simple]) -> int:
+    ...     return b.value.add(a)
+    ...
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ...     a
+    ...     1
+    ...     2
+    ...     3
+    ... '''
+    ... ).with_columns(b=create_py_object(pw.this.a))
+    >>> res = t.select(res=use_py_object(pw.this.a, pw.this.b))
+    >>> pw.debug.compute_and_print(res, include_id=False)
+    res
+    2
+    4
+    6
+    """
+
+    value: T
+
+    @staticmethod
+    def _create_with_serializer(
+        value: T, *, serializer: PyObjectWrapperSerializer | None = None
+    ) -> PyObjectWrapper[T]: ...

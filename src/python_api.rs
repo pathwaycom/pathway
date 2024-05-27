@@ -9,7 +9,10 @@ use crate::engine::graph::{
     ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacksBuilder,
 };
 use crate::engine::license::{Error as LicenseError, License};
-use crate::engine::{Computer as EngineComputer, Expressions, ShardPolicy, TotalFrontier};
+use crate::engine::{
+    Computer as EngineComputer, Expressions, PyObjectWrapper as InternalPyObjectWrapper,
+    ShardPolicy, TotalFrontier,
+};
 use crate::persistence::frontier::OffsetAntichain;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
@@ -322,6 +325,8 @@ impl<'source> FromPyObject<'source> for Value {
             Ok(Value::from(t.as_slice()))
         } else if let Ok(dict) = ob.downcast::<PyDict>() {
             value_json_from_py_any(dict)
+        } else if let Ok(ob) = ob.extract::<PyObjectWrapper>() {
+            Ok(Value::from(ob.into_internal()))
         } else {
             // XXX: check types, not names
             let type_name = ob.get_type().name()?;
@@ -375,6 +380,7 @@ impl ToPyObject for Value {
             Self::Duration(d) => d.into_py(py),
             Self::Json(j) => json_to_py_object(py, j),
             Self::Error => ERROR.clone_ref(py).into_py(py),
+            Self::PyObjectWrapper(op) => PyObjectWrapper::from_internal(py, op).into_py(py),
         }
     }
 }
@@ -595,6 +601,60 @@ impl Pointer {
             })?
             .as_ref(py)
             .call1((cls, item))
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
+#[derive(Clone)]
+struct PyObjectWrapper {
+    #[pyo3(get)]
+    value: PyObject,
+    serializer: Option<PyObject>,
+}
+
+#[pymethods]
+impl PyObjectWrapper {
+    #[new]
+    #[pyo3(signature = (value))]
+    fn new(value: PyObject) -> Self {
+        Self {
+            value,
+            serializer: None,
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (value, *, serializer=None), name="_create_with_serializer")]
+    fn create_with_serializer(value: PyObject, serializer: Option<PyObject>) -> Self {
+        Self { value, serializer }
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("PyObjectWrapper({})", self.value)
+    }
+
+    #[classmethod]
+    pub fn __class_getitem__<'py>(cls: &'py PyType, item: &'py PyAny) -> PyResult<&'py PyAny> {
+        // TODO: unify with Pointer
+        static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+
+        let py = cls.py();
+        GENERIC_ALIAS
+            .get_or_try_init(py, || -> PyResult<_> {
+                Ok(py.import("types")?.getattr("GenericAlias")?.into())
+            })?
+            .as_ref(py)
+            .call1((cls, item))
+    }
+}
+
+impl PyObjectWrapper {
+    fn into_internal(self) -> InternalPyObjectWrapper {
+        InternalPyObjectWrapper::new(self.value, self.serializer)
+    }
+
+    fn from_internal(py: Python<'_>, ob: &InternalPyObjectWrapper) -> Self {
+        Self::create_with_serializer(ob.get_inner(py), ob.get_serializer(py))
     }
 }
 
@@ -1368,6 +1428,8 @@ impl PathwayType {
     pub const TUPLE: Type = Type::Tuple;
     #[classattr]
     pub const BYTES: Type = Type::Bytes;
+    #[classattr]
+    pub const PY_OBJECT_WRAPPER: Type = Type::PyObjectWrapper;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]
@@ -4690,6 +4752,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     let _ = Lazy::force(&LOGGING_RESET_HANDLE);
 
     m.add_class::<Pointer>()?;
+    m.add_class::<PyObjectWrapper>()?;
     m.add_class::<PyReducer>()?;
     m.add_class::<PyReducerData>()?;
     m.add_class::<PyUnaryOperator>()?;

@@ -6,5 +6,5 @@ PORT_DISPENSER = UniquePortDispenser()
 
 
 @pytest.fixture
-def port():
-    yield PORT_DISPENSER.get_unique_port()
+def port(testrun_uid):
+    yield PORT_DISPENSER.get_unique_port(testrun_uid)

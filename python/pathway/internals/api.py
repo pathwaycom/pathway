@@ -203,3 +203,85 @@ def squash_updates(updates: CapturedStream) -> CapturedTable:
             raise AssertionError(f"Invalid diff value: {row.diff}")
 
     return state
+
+
+class PyObjectWrapperSerializerProtocol(Protocol):
+    @staticmethod
+    def dumps(object: Any) -> bytes: ...
+
+    @staticmethod
+    def loads(data: bytes) -> Any: ...
+
+
+class PyObjectWrapperSerializer:
+    def __init__(self, serializer: PyObjectWrapperSerializerProtocol) -> None:
+        # making sure that the serializer contains appropriate methods
+        # and taking only needed methods from it to make it serializable if it is a whole module
+        self._loads = serializer.loads
+        self._dumps = serializer.dumps
+
+    def dumps(self, object: Any) -> bytes:
+        return self._dumps(object)
+
+    def loads(self, data: bytes) -> Any:
+        return self._loads(data)
+
+
+def wrap_serializer(
+    serializer: PyObjectWrapperSerializerProtocol,
+) -> PyObjectWrapperSerializer:
+    return PyObjectWrapperSerializer(serializer)
+
+
+def wrap_py_object(
+    object: T, *, serializer: PyObjectWrapperSerializerProtocol | None = None
+) -> PyObjectWrapper[T]:
+    """A function wrapping python objects of any type to enable passing them to the engine.
+
+    Args:
+        value: a python object to be wrapped
+        serializer: a custom serializer. Has to implement ``PyObjectWrapperSerializerProtocol``.
+            If not set, ``pickle`` is used.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> import dill
+    >>> from dataclasses import dataclass
+    >>>
+    >>> @dataclass
+    ... class Simple:
+    ...     a: int
+    ...     def add(self, x: int) -> int:
+    ...         return self.a + x
+    ...
+    >>> @pw.udf
+    ... def create_py_object(a: int) -> pw.PyObjectWrapper[Simple]:
+    ...     return pw.wrap_py_object(Simple(a), serializer=dill)
+    ...
+    >>> @pw.udf
+    ... def use_py_object(a: int, b: pw.PyObjectWrapper[Simple]) -> int:
+    ...     return b.value.add(a)
+    ...
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ...     a
+    ...     1
+    ...     2
+    ...     3
+    ... '''
+    ... ).with_columns(b=create_py_object(pw.this.a))
+    >>> res = t.select(res=use_py_object(pw.this.a, pw.this.b))
+    >>> pw.debug.compute_and_print(res, include_id=False) # doctest: +SKIP
+    res
+    2
+    4
+    6
+    """
+    if serializer is None:
+        serializer_wrapped = None
+    else:
+        serializer_wrapped = wrap_serializer(serializer)
+    return PyObjectWrapper._create_with_serializer(
+        object, serializer=serializer_wrapped
+    )

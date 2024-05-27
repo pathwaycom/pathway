@@ -51,3 +51,6 @@ pub mod external_index_wrappers;
 
 pub mod timestamp;
 pub use timestamp::Timestamp;
+
+pub mod py_object_wrapper;
+pub use py_object_wrapper::PyObjectWrapper;

@@ -8,6 +8,7 @@ from collections.abc import Generator
 import pytest
 
 from pathway.internals import config, parse_graph
+from pathway.tests.utils import UniquePortDispenser
 
 
 @pytest.fixture(autouse=True)
@@ -65,3 +66,14 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
         return
 
     assert saved_env == new_env, "environment changed during the test run"
+
+
+# FIXME: if you plan to use more than 16 pathway processes, increase the step size
+PORT_DISPENSER = UniquePortDispenser(
+    step_size=16,
+)
+
+
+@pytest.fixture
+def port(testrun_uid):
+    yield PORT_DISPENSER.get_unique_port(testrun_uid)

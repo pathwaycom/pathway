@@ -10,6 +10,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Hashable, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
@@ -50,6 +51,12 @@ class UniquePortDispenser:
     This class automates unique port assignments for different tests.
     """
 
+    range_start: int
+    worker_range_size: int
+    step_size: int
+    next_available_port: int | None
+    lock: threading.Lock
+
     def __init__(
         self,
         range_start: int = 12345,
@@ -65,15 +72,23 @@ class UniquePortDispenser:
         else:
             raise ValueError(f"Unknown xdist worker id: {pytest_worker_id}")
 
-        self._step_size = step_size
-        self._next_available_port = range_start + worker_id * worker_range_size
-        self._lock = threading.Lock()
+        self.step_size = step_size
+        self.range_start = range_start + worker_id * worker_range_size
+        self.worker_range_size = worker_range_size
+        self.next_available_port = None
+        self.lock = threading.Lock()
 
-    def get_unique_port(self) -> int:
-        with self._lock:
-            result = self._next_available_port
-            self._next_available_port += self._step_size
-        return result
+    def get_unique_port(self, testrun_uid: str) -> int:
+        with self.lock:
+            if self.next_available_port is None:
+                self.next_available_port = (
+                    hash(testrun_uid) % self.worker_range_size + self.range_start
+                )
+            port = self.next_available_port
+            self.next_available_port += self.step_size
+            if self.next_available_port >= self.range_start + self.worker_range_size:
+                self.next_available_port = self.range_start
+        return port
 
 
 @dataclass(order=True)
@@ -520,6 +535,8 @@ def wait_result_with_checker(
     *,
     step: float = 0.1,
     target: Callable[..., None] | None = run,
+    processes: int = 1,
+    first_port: int | None = None,
     args: Iterable[Any] = (),
     kwargs: Mapping[str, Any] = {},
 ) -> None:
@@ -528,8 +545,30 @@ def wait_result_with_checker(
             assert (
                 multiprocessing.get_start_method() == "fork"
             ), "multiprocessing does not use fork(), pw.run() will not work"
-            p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
-            p.start()
+
+            handles: list[multiprocessing.Process] = []
+            if processes != 1:
+                assert first_port is not None
+                run_id = uuid.uuid4()
+
+                def target_wrapped(process_id, *args, **kwargs):
+                    os.environ["PATHWAY_PROCESSES"] = str(processes)
+                    os.environ["PATHWAY_FIRST_PORT"] = str(first_port)
+                    os.environ["PATHWAY_PROCESS_ID"] = str(process_id)
+                    os.environ["PATHWAY_RUN_ID"] = str(run_id)
+                    target(*args, **kwargs)
+
+                for process_id in range(processes):
+                    p = multiprocessing.Process(
+                        target=target_wrapped, args=(process_id, *args), kwargs=kwargs
+                    )
+                    p.start()
+                    handles.append(p)
+            else:
+                target_wrapped = target
+                p = multiprocessing.Process(target=target, args=args, kwargs=kwargs)
+                p.start()
+                handles.append(p)
 
         succeeded = False
         start_time = time.monotonic()
@@ -563,8 +602,9 @@ def wait_result_with_checker(
             if "persistence_config" in kwargs:
                 time.sleep(5.0)  # allow a little gap to persist state
 
-            p.terminate()
-            p.join()
+            for p in handles:
+                p.terminate()
+                p.join()
 
 
 def write_csv(path: str | pathlib.Path, table_def: str, **kwargs):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathway.internals import reducers, udfs, universes
-from pathway.internals.api import Pointer
+from pathway.internals.api import Pointer, PyObjectWrapper, wrap_py_object
 from pathway.internals.common import (
     apply,
     apply_async,
@@ -106,6 +106,8 @@ __all__ = [
     "ReducerExpression",
     "Schema",
     "Pointer",
+    "PyObjectWrapper",
+    "wrap_py_object",
     "MonitoringLevel",
     "WindowJoinResult",
     "this",

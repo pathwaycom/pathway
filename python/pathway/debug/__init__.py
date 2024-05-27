@@ -148,8 +148,8 @@ def _compute_and_print_internal(
 
     try:
         output_data = sorted(output_data, key=_key)
-    except ValueError:
-        pass  # Some values (like arrays) cannot be sorted this way, so just don't sort them.
+    except (ValueError, TypeError):
+        pass  # Some values (like arrays, PyObjectWrapper) cannot be sorted this way, so just don't sort them.
     output_data_truncated = itertools.islice(output_data, n_rows)
     data = []
     if include_id:

@@ -340,8 +340,11 @@ pub enum FormatterError {
     #[error("incorrect column index")]
     IncorrectColumnIndex,
 
-    #[error("value does not fit into data type")]
-    ValueDoesNotFit,
+    #[error("type {type_:?} is not json-serializable")]
+    TypeNonJsonSerializable { type_: Type },
+
+    #[error("Error value is not json-serializable")]
+    ErrorValueNonJsonSerializable,
 
     #[error("this connector doesn't support this value type")]
     UnsupportedValueType,
@@ -991,7 +994,10 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
         Value::DateTimeUtc(dt) => Ok(json!(dt.to_string())),
         Value::Duration(d) => Ok(json!(d.nanoseconds())),
         Value::Json(j) => Ok((**j).clone()),
-        Value::Error => Err(FormatterError::ValueDoesNotFit),
+        Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable),
+        Value::PyObjectWrapper(_) => Err(FormatterError::TypeNonJsonSerializable {
+            type_: Type::PyObjectWrapper,
+        }),
     }
 }
 

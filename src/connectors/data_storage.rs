@@ -1584,6 +1584,7 @@ mod to_sql {
                     "JSON"
                 }
                 Self::Error => "error",
+                Self::PyObjectWrapper(_) => "PyObjectWrapper",
             };
             Err(Box::new(WrongPathwayType {
                 pathway_type: pathway_type.to_owned(),

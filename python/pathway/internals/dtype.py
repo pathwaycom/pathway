@@ -475,6 +475,34 @@ class _Duration(DType):
 DURATION = _Duration()
 
 
+class PyObjectWrapper(DType):
+    wrapped: type
+
+    def __new__(cls, wrapped: type) -> PyObjectWrapper:
+        return super().__new__(cls, wrapped)
+
+    def _set_args(self, wrapped: type) -> None:
+        self.wrapped = wrapped
+
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.PY_OBJECT_WRAPPER
+
+    def __repr__(self) -> str:
+        return f"PyObjectWrapper({self.wrapped})"
+
+    def is_value_compatible(self, arg):
+        return isinstance(arg, api.PyObjectWrapper) and isinstance(
+            arg.value, self.wrapped
+        )
+
+    @property
+    def typehint(self) -> type[api.PyObjectWrapper]:
+        return api.PyObjectWrapper[self.wrapped]  # type: ignore[name-defined]
+
+
+ANY_PY_OBJECT_WRAPPER: DType = PyObjectWrapper(object)
+
+
 def wrap(input_type) -> DType:
     assert input_type != Optional
     assert input_type != Tuple
@@ -482,6 +510,7 @@ def wrap(input_type) -> DType:
     assert input_type != Array
     assert input_type != List
     assert input_type != Json
+    assert input_type != PyObjectWrapper
     assert input_type != ...
 
     from pathway.internals.schema import ColumnSchema
@@ -550,6 +579,11 @@ def wrap(input_type) -> DType:
         if dims == typing.Any:
             return Array(n_dim=None, wrapped=wrapped)
         return Array(n_dim=len(typing.get_args(dims)), wrapped=wrapped)
+    elif input_type == api.PyObjectWrapper:
+        return ANY_PY_OBJECT_WRAPPER
+    elif typing.get_origin(input_type) == api.PyObjectWrapper:
+        (inner,) = typing.get_args(input_type)
+        return PyObjectWrapper(inner)
     elif isinstance(input_type, type) and issubclass(input_type, Enum):
         return ANY
     elif input_type == datetime.datetime:

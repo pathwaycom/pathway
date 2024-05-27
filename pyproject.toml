@@ -85,6 +85,8 @@ tests = [
     "kafka-python >= 2.0.2",
     "python-magic",
     "pathway[all]",
+    "dill >= 0.3.8",
+    "cloudpickle >= 3.0.0",
 ]
 airbyte = [
     "google-cloud-run",

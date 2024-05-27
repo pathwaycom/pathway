@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.PyObjectWrapper` that enables passing python objects of any type to the engine.
+
 ## [0.11.2] - 2024-05-27
 
 ### Added

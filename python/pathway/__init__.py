@@ -24,6 +24,7 @@ from pathway.internals import (
     LiveTable,
     MonitoringLevel,
     Pointer,
+    PyObjectWrapper,
     Schema,
     SchemaProperties,
     Table,
@@ -76,6 +77,7 @@ from pathway.internals import (
     udf,
     udf_async,
     unwrap,
+    wrap_py_object,
 )
 from pathway.internals.api import PathwayType as Type, PersistenceMode
 from pathway.internals.custom_reducers import BaseCustomAccumulator
@@ -137,6 +139,8 @@ __all__ = [
     "ColumnExpression",
     "Schema",
     "Pointer",
+    "PyObjectWrapper",
+    "wrap_py_object",
     "MonitoringLevel",
     "WindowJoinResult",
     "this",
