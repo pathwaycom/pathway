@@ -1,6 +1,6 @@
 # ---
-# title: 'Cheap RAGs up for grabs: How we cut LLM costs without sacrificing accuracy?'
-# description: 'Cheap RAGs up for grabs: How we cut LLM costs without sacrificing accuracy?'
+# title: 'Adaptive RAG: How we cut LLM costs without sacrificing accuracy'
+# description: 'This article presents Adaptive RAG: a new technique to decrease the cost of RAGs without sacrificing accuracy'
 # aside: true
 # article:
 #     thumbnail: '/assets/content/blog/adaptive-rag-plots/visual-abstract.png'
@@ -17,7 +17,7 @@
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability', 'notebook']
 # ---
 
-# # Cheap RAGs up for grabs: How we cut LLM costs without sacrificing accuracy?
+# # Adaptive RAG: How we cut LLM costs without sacrificing accuracy
 
 # ![Visual abstract](/assets/content/blog/adaptive-rag-plots/visual-abstract.png)
 # <!-- Source for plots: https://github.com/pathwaycom/IoT-Pathway/blob/develop/experimental/szymon/geometric-RAG-plots/replication.ipynb -->
