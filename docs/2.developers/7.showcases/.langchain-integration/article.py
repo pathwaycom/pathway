@@ -6,6 +6,7 @@
 #     thumbnail: '/assets/content/showcases/vectorstore/Langchain-Pathway.png'
 #     tags: ['showcase', 'llm']
 # author: 'szymon'
+# notebook_export_path: notebooks/showcases/langchain-integration.ipynb
 # keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'LangChain']
 # ---
 
