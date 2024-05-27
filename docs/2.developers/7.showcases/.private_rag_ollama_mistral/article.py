@@ -4,6 +4,7 @@
 # aside: true
 # article:
 #     thumbnail: '/assets/content/blog/local-adaptive-rag/local_adaptive.png'
+#     thumbnailFit: 'contain'
 #     tags: ['showcase', 'llm']
 #     date: '2024-04-23'
 #     related: ['/developers/showcases/adaptive-rag', '/developers/showcases/llamaindex-pathway']

@@ -4,6 +4,7 @@
 # aside: true
 # article:
 #     thumbnail: '/assets/content/blog/adaptive-rag-plots/visual-abstract.png'
+#     thumbnailFit: 'contain'
 #     tags: ['showcase', 'llm']
 #     date: '2024-03-28'
 #     related: false
