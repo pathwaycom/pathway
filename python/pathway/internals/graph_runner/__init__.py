@@ -187,7 +187,10 @@ class GraphRunner:
             with (
                 new_event_loop() as event_loop,
                 monitor_stats(
-                    monitoring_level, node_names, self.default_logging
+                    monitoring_level,
+                    node_names,
+                    default_logging=self.default_logging,
+                    process_id=pathway_config.process_id,
                 ) as stats_monitor,
                 otel.with_logging_handler(),
                 get_persistence_engine_config(

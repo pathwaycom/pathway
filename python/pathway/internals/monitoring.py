@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import os
 from enum import Enum
 from typing import Any
 
@@ -189,21 +190,31 @@ class StatsMonitor:
 def monitor_stats(
     monitoring_level: api.MonitoringLevel,
     node_names: list[tuple[int, str]],
+    *,
     default_logging: bool,
+    process_id: str,
     refresh_per_second: int = 4,
 ):
     if monitoring_level != api.MonitoringLevel.ALL:
         node_names = []
     if monitoring_level != api.MonitoringLevel.NONE:
-        stats_monitor = StatsMonitor(node_names)
-        handler = stats_monitor.get_logging_handler()
-        logging.basicConfig(level=logging.INFO, handlers=[])
-        logging.getLogger().addHandler(handler)
-        with Live(
-            stats_monitor.layout, refresh_per_second=refresh_per_second, screen=True
-        ):
-            yield stats_monitor
-        logging.getLogger().removeHandler(handler)
+        if process_id == "0":
+            stats_monitor = StatsMonitor(node_names)
+            handler = stats_monitor.get_logging_handler()
+            logging.basicConfig(level=logging.INFO, handlers=[])
+            logging.getLogger().addHandler(handler)
+            with Live(
+                stats_monitor.layout, refresh_per_second=refresh_per_second, screen=True
+            ):
+                yield stats_monitor
+            logging.getLogger().removeHandler(handler)
+        else:
+            with open(os.devnull, "w") as devnull:
+                with (
+                    contextlib.redirect_stdout(devnull),
+                    contextlib.redirect_stderr(devnull),
+                ):
+                    yield None
     else:
         if default_logging:
             logging.basicConfig(

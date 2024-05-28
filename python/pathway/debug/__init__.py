@@ -29,6 +29,7 @@ import pandas as pd
 
 from pathway import persistence
 from pathway.internals import Json, api, parse_graph
+from pathway.internals.config import get_pathway_config
 from pathway.internals.datasource import DataSourceOptions, PandasDataSource
 from pathway.internals.fingerprints import fingerprint
 from pathway.internals.graph_runner import GraphRunner
@@ -103,6 +104,8 @@ def _compute_and_print_internal(
     **kwargs,
 ) -> None:
     captured = _compute_table(table, _stacklevel=_stacklevel + 1, **kwargs)
+    if get_pathway_config().process_id != "0":
+        return
     columns = list(table._columns.keys())
     if squash_updates:
         output_data = list(api.squash_updates(captured).items())

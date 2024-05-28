@@ -69,6 +69,7 @@ class PathwayConfig:
     terminate_on_error: bool = _env_bool_field(
         "PATHWAY_TERMINATE_ON_ERROR", default="true"
     )
+    process_id: str = _env_field("PATHWAY_PROCESS_ID", default="0")
 
     @property
     def replay_config(
