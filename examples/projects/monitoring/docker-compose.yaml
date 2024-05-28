@@ -1,0 +1,17 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib
+    volumes:
+      - ./config.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - ${OTLP_GRPC_PORT:-4317}:4317 # OTLP gRPC receiver
+    environment:
+      TEMPO_URL: tempo-prod-10-prod-eu-west-2.grafana.net:443
+      TEMPO_USERNAME:
+      TEMPO_PASSWORD:
+      PROMETHEUS_URL: https://prometheus-prod-24-prod-eu-west-2.grafana.net/api/prom/push
+      PROMETHEUS_USERNAME:
+      PROMETHEUS_PASSWORD:
+      LOKI_URL: https://logs-prod-012.grafana.net/loki/api/v1/push
+      LOKI_USERNAME:
+      LOKI_PASSWORD:

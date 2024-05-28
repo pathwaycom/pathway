@@ -1,0 +1,88 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+extensions:
+  basicauth/grafana_cloud_tempo:
+    client_auth:
+      username: ${env:TEMPO_USERNAME}
+      password: ${env:TEMPO_PASSWORD}
+  basicauth/grafana_cloud_prometheus:
+    client_auth:
+      username: ${env:PROMETHEUS_USERNAME}
+      password: ${env:PROMETHEUS_PASSWORD}
+  basicauth/grafana_cloud_loki:
+    client_auth:
+      username: ${env:LOKI_USERNAME}
+      password: ${env:LOKI_PASSWORD}
+
+processors:
+  batch:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/batchprocessor
+    send_batch_size: 10
+    timeout: 30s
+  resource/loki:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/resourceprocessor
+    attributes:
+      - action: insert
+        key: loki.format
+        value: raw
+
+exporters:
+  debug:
+    verbosity: detailed
+
+  otlp/grafana_cloud_traces:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlpexporter
+    endpoint: ${env:TEMPO_URL}
+    auth:
+      authenticator: basicauth/grafana_cloud_tempo
+
+  prometheusremotewrite/grafana_cloud_metrics:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/prometheusremotewriteexporter
+    endpoint: ${env:PROMETHEUS_URL}
+    add_metric_suffixes: false
+    auth:
+      authenticator: basicauth/grafana_cloud_prometheus
+
+  loki/grafana_cloud_logs:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/lokiexporter
+    endpoint: ${env:LOKI_URL}
+    auth:
+      authenticator: basicauth/grafana_cloud_loki
+
+service:
+  extensions:
+    - basicauth/grafana_cloud_tempo
+    - basicauth/grafana_cloud_prometheus
+    - basicauth/grafana_cloud_loki
+  pipelines:
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - batch
+      exporters:
+        - debug
+        - otlp/grafana_cloud_traces
+    metrics:
+      receivers:
+        - otlp
+      processors:
+        - transform/add_resource_attributes_as_metric_attributes
+        - batch
+      exporters:
+        - debug
+        - prometheusremotewrite/grafana_cloud_metrics
+    logs:
+      receivers:
+        - otlp
+      processors:
+        - resource/loki
+        - batch
+      exporters:
+        - debug
+        - loki/grafana_cloud_logs
+
