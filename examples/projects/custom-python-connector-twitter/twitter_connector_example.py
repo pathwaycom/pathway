@@ -19,11 +19,9 @@ class TwitterClient(tweepy.StreamingClient):
         self._subject = subject
 
     def on_response(self, response) -> None:
-        self._subject.next_json(
-            {
-                "id": response.data.id,
-                "text": response.data.text,
-            }
+        self._subject.next(
+            key=response.data.id,
+            text=response.data.text,
         )
 
 
