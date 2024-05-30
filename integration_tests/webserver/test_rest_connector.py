@@ -4,16 +4,36 @@ import multiprocessing
 import pathlib
 import threading
 import time
+import uuid
 
 import pytest
 import requests
 
 import pathway as pw
+from pathway.internals.udfs.caches import InMemoryCache
 from pathway.tests.utils import (
     CsvLinesNumberChecker,
     expect_csv_checker,
     wait_result_with_checker,
 )
+
+
+class ExceptionAwareThread(threading.Thread):
+    def run(self):
+        self._exception = None
+        try:
+            if self._target is not None:  # type: ignore
+                self._result = self._target(*self._args, **self._kwargs)  # type: ignore
+        except Exception as e:
+            self._exception = e
+        finally:
+            del self._target, self._args, self._kwargs  # type: ignore
+
+    def join(self, timeout=None):
+        super().join(timeout)
+        if self._exception:
+            raise self._exception
+        return self._result
 
 
 def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:
@@ -50,9 +70,10 @@ def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:
     response_writer(responses)
     pw.io.csv.write(queries, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    t.join()
 
 
 def test_server(tmp_path: pathlib.Path, port: int) -> None:
@@ -97,9 +118,10 @@ def test_server_customization(tmp_path: pathlib.Path, port: int) -> None:
     response_writer(responses)
     pw.io.csv.write(queries, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    t.join()
 
 
 def test_server_schema_customization(tmp_path: pathlib.Path, port: int) -> None:
@@ -132,9 +154,10 @@ def test_server_schema_customization(tmp_path: pathlib.Path, port: int) -> None:
     response_writer(responses)
     pw.io.csv.write(queries, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    t.join()
 
 
 def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
@@ -166,7 +189,7 @@ def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
 
     pw.io.csv.write(sum, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
 
     wait_result_with_checker(
@@ -183,6 +206,8 @@ def test_server_keep_queries(tmp_path: pathlib.Path, port: int) -> None:
         ),
         10,
     )
+
+    t.join()
 
 
 def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> None:
@@ -293,9 +318,10 @@ def _test_server_two_endpoints(
 
     pw.io.csv.write(all_queries, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 8), 30)
+    t.join()
 
 
 def test_server_two_endpoints_without_cors(tmp_path: pathlib.Path, port: int):
@@ -390,9 +416,10 @@ def test_server_parameter_cast(tmp_path: pathlib.Path, port: int) -> None:
 
     pw.io.csv.write(double_queries, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 4), 30)
+    t.join()
 
 
 def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int) -> None:
@@ -423,9 +450,10 @@ def test_server_parameter_cast_json(tmp_path: pathlib.Path, port: int) -> None:
 
     pw.io.csv.write(echo_queries, output_path)
 
-    t = threading.Thread(target=target, daemon=True)
+    t = ExceptionAwareThread(target=target, daemon=True)
     t.start()
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 2), 30)
+    t.join()
 
 
 def test_errors(tmp_path: pathlib.Path, port: int) -> None:
@@ -465,4 +493,65 @@ def test_errors(tmp_path: pathlib.Path, port: int) -> None:
     wait_result_with_checker(
         CsvLinesNumberChecker(output_path, 2), 30, kwargs={"terminate_on_error": False}
     )
+    t.join()
+
+
+def test_requests_caching(tmp_path: pathlib.Path, port: int) -> None:
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        name: str
+
+    def logic(queries: pw.Table) -> pw.Table:
+        return queries.select(
+            query_id=queries.id,
+            result=pw.apply(lambda name: str(uuid.uuid4()), queries.name),
+        )
+
+    def target() -> None:
+        time.sleep(5)
+        r = requests.post(
+            f"http://127.0.0.1:{port}/assign-user-id", json={"name": "Alice"}
+        )
+        r.raise_for_status()
+        alice_id = r.text
+        r = requests.post(
+            f"http://127.0.0.1:{port}/assign-user-id", json={"name": "Bob"}
+        )
+        r.raise_for_status()
+        bob_id = r.text
+        assert alice_id != bob_id
+        r = requests.post(
+            f"http://127.0.0.1:{port}/assign-user-id", json={"name": "Alice"}
+        )
+        r.raise_for_status()
+        assert alice_id == r.text
+        r = requests.post(
+            f"http://127.0.0.1:{port}/assign-user-id", json={"name": "Bob"}
+        )
+        r.raise_for_status()
+        assert bob_id == r.text
+        r = requests.post(
+            f"http://127.0.0.1:{port}/assign-user-id", json={"name": "Charlie"}
+        )
+        r.raise_for_status()
+        charlie_id = r.text
+        assert charlie_id != alice_id and charlie_id != bob_id
+
+    webserver = pw.io.http.PathwayWebserver(host="127.0.0.1", port=port)
+
+    queries, response_writer = pw.io.http.rest_connector(
+        webserver=webserver,
+        schema=InputSchema,
+        route="/assign-user-id",
+        delete_completed_queries=True,
+        cache_strategy=InMemoryCache(),
+    )
+    queries = logic(queries)
+    response_writer(queries)
+    pw.io.csv.write(queries, output_path)
+
+    t = ExceptionAwareThread(target=target, daemon=True)
+    t.start()
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 6), 30)
     t.join()

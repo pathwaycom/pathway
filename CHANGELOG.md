@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.PyObjectWrapper` that enables passing python objects of any type to the engine.
+- `cache_strategy` option added for `pw.io.http.rest_connector`. It enables cache configuration, which is useful for duplicated requests.
 
 ## [0.11.2] - 2024-05-27
 

@@ -23,6 +23,7 @@ from pathway.internals.api import Pointer, unsafe_make_pointer
 from pathway.internals.dtype import unoptionalize
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table_subscription import subscribe as internal_subscribe
+from pathway.internals.udfs.caches import CacheStrategy
 
 # There is no OpenAPI type for 'any', so it's excluded from the dict
 # 'object' and 'array' are excluded because there is schema for the nested
@@ -502,6 +503,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         format: str = "raw",
         request_validator: Callable | None = None,
         documentation: EndpointDocumentation = EndpointDocumentation(),
+        cache_strategy: CacheStrategy | None = None,
     ) -> None:
         super().__init__()
         self._webserver = webserver
@@ -510,6 +512,8 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._delete_completed_queries = delete_completed_queries
         self._format = format
         self._request_validator = request_validator
+        self._cache_strategy = cache_strategy
+        self._request_processor = self._create_request_processor()
 
         webserver._register_endpoint(
             route, self.handle, format, schema, methods, documentation
@@ -519,8 +523,6 @@ class RestServerSubject(io.python.ConnectorSubject):
         self._webserver._run()
 
     async def handle(self, request: web.Request):
-        id = unsafe_make_pointer(uuid4().int)
-
         if self._format == "raw":
             payload = {QUERY_SCHEMA_COLUMN: await request.text()}
         elif self._format == "custom":
@@ -556,23 +558,35 @@ class RestServerSubject(io.python.ConnectorSubject):
                 logging.error(json.dumps(record))
                 raise web.HTTPBadRequest(reason=str(e))
 
-        self._cast_types_to_schema(payload)
+        result = await self._request_processor(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        )
+        return copy.deepcopy(result)
 
-        event = asyncio.Event()
-        data = pw.Json.dumps(payload).encode()
+    def _create_request_processor(self):
+        async def inner(payload_encoded: str) -> web.Response:
+            id = unsafe_make_pointer(uuid4().int)
+            payload = json.loads(payload_encoded)
+            self._cast_types_to_schema(payload)
+            event = asyncio.Event()
 
-        self._tasks[id] = {
-            "event": event,
-            "result": "-PENDING-",
-        }
+            self._tasks[id] = {
+                "event": event,
+                "result": "-PENDING-",
+            }
 
-        self._add(id, data)
-        response = await self._fetch_response(id, event)
-        if self._delete_completed_queries:
-            self._remove(id, data)
-        if response is api.ERROR:
-            return web.json_response(status=500)
-        return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
+            self._add_inner(id, payload)
+            response = await self._fetch_response(id, event)
+            if self._delete_completed_queries:
+                self._remove_inner(id, payload)
+            if response is api.ERROR:
+                return web.json_response(status=500)
+            return web.json_response(status=200, data=response, dumps=pw.Json.dumps)
+
+        if not self._cache_strategy:
+            return inner
+
+        return self._cache_strategy.wrap_async(inner)
 
     async def _fetch_response(self, id, event) -> Any:
         await event.wait()
@@ -620,6 +634,7 @@ def rest_connector(
     keep_queries: bool | None = None,
     delete_completed_queries: bool | None = None,
     request_validator: Callable | None = None,
+    cache_strategy: CacheStrategy | None = None,
 ) -> tuple[pw.Table, Callable]:
     """
     Runs a lightweight HTTP server and inputs a collection from the HTTP endpoint,
@@ -644,6 +659,8 @@ need to create only one instance of this class per single host-port pair;
         request_validator: a callable that can verify requests. A return value of `None` accepts payload.
           Any other returned value is treated as error and used as the response. Any exception is
           caught and treated as validation failure.
+        cache_strategy: one of available request caching strategies or None if no caching is required.
+          If enabled, caches responses for the requests with the same ``schema``-defined payload.
 
     Returns:
         table: the table read;
@@ -750,6 +767,7 @@ with:
             format=format,
             request_validator=request_validator,
             documentation=documentation,
+            cache_strategy=cache_strategy,
         ),
         schema=schema,
         format="json",
