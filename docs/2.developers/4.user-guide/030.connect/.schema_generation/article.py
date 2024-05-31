@@ -16,7 +16,7 @@
 
 # In Pathway, Schemas are used to define the structure of a Table, that is, names and types
 # of columns. To learn the basics of Schemas in Pathway, and how you can create them by writing
-# a class definition in Python, read our [user guide](/developers/user-guide/types-in-pathway/schema/).
+# a class definition in Python, read our [user guide](/developers/user-guide/connect/schema/).
 # In this tutorial, you will learn alternative ways to create Schemas, either by providing a dictionary of column definitions or sample input data in CSV format.
 
 # To run the examples in this tutorial, you can download the needed files by uncommenting and executing the following code:
@@ -29,7 +29,7 @@
 # ## Schema generation from JSON
 #
 # In Pathway, you can build a Schema from a dictionary using the
-# [schema_builder function](/developers/user-guide/types-in-pathway/schema#schema-as-a-dictionary), described in our user guide.
+# [schema_builder function](/developers/user-guide/connect/schema#schema-as-a-dictionary), described in our user guide.
 # The values in the dictionary given as an input to `pw.schema_builder`, however, are instances of `pw.column_definition`, which has some limitations, e.g. they can't be easily serialized in a JSON file. For this purpose, in Pathway there is a `pw.schema_from_dict` function, which takes
 # as an input a dictionary whose keys are names of the columns, and values are either:
 # - type of a column

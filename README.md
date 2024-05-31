@@ -66,7 +66,7 @@ For any questions, you will find the community and team behind the project [on D
   - [Real-time ETL.](https://pathway.com/developers/showcases/kafka-etl)
   - [Event-driven pipelines with alerting.](https://pathway.com/developers/showcases/realtime-log-monitoring)
   - [Realtime analytics.](https://pathway.com/developers/showcases/linear_regression_with_kafka/)
-  - [Switch from batch to streaming.](https://pathway.com/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
+  - [Switch from batch to streaming.](https://pathway.com/developers/user-guide/connect/switch-from-batch-to-streaming)
 2. Live Data AI Pipelines:
   - [Data indexing pipeline and RAG.](https://pathway.com/developers/user-guide/llm-xpack/vectorstore_pipeline/)
   - [LLM-powered data pipeline.](https://pathway.com/developers/showcases/llm-alert-pathway/)

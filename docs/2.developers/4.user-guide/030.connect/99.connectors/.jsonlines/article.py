@@ -25,7 +25,7 @@
 # ```
 #
 # ⚠️ JSON lines connectors work both in streaming and static modes.
-# Be careful as the use of connectors differs depending on the chosen mode: see the [differences](/developers/user-guide/connecting-to-data/streaming-and-static-modes/).
+# Be careful as the use of connectors differs depending on the chosen mode: see the [differences](/developers/user-guide/introduction/streaming-and-static-modes/).
 #
 # ## Input connector
 #
@@ -48,7 +48,7 @@
 #
 # **Any file modification would be reflected in the table read: if you delete a part of a file, the respective data will be deleted from the table**.
 #
-# Let's consider the following example, which reads a JSON Lines file and outputs it in a CSV file using the [CSV output connector](/developers/user-guide/connectors/csv_connectors/):
+# Let's consider the following example, which reads a JSON Lines file and outputs it in a CSV file using the [CSV output connector](/developers/user-guide/connect/connectors/csv_connectors/):
 
 # +
 import pathway as pw

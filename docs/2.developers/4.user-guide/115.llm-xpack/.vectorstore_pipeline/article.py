@@ -121,7 +121,7 @@ data_sources.append(
 )
 
 # This creates a connector that tracks files in Google Drive.
-# Please follow the instructions at /developers/user-guide/connectors/gdrive-connector/ to get credentials.
+# Please follow the instructions at /developers/user-guide/connect/connectors/gdrive-connector/ to get credentials.
 # data_sources.append(
 #     pw.io.gdrive.read(object_id="17H4YpBOAKQzEJ93xmC2z170l0bP2npMy", service_user_credentials_file="credentials.json", with_metadata=True))
 

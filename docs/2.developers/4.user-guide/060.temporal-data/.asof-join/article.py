@@ -122,7 +122,7 @@ price_table = pw.debug.table_from_pandas(prices).select(
 # ## Previewing Your Data
 # Pathway is a powerful tool designed to work with both static and real-time streaming data, though its primary strength lies in handling real-time data processing.
 #
-# During the development and testing stages of your data processing pipeline, it's essential to validate that the data is processed correctly. To facilitate this, you could define a function named preview_table for data inspection. However, keep in mind that this function should not be utilized in a production setting. It employs pw.debug.compute_and_print and uses static data. For a production environment involving real-time data streams, you should rely on [Pathway's output connectors](/developers/user-guide/connecting-to-data/connectors) to access the data.
+# During the development and testing stages of your data processing pipeline, it's essential to validate that the data is processed correctly. To facilitate this, you could define a function named preview_table for data inspection. However, keep in mind that this function should not be utilized in a production setting. It employs pw.debug.compute_and_print and uses static data. For a production environment involving real-time data streams, you should rely on [Pathway's output connectors](/developers/user-guide/connect/pathway-connectors) to access the data.
 #
 # Let's take a look at the first few rows of our newly created tables.
 

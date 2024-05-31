@@ -102,7 +102,7 @@ print(result_4.schema)
 # *Remark:* to keep the examples as simple as possible, the code pieces in this guide use `table_from_markdown` to define the example tables and `compute_and_print` to run the computations.
 # Those functions use Pathway in the static mode.
 # However, Pathway is a streaming data processing system and can work on dynamically changing data.
-# See [Pathway modes](/developers/user-guide/connecting-to-data/streaming-and-static-modes/) for more info on this topic.
+# See [Pathway modes](/developers/user-guide/introduction/streaming-and-static-modes/) for more info on this topic.
 #
 # Also note that the `inc` function is only present in this guide for demonstration purposes.
 # It is possible to get the same result using Pathway native operations and this is the recommended way as then the computations are performed in Rust, not Python.
@@ -358,7 +358,7 @@ result_disk_cache = table.with_columns(value_inc=inc_disk_cache(table.value))
 pw.debug.compute_and_print(result_disk_cache, persistence_config=persistence_config)
 
 # %% [markdown]
-# If, instead of printing output on the screen, you want to use one of the [output connectors](/developers/user-guide/connectors/csv_connectors/), you need to put `persistence_config` in `pw.run`, like this:
+# If, instead of printing output on the screen, you want to use one of the [output connectors](/developers/user-guide/connect/connectors/csv_connectors/), you need to put `persistence_config` in `pw.run`, like this:
 
 # %%
 pw.io.csv.write(result_disk_cache, "result_disk_cache.csv")

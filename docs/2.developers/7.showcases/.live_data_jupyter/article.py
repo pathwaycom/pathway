@@ -39,7 +39,7 @@
 #
 # In this notebook you will learn how to visualise a live data stream in real-time from the familiar context of a Jupyter Notebook. You will use Pathway, [Bokeh](https://bokeh.org/) and [Panel](https://panel.holoviz.org/) to build a real-time data visualisation that will alert you when the data hits a critical threshold. You can follow along on this page or run the code for yourself [in Colab](https://colab.research.google.com/github/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb) or [from Github](https://github.com/pathwaycom/pathway/blob/main/examples/notebooks/showcases/live-data-jupyter.ipynb).
 #
-# Because Pathway [unites static and stream processing](/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming#switching-from-batch-to-streaming) in a single syntax, you can use the exact same code for both batch and streaming. This way you can test your workflow with a static snapshot and then simply switch out the data source for a live stream when you want to visualise the full data flow in real-time.
+# Because Pathway [unites static and stream processing](/developers/user-guide/connect/switch-from-batch-to-streaming#switching-from-batch-to-streaming) in a single syntax, you can use the exact same code for both batch and streaming. This way you can test your workflow with a static snapshot and then simply switch out the data source for a live stream when you want to visualise the full data flow in real-time.
 #
 # Let's jump in! 🪂
 #
@@ -80,7 +80,7 @@ import pathway as pw
 # %% [markdown]
 # ## Data source setup
 #
-# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connectors/switching-to-redpanda/).
+# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda/).
 #
 # The `input_rate` parameter controls how fast the data is replayed.
 #
@@ -100,7 +100,7 @@ data = data.with_columns(t=data.t.dt.utc_from_timestamp(unit="ms"))
 # %% [markdown]
 # ## Switching between static and stream processing
 #
-# As you probably noticed, the code block above also includes a commented-out section. You can use this line instead of `data = pw.demo.replay_csv(...)` to test the workflow with static data. This is the only change you need to make in your code to switch between static and stream processing. Learn more about Pathway's unified engine and single syntax in [our User Guide](/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming#switching-from-batch-to-streaming).
+# As you probably noticed, the code block above also includes a commented-out section. You can use this line instead of `data = pw.demo.replay_csv(...)` to test the workflow with static data. This is the only change you need to make in your code to switch between static and stream processing. Learn more about Pathway's unified engine and single syntax in [our User Guide](/developers/user-guide/connect/switch-from-batch-to-streaming#switching-from-batch-to-streaming).
 #
 # ## 20-minute rolling statistics
 #

@@ -139,4 +139,4 @@ pw.debug.compute_and_print(result)
 # In this guide, you learned how to write transformer classes building a tree and computing some basic operations on that tree. This is useful for defining row-based logic for tables, oblivious of the fact that we are operating on top of data streams.
 # You can take a look at our [tour of Pathway's transformers](/developers/user-guide/diving-deeper/transformer-example/) in which you will find a list of examples of transformers.
 #
-# You can also check our [connectors](/developers/user-guide/connecting-to-data/connectors/) to connect your data into Pathway.
+# You can also check our [connectors](/developers/user-guide/connect/pathway-connectors/) to connect your data into Pathway.

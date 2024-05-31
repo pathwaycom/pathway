@@ -239,4 +239,4 @@ pw.debug.compute_and_print(result)
 #
 # We hope these examples make you feel comfortable using Pathway transformer classes. You can take a look at our advanced example of [transformer classes on a tree](/developers/user-guide/diving-deeper/transformer-recursion/).
 #
-# To continue your exploration of Pathway, you can also check out our [connectors](/developers/user-guide/connecting-to-data/connectors/), or see directly how to use Pathway to implement classic algorithms such as [PageRank](/developers/showcases/pagerank).
+# To continue your exploration of Pathway, you can also check out our [connectors](/developers/user-guide/connect/pathway-connectors/), or see directly how to use Pathway to implement classic algorithms such as [PageRank](/developers/showcases/pagerank).

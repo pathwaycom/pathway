@@ -266,7 +266,7 @@ time_series_filtered = points_within_50.select(
 #
 # Let's plot the results.
 # Let's first output the data in Pandas and then plot the timeseries.
-# In practice you'd use a [output connector](/developers/user-guide/connecting-to-data/connectors/) to output the results to Kafka or Postgres.
+# In practice you'd use a [output connector](/developers/user-guide/connect/pathway-connectors/) to output the results to Kafka or Postgres.
 
 time_series_filtered_pd = pw.debug.table_to_pandas(time_series_filtered)
 time_series_filtered_pd = time_series_filtered_pd.sort_values(by=["x"])
@@ -395,7 +395,7 @@ def smooth_table(table):
 
 # Then, you need to read the input source.
 # You are not working with a static data source anymore, but a streaming one.
-# You can use `pw.demo.replay_csv_with_time` to replay a data source in a CSV file respecting the time between updates based on a timestamp columns (more information about this function in our dedicated [article](/developers/user-guide/connecting-to-data/artificial-streams#replaying-static-csv-files-with-replay_csv-and-replay_csv_with_time)). Here the time is contained in the column `time`:
+# You can use `pw.demo.replay_csv_with_time` to replay a data source in a CSV file respecting the time between updates based on a timestamp columns (more information about this function in our dedicated [article](/developers/user-guide/connect/artificial-streams#replaying-static-csv-files-with-replay_csv-and-replay_csv_with_time)). Here the time is contained in the column `time`:
 
 
 # +

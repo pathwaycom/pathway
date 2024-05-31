@@ -23,8 +23,8 @@
 # # Basic Data Types
 # This guide is about basic data types in Pathway: it covers the list of basic data types that can be used in Pathway, explores several available conversion methods, and wraps up with examples of operators that require a column of specific data type as input.
 
-# Currently, Pathway allows using the following basic Python types: `bool`, `str`, `int`, `float`, and `bytes`. Additionally, there is support for types `datetime` and `duration` from `datetime` module, distinguishing between `utc datetimes` and `naive datetimes`. Finally, Pathway also introduces an additional type for columns representing pointers, called `Pointer`. Below, you can find an example table with six columns, one example column for each of the basic Python types, and one column of type Pointer. The complex types (as datetime) need some conversion, and they are covered in [the later part of the article](/developers/user-guide/types-in-pathway/datatypes#temporal-data-types).
-# The standard way to define a type in Pathway is to use a [`schema`](/developers/api-docs/pathway#pathway.Schema) (you can learn more about schemas in this [article](/developers/user-guide/types-in-pathway/schema/)):
+# Currently, Pathway allows using the following basic Python types: `bool`, `str`, `int`, `float`, and `bytes`. Additionally, there is support for types `datetime` and `duration` from `datetime` module, distinguishing between `utc datetimes` and `naive datetimes`. Finally, Pathway also introduces an additional type for columns representing pointers, called `Pointer`. Below, you can find an example table with six columns, one example column for each of the basic Python types, and one column of type Pointer. The complex types (as datetime) need some conversion, and they are covered in [the later part of the article](/developers/user-guide/connect/datatypes#temporal-data-types).
+# The standard way to define a type in Pathway is to use a [`schema`](/developers/api-docs/pathway#pathway.Schema) (you can learn more about schemas in this [article](/developers/user-guide/connect/schema/)):
 # %%
 import datetime
 
@@ -106,7 +106,7 @@ pw.debug.compute_and_print(str_table, include_id=False)
 print(str_table.schema)
 # %% [markdown]
 # ### Module `str`
-# Furthermore, Pathway provides a [string module](/developers/api-docs/pathway#pathway.internals.expressions.StringNamespace) containing string operations. Among other things, it provides several methods that allow parsing converting `str` to other simple types, accessible via the `str` namespace of column (e.g. `table_name.column_name.str.parse_*`). You can find examples of usage of those methods in the [remaining part of this article](/developers/user-guide/types-in-pathway/datatypes#parse-numbers-from-str).
+# Furthermore, Pathway provides a [string module](/developers/api-docs/pathway#pathway.internals.expressions.StringNamespace) containing string operations. Among other things, it provides several methods that allow parsing converting `str` to other simple types, accessible via the `str` namespace of column (e.g. `table_name.column_name.str.parse_*`). You can find examples of usage of those methods in the [remaining part of this article](/developers/user-guide/connect/datatypes#parse-numbers-from-str).
 
 # ### Type `bytes`
 # %%

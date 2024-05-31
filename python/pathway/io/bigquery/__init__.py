@@ -60,7 +60,7 @@ either 1 or -1 and which denotes if the entry was inserted to the table or if it
         table_name: The name of the table to be written.
         service_user_credentials_file: Google API service user json file. Please \
 follow the instructions provided in the `developer's user guide \
-<https://pathway.com/developers/user-guide/connectors/gdrive-connector/#setting-up-google-drive>`_ \
+<https://pathway.com/developers/user-guide/connect/connectors/gdrive-connector/#setting-up-google-drive>`_ \
 to obtain them.
 
     Returns:

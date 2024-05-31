@@ -27,7 +27,7 @@
 #
 # Let's consider a simple example in which you join two tables in Pathway. Here, a table is built from a simulated stream of changes to its rows. The value in the `__time__` column represents the arrival time of the record to the engine. Rows with the same value in the `__time__` column belong to a single batch.
 #
-# To use an example with a real streaming source it is enough to replace [`pw.debug.table_from_markdown`](/developers/api-docs/debug#pathway.debug.table_from_markdown) with an appropriate [connector](/developers/user-guide/connecting-to-data/connectors/) (like Redpanda or Kafka connector).
+# To use an example with a real streaming source it is enough to replace [`pw.debug.table_from_markdown`](/developers/api-docs/debug#pathway.debug.table_from_markdown) with an appropriate [connector](/developers/user-guide/connect/supported-data-sources/) (like Redpanda or Kafka connector).
 #
 # The tables are joined on the `instance` column.
 
@@ -257,7 +257,7 @@ queries, response_writer = pw.io.http.rest_connector(
     delete_completed_queries=False,
 )
 # %% [markdown]
-# The database is represented as a directory containing CSV files with points from which you want to find closest ones. You can use a [CSV connector](/developers/user-guide/connectors/csv_connectors) to read a directory of CSV files. The `mode` parameter is set to `streaming`. If new files appear in the directory, their entries will be appended to the stream and hence will be added to the KNN index.
+# The database is represented as a directory containing CSV files with points from which you want to find closest ones. You can use a [CSV connector](/developers/user-guide/connect/connectors/csv_connectors) to read a directory of CSV files. The `mode` parameter is set to `streaming`. If new files appear in the directory, their entries will be appended to the stream and hence will be added to the KNN index.
 # %%
 data_dir = "points"
 data = pw.io.csv.read(

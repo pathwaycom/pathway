@@ -19,7 +19,7 @@
 # Let's consider a scenario in which you track customers ordering products. Each order is placed at some specific time (`order_time`) and reaches the tracking system written in Pathway at time `__time__`.
 # In a real-world scenario, you don't have perfect control over the time between the moment the order is placed and the moment it reaches the data processing engine. Packets can take different routes over the network, or, in rare cases, a sneaky Georgian woman can cut off internet access for [a whole country](https://www.theguardian.com/world/2011/apr/06/georgian-woman-cuts-web-access). As such, times `order_time` can arrive in the processing system out of order, very late, or even not arrive at all.
 
-# To deliver streaming data in a production system, you can use a connector like Kafka or Redpanda (you can read more about them in [Kafka connector](/developers/user-guide/connectors/kafka_connectors/) or [Redpanda connector](/developers/user-guide/connectors/switching-to-redpanda/) articles). Below, `pw.debug.table_from_markdown` with `__time__` column simulates a connector that delivers data out-of-order to demonstrate configurable _temporal behavior_ of interval join.
+# To deliver streaming data in a production system, you can use a connector like Kafka or Redpanda (you can read more about them in [Kafka connector](/developers/user-guide/connect/connectors/kafka_connectors/) or [Redpanda connector](/developers/user-guide/connect/connectors/switching-to-redpanda/) articles). Below, `pw.debug.table_from_markdown` with `__time__` column simulates a connector that delivers data out-of-order to demonstrate configurable _temporal behavior_ of interval join.
 
 # %% tags=[]
 import pathway as pw

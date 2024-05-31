@@ -125,7 +125,7 @@ import pathway as pw
 # # !wget https://public-pathway-releases.s3.eu-central-1.amazonaws.com/data/fuzzy_join_part_1_transactionsB.csv -O transactionsB.csv
 
 # %% [markdown]
-# We use [our csv connectors](/developers/user-guide/connecting-to-data/connectors/) to read the csv files:
+# We use [our csv connectors](/developers/user-guide/connect/connectors/csv_connectors/) to read the csv files:
 
 
 # %%

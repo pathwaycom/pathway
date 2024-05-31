@@ -41,7 +41,7 @@
 #
 # The processing pipeline should be designed in the same way no matter what mode is used in the end. The only difference is how the data is considered.
 #
-# To learn more about both modes, you can read our [article](/developers/user-guide/connecting-to-data/streaming-and-static-modes/) about it.
+# To learn more about both modes, you can read our [article](/developers/user-guide/introduction/streaming-and-static-modes/) about it.
 #
 # In most of our examples, we use the static mode since it avoids setting external streaming data sources such as Kafka.
 
@@ -89,7 +89,7 @@ pw.debug.compute_and_print(t_name)
 #
 #
 # ### Streaming mode
-# In the streaming mode, those tables would be obtained using one of the [connectors](/developers/user-guide/connecting-to-data/connectors/) provided by Pathway.
+# In the streaming mode, those tables would be obtained using one of the [connectors](/developers/user-guide/connect/supported-data-sources/) provided by Pathway.
 # For example, we could use [`pw.io.kafka.read`](/developers/api-docs/pathway-io/kafka#pathway.io.kafka.read) to obtain the table from Kafka.
 # The results should be taken out of Pathway using an output connector: we could send the data to postgresql using [`pw.io.progresql.write`](/developers/api-docs/pathway-io/postgres#pathway.io.postgres.write) for instance.
 # Otherwise, the way the data is manipulated is exactly the same in both modes.
