@@ -17,10 +17,10 @@ Ensure you have Docker and Docker Compose installed on your machine. For install
 
 To send data to Grafana Cloud, you will need a free Grafana account. You can create one by visiting [Grafana Cloud](https://grafana.com/).
 
-Make sure Pathway is installed:
+Make sure Pathway is installed in version 0.11.2 or higher:
 
 ```python
-pip install pathway
+pip install -U pathway
 ```
 
 ### Configuration
