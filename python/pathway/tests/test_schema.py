@@ -139,7 +139,7 @@ def test_schema_class_generation(tmp_path: pathlib.Path):
             "d": pw.column_definition(default_value=5, dtype=int),
             "e": pw.column_definition(dtype=float),
             "f": pw.column_definition(dtype=tuple[int, Any]),
-            "g": pw.column_definition(dtype=pw.DATE_TIME_UTC),
+            "g": pw.column_definition(dtype=pw.DateTimeUtc),
             "h": pw.column_definition(dtype=tuple[int, ...]),
         },
         name="Foo",

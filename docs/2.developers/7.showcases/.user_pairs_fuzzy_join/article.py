@@ -45,7 +45,7 @@ def table_from_kafka(**kwargs):
         receiver=str,
         currency=str,
         amount=int,
-        timestamp=pw.DATE_TIME_UTC,
+        timestamp=pw.DateTimeUtc,
         usd_estimate=int,
     )
 

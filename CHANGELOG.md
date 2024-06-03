@@ -13,6 +13,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Removed
 - **BREAKING**: Removed `Table.having` method.
 
+### Removed
+- **BREAKING**: Removed `pw.DATE_TIME_UTC`, `pw.DATE_TIME_NAIVE` and `pw.DURATION` as dtype markers. Instead, `pw.DateTimeUtc`, `pw.DateTimeNaive` and `pw.Duration` should be used, which
+are wrappers for corresponding pandas types.
+
 ## [0.11.2] - 2024-05-27
 
 ### Added

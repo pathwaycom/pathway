@@ -81,7 +81,6 @@ from pathway.internals import (
 )
 from pathway.internals.api import PathwayType as Type, PersistenceMode
 from pathway.internals.custom_reducers import BaseCustomAccumulator
-from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC, DURATION
 from pathway.schema import schema_builder
 from pathway.stdlib import (
     graphs,
@@ -169,9 +168,6 @@ __all__ = [
     "column_definition",
     "TableSlice",
     "demo",
-    "DATE_TIME_NAIVE",
-    "DATE_TIME_UTC",
-    "DURATION",
     "unwrap",
     "fill_error",
     "SchemaProperties",
