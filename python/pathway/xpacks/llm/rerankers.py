@@ -68,11 +68,6 @@ class LLMReranker(pw.UDF):
         - use_logit_bias: bool or None. Setting it as `None` checks if the LLM provider supports
             `logit_bias` argument, it can be overridden by setting it as `True` or `False`.
             Defaults to `None`.
-        - doc: Document or document chunk to be scored.
-        - query: User query or prompt that will be used to evaluate relevance of the doc.
-
-    `llm`, `use_logit_bias`, `retry_strategy` and `cache_strategy` are initialization arguments.
-    Rest are run time only arguments.
 
     Example:
 
@@ -170,6 +165,19 @@ class LLMReranker(pw.UDF):
                 f"Expected a number in the text, no number found in `{text}`."
             )
 
+    def __call__(
+        self, doc: pw.ColumnExpression, query: pw.ColumnExpression, **kwargs
+    ) -> pw.ColumnExpression:
+        """Evaluates the doc against the query.
+
+        Args:
+            - doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
+            - query (pw.ColumnExpression[str]): User query or prompt that will be used
+                to evaluate relevance of the doc.
+            - **kwargs: override for defaults set in the constructor
+        """
+        return super().__call__(doc, query, **kwargs)
+
 
 class CrossEncoderReranker(pw.UDF):
     """Pointwise Cross encoder reranker module.
@@ -183,11 +191,6 @@ class CrossEncoderReranker(pw.UDF):
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - doc: Document or document chunk to be scored.
-        - query: User query or prompt that will be used to evaluate relevance of the doc.
-
-    `model_name` and `cache_strategy` are initialization arguments.
-    Rest are run time only arguments.
 
     Suggested model: `cross-encoder/ms-marco-TinyBERT-L-2-v2`
 
@@ -226,6 +229,19 @@ class CrossEncoderReranker(pw.UDF):
         scores = self.model.predict([[query, doc]], **kwargs)
         return scores[0]
 
+    def __call__(
+        self, doc: pw.ColumnExpression, query: pw.ColumnExpression, **kwargs
+    ) -> pw.ColumnExpression:
+        """Evaluates the doc against the query.
+
+        Args:
+            - doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
+            - query (pw.ColumnExpression[str]): User query or prompt that will be used
+                to evaluate relevance of the doc.
+            - **kwargs: override for defaults set in the constructor.
+        """
+        return super().__call__(doc, query, **kwargs)
+
 
 class EncoderReranker(pw.UDF):
     """Pointwise encoder reranker module.
@@ -239,11 +255,6 @@ class EncoderReranker(pw.UDF):
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - doc: Document or document chunk to be scored.
-        - query: User query or prompt that will be used to evaluate relevance of the doc.
-
-    `model_name` and `cache_strategy` are initialization arguments.
-    Rest are run time only arguments.
 
     Suggested model: `BAAI/bge-large-zh-v1.5`
 
@@ -284,6 +295,19 @@ class EncoderReranker(pw.UDF):
         )
 
         return embeddings[0] @ embeddings[1].T
+
+    def __call__(
+        self, doc: pw.ColumnExpression, query: pw.ColumnExpression, **kwargs
+    ) -> pw.ColumnExpression:
+        """Evaluates the doc against the query.
+
+        Args:
+            - doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
+            - query (pw.ColumnExpression[str]): User query or prompt that will be used
+                to evaluate relevance of the doc.
+            - **kwargs: override for defaults set in the constructor.
+        """
+        return super().__call__(doc, query, **kwargs)
 
 
 class FlashRankReranker(pw.UDF):

@@ -64,6 +64,14 @@ class BaseEmbedder(pw.UDF):
         """
         return len(_coerce_sync(self.__wrapped__)(".", **kwargs))
 
+    def __call__(self, input: pw.ColumnExpression, *args, **kwargs):
+        """Embeds texts in a Column.
+
+        Args:
+            - input (ColumnExpression[str]): Column with texts to embed
+        """
+        return super().__call__(input, *args, **kwargs)
+
 
 class OpenAIEmbedder(BaseEmbedder):
     """Pathway wrapper for OpenAI Embedding services.

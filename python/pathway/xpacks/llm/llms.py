@@ -221,6 +221,16 @@ class OpenAIChat(pw.UDF):
         logger.info(json.dumps(event))
         return response
 
+    def __call__(self, messages: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """Sends messages to OpenAI Chat and returns response.
+
+        Args:
+            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+                to OpenAIChat
+            - **kwargs: override for defaults set in the constructor
+        """
+        return super().__call__(messages, **kwargs)
+
 
 class LiteLLMChat(pw.UDF):
     """Pathway wrapper for LiteLLM Chat services.
@@ -322,6 +332,16 @@ class LiteLLMChat(pw.UDF):
 
         return response
 
+    def __call__(self, messages: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """Sends messages to the LLM and returns response.
+
+        Args:
+            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+                to the LLM
+            - **kwargs: override for defaults set in the constructor
+        """
+        return super().__call__(messages, **kwargs)
+
 
 class HFPipelineChat(pw.UDF):
     """
@@ -399,6 +419,16 @@ class HFPipelineChat(pw.UDF):
 
         return wrapped(input_string)
 
+    def __call__(self, messages: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """Sends messages to the LLM and returns response.
+
+        Args:
+            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+                to the LLM
+            - **kwargs: override for defaults set in the constructor
+        """
+        return super().__call__(messages, **kwargs)
+
 
 class CohereChat(pw.UDF):
     """Pathway wrapper for Cohere Chat services.
@@ -422,8 +452,6 @@ class CohereChat(pw.UDF):
         - model: name of the model to use. Check the
             `available models <https://docs.cohere.com/docs/command-beta>`_
             for details.
-        - documents: (only in call) list of documents for RAG capability.
-            Cohere client returns cited docs and cited chunks of text.
 
 
     >>> import pathway as pw
@@ -511,6 +539,23 @@ class CohereChat(pw.UDF):
         logger.info(json.dumps(event))
 
         return (response, cited_documents)
+
+    def __call__(
+        self,
+        messages: pw.ColumnExpression,
+        documents: pw.ColumnExpression | None = None,
+        **kwargs,
+    ) -> pw.ColumnExpression:
+        """Sends messages to Cohere Chat and returns response.
+
+        Args:
+            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send.
+                to the LLM
+            - documents (ColumnExpression[list[dict] | pw.Json | tuple] | None): Column with context
+                documents to be sent to Cohere Chat. This argument is optional.
+            - **kwargs: override for defaults set in the constructor.
+        """
+        return super().__call__(messages, documents, **kwargs)
 
 
 @pw.udf

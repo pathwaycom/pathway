@@ -110,3 +110,12 @@ class TokenCountSplitter(pw.UDF):
             i += len(tokenizer.encode_ordinary(chunk))
             output.append((chunk, {}))
         return output
+
+    def __call__(self, text: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """Split given strings into smaller chunks.
+
+        Args:
+            - messages (ColumnExpression[str]): Column with texts to be split
+            - **kwargs: override for defaults set in the constructor
+        """
+        return super().__call__(text, **kwargs)

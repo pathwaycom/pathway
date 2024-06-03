@@ -17,9 +17,26 @@ logger = logging.getLogger(__name__)
 
 
 class ParseUtf8(pw.UDF):
+    """
+    Decode text encoded as UTF-8.
+    """
+
     def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         docs: list[tuple[str, dict]] = [(contents.decode("utf-8"), {})]
         return docs
+
+    def __call__(self, contents: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """
+        Parse the given document.
+
+        Args:
+            - contents: document contents
+
+        Returns:
+            A column with a list of pairs for each query. Each pair is a text chunk and
+            associated metadata. The metadata is an empty dictionary.
+        """
+        return super().__call__(contents, **kwargs)
 
 
 # Based on:
@@ -160,3 +177,21 @@ class ParseUnstructured(pw.UDF):
         else:
             raise ValueError(f"mode of {mode} not supported.")
         return docs
+
+    def __call__(self, contents: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """
+        Parse the given document.
+
+        Args:
+            - contents: document contents
+            - **kwargs: override for defaults set in the constructor
+
+        Returns:
+            A column with a list of pairs for each query. Each pair is a text chunk and
+            associated metadata.
+            The metadata is obtained from Unstructured, you can check possible values
+            in the `Unstructed documentation <https://unstructured-io.github.io/unstructured/metadata.html>`
+            Note that when `mode` is set to `single` or `paged` some of these fields are
+            removed if they are specific to a single element, e.g. `category_depth`.
+        """
+        return super().__call__(contents, **kwargs)
