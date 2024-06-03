@@ -81,10 +81,11 @@ sorted_events = events.sort(key=events.timestamp, instance=events.topic_id)
 # %% [markdown]
 # Finally, we process events in order of their timestamps at input.
 # %%
-events_with_prev = events.having(sorted_events.prev)
-differences = events_with_prev.select(
-    delta=events.restrict(events_with_prev).timestamp - pw.this.timestamp
-)
+events_with_prev = events.with_columns(
+    prev_timestamp=events.ix(sorted_events.prev, optional=True).timestamp
+).filter(pw.this.prev_timestamp.is_not_none())
+
+differences = events_with_prev.select(delta=pw.this.timestamp - pw.this.prev_timestamp)
 
 pw.io.postgres.write(
     differences,

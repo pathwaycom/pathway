@@ -1156,12 +1156,18 @@ id_type=<class 'pathway.engine.Pointer'>>
 
     @trace_user_frame
     def ix(
-        self, expression: expr.ColumnExpression, *, optional: bool = False, context=None
+        self,
+        expression: expr.ColumnExpression,
+        *,
+        optional: bool = False,
+        context=None,
+        allow_misses: bool = False,
     ) -> Table:
         """Reindexes the table using expression values as keys. Uses keys from context, or tries to infer
         proper context from the expression.
         If optional is True, then None in expression values result in None values in the result columns.
         Missing values in table keys result in RuntimeError.
+        If ``allow_misses`` is set to True, they result in None value on the output.
 
         Context can be anything that allows for `select` or `reduce`, or `pathway.this` construct
         (latter results in returning a delayed operation, and should be only used when using `ix` inside
@@ -1212,7 +1218,10 @@ id_type=<class 'pathway.engine.Pointer'>>
         if isinstance(context, thisclass.ThisMetaclass):
             return context._delayed_op(
                 lambda table, expression: self.ix(
-                    expression=expression, optional=optional, context=table
+                    expression=expression,
+                    optional=optional,
+                    context=table,
+                    allow_misses=allow_misses,
                 ),
                 expression=expression,
                 qualname=f"{self}.ix(...)",
@@ -1220,8 +1229,9 @@ id_type=<class 'pathway.engine.Pointer'>>
             )
         restrict_universe = RestrictUniverseDesugaring(context)
         expression = restrict_universe.eval_expression(expression)
-        key_col = context.select(tmp=expression).tmp
-        key_dtype = self.eval_type(key_col)
+        key_tab = context.select(tmp=expression)
+        key_col = key_tab.tmp
+        key_dtype = key_tab.eval_type(key_col)
         supertype = dt.ANY_POINTER
         if optional:
             supertype = dt.Optional(supertype)
@@ -1243,7 +1253,18 @@ id_type=<class 'pathway.engine.Pointer'>>
             )
         else:
             self_ = self
-        return self_._ix(key_col, optional)
+        if allow_misses:
+            subset = self_._having(key_col)
+            new_key_col = key_tab.restrict(subset).tmp
+            fill = key_tab.difference(subset).select(
+                **{name: None for name in self.column_names()}
+            )
+            return Table.concat(
+                self_._ix(new_key_col, optional=optional), fill
+            ).with_universe_of(key_tab)
+
+        else:
+            return self_._ix(key_col, optional)
 
     @contextualized_operator
     def _ix(
@@ -1911,23 +1932,6 @@ id_type=<class 'pathway.engine.Pointer'>>
         return self._with_same_universe(*columns_wrapped.items())
 
     @trace_user_frame
-    @desugar
-    @check_arg_types
-    def having(self, *indexers: expr.ColumnReference) -> Table[TSchema]:
-        """Removes rows so that indexed.ix(indexer) is possible when some rows are missing,
-        for each indexer in indexers"""
-        rets: list[Table] = []
-        for indexer in indexers:
-            rets.append(self._having(indexer))
-        if len(rets) == 0:
-            return self
-        elif len(rets) == 1:
-            [ret] = rets
-            return ret
-        else:
-            return rets[0].intersect(*rets[1:])
-
-    @trace_user_frame
     @contextualized_operator
     @check_arg_types
     def _with_schema(self, schema: type[Schema]) -> Table:
@@ -2345,11 +2349,13 @@ id_type=<class 'pathway.engine.Pointer'>>
         optional: bool = False,
         context=None,
         instance: expr.ColumnReference | None = None,
+        allow_misses: bool = False,
     ):
         """Reindexes the table using expressions as primary keys.
         Uses keys from context, or tries to infer proper context from the expression.
-        If optional is True, then None in expression values result in None values in the result columns.
+        If ``optional`` is True, then None in expression values result in None values in the result columns.
         Missing values in table keys result in RuntimeError.
+        If ``allow_misses`` is set to True, they result in None value on the output.
 
         Context can be anything that allows for `select` or `reduce`, or `pathway.this` construct
         (latter results in returning a delayed operation, and should be only used when using `ix` inside
@@ -2423,6 +2429,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             self.pointer_from(*args, optional=optional, instance=instance),
             optional=optional,
             context=context,
+            allow_misses=allow_misses,
         )
 
     @trace_user_frame

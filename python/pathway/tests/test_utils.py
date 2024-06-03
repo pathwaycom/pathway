@@ -22,7 +22,7 @@ from pathway.tests.utils import (
 )
 
 
-def test_ix_sanitize():
+def test_ix_optional():
     t_animals = T(
         """
             | genus      | epithet
@@ -40,11 +40,10 @@ def test_ix_sanitize():
          3 | 4
          4 | 2
         """,
-    )
-    t_indexer = t_indexer.select(indexer=t_animals.pointer_from(pw.this.indexer))
-    ret = t_animals.having(t_indexer.indexer).select(
-        genus=t_animals.ix(t_indexer.indexer, context=pw.this).genus
-    )
+    ).with_columns(indexer=pw.this.pointer_from(pw.this.indexer))
+    ret = t_animals.ix(t_indexer.indexer, allow_misses=True).filter(
+        pw.this.genus.is_not_none()
+    )[["genus"]]
     expected = T(
         """
            | genus

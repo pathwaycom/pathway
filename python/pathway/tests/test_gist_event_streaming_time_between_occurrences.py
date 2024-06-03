@@ -11,12 +11,15 @@ from pathway.tests.utils import T, assert_table_equality_wo_index
 
 # DO NOT MODIFY THIS WITHOUT MODIFYING the following file:
 # public/website3/content/2.developers/6.tutorials/.event_stream_processing_time_between_occurrences/article.py # noqa E501
-def get_differences(events):
+def get_differences(events: pw.Table):
     sorted_events = events.sort(key=events.timestamp, instance=events.topic_id)
 
-    events_with_prev = events.having(sorted_events.prev)
+    events_with_prev = events.with_columns(
+        prev_timestamp=events.ix(sorted_events.prev, optional=True).timestamp
+    ).filter(pw.this.prev_timestamp.is_not_none())
+
     differences = events_with_prev.select(
-        delta=events.restrict(events_with_prev).timestamp - pw.this.timestamp
+        delta=pw.this.timestamp - pw.this.prev_timestamp
     )
     return sorted_events, differences
 

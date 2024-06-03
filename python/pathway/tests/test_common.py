@@ -3932,7 +3932,11 @@ def test_join_ix():
         col=right.ix(left.a, context=pw.this).b
     )
 
-    ret3 = right.having(left.a).select(col=right.ix(left.a, context=pw.this).b)
+    ret3 = (
+        right.ix(left.a, allow_misses=True)
+        .select(col=pw.this.b)
+        .filter(pw.this.col.is_not_none())
+    )
 
     # below is the desugared version of above computation
     # it works, and it's magic
@@ -4296,7 +4300,7 @@ def test_chained_join_ids():
     )
 
 
-def test_multiple_having():
+def test_multiple_ix():
     indexed_table = T(
         """
            | col
@@ -4327,11 +4331,20 @@ def test_multiple_having():
     """
     ).with_columns(key=indexed_table.pointer_from(pw.this.key))
 
+    a = (
+        indexed_table.ix(indexer1.key, allow_misses=True)
+        .filter(pw.this.col.is_not_none())
+        .select(col1=pw.this.col)
+    )
+    b = (
+        indexed_table.ix(indexer2.key, allow_misses=True)
+        .filter(pw.this.col.is_not_none())
+        .select(col2=pw.this.col)
+    )
+    result = a.intersect(b)
+    result = a.restrict(result) + b.restrict(result)
     assert_table_equality_wo_index(
-        indexed_table.having(indexer1.key, indexer2.key).select(
-            col1=indexed_table.ix(indexer1.key, context=pw.this).col,
-            col2=indexed_table.ix(indexer2.key, context=pw.this).col,
-        ),
+        result,
         T(
             """
         col1 | col2
@@ -4340,19 +4353,6 @@ def test_multiple_having():
         """
         ),
     )
-
-
-def test_having_empty():
-    indexed_table = T(
-        """
-           | col
-        2  | a
-        3  | b
-        4  | c
-        5  | d
-        """
-    )
-    assert indexed_table == indexed_table.having()
 
 
 def test_join_desugaring_assign_id():
