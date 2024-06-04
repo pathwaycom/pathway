@@ -34,8 +34,7 @@
 
 # Pathway<a id="pathway"></a>
 
-[Pathway](https://pathway.com) is a Python data processing framework for analytics and AI pipelines over data streams.
-It's the ideal solution for real-time processing use cases like streaming ETL or RAG pipelines for unstructured data.
+[Pathway](https://pathway.com) is a Python ETL framework for event processing, real-time analytics, LLM pipelines and RAG.
 
 Pathway comes with an **easy-to-use Python API**, allowing you to seamlessly integrate your favorite Python ML libraries.
 Pathway code is versatile and robust: **you can use it in both development and production environments, handling both batch and streaming data effectively**.
@@ -52,6 +51,33 @@ pip install -U pathway
 
 For any questions, you will find the community and team behind the project [on Discord](https://discord.com/invite/pathway).
 
+## Use-cases and templates
+
+Ready to see what Pathway can do? Try one of our [easy-to-run examples](https://pathway.com/developers/showcases)! Available in both notebook and docker formats, these ready-to-launch examples can be launched in just a few clicks. Pick one and start your hands-on experience with Pathway today!
+
+### Event processing and real-time analytics pipelines
+With its unified engine for batch and streaming and its full Python compatibility, Pathway makes data processing as easy as possible. It's the ideal solution for a wide range of data processing pipelines, including:
+
+- [Showcase: Real-time ETL.](https://pathway.com/developers/showcases/kafka-etl)
+- [Showcase: Event-driven pipelines with alerting.](https://pathway.com/developers/showcases/realtime-log-monitoring)
+- [Showcase: Realtime analytics.](https://pathway.com/developers/showcases/linear_regression_with_kafka/)
+- [Docs: Switch from batch to streaming.](https://pathway.com/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
+
+
+
+### Live LLM and RAG pipelines
+
+Pathway provides dedicated LLM tooling to build LLM and RAG pipelines. Wrappers for most common LLM services and utilities are included, making working with LLMs and RAGs pipelines incredibly easy. Check out our [LLM xpack documentation](https://pathway.com/developers/user-guide/llm-xpack/overview).
+
+Don't hesitate to try one of our runnable examples featuring LLM tooling.
+You can find such examples [here](https://pathway.com/developers/user-guide/llm-xpack/llm-examples).
+
+  - [Showcase: LLM-powered data pipeline.](https://pathway.com/developers/showcases/llm-alert-pathway/)
+  - [Showcase: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/showcases/unstructured-to-structured/)
+  - [Template: Private RAG with Ollama and Mistral AI](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/private-rag)
+  - [Template: Adaptive RAG](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/adaptive-rag)
+  - [Template: Multimodal RAG with gpt4-0](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/gpt_4o_multimodal_rag)
+
 ## Features
 
 - **A wide range of connectors**: Pathway comes with connectors that connect to external data sources such as Kafka, GDrive, PostgreSQL, or SharePoint. Its Airbyte connector allows you to connect to more than 300 different data sources. If the connector you want is not available, you can build your own custom connector using Pathway Python connector.
@@ -59,21 +85,10 @@ For any questions, you will find the community and team behind the project [on D
 - **Persistence**: Pathway provides persistence to save the state of the computation. This allows you to restart your pipeline after an update or a crash. Your pipelines are in good hands with Pathway!
 - **Consistency**: Pathway handles the time for you, making your all your computations are consistent. In particular, Pathway manages late and out-of-order points by updating its results whenever new (or late, in this case) data points come into the system. The free version of Pathway gives the "at least once" consistency while the enterprise version provides the "exactly once" consistency.
 - **Scalable Rust engine**: with Pathway Rust engine, you are free from the usual limits imposed by Python. You can easily do multithreading, multiprocessing, and distributed computations.
+- **LLM helpers**: Pathway provides an LLM extension with all the utilities to integrate LLMs with your data pipelines (LLM wrappers, parsers, embedders, splitters), including an in-memory real-time Vector Index, and integrations with LLamaIndex and LangChain. You can quickly build and deploy RAG applications with your live documents.
 
-## Use-cases
-
-1. Real-time processing over data streams:
-  - [Real-time ETL.](https://pathway.com/developers/showcases/kafka-etl)
-  - [Event-driven pipelines with alerting.](https://pathway.com/developers/showcases/realtime-log-monitoring)
-  - [Realtime analytics.](https://pathway.com/developers/showcases/linear_regression_with_kafka/)
-  - [Switch from batch to streaming.](https://pathway.com/developers/user-guide/connect/switch-from-batch-to-streaming)
-2. Live Data AI Pipelines:
-  - [Data indexing pipeline and RAG.](https://pathway.com/developers/user-guide/llm-xpack/vectorstore_pipeline/)
-  - [LLM-powered data pipeline.](https://pathway.com/developers/showcases/llm-alert-pathway/)
-  - [Unstructured data to SQL on-the-fly.](https://pathway.com/developers/showcases/unstructured-to-structured/)
 
 ## Getting started<a id="getting-started"></a>
-
 
 ### Installation<a id="installation"></a>
 
