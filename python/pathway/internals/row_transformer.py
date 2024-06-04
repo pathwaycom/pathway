@@ -146,33 +146,7 @@ class ClassArgMeta(type):
 
 
 class ClassArg(metaclass=ClassArgMeta):
-    """Base class to inherit from when writing inner classes for class transformers.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class simple_transformer:
-    ...     class table(pw.ClassArg):
-    ...         arg = pw.input_attribute()
-    ...         @pw.output_attribute
-    ...         def ret(self) -> int:
-    ...             return self.arg + 1
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7
-    ... ''')
-    >>> t2 = simple_transformer(table=t1.select(arg=t1.age)).table
-    >>> pw.debug.compute_and_print(t1 + t2, include_id=False)
-    age | ret
-    7   | 8
-    8   | 9
-    9   | 10
-    10  | 11
-    """
+    """Base class to inherit from when writing inner classes for class transformers."""
 
     transformer: RowTransformer  # stub for mypy
     id: Pointer  # stub for mypy

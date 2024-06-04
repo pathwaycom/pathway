@@ -108,7 +108,7 @@ pw.debug.compute_and_print(t_david.select(t_david.name))
 #  * **The bracket notation**: you can also use string to access the column **the bracket notation**. The previous example is equivalent to ```t_david.select(t_david["name"])```.
 
 #  * The **this notation**: to refer to the table currently manipulated you can use [`pw.this`](/developers/api-docs/pathway#pathway.this). Our example becomes `t_david.select(pw.this.name)`.
-# This notation works for all standard transformers.
+# This notation works for all standard transformations.
 #     > It can be used to refer to the table, even if it has not been given a name, for example in successive operations:
 
 t_new_age = t_david.select(new_age=pw.this.age).select(
@@ -349,6 +349,3 @@ pw.debug.compute_and_print(
 )
 # _MD_COMMENT_END_
 # _MD_SHOW_t_multiples_values.select(sum=pw.apply(lambda x,y: x+y, pw.this.valA, pw.this.valB))
-
-# * Other operations with **transformer classes**: Pathway enables complex computation on data streams by using transformer classes.
-# It is a bit advanced for this first-steps guide but you can find all the information about transformer classes in [our tutorial](/developers/user-guide/diving-deeper/transformer-introduction/).

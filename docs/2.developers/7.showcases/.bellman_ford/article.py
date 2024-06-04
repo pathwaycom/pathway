@@ -188,7 +188,3 @@ pw.debug.compute_and_print(bellman_ford(vertices, edges))
 # - Iterate the transformation until a fixed point is reached
 #   - usually transforms the data by a simple one-liner.
 #   - for example ```iterate(lambda foo, bar: {foo=fn(foo, bar), bar=bar}, foo=input_table_1, bar=input_table2).foo```
-#
-# *Note:* It is also possible to define transformations from the perspective of
-# a row and not of a table. Curious? Take a look at [the transformer class tutorial](/developers/user-guide/diving-deeper/transformer-recursion/) or some of our other cookbooks, like this one on
-# [Pagerank](/developers/showcases/pagerank).

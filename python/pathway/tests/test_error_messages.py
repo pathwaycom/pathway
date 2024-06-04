@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 import pathway as pw
+from pathway.internals import ClassArg, input_attribute, output_attribute, transformer
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.tests.utils import (
     T,
@@ -303,12 +304,12 @@ def test_traceback_transformers_1():
         """
     )
 
-    @pw.transformer
+    @transformer
     class syntax_error_transformer:
-        class my_table(pw.ClassArg):
-            time = pw.input_attribute()
+        class my_table(ClassArg):
+            time = input_attribute()
 
-            @pw.output_attribute
+            @output_attribute
             def output_col(self):
                 return self.transfomer.my_table[self.id].time  # cause
 
@@ -326,12 +327,12 @@ def test_traceback_transformers_2():
         """
     )
 
-    @pw.transformer
+    @transformer
     class syntax_error_transformer:
-        class my_table(pw.ClassArg):
-            time = pw.input_attribute()
+        class my_table(ClassArg):
+            time = input_attribute()
 
-            @pw.output_attribute
+            @output_attribute
             def output_col(self):
                 return self.transformer.my_tablee[self.id].time  # cause
 
@@ -349,12 +350,12 @@ def test_traceback_transformers_3():
         """
     )
 
-    @pw.transformer
+    @transformer
     class syntax_error_transformer:
-        class my_table(pw.ClassArg):
-            time = pw.input_attribute()
+        class my_table(ClassArg):
+            time = input_attribute()
 
-            @pw.output_attribute
+            @output_attribute
             def output_col(self):
                 return self.transformer.my_table[self.id].foo  # cause
 
@@ -372,12 +373,12 @@ def test_traceback_transformers_4():
         """
     )
 
-    @pw.transformer
+    @transformer
     class syntax_error_transformer:
-        class my_table(pw.ClassArg):
-            time = pw.input_attribute()
+        class my_table(ClassArg):
+            time = input_attribute()
 
-            @pw.output_attribute
+            @output_attribute
             def output_col(self):
                 return self.transformer.my_table["asdf"].time  # cause
 

@@ -5,18 +5,18 @@ import pathlib
 
 import pytest
 
-from pathway import (
+from pathway import Table, reducers, schema_from_types, this
+from pathway.debug import _markdown_to_pandas
+from pathway.internals import (
     ClassArg,
-    Table,
+    column,
+    datasink,
+    datasource,
+    graph_runner,
     input_attribute,
     output_attribute,
-    reducers,
-    schema_from_types,
-    this,
     transformer,
 )
-from pathway.debug import _markdown_to_pandas
-from pathway.internals import column, datasink, datasource, graph_runner
 from pathway.internals.graph_runner.state import ScopeState
 from pathway.internals.graph_runner.storage_graph import OperatorStorageGraph
 from pathway.internals.monitoring import MonitoringLevel

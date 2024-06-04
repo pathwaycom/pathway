@@ -9,11 +9,7 @@ from .data_index import DataIndex
 from .nearest_neighbors import LshKnn, USearchKnn
 from .sorting import (
     SortedIndex,
-    binsearch_oracle,
     build_sorted_index,
-    filter_cmp_helper,
-    filter_smallest_k,
-    prefix_sum_oracle,
     retrieve_prev_next_values,
     sort_from_index,
 )
@@ -33,11 +29,7 @@ __all__ = [
     "default_vector_document_index",
     "default_lsh_knn_document_index",
     "default_usearch_knn_document_index",
-    "binsearch_oracle",
-    "build_sorted_index",
-    "filter_cmp_helper",
-    "filter_smallest_k",
-    "prefix_sum_oracle",
     "retrieve_prev_next_values",
     "sort_from_index",
+    "build_sorted_index",
 ]

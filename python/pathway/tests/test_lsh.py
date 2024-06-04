@@ -87,5 +87,5 @@ def test_knn_classifier():
     2  | 0
     """,
             unsafe_trusted_ids=True,
-        ),
+        ).update_types(predicted_label=int | None),
     )

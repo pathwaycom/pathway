@@ -36,7 +36,7 @@ import numpy as np
 # TODO change to `import pathway as pw` when it is not imported as part of stdlib, OR move the whole file to stdlib
 import pathway.internals as pw
 from pathway.internals.helpers import StableSet
-from pathway.stdlib.utils.col import groupby_reduce_majority, unpack_col
+from pathway.stdlib.utils.col import unpack_col
 
 from ._lsh import generate_cosine_lsh_bucketer, generate_euclidean_lsh_bucketer
 
@@ -185,101 +185,96 @@ def knn_lsh_generic_classifier_train(
                 )
             )
 
-        def merge_buckets(*tuples: list[tuple]) -> tuple:
+        @pw.udf
+        def merge_buckets(*tuples: tuple[pw.Pointer, ...]) -> tuple[pw.Pointer, ...]:
             return tuple(StableSet(sum(tuples, ())))
 
         if "metadata_filter" not in result._columns:
-            result += result.select(metadata_filter=None)
+            result = result.with_columns(metadata_filter=None)
 
         flattened = result.select(
-            result.data,
+            pw.this.data,
+            pw.this.k,
+            pw.this.metadata_filter,
             query_id=result.id,
-            ids=pw.apply(merge_buckets, *[result[f"items_{i}"] for i in range(L)]),
-            k=result.k,
-            metadata_filter=result.metadata_filter,
+            ids=merge_buckets(*[result[f"items_{i}"] for i in range(L)]),
         ).filter(pw.this.ids != ())
 
+        actually_flattened = flattened.flatten(pw.this.ids, origin_id="origin_id")
+        actually_flattened = (
+            actually_flattened[["origin_id", "ids"]]
+            + data.ix(actually_flattened.ids)[["data", "metadata"]]
+        )
+        flattened_with_data = flattened.without(pw.this.ids) + (
+            actually_flattened.groupby(id=pw.this.origin_id).reduce(
+                training_data=pw.reducers.tuple(pw.this.data),
+                training_metadata=pw.reducers.tuple(pw.this.metadata),
+                ids=pw.reducers.tuple(pw.this.ids),
+            )
+        ).with_universe_of(flattened)
+
         # step 3: find knns in unioned buckets
-        @pw.transformer
-        class compute_knns_transformer:
-            class training_data(pw.ClassArg):
-                data = pw.input_attribute()
-                metadata = pw.input_attribute()
 
-            class flattened(pw.ClassArg):
-                data = pw.input_attribute()
-                query_id = pw.input_attribute()
-                ids = pw.input_attribute()
-                k = pw.input_attribute()
-                metadata_filter = pw.input_attribute()
-
-                @pw.output_attribute
-                def knns(self) -> list[tuple[pw.Pointer, float]]:
-                    querypoint = self.data
-                    for id_candidate in self.ids:
-                        try:
-                            self.transformer.training_data[id_candidate].data
-                            self.transformer.training_data[id_candidate].metadata
-                        except Exception:
-                            raise
-                        except BaseException:
-                            # Used to prefetch values
-                            pass
-
-                    try:
-                        candidates = [
-                            (
-                                id_candidate,
-                                self.transformer.training_data[id_candidate].data,
-                            )
-                            for id_candidate in self.ids
-                            if self.metadata_filter is None
-                            or jmespath.search(
-                                self.metadata_filter,
-                                self.transformer.training_data[
-                                    id_candidate
-                                ].metadata.value,
-                                options=_glob_options,
-                            )
-                            is True
-                        ]
-                    except jmespath.exceptions.JMESPathError:
-                        logging.exception(
-                            "Incorrect JMESPath expression for metadata filter"
-                        )
-                        candidates = []
-
-                    if len(candidates) == 0:
-                        return []
-                    ids_filtered, data_candidates_filtered = zip(*candidates)
-                    data_candidates = np.array(data_candidates_filtered)
-                    neighs = min(self.k, len(data_candidates))
-                    distances = distance_function(data_candidates, querypoint)
-                    knn_ids = np.argpartition(
-                        distances,
-                        neighs - 1,
-                    )[
-                        :neighs
-                    ]  # neighs - 1 in argpartition, because of 0-based indexing
-                    k_distances = distances[knn_ids]
-                    final_ids = np.array(ids_filtered)[knn_ids]
-                    if len(final_ids) == 0:
-                        return []
-                    sorted_dists, sorted_ids_by_dist = zip(
-                        *sorted(zip(k_distances, final_ids))
+        @pw.udf
+        def knns(
+            querypoint, training_data, training_metadata, ids, metadata_filter, k
+        ) -> list[tuple[pw.Pointer, float]]:
+            try:
+                candidates = [
+                    (
+                        id_candidate,
+                        data,
                     )
-                    return list(zip(sorted_ids_by_dist, sorted_dists))
+                    for id_candidate, data, metadata in zip(
+                        ids, training_data, training_metadata
+                    )
+                    if metadata_filter is None
+                    or jmespath.search(
+                        metadata_filter,
+                        metadata.value,
+                        options=_glob_options,
+                    )
+                    is True
+                ]
+            except jmespath.exceptions.JMESPathError:
+                logging.exception("Incorrect JMESPath expression for metadata filter")
+                candidates = []
 
-        knn_result: pw.Table = compute_knns_transformer(  # type: ignore
-            training_data=data, flattened=flattened
-        ).flattened.select(flattened.query_id, knns_ids_with_dists=pw.this.knns)
+            if len(candidates) == 0:
+                return []
+            ids_filtered, data_candidates_filtered = zip(*candidates)
+            data_candidates = np.array(data_candidates_filtered)
+            neighs = min(k, len(data_candidates))
+            distances = distance_function(data_candidates, querypoint)
+            knn_ids = np.argpartition(
+                distances,
+                neighs - 1,
+            )[
+                :neighs
+            ]  # neighs - 1 in argpartition, because of 0-based indexing
+            k_distances = distances[knn_ids]
+            final_ids = np.array(ids_filtered)[knn_ids]
+            if len(final_ids) == 0:
+                return []
+            sorted_dists, sorted_ids_by_dist = zip(*sorted(zip(k_distances, final_ids)))
+            return list(zip(sorted_ids_by_dist, sorted_dists))
 
-        knn_result_with_empty_results = queries.join_left(
+        knn_result = flattened_with_data.select(
+            pw.this.query_id,
+            knns_ids_with_dists=knns(
+                pw.this.data,
+                pw.this.training_data,
+                pw.this.training_metadata,
+                pw.this.ids,
+                pw.this.metadata_filter,
+                pw.this.k,
+            ),
+        )
+        result = queries.join_left(
             knn_result, queries.id == knn_result.query_id
-        ).select(knn_result.knns_ids_with_dists, query_id=queries.id)
-
-        result = knn_result_with_empty_results.with_columns(
-            knns_ids_with_dists=pw.coalesce(pw.this.knns_ids_with_dists, ()),
+        ).select(
+            knns_ids_with_dists=pw.coalesce(knn_result.knns_ids_with_dists, ()),
+            query_id=queries.id,
         )
 
         if not with_distances:
@@ -314,97 +309,17 @@ def knn_lsh_classify(knn_model, data_labels: pw.Table, queries: pw.Table, k):
     The queries are then labeled using a majority vote between the labels
     of the retrieved datapoints, using the labels provided in data_labels.
     """
-    knns = knn_model(queries, k)
+    knns: pw.Table = knn_model(queries, k)
 
-    # resultA = process_knn_no_transformers(data_labels, knns)
-    # resultB = process_knn_two_transformers(data_labels, knns)
-    result = (
-        take_majority_label(labels=data_labels, knn_table=knns)  # type: ignore
-        .knn_table.with_id(knns.query_id)
+    knns_nonempty = (
+        knns.flatten(pw.this.knns_ids)
+        .update_types(knns_ids=pw.Pointer)
+        .with_columns(data_labels.ix(pw.this.knns_ids).label)
+        .groupby(id=pw.this.query_id)
+        .reduce(predicted_label=pw.apply(mode, pw.reducers.tuple(pw.this.label)))
         .update_types(predicted_label=data_labels.typehints()["label"])
     )
-
-    return result
-
-
-@pw.transformer
-class take_majority_label:
-    class labels(pw.ClassArg):
-        label = pw.input_attribute()
-
-    class knn_table(pw.ClassArg):
-        knns_ids = pw.input_attribute()
-
-        @pw.output_attribute
-        def predicted_label(self):
-            try:
-                for x in self.knns_ids:
-                    self.transformer.labels[x].label
-            except Exception:
-                raise
-            except BaseException:
-                # Used to prefetch values
-                pass
-            if self.knns_ids != ():
-                return mode(self.transformer.labels[x].label for x in self.knns_ids)
-            else:
-                return None
-
-
-def process_knn_no_transformers(data_labels, knns):
-    labeled = (
-        knns.flatten(pw.this.knns_ids, row_id=pw.this.id)
-        .join(knns, pw.this.row_id == knns.id)
-        .select(knns.query_id, data_labels.ix(pw.this.knns_ids).label)
+    knns_empty = knns.with_id(pw.this.query_id).select(predicted_label=None)
+    return knns_empty.update_cells(
+        knns_nonempty.promise_universe_is_subset_of(knns_empty)
     )
-
-    # labeled = flatten_column(knns.knns_ids, origin_id=knns.query_id).select(
-    #     pw.this.query_id, data_labels.ix(pw.this.knns_ids).label
-    # )
-    predictions = groupby_reduce_majority(labeled.query_id, labeled.label)
-
-    results = predictions.select(predicted_label=predictions.majority).with_id(
-        predictions.query_id
-    )
-    return results
-
-
-def process_knn_two_transformers(data_labels, knns):
-    labeled = (
-        substitute_with_labels(labels=data_labels, knn_table=knns)  # type: ignore
-        .knn_table.select(labels=pw.this.knn_labels)
-        .with_id(knns.query_id)
-    )
-
-    result: pw.Table = (
-        compute_mode_empty_to_none(labeled.select(items=labeled.labels))  # type: ignore
-        .data.select(predicted_label=pw.this.mode)
-        .with_id(labeled.id)
-    )
-    return result
-
-
-@pw.transformer
-class substitute_with_labels:
-    class labels(pw.ClassArg):
-        label = pw.input_attribute()
-
-    class knn_table(pw.ClassArg):
-        knns_ids = pw.input_attribute()
-
-        @pw.output_attribute
-        def knn_labels(self):
-            return tuple(self.transformer.labels[x].label for x in self.knns_ids)
-
-
-@pw.transformer
-class compute_mode_empty_to_none:
-    class data(pw.ClassArg):
-        items = pw.input_attribute()
-
-        @pw.output_attribute
-        def mode(self):
-            if self.items != ():
-                return mode(self.items)
-            else:
-                return None

@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from pathway import (
+from pathway import Schema, Table, reducers, this
+from pathway.internals import (
     ClassArg,
-    Schema,
-    Table,
     attribute,
     input_attribute,
     input_method,
     method,
     output_attribute,
-    reducers,
-    this,
     transformer,
 )
 from pathway.tests.utils import (

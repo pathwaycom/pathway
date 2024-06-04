@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-import pathway as pw
+import pathway.internals as pw
 
 
 class Node(pw.Schema):

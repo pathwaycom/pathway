@@ -28,224 +28,33 @@ def _operator_wrapper(func: Callable, operator_cls: type[op.OperatorFromDef]):
 
 
 def input_attribute(type=float):
-    """Returns new input_attribute. To be used inside class transformers.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class simple_transformer:
-    ...     class table(pw.ClassArg):
-    ...         arg = pw.input_attribute()
-    ...
-    ...         @pw.output_attribute
-    ...         def ret(self) -> float:
-    ...             return self.arg + 1
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7''')
-    >>> t2 = simple_transformer(table=t1.select(arg=t1.age)).table
-    >>> pw.debug.compute_and_print(t1 + t2, include_id=False)
-    age | ret
-    7   | 8
-    8   | 9
-    9   | 10
-    10  | 11
-    """
+    """Returns new input_attribute. To be used inside class transformers."""
     return rt.InputAttribute(dtype=dt.wrap(type))
 
 
 def input_method(type=float):
-    """Decorator for defining input methods in class transformers.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class first_transformer:
-    ...     class table(pw.ClassArg):
-    ...         a: float = pw.input_attribute()
-    ...
-    ...         @pw.method
-    ...         def fun(self, arg) -> int:
-    ...             return self.a * arg
-    ...
-    >>> @pw.transformer
-    ... class second_transformer:
-    ...     class table(pw.ClassArg):
-    ...         m = pw.input_method(int)
-    ...
-    ...         @pw.output_attribute
-    ...         def val(self):
-    ...             return self.m(2)
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7''')
-    >>> t2 = first_transformer(table=t1.select(a=t1.age)).table
-    >>> t2.schema
-    <pathway.Schema types={'fun': typing.Callable[..., int]}, id_type=<class 'pathway.engine.Pointer'>>
-    >>> t3 = second_transformer(table=t2.select(m=t2.fun)).table
-    >>> pw.debug.compute_and_print(t1 + t3, include_id=False)
-    age | val
-    7   | 14
-    8   | 16
-    9   | 18
-    10  | 20
-    """
+    """Decorator for defining input methods in class transformers."""
     return rt.InputMethod(dtype=dt.wrap(type))
 
 
 @with_optional_kwargs
 def attribute(func, **kwargs):
-    """Decorator for creation of attributes.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class simple_transformer:
-    ...     class table(pw.ClassArg):
-    ...         arg = pw.input_attribute()
-    ...
-    ...         @pw.attribute
-    ...         def attr(self) -> float:
-    ...             return self.arg*2
-    ...
-    ...         @pw.output_attribute
-    ...         def ret(self) -> float:
-    ...             return self.attr + 1
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7''')
-    >>> t2 = simple_transformer(table=t1.select(arg=t1.age)).table
-    >>> pw.debug.compute_and_print(t1 + t2, include_id=False)
-    age | ret
-    7   | 15
-    8   | 17
-    9   | 19
-    10  | 21
-    """
+    """Decorator for creation of attributes."""
     return rt.Attribute(func, **kwargs)
 
 
 @with_optional_kwargs
 def output_attribute(func, **kwargs):
-    """Decorator for creation of output_attributes.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class simple_transformer:
-    ...     class table(pw.ClassArg):
-    ...         arg = pw.input_attribute()
-    ...
-    ...         @pw.output_attribute
-    ...         def ret(self) -> float:
-    ...             return self.arg + 1
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7''')
-    >>> t2 = simple_transformer(table=t1.select(arg=t1.age)).table
-    >>> pw.debug.compute_and_print(t1 + t2, include_id=False)
-    age | ret
-    7   | 8
-    8   | 9
-    9   | 10
-    10  | 11
-    """
+    """Decorator for creation of output_attributes."""
     return rt.OutputAttribute(func, **kwargs)
 
 
 @with_optional_kwargs
 def method(func, **kwargs):
-    """Decorator for creation methods in class transformers.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class simple_transformer:
-    ...     class table(pw.ClassArg):
-    ...         a: float = pw.input_attribute()
-    ...
-    ...         @pw.output_attribute
-    ...         def b(self) -> float:
-    ...             return self.fun(self.a)
-    ...
-    ...         @method
-    ...         def fun(self, arg) -> float:
-    ...             return self.a * arg
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7''')
-    >>> t2 = simple_transformer(table=t1.select(a=t1.age)).table
-    >>> t2.schema
-    <pathway.Schema types={'b': <class 'float'>, 'fun': typing.Callable[..., float]}, \
-id_type=<class 'pathway.engine.Pointer'>>
-    >>> pw.debug.compute_and_print(t1 + t2.select(t2.b), include_id=False)
-    age | b
-    7   | 49
-    8   | 64
-    9   | 81
-    10  | 100
-    >>> pw.debug.compute_and_print(t1 + t2.select(out = t2.fun(t2.b)), include_id=False)
-    age | out
-    7   | 343
-    8   | 512
-    9   | 729
-    10  | 1000
-    """
+    """Decorator for creation methods in class transformers."""
     return rt.Method(func, **kwargs)
 
 
 def transformer(cls):
-    """Decorator that wraps the outer class when defining class transformers.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> @pw.transformer
-    ... class simple_transformer:
-    ...     class table(pw.ClassArg):
-    ...         arg = pw.input_attribute()
-    ...
-    ...         @pw.output_attribute
-    ...         def ret(self) -> float:
-    ...             return self.arg + 1
-    ...
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age
-    ... 10
-    ... 9
-    ... 8
-    ... 7''')
-    >>> t2 = simple_transformer(table=t1.select(arg=t1.age)).table
-    >>> pw.debug.compute_and_print(t1 + t2, include_id=False)
-    age | ret
-    7   | 8
-    8   | 9
-    9   | 10
-    10  | 11
-    """
+    """Decorator that wraps the outer class when defining class transformers."""
     return rt.RowTransformer.from_class(cls)

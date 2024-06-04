@@ -246,6 +246,7 @@ t2_timestamp = format_table(t2)
 #
 # In this case, you can filter all the entries with a timestamp higher than a given value to only display a small portion of the dataset.
 
+
 # %%
 def preview_table(table, max_timestamp=1224744825):
     table = table.filter(pw.this.timestamp < max_timestamp)
@@ -393,59 +394,40 @@ preview_table(interpolated_table)
 
 
 # %% [markdown]
-# Then, you can use transformer classes to compute the instant speed on all the points for both sources:
+# Then, you can use `ix` method to fetch values from corresponding `prev` and `next` rows, and use them to compute the instant speed on all the points for both sources:
 
 # %%
-@pw.transformer
-class computing_speed:
-    class ordered_ts(pw.ClassArg):
-        timestamp = pw.input_attribute()
-        interpolated_position_1 = pw.input_attribute()
-        interpolated_position_2 = pw.input_attribute()
-        prev = pw.input_attribute()
-        next = pw.input_attribute()
+interpolated_table_prev = interpolated_table.ix(pw.this.prev, optional=True)
+interpolated_table_next = interpolated_table.ix(pw.this.next, optional=True)
 
-        @pw.output_attribute
-        def speed_1(self) -> float:
-            t = self.timestamp
-            t_prev = t
-            position_prev = self.interpolated_position_1
-            t_next = t
-            position_next = self.interpolated_position_1
-            if self.prev is not None:
-                t_prev = self.transformer.ordered_ts[self.prev].timestamp
-                position_prev = self.transformer.ordered_ts[
-                    self.prev
-                ].interpolated_position_1
-            if self.next is not None:
-                t_next = self.transformer.ordered_ts[self.next].timestamp
-                position_next = self.transformer.ordered_ts[
-                    self.next
-                ].interpolated_position_1
-            return compute_speed(t_prev, position_prev, t_next, position_next)
+table_speed = interpolated_table.select(
+    pw.this.timestamp,
+    speed_1=compute_speed(
+        pw.coalesce(interpolated_table_prev.timestamp, pw.this.timestamp),
+        pw.coalesce(
+            interpolated_table_prev.interpolated_position_1,
+            pw.this.interpolated_position_1,
+        ),
+        pw.coalesce(interpolated_table_next.timestamp, pw.this.timestamp),
+        pw.coalesce(
+            interpolated_table_next.interpolated_position_1,
+            pw.this.interpolated_position_1,
+        ),
+    ),
+    speed_2=compute_speed(
+        pw.coalesce(interpolated_table_prev.timestamp, pw.this.timestamp),
+        pw.coalesce(
+            interpolated_table_prev.interpolated_position_2,
+            pw.this.interpolated_position_2,
+        ),
+        pw.coalesce(interpolated_table_next.timestamp, pw.this.timestamp),
+        pw.coalesce(
+            interpolated_table_next.interpolated_position_2,
+            pw.this.interpolated_position_2,
+        ),
+    ),
+)
 
-        @pw.output_attribute
-        def speed_2(self) -> float:
-            t = self.timestamp
-            t_prev = t
-            position_prev = self.interpolated_position_2
-            t_next = t
-            position_next = self.interpolated_position_2
-            if self.prev is not None:
-                t_prev = self.transformer.ordered_ts[self.prev].timestamp
-                position_prev = self.transformer.ordered_ts[
-                    self.prev
-                ].interpolated_position_2
-            if self.next is not None:
-                t_next = self.transformer.ordered_ts[self.next].timestamp
-                position_next = self.transformer.ordered_ts[
-                    self.next
-                ].interpolated_position_2
-            return compute_speed(t_prev, position_prev, t_next, position_next)
-
-
-table_speed = computing_speed(ordered_ts=interpolated_table).ordered_ts
-table_speed = pw.Table.from_columns(interpolated_table.timestamp) + table_speed
 preview_table(table_speed)
 
 # %% [markdown]

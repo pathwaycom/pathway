@@ -16,7 +16,7 @@
 # Let's start with a brief explanation of Pathway's [dataflow](/developers/user-guide/introduction/concepts#dataflow).
 # In Pathway, the processing pipeline that you define is modeled using a graph.
 # This graph, called the dataflow, models the different transformation steps performed on the data.
-# Each node is either an operation performed on one or more tables (e.g. a transformer), or a connector.
+# Each node is either an operation performed on one or more tables (e.g. a transformation), or a connector.
 #
 #
 # For example, consider the following scenario: you have two tables containing the ages (in T1) and the countries (in T2) of different people and you want to compute the list of people from a given country (let's say the US) and the list of people in this country and whether they are adults or not.
@@ -38,7 +38,7 @@
 # The corresponding notations would be: T1' $\rightarrow$ T1bis, T2' $\rightarrow$ T2bis, t1 $\rightarrow$ `select` with `apply`, t2 $\rightarrow$ `filter`, and t3 $\rightarrow$ `join` and `select`.
 #
 # The main take-away is that Pathway builds this graph based on the pipeline defined by the user, before any computation is actually done.
-# This graph models the relations between the different connectors, tables, and transformers.
+# This graph models the relations between the different connectors, tables, and transformations.
 # Its main purpose is to provide fast updates in streaming mode.
 #
 #

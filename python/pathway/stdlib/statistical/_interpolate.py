@@ -3,52 +3,26 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING
 
-from pathway.internals.expression import ColumnReference
+import pathway.internals as pw
 from pathway.internals.trace import trace_user_frame
 
-if TYPE_CHECKING:
-    from pathway.internals.table import Table
 
-
-def _linear_interpolate(t, t_prev, v_prev, t_next, v_next) -> float:
+@pw.udf
+def _linear_interpolate(
+    t: float,
+    t_prev: float | None,
+    v_prev: float | None,
+    t_next: float | None,
+    v_next: float | None,
+) -> float | None:
+    if v_prev is None:
+        return v_next
+    assert t_prev is not None
+    if v_next is None:
+        return v_prev
+    assert t_next is not None
     return v_prev + (t - t_prev) * (v_next - v_prev) / (t_next - t_prev)
-
-
-def _compute_interpolate(table_with_prev_next: Table) -> Table:
-    import pathway.internals as pw
-
-    @pw.transformer
-    class computing_interpolate:
-        class ordered_ts(pw.ClassArg):
-            timestamp = pw.input_attribute()
-            value = pw.input_attribute()
-            prev_value = pw.input_attribute()
-            next_value = pw.input_attribute()
-
-            @pw.output_attribute
-            def interpolated_value(self) -> float | None:
-                if self.value is not None:
-                    return self.value
-                t = self.timestamp
-
-                if self.prev_value is None and self.next_value is None:
-                    return None
-                if self.prev_value is None:
-                    return self.transformer.ordered_ts[self.next_value].value
-                if self.next_value is None:
-                    return self.transformer.ordered_ts[self.prev_value].value
-
-                t_prev = self.transformer.ordered_ts[self.prev_value].timestamp
-                value_prev = self.transformer.ordered_ts[self.prev_value].value
-                t_next = self.transformer.ordered_ts[self.next_value].timestamp
-                value_next = self.transformer.ordered_ts[self.next_value].value
-                return _linear_interpolate(t, t_prev, value_prev, t_next, value_next)
-
-    return computing_interpolate(
-        ordered_ts=table_with_prev_next
-    ).ordered_ts  # type: ignore
 
 
 class InterpolateMode(Enum):
@@ -57,9 +31,9 @@ class InterpolateMode(Enum):
 
 @trace_user_frame
 def interpolate(
-    self: Table,
-    timestamp: ColumnReference,
-    *values: ColumnReference,
+    self: pw.Table,
+    timestamp: pw.ColumnReference,
+    *values: pw.ColumnReference,
     mode: InterpolateMode = InterpolateMode.LINEAR,
 ):
     """
@@ -96,12 +70,12 @@ def interpolate(
     >>> table = table.interpolate(pw.this.timestamp, pw.this.values_a, pw.this.values_b)
     >>> pw.debug.compute_and_print(table, include_id=False)
     timestamp | values_a | values_b
-    1         | 1        | 10
+    1         | 1.0      | 10.0
     2         | 2.0      | 20.0
-    3         | 3        | 30.0
+    3         | 3.0      | 30.0
     4         | 4.0      | 40.0
     5         | 5.0      | 50.0
-    6         | 6        | 60
+    6         | 6.0      | 60.0
     """
 
     from pathway.stdlib.indexing.sorting import retrieve_prev_next_values
@@ -111,7 +85,7 @@ def interpolate(
             """interpolate: Invalid mode. Only Interpolate.LINEAR is currently available."""
         )
 
-    if isinstance(timestamp, ColumnReference):
+    if isinstance(timestamp, pw.ColumnReference):
         timestamp = self[timestamp]
     else:
         if isinstance(timestamp, str):
@@ -128,7 +102,7 @@ def interpolate(
     table = self
 
     for value in values:
-        if isinstance(value, ColumnReference):
+        if isinstance(value, pw.ColumnReference):
             value = self[value]
         else:
             if isinstance(value, str):
@@ -147,8 +121,22 @@ def interpolate(
 
         table_with_prev_next = retrieve_prev_next_values(sorted_timestamp_value)
 
-        interpolated_table = _compute_interpolate(
-            table_with_prev_next + sorted_timestamp_value
+        interpolated_table = table_with_prev_next + sorted_timestamp_value
+
+        prev_tab = interpolated_table.ix(pw.this.prev_value, optional=True)
+        next_tab = interpolated_table.ix(pw.this.next_value, optional=True)
+
+        interpolated_table = interpolated_table.with_columns(
+            interpolated_value=pw.coalesce(
+                pw.this.value,
+                _linear_interpolate(
+                    pw.this.timestamp,
+                    prev_tab.timestamp,
+                    prev_tab.value,
+                    next_tab.timestamp,
+                    next_tab.value,
+                ),
+            )
         )
 
         table = table.with_columns(
