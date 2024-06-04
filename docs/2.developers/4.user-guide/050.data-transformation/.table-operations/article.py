@@ -244,17 +244,13 @@ pw.debug.compute_and_print(t_union)
 # _MD_COMMENT_END_
 # _MD_SHOW_
 
-# * **Concatenation**: you can use [`concat`](/developers/api-docs/pathway-table#pathway.Table.concat) to concatenate two tables, but they need to have disjoint ids.
+# * **Concatenation**: you can use [`concat_reindex`](/developers/api-docs/pathway-table#pathway.Table.concat_reindex) to concatenate two tables:
 
-pw.universes.promise_are_pairwise_disjoint(t_union, t_david)
 # _MD_COMMENT_START_
-pw.debug.compute_and_print(pw.Table.concat(t_union, t_david))
+pw.debug.compute_and_print(pw.Table.concat_reindex(t_union, t_david))
 # _MD_COMMENT_END_
-# _MD_SHOW_pw.Table.concat(t_union,t_david)
+# _MD_SHOW_pw.Table.concat_reindex(t_union,t_david)
 
-# As you can see, Pathway keeps the index.
-# If you are concatenating tables with overlapping indexes, you can use [`concat_reindex`](/developers/api-docs/pathway-table#pathway.Table.concat_reindex) which will concat the tables and produce a new index.
-#
 # > **Info for Databricks Delta users**: Concatenation is highly similar to the SQL [`MERGE INTO`](https://docs.databricks.com/sql/language-manual/delta-merge-into.html).
 #
 # * **Join**: you can do all usual types of joins in Pathway (inner, outer, left, right). The example below presents an inner join:
