@@ -340,7 +340,7 @@ pw.debug.compute_and_print(result_in_memory_cache)
 # This is where `DiskCache` comes in.
 # It stores the results of the calls in persistent storage.
 # In the example, it is located in the `./Cache` directory.
-# To read more about setting up persistence see the [persistence guide](/developers/user-guide/persistence-consistency-scaling/persistence).
+# To read more about setting up persistence see the [persistence guide](/developers/user-guide/deployment/persistence).
 
 
 # %%
