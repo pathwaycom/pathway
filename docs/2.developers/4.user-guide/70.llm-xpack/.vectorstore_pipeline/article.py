@@ -1,5 +1,5 @@
 # ---
-# title: "Always up-to-date Vector Data Indexing pipeline"
+# title: "Data Indexing"
 # description: ''
 # aside: true
 # author: 'pathway'
