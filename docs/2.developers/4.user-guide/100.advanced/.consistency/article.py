@@ -1,5 +1,5 @@
 # ---
-# title: 'Data model consistency'
+# title: 'Data Model Consistency'
 # description: 'Computations in Pathway are expressed as if static data were loaded into the system. Pathway delivers consistent results by explicitly reasoning about time: every processed input message bears a timestamp, and each output message specifies exactly for which input times it was computed.'
 # notebook_export_path: notebooks/tutorials/consistency.ipynb
 # jupyter:
@@ -17,7 +17,7 @@
 # ---
 
 # %% [markdown]
-# # Consistency of the Pathway data model
+# # Consistency of the Pathway Data Model
 #
 # Computations in Pathway are expressed as if static data were loaded into the system. When streaming changes, Pathway produces inputs consistent with the state of all inputs at a given point in time.
 #

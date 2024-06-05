@@ -1,5 +1,5 @@
 # ---
-# title: User-defined functions
+# title: User-defined Functions
 # description: An article exploring concepts related to user defined functions in Pathway.
 # date: '2024-02-21'
 # thumbnail: ''
@@ -9,7 +9,7 @@
 # ---
 
 # %% [markdown]
-# # User-defined functions (UDFs) in Pathway
+# # User-defined Functions (UDFs) in Pathway
 # Pathway supports a wide range of expressions that allow you to operate on individual rows. <!-- TODO: link article when done -->
 # However, not all operations can be expressed that way.
 # To address this problem, Pathway allows you to write a user-defined function (UDF) in Python.

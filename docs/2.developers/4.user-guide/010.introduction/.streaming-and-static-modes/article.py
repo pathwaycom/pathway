@@ -1,9 +1,9 @@
 # ---
-# title: "Streaming and static modes"
+# title: "Streaming and Static Modes"
 # description: ''
 # ---
 
-# # Streaming and static modes
+# # Streaming and Static Modes
 # While Pathway is made for processing bounded and unbounded streaming data, entirely static data can also be used for testing and debugging purposes. This article explains what are those two modes -streaming and static- and their differences.
 #
 # Pathway is purposely designed to work with streaming data.
@@ -123,9 +123,11 @@ class SchemaT1(pw.Schema):
     name: str
     age: int
 
+
 class SchemaT2(pw.Schema):
     name: str
     country: str
+
 
 def pipeline(T1, T2):
     T1bis = T1.select(*pw.this, adult=pw.apply(lambda x: x > 18, pw.this.age))

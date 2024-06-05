@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown]
-# # Always up-to-date data indexing pipeline
+# # Always Up-to-date Data Indexing pipeline
 #
 # This showcase shows how to use Pathway to deploy a live data indexing pipeline, which can be queried like a typical vector store. However, under the hood, Pathway updates the index on each data change, always giving up-to-date answers.
 # <!-- canva link: https://www.canva.com/design/DAF1cxQW5Vg/LcFdDrPApBrgwM5kyirY6w/edit  -->

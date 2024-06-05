@@ -1,5 +1,5 @@
 # ---
-# title: Dealing with JSON data type
+# title: Dealing with JSON Data Type
 # description: An article explaining how to use JSON in Pathway
 # date: '2023-12-22'
 # thumbnail: '/assets/content/blog/th-json.png'

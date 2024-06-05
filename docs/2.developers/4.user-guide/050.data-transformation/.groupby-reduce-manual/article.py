@@ -1,5 +1,5 @@
 # ---
-# title: "Groupby Reduce manu[a]l"
+# title: "Groupby Reduce"
 # description: 'Groupby Reduce manu[a]l'
 # notebook_export_path: notebooks/tutorials/groupby_reduce_manual.ipynb
 # ---
@@ -138,6 +138,7 @@ pw.debug.compute_and_print(aggregated_results)
 # * for all the remaining columns (in $T \setminus C$), we need to apply a reducer, before we use them in expressions
 #
 # In particular, we can mix columns from $C$ and reduced columns from $T \setminus C$ in column expressions.
+
 
 # +
 def make_a_note(label: str, tot_votes: int, tot_fractional_vote: float):

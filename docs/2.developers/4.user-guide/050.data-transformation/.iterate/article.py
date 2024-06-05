@@ -1,5 +1,5 @@
 # ---
-# title: Iterative computations
+# title: Iterative Computations
 # description: An article exploring concepts related to iterative computation in Pathway.
 # date: '2023-12-28'
 # thumbnail: ''
@@ -9,7 +9,7 @@
 # ---
 
 # %% [markdown]
-# # Iterative computations
+# # Iterative Computations
 # Pathway allows you to perform iterative computations on tables. The tables can be updated over time but the data is still split into batches properly after performing an iteration.
 #
 # The iteration is performed until convergence or until the limit of steps is reached (by default there is no limit but you can specify it). The iteration is incremental - the next iteration step only gets elements that have been updated in the previous step. It allows Pathway to reduce the amount of computations performed and effectively have a different number of iteration steps for different elements.

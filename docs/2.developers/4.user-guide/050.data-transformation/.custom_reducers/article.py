@@ -1,5 +1,5 @@
 # ---
-# title: Writing custom reducers
+# title: Writing Custom Reducers
 # description: An article explaining how to write custom reducers in Pathway
 # date: '2024-01-17'
 # thumbnail: '/assets/content/blog/th-json.png'
@@ -21,7 +21,7 @@
 # ---
 
 # %% [markdown]
-# # Writing simple custom reducer in Pathway
+# # Writing Simple Custom Reducer in Pathway
 #
 # Pathway supports natively aggregation using a wide range of [reducers](/developers/api-docs/reducers/), e.g., [`sum`](/developers/api-docs/reducers#pathway.reducers.sum), [`count`](/developers/api-docs/reducers#pathway.reducers.count), or [`max`](/developers/api-docs/reducers#pathway.reducers.max). However, those might not cover all the necessary ways of aggregating values. In this tutorial, you learn how to write reducers implementing custom logic.
 #

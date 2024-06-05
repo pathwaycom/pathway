@@ -1,5 +1,5 @@
 # ---
-# title: Controlling temporal behavior of interval join
+# title: Controlling Temporal Behavior of Interval Join
 # description: An article exploring concepts related to temporal behavior of interval join.
 # date: '2023-11-28'
 # thumbnail: 'assets/content/tutorials/fleet_eta_interval_join/fleet-eta-interval-join-th.png'
@@ -9,7 +9,7 @@
 # ---
 
 # %% [markdown]
-# # Controlling temporal behavior of interval join
+# # Controlling Temporal Behavior of Interval Join
 # This article explores concepts related to the temporal behavior of Pathway's interval join, like filtering out
 # late records, freeing memory that is no longer needed, or decreasing the frequency of updates.
 #

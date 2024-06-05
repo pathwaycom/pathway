@@ -1,5 +1,5 @@
 # ---
-# title: Asynchronous transformations
+# title: Asynchronous Transformations
 # description: An article explaining how to perform asynchronous data transformations in Pathway
 # date: '2024-02-20'
 # thumbnail: ''

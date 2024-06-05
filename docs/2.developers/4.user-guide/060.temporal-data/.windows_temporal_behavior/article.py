@@ -1,5 +1,5 @@
 # ---
-# title: Controlling temporal behavior of windows
+# title: Controlling Temporal Behavior of Windows
 # description: An article exploring concepts related to temporal behavior of windows.
 # date: '2024-01-08'
 # thumbnail: 'assets/content/tutorials/clickstream_window_join/clickstream-window-join-th.png'
@@ -7,7 +7,7 @@
 # notebook_export_path: notebooks/tutorials/windows_temporal_behavior.ipynb
 # ---
 
-# # Controlling temporal behavior of windows
+# # Controlling Temporal Behavior of Windows
 
 # In this article you will learn how to use windows effectively, by specifying their temporal behaviors.
 

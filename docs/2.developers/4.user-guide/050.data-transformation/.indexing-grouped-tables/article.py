@@ -1,5 +1,5 @@
 # ---
-# title: "Indexing from 'groupby' and single-row tables"
+# title: "Indexing from 'groupby' and Single-row Tables"
 # description:
 # date: '2023-03-31'
 # thumbnail: '/assets/content/blog/th-computing-pagerank.png'
@@ -20,7 +20,7 @@
 # ---
 
 # %% [markdown]
-# # Indexing from a `groupby` and single-row tables using `ix_ref`
+# # Indexing from a `groupby` and Single-row Tables using `ix_ref`
 # In this tutorial, you will learn how to use `ix_ref` in a grouped table to access a row from the grouped table and how to manipulate single-row tables.
 #
 # ## Accessing a grouped row by value using `ix_ref`

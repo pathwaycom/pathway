@@ -1,10 +1,10 @@
 # ---
-# title: "Basic operations"
+# title: "Basic Operations"
 # description: ''
 # notebook_export_path: notebooks/tutorials/survival_guide.ipynb
 # ---
 
-# # Basic operations
+# # Basic Operations
 # Must-read for first-timers and veterans alike, this guide gathers the most commonly used basic elements of Pathway.
 #
 #

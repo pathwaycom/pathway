@@ -1,5 +1,5 @@
 # ---
-# title: Windowby Reduce manu[a]l
+# title: Windowby Reduce
 # description: Windowby Reduce manu[a]l
 # notebook_export_path: notebooks/tutorials/windowby_manual.ipynb
 # ---

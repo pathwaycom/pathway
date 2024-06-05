@@ -1,5 +1,5 @@
 # ---
-# title: 'Automatic generation of Schema class'
+# title: 'Automatic Generation of Schema Class'
 # description: 'Tutorial on generating Schema from sample CSV file or definition in JSON'
 # date: '2023-11-08'
 # thumbnail: '/assets/content/blog/th-custom-connectors.png'
@@ -126,6 +126,8 @@ print(schema.generate_class(class_name="MySchema"))
 
 # Method `generate_class_to_file` has one required argument, which is the path where class definition is to be saved. Its optional arguments `class_name` and `generate_includes` are the same as for `generate_class` method.
 
-schema.generate_class_to_file("myschema.py", class_name="MySchema", generate_imports=True)
+schema.generate_class_to_file(
+    "myschema.py", class_name="MySchema", generate_imports=True
+)
 with open("myschema.py") as f:
     print(f.read())

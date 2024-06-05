@@ -1,10 +1,10 @@
 # ---
-# title: Simple join manu[a]l
+# title: Simple Join
 # description: Simple join manu[a]l
 # notebook_export_path: notebooks/tutorials/join_manual.ipynb
 # ---
 
-# # Playing with joins.
+# # Playing with Joins.
 # A brief explanation on how to perform joins with Pathway.
 #
 # Join is one of the basic table operations provided in Pathway.
@@ -123,6 +123,7 @@ pw.debug.compute_and_print(bad_match)
 #
 # The [`select`](/developers/api-docs/pathway#pathway.JoinResult.select) function works here similarly as [`select`](/developers/api-docs/pathway-table#pathway.Table.select) on a table. The difference is
 # that here, you can use columns of both tables as arguments, e.g.
+
 
 # +
 def make_food_constraint_note(name, dish):
@@ -248,6 +249,7 @@ pw.debug.compute_and_print(basic_customer_info)
 
 # As you can see, the behavior of the original `make_food_constraint_note` generates a
 # little bit of an odd entry for Dan. To fix that problem, you can redefine the `make_food_constraint_note`.
+
 
 # +
 def make_food_constraint_note_none_tolerant(name, dish):

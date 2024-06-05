@@ -4,7 +4,7 @@
 # notebook_export_path: notebooks/tutorials/from_pandas.ipynb
 # ---
 
-# # Pathway Tutorial for pandas Users
+# # Pathway Tutorial for Pandas Users
 # This tutorial gets you up and running with Pathway in 10 minutes. It is specificaly designed for users coming from `pandas`.
 #
 # In this tutorial, you will learn how to:
@@ -74,9 +74,11 @@ import pathway as pw
 #
 # In our case, we will create a Pathway table by listening to a directory for new events (in this case `./sum_input_data/`) and defining the schema of the table which maps the columns to their data types. Be sure to toggle streaming mode on by setting `mode` to `streaming`.
 
+
 # +
 class InputSchema(pw.Schema):
     value: int
+
 
 t = pw.io.csv.read(
     "./sum_input_data/",
