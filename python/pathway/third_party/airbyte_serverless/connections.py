@@ -4,21 +4,13 @@ import re
 import yaml
 import jinja2
 
-from .sources import Source
-from .destinations import Destination
-from .runners import Runner
+from .sources import DockerAirbyteSource
 
 
 CONNECTION_CONFIG_TEMPLATE = jinja2.Template(
     """
 source:
   {{ source.yaml_definition_example | indent(2, False) }}
-
-destination:
-  {{ destination.yaml_definition_example | indent(2, False) }}
-
-remote_runner:
-  {{ remote_runner.yaml_definition_example | indent(2, False) }}
 """
 )
 
@@ -52,20 +44,17 @@ class Connection:
     A `Connection` instance:
     - instantiates a `source` and a `destination` from provided `yaml_config`
     - has a `run` method to perform extract-load from `source` to `destination`
+
+    Both `Connection` and `ConnectionFromFile` are only used in Pathway CLI to generate
+    config templates based on the connector name.
     """
 
     def __init__(self, yaml_config=None):
         self.yaml_config = yaml_config
 
-    def init_yaml_config(self, source, destination, remote_runner):
-        source = Source(source)
-        destination = Destination(destination)
-        remote_runner = Runner(remote_runner, self)
-        self.yaml_config = CONNECTION_CONFIG_TEMPLATE.render(
-            source=source,
-            destination=destination,
-            remote_runner=remote_runner,
-        )
+    def init_yaml_config(self, source):
+        source = DockerAirbyteSource(source)
+        self.yaml_config = CONNECTION_CONFIG_TEMPLATE.render(source=source)
 
     @property
     def config(self):
@@ -75,36 +64,6 @@ class Connection:
             yaml_config
         ), "connection `yaml_config` does not exist. Please re-create connection"
         return yaml.safe_load(yaml_config)
-
-    @property
-    def available_streams(self):
-        return self.source.available_streams
-
-    def set_streams(self, streams):
-        assert streams, "`streams` variable must be defined"
-        self.yaml_config = re.sub(
-            r"streams:[^#]*(#*.*)",
-            f"streams: {streams} \g<1>",  # noqa
-            self.yaml_config,
-        )
-
-    @property
-    def source(self):
-        return Source(**self.config["source"])
-
-    @property
-    def destination(self):
-        return Destination(**self.config["destination"])
-
-    @property
-    def remote_runner(self):
-        return Runner(self.config["remote_runner"]["type"], self)
-
-    def run(self):
-        Runner("direct", self).run()
-
-    def remote_run(self):
-        self.remote_runner.run()
 
 
 class ConnectionFromFile(Connection):
@@ -119,14 +78,13 @@ class ConnectionFromFile(Connection):
         self.name = name
         self.config_filename = f"{self.CONNECTIONS_FOLDER}/{self.name}.yaml"
 
-    # TODO: make config consist only of a single source parameter
-    def init_yaml_config(self, source, destination, remote_runner):
+    def init_yaml_config(self, source):
         assert not self.yaml_config, (
             f"Connection `{self.name}` already exists. "
             f"If you want to re-init it, delete the file `{self.config_filename}`"
             " and run this command again"
         )
-        super().init_yaml_config(source, destination, remote_runner)
+        super().init_yaml_config(source)
 
     @property
     def yaml_config(self):

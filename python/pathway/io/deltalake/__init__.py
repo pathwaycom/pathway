@@ -24,7 +24,7 @@ def write(table: Table, path: str) -> None:
 
     Args:
         table: Table to be written.
-        filename: Path to the target output DeltaLake storage directory.
+        path: Path to the target output DeltaLake storage directory.
 
     Returns:
         None

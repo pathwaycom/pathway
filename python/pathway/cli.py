@@ -183,7 +183,7 @@ def create_source(connection, image):
         )
 
     connection = ConnectionFromFile(connection)
-    connection.init_yaml_config(image, "print", "cloud_run_job")
+    connection.init_yaml_config(image)
     click.echo(
         f"Connection `{connection.name}` with source `{image}` created successfully"
     )

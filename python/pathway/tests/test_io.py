@@ -3011,3 +3011,23 @@ def test_deltalake_append(tmp_path: pathlib.Path):
     delta_table = DeltaTable(output_path)
     pd_table_from_delta = delta_table.to_pandas()
     assert pd_table_from_delta.shape[0] == 6
+
+
+@needs_multiprocessing_fork
+@pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
+def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
+    table = pw.io.airbyte.read(
+        tmp_path_with_airbyte_config / "connections/new_source.yaml",
+        ["Users"],
+        mode="static",
+        execution_type="local",
+        env_vars=env_vars,
+    )
+    output_path = tmp_path_with_airbyte_config / "table.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    run_all()
+    total_lines = 0
+    with open(output_path, "r") as f:
+        for _ in f:
+            total_lines += 1
+    assert total_lines == 500

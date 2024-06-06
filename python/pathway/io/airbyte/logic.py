@@ -4,10 +4,10 @@ import time
 
 from pathway.io._utils import STATIC_MODE_NAME
 from pathway.io.python import ConnectorSubject
-from pathway.third_party.airbyte_serverless.connections import Source as AirbyteSource
 from pathway.third_party.airbyte_serverless.destinations import (
     BaseDestination as BaseAirbyteDestination,
 )
+from pathway.third_party.airbyte_serverless.sources import AbstractAirbyteSource
 
 MAX_RETRIES = 5
 INCREMENTAL_SYNC_MODE = "incremental"
@@ -95,7 +95,7 @@ class _PathwayAirbyteSubject(ConnectorSubject):
 
     def __init__(
         self,
-        source: AirbyteSource,
+        source: AbstractAirbyteSource,
         mode: str,
         refresh_interval_ms: int,
         *args,
@@ -137,3 +137,6 @@ class _PathwayAirbyteSubject(ConnectorSubject):
             time_elapsed = time.time() - time_before_start
             if time_elapsed < self.refresh_interval:
                 time.sleep(self.refresh_interval - time_elapsed)
+
+    def on_stop(self):
+        self.source.on_stop()

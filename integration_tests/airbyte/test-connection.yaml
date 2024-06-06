@@ -1,0 +1,9 @@
+
+source:
+  docker_image: "airbyte/source-faker:0.1.4" # GENERATED | string | A Public Docker Airbyte Source. Example: `airbyte/source-faker:0.1.4`. (see connectors list at: "https://hub.docker.com/search?q=airbyte%2Fsource-" )
+  config: # PREGENERATED | object | PLEASE UPDATE this pre-generated config by following the documentation https://docs.airbyte.com/integrations/sources/faker
+    count: 1000 # REQUIRED | integer | How many users should be generated in total.  This setting does not apply to the purchases or products stream.
+    seed: -1 # OPTIONAL | integer | Manually control the faker random seed to return the same values on subsequent runs (leave -1 for random)
+    records_per_sync: 500 # OPTIONAL | integer | How many fake records will be returned for each sync, for each stream?  By default, it will take 2 syncs to create the requested 1000 records.
+    records_per_slice: 100 # OPTIONAL | integer | How many fake records will be in each page (stream slice), before a state message is emitted?
+  streams: # OPTIONAL | string | Comma-separated list of streams to retrieve. If missing, all streams are retrieved from source.

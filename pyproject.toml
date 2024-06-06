@@ -92,6 +92,7 @@ tests = [
 airbyte = [
     "google-cloud-run",
     "google-cloud-secret-manager",
+    "google-cloud-logging",
     "pyyaml",
     "jinja2",
 ]

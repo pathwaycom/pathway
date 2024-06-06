@@ -6,7 +6,9 @@ import os
 from collections.abc import Generator
 
 import pytest
+from click.testing import CliRunner
 
+from pathway import cli
 from pathway.internals import config, parse_graph
 from pathway.tests.utils import UniquePortDispenser
 
@@ -77,3 +79,23 @@ PORT_DISPENSER = UniquePortDispenser(
 @pytest.fixture
 def port(testrun_uid):
     yield PORT_DISPENSER.get_unique_port(testrun_uid)
+
+
+@pytest.fixture
+def tmp_path_with_airbyte_config(tmp_path):
+    start_dir = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.create_source,
+            [
+                "new_source",
+                "--image",
+                "airbyte/source-faker:0.1.4",
+            ],
+        )
+        assert result.exit_code == 0
+    finally:
+        os.chdir(start_dir)
+    return tmp_path
