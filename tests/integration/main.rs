@@ -7,6 +7,7 @@ mod test_bytes;
 mod test_connector_field_defaults;
 mod test_dd_distinct_total;
 mod test_debezium;
+mod test_deltalake;
 mod test_dsv;
 mod test_dsv_dir;
 mod test_dsv_output;

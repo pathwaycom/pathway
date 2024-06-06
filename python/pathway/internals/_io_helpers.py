@@ -89,9 +89,13 @@ class AwsS3Settings:
 
 def _format_output_value_fields(table: Table) -> list[api.ValueField]:
     value_fields = []
-    for column_name in table._columns.keys():
+    for column_name, column_data in table._columns.items():
         value_fields.append(
-            api.ValueField(column_name, api.PathwayType.ANY, is_optional=True)
+            api.ValueField(
+                column_name,
+                column_data.dtype.map_to_engine(),
+                is_optional=isinstance(column_data.dtype, dt.Optional),
+            )
         )
 
     return value_fields

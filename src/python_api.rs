@@ -65,14 +65,15 @@ use self::external_index_wrappers::{
 use self::threads::PythonThreadState;
 
 use crate::connectors::data_format::{
-    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityParser,
-    InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
+    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityFormatter,
+    IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
     PsqlSnapshotFormatter, PsqlUpdatesFormatter, SingleColumnFormatter, TransparentParser,
 };
 use crate::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, DataEventType, ElasticSearchWriter, FileWriter,
-    FilesystemReader, KafkaReader, KafkaWriter, NullWriter, PsqlWriter, PythonReaderBuilder,
-    ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, SqliteReader, Writer,
+    ConnectorMode, CsvFilesystemReader, DataEventType, DeltaTableWriter, ElasticSearchWriter,
+    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter, PsqlWriter,
+    PythonReaderBuilder, ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, SqliteReader,
+    Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -2809,7 +2810,9 @@ impl Scope {
     ) -> PyResult<()> {
         let py = self_.py();
 
-        let sink_impl = data_sink.borrow().construct_writer(py)?;
+        let sink_impl = data_sink
+            .borrow()
+            .construct_writer(py, &data_format.borrow())?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
 
         self_
@@ -3654,13 +3657,13 @@ impl PythonSubject {
 #[derive(Clone)]
 pub struct ValueField {
     #[pyo3(get)]
-    name: String,
+    pub name: String,
     #[pyo3(get)]
-    type_: Type,
+    pub type_: Type,
     #[pyo3(get)]
-    is_optional: bool,
+    pub is_optional: bool,
     #[pyo3(get)]
-    default: Option<Value>,
+    pub default: Option<Value>,
 }
 
 impl ValueField {
@@ -4151,7 +4154,11 @@ impl DataStorage {
             .borrow(py))
     }
 
-    fn construct_writer(&self, py: pyo3::Python) -> PyResult<Box<dyn Writer>> {
+    fn construct_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
             "fs" => {
                 let path = self.path()?;
@@ -4211,6 +4218,17 @@ impl DataStorage {
                 let max_batch_size = self.max_batch_size;
 
                 let writer = ElasticSearchWriter::new(client, index_name, max_batch_size);
+                Ok(Box::new(writer))
+            }
+            "deltalake" => {
+                let path = self.path()?;
+                let mut value_fields = Vec::new();
+                for field in &data_format.value_fields {
+                    value_fields.push(field.borrow(py).clone());
+                }
+                let writer = DeltaTableWriter::new(path, &value_fields).map_err(|e| {
+                    PyIOError::new_err(format!("Unable to start DeltaTable output connector: {e}"))
+                })?;
                 Ok(Box::new(writer))
             }
             "null" => Ok(Box::new(NullWriter::new())),
@@ -4353,6 +4371,10 @@ impl DataFormat {
                     .value_field_index
                     .ok_or_else(|| PyValueError::new_err("Payload column not specified"))?;
                 let formatter = SingleColumnFormatter::new(index);
+                Ok(Box::new(formatter))
+            }
+            "identity" => {
+                let formatter = IdentityFormatter::new();
                 Ok(Box::new(formatter))
             }
             _ => Err(PyValueError::new_err("Unknown data format")),

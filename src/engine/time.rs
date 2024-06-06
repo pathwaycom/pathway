@@ -44,6 +44,18 @@ pub trait DateTime {
         self.as_chrono_datetime().second().into()
     }
 
+    fn timestamp_microseconds(&self) -> i64 {
+        self.timestamp() / 1_000
+    }
+
+    fn timestamp_milliseconds(&self) -> i64 {
+        self.timestamp() / 1_000_000
+    }
+
+    fn timestamp_seconds(&self) -> i64 {
+        self.timestamp() / 1_000_000_000
+    }
+
     fn minute(&self) -> i64 {
         self.as_chrono_datetime().minute().into()
     }
@@ -301,6 +313,11 @@ impl DateTimeUtc {
     pub fn truncate(&self, duration: Duration) -> DateTimeUtc {
         Self::new(self.get_truncated_timestamp(duration))
     }
+
+    pub fn from_timestamp(timestamp: i64, unit: &str) -> Result<Self> {
+        let mult = get_unit_multiplier(unit)?;
+        Ok(Self::new(mult * timestamp))
+    }
 }
 
 impl<Tz: chrono::TimeZone> From<chrono::DateTime<Tz>> for DateTimeUtc {
@@ -368,6 +385,12 @@ pub struct Duration {
 impl Duration {
     pub fn new(duration: i64) -> Self {
         Self { duration }
+    }
+
+    pub fn new_with_unit(duration: i64, unit: &str) -> DataResult<Self> {
+        Ok(Self {
+            duration: duration * get_unit_multiplier(unit)?,
+        })
     }
 
     fn as_chrono_duration(self) -> chrono::Duration {

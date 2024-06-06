@@ -87,6 +87,7 @@ tests = [
     "pathway[all]",
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
+    "deltalake",
 ]
 airbyte = [
     "google-cloud-run",

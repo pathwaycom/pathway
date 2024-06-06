@@ -5,6 +5,7 @@ from pathway.io import (
     bigquery,
     csv,
     debezium,
+    deltalake,
     elasticsearch,
     fs,
     gdrive,
@@ -56,4 +57,5 @@ __all__ = [
     "gdrive",
     "sqlite",
     "pubsub",
+    "deltalake",
 ]

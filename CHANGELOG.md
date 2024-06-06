@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.PyObjectWrapper` that enables passing python objects of any type to the engine.
 - `cache_strategy` option added for `pw.io.http.rest_connector`. It enables cache configuration, which is useful for duplicated requests.
 - `allow_misses` argument to `Table.ix` and `Table.ix_ref` methods which allows for filling rows with missing keys with None values.
+- `pw.io.deltalake.write` output connector that streams the changes of a given table into a DeltaLake storage.
 
 ### Removed
 - **BREAKING**: Removed `Table.having` method.

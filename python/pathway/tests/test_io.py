@@ -13,6 +13,7 @@ from unittest import mock
 
 import pandas as pd
 import pytest
+from deltalake import DeltaTable
 from fs import open_fs
 
 import pathway as pw
@@ -2948,3 +2949,65 @@ def test_non_ascii_characters(tmp_path: pathlib.Path):
     expected = ["a\\na", "ąęćśż", "قطة"]
     for word in expected:
         assert word in answers
+
+
+def test_deltalake_simple(tmp_path: pathlib.Path):
+    data = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output"
+    write_csv(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, str(output_path))
+    run_all()
+
+    delta_table = DeltaTable(output_path)
+    pd_table_from_delta = (
+        delta_table.to_pandas().drop("time", axis=1).drop("diff", axis=1)
+    )
+
+    assert_table_equality(
+        table,
+        pw.debug.table_from_pandas(
+            pd_table_from_delta,
+            schema=InputSchema,
+        ),
+    )
+
+
+def test_deltalake_append(tmp_path: pathlib.Path):
+    data = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output"
+    write_csv(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    def iteration():
+        G.clear()
+        table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
+        pw.io.deltalake.write(table, str(output_path))
+        run_all()
+
+    iteration()
+    iteration()
+
+    delta_table = DeltaTable(output_path)
+    pd_table_from_delta = delta_table.to_pandas()
+    assert pd_table_from_delta.shape[0] == 6

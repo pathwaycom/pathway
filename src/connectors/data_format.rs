@@ -1738,3 +1738,30 @@ impl Formatter for NullFormatter {
         ))
     }
 }
+
+#[derive(Default)]
+pub struct IdentityFormatter {}
+
+impl IdentityFormatter {
+    pub fn new() -> IdentityFormatter {
+        IdentityFormatter {}
+    }
+}
+
+impl Formatter for IdentityFormatter {
+    fn format(
+        &mut self,
+        key: &Key,
+        values: &[Value],
+        time: Timestamp,
+        diff: isize,
+    ) -> Result<FormatterContext, FormatterError> {
+        Ok(FormatterContext::new_single_payload(
+            Vec::new(),
+            *key,
+            values.to_vec(),
+            time,
+            diff,
+        ))
+    }
+}
