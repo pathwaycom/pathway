@@ -6322,3 +6322,57 @@ def test_warns_no_second_warning():
     a.promise_universes_are_disjoint(a)
     with warnings.catch_warnings():
         a.promise_universes_are_disjoint(a)
+
+
+def test_remove_retractions():
+    t = T(
+        """
+        a | __time__ | __diff__
+        1 |     2    |     1
+        2 |     4    |     1
+        3 |     6    |     1
+        2 |     8    |    -1
+        4 |    10    |     1
+        3 |    12    |    -1
+    """,
+        id_from=["a"],
+    )
+
+    expected_with_retractions = T(
+        """
+        a
+        1
+        4
+    """,
+        id_from=["a"],
+    )
+    expected_without_retractions = T(
+        """
+        a
+        1
+        2
+        3
+        4
+    """,
+        id_from=["a"],
+    )
+
+    res = t._remove_retractions()
+
+    assert_table_equality(
+        (t, res),
+        (expected_with_retractions, expected_without_retractions),
+    )
+
+    expected_stream = T(
+        """
+        a | __time__ | __diff__
+        1 |     2    |     1
+        2 |     4    |     1
+        3 |     6    |     1
+        4 |    10    |     1
+    """,
+        id_from=["a"],
+    )
+
+    assert_stream_equality(res, expected_stream)

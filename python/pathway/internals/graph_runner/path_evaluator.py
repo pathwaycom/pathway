@@ -239,6 +239,7 @@ NoNewColumnsContext = (
     | clmn.ConcatUnsafeContext
     | clmn.UpdateRowsContext
     | clmn.SetSchemaContext
+    | clmn.RemoveRetractionsContext
 )
 
 
@@ -256,6 +257,7 @@ class NoNewColumnsPathEvaluator(
         clmn.FreezeContext,
         clmn.BufferContext,
         clmn.SetSchemaContext,
+        clmn.RemoveRetractionsContext,
     ],
 ):
     context: NoNewColumnsContext

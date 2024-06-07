@@ -71,8 +71,8 @@ use pyo3::PyObject;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
-use timely::dataflow::operators::ToStream as _;
 use timely::dataflow::operators::{Filter, Inspect, Probe};
+use timely::dataflow::operators::{Map, ToStream as _};
 use timely::dataflow::scopes::Child;
 use timely::execute;
 use timely::order::{Product, TotalOrder};
@@ -1531,6 +1531,32 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 None
             }
         });
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
+    }
+
+    fn remove_retractions_from_table(
+        &mut self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let new_table = table
+            .values()
+            .inner
+            .flat_map(|(data, time, diff)| {
+                if diff > 0 {
+                    Some((data, time, diff))
+                } else {
+                    None
+                }
+            })
+            .as_collection();
         Ok(self
             .tables
             .alloc(Table::from_collection(new_table).with_properties(table_properties)))
@@ -4378,6 +4404,16 @@ where
             .filter_table(table_handle, filtering_column_path, table_properties)
     }
 
+    fn remove_retractions_from_table(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .remove_retractions_from_table(table_handle, table_properties)
+    }
+
     fn forget(
         &self,
         _table_handle: TableHandle,
@@ -4955,6 +4991,16 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0
             .borrow_mut()
             .filter_table(table_handle, filtering_column_path, table_properties)
+    }
+
+    fn remove_retractions_from_table(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.0
+            .borrow_mut()
+            .remove_retractions_from_table(table_handle, table_properties)
     }
 
     fn forget(

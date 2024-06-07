@@ -2373,6 +2373,18 @@ impl Scope {
         Table::new(self_, new_table_handle)
     }
 
+    pub fn remove_retractions_from_table(
+        self_: &PyCell<Self>,
+        table: PyRef<Table>,
+        table_properties: TableProperties,
+    ) -> PyResult<Py<Table>> {
+        let new_table_handle = self_
+            .borrow()
+            .graph
+            .remove_retractions_from_table(table.handle, table_properties.0)?;
+        Table::new(self_, new_table_handle)
+    }
+
     pub fn forget(
         self_: &PyCell<Self>,
         table: PyRef<Table>,

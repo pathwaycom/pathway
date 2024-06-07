@@ -1325,3 +1325,17 @@ class RemoveErrorsEvaluator(ExpressionEvaluator, context_type=clmn.RemoveErrorsC
             column_paths,
             properties,
         )
+
+
+class RemoveRetractionsEvaluator(
+    ExpressionEvaluator, context_type=clmn.RemoveRetractionsContext
+):
+    context: clmn.RemoveRetractionsContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
+        properties = self._table_properties(output_storage)
+        return self.scope.remove_retractions_from_table(
+            self.state.get_table(input_storage._universe),
+            properties,
+        )

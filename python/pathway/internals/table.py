@@ -2460,6 +2460,11 @@ id_type=<class 'pathway.engine.Pointer'>>
         context = clmn.RemoveErrorsContext(self._id_column)
         return self._table_with_context(context)
 
+    @contextualized_operator
+    def _remove_retractions(self) -> Table[TSchema]:
+        context = clmn.RemoveRetractionsContext(self._id_column)
+        return self._table_with_context(context)
+
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])
 

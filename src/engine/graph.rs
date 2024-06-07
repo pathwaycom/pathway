@@ -730,6 +730,12 @@ pub trait Graph {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
+    fn remove_retractions_from_table(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
     fn forget(
         &self,
         table_handle: TableHandle,
@@ -1184,6 +1190,14 @@ impl Graph for ScopedGraph {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| g.filter_table(table_handle, filtering_column_path, table_properties))
+    }
+
+    fn remove_retractions_from_table(
+        &self,
+        table_handle: TableHandle,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| g.remove_retractions_from_table(table_handle, table_properties))
     }
 
     fn forget(

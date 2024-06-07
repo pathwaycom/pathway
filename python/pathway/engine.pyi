@@ -665,6 +665,11 @@ class Scope:
         column_paths: Iterable[ColumnPath],
         table_properties: TableProperties,
     ) -> Table: ...
+    def remove_retractions_from_table(
+        self,
+        table: Table,
+        table_properties: TableProperties,
+    ) -> Table: ...
 
 class Error: ...
 

@@ -1067,3 +1067,25 @@ class RemoveErrorsContext(
 
     def id_column_type(self) -> dt.DType:
         return self.orig_id_column.dtype
+
+
+@dataclass(eq=False, frozen=True)
+class RemoveRetractionsContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
+    """Context of `table._remove_retractions() operation."""
+
+    id_column_to_filter: IdColumn
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.id_column_to_filter]
+
+    def input_universe(self) -> Universe:
+        return self.id_column_to_filter.universe
+
+    def id_column_type(self) -> dt.DType:
+        return self.id_column_to_filter.dtype
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.id_column_to_filter.universe.superset()
