@@ -34,7 +34,7 @@
 
 # Pathway<a id="pathway"></a>
 
-[Pathway](https://pathway.com) is a Python ETL framework for event processing, real-time analytics, LLM pipelines and RAG.
+[Pathway](https://pathway.com) is a Python ETL framework for stream processing, real-time analytics, LLM pipelines, and RAG.
 
 Pathway comes with an **easy-to-use Python API**, allowing you to seamlessly integrate your favorite Python ML libraries.
 Pathway code is versatile and robust: **you can use it in both development and production environments, handling both batch and streaming data effectively**.
