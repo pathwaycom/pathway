@@ -1,5 +1,5 @@
 # ---
-# title: 'Realtime Classification with Nearest Neighbors (1/2)'
+# title: 'Realtime Classification with Nearest Neighbors'
 # description: 'Pathway Showcase: kNN+LSH classifier'
 # notebook_export_path: notebooks/showcases/lsh.ipynb
 # author: 'olivier'
@@ -26,7 +26,7 @@
 # %% [markdown]
 # # Realtime classification in Pathway
 #
-# ## Part 1: Using the Nearest-Neighbors Classifier
+# ## Using the Nearest-Neighbors Classifier
 #
 # ![Classification with Pathway](https://pathway.com/assets/content/showcases/lsh/KNN.gif)
 #
@@ -66,7 +66,7 @@
 #
 # Classifiers are just regular Pathway library functions. In Pathway' standard library, we provide you with a choice of neat classifiers for your convenience - but if you prefer to create your own, be our guest: the logic will only take a couple dozen lines of Python in our framework. As with all code written in Pathway, Pathway takes care of making sure classifiers work correctly on top of data streams.
 #
-# In this showcase, we will show you how to use Pathway to make your own classification app. We will be using the kNN+LSH classifier from Pathway's standard library: if you are interested about how it works, you can find out more about those topics in our [article](/developers/showcases/lsh/lsh_chapter2) about it.
+# In this showcase, we will show you how to use Pathway to make your own classification app. We will be using the kNN+LSH classifier from Pathway's standard library: if you are interested about how it works, you can find out more about those topics in our [article](/blog/realtime-classification) about it.
 
 
 # %% [markdown]
@@ -173,6 +173,6 @@ pw.debug.compute_and_print(results)
 #
 # When doing classification on a stream in Pathway, the model is kept up to date automatically. As the model improves over time, results get better and previous classification decisions are also updated to the most up-to-date-model, without having to worry about it.
 #
-# In many streaming scenarios, the kNN+LSH approach we used provides a sweet-spot between speed and quality. If you want to know more about how all of this works, you can read our [article](/developers/showcases/lsh/lsh_chapter2) about it.
+# In many streaming scenarios, the kNN+LSH approach we used provides a sweet-spot between speed and quality. If you want to know more about how all of this works, you can read our [article](/blog/realtime-classification) about it.
 #
 # In our next articles, we will show you how to use Pathway to build streaming recommender systems and real-time anomaly detection. (Coming soon.)
