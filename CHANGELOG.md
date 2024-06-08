@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.12.0] - 2024-06-08
+
 ### Added
 - `pw.PyObjectWrapper` that enables passing python objects of any type to the engine.
 - `cache_strategy` option added for `pw.io.http.rest_connector`. It enables cache configuration, which is useful for duplicated requests.
@@ -14,8 +16,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Removed
 - **BREAKING**: Removed `Table.having` method.
-
-### Removed
 - **BREAKING**: Removed `pw.DATE_TIME_UTC`, `pw.DATE_TIME_NAIVE` and `pw.DURATION` as dtype markers. Instead, `pw.DateTimeUtc`, `pw.DateTimeNaive` and `pw.Duration` should be used, which are wrappers for corresponding pandas types.
 - **BREAKING**: Removed class transformers from public API: `pw.ClassArg`, `pw.attribute`, `pw.input_attribute`, `pw.input_method`, `pw.method`, `pw.output_attribute` and `pw.transformer`.
 - **BREAKING**: Removed several methods from `pw.indexing` module: `binsearch_oracle`, `filter_cmp_helper`, `filter_smallest_k` and `prefix_sum_oracle`.
