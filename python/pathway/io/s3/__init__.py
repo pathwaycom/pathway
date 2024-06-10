@@ -103,15 +103,22 @@ def read(
     Args:
         path: Path to an object or to a folder of objects in Amazon S3 bucket.
         aws_s3_settings: Connection parameters for the S3 account and the bucket.
-        format: Format of data to be read. Currently "csv", "json" and "plaintext"
-            formats are supported.
-        schema: Schema of the resulting table.
-        mode: If set to "streaming", the engine will wait for the new objects under the
-            given path prefix. Set it to "static", it will only consider the available
-            data and ingest all of it. Default value is "streaming".
+        format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
+            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            between ``plaintext`` and ``plaintext_by_object`` is how the input is
+            tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
+            Otherwise, the files are split in full and one row will correspond to one
+            file. In case the ``binary`` format is specified, the data is read as raw
+            bytes without UTF-8 parsing.
+        schema: Schema of the resulting table. Not required for ``plaintext_by_object``
+            and ``binary`` formats: if they are chosen, the contents of the read objects
+            are stored in the column ``data``.
+        mode: If set to ``streaming``, the engine waits for the new objects under the
+            given path prefix. Set it to ``static``, it only considers the available
+            data and ingest all of it. Default value is ``streaming``.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
-            the specified format is "csv".
-        json_field_paths: If the format is "json", this field allows to map field names
+            the specified format is ``csv``.
+        json_field_paths: If the format is ``json``, this field allows to map field names
             into path in the read json object. For the field which require such mapping,
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
@@ -129,7 +136,7 @@ def read(
     Example:
 
     Let's consider an object store, which is hosted in Amazon S3. The store contains
-    datasets in the respective bucket and is located in the region eu-west-3. The goal
+    datasets in the respective bucket and is located in the region ``eu-west-3``. The goal
     is to read the dataset, located under the path ``animals/`` in this bucket.
 
     Let's suppose that the format of the dataset rows is jsonlines.
@@ -166,6 +173,68 @@ def read(
     ...     format="json",
     ...     schema=InputSchema,
     ... )
+
+    It's not obligatory to choose one of the available input tokenizations. You
+    can also read the objects in full, thus creating a ``pw.Table`` where each row
+    corresponds to a single object read in full. To do that, you need to specify
+    ``binary`` as a format:
+
+    >>> t = pw.io.s3.read(
+    ...     "animals/",
+    ...     aws_s3_settings=pw.io.s3.AwsS3Settings(
+    ...         bucket_name="datasets",
+    ...         region="eu-west-3",
+    ...     ),
+    ...     format="binary",
+    ... )
+
+    Similarly you can also enable the UTF-8 parsing of the objects read, resulting in
+    having a table of plaintext files:
+
+    >>> t = pw.io.s3.read(
+    ...     "animals/",
+    ...     aws_s3_settings=pw.io.s3.AwsS3Settings(
+    ...         bucket_name="datasets",
+    ...         region="eu-west-3",
+    ...     ),
+    ...     format="plaintext_by_object",
+    ... )
+
+    Note that it's also possible to infer the bucket name and credentials from the path,
+    if it's given in a full form with ``s3://`` prefix. For instance, in the example above
+    you can also connect as follows:
+
+    >>> t = pw.io.s3.read("s3://datasets/animals", format="binary")  # doctest: +SKIP
+
+    Note that you need to be logged in S3 for the credentials auto-detection to work.
+
+    Finally, you can also read the data from self-hosted S3 buckets, or generally those
+    where the endpoint path differs from the standard AWS paths. To do that, you can make
+    use of the ``endpoint`` field of ``pw.io.s3.AwsS3Settings`` class. One of the natural
+    examples for that may be the min.io S3 buckets. That is, if you have a min.io S3
+    bucket instance, one of the ways to connect to it via this connector would be the
+    first to create the settings object with the custom endpoint and path style:
+
+    >>> custom_settings = pw.io.s3.AwsS3Settings(
+    ...     endpoint="avv749.stackhero-network.com",
+    ...     bucket_name="datasets",
+    ...     access_key=os.environ["MINIO_S3_ACCESS_KEY"],
+    ...     secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
+    ...     with_path_style=True,
+    ...     region="eu-west-3",
+    ... )
+
+    And you can connect with the usage of this created custom settings format:
+
+    >>> t = pw.io.s3.read(
+    ...     "animals/",
+    ...     aws_s3_settings=custom_settings,
+    ...     format="binary",
+    ... )
+
+    Please note that the min.io connection via generic S3 connector is given only as an
+    example: you may use ``pw.io.minio.read`` connector which wouldn't require any custom
+    settings object creation from you.
     """
     internal_mode = internal_connector_mode(mode)
     if aws_s3_settings:
@@ -229,12 +298,19 @@ def read_from_digital_ocean(
     Args:
         path: Path to an object or to a folder of objects in S3 bucket.
         do_s3_settings: Connection parameters for the account and the bucket.
-        format: Format of data to be read. Currently "csv", "json" and "plaintext"
-            formats are supported.
-        schema: Schema of the resulting table.
-        mode: If set to "streaming", the engine will wait for the new objects under the
-            given path prefix. Set it to "static", it will only consider the available
-            data and ingest all of it. Default value is "streaming".
+        format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
+            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            between ``plaintext`` and ``plaintext_by_object`` is how the input is
+            tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
+            Otherwise, the files are split in full and one row will correspond to one
+            file. In case the ``binary`` format is specified, the data is read as raw
+            bytes without UTF-8 parsing.
+        schema: Schema of the resulting table. Not required for ``plaintext_by_object``
+            and ``binary`` formats: if they are chosen, the contents of the read objects
+            are stored in the column ``data``.
+        mode: If set to ``streaming``, the engine waits for the new objects under the
+            given path prefix. Set it to ``static``, it only considers the available
+            data and ingest all of it. Default value is ``streaming``.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -276,6 +352,10 @@ def read_from_digital_ocean(
     ...     format="csv",
     ...     schema=InputSchema,
     ... )
+
+    Please note that this connector is **interoperable** with the **AWS S3** connector,
+    therefore all examples concerning different data formats in ``pw.io.s3.read`` also
+    work with Digital Ocean version.
     """
     internal_mode = internal_connector_mode(mode)
     data_storage = construct_s3_data_storage(
@@ -333,12 +413,19 @@ def read_from_wasabi(
     Args:
         path: Path to an object or to a folder of objects in S3 bucket.
         wasabi_s3_settings: Connection parameters for the account and the bucket.
-        format: Format of data to be read. Currently "csv", "json" and "plaintext"
-            formats are supported.
-        schema: Schema of the resulting table.
-        mode: If set to "streaming", the engine will wait for the new objects under the
-            given path prefix. Set it to "static", it will only consider the available
-            data and ingest all of it. Default value is "streaming".
+        format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
+            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            between ``plaintext`` and ``plaintext_by_object`` is how the input is
+            tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
+            Otherwise, the files are split in full and one row will correspond to one
+            file. In case the ``binary`` format is specified, the data is read as raw
+            bytes without UTF-8 parsing.
+        schema: Schema of the resulting table. Not required for ``plaintext_by_object``
+            and ``binary`` formats: if they are chosen, the contents of the read objects
+            are stored in the column ``data``.
+        mode: If set to ``streaming``, the engine waits for the new objects under the
+            given path prefix. Set it to ``static``, it only considers the available
+            data and ingest all of it. Default value is ``streaming``.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -359,7 +446,7 @@ def read_from_wasabi(
     Example:
 
     Let's consider an object store, which is hosted in Wasabi S3. The store
-    contains CSV datasets in the respective bucket and is located in the region us-west-1.
+    contains CSV datasets in the respective bucket and is located in the region ``us-west-1``.
     The goal is to read the dataset, located under the path ``animals/`` in this bucket.
 
     Then, the code may look as follows:
@@ -380,6 +467,10 @@ def read_from_wasabi(
     ...     format="csv",
     ...     schema=InputSchema,
     ... )
+
+    Please note that this connector is **interoperable** with the **AWS S3** connector,
+    therefore all examples concerning different data formats in ``pw.io.s3.read`` also
+    work with Wasabi version.
     """
     internal_mode = internal_connector_mode(mode)
     data_storage = construct_s3_data_storage(

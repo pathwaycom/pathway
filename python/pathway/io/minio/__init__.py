@@ -78,12 +78,19 @@ def read(
     Args:
         path: Path to an object or to a folder of objects in MinIO S3 bucket.
         minio_settings: Connection parameters for the MinIO account and the bucket.
-        format: Format of data to be read. Currently "csv", "json" and "plaintext"
-            formats are supported.
-        schema: Schema of the resulting table.
-        mode: If set to "streaming", the engine will wait for the new objects under the
-            given path prefix. Set it to "static", it will only consider the available
-            data and ingest all of it. Default value is "streaming".
+        format: Format of data to be read. Currently ``csv``, ``json``, ``plaintext``,
+            ``plaintext_by_object`` and ``binary`` formats are supported. The difference
+            between ``plaintext`` and ``plaintext_by_object`` is how the input is
+            tokenized: if the ``plaintext`` option is chosen, it's split by the newlines.
+            Otherwise, the files are split in full and one row will correspond to one
+            file. In case the ``binary`` format is specified, the data is read as raw
+            bytes without UTF-8 parsing.
+        schema: Schema of the resulting table. Not required for ``plaintext_by_object``
+            and ``binary`` formats: if they are chosen, the contents of the read objects
+            are stored in the column ``data``.
+        mode: If set to ``streaming``, the engine waits for the new objects under the
+            given path prefix. Set it to ``static``, it only considers the available
+            data and ingest all of it. Default value is ``streaming``.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -124,6 +131,10 @@ def read(
     ...     format="csv",
     ...     schema=InputSchema,
     ... )
+
+    Please note that this connector is **interoperable** with the **AWS S3** connector,
+    therefore all examples concerning different data formats in ``pw.io.s3.read`` also
+    work with min.io input.
     """
 
     return s3_read(

@@ -33,6 +33,7 @@ _DATA_FORMAT_MAPPING = {
     "raw": "identity",
     "binary": "identity",
     "plaintext_by_file": "identity",
+    "plaintext_by_object": "identity",
 }
 
 _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
@@ -59,6 +60,7 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "raw",
     "binary",
     "plaintext_by_file",
+    "plaintext_by_object",
 }
 
 
@@ -107,7 +109,7 @@ def internal_connector_mode(mode: str | api.ConnectorMode) -> api.ConnectorMode:
 
 
 def internal_read_method(format: str) -> ReadMethod:
-    if format == "binary" or format == "plaintext_by_file":
+    if format in ("binary", "plaintext_by_file", "plaintext_by_object"):
         return ReadMethod.FULL
     return ReadMethod.BY_LINE
 

@@ -629,6 +629,15 @@ def get_aws_s3_settings():
     )
 
 
+def get_minio_settings():
+    return pw.io.minio.MinIOSettings(
+        bucket_name="minio-integrationtest",
+        access_key=os.environ["MINIO_S3_ACCESS_KEY"],
+        secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
+        endpoint="minio-api.deploys.pathway.com",
+    )
+
+
 # Callback class for checking whether number of distinct timestamps of
 # rows is equal to expected
 class CountDifferentTimestampsCallback(pw.io.OnChangeCallback):
