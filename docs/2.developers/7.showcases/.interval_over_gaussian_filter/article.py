@@ -1,5 +1,5 @@
 # ---
-# title: 'Real-time [Low-latency] Signal Processing in Streaming Mode: how to apply a Gaussian filter with irregular sampling in your Data Streams.'
+# title: 'Gaussian Filtering in Real-time: Signal processing with out-of-order data streams'
 # description: 'Tutorial on signal processing: how to apply a Gaussian filter with Pathway using windowby and intervals_over'
 # notebook_export_path: notebooks/tutorials/gaussian-filtering-python.ipynb
 # author: 'olivier'
@@ -12,7 +12,7 @@
 # keywords: ['signal processing', 'Gaussian filter', 'out-of-order data', 'irregular sampling', 'intervals_over', 'window', 'notebook']
 # ---
 
-# # Gaussian Filtering in Python: Working with out-of-order data points
+# # Gaussian Filtering in Real-time: Signal processing with out-of-order data streams
 #
 # In this tutorial, you will learn how to perform signal processing on out-of-order signal data. Specifically, you will apply a Gaussian filter on a signal data stream with irregular sampling.
 # This is an important skill to master because most real-world signal processing scenarios do not follow the regular and precise timing assumptions on which many standard signal processing systems are built.

@@ -1,5 +1,5 @@
 # ---
-# title: 'Real-time [Low-latency] Signal Processing in Streaming Mode: how to combine your Data Streams with upsampling.'
+# title: 'Signal Processing with Real-time Upsampling: combining multiple time series data streams.'
 # description: 'Tutorial on signal processing: how to do upsampling with Pathway using windowby and intervals_over'
 # notebook_export_path: notebooks/tutorials/upsampling.ipynb
 # author: 'olivier'
@@ -12,7 +12,7 @@
 # keywords: ['signal processing', 'upsampling', 'out-of-order data', 'resampling', 'interpolation', 'intervals_over', 'window', 'notebook']
 # ---
 
-# # Upsampling your Signal Processing Data: transforming multiple data streams.
+# # Signal Processing with Real-time Upsampling: combining multiple time series data streams..
 # Learn how to perform upsampling on multiple data streams. The data streams will be modelled as time series data and will have different sampling rates to begin with.
 # Using upsampling techniques in Python, you will align the sampling rates of the multiple data sources in order to perform data analysis over the entire stream.
 #

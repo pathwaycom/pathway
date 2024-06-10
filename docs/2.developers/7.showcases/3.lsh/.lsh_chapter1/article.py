@@ -1,5 +1,5 @@
 # ---
-# title: 'Realtime Classification with Nearest Neighbors'
+# title: 'Adaptive Classifiers: Evolving Predictions with Real-Time Data'
 # description: 'Pathway Showcase: kNN+LSH classifier'
 # notebook_export_path: notebooks/showcases/lsh.ipynb
 # author: 'olivier'
@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown]
-# # Realtime classification in Pathway
+# # Adaptive Classifiers: Evolving Predictions with Real-Time Data
 #
 # ## Using the Nearest-Neighbors Classifier
 #

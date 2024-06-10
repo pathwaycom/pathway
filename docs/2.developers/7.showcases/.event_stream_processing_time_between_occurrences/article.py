@@ -1,5 +1,5 @@
 # ---
-# title:  Time between events in a multi-topic event stream
+# title:  "Out-of-Order Event Streams: Calculating Time Deltas with grouping by topic"
 # description: Event stream processing
 # author: 'przemek'
 # aside: true
@@ -23,7 +23,7 @@
 # ---
 
 # %% [markdown]
-# # Time between events in a multi-topic event stream
+# # Out-of-Order Event Streams: Calculating Time Deltas with grouping by topic
 #
 # We are processing a stream of events on different topics.
 # We want to compute, for each event, how much time has passed since the previous event on the same topic.

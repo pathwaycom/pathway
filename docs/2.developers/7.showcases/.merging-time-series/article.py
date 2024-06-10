@@ -1,5 +1,5 @@
 # ---
-# title: "How to combine two time series"
+# title: "Sensor Fusion in real-time: combining time series data with Pathway"
 # description: "Learn how to combine between two time series with different timestamps in Pathway."
 # aside: true
 # article:
@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown]
-# # Combining two time series in Pathway
+# # Sensor Fusion in real-time: combining time series data with Pathway
 # In this article, you will learn how to combine time series in Pathway.
 #
 # With the emergence of IoT technology, we now have a wide range of sensor devices at our disposal that can measure almost anything, from GPS positions to humidity and temperature.

@@ -1,5 +1,5 @@
 # ---
-# title: 'Part 1: Realtime Fuzzy-Join'
+# title: "Part 1: Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join"
 # description: Article introducing Fuzzy Join.
 # notebook_export_path: notebooks/showcases/fuzzy_join_part1.ipynb
 # aside: true
@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown] jp-MarkdownHeadingCollapsed=true
-# # Realtime Fuzzy-Join in Pathway
+# # Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join
 #
 # ## Part 1: Fuzzy joins: 'errare humanum est'
 #

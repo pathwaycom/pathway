@@ -1,5 +1,5 @@
 # ---
-# title: Mining hidden user pair activity with Fuzzy Join
+# title: Uncovering hidden user relationships in crypto exchanges with Fuzzy Join on streaming data
 # description: An example of a cryptocurrency exchange
 # author: 'przemek'
 # aside: true
@@ -23,7 +23,7 @@
 # ---
 
 # %% [markdown]
-# # Mining hidden user pair activity with Fuzzy Join
+# # Uncovering hidden user relationships in crypto exchanges with Fuzzy Join on streaming data
 #
 # In this article, we want to analyze a stream of transactions in a crypto exchange.
 # We find all the pairs of users A and B such as A sells B the ETH coin, and buys from B BTC in a separate transaction.

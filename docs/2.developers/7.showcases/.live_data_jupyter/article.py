@@ -1,5 +1,5 @@
 # ---
-# title: "Working with live data streams in Jupyter"
+# title: "Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway"
 # description: ''
 # aside: true
 # author:
@@ -28,7 +28,7 @@
 # ---
 
 # %% [markdown]
-# # Working with live data streams in Jupyter
+# # Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway
 #
 # <b> 💡 This notebook is one part of a [full-length tutorial](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/) depicting a production-grade data science scenario from data exploration to interactive dashboarding and containerized deploy.</b>
 #

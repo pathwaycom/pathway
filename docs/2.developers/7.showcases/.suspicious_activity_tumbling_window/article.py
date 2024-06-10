@@ -1,5 +1,5 @@
 # ---
-# title: Tumbling Window group-by - detect suspicious user activity
+# title: "Real-Time Anomaly Detection: identifying brute-force logins using Tumbling Windows"
 # description: Detecting suspicious login attempts
 # notebook_export_path: notebooks/tutorials/suspicious_user_activity.ipynb
 # author: 'przemek'
@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown]
-# # Detecting suspicious user activity with Tumbling Window group-by
+# # Real-Time Anomaly Detection: identifying brute-force logins using Tumbling Windows
 #
 # In this tutorial you will learn how to perform a [tumbling window](/glossary/tumbling-window) operation to detect suspicious activity.
 #

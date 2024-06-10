@@ -1,5 +1,5 @@
 # ---
-# title: Alerting on significant changes
+# title: Smart real-time monitoring application with alert deduplication
 # description: Event stream processing
 # author: 'mateusz'
 # aside: true
@@ -22,7 +22,7 @@
 # ---
 
 # %% [markdown]
-# # Alerting on significant changes
+# # Smart real-time monitoring application with alert deduplication
 #
 # In many monitoring environments, especially those dealing with complex systems, it's common for multiple alerts to be triggered for the same underlying issue. This creates the necessity for alert deduplication, with rules matching specific business needs. In this tutorial we will show how to design and implement such deduplication mechanism in Pathway handling real-time streaming data.
 #

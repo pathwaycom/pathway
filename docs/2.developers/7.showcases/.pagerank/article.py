@@ -1,5 +1,5 @@
 # ---
-# title: Computing PageRank
+# title: Real-Time PageRank on Dynamic Graphs with Pathway
 # description: Demonstration of a PageRank computation
 # notebook_export_path: notebooks/tutorials/pagerank.ipynb
 # aside: true
@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown]
-# # Computing PageRank
+# # Real-Time PageRank on Dynamic Graphs with Pathway
 #
 # ## Introduction
 # PageRank is best known for its success in ranking web pages in Google Search engine.

@@ -1,5 +1,5 @@
 # ---
-# title: 'Using LangChain with Pathway'
+# title: 'Langchain and Pathway: RAG Apps with always-up-to-date knowledge'
 # description: ''
 # article:
 #     date: '2024-05-18'
@@ -10,7 +10,7 @@
 # keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'LangChain']
 # ---
 
-# # Integrating LangChain with Pathway
+# # Langchain and Pathway: RAG Apps with always-up-to-date knowledge
 #
 # <!-- Canva link for thumbnail: https://www.canva.com/design/DAGFNCj-Np8/P3FKop5Gv4r9MDCrgecDPQ/edit -->
 #

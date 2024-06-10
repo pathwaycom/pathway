@@ -1,5 +1,5 @@
 # ---
-# title: Bellman-Ford Algorithm
+# title: Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway
 # description: Article explaining step-by-step how to implement the Bellman-Ford algorithm in Pathway.
 # aside: true
 # article:
@@ -24,7 +24,7 @@
 # ---
 
 # %% [markdown]
-# # The Bellman-Ford Algorithm
+# # Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway
 # This article explains step-by-step how the Bellman–Ford algorithm may be implemented in Pathway.
 #
 # ## Introduction
