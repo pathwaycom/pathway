@@ -259,14 +259,14 @@ class BaseRAGQuestionAnswerer:
     Args:
         llm: LLM instance for question answering. See https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms for available models.
         indexer: Indexing object for search & retrieval to be used for context augmentation.
-        default_llm_name: Default LLM model to be used in queries, only used if `model` parameter in post request is not specified.
-            Omitting or setting this to `None` will default to the model name set during LLM's initialization.
+        default_llm_name: Default LLM model to be used in queries, only used if ``model`` parameter in post request is not specified.
+            Omitting or setting this to ``None`` will default to the model name set during LLM's initialization.
 
         short_prompt_template: Template for document question answering with short response.
-            A pw.udf function is expected. Defaults to `pathway.xpacks.llm.prompts.prompt_short_qa`.
+            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_short_qa``.
         long_prompt_template: Template for document question answering with long response.
-            A pw.udf function is expected. Defaults to `pathway.xpacks.llm.prompts.prompt_qa`.
-        summarize_template: Template for text summarization. Defaults to `pathway.xpacks.llm.prompts.prompt_summarize`.
+            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+        summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
 
 
@@ -495,6 +495,74 @@ class BaseRAGQuestionAnswerer:
 
 
 class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
+    """
+    Builds the logic and the API for adaptive RAG application.
+
+    It allows to build a RAG app with Pathway vector store and Pathway components.
+    Gives the freedom to choose between two question answering strategies,
+    short (concise), and long (detailed) response, that can be set during the post request.
+    Allows for LLM agnosticity with freedom to choose from proprietary or open-source LLMs.
+
+    It differs from :py:class:`~pathway.xpacks.llm.question_answering.BaseRAGQuestionAnswerer`
+    in adaptive choosing the number of chunks used as a context of a question.
+    First, only ``n_starting_documents`` chunks are used,
+    and then the number is increased until an answer is found.
+
+    Args:
+        llm: LLM instance for question answering. See https://pathway.com/developers/api-docs/pathway-xpacks-llm/llms for available models.
+        indexer: Indexing object for search & retrieval to be used for context augmentation.
+        default_llm_name: Default LLM model to be used in queries, only used if ``model`` parameter in post request is not specified.
+            Omitting or setting this to ``None`` will default to the model name set during LLM's initialization.
+        short_prompt_template: Template for document question answering with short response.
+            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_short_qa``.
+        long_prompt_template: Template for document question answering with long response.
+            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+        summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
+        n_starting_documents: Number of documents embedded in the first query.
+        factor: Factor by which a number of documents increases in each next query, if
+            an answer is not found.
+        max_iterations: Number of times to ask a question, with the increasing number of documents.
+        strict_prompt: If LLM should be instructed strictly to return json.
+            Increases performance in small open source models, not needed in OpenAI GPT models.
+
+
+    Example:
+
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import embedders, splitters, llms, parsers  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
+    >>> from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.question_answering import AdaptiveRAGQuestionAnswerer  # doctest: +SKIP
+    >>> my_folder = pw.io.fs.read(
+    ...     path="/PATH/TO/MY/DATA/*",  # replace with your folder
+    ...     format="binary",
+    ...     with_metadata=True)  # doctest: +SKIP
+    >>> sources = [my_folder]  # doctest: +SKIP
+    >>> app_host = "0.0.0.0"  # doctest: +SKIP
+    >>> app_port = 8000  # doctest: +SKIP
+    >>> parser = parsers.ParseUnstructured()  # doctest: +SKIP
+    >>> text_splitter = splitters.TokenCountSplitter(max_tokens=400)  # doctest: +SKIP
+    >>> embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())  # doctest: +SKIP
+    >>> vector_server = VectorStoreServer(  # doctest: +SKIP
+    ...     *sources,
+    ...     embedder=embedder,
+    ...     splitter=text_splitter,
+    ...     parser=parser,
+    ... )
+    >>> chat = llms.OpenAIChat(  # doctest: +SKIP
+    ...     model=DEFAULT_GPT_MODEL,
+    ...     retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6),
+    ...     cache_strategy=DiskCache(),
+    ...     temperature=0.05,
+    ... )
+    >>> app = AdaptiveRAGQuestionAnswerer(  # doctest: +SKIP
+    ...     llm=chat,
+    ...     indexer=vector_server,
+    ... )
+    >>> app.build_server(host=app_host, port=app_port)  # doctest: +SKIP
+    >>> app.run_server()  # doctest: +SKIP
+    """  # noqa: E501
+
     def __init__(
         self,
         llm: pw.UDF,

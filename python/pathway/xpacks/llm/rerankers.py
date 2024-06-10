@@ -3,6 +3,7 @@ import re
 
 import pathway as pw
 from pathway.internals import udfs
+from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import Doc
 from pathway.xpacks.llm._utils import (
     _check_llm_accepts_logit_bias,
@@ -21,8 +22,9 @@ def rerank_topk_filter(
     """Apply top-k filtering to docs using the relevance scores.
 
     Args:
-        - docs: Documents or chunks.
-        - scores: Re-ranking scores for chunks.
+        - docs: A column with lists of  documents or chunks to rank. Each row in this column
+            is filtered separately.
+        - scores: A column with lists of re-ranking scores for chunks.
         - k: Number of documents to keep after filtering.
 
     >>> import pathway as pw
@@ -44,8 +46,9 @@ def rerank_topk_filter(
     ... doc_list=pw.this.docs_scores_tuple[0],
     ... score_list=pw.this.docs_scores_tuple[1],
     ... )
-    >>> docs_table
-    <pathway.Table schema={'doc_list': list[pathway.internals.json.Json], 'score_list': list[float]} id_type=pathway.engine.Pointer[()]>
+    >>> pw.debug.compute_and_print(docs_table, include_id=False)
+    doc_list                                                            | score_list
+    (pw.Json({'text': 'Something else'}), pw.Json({'text': 'Pathway'})) | (3.0, 2.0)
     """  # noqa: E501
     docs, scores = zip(*sorted(zip(docs, scores), key=lambda tup: tup[1], reverse=True))
     logging.info(f"Number of docs after rerank: {len(docs[:k])}\nScores: {scores[:k]}")
@@ -219,7 +222,8 @@ class CrossEncoderReranker(pw.UDF):
     ) -> None:
         super().__init__(cache_strategy=cache_strategy)
 
-        from sentence_transformers.cross_encoder import CrossEncoder
+        with optional_imports("xpack-llm-local"):
+            from sentence_transformers import CrossEncoder
 
         self.model = CrossEncoder(model_name, **init_kwargs)
 
@@ -283,7 +287,8 @@ class EncoderReranker(pw.UDF):
     ) -> None:
         super().__init__(cache_strategy=cache_strategy)
 
-        from sentence_transformers import SentenceTransformer
+        with optional_imports("xpack-llm-local"):
+            from sentence_transformers import SentenceTransformer
 
         self.model = SentenceTransformer(model_name, **init_kwargs)
 
