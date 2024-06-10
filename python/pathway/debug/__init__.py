@@ -44,23 +44,23 @@ from pathway.io.python import ConnectorSubject, read
 
 
 @check_arg_types
-def _compute_table(
-    table: Table, *, _stacklevel: int = 1, **kwargs
-) -> api.CapturedStream:
-    [captured] = GraphRunner(
+def _compute_tables(
+    *tables: Table, _stacklevel: int = 1, **kwargs
+) -> list[api.CapturedStream]:
+    captured = GraphRunner(
         parse_graph.G,
         debug=True,
         monitoring_level=MonitoringLevel.NONE,
         _stacklevel=_stacklevel + 1,
         **kwargs,
-    ).run_tables(table)
+    ).run_tables(*tables)
     return captured
 
 
 def table_to_dicts(
     table: Table,
 ) -> tuple[list[api.Pointer], dict[str, dict[api.Pointer, api.Value]]]:
-    captured = _compute_table(table)
+    captured = _compute_tables(table)[0]
     output_data = api.squash_updates(captured)
     keys = list(output_data.keys())
     columns = {
@@ -94,8 +94,7 @@ class _NoneAwareComparisonWrapper:
 
 
 def _compute_and_print_internal(
-    table: Table,
-    *,
+    *tables: Table,
     squash_updates: bool,
     include_id: bool,
     short_pointers: bool,
@@ -103,9 +102,29 @@ def _compute_and_print_internal(
     _stacklevel: int = 1,
     **kwargs,
 ) -> None:
-    captured = _compute_table(table, _stacklevel=_stacklevel + 1, **kwargs)
+    captured = _compute_tables(*tables, _stacklevel=_stacklevel + 1, **kwargs)
     if get_pathway_config().process_id != "0":
         return
+    for table, captured_single in zip(tables, captured, strict=True):
+        _compute_and_print_single(
+            table,
+            captured_single,
+            squash_updates=squash_updates,
+            include_id=include_id,
+            short_pointers=short_pointers,
+            n_rows=n_rows,
+        )
+
+
+def _compute_and_print_single(
+    table: Table,
+    captured: api.CapturedStream,
+    *,
+    squash_updates: bool,
+    include_id: bool,
+    short_pointers: bool,
+    n_rows: int | None,
+) -> None:
     columns = list(table._columns.keys())
     if squash_updates:
         output_data = list(api.squash_updates(captured).items())
@@ -168,9 +187,9 @@ def _compute_and_print_internal(
         data.append(formatted_row)
     max_lens = [max(len(row[i]) for row in data) for i in range(len(data[0]))]
     max_lens[-1] = 0
-    for row in data:
+    for formatted_row in data:
         formatted = " | ".join(
-            value.ljust(max_len) for value, max_len in zip(row, max_lens)
+            value.ljust(max_len) for value, max_len in zip(formatted_row, max_lens)
         )
         print(formatted.rstrip())
 
@@ -178,8 +197,7 @@ def _compute_and_print_internal(
 @check_arg_types
 @trace_user_frame
 def compute_and_print(
-    table: Table,
-    *,
+    *tables: Table,
     include_id=True,
     short_pointers=True,
     n_rows: int | None = None,
@@ -188,13 +206,13 @@ def compute_and_print(
     """A function running the computations and printing the table.
 
     Args:
-        table: a table to be computed and printed
+        tables: tables to be computed and printed
         include_id: whether to show ids of rows
         short_pointers: whether to shorten printed ids
         n_rows: number of rows to print, if None whole table will be printed
     """
     _compute_and_print_internal(
-        table,
+        *tables,
         squash_updates=True,
         include_id=include_id,
         short_pointers=short_pointers,
@@ -207,8 +225,7 @@ def compute_and_print(
 @check_arg_types
 @trace_user_frame
 def compute_and_print_update_stream(
-    table: Table,
-    *,
+    *tables: Table,
     include_id=True,
     short_pointers=True,
     n_rows: int | None = None,
@@ -217,13 +234,13 @@ def compute_and_print_update_stream(
     """A function running the computations and printing the update stream of the table.
 
     Args:
-        table: a table for which the update stream is to be computed and printed
+        tables: tables for which the update stream is to be computed and printed
         include_id: whether to show ids of rows
         short_pointers: whether to shorten printed ids
         n_rows: number of rows to print, if None whole update stream will be printed
     """
     _compute_and_print_internal(
-        table,
+        *tables,
         squash_updates=False,
         include_id=include_id,
         short_pointers=short_pointers,
