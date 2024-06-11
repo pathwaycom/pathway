@@ -5,6 +5,7 @@ use std::error;
 use std::fmt;
 use std::result;
 
+use super::ColumnPath;
 use super::CompoundType;
 use super::{Key, Value};
 use crate::persistence::metadata_backends::Error as MetadataBackendError;
@@ -52,8 +53,8 @@ pub enum Error {
     #[error("invalid venn universes handle")]
     InvalidVennUniversesHandle,
 
-    #[error("invalid column path")]
-    InvalidColumnPath,
+    #[error("invalid column path: {0:?}")]
+    InvalidColumnPath(ColumnPath),
 
     #[error("properties of two columns with the same path are not equal")]
     InconsistentColumnProperties,

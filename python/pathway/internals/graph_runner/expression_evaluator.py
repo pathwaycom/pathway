@@ -235,7 +235,7 @@ class RowwiseEvaluator(
             expressions.append(
                 (
                     self.eval_dependency(placeholder_column, eval_state=eval_state),
-                    self.scope.table_properties(engine_input_table),
+                    self.scope.table_properties(engine_input_table, old_path),
                 )
             )
             input_storage = input_storage.with_updated_paths(
@@ -1030,7 +1030,7 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
         return Storage.merge_storages(
             universe,
             left_id_storage,
-            left_input_storage.restrict_to_table(self.context.left_table),
+            left_input_storage.remove_columns_from_table(self.context.right_table),
             right_id_storage,
             right_input_storage.restrict_to_table(self.context.right_table),
         )

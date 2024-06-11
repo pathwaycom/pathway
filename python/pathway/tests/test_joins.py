@@ -1511,3 +1511,37 @@ def test_joins_typing_on():
     right_table = pw.Table.empty(col=str)
     with pytest.raises(expected_exception=TypeError):
         left_table.join(right_table, left_table.col == right_table.col)
+
+
+def test_use_other_column_after_left_join_preserving_universe():
+    t1 = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 2
+        3 | 4
+        5 | 3
+    """
+    )
+    t2 = pw.debug.table_from_markdown(
+        """
+        b |  c
+        2 | 10
+        4 | 11
+    """
+    )
+    t3 = t1.select(a=pw.this.a + 1)
+    res = (
+        t1.join_left(t2, pw.left.b == pw.right.b, id=pw.left.id).select(
+            pw.left.b, pw.right.c
+        )
+        + t3
+    )
+    expected = T(
+        """
+        b |  c | a
+        2 | 10 | 2
+        4 | 11 | 4
+        3 |    | 6
+    """
+    )
+    assert_table_equality(res, expected)

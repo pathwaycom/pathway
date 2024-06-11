@@ -1410,12 +1410,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(universe_handle)
     }
 
-    fn table_properties(&mut self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
+    fn table_properties(
+        &mut self,
+        table_handle: TableHandle,
+        path: &ColumnPath,
+    ) -> Result<Arc<TableProperties>> {
         let table = self
             .tables
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-        Ok(table.properties.clone())
+        Ok(Arc::from(path.extract_properties(&table.properties)?))
     }
 
     fn flatten_table_storage(
@@ -4349,8 +4353,12 @@ where
         self.0.borrow_mut().table_universe(table_handle)
     }
 
-    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
-        self.0.borrow_mut().table_properties(table_handle)
+    fn table_properties(
+        &self,
+        table_handle: TableHandle,
+        path: &ColumnPath,
+    ) -> Result<Arc<TableProperties>> {
+        self.0.borrow_mut().table_properties(table_handle, path)
     }
 
     fn flatten_table_storage(
@@ -4932,8 +4940,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0.borrow_mut().table_universe(table_handle)
     }
 
-    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
-        self.0.borrow_mut().table_properties(table_handle)
+    fn table_properties(
+        &self,
+        table_handle: TableHandle,
+        path: &ColumnPath,
+    ) -> Result<Arc<TableProperties>> {
+        self.0.borrow_mut().table_properties(table_handle, path)
     }
 
     fn flatten_table_storage(

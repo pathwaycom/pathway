@@ -135,7 +135,10 @@ impl ColumnPath {
                         break;
                         // needed in outer joins and replacing rows with duplicated ids with error
                     }
-                    value = value.as_tuple()?.get(*i).ok_or(Error::InvalidColumnPath)?;
+                    value = value
+                        .as_tuple()?
+                        .get(*i)
+                        .ok_or_else(|| Error::InvalidColumnPath(self.clone()))?;
                 }
                 Ok(value.clone())
             }
@@ -148,7 +151,10 @@ impl ColumnPath {
             Self::ValuePath(path) => {
                 let mut value = value;
                 for i in path {
-                    value = value.as_tuple()?.get(*i).ok_or(Error::InvalidColumnPath)?;
+                    value = value
+                        .as_tuple()?
+                        .get(*i)
+                        .ok_or_else(|| Error::InvalidColumnPath(self.clone()))?;
                 }
                 Ok(value.clone())
             }
@@ -166,9 +172,11 @@ impl ColumnPath {
                 for i in path {
                     match table_properties {
                         TableProperties::Table(inner) => {
-                            table_properties = inner.get(*i).ok_or(Error::InvalidColumnPath)?;
+                            table_properties = inner
+                                .get(*i)
+                                .ok_or_else(|| Error::InvalidColumnPath(self.clone()))?;
                         }
-                        _ => return Err(Error::InvalidColumnPath),
+                        _ => return Err(Error::InvalidColumnPath(self.clone())),
                     }
                 }
                 Ok(table_properties.clone())
@@ -361,7 +369,6 @@ impl TableProperties {
             if !props.is_empty() && props.first().unwrap().0.len() == depth {
                 let first = &props.first().unwrap().1;
                 for (_path, other) in &props[1..] {
-                    assert_eq!(first, other);
                     if first != other {
                         return Err(Error::InconsistentColumnProperties);
                     }
@@ -696,7 +703,11 @@ pub trait Graph {
 
     fn table_universe(&self, table_handle: TableHandle) -> Result<UniverseHandle>;
 
-    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>>;
+    fn table_properties(
+        &self,
+        table_handle: TableHandle,
+        path: &ColumnPath,
+    ) -> Result<Arc<TableProperties>>;
 
     fn flatten_table_storage(
         &self,
@@ -1131,8 +1142,12 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.table_universe(table_handle))
     }
 
-    fn table_properties(&self, table_handle: TableHandle) -> Result<Arc<TableProperties>> {
-        self.try_with(|g| g.table_properties(table_handle))
+    fn table_properties(
+        &self,
+        table_handle: TableHandle,
+        path: &ColumnPath,
+    ) -> Result<Arc<TableProperties>> {
+        self.try_with(|g| g.table_properties(table_handle, path))
     }
 
     fn flatten_table_storage(

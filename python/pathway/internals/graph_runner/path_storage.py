@@ -64,6 +64,14 @@ class Storage:
                 new_column_paths[column] = path
         return dataclasses.replace(self, _column_paths=new_column_paths)
 
+    def remove_columns_from_table(self, table: Table) -> Storage:
+        table_columns = set(table._columns.values())
+        new_column_paths = {}
+        for column, path in self._column_paths.items():
+            if column not in table_columns:
+                new_column_paths[column] = path
+        return dataclasses.replace(self, _column_paths=new_column_paths)
+
     @classmethod
     def merge_storages(cls, universe: Universe, *storages: Storage) -> Storage:
         column_paths = {}

@@ -485,7 +485,9 @@ class ExternalIndexAsOfNowContext(
 
 
 @dataclass(eq=False, frozen=True)
-class TableRestrictedRowwiseContext(RowwiseContext):
+class TableRestrictedRowwiseContext(
+    RowwiseContext, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Restricts expression to specific table."""
 
     table: pw.Table
@@ -934,7 +936,9 @@ class JoinContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class JoinRowwiseContext(RowwiseContext):
+class JoinRowwiseContext(
+    RowwiseContext, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context for actually evaluating join expressions."""
 
     temporary_column_to_original: dict[InternalColRef, InternalColRef]

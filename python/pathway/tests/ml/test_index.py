@@ -12,6 +12,7 @@ from pathway.engine import USearchMetricKind
 from pathway.stdlib.indexing.bm25 import TantivyBM25
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.nearest_neighbors import LshKnn, USearchKnn
+from pathway.stdlib.indexing.vector_document_index import default_lsh_knn_document_index
 from pathway.stdlib.ml.index import KNNIndex
 from pathway.tests.utils import (
     T,
@@ -705,3 +706,29 @@ def test_errors_in_index_filter():
         (expected, expected_err),
         terminate_on_error=False,
     )
+
+
+def test_output_joined_with_other_columns():
+    @pw.udf
+    def embedder(x: str) -> list[float]:
+        return [0.0, 1.0, 2.0]
+
+    @pw.udf
+    def sort_docs(x: list[str]) -> list[str]:
+        return sorted(x)
+
+    query = pw.debug.table_from_rows(pw.schema_from_types(query=str), [("a",)])
+    docs = pw.debug.table_from_rows(
+        pw.schema_from_types(doc=str), [("a",), ("b",), ("c",)]
+    )
+
+    index = default_lsh_knn_document_index(
+        docs.doc, docs, dimensions=3, embedder=embedder
+    )
+    res = query + index.query(query.query, collapse_rows=True).select(
+        doc=sort_docs(pw.right.doc)
+    )
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame({"query": ["a"], "doc": [("a", "b", "c")]})
+    )
+    assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)

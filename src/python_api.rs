@@ -2341,9 +2341,10 @@ impl Scope {
     pub fn table_properties(
         self_: &PyCell<Self>,
         table: PyRef<Table>,
+        path: ColumnPath,
     ) -> PyResult<Py<TableProperties>> {
         let py = self_.py();
-        let properties = self_.borrow().graph.table_properties(table.handle)?;
+        let properties = self_.borrow().graph.table_properties(table.handle, &path)?;
         TableProperties::new(py, properties)
     }
 
