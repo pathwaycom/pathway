@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
 
+use std::cmp::max;
 use std::sync::Arc;
 
 use crate::engine::error::DynResult;
@@ -47,25 +48,9 @@ impl USearchKNNIndex {
             key_to_id_mapper: KeyToU64IdMapper::new(),
         })
     }
-}
 
-impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for USearchKNNIndex {
-    fn add(&mut self, key: Key, data: Vec<f64>) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.get_noncolliding_u64_id(key);
-        if self.index.size() + 1 > self.index.capacity() {
-            assert!(self.index.reserve(2 * self.index.capacity()).is_ok());
-        }
-        Ok(self.index.add(key_id, &data)?)
-    }
-
-    fn remove(&mut self, key: Key) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.remove_key(key)?;
-        self.index.remove(key_id)?;
-        Ok(())
-    }
-
-    fn search(&self, data: &Vec<f64>, limit: Option<usize>) -> DynResult<Vec<KeyScoreMatch>> {
-        let matches = self.index.search(data, limit.unwrap())?;
+    fn search_one(&self, data: &[f64], limit: usize) -> DynResult<Vec<KeyScoreMatch>> {
+        let matches = self.index.search(data, limit)?;
         Ok(matches
             .keys
             .into_iter()
@@ -75,6 +60,53 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for USearchKNNIndex {
                 score: -f64::from(d),
             })
             .collect())
+    }
+
+    fn add_one(&mut self, key: Key, data: &[f64]) -> DynResult<()> {
+        let key_id = self.key_to_id_mapper.get_noncolliding_u64_id(key);
+        self.index.add(key_id, data)?;
+        Ok(())
+    }
+
+    fn remove_one(&mut self, key: Key) -> DynResult<()> {
+        let key_id = self.key_to_id_mapper.remove_key(key)?;
+        self.index.remove(key_id)?;
+        Ok(())
+    }
+}
+
+impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for USearchKNNIndex {
+    fn add(&mut self, add_data: Vec<(Key, Vec<f64>)>) -> Vec<(Key, DynResult<()>)> {
+        if self.index.size() + add_data.len() > self.index.capacity() {
+            assert!(self
+                .index
+                .reserve(max(
+                    2 * self.index.capacity(),
+                    self.index.size() + add_data.len()
+                ))
+                .is_ok());
+        }
+
+        add_data
+            .into_iter()
+            .map(|(key, data)| (key, self.add_one(key, &data)))
+            .collect()
+    }
+
+    fn remove(&mut self, keys: Vec<Key>) -> Vec<(Key, DynResult<()>)> {
+        keys.into_iter()
+            .map(|key| (key, self.remove_one(key)))
+            .collect()
+    }
+
+    fn search(
+        &self,
+        queries: &[(Key, Vec<f64>, usize)],
+    ) -> Vec<(Key, DynResult<Vec<KeyScoreMatch>>)> {
+        queries
+            .iter()
+            .map(|(key, data, limit)| (*key, self.search_one(data, *limit)))
+            .collect()
     }
 }
 

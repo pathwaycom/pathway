@@ -1,4 +1,5 @@
 // Copyright © 2024 Pathway
+use itertools::Itertools;
 
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use std::panic::Location;
@@ -20,9 +21,9 @@ use crate::engine::dataflow::maybe_total::MaybeTotalScope;
 use super::utils::batch_by_time;
 use super::MapWrapped;
 
-pub trait Index<K, V, R, V2, Ret> {
-    fn take_update(&mut self, k: K, v: V, diff: R);
-    fn search(&self, v: &V2) -> Ret;
+pub trait Index<K, V, R, K2, V2, Ret> {
+    fn take_updates(&mut self, batch: Vec<(K, V, R)>);
+    fn search(&self, batch: Vec<(K2, V2, R)>) -> Vec<(K2, Ret, R)>;
 }
 
 /**
@@ -37,7 +38,7 @@ pub trait UseExternalIndexAsOfNow<G: Scope, K: ExchangeData, V: ExchangeData, R:
     fn use_external_index_as_of_now<K2, V2, Ret>(
         &self,
         query_stream: &Collection<G, (K2, V2), R>,
-        index: Box<dyn Index<K, V, R, V2, Ret>>,
+        index: Box<dyn Index<K, V, R, K2, V2, Ret>>,
     ) -> Collection<G, (K2, Ret), R>
     where
         K2: ExchangeData,
@@ -55,7 +56,7 @@ where
     fn use_external_index_as_of_now<K2, V2, Ret>(
         &self,
         query_stream: &Collection<G, (K2, V2), R>,
-        index: Box<dyn Index<K, V, R, V2, Ret>>,
+        index: Box<dyn Index<K, V, R, K2, V2, Ret>>,
     ) -> Collection<G, (K2, Ret), R>
     where
         K2: ExchangeData,
@@ -78,7 +79,7 @@ where
 fn use_external_index_as_of_now_core<G, K, K2, V, V2, R, Ret>(
     index_stream: &Collection<G, (K, V), R>,
     query_stream: &Collection<G, (K2, V2), R>,
-    index: Box<dyn Index<K, V, R, V2, Ret>>,
+    index: Box<dyn Index<K, V, R, K2, V2, Ret>>,
 ) -> Collection<G, (K2, Ret), R>
 where
     G: MaybeTotalScope,
@@ -125,10 +126,10 @@ where
                             batch_by_time(&input_buffer, |key, val, _time, diff| {
                                 match (key, val) {
                                     (Either::Left(key), Either::Left(val)) => {
-                                        (Either::Left((key.clone(), val.clone())), diff.clone())
+                                        Either::Left((key.clone(), val.clone(), diff.clone()))
                                     }
                                     (Either::Right(key), Either::Right(val)) => {
-                                        (Either::Right((key.clone(), val.clone())), diff.clone())
+                                        Either::Right((key.clone(), val.clone(), diff.clone()))
                                     }
                                     _ => unreachable!(),
                                 }
@@ -137,22 +138,20 @@ where
                         for (time, data) in grouped {
                             // update index
                             let (updates, queries): (_, Vec<_>) =
-                                data.into_iter().partition(|x| x.0.is_left());
+                                data.into_iter().partition_map(|x| x);
 
-                            for entry in updates {
-                                if let (Either::Left((key, value)), diff) = entry {
-                                    index.take_update(key, value, diff);
-                                }
-                            }
+                            index.take_updates(updates);
                             //ask queries, deposit answers
                             let delayed = &capability.delayed(&time);
                             let mut session = output.session(delayed);
 
-                            for entry in queries {
-                                if let (Either::Right((key, value)), diff) = entry {
-                                    session.give(((key, index.search(&value)), time.clone(), diff));
-                                }
-                            }
+                            let mut ret: Vec<((K2, Ret), G::Timestamp, R)> = index
+                                .search(queries)
+                                .into_iter()
+                                .map(|(k, v, diff)| ((k, v), time.clone(), diff))
+                                .collect();
+
+                            session.give_vec(&mut ret);
                         }
                     });
                 }

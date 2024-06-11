@@ -3,8 +3,8 @@
 use crate::engine::error::DynResult;
 use crate::engine::{Error, Key};
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
-use tantivy::schema::{Schema, Term, Value, INDEXED, STORED, TEXT};
+use tantivy::query::{Query, QueryParser};
+use tantivy::schema::{Field, Schema, Term, Value, INDEXED, STORED, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, TantivyDocument};
 
 use super::{
@@ -16,7 +16,8 @@ pub struct TantivyIndex {
     // non configurable parameters
     reader: IndexReader,
     writer: IndexWriter,
-    schema: Schema,
+    id_field: Field,
+    data_field: Field,
     query_parser: QueryParser,
     key_to_id_mapper: KeyToU64IdMapper,
 }
@@ -41,60 +42,37 @@ impl TantivyIndex {
             .try_into()?;
 
         let data_field = schema.get_field("data").unwrap();
+        let id_field = schema.get_field("id").unwrap();
         let query_parser = QueryParser::for_index(&index, vec![data_field]);
 
         Ok(TantivyIndex {
             reader: index_reader,
             writer: index_writer,
-            schema,
+            id_field,
+            data_field,
             query_parser,
             key_to_id_mapper: KeyToU64IdMapper::new(),
         })
     }
-}
 
-// index methods
-// maybe todo -> make search generic wrt ResultType
-impl NonFilteringExternalIndex<String, String> for TantivyIndex {
-    fn add(&mut self, key: Key, data: String) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.get_noncolliding_u64_id(key);
-        //maybe cache fields, so that don't need to take them each step
-        let id_field = self.schema.get_field("id").unwrap();
-        let data_field = self.schema.get_field("data").unwrap();
+    fn search_one(
+        &self,
+        data: &str,
+        limit: usize,
+        searcher: &Searcher,
+    ) -> DynResult<Vec<KeyScoreMatch>> {
+        let query: Box<dyn Query> = self.query_parser.parse_query(data)?;
 
-        self.writer.add_document(doc!(
-            id_field => key_id,
-            data_field => data,
-        ))?;
-        //TODO: make batch-add, to avoid commit-per-entry
-        self.writer.commit()?;
-        Ok(())
-    }
-
-    fn remove(&mut self, key: Key) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.remove_key(key)?;
-
-        let id_field = self.schema.get_field("id").unwrap();
-        let proxy_id_term = Term::from_field_u64(id_field, key_id);
-        self.writer.delete_term(proxy_id_term);
-        self.writer.commit()?;
-        Ok(())
-    }
-
-    fn search(&self, data: &String, limit: Option<usize>) -> DynResult<Vec<KeyScoreMatch>> {
-        let id_field = self.schema.get_field("id").unwrap();
-
-        let query = self.query_parser.parse_query(data)?;
-
-        self.reader.reload()?;
-        let searcher: Searcher = self.reader.searcher();
-
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit.unwrap()))?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
 
         let mut ret_vec = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {
             let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
-            let match_proxy_id = retrieved_doc.get_first(id_field).unwrap().as_u64().unwrap();
+            let match_proxy_id = retrieved_doc
+                .get_first(self.id_field)
+                .unwrap()
+                .as_u64()
+                .unwrap();
 
             ret_vec.push(KeyScoreMatch {
                 key: self.key_to_id_mapper.get_key_for_id(match_proxy_id),
@@ -102,6 +80,58 @@ impl NonFilteringExternalIndex<String, String> for TantivyIndex {
             });
         }
         Ok(ret_vec)
+    }
+
+    fn add_one(&mut self, key: Key, data: String) -> DynResult<()> {
+        let key_id = self.key_to_id_mapper.get_noncolliding_u64_id(key);
+        self.writer.add_document(doc!(
+            self.id_field => key_id,
+            self.data_field => data,
+        ))?;
+        Ok(())
+    }
+
+    fn remove_one(&mut self, key: Key) -> DynResult<()> {
+        let key_id = self.key_to_id_mapper.remove_key(key)?;
+        let proxy_id_term = Term::from_field_u64(self.id_field, key_id);
+        self.writer.delete_term(proxy_id_term);
+        Ok(())
+    }
+}
+
+// index methods
+// maybe todo -> make search generic wrt ResultType
+impl NonFilteringExternalIndex<String, String> for TantivyIndex {
+    fn add(&mut self, add_data: Vec<(Key, String)>) -> Vec<(Key, DynResult<()>)> {
+        let ret = add_data
+            .into_iter()
+            .map(|(key, data)| (key, self.add_one(key, data)))
+            .collect();
+
+        self.writer.commit().unwrap(); //TODO fix when clear how to report batch errors
+        ret
+    }
+
+    fn remove(&mut self, keys: Vec<Key>) -> Vec<(Key, DynResult<()>)> {
+        let ret = keys
+            .into_iter()
+            .map(|key| (key, self.remove_one(key)))
+            .collect();
+        self.writer.commit().unwrap(); //TODO fix when clear how to report batch errors
+        ret
+    }
+
+    fn search(
+        &self,
+        queries: &[(Key, String, usize)],
+    ) -> Vec<(Key, DynResult<Vec<KeyScoreMatch>>)> {
+        self.reader.reload().unwrap(); //maybe handle fail in some better way? not clear how to report fail on a
+                                       // batch of updates, due to fail of index reload
+        let searcher: Searcher = self.reader.searcher();
+        queries
+            .iter()
+            .map(|(key, data, limit)| (*key, self.search_one(data, *limit, &searcher)))
+            .collect()
     }
 }
 
