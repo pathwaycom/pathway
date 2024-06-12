@@ -46,7 +46,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `query` and `query_as_of_now` of `pathway.stdlib.indexing.data_index.DataIndex` now accept in `metadata_column` parameter a column with data of type `str | None`.
-- `pathway.xpacks.connectors.sharepoint` module under Pathway for Business License.
+- `pathway.xpacks.connectors.sharepoint` module, available with Pathway Scale License.
 
 
 ## [0.11.0] - 2024-05-10
