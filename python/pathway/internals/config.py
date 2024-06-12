@@ -123,10 +123,44 @@ def get_pathway_config() -> PathwayConfig:
 
 
 def set_license_key(key: str | None) -> None:
+    """Sets Pathway license key.
+    License key can be obtained from the
+    `official website <https://pathway.com/get-license/>`_.
+
+    Args:
+        key: The license key to be set. If None, any existing license key will be cleared.
+
+    Returns:
+        None
+
+    Example:
+
+    >>> import pathway as pw
+    >>> pw.set_license_key("demo-license-key-with-telemetry")
+    """
     get_pathway_config().license_key = key
 
 
 def set_monitoring_config(*, server_endpoint: str | None) -> None:
+    """Sets the monitoring server endpoint.
+    Requires a valid Pathway Scale license key.
+
+    Args:
+        server_endpoint: The server endpoint URL for monitoring,
+            or None to clear the existing configuration.
+            The endpoint should be
+            `OTLP <https://opentelemetry.io/docs/specs/otlp/>`_ compatible
+            and support gRPC protocol.
+
+    Returns:
+        None
+
+    Example:
+
+    >>> import pathway as pw
+    >>> pw.set_license_key("YOUR_LICENSE_KEY")
+    >>> pw.set_monitoring_config(server_endpoint="https://example.com:4317")
+    """
     get_pathway_config().monitoring_server = server_endpoint
 
 

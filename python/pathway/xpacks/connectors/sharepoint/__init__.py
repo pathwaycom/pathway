@@ -237,6 +237,7 @@ def read(
     refresh_interval: int = 30,
 ) -> Table:
     """Reads a table from a directory or a file in Microsoft SharePoint site.
+    Requires a valid Pathway Scale license key.
 
     It will return a table with single column `data` containing each file in a binary format.
 
