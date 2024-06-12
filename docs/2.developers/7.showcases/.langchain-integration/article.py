@@ -7,7 +7,7 @@
 #     tags: ['showcase', 'llm']
 # author: 'szymon'
 # notebook_export_path: notebooks/showcases/langchain-integration.ipynb
-# keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'LangChain']
+# keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'LangChain', 'notebook']
 # ---
 
 # # Langchain and Pathway: RAG Apps with always-up-to-date knowledge
