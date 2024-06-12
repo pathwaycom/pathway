@@ -1,5 +1,8 @@
 <div align="center">
-  <img src="https://pathway.com/logo-light.svg" /><br /><br />
+  <a href="https://pathway.com/">
+    <img src="https://pathway.com/logo-light.svg"/>
+  </a>
+  <br /><br />
 </div>
 <p align="center">
         <a href="https://github.com/pathwaycom/pathway/actions/workflows/ubuntu_test.yml">
