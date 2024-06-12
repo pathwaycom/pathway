@@ -12,6 +12,7 @@ concurrency:
 env:
   AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
   MINIO_S3_SECRET_ACCESS_KEY: ${{ secrets.MINIO_S3_SECRET_ACCESS_KEY }}
+  PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
 jobs:
   Build_packages:
     name: Build packages

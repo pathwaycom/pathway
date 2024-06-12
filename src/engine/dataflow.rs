@@ -3449,7 +3449,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             stats.on_batch_entry_written();
         }
         stats.on_batch_finished();
-        data_sink.flush().map_err(DynError::from)?;
+        data_sink.flush(false).map_err(DynError::from)?;
 
         Ok(())
     }
@@ -3535,6 +3535,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     &worker_persistent_storage,
                                 );
                                 if t.is_none() {
+                                    data_sink.flush(true).map_err(DynError::from)?;
                                     break Ok(());
                                 }
                             }

@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use assert_matches::assert_matches;
@@ -26,7 +27,12 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> Result<(), WriteErro
         default: None,
     }];
 
-    let mut writer = DeltaTableWriter::new(test_storage_path.to_str().unwrap(), &value_fields)?;
+    let mut writer = DeltaTableWriter::new(
+        test_storage_path.to_str().unwrap(),
+        &value_fields,
+        HashMap::new(),
+        None,
+    )?;
     let mut formatter = IdentityFormatter::new();
 
     for value in values {
@@ -35,7 +41,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> Result<(), WriteErro
             .expect("formatter failed");
         writer.write(context)?;
     }
-    writer.flush()?;
+    writer.flush(true)?;
     let rows_present = read_from_deltalake(test_storage_path.to_str().unwrap(), type_);
     assert_eq!(rows_present, values);
 

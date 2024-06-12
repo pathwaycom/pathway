@@ -2984,7 +2984,8 @@ def test_deltalake_simple(tmp_path: pathlib.Path):
     )
 
 
-def test_deltalake_append(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("min_commit_frequency", [None, 60_000])
+def test_deltalake_append(min_commit_frequency, tmp_path: pathlib.Path):
     data = """
         k | v
         1 | foo
@@ -3002,7 +3003,11 @@ def test_deltalake_append(tmp_path: pathlib.Path):
     def iteration():
         G.clear()
         table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
-        pw.io.deltalake.write(table, str(output_path))
+        pw.io.deltalake.write(
+            table,
+            str(output_path),
+            min_commit_frequency=min_commit_frequency,
+        )
         run_all()
 
     iteration()

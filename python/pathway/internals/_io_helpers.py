@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import boto3
+import boto3.session
 
 from pathway.internals import api, dtype as dt, schema
 from pathway.internals.table import Table
@@ -38,13 +39,22 @@ class AwsS3Settings:
         region=None,
         endpoint=None,
     ):
-        self.settings = api.AwsS3Settings(
-            bucket_name,
-            access_key,
-            secret_access_key,
-            with_path_style,
-            region,
-            endpoint,
+        self._bucket_name = bucket_name
+        self._access_key = access_key
+        self._secret_access_key = secret_access_key
+        self._with_path_style = with_path_style
+        self._region = region
+        self._endpoint = endpoint
+
+    @property
+    def settings(self):
+        return api.AwsS3Settings(
+            self._bucket_name,
+            self._access_key,
+            self._secret_access_key,
+            self._with_path_style,
+            self._region,
+            self._endpoint,
         )
 
     @classmethod
@@ -85,6 +95,32 @@ class AwsS3Settings:
             bucket_name=bucket,
             region=region,
         )
+
+    def as_deltalake_storage_options(self):
+        options = {
+            "AWS_S3_ALLOW_UNSAFE_RENAME": "True",
+            "AWS_REGION": self._region,
+            "AWS_VIRTUAL_HOSTED_STYLE_REQUEST": str(not self._with_path_style),
+        }
+        if self._access_key is not None and self._secret_access_key is not None:
+            options["AWS_ACCESS_KEY_ID"] = self._access_key
+            options["AWS_SECRET_ACCESS_KEY"] = self._secret_access_key
+        else:
+            # DeltaLake underlying AWS S3 library may fail to deduce the credentials, so
+            # we use boto3 to do that, which is more reliable
+            # Related github issue: https://github.com/delta-io/delta-rs/issues/854
+            session = boto3.session.Session()
+            creds = session.get_credentials()
+            if creds.access_key is not None and creds.secret_key is not None:
+                options["AWS_ACCESS_KEY_ID"] = creds.access_key
+                options["AWS_SECRET_ACCESS_KEY"] = creds.secret_key
+            elif creds.token is not None:
+                options["AWS_SESSION_TOKEN"] = creds.token
+        if self._bucket_name is not None:
+            options["AWS_BUCKET_NAME"] = self._bucket_name
+        if self._endpoint is not None:
+            options["AWS_ENDPOINT_NAME"] = self._endpoint
+        return options
 
 
 def _format_output_value_fields(table: Table) -> list[api.ValueField]:

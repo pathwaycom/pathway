@@ -180,6 +180,8 @@ jobs:
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
           export PYTEST_ADDOPTS="--dist worksteal -n auto"
           python -m pytest -v --confcutdir "${ENV_NAME}" --doctest-modules --pyargs pathway
+        env:
+          PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
 
   Verify_ARM_ARCH:
     needs:
@@ -234,6 +236,7 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
           DEVELOPER_DIR: /Library/Developer/CommandLineTools
           SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+          PATHWAY_LICENSE_KEY: ${{ secrets.PATHWAY_LICENSE_KEY }}
 
       - name: post cleanup
         run: rm -rf ./wheels

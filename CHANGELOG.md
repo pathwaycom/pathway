@@ -5,8 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.deltalake.write` now supports S3 destinations.
+
 ### Changed
 - `pw.debug.compute_and_print` now allows passing more than one table.
+- **BREAKING**: `path` parameter in `pw.io.deltalake.write` renamed to `uri`.
 
 ### Fixed
 -  A bug in `pw.Table.deduplicate`. If `persistent_id` is not set, it is no longer generated in `pw.PersistenceMode.SELECTIVE_PERSISTING` mode.

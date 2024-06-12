@@ -3435,6 +3435,8 @@ pub struct DataStorage {
     column_names: Option<Vec<String>>,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
+    storage_options: Option<HashMap<String, String>>,
+    min_commit_frequency: Option<u64>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -3743,6 +3745,8 @@ impl DataStorage {
         column_names = None,
         header_fields = Vec::new(),
         key_field_index = None,
+        storage_options = None,
+        min_commit_frequency = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3767,6 +3771,8 @@ impl DataStorage {
         column_names: Option<Vec<String>>,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
+        storage_options: Option<HashMap<String, String>>,
+        min_commit_frequency: Option<u64>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -3790,6 +3796,8 @@ impl DataStorage {
             column_names,
             header_fields,
             key_field_index,
+            storage_options,
+            min_commit_frequency,
         }
     }
 }
@@ -4239,7 +4247,13 @@ impl DataStorage {
                 for field in &data_format.value_fields {
                     value_fields.push(field.borrow(py).clone());
                 }
-                let writer = DeltaTableWriter::new(path, &value_fields).map_err(|e| {
+                let writer = DeltaTableWriter::new(
+                    path,
+                    &value_fields,
+                    self.storage_options.clone().unwrap_or_default(),
+                    self.min_commit_frequency.map(time::Duration::from_millis),
+                )
+                .map_err(|e| {
                     PyIOError::new_err(format!("Unable to start DeltaTable output connector: {e}"))
                 })?;
                 Ok(Box::new(writer))
@@ -4785,6 +4799,9 @@ fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) ->
 fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     // Initialize the logging
     let _ = Lazy::force(&LOGGING_RESET_HANDLE);
+
+    // Enable S3 support in DeltaLake library
+    ::deltalake::aws::register_handlers(None);
 
     m.add_class::<Pointer>()?;
     m.add_class::<PyObjectWrapper>()?;

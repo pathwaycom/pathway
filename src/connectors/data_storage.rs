@@ -25,7 +25,7 @@ use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use std::thread;
 use std::thread::sleep;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, FixedOffset};
 use log::{error, warn};
@@ -70,7 +70,7 @@ use deltalake::kernel::StructField as DeltaTableStructField;
 use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
 use deltalake::protocol::SaveMode as DeltaTableSaveMode;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
-use deltalake::{open_table as open_delta_table, DeltaTable, DeltaTableError};
+use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, DeltaTableError};
 use elasticsearch::{BulkParts, Elasticsearch};
 use glob::Pattern as GlobPattern;
 use glob::PatternError as GlobPatternError;
@@ -473,7 +473,7 @@ pub enum WriteError {
 pub trait Writer: Send {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError>;
 
-    fn flush(&mut self) -> Result<(), WriteError> {
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         Ok(())
     }
 
@@ -678,7 +678,7 @@ impl Writer for FileWriter {
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), WriteError> {
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         self.writer.flush()?;
         Ok(())
     }
@@ -1640,13 +1640,13 @@ impl Writer for PsqlWriter {
         self.buffer.push(data);
         if let Some(max_batch_size) = self.max_batch_size {
             if self.buffer.len() == max_batch_size {
-                self.flush()?;
+                self.flush(true)?;
             }
         }
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), WriteError> {
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         if self.buffer.is_empty() {
             return Ok(());
         }
@@ -2148,14 +2148,6 @@ impl ElasticSearchWriter {
     }
 }
 
-impl Drop for ElasticSearchWriter {
-    fn drop(&mut self) {
-        if !self.docs_buffer.is_empty() {
-            self.flush().unwrap();
-        }
-    }
-}
-
 impl Writer for ElasticSearchWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         for payload in data.payloads {
@@ -2165,14 +2157,14 @@ impl Writer for ElasticSearchWriter {
 
         if let Some(max_batch_size) = self.max_batch_size {
             if self.docs_buffer.len() / 2 >= max_batch_size {
-                self.flush()?;
+                self.flush(true)?;
             }
         }
 
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), WriteError> {
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
         if self.docs_buffer.is_empty() {
             return Ok(());
         }
@@ -2570,12 +2562,19 @@ pub struct DeltaTableWriter {
     writer: DTRecordBatchWriter,
     schema: Arc<ArrowSchema>,
     buffered_columns: Vec<Vec<Value>>,
+    min_commit_frequency: Option<Duration>,
+    last_commit_at: Instant,
 }
 
 impl DeltaTableWriter {
-    pub fn new(path: &str, value_fields: &Vec<ValueField>) -> Result<Self, WriteError> {
+    pub fn new(
+        path: &str,
+        value_fields: &Vec<ValueField>,
+        storage_options: HashMap<String, String>,
+        min_commit_frequency: Option<Duration>,
+    ) -> Result<Self, WriteError> {
         let schema = Arc::new(Self::construct_schema(value_fields)?);
-        let table = Self::open_table(path, value_fields)?;
+        let table = Self::open_table(path, value_fields, storage_options)?;
         let writer = DTRecordBatchWriter::for_table(&table)?;
 
         let mut empty_buffered_columns = Vec::new();
@@ -2587,6 +2586,11 @@ impl DeltaTableWriter {
             writer,
             schema,
             buffered_columns: empty_buffered_columns,
+            min_commit_frequency,
+
+            // before the first commit, the time should be
+            // measured from the moment of the start
+            last_commit_at: Instant::now(),
         })
     }
 
@@ -2733,7 +2737,8 @@ impl DeltaTableWriter {
     }
 
     fn create_async_runtime() -> Result<TokioRuntime, WriteError> {
-        Ok(tokio::runtime::Builder::new_current_thread()
+        // Deadlocks if new_current_thread is used
+        Ok(tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?)
     }
@@ -2741,6 +2746,7 @@ impl DeltaTableWriter {
     pub fn open_table(
         path: &str,
         schema_fields: &Vec<ValueField>,
+        storage_options: HashMap<String, String>,
     ) -> Result<DeltaTable, WriteError> {
         let mut struct_fields = Vec::new();
         for field in schema_fields {
@@ -2759,13 +2765,13 @@ impl DeltaTableWriter {
         }
 
         let runtime = Self::create_async_runtime()?;
-
         let table: DeltaTable = runtime
             .block_on(async {
                 let builder = DeltaTableCreateBuilder::new()
                     .with_location(path)
                     .with_save_mode(DeltaTableSaveMode::Append)
-                    .with_columns(struct_fields);
+                    .with_columns(struct_fields)
+                    .with_storage_options(storage_options.clone());
 
                 builder.await
             })
@@ -2773,7 +2779,7 @@ impl DeltaTableWriter {
                 |e| {
                     warn!("Unable to create DeltaTable for output: {e}. Trying to open the existing one by this path.");
                     runtime.block_on(async {
-                            open_delta_table(path).await
+                        open_delta_table(path, storage_options).await
                     })
                 }
             )?;
@@ -2794,15 +2800,22 @@ impl Writer for DeltaTableWriter {
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), WriteError> {
-        Self::create_async_runtime()?.block_on(async {
-            self.writer.write(self.prepare_delta_batch()?).await?;
-            self.writer.flush_and_commit(&mut self.table).await?;
-            for column in &mut self.buffered_columns {
-                column.clear();
-            }
-            Ok::<(), WriteError>(())
-        })?;
+    fn flush(&mut self, forced: bool) -> Result<(), WriteError> {
+        let commit_needed = !self.buffered_columns[0].is_empty()
+            && (self
+                .min_commit_frequency
+                .map_or(true, |f| self.last_commit_at.elapsed() >= f)
+                || forced);
+        if commit_needed {
+            Self::create_async_runtime()?.block_on(async {
+                self.writer.write(self.prepare_delta_batch()?).await?;
+                self.writer.flush_and_commit(&mut self.table).await?;
+                for column in &mut self.buffered_columns {
+                    column.clear();
+                }
+                Ok::<(), WriteError>(())
+            })?;
+        }
         Ok(())
     }
 }
