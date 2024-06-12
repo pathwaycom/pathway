@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.debug.compute_and_print` now allows passing more than one table.
 
+### Fixed
+-  A bug in `pw.Table.deduplicate`. If `persistent_id` is not set, it is no longer generated in `pw.PersistenceMode.SELECTIVE_PERSISTING` mode.
+
 ## [0.12.0] - 2024-06-08
 
 ### Added

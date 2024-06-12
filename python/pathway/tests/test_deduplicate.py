@@ -395,3 +395,156 @@ def test_deduplicate_keeps_state_with_regular_persistence(tmp_path: pathlib.Path
 
     run_computation(6, 0, [0, 2, 4])
     run_computation(5, 6, [6, 8, 10])
+
+
+def test_selective_persistence_persistent_id_set(
+    tmp_path: pathlib.Path,
+):
+    persistence_path = tmp_path / "persistence"
+    persistence_config = pw.persistence.Config.simple_config(
+        pw.persistence.Backend.filesystem(persistence_path),
+        persistence_mode=pw.PersistenceMode.SELECTIVE_PERSISTING,
+    )
+    data_1 = """
+    val | __time__
+     1  |     2
+     2  |     4
+     3  |     6
+     4  |     8
+     5  |    10
+    """
+    data_2 = """
+    val | __time__
+     1  |     2
+     2  |     4
+     3  |     6
+     4  |     8
+     5  |    10
+     6  |    12
+     7  |    14
+     8  |    16
+     9  |    16
+    """
+
+    def acceptor(new_value, old_value) -> bool:
+        return new_value >= old_value + 2
+
+    table = pw.debug.table_from_markdown(data_1)
+    result = table.deduplicate(
+        value=pw.this.val, acceptor=acceptor, persistent_id="foo"
+    )
+
+    expected_1 = pw.debug.table_from_markdown(
+        """
+    id | val | __time__ | __diff__
+     1 |  1  |     2    |     1
+     1 |  1  |     6    |    -1
+     1 |  3  |     6    |     1
+     1 |  3  |    10    |    -1
+     1 |  5  |    10    |     1
+    """
+    )
+    assert_stream_equality_wo_index(
+        result, expected_1, persistence_config=persistence_config
+    )
+    G.clear()
+
+    table = pw.debug.table_from_markdown(data_2)
+    result = table.deduplicate(
+        value=pw.this.val, acceptor=acceptor, persistent_id="foo"
+    )
+
+    expected_2 = pw.debug.table_from_markdown(
+        """
+    id | val | __time__ | __diff__
+     1 |  5  |     0    |     1
+     1 |  5  |    14    |    -1
+     1 |  7  |    14    |     1
+     1 |  7  |    16    |    -1
+     1 |  9  |    16    |     1
+    """
+    )
+    assert_stream_equality_wo_index(
+        result, expected_2, persistence_config=persistence_config
+    )
+
+
+@pytest.mark.parametrize(
+    "first_id,second_id", [(None, None), ("foo", "bar"), (None, "foo"), ("bar", None)]
+)
+def test_selective_persistence_no_persistent_id_set_or_different_ids_set(
+    tmp_path: pathlib.Path,
+    first_id: str | None,
+    second_id: str | None,
+):
+    persistence_path = tmp_path / "persistence"
+    persistence_config = pw.persistence.Config.simple_config(
+        pw.persistence.Backend.filesystem(persistence_path),
+        persistence_mode=pw.PersistenceMode.SELECTIVE_PERSISTING,
+    )
+    data_1 = """
+    val | __time__
+     1  |     2
+     2  |     4
+     3  |     6
+     4  |     8
+     5  |    10
+    """
+    data_2 = """
+    val | __time__
+     1  |     2
+     2  |     4
+     3  |     6
+     4  |     8
+     5  |    10
+     6  |    12
+     7  |    14
+     8  |    16
+     9  |    16
+    """
+
+    def acceptor(new_value, old_value) -> bool:
+        return new_value >= old_value + 2
+
+    table = pw.debug.table_from_markdown(data_1)
+    result = table.deduplicate(
+        value=pw.this.val, acceptor=acceptor, persistent_id=first_id
+    )
+
+    expected_1 = pw.debug.table_from_markdown(
+        """
+    id | val | __time__ | __diff__
+     1 |  1  |     2    |     1
+     1 |  1  |     6    |    -1
+     1 |  3  |     6    |     1
+     1 |  3  |    10    |    -1
+     1 |  5  |    10    |     1
+    """
+    )
+    assert_stream_equality_wo_index(
+        result, expected_1, persistence_config=persistence_config
+    )
+    G.clear()
+
+    table = pw.debug.table_from_markdown(data_2)
+    result = table.deduplicate(
+        value=pw.this.val, acceptor=acceptor, persistent_id=second_id
+    )
+
+    expected_2 = pw.debug.table_from_markdown(
+        """
+    id | val | __time__ | __diff__
+     1 |  1  |     2    |     1
+     1 |  1  |     6    |    -1
+     1 |  3  |     6    |     1
+     1 |  3  |    10    |    -1
+     1 |  5  |    10    |     1
+     1 |  5  |    14    |    -1
+     1 |  7  |    14    |     1
+     1 |  7  |    16    |    -1
+     1 |  9  |    16    |     1
+    """
+    )
+    assert_stream_equality_wo_index(
+        result, expected_2, persistence_config=persistence_config
+    )
