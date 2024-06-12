@@ -1,11 +1,10 @@
 # ---
-# title: "Part 1: Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join"
+# title: "Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join"
 # description: Article introducing Fuzzy Join.
 # notebook_export_path: notebooks/showcases/fuzzy_join_part1.ipynb
 # aside: true
 # article:
 #   date: '2022-10-18'
-#   thumbnail: ''
 #   tags: ['tutorial', 'data-pipeline']
 # keywords: ['Fuzzy join', 'reconciliation', 'unstructured', 'notebook']
 # author: 'pathway'
@@ -26,7 +25,7 @@
 # %% [markdown] jp-MarkdownHeadingCollapsed=true
 # # Automating reconciliation of messy financial transaction logs using Pathway's real-time fuzzy join
 #
-# ## Part 1: Fuzzy joins: 'errare humanum est'
+# ## Fuzzy joins: 'errare humanum est'
 #
 # As the ancient maxim says, ['errare humanum est'](https://en.wiktionary.org/w/index.php?title=errare_humanum_est): to err is human.
 # More than two thousands years later, this lesson is still very accurate in our modern world.

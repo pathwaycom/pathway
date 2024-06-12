@@ -1,11 +1,12 @@
 # ---
-# title: 'Part 2: Realtime Fuzzy-Join'
+# title: 'Interaction with a Feedback Loop.'
 # description: Article introducing Fuzzy Join.
 # notebook_export_path: notebooks/showcases/fuzzy_join_part2.ipynb
 # aside: true
 # article:
 #   date: '2022-10-19'
-#   thumbnail: ''
+#   thumbnail: '/assets/content/showcases/fuzzy_join/reconciliation_chapter3_trim.png'
+#   thumbnailFit: 'contain'
 #   tags: ['tutorial', 'data-pipeline']
 # keywords: ['Fuzzy join', 'reconciliation', 'unstructured', 'notebook']
 # author: 'pathway'
@@ -24,13 +25,13 @@
 # ---
 
 # %% [markdown]
-# # Realtime Fuzzy-Join in Pathway
+# # Interaction with a Feedback Loop.
 #
-# ## Part 2: Fuzzy Join - reconciliation with audit: when the computer is not enough
+# ## Fuzzy Join - reconciliation with audit: when the computer is not enough
 #
 # In this article, we are going to show you how Pathway interacts with incremental data flows with a **feedback loop**.
 #
-# In the [first part of this showcase](/developers/showcases/fuzzy_join/fuzzy_join_chapter1) we explained how `smart_fuzzy_join` may be helpful in bookkeeping.
+# In the [another showcase](/developers/showcases/fuzzy_join/fuzzy_join_chapter1) we explained how `smart_fuzzy_join` may be helpful in bookkeeping.
 # Previously, we had a simple pipeline that matched entries of two different tables, such as two logs of bank transfers, in two different formats.
 # Many matchings can be inferred automatically, but some can be really tricky without help: while the fans of Harry Potter can instantaneously make the connection between 'You-Know-Who' and 'Voldemort', it is impossible for a computer to do so, at least without help.
 #
@@ -39,7 +40,7 @@
 # The auditor may help the system by providing some hints, i.e. suggesting difficult matchings by hand.
 #
 # ## Feedback loop in Pathway
-# ![Graph image](https://pathway.com/assets/content/showcases/fuzzy_join/reconciliation_chapter3_trim.png)
+# ![Graph image](/assets/content/showcases/fuzzy_join/reconciliation_chapter3_trim.png)
 #
 # This figure represents an architecture with a feedback loop to understand how the pieces work together.
 #
