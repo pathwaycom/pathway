@@ -24,6 +24,11 @@
 
 import pathway as pw
 
+# To use advanced features with Pathway Scale, get your free license key from
+# https://pathway.com/features and paste it below.
+# To use Pathway Community, comment out the line below.
+pw.set_license_key("demo-license-key-with-telemetry")
+
 fname = "ticker.csv"
 schema = pw.schema_from_csv(fname)
 

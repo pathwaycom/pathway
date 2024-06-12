@@ -4,6 +4,11 @@ import os
 
 import pathway as pw
 
+# To use advanced features with Pathway Scale, get your free license key from
+# https://pathway.com/features and paste it below.
+# To use Pathway Community, comment out the line below.
+pw.set_license_key("demo-license-key-with-telemetry")
+
 # set kafka credentials (from upstash)
 kafka_endpoint = "talented-cow-10356-eu1-kafka.upstash.io:9092"
 kafka_user = os.environ["UPSTASH_KAFKA_USER"]

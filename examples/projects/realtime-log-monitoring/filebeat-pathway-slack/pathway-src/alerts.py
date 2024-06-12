@@ -7,6 +7,11 @@ import requests
 
 import pathway as pw
 
+# To use advanced features with Pathway Scale, get your free license key from
+# https://pathway.com/features and paste it below.
+# To use Pathway Community, comment out the line below.
+pw.set_license_key("demo-license-key-with-telemetry")
+
 alert_threshold = 5
 sliding_window_duration = timedelta(seconds=1)
 

@@ -4,6 +4,11 @@ from uuid import uuid4
 
 import pathway as pw
 
+# To use advanced features with Pathway Scale, get your free license key from
+# https://pathway.com/features and paste it below.
+# To use Pathway Community, comment out the line below.
+pw.set_license_key("demo-license-key-with-telemetry")
+
 rdkafka_settings = {
     "bootstrap.servers": "kafka:9092",
     "security.protocol": "plaintext",
