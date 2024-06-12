@@ -31,7 +31,7 @@
 # %% [markdown]
 # # Jupyter / Colab: visualizing and transforming live data streams in Python notebooks with Pathway
 #
-# <b> 💡 This notebook is one part of a [full-length tutorial](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/) depicting a production-grade data science scenario from data exploration to interactive dashboarding and containerized deploy.</b>
+# <b> 💡 This notebook is one part of a [full-length tutorial](/developers/user-guide/deployment/from-jupyter-to-deploy/) depicting a production-grade data science scenario from data exploration to interactive dashboarding and containerized deploy.</b>
 #
 # ## Jupyter notebooks & streaming data
 # Jupyter notebooks are a great tool for working with data. They give you a friendly interactive interface in which you can process data comfortably and visualise it in intuitive, human-readable ways.
@@ -81,7 +81,7 @@ import pathway as pw
 # %% [markdown]
 # ## Data source setup
 #
-# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda/).
+# Create a streaming data source that replays data in a CSV file. This is an easy way to simulate a live data stream without any infrastructure hassle. You can of course use Pathway with a real, production-grade data stream, for example [from Kafka](/developers/user-guide/deployment/from-jupyter-to-deploy#kafka-integration) or [Redpanda](/developers/user-guide/connect/connectors/switching-to-redpanda/).
 #
 # The `input_rate` parameter controls how fast the data is replayed.
 #
@@ -288,7 +288,7 @@ pw.run()
 #
 # Congratulations! You have succesfully built a live data streaming pipeline with useful data visualisations and real-time alerts, right from a Jupyter notebook 😄
 #
-# This is just a taste of what is possible. If you're interested in diving deeper and building a production-grade data science pipeline all the way from data exploration to deployment, you may want to check out the full-length [From Jupyter to Deploy](/developers/user-guide/exploring-pathway/from-jupyter-to-deploy/) tutorial.
+# This is just a taste of what is possible. If you're interested in diving deeper and building a production-grade data science pipeline all the way from data exploration to deployment, you may want to check out the full-length [From Jupyter to Deploy](/developers/user-guide/deployment/from-jupyter-to-deploy/) tutorial.
 #
 # ## What else can you do with Pathway?
 #
