@@ -53,7 +53,11 @@ For any questions, you will find the community and team behind the project [on D
 
 ## Use-cases and templates
 
-Ready to see what Pathway can do? Try one of our [easy-to-run examples](https://pathway.com/developers/showcases)! Available in both notebook and docker formats, these ready-to-launch examples can be launched in just a few clicks. Pick one and start your hands-on experience with Pathway today!
+Ready to see what Pathway can do?
+
+[Try one of our easy-to-run examples](https://pathway.com/developers/showcases)!
+
+Available in both notebook and docker formats, these ready-to-launch examples can be launched in just a few clicks. Pick one and start your hands-on experience with Pathway today!
 
 ### Event processing and real-time analytics pipelines
 With its unified engine for batch and streaming and its full Python compatibility, Pathway makes data processing as easy as possible. It's the ideal solution for a wide range of data processing pipelines, including:
