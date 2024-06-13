@@ -303,7 +303,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         )
         self.kwargs = call_kwargs
 
-    def __wrapped__(self, text: str, **kwargs) -> list[float]:
+    def __wrapped__(self, input: str, **kwargs) -> list[float]:
         """
         Embed the text
 
@@ -315,4 +315,4 @@ class SentenceTransformerEmbedder(BaseEmbedder):
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         """  # noqa: E501
         kwargs = {**self.kwargs, **kwargs}
-        return self.model.encode(text, **kwargs).tolist()
+        return self.model.encode(input, **kwargs).tolist()
