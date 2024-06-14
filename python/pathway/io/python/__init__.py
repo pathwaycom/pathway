@@ -33,6 +33,11 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
     "binary",
 }
 
+COMMIT_LITERAL = "*COMMIT*"
+ENABLE_COMMITS_LITERAL = "*ENABLE_COMMITS*"
+DISABLE_COMMITS_LITERAL = "*DISABLE_COMMITS*"
+FINISH_LITERAL = "*FINISH*"
+
 
 class ConnectorSubject(ABC):
     """An abstract class allowing to create custom python connectors.
@@ -175,14 +180,22 @@ class ConnectorSubject(ABC):
 
     def commit(self) -> None:
         """Sends a commit message."""
-        self._send_special_message("*COMMIT*")
+        self._send_special_message(COMMIT_LITERAL)
+
+    def _enable_commits(self) -> None:
+        """Enables autocommits."""
+        self._send_special_message(ENABLE_COMMITS_LITERAL)
+
+    def _disable_commits(self) -> None:
+        """Disables autocommits. Useful if you want to have a few messages in the same batch."""
+        self._send_special_message(DISABLE_COMMITS_LITERAL)
 
     def close(self) -> None:
         """Sends a sentinel message.
 
         Should be called to indicate that no new messages will be sent.
         """
-        self._send_special_message("*FINISH*")
+        self._send_special_message(FINISH_LITERAL)
 
     def _send_special_message(self, msg: str) -> None:
         event_type = (

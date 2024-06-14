@@ -162,6 +162,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
 
     def _on_time_end(self, time: int) -> None:
         self._time_finished = time
+        self.commit()
         instances = list(self._instances)
         # it creates a separate list for iteration because _maybe_produce_instance
         # can remove entries from self._instances
@@ -214,7 +215,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
             del self._instances[instance]
 
     def _flush_buffer(self, instance_data: _Instance) -> None:
-        self.commit()
+        if not instance_data.buffer:
+            return
+        self._disable_commits()
         for key, is_addition, result in instance_data.buffer:
             if is_addition and instance_data.correct:
                 assert isinstance(result, dict)
@@ -223,7 +226,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
                 self._set_status(key, _AsyncStatus.FAILURE)
             else:
                 self._remove_by_key(key)
-        self.commit()
+        self._enable_commits()  # does a commit as well
         instance_data.buffer.clear()
 
     def _set_status(self, key: Pointer, status: _AsyncStatus) -> None:
@@ -318,6 +321,7 @@ class AsyncTransformer(ABC):
         input_table: pw.Table,
         *,
         instance: pw.ColumnExpression | api.Value = pw.this.id,
+        autocommit_duration_ms: int | None = 1500,
     ) -> None:
         assert self.output_schema is not None
         self._connector = _AsyncConnector(self)
@@ -339,6 +343,7 @@ class AsyncTransformer(ABC):
             )
 
         self._input_table = input_table
+        self._autocommit_duration_ms = autocommit_duration_ms
 
     def _check_signature_matches_schema(
         self, sig: inspect.Signature, schema: type[Schema]
@@ -501,8 +506,8 @@ class AsyncTransformer(ABC):
         table: pw.Table = io.python.read(
             self._connector,
             schema=schema | _AsyncStatusSchema,
-            autocommit_duration_ms=None,
             name="async-transformer",
+            autocommit_duration_ms=self._autocommit_duration_ms,
         )
         input_node = table._source.operator
 

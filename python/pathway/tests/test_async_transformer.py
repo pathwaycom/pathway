@@ -6,6 +6,7 @@ import os
 import pathlib
 import random
 import re
+import time
 from typing import Any
 from unittest import mock
 
@@ -17,12 +18,14 @@ import pathway as pw
 from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
+    FileLinesNumberChecker,
     T,
     assert_stream_split_into_groups,
     assert_table_equality,
     deprecated_call_here,
     needs_multiprocessing_fork,
     run,
+    wait_result_with_checker,
     write_csv,
     xfail_on_multiple_threads,
 )
@@ -591,3 +594,68 @@ def test_error_is_logged(caplog):
         isinstance(record.exc_text, str) and "incorrect value 11" in record.exc_text
         for record in caplog.records
     )
+
+
+@needs_multiprocessing_fork
+def test_commits_even_if_blocked_on_processing(tmp_path):
+    # can sometimes succeed even if it shouldn't
+    # then all values are read to `a` before `TestAsyncTransformer` produces last valid value
+    # to test the correct behavior, `a` should still read values, when `b` inserts
+    # blocking calls to AsyncTransformer. Then the transformer is blocked but its output
+    # should still advance time.
+    output_path = tmp_path / "output.csv"
+
+    class OutputSchema(pw.Schema):
+        value: float
+
+    a = pw.demo.range_stream(nb_rows=4)
+    b = pw.demo.range_stream(nb_rows=4)
+
+    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
+        async def invoke(self, value: int) -> dict[str, Any]:
+            if value > 1:
+                time.sleep(100)  # simulates a blocking operation
+            return dict(value=value)
+
+    b = TestAsyncTransformer(input_table=b).successful
+    res = a.join(b).select(l=pw.left.value + 1, r=pw.right.value + 1)
+
+    pw.io.csv.write(res, output_path)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 9), 30)
+    # 9 = 4 x 2 + 1 (4 from a, 2 non-blocked from b, 1 header)
+
+
+@needs_multiprocessing_fork
+def test_commits_even_if_nothing_to_process(tmp_path):
+    output_path = tmp_path / "output.csv"
+
+    class HangingSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(value=0)
+            self.next(value=1)
+            time.sleep(100)  # simulates waiting for more files
+
+    class InputSchema(pw.Schema):
+        value: int
+
+    a = pw.demo.range_stream(nb_rows=4)
+    b = pw.python.read(
+        HangingSubject(),
+        schema=InputSchema,
+    )
+
+    class OutputSchema(pw.Schema):
+        value: float
+
+    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
+        async def invoke(self, value: int) -> dict[str, Any]:
+            return dict(value=value)
+
+    b = TestAsyncTransformer(input_table=b).successful
+    res = a.join(b).select(l=pw.left.value + 1, r=pw.right.value + 1)
+
+    pw.io.csv.write(res, output_path)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 9), 30)
+    # 9 = 4 x 2 + 1 (4 from a, 2 non-blocked from b, 1 header)
+    # checks if values from stream `a` are joined with `b` after all
+    # values are inserted to `b` from AsyncTransformer

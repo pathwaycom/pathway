@@ -22,7 +22,9 @@ use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
 use serde_json::Value as JsonValue;
 
-const COMMIT_LITERAL: &str = "*COMMIT*";
+use super::data_storage::SpecialEvent;
+
+pub const COMMIT_LITERAL: &str = "*COMMIT*";
 const DEBEZIUM_EMPTY_KEY_PAYLOAD: &str = "{\"payload\": {\"before\": {}, \"after\": {}}}";
 
 fn is_commit_literal(value: &DynResult<Value>) -> bool {
@@ -1447,7 +1449,7 @@ impl Parser for TransparentParser {
         let Diff((data_event, key, values)) = data else {
             return Err(ParseError::UnsupportedReaderContext.into());
         };
-        if values.is_special(COMMIT_LITERAL) {
+        if values.get_special() == Some(SpecialEvent::Commit) {
             return Ok(vec![ParsedEventWithErrors::AdvanceTime]);
         }
         let key = key

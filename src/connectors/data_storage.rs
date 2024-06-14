@@ -34,7 +34,7 @@ use tempfile::{tempdir, TempDir};
 use tokio::runtime::Runtime as TokioRuntime;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
-use crate::connectors::data_format::FormatterContext;
+use crate::connectors::data_format::{FormatterContext, COMMIT_LITERAL};
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
@@ -169,7 +169,27 @@ pub enum DataEventType {
     Upsert,
 }
 
-const FINISH_LITERAL: &str = "*FINISH*";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialEvent {
+    Finish,
+    EnableAutocommits,
+    DisableAutocommits,
+    Commit,
+}
+
+impl TryFrom<&str> for SpecialEvent {
+    type Error = ReadError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "*FINISH*" => Ok(Self::Finish),
+            "*ENABLE_COMMITS*" => Ok(Self::EnableAutocommits),
+            "*DISABLE_COMMITS*" => Ok(Self::DisableAutocommits),
+            COMMIT_LITERAL => Ok(Self::Commit),
+            value => Err(ReadError::InvalidSpecialValue(value.to_owned())),
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ValuesMap {
@@ -180,8 +200,13 @@ pub struct ValuesMap {
 
 impl ValuesMap {
     const SPECIAL_FIELD_NAME: &'static str = "_pw_special";
-    pub fn is_special(&self, value: &str) -> bool {
-        self.map.len() == 1 && self.map.get(Self::SPECIAL_FIELD_NAME) == Some(&Value::from(value))
+    pub fn get_special(&self) -> Option<SpecialEvent> {
+        if self.map.len() == 1 {
+            let value = self.map.get(Self::SPECIAL_FIELD_NAME)?;
+            value.as_string().ok()?.as_str().try_into().ok()
+        } else {
+            None
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -268,6 +293,9 @@ pub enum ReadError {
 
     #[error("no objects to read")]
     NoObjectsToRead,
+
+    #[error("invalid special value: {0}")]
+    InvalidSpecialValue(String),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -1468,26 +1496,40 @@ impl Reader for PythonReader {
                 )));
             }
 
-            if values.is_special(FINISH_LITERAL) {
-                self.is_finished = true;
-                self.subject.borrow(py).end.call0(py)?;
-                Ok(ReadResult::Finished)
-            } else {
-                // We use simple sequential offset because Python connector is single threaded, as
-                // by default.
-                //
-                // If it's changed, add worker_id to the offset.
-                self.total_entries_read += 1;
-                let offset = (
-                    OffsetKey::Empty,
-                    OffsetValue::PythonEntrySequentialId(self.total_entries_read),
-                );
-
-                Ok(ReadResult::Data(
-                    ReaderContext::from_diff(event, key, values),
-                    offset,
-                ))
+            if let Some(special_value) = values.get_special() {
+                match special_value {
+                    SpecialEvent::Finish => {
+                        self.is_finished = true;
+                        self.subject.borrow(py).end.call0(py)?;
+                        return Ok(ReadResult::Finished);
+                    }
+                    SpecialEvent::EnableAutocommits => {
+                        return Ok(ReadResult::FinishedSource {
+                            commit_allowed: true,
+                        })
+                    }
+                    SpecialEvent::DisableAutocommits => {
+                        return Ok(ReadResult::FinishedSource {
+                            commit_allowed: false,
+                        })
+                    }
+                    SpecialEvent::Commit => {}
+                }
             }
+            // We use simple sequential offset because Python connector is single threaded, as
+            // by default.
+            //
+            // If it's changed, add worker_id to the offset.
+            self.total_entries_read += 1;
+            let offset = (
+                OffsetKey::Empty,
+                OffsetValue::PythonEntrySequentialId(self.total_entries_read),
+            );
+
+            Ok(ReadResult::Data(
+                ReaderContext::from_diff(event, key, values),
+                offset,
+            ))
         })
     }
 
