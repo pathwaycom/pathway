@@ -57,6 +57,7 @@ xpack-llm = [
     "llama-index-core ~= 0.10.0",
     "llama-index-readers-pathway ~= 0.1.0",
     "llama-index-retrievers-pathway ~= 0.1.0",
+    "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
 ]
 xpack-llm-local = [
     "sentence_transformers == 2.4.0", 
