@@ -169,6 +169,7 @@ class ReducerData:
     reducer: Reducer
     skip_errors: bool
     column_paths: list[ColumnPath]
+    trace: Trace | None
 
 class UnaryOperator:
     INV: UnaryOperator

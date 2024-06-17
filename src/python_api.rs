@@ -735,11 +735,17 @@ struct PyReducerData(ReducerData);
 #[pymethods]
 impl PyReducerData {
     #[new]
-    fn new(reducer: Reducer, skip_errors: bool, column_paths: Vec<ColumnPath>) -> Self {
+    fn new(
+        reducer: Reducer,
+        skip_errors: bool,
+        column_paths: Vec<ColumnPath>,
+        trace: Option<EngineTrace>,
+    ) -> Self {
         Self(ReducerData {
             reducer,
             skip_errors,
             column_paths,
+            trace: trace.unwrap_or(EngineTrace::Empty),
         })
     }
 }

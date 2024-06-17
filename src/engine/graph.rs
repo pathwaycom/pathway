@@ -268,14 +268,21 @@ pub struct ReducerData {
     pub reducer: Reducer,
     pub skip_errors: bool,
     pub column_paths: Vec<ColumnPath>,
+    pub trace: Trace,
 }
 
 impl ReducerData {
-    pub fn new(reducer: Reducer, skip_errors: bool, column_paths: Vec<ColumnPath>) -> Self {
+    pub fn new(
+        reducer: Reducer,
+        skip_errors: bool,
+        column_paths: Vec<ColumnPath>,
+        trace: Trace,
+    ) -> Self {
         ReducerData {
             reducer,
             skip_errors,
             column_paths,
+            trace,
         }
     }
 }

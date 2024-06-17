@@ -180,7 +180,10 @@ impl From<DynError> for Error {
 
 impl From<DataError> for Error {
     fn from(value: DataError) -> Self {
-        Self::DataError(value)
+        match value {
+            DataError::Other(error) => Self::Other(error),
+            value => Self::DataError(value),
+        }
     }
 }
 

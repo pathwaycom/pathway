@@ -2643,6 +2643,7 @@ trait DataflowReducer<S: MaybeTotalScope> {
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
+        trace: Trace,
     ) -> Values<S>;
 }
 
@@ -2651,6 +2652,7 @@ impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
+        _trace: Trace,
     ) -> Values<S> {
         let initialized = values.map_named("DataFlowReducer::reduce::init", {
             let self_ = self.clone();
@@ -2703,6 +2705,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
+        _trace: Trace,
     ) -> Values<S> {
         values
             .map_named("IntSumReducer::reduce::init", {
@@ -2732,6 +2735,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
+        _trace: Trace,
     ) -> Values<S> {
         values
             .map_named(
@@ -2754,6 +2758,7 @@ where
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
+        trace: Trace,
     ) -> Values<S> {
         values
             .map_named(
@@ -2766,8 +2771,11 @@ where
                 if contains_errors {
                     Some(Value::Error)
                 } else {
-                    self.combine(state, values)
-                        .unwrap_or_log(error_logger.as_ref(), Some(Value::Error))
+                    self.combine(state, values).unwrap_or_log_with_trace(
+                        error_logger.as_ref(),
+                        &trace,
+                        Some(Value::Error),
+                    )
                 }
             })
             .into()
@@ -2783,6 +2791,7 @@ where
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
+        _trace: Trace,
     ) -> Values<S> {
         values
             .map_named(
@@ -2813,6 +2822,7 @@ where
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
+        _trace: Trace,
     ) -> Values<S> {
         values
             .map_named(
@@ -2958,9 +2968,11 @@ where
                         Some((key, new_key, new_values))
                     }
                 });
-                Ok(reducer_impl
-                    .clone()
-                    .reduce(&with_extracted_value, self.create_error_logger()?.into()))
+                Ok(reducer_impl.clone().reduce(
+                    &with_extracted_value,
+                    self.create_error_logger()?.into(),
+                    data.trace,
+                ))
             })
             .collect::<Result<_>>()?;
         let new_values = if let Some(first) = reduced_columns.first() {

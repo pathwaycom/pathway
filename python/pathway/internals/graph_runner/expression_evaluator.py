@@ -1115,6 +1115,7 @@ class GroupedEvaluator(ExpressionEvaluator, context_type=clmn.GroupedContext):
                     reducer=reducer_data.reducer,
                     skip_errors=self.context.skip_errors,
                     column_paths=inner_paths,
+                    trace=column.trace.to_engine(),
                 )
             )
 
