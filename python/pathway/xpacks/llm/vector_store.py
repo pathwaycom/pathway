@@ -603,6 +603,9 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         else:
             run()
 
+    def __repr__(self):
+        return f"VectorStoreServer({str(self._graph)})"
+
 
 class VectorStoreClient:
     """
