@@ -70,3 +70,6 @@ To visualize the collected telemetry data, you can import the provided Grafana d
 3. Click on Import.
 4. Upload the grafana-dashboard.json file.
 5. Click Import to load the example dashboard.
+
+Once you add the dashboard and run the script, you'll be able to see the first set of data on resource usage.
+<img src="assets/monitoring_graph.png" alt="Explore trace graph" class="mx-auto" width="auto" height="auto"/>
