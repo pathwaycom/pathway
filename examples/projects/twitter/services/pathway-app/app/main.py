@@ -4,7 +4,7 @@
 
 The code is responsible for parsing and processing the tweets from the Twitter API.
 See public/website3/content/2.developers/7.showcases/1.twitter.md
-or https://pathway.com/developers/showcases/twitter for the detailed description.
+or https://pathway.com/developers/templates/twitter for the detailed description.
 """
 
 import argparse

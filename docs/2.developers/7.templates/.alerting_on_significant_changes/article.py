@@ -127,7 +127,7 @@ def accept_larger_max(new_max: float, prev_max: float) -> bool:
 result = pw.stateful.deduplicate(reduced, col=reduced.value, acceptor=accept_larger_max)
 
 # %% [markdown]
-# Now we can send the alerts to e.g. Slack. We can do it similarily as in the [realtime log monitoring tutorial](/developers/showcases/realtime-log-monitoring#scenario-2-sending-the-alert-to-slack) by using `pw.io.subscribe`.
+# Now we can send the alerts to e.g. Slack. We can do it similarily as in the [realtime log monitoring tutorial](/developers/templates/realtime-log-monitoring#scenario-2-sending-the-alert-to-slack) by using `pw.io.subscribe`.
 #
 # Here, for testing purposes, instead of sending an alert, we will store the accepted maxima in the list.
 

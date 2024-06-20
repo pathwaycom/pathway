@@ -458,5 +458,5 @@ preview_table(average_speed_table)
 # For instance, imagine you want to predict weather patterns using a combination of humidity, temperature, and other metrics.
 # By combining these time series, you could create a more comprehensive picture of the conditions affecting your area's weather patterns.
 #
-# The possibilities for time series analysis are endless, and if you're interested in learning more, be sure to check out [our article on log monitoring](/developers/showcases/realtime-log-monitoring).
+# The possibilities for time series analysis are endless, and if you're interested in learning more, be sure to check out [our article on log monitoring](/developers/templates/realtime-log-monitoring).
 # In it, we explore how to use time series analysis to detect anomalies in your web server's logs.

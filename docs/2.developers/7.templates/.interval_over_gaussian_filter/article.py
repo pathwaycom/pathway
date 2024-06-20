@@ -8,7 +8,7 @@
 #   date: '2023-10-17'
 #   thumbnail: '/assets/content/tutorials/time_series/thumbnail-gaussian.png'
 #   tags: ['tutorial', 'Time Series']
-#   related: ['/blog/signal-processing', '/developers/showcases/upsampling']
+#   related: ['/blog/signal-processing', '/developers/templates/upsampling']
 # keywords: ['signal processing', 'Gaussian filter', 'out-of-order data', 'irregular sampling', 'intervals_over', 'window', 'notebook']
 # ---
 
@@ -487,4 +487,4 @@ set_params_plot()
 # Pathway provides all you need to tackle the challenges of real-world digital signal processing on data streams.
 # Now that you understand the differences between idealized signal processing and data stream processing, I'm sure you can leverage Pathway's capabilities to process, filter, and analyze data efficiently, even when dealing with imperfect sampling rates and data imperfections.
 #
-# If you want to learn more about DSP in Pathway, try our [tutorial](/developers/showcases/upsampling/) about manipulating different data sources by *upsampling* a data source to match the sampling rate of given data source.
+# If you want to learn more about DSP in Pathway, try our [tutorial](/developers/templates/upsampling/) about manipulating different data sources by *upsampling* a data source to match the sampling rate of given data source.

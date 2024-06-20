@@ -261,6 +261,6 @@ output.head(1)
 #
 # <img src="/assets/content/documentation/manul-celebrate.svg" width=250>
 #
-# Now that you're up and running, consider taking a look at our [showcases](/developers/showcases).
+# Now that you're up and running, consider taking a look at our [showcases](/developers/templates).
 #
 # We would love to hear your feedback about our product. Come say hi on our [Discord](https://discord.com/invite/pathway)!

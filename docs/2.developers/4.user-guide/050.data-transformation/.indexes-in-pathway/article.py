@@ -4,7 +4,7 @@
 # date: '2023-11-15'
 # thumbnail: '/assets/content/blog/th-computing-pagerank.png'
 # tags: ['tutorial', 'engineering']
-# related: ['/developers/showcases/lsh/lsh_chapter1', '/developers/showcases/llm-alert-pathway']
+# related: ['/developers/templates/lsh/lsh_chapter1', '/developers/templates/llm-alert-pathway']
 # keywords: ['index', 'indexing', 'join', 'asof join', 'asof_now', 'KNN']
 # notebook_export_path: notebooks/tutorials/indexes.ipynb
 # ---
@@ -173,7 +173,7 @@ pw.debug.compute_and_print(answers)
 
 # %% [markdown]
 # ## KNN Index
-# An approximate [K Nearest Neighbors (KNN) Index](/developers/showcases/lsh/lsh_chapter1) behaves similarly to a join. The default method [`get_nearest_items`](/developers/api-docs/ml#pathway.stdlib.ml.index.KNNIndex.get_nearest_items) maintains always up-to-date answers to all queries when the set of indexed documents changes. In fact, it uses a join under the hood.
+# An approximate [K Nearest Neighbors (KNN) Index](/developers/templates/lsh/lsh_chapter1) behaves similarly to a join. The default method [`get_nearest_items`](/developers/api-docs/ml#pathway.stdlib.ml.index.KNNIndex.get_nearest_items) maintains always up-to-date answers to all queries when the set of indexed documents changes. In fact, it uses a join under the hood.
 #
 # If you don't want answers to your queries to be updated, you can use [`get_nearest_items_asof_now`](/developers/api-docs/ml#pathway.stdlib.ml.index.KNNIndex.get_nearest_items_asof_now) (experimental). It'll return the closest points once and will forget the query. However, it'll monitor the stream containing index data and update the index if new data arrives (but won't update old queries). As a result, if you ask the same query again and the index has changed in the meantime, you can get a different answer. This behavior is used in our [llm-app](/developers/user-guide/llm-xpack/llm-app-pathway/) to answer queries using an always up-to-date index of documents.
 #
@@ -431,7 +431,7 @@ response_writer(result)
 #     run(data_dir=args.data_dir, host=args.host, port=args.port)
 # ```
 # %% [markdown]
-# A similar approach was taken in our [alerting example](/developers/showcases/llm-alert-pathway/).
+# A similar approach was taken in our [alerting example](/developers/templates/llm-alert-pathway/).
 # It is an LLM app that can send you alerts on slack when the response to your query has  changed significantly.
 # %% [markdown]
 # ## Summary

@@ -8,7 +8,7 @@
 # Must-read for first-timers and veterans alike, this guide gathers the most commonly used basic elements of Pathway.
 #
 #
-# While the Pathway programming framework comes with advanced functionalities such as [classifiers](/developers/showcases/lsh/lsh_chapter1) or [fuzzy-joins](/developers/showcases/fuzzy_join/fuzzy_join_chapter1), it is essential to master the basic operations at the core of the framework.
+# While the Pathway programming framework comes with advanced functionalities such as [classifiers](/developers/templates/lsh/lsh_chapter1) or [fuzzy-joins](/developers/templates/fuzzy_join/fuzzy_join_chapter1), it is essential to master the basic operations at the core of the framework.
 # As part of this basic operations guide, we are going to walk through the following topics:
 # * [Streaming and static modes](#streaming-and-static-modes)
 # * [Starting with data](#starting-with-data)
@@ -18,7 +18,7 @@
 # * [Updating](#updating)
 # * [Computing](#operations)
 #
-# If you want more information you can review our complete [API docs](/developers/api-docs/pathway) or some of our [tutorials](/developers/showcases/suspicious_activity_tumbling_window).
+# If you want more information you can review our complete [API docs](/developers/api-docs/pathway) or some of our [tutorials](/developers/templates/suspicious_activity_tumbling_window).
 
 # ## Streaming and static modes
 #

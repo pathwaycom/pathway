@@ -5,7 +5,7 @@
 An example usage of Pathway, the programming framework for handling streaming data updates.
 The application allows for streaming twitter data on a given topic, performs sentiment analysis and visualizes the results.
 
-See [the corresponding page at pathway.com](https://pathway.com/developers/showcases/twitter) for a high-level description.
+See [the corresponding page at pathway.com](https://pathway.com/developers/templates/twitter) for a high-level description.
 
 ---
 

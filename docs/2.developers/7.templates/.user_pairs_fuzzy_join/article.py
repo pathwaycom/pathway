@@ -128,4 +128,4 @@ pw.io.postgres.write(
 "do not print cell output _MD_SKIP_";  # fmt: skip
 # %% [markdown]
 # Would you like to find users that match within given time-window? Take a look at
-# recipes on [group-by with a tumbling window](/developers/showcases/suspicious_activity_tumbling_window).
+# recipes on [group-by with a tumbling window](/developers/templates/suspicious_activity_tumbling_window).

@@ -8,7 +8,7 @@
 #   date: '2023-10-18'
 #   thumbnail: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
 #   tags: ['tutorial', 'Time Series']
-#   related: ['/blog/signal-processing', '/developers/showcases/gaussian_filtering_python']
+#   related: ['/blog/signal-processing', '/developers/templates/gaussian_filtering_python']
 # keywords: ['signal processing', 'upsampling', 'out-of-order data', 'resampling', 'interpolation', 'intervals_over', 'window', 'notebook']
 # ---
 
@@ -23,7 +23,7 @@
 # In this article, you will learn how to use upsampling to align the sampling rates of your multiple time series data sources.
 #
 # ## Upsampling: Working with Messy Real-World Data
-# This tutorial builds on the [Gaussian Filtering](/developers/showcases/gaussian_filtering_python) tutorial which explains how you can smooth out a messy, out-of-order data stream.
+# This tutorial builds on the [Gaussian Filtering](/developers/templates/gaussian_filtering_python) tutorial which explains how you can smooth out a messy, out-of-order data stream.
 # While digital signal processing systems assume neatly ordered signals arriving at a regular and precise sampling rate, this is rarely the case in [real-world applications](/blog/iot-data-analytics/).
 # Irregular and out-of-order data streams are a common occurrence in the real world of data processing.
 # Data streams may be sampled at irregular intervals, leading to variations in the time between samples. The resulting data is noisy and contains gaps.
@@ -176,14 +176,14 @@ data_stream_B = load_to_pathway(x_B, y_B)
 
 # ## Upsampling with `windowby`
 #
-# While you could [combine the data streams](/developers/showcases/combining_time_series) by keeping the union of the timestamps, this would mean altering two time series. Instead, upsampling alters only one data stream and thereby limits the imprecision introduced by the operation.
+# While you could [combine the data streams](/developers/templates/combining_time_series) by keeping the union of the timestamps, this would mean altering two time series. Instead, upsampling alters only one data stream and thereby limits the imprecision introduced by the operation.
 #
 # To do upsampling, you want to obtain an aggregation of the closest points of time series B for each point of the time series A, and then do an interpolation to obtain the value at the given time for time series B.
 #
 # However, when dealing with streaming data, you do not have any assumption on the distribution of surrounding points.
 # You can ask for a fixed number of previous/next points, but you'd take the risk to obtain points with very different timestamps.
 # The solution is to ask for the data points in an interval around your point using a `windowby` with `intervals_over`.
-# If you need a quick reminder on how it works, don't hesitate to read the [tutorial about Gaussian filter](/developers/showcases/gaussian_filtering_python#interval-joins-and-windowby).
+# If you need a quick reminder on how it works, don't hesitate to read the [tutorial about Gaussian filter](/developers/templates/gaussian_filtering_python#interval-joins-and-windowby).
 #
 # Unlike applying a Gaussian filter, upsampling requires using two different tables.
 # You will do the `windowby` over the time series B (the one you want to upsample) and compute the intervals over the time series A (the one on which you want to align, with the higher sampling rate).
@@ -325,7 +325,7 @@ plt.show()
 # This approach is impossible in a streaming setup where data points can be delayed indefinitely.
 # The best we can do is to do the computation with the information at hand and then update our results whenever late data is received.
 # This is exactly what Pathway does: your results are kept up-to-date with respect to the latest available data.
-# You can see how it works in practice with [our example about the Gaussian filter](/developers/showcases/gaussian_filtering_python).
+# You can see how it works in practice with [our example about the Gaussian filter](/developers/templates/gaussian_filtering_python).
 
 # ## Upsampling: Conclusion
 #

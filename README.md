@@ -58,16 +58,16 @@ For any questions, you will find the community and team behind the project [on D
 
 Ready to see what Pathway can do?
 
-[Try one of our easy-to-run examples](https://pathway.com/developers/showcases)!
+[Try one of our easy-to-run examples](https://pathway.com/developers/templates)!
 
 Available in both notebook and docker formats, these ready-to-launch examples can be launched in just a few clicks. Pick one and start your hands-on experience with Pathway today!
 
 ### Event processing and real-time analytics pipelines
 With its unified engine for batch and streaming and its full Python compatibility, Pathway makes data processing as easy as possible. It's the ideal solution for a wide range of data processing pipelines, including:
 
-- [Showcase: Real-time ETL.](https://pathway.com/developers/showcases/kafka-etl)
-- [Showcase: Event-driven pipelines with alerting.](https://pathway.com/developers/showcases/realtime-log-monitoring)
-- [Showcase: Realtime analytics.](https://pathway.com/developers/showcases/linear_regression_with_kafka/)
+- [Showcase: Real-time ETL.](https://pathway.com/developers/templates/kafka-etl)
+- [Showcase: Event-driven pipelines with alerting.](https://pathway.com/developers/templates/realtime-log-monitoring)
+- [Showcase: Realtime analytics.](https://pathway.com/developers/templates/linear_regression_with_kafka/)
 - [Docs: Switch from batch to streaming.](https://pathway.com/developers/user-guide/connecting-to-data/switch-from-batch-to-streaming)
 
 
@@ -79,8 +79,8 @@ Pathway provides dedicated LLM tooling to build LLM and RAG pipelines. Wrappers 
 Don't hesitate to try one of our runnable examples featuring LLM tooling.
 You can find such examples [here](https://pathway.com/developers/user-guide/llm-xpack/llm-examples).
 
-  - [Showcase: LLM-powered data pipeline.](https://pathway.com/developers/showcases/llm-alert-pathway/)
-  - [Showcase: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/showcases/unstructured-to-structured/)
+  - [Showcase: LLM-powered data pipeline.](https://pathway.com/developers/templates/llm-alert-pathway/)
+  - [Showcase: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/templates/unstructured-to-structured/)
   - [Template: Private RAG with Ollama and Mistral AI](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/private-rag)
   - [Template: Adaptive RAG](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/adaptive-rag)
   - [Template: Multimodal RAG with gpt4-0](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/gpt_4o_multimodal_rag)
