@@ -49,6 +49,7 @@ use crate::python_api::threads::PythonThreadState;
 use crate::python_api::with_gil_and_pool;
 use crate::python_api::PythonSubject;
 use crate::python_api::ValueField;
+use crate::retry::{execute_with_retries, RetryConfig};
 use crate::timestamp::current_unix_timestamp_secs;
 
 use bincode::ErrorKind as BincodeError;
@@ -1734,6 +1735,8 @@ impl CurrentlyProcessedS3Object {
     }
 }
 
+const MAX_S3_RETRIES: usize = 20;
+
 pub struct S3Scanner {
     /*
         This class takes responsibility over S3 object selection and streaming.
@@ -1750,9 +1753,13 @@ impl S3Scanner {
     pub fn new(bucket: S3Bucket, objects_prefix: impl Into<String>) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
 
-        let object_lists = bucket
-            .list(objects_prefix.clone(), None)
-            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        let object_lists = execute_with_retries(
+            || bucket.list(objects_prefix.clone(), None),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )
+        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+
         let mut has_nonempty_list = false;
         for list in object_lists {
             if !list.contents.is_empty() {
@@ -1783,12 +1790,22 @@ impl S3Scanner {
         let loader_thread = thread::Builder::new()
             .name(format!("pathway:s3_get-{object_path_ref}"))
             .spawn(move || {
-                let code = bucket
-                    .get_object_to_writer(&object_path, &mut pipe_writer)
-                    .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))?;
-                if code != 200 {
-                    return Err(ReadError::S3(S3CommandName::GetObject, S3Error::HttpFail));
-                }
+                let response = execute_with_retries(
+                    || {
+                        bucket.get_object(&object_path).map(|data| {
+                            if data.status_code() / 100 == 2 {
+                                Ok(data)
+                            } else {
+                                warn!("Bad S3 status code: {}", data.status_code());
+                                Err(S3Error::HttpFail)
+                            }
+                        })?
+                    },
+                    RetryConfig::default(),
+                    MAX_S3_RETRIES,
+                )
+                .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))?;
+                pipe_writer.write_all(response.bytes()).unwrap();
                 Ok(())
             })
             .expect("s3 thread creation failed");
@@ -1814,10 +1831,12 @@ impl S3Scanner {
             state.loader_thread.join().expect("s3 thread panic")?;
         }
 
-        let object_lists = self
-            .bucket
-            .list(self.objects_prefix.to_string(), None)
-            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        let object_lists = execute_with_retries(
+            || self.bucket.list(self.objects_prefix.to_string(), None),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )
+        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
 
         let mut selected_object: Option<(DateTime<FixedOffset>, String)> = None;
         for list in &object_lists {
@@ -1860,10 +1879,13 @@ impl S3Scanner {
             S3 bucket-list calls are considered expensive, because of that we do one.
             Then, two linear passes detect the files which should be marked.
         */
-        let object_lists = self
-            .bucket
-            .list(self.objects_prefix.to_string(), None)
-            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        let object_lists = execute_with_retries(
+            || self.bucket.list(self.objects_prefix.to_string(), None),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )
+        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+
         let mut threshold_modification_time = None;
         for list in &object_lists {
             for object in &list.contents {

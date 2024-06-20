@@ -15,7 +15,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING**: `path` parameter in `pw.io.deltalake.write` renamed to `uri`.
 
 ### Fixed
--  A bug in `pw.Table.deduplicate`. If `persistent_id` is not set, it is no longer generated in `pw.PersistenceMode.SELECTIVE_PERSISTING` mode.
+- A bug in `pw.Table.deduplicate`. If `persistent_id` is not set, it is no longer generated in `pw.PersistenceMode.SELECTIVE_PERSISTING` mode.
+- All S3 input connectors (including S3, Min.io, Digital Ocean, and Wasabi) now automatically retry network operations if a failure occurs.
+- The issue where the connection to the S3 source fails after partially ingesting an object has been resolved by downloading the object in full first.
 
 ## [0.12.0] - 2024-06-08
 

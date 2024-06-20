@@ -28,6 +28,7 @@ use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOut
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId};
+use crate::retry::{execute_with_retries, RetryConfig};
 use crate::timestamp::current_unix_timestamp_ms;
 
 use std::borrow::{Borrow, Cow};
@@ -68,7 +69,6 @@ use log::{error, info};
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
 use pyo3::PyObject;
-use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 use timely::dataflow::operators::{Filter, Inspect, Probe};
@@ -130,9 +130,6 @@ const YOLO: &[&str] = &[
 ];
 
 const OUTPUT_RETRIES: usize = 5;
-const RETRY_SLEEP_INITIAL: Duration = Duration::from_secs(1);
-const RETRY_SLEEP_BACKOFF_FACTOR: f64 = 1.2;
-const RETRY_JITTER: Duration = Duration::from_millis(800);
 const ERROR_LOG_FLUSH_PERIOD: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
@@ -3434,30 +3431,22 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             }
 
             // TODO: provide a way to configure it individually per connector maybe?
-            let mut sleep_duration = RETRY_SLEEP_INITIAL;
             let retries = if data_sink.retriable() {
                 OUTPUT_RETRIES
             } else {
                 1
             };
-            for attempt in 0..retries {
-                let formatted = data_formatter
-                    .format(&key, &values, time, diff)
-                    .map_err(DynError::from)?;
-                let write_result = data_sink.write(formatted);
-                if write_result.is_err() {
-                    if attempt == retries - 1 {
-                        // If this is the last attempt and the output has failed, fail
-                        // the whole computation
-                        write_result.map_err(DynError::from)?;
-                    }
-                    std::thread::sleep(sleep_duration);
-                    sleep_duration = sleep_duration.mul_f64(RETRY_SLEEP_BACKOFF_FACTOR)
-                        + thread_rng().gen_range(Duration::ZERO..RETRY_JITTER);
-                } else {
-                    break;
-                }
-            }
+
+            execute_with_retries(
+                || {
+                    let formatted = data_formatter
+                        .format(&key, &values, time, diff)
+                        .map_err(DynError::from)?;
+                    data_sink.write(formatted).map_err(DynError::from)
+                },
+                RetryConfig::default(),
+                retries,
+            )?;
             stats.on_batch_entry_written();
         }
         stats.on_batch_finished();

@@ -19,6 +19,7 @@ mod env;
 mod fs_helpers;
 mod mat_mul;
 mod pipe;
+mod retry;
 mod timestamp;
 
 #[cfg(not(feature = "standard-allocator"))]
