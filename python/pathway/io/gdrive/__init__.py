@@ -271,17 +271,23 @@ class _GDriveSubject(ConnectorSubject):
         prev = _GDriveTree({})
 
         while True:
-            tree = client.tree(self._root)
-            for file in tree.removed_files(prev):
-                self.remove(file)
-            for file in tree.new_and_changed_files(prev):
-                payload = client.download(file)
-                if payload is not None:
-                    self.upsert(file, payload)
+            try:
+                tree = client.tree(self._root)
+            except HttpError as e:
+                logging.error(
+                    f"Failed to query GDrive: {e}. Retrying in {self._refresh_interval} seconds...",
+                )
+            else:
+                for file in tree.removed_files(prev):
+                    self.remove(file)
+                for file in tree.new_and_changed_files(prev):
+                    payload = client.download(file)
+                    if payload is not None:
+                        self.upsert(file, payload)
 
-            if self._mode == "static":
-                break
-            prev = tree
+                if self._mode == "static":
+                    break
+                prev = tree
             time.sleep(self._refresh_interval)
 
     def upsert(self, file: GDriveFile, payload: bytes):
