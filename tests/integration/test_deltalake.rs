@@ -9,12 +9,17 @@ use deltalake::datafusion::parquet::record::Field as ParquetField;
 use serde_json::json;
 use tempfile::tempdir;
 
-use pathway_engine::connectors::data_format::{Formatter, IdentityFormatter};
-use pathway_engine::connectors::data_storage::{DeltaTableWriter, WriteError, Writer};
+use pathway_engine::connectors::data_format::{
+    Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
+};
+use pathway_engine::connectors::data_storage::{
+    ConnectorMode, DeltaTableReader, DeltaTableWriter, WriteError, Writer,
+};
+use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Timestamp, Type, Value};
 use pathway_engine::python_api::ValueField;
 
-const BASE32_ALPHABET: base32::Alphabet = base32::Alphabet::Crockford;
+use crate::helpers::read_data_from_reader;
 
 fn run_single_column_save(type_: Type, values: &[Value]) -> Result<(), WriteError> {
     let test_storage = tempdir().expect("tempdir creation failed");
@@ -45,7 +50,35 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> Result<(), WriteErro
     let rows_present = read_from_deltalake(test_storage_path.to_str().unwrap(), type_);
     assert_eq!(rows_present, values);
 
+    let rows_roundtrip = read_with_connector(test_storage_path.to_str().unwrap(), type_);
+    assert_eq!(rows_roundtrip, values);
+
     Ok(())
+}
+
+fn read_with_connector(path: &str, type_: Type) -> Vec<Value> {
+    let mut schema = HashMap::new();
+    schema.insert(
+        "field".to_string(),
+        InnerSchemaField::new(type_, true, None),
+    );
+    let mut type_map = HashMap::new();
+    type_map.insert("field".to_string(), type_);
+    let reader =
+        DeltaTableReader::new(path, HashMap::new(), type_map, ConnectorMode::Static, None).unwrap();
+    let parser =
+        TransparentParser::new(None, vec!["field".to_string()], schema, SessionType::Native);
+    let values_read = read_data_from_reader(Box::new(reader), Box::new(parser)).unwrap();
+    let mut result = Vec::new();
+    for event in values_read {
+        let ParsedEvent::Insert((_key, values)) = event else {
+            panic!("Unexpected event type: {event:?}")
+        };
+        assert_eq!(values.len(), 1);
+        let value = values[0].clone();
+        result.push(value);
+    }
+    result
 }
 
 fn read_from_deltalake(path: &str, type_: Type) -> Vec<Value> {
@@ -89,13 +122,6 @@ fn read_from_deltalake(path: &str, type_: Type) -> Vec<Value> {
                             let json: serde_json::Value = serde_json::from_str(s).unwrap();
                             Value::from(json)
                         },
-                        (ParquetField::Str(s), Type::Pointer) => {
-                            // should only be used for tests
-                            let key = &s[1..];
-                            let decoded = base32::decode(BASE32_ALPHABET, key).unwrap();
-                            let key_raw = u128::from_le_bytes(decoded.try_into().unwrap());
-                            Value::from(Key(key_raw))
-                        }
                         (ParquetField::TimestampMicros(us), Type::DateTimeNaive) => Value::from(DateTimeNaive::from_timestamp(*us, "us").unwrap()),
                         (ParquetField::TimestampMicros(us), Type::DateTimeUtc) => Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap()),
                         (ParquetField::Bytes(b), Type::Bytes) => Value::Bytes(b.data().into()),
@@ -128,14 +154,6 @@ fn test_save_float() -> eyre::Result<()> {
     Ok(run_single_column_save(
         Type::Float,
         &[Value::Float(0.01.into())],
-    )?)
-}
-
-#[test]
-fn test_save_pointer() -> eyre::Result<()> {
-    Ok(run_single_column_save(
-        Type::Pointer,
-        &[Value::Pointer(Key::random())],
     )?)
 }
 
@@ -202,7 +220,13 @@ fn test_save_json() -> eyre::Result<()> {
 
 #[test]
 fn test_unsupported_types_fail_as_expected() -> eyre::Result<()> {
-    let unsupported_types = &[Type::Any, Type::Array, Type::PyObjectWrapper, Type::Tuple];
+    let unsupported_types = &[
+        Type::Any,
+        Type::Array,
+        Type::PyObjectWrapper,
+        Type::Tuple,
+        Type::Pointer,
+    ];
     for t in unsupported_types {
         let save_result = run_single_column_save(*t, &[]);
         assert_matches!(save_result, Err(WriteError::UnsupportedType(_)));

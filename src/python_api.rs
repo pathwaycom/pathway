@@ -71,10 +71,10 @@ use crate::connectors::data_format::{
     TransparentParser,
 };
 use crate::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, DataEventType, DeltaTableWriter, ElasticSearchWriter,
-    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter, PsqlWriter,
-    PythonReaderBuilder, ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, SqliteReader,
-    Writer,
+    ConnectorMode, CsvFilesystemReader, DataEventType, DeltaTableReader, DeltaTableWriter,
+    ElasticSearchWriter, FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter,
+    PsqlWriter, PythonReaderBuilder, ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader,
+    SqliteReader, Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -2145,7 +2145,9 @@ impl Scope {
             }
         }
 
-        let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(py)?;
+        let (reader_impl, parallel_readers) = data_source
+            .borrow()
+            .construct_reader(py, &data_format.borrow())?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
 
@@ -4131,7 +4133,29 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
-    fn construct_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_deltalake_reader(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        // While S3 source is not implemented in our DeltaLake connector,
+        // we don't have storage_options to provide
+        let reader = DeltaTableReader::new(
+            self.path()?,
+            HashMap::new(),
+            data_format.value_fields_type_map(py),
+            self.mode,
+            self.internal_persistent_id(),
+        )
+        .map_err(|e| PyIOError::new_err(format!("Failed to connect to DeltaLake: {e}")))?;
+        Ok((Box::new(reader), 1))
+    }
+
+    fn construct_reader(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(),
             "s3" => self.construct_s3_reader(py),
@@ -4140,6 +4164,7 @@ impl DataStorage {
             "kafka" => self.construct_kafka_reader(),
             "python" => self.construct_python_reader(py),
             "sqlite" => self.construct_sqlite_reader(),
+            "deltalake" => self.construct_deltalake_reader(py, data_format),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -4301,6 +4326,16 @@ impl DataStorage {
 }
 
 impl DataFormat {
+    pub fn value_fields_type_map(&self, py: pyo3::Python) -> HashMap<String, Type> {
+        let mut result = HashMap::new();
+        for field in &self.value_fields {
+            let name = field.borrow(py).name.clone();
+            let type_ = field.borrow(py).type_;
+            result.insert(name, type_);
+        }
+        result
+    }
+
     fn value_field_names(&self, py: pyo3::Python) -> Vec<String> {
         // TODO: schema support is to be added here
         let mut value_field_names = Vec::new();

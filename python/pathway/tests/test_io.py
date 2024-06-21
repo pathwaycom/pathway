@@ -13,7 +13,7 @@ from unittest import mock
 
 import pandas as pd
 import pytest
-from deltalake import DeltaTable
+from deltalake import DeltaTable, write_deltalake
 from fs import open_fs
 
 import pathway as pw
@@ -3036,3 +3036,124 @@ def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
         for _ in f:
             total_lines += 1
     assert total_lines == 500
+
+
+def test_deltalake_roundtrip(tmp_path: pathlib.Path):
+    data = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    input_path = tmp_path / "input.csv"
+    lake_path = tmp_path / "lake"
+    output_path = tmp_path / "output.csv"
+    write_csv(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, str(lake_path))
+    run_all()
+
+    G.clear()
+    table = pw.io.deltalake.read(str(lake_path), schema=InputSchema, mode="static")
+    pw.io.csv.write(table, output_path)
+    run_all()
+
+    final = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    original = pd.read_csv(input_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    assert final.equals(original)
+
+
+def test_deltalake_recovery(tmp_path: pathlib.Path):
+    data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
+    df = pd.DataFrame(data).set_index("k")
+    lake_path = str(tmp_path / "lake")
+    output_path = str(tmp_path / "output.csv")
+    write_deltalake(lake_path, df)
+
+    persistence_config = pw.persistence.Config.simple_config(
+        pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
+    )
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    def run_pathway_program(expected_key_set):
+        G.clear()
+        table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
+        pw.io.csv.write(table, output_path)
+        run_all(persistence_config=persistence_config)
+        try:
+            result = pd.read_csv(output_path)
+            assert set(result["k"]) == expected_key_set
+        except pd.errors.EmptyDataError:
+            assert expected_key_set == {}
+
+    run_pathway_program({1, 2, 3})
+
+    # The second run: only two added rows must be read
+    additional_data = [{"k": 7, "v": "seven"}, {"k": 8, "v": "eight"}]
+    df = pd.DataFrame(additional_data).set_index("k")
+    write_deltalake(lake_path, df, mode="append")
+    run_pathway_program({7, 8})
+
+    # The third run: add three more rows
+    additional_data = [
+        {"k": 4, "v": "four"},
+        {"k": 5, "v": "five"},
+        {"k": 6, "v": "six"},
+    ]
+    df = pd.DataFrame(additional_data).set_index("k")
+    write_deltalake(lake_path, df, mode="append")
+    run_pathway_program({4, 5, 6})
+
+    # The fourth run: optimize the storage, and then write some data
+    DeltaTable(lake_path).optimize()
+    additional_data = [{"k": 9, "v": "nine"}]
+    df = pd.DataFrame(additional_data).set_index("k")
+    write_deltalake(lake_path, df, mode="append")
+    run_pathway_program({9})
+
+    # The fifth run: only reorganize the data according to Z-order
+    DeltaTable(lake_path).optimize.z_order("k")
+    run_pathway_program({})
+
+    # The sixth run: add some data on top of the reordered table
+    additional_data = [{"k": 10, "v": "ten"}]
+    df = pd.DataFrame(additional_data).set_index("k")
+    write_deltalake(lake_path, df, mode="append")
+    run_pathway_program({10})
+
+
+@needs_multiprocessing_fork
+def test_streaming_from_deltalake(tmp_path):
+    lake_path = str(tmp_path / "lake")
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    data = [{"k": 0, "v": ""}]
+    df = pd.DataFrame(data).set_index("k")
+    write_deltalake(lake_path, df, mode="append")
+
+    def create_new_versions(start_idx, end_idx):
+        for idx in range(start_idx, end_idx):
+            data = [{"k": idx, "v": "a" * idx}]
+            df = pd.DataFrame(data).set_index("k")
+            write_deltalake(lake_path, df, mode="append")
+            time.sleep(1.0)
+
+    t = threading.Thread(target=create_new_versions, args=(1, 10))
+    t.start()
+    table = pw.io.deltalake.read(
+        lake_path, schema=InputSchema, autocommit_duration_ms=10
+    )
+    pw.io.csv.write(table, output_path)
+    wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 30)

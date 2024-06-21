@@ -1,9 +1,9 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use cached::proc_macro::cached;
 use log::info;
 use nix::sys::resource::Resource;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -77,9 +77,6 @@ pub enum Error {
     LicenseValidationError,
 }
 
-static CHECKER: Lazy<KeygenLicenseChecker> =
-    Lazy::new(|| KeygenLicenseChecker::new(PATHWAY_LICENSE_SERVER.to_string()));
-
 #[derive(Deserialize, Clone)]
 pub struct ValidationResponse {
     valid: bool,
@@ -104,7 +101,8 @@ pub fn check_entitlements(
     license: License,
     entitlements: Vec<String>,
 ) -> Result<ValidationResponse, Error> {
-    CHECKER.check_entitlements(license, entitlements)
+    KeygenLicenseChecker::new(PATHWAY_LICENSE_SERVER.to_string())
+        .check_entitlements(license, entitlements)
 }
 
 trait LicenseChecker {
@@ -142,6 +140,7 @@ impl LicenseChecker for KeygenLicenseChecker {
                     .client
                     .post(format!("{}/license/validate", self.api_url))
                     .header("Api-Version", "v1")
+                    .timeout(Duration::from_secs(10))
                     .json(&json!({
                         "license_key": license_key,
                         "entitlements": entitlements

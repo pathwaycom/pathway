@@ -2,15 +2,137 @@
 
 from __future__ import annotations
 
-from pathway.internals import api, datasink
+from typing import Any
+
+from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.config import _check_entitlements
 from pathway.internals.runtime_type_check import check_arg_types
+from pathway.internals.schema import Schema
 from pathway.internals.table import Table
+from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
+from pathway.io._utils import internal_connector_mode, read_schema
 from pathway.io.s3 import AwsS3Settings
 
 S3_URI_PREFIX = "s3://"
+
+
+@check_arg_types
+@trace_user_frame
+def read(
+    uri: str,
+    schema: type[Schema],
+    *,
+    mode: str = "streaming",
+    autocommit_duration_ms: int | None = 1500,
+    persistent_id: str | None = None,
+    debug_data: Any = None,
+) -> Table:
+    """
+    Reads an **append-only** table from Delta Lake. Currently, only local lakes are
+    supported, S3 support will be added soon.
+
+    Args:
+        uri: URI of the Delta Lake source that must be read.
+        schema: Schema of the resulting table.
+        mode: Denotes how the engine polls the new data from the source. Currently
+            ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"``
+            the engine will wait for the updates in the specified lake. It will track
+            new row additions and reflect these events in the state. On the other hand,
+            the ``"static"`` mode will only consider the available data and ingest all
+            of it in one commit. The default value is ``"streaming"``.
+        persistent_id: (unstable) An identifier, under which the state of the table
+            will be persisted or ``None``, if there is no need to persist the state of this table.
+            When a program restarts, it restores the state for all input tables according to what
+            was saved for their ``persistent_id``. This way it's possible to configure the start of
+            computations from the moment they were terminated last time.
+        autocommit_duration_ms: The maximum time between two commits. Every
+            ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
+        debug_data: Static data replacing original one when debug mode is active.
+
+    Examples:
+
+    Consider an example with a stream of changes on a simple key-value table, streamed by
+    another Pathway program with ``pw.io.deltalake.write`` method.
+
+    To set the stage you may need to clear the existing lake object. Since it's a directory
+    in the file system if can be done this way:
+
+    >>> import shutil
+    >>> shutil.rmtree("./local-lake", ignore_errors=True)
+
+    Now you can start wrinting Pathway code. First, the schema of the table needs to be created:
+
+    >>> import pathway as pw
+    >>> class KVSchema(pw.Schema):
+    ...     key: str
+    ...     value: str
+
+    Then, this table must be written into a Delta Lake storage. In the example, it can
+    be created from the static data with ``pw.debug.table_from_markdown`` method and
+    saved into the locally located lake:
+
+    >>> output_table = pw.debug.table_from_markdown("key value \\n one Hello \\n two World")
+    >>> pw.io.deltalake.write(output_table, "./local-lake")
+
+    Now the producer code can be run with with a simple ``pw.run``:
+
+    >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    After that, you can read this table with Pathway as well. It requires the specification
+    of the URI and the schema that was created above. In addition, you can use the ``"static"``
+    mode, so that the program finishes after the data is read:
+
+    >>> input_table = pw.io.deltalake.read("./local-lake", KVSchema, mode="static")
+
+    Please note that the table doesn't necessary have to be created by Pathway: an
+    append-only Delta Table created in any other way will also be processed correctly.
+
+    Finally, you can check that the resulting table contains the same set of rows by
+    displaying it with ``pw.debug.compute_and_print``:
+
+    >>> pw.debug.compute_and_print(input_table, include_id=False)
+    key | value
+    one | Hello
+    two | World
+    """
+    _check_entitlements("deltalake")
+
+    schema, api_schema = read_schema(
+        schema=schema,
+        value_columns=None,
+        primary_key=None,
+        types=None,
+        default_values=None,
+    )
+
+    data_storage = api.DataStorage(
+        storage_type="deltalake",
+        path=uri,
+        mode=internal_connector_mode(mode),
+        persistent_id=persistent_id,
+    )
+    data_format = api.DataFormat(
+        format_type="transparent",
+        **api_schema,
+    )
+
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms
+    )
+    return table_from_datasource(
+        datasource.GenericDataSource(
+            datastorage=data_storage,
+            dataformat=data_format,
+            schema=schema,
+            data_source_options=data_source_options,
+            datasource_name="deltalake",
+            append_only=True,
+        ),
+        debug_datasource=datasource.debug_datasource(debug_data),
+    )
 
 
 @check_arg_types
@@ -23,7 +145,7 @@ def write(
     min_commit_frequency: int | None = 60_000,
 ) -> None:
     """
-    Writes the stream of changes from ``table`` into `DeltaLake <https://delta.io/>_` data
+    Writes the stream of changes from ``table`` into `Delta Lake <https://delta.io/>_` data
     storage at the location specified by ``uri``. Supported storage types are S3 and the
     local filesystem.
 
@@ -37,7 +159,7 @@ def write(
 
     Args:
         table: Table to be written.
-        uri: URI of the target DeltaLake.
+        uri: URI of the target Delta Lake.
         s3_connection_settings: Configuration for S3 credentials when using S3 storage.
             In addition to the access key and secret access key, you can specify a custom
             endpoint, which is necessary for buckets hosted outside of Amazon AWS. If the
@@ -60,7 +182,7 @@ def write(
 
     Example:
 
-    Consider a table ``access_log`` that needs to be output to a DeltaLake storage
+    Consider a table ``access_log`` that needs to be output to a Delta Lake storage
     located locally at the folder ``./logs/access-log``. It can be done as follows:
 
     >>> pw.io.deltalake.write(access_log, "./logs/access-log")  # doctest: +SKIP

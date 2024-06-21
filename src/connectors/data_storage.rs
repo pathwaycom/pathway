@@ -42,6 +42,7 @@ use crate::deepcopy::DeepCopy;
 use crate::engine::time::DateTime as EngineDateTime;
 use crate::engine::Type;
 use crate::engine::Value;
+use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::{ExternalPersistentId, PersistentId};
@@ -65,13 +66,24 @@ use deltalake::arrow::datatypes::{
     TimeUnit as ArrowTimeUnit,
 };
 use deltalake::arrow::error::ArrowError;
+use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
+use deltalake::datafusion::parquet::record::Field as ParquetValue;
+use deltalake::kernel::Action as DeltaLakeAction;
 use deltalake::kernel::DataType as DeltaTableKernelType;
 use deltalake::kernel::PrimitiveType as DeltaTablePrimitiveType;
 use deltalake::kernel::StructField as DeltaTableStructField;
 use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
+use deltalake::parquet::errors::ParquetError;
+use deltalake::parquet::file::reader::FileReader as DeltaLakeParquetFileReader;
+use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
+use deltalake::parquet::record::Row as ParquetRow;
 use deltalake::protocol::SaveMode as DeltaTableSaveMode;
+use deltalake::table::PeekCommit as DeltaLakePeekCommit;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
-use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, DeltaTableError};
+use deltalake::{
+    open_table_with_storage_options as open_delta_table, DeltaConfigKey, DeltaTable,
+    DeltaTableError,
+};
 use elasticsearch::{BulkParts, Elasticsearch};
 use glob::Pattern as GlobPattern;
 use glob::PatternError as GlobPatternError;
@@ -221,6 +233,15 @@ impl From<HashMap<String, Value>> for ValuesMap {
     }
 }
 
+fn create_async_runtime(is_multi_thread: bool) -> Result<TokioRuntime, io::Error> {
+    let mut builder = if is_multi_thread {
+        tokio::runtime::Builder::new_multi_thread()
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+    };
+    builder.enable_all().build()
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub enum ReaderContext {
     RawBytes(DataEventType, Vec<u8>),
@@ -281,6 +302,12 @@ pub enum ReadError {
     Sqlite(#[from] SqliteError),
 
     #[error(transparent)]
+    DeltaTable(#[from] DeltaTableError),
+
+    #[error(transparent)]
+    Parquet(#[from] ParquetError),
+
+    #[error(transparent)]
     Py(#[from] PyErr),
 
     #[error(transparent)]
@@ -297,6 +324,9 @@ pub enum ReadError {
 
     #[error("invalid special value: {0}")]
     InvalidSpecialValue(String),
+
+    #[error("parquet value type mismatch: got {0:?} expected {1:?}")]
+    WrongParquetType(ParquetValue, Type),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -308,6 +338,7 @@ pub enum StorageType {
     Kafka,
     Python,
     Sqlite,
+    DeltaLake,
 }
 
 impl StorageType {
@@ -324,6 +355,7 @@ impl StorageType {
             StorageType::Python => PythonReader::merge_two_frontiers(lhs, rhs),
             StorageType::S3Lines => S3GenericReader::merge_two_frontiers(lhs, rhs),
             StorageType::Sqlite => SqliteReader::merge_two_frontiers(lhs, rhs),
+            StorageType::DeltaLake => DeltaTableReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -382,6 +414,18 @@ pub trait Reader {
                         },
                     ) => {
                         if other_line_idx > offset_line_idx {
+                            result.advance_offset(offset_key.clone(), other_value.clone());
+                        }
+                    }
+                    (
+                        OffsetValue::DeltaLakeVersion(offset_version),
+                        OffsetValue::DeltaLakeVersion(other_version),
+                    ) => {
+                        if let Some(existing_version) = offset_version {
+                            if other_version.unwrap_or(*existing_version) > *existing_version {
+                                result.advance_offset(offset_key.clone(), other_value.clone());
+                            }
+                        } else {
                             result.advance_offset(offset_key.clone(), other_value.clone());
                         }
                     }
@@ -2232,22 +2276,18 @@ impl Writer for ElasticSearchWriter {
         if self.docs_buffer.is_empty() {
             return Ok(());
         }
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                self.client
-                    .bulk(BulkParts::Index(&self.index_name))
-                    .body(take(&mut self.docs_buffer))
-                    .send()
-                    .await
-                    .map_err(WriteError::Elasticsearch)?
-                    .error_for_status_code()
-                    .map_err(WriteError::Elasticsearch)?;
+        create_async_runtime(false)?.block_on(async {
+            self.client
+                .bulk(BulkParts::Index(&self.index_name))
+                .body(take(&mut self.docs_buffer))
+                .send()
+                .await
+                .map_err(WriteError::Elasticsearch)?
+                .error_for_status_code()
+                .map_err(WriteError::Elasticsearch)?;
 
-                Ok(())
-            })
+            Ok(())
+        })
     }
 
     fn single_threaded(&self) -> bool {
@@ -2755,12 +2795,12 @@ impl DeltaTableWriter {
         Ok(DeltaTableKernelType::Primitive(match type_ {
             Type::Bool => DeltaTablePrimitiveType::Boolean,
             Type::Float => DeltaTablePrimitiveType::Double,
-            Type::Pointer | Type::String | Type::Json => DeltaTablePrimitiveType::String,
+            Type::String | Type::Json => DeltaTablePrimitiveType::String,
             Type::Bytes => DeltaTablePrimitiveType::Binary,
             Type::DateTimeNaive => DeltaTablePrimitiveType::TimestampNtz,
             Type::DateTimeUtc => DeltaTablePrimitiveType::Timestamp,
             Type::Int | Type::Duration => DeltaTablePrimitiveType::Long,
-            Type::Any | Type::Array | Type::Tuple | Type::PyObjectWrapper => {
+            Type::Any | Type::Array | Type::Tuple | Type::PyObjectWrapper | Type::Pointer => {
                 return Err(WriteError::UnsupportedType(type_))
             }
         }))
@@ -2800,13 +2840,6 @@ impl DeltaTableWriter {
         Ok(ArrowSchema::new(schema_fields))
     }
 
-    fn create_async_runtime() -> Result<TokioRuntime, WriteError> {
-        // Deadlocks if new_current_thread is used
-        Ok(tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?)
-    }
-
     pub fn open_table(
         path: &str,
         schema_fields: &Vec<ValueField>,
@@ -2828,13 +2861,15 @@ impl DeltaTableWriter {
             ));
         }
 
-        let runtime = Self::create_async_runtime()?;
+        // Deadlocks if new_current_thread is used
+        let runtime = create_async_runtime(true)?;
         let table: DeltaTable = runtime
             .block_on(async {
                 let builder = DeltaTableCreateBuilder::new()
                     .with_location(path)
                     .with_save_mode(DeltaTableSaveMode::Append)
                     .with_columns(struct_fields)
+                    .with_configuration_property(DeltaConfigKey::AppendOnly, Some("true"))
                     .with_storage_options(storage_options.clone());
 
                 builder.await
@@ -2871,7 +2906,8 @@ impl Writer for DeltaTableWriter {
                 .map_or(true, |f| self.last_commit_at.elapsed() >= f)
                 || forced);
         if commit_needed {
-            Self::create_async_runtime()?.block_on(async {
+            // Deadlocks if new_current_thread is used
+            create_async_runtime(true)?.block_on(async {
                 self.writer.write(self.prepare_delta_batch()?).await?;
                 self.writer.flush_and_commit(&mut self.table).await?;
                 for column in &mut self.buffered_columns {
@@ -2881,5 +2917,257 @@ impl Writer for DeltaTableWriter {
             })?;
         }
         Ok(())
+    }
+}
+
+pub struct DeltaTableReader {
+    table: DeltaTable,
+    streaming_mode: ConnectorMode,
+    column_types: HashMap<String, Type>,
+    persistent_id: Option<PersistentId>,
+    base_path: String,
+
+    reader: Option<ParquetRowIterator<'static>>,
+    current_version: i64,
+    last_fully_read_version: Option<i64>,
+    entries_expected: isize,
+    parquet_files_queue: VecDeque<String>,
+}
+
+const DELTA_APPEND_COMMIT_TYPE: &str = "WRITE";
+
+impl DeltaTableReader {
+    pub fn new(
+        path: &str,
+        storage_options: HashMap<String, String>,
+        column_types: HashMap<String, Type>,
+        streaming_mode: ConnectorMode,
+        persistent_id: Option<PersistentId>,
+    ) -> Result<Self, ReadError> {
+        let runtime = create_async_runtime(false)?;
+        let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
+        let current_version = table.version();
+        let parquet_files_queue = Self::get_file_uris(&table)?;
+
+        Ok(Self {
+            table,
+            column_types,
+            streaming_mode,
+            persistent_id,
+            base_path: path.to_string(),
+
+            current_version,
+            last_fully_read_version: None,
+            reader: None,
+            parquet_files_queue,
+            entries_expected: 0,
+        })
+    }
+
+    fn get_file_uris(table: &DeltaTable) -> Result<VecDeque<String>, ReadError> {
+        Ok(table.get_file_uris()?.collect())
+    }
+
+    fn ensure_absolute_path(&self, path: &str) -> String {
+        if path.starts_with(&self.base_path) {
+            return path.to_string();
+        }
+        if self.base_path.ends_with('/') {
+            format!("{}{path}", self.base_path)
+        } else {
+            format!("{}/{path}", self.base_path)
+        }
+    }
+
+    fn wait_for_new_parquet_files(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
+        let runtime = create_async_runtime(false)?;
+        runtime.block_on(async {
+            while self.parquet_files_queue.is_empty() {
+                let diff = self.table.peek_next_commit(self.current_version).await?;
+                let DeltaLakePeekCommit::New(next_version, txn_actions) = diff else {
+                    if !is_polling_enabled {
+                        break;
+                    }
+                    // Fully up to date, no changes yet
+                    sleep(Duration::from_millis(100));
+                    continue;
+                };
+
+                let mut added_blocks = VecDeque::new();
+                let mut operation = None;
+                for action in txn_actions {
+                    match action {
+                        DeltaLakeAction::Add(data) => {
+                            added_blocks.push_back(self.ensure_absolute_path(&data.path));
+                        }
+                        DeltaLakeAction::CommitInfo(data) => operation = data.operation,
+                        _ => continue,
+                    };
+                }
+
+                self.current_version = next_version;
+                if operation == Some(DELTA_APPEND_COMMIT_TYPE.to_string()) {
+                    self.parquet_files_queue = take(&mut added_blocks);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn read_next_row_native(&mut self, is_polling_enabled: bool) -> Result<ParquetRow, ReadError> {
+        loop {
+            match &mut self.reader {
+                Some(ref mut reader) => {
+                    match reader.next() {
+                        Some(Ok(row)) => {
+                            assert!(
+                                self.entries_expected > 0,
+                                "file contains more parquet entries than expected"
+                            );
+                            self.entries_expected -= 1;
+                            return Ok(row);
+                        }
+                        Some(Err(parquet_err)) => return Err(ReadError::Parquet(parquet_err)),
+                        None => {
+                            assert!(self.entries_expected == 0, "unexpected end of file");
+                            self.reader = None;
+                        }
+                    };
+                }
+                None => {
+                    if self.parquet_files_queue.is_empty() {
+                        if is_polling_enabled {
+                            self.wait_for_new_parquet_files(true)?;
+                        } else {
+                            return Err(ReadError::NoObjectsToRead);
+                        }
+                    }
+                    let next_parquet_file = self.parquet_files_queue.pop_front().unwrap();
+
+                    // TODO: implement for s3
+                    self.reader = Some(
+                        DeltaLakeParquetReader::try_from(Path::new(&next_parquet_file))?
+                            .into_iter(),
+                    );
+                    self.entries_expected = Self::rows_in_file_count(&next_parquet_file)?;
+                }
+            }
+        }
+    }
+
+    fn rows_in_file_count(path: &str) -> Result<isize, ReadError> {
+        let reader = DeltaLakeParquetReader::try_from(Path::new(path))?;
+        let metadata = reader.metadata();
+        let mut n_rows = 0;
+        for row_group in metadata.row_groups() {
+            n_rows += row_group.num_rows();
+        }
+        Ok(n_rows.try_into().unwrap())
+    }
+}
+
+impl Reader for DeltaTableReader {
+    fn read(&mut self) -> Result<ReadResult, ReadError> {
+        let parquet_row = match self.read_next_row_native(self.streaming_mode.is_polling_enabled())
+        {
+            Ok(row) => row,
+            Err(ReadError::NoObjectsToRead) => return Ok(ReadResult::Finished),
+            Err(other) => return Err(other),
+        };
+        let mut row_map = HashMap::new();
+        for (name, parquet_value) in parquet_row.get_column_iter() {
+            let Some(expected_type) = self.column_types.get(name) else {
+                // Column outside of the user-provided schema
+                continue;
+            };
+
+            let value = match (parquet_value, expected_type) {
+                (ParquetValue::Null, _) => Value::None,
+                (ParquetValue::Bool(b), Type::Bool | Type::Any) => Value::from(*b),
+                (ParquetValue::Long(i), Type::Int | Type::Any) => Value::from(*i),
+                (ParquetValue::Long(i), Type::Duration) => {
+                    Value::from(EngineDuration::new_with_unit(*i, "us").unwrap())
+                }
+                (ParquetValue::Double(f), Type::Float | Type::Any) => Value::Float((*f).into()),
+                (ParquetValue::Str(s), Type::String | Type::Any) => Value::String(s.into()),
+                (ParquetValue::Str(s), Type::Json) => {
+                    let json: serde_json::Value = serde_json::from_str(s).unwrap();
+                    Value::from(json)
+                }
+                (ParquetValue::TimestampMicros(us), Type::DateTimeNaive | Type::Any) => {
+                    Value::from(DateTimeNaive::from_timestamp(*us, "us").unwrap())
+                }
+                (ParquetValue::TimestampMicros(us), Type::DateTimeUtc) => {
+                    Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap())
+                }
+                (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => Value::Bytes(b.data().into()),
+                _ => {
+                    return Err(ReadError::WrongParquetType(
+                        parquet_value.clone(),
+                        *expected_type,
+                    ))
+                }
+            };
+            row_map.insert(name.clone(), value);
+        }
+
+        if self.entries_expected == 0 && self.parquet_files_queue.is_empty() {
+            self.last_fully_read_version = Some(self.current_version);
+        }
+
+        Ok(ReadResult::Data(
+            ReaderContext::from_diff(DataEventType::Insert, None, row_map.into()),
+            (
+                OffsetKey::Empty,
+                OffsetValue::DeltaLakeVersion(self.last_fully_read_version),
+            ),
+        ))
+    }
+
+    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
+        // The offset denotes the last fully processed Delta Table version.
+        // Then, the `seek` loads this checkpoint and ensures that no diffs
+        // from the current version will be applied.
+        let offset_value = frontier.get_offset(&OffsetKey::Empty);
+        let Some(OffsetValue::DeltaLakeVersion(last_fully_read_version)) = offset_value else {
+            if offset_value.is_some() {
+                warn!("Incorrect type of offset value in DeltaLake frontier: {offset_value:?}");
+            }
+            return Ok(());
+        };
+
+        let Some(last_fully_read_version) = last_fully_read_version else {
+            return Ok(());
+        };
+
+        self.last_fully_read_version = Some(*last_fully_read_version);
+        self.current_version = *last_fully_read_version;
+
+        // The parquet files queue is empty because the version
+        // was fully processed in the previous run.
+        self.parquet_files_queue.clear();
+        self.entries_expected = 0;
+        self.reader = None;
+
+        let runtime = create_async_runtime(false)?;
+        runtime.block_on(async { self.table.load_version(self.current_version).await })?;
+
+        // Prepare the state for the next read: advance to the next
+        // unprocessed version.
+        self.wait_for_new_parquet_files(false)?;
+
+        Ok(())
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
+    }
+
+    fn persistent_id(&self) -> Option<PersistentId> {
+        self.persistent_id
+    }
+
+    fn storage_type(&self) -> StorageType {
+        StorageType::DeltaLake
     }
 }

@@ -79,12 +79,13 @@ class GenericDataSource(DataSource):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
     datasource_name: str
+    append_only: bool = False
 
     def is_bounded(self) -> bool:
         return self.datastorage.mode == api.ConnectorMode.STATIC
 
     def is_append_only(self) -> bool:
-        return self.datastorage.mode != api.ConnectorMode.STREAMING
+        return self.datastorage.mode != api.ConnectorMode.STREAMING or self.append_only
 
     @property
     def name(self) -> str:
