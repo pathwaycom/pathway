@@ -131,7 +131,8 @@ def subscribe(
         for field_name, field_value in zip(table._columns.keys(), values):
             row[field_name] = field_value
 
-        return on_change(key=key, row=row, time=time, is_addition=(diff == 1))
+        assert diff in [-1, 1]
+        return on_change(key=key, row=row, time=time, is_addition=(diff >= 1))
 
     table_to_datasink(
         table,

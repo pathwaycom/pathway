@@ -342,7 +342,7 @@ def table_from_pandas(
         schema = schema_from_pandas(
             df, id_from=id_from, exclude_columns=api.PANDAS_PSEUDOCOLUMNS
         )
-    elif ordinary_columns_names != schema.column_names():
+    elif set(ordinary_columns_names) != set(schema.column_names()):
         raise ValueError("schema does not match given dataframe")
 
     _validate_dataframe(df, stacklevel=_stacklevel + 4)

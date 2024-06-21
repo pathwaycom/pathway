@@ -1066,7 +1066,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         """Deduplicates rows in `self` on `value` column using acceptor function.
 
         It keeps rows which where accepted by the acceptor function.
-        Acceptor operates on two arguments - current value and the previously accepted value.
+        Acceptor operates on two arguments - *CURRENT* value and *PREVIOUS* value.
 
         Args:
             value: column expression used for deduplication.
