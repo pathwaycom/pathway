@@ -261,6 +261,7 @@ def construct_schema_and_data_format(
     *,
     schema: type[Schema] | None = None,
     with_metadata: bool = False,
+    autogenerate_key: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     value_columns: list[str] | None = None,
@@ -300,6 +301,11 @@ def construct_schema_and_data_format(
             format_type=data_format_type,
             **api_schema,
             parse_utf8=(format != "binary"),
+            key_generation_policy=(
+                api.KeyGenerationPolicy.ALWAYS_AUTOGENERATE
+                if autogenerate_key
+                else api.KeyGenerationPolicy.PREFER_MESSAGE_KEY
+            ),
         )
 
     assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)

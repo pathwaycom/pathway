@@ -695,32 +695,52 @@ impl Parser for DsvParser {
     }
 }
 
+fn value_from_bytes(bytes: &[u8], parse_utf8: bool) -> DynResult<Value> {
+    if parse_utf8 {
+        Ok(Value::String(prepare_plaintext_string(bytes)?.into()))
+    } else {
+        Ok(Value::Bytes(bytes.into()))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum KeyGenerationPolicy {
+    AlwaysAutogenerate,
+    PreferMessageKey,
+}
+
+impl KeyGenerationPolicy {
+    fn generate(self, key: &Option<Vec<u8>>, parse_utf8: bool) -> Option<DynResult<Vec<Value>>> {
+        match &self {
+            Self::AlwaysAutogenerate => None,
+            Self::PreferMessageKey => key
+                .as_ref()
+                .map(|bytes| value_from_bytes(bytes, parse_utf8).map(|k| vec![k])),
+        }
+    }
+}
+
 pub struct IdentityParser {
     value_fields: Vec<String>,
     parse_utf8: bool,
     metadata_column_value: Value,
     session_type: SessionType,
+    key_generation_policy: KeyGenerationPolicy,
 }
 
 impl IdentityParser {
     pub fn new(
         value_fields: Vec<String>,
         parse_utf8: bool,
+        key_generation_policy: KeyGenerationPolicy,
         session_type: SessionType,
     ) -> IdentityParser {
         Self {
             value_fields,
             parse_utf8,
             metadata_column_value: Value::None,
+            key_generation_policy,
             session_type,
-        }
-    }
-
-    fn prepare_bytes(&self, bytes: &[u8]) -> DynResult<Value> {
-        if self.parse_utf8 {
-            Ok(Value::String(prepare_plaintext_string(bytes)?.into()))
-        } else {
-            Ok(Value::Bytes(bytes.into()))
         }
     }
 }
@@ -728,21 +748,21 @@ impl IdentityParser {
 impl Parser for IdentityParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
         let (event, key, value, metadata) = match data {
-            RawBytes(event, raw_bytes) => (*event, None, self.prepare_bytes(raw_bytes), Ok(None)),
-            KeyValue((key, value)) => {
-                let prepared_key = key
-                    .as_ref()
-                    .map(|bytes| self.prepare_bytes(bytes).map(|k| vec![k]));
-                match value {
-                    Some(bytes) => (
-                        DataEventType::Insert,
-                        prepared_key,
-                        self.prepare_bytes(bytes),
-                        Ok(None),
-                    ),
-                    None => return Err(ParseError::EmptyKafkaPayload.into()),
-                }
-            }
+            RawBytes(event, raw_bytes) => (
+                *event,
+                None,
+                value_from_bytes(raw_bytes, self.parse_utf8),
+                Ok(None),
+            ),
+            KeyValue((key, value)) => match value {
+                Some(bytes) => (
+                    DataEventType::Insert,
+                    self.key_generation_policy.generate(key, self.parse_utf8),
+                    value_from_bytes(bytes, self.parse_utf8),
+                    Ok(None),
+                ),
+                None => return Err(ParseError::EmptyKafkaPayload.into()),
+            },
             Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
             }

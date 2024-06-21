@@ -66,8 +66,9 @@ use self::threads::PythonThreadState;
 
 use crate::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityFormatter,
-    IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser, NullFormatter, Parser,
-    PsqlSnapshotFormatter, PsqlUpdatesFormatter, SingleColumnFormatter, TransparentParser,
+    IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser, KeyGenerationPolicy,
+    NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter, SingleColumnFormatter,
+    TransparentParser,
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, DataEventType, DeltaTableWriter, ElasticSearchWriter,
@@ -473,6 +474,18 @@ impl<'source> FromPyObject<'source> for DebeziumDBType {
 impl IntoPy<PyObject> for DebeziumDBType {
     fn into_py(self, py: Python<'_>) -> PyObject {
         PyDebeziumDBType(self).into_py(py)
+    }
+}
+
+impl<'source> FromPyObject<'source> for KeyGenerationPolicy {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyKeyGenerationPolicy>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for KeyGenerationPolicy {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyKeyGenerationPolicy(self).into_py(py)
     }
 }
 
@@ -1498,6 +1511,17 @@ impl PyDebeziumDBType {
     pub const POSTGRES: DebeziumDBType = DebeziumDBType::Postgres;
     #[classattr]
     pub const MONGO_DB: DebeziumDBType = DebeziumDBType::MongoDB;
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "KeyGenerationPolicy")]
+pub struct PyKeyGenerationPolicy(KeyGenerationPolicy);
+
+#[pymethods]
+impl PyKeyGenerationPolicy {
+    #[classattr]
+    pub const ALWAYS_AUTOGENERATE: KeyGenerationPolicy = KeyGenerationPolicy::AlwaysAutogenerate;
+    #[classattr]
+    pub const PREFER_MESSAGE_KEY: KeyGenerationPolicy = KeyGenerationPolicy::PreferMessageKey;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "MonitoringLevel")]
@@ -3724,6 +3748,7 @@ pub struct DataFormat {
     debezium_db_type: DebeziumDBType,
     session_type: SessionType,
     value_field_index: Option<usize>,
+    key_generation_policy: KeyGenerationPolicy,
 }
 
 #[pymethods]
@@ -3824,6 +3849,7 @@ impl DataFormat {
         debezium_db_type = DebeziumDBType::Postgres,
         session_type = SessionType::Native,
         value_field_index = None,
+        key_generation_policy = KeyGenerationPolicy::PreferMessageKey,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3838,6 +3864,7 @@ impl DataFormat {
         debezium_db_type: DebeziumDBType,
         session_type: SessionType,
         value_field_index: Option<usize>,
+        key_generation_policy: KeyGenerationPolicy,
     ) -> Self {
         DataFormat {
             format_type,
@@ -3851,6 +3878,7 @@ impl DataFormat {
             debezium_db_type,
             session_type,
             value_field_index,
+            key_generation_policy,
         }
     }
 }
@@ -4353,6 +4381,7 @@ impl DataFormat {
             "identity" => Ok(Box::new(IdentityParser::new(
                 self.value_field_names(py),
                 self.parse_utf8,
+                self.key_generation_policy,
                 self.session_type,
             ))),
             "transparent" => Ok(Box::new(TransparentParser::new(
@@ -4821,6 +4850,7 @@ fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PySessionType>()?;
     m.add_class::<PyDataEventType>()?;
     m.add_class::<PyDebeziumDBType>()?;
+    m.add_class::<PyKeyGenerationPolicy>()?;
     m.add_class::<PyReadMethod>()?;
     m.add_class::<PyMonitoringLevel>()?;
     m.add_class::<Universe>()?;

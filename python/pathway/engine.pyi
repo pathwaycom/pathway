@@ -58,6 +58,10 @@ class DebeziumDBType(Enum):
     POSTGRES: DebeziumDBType
     MONGO_DB: DebeziumDBType
 
+class KeyGenerationPolicy(Enum):
+    ALWAYS_AUTOGENERATE: KeyGenerationPolicy
+    PREFER_MESSAGE_KEY: KeyGenerationPolicy
+
 class Universe:
     pass
 

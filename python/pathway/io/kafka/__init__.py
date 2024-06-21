@@ -37,6 +37,7 @@ def read(
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
+    autogenerate_key: bool = False,
     parallel_readers: int | None = None,
     persistent_id: str | None = None,
     value_columns: list[str] | None = None,
@@ -74,6 +75,9 @@ def read(
             given in the format ``<field_name>: <path to be mapped>``, where the path to
             be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        autogenerate_key: If ``True``, Pathway automatically generates unique primary key
+            for the entries read. Otherwise it first tries to use the key from the message.
+            This parameter is used only if the ``format`` is "raw" or "plaintext".
         parallel_readers: number of copies of the reader to work in parallel. In case
             the number is not specified, min{pathway_threads, total number of partitions}
             will be taken. This number also can't be greater than the number of Pathway
@@ -257,6 +261,7 @@ def read(
     )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
+        autogenerate_key=autogenerate_key,
         schema=schema,
         csv_settings=None,
         json_field_paths=json_field_paths,

@@ -1,6 +1,8 @@
 // Copyright © 2024 Pathway
 
-use pathway_engine::connectors::data_format::{IdentityParser, ParseResult, ParsedEvent, Parser};
+use pathway_engine::connectors::data_format::{
+    IdentityParser, KeyGenerationPolicy, ParseResult, ParsedEvent, Parser,
+};
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, FilesystemReader, ReadMethod, ReadResult, Reader,
 };
@@ -12,7 +14,12 @@ use crate::helpers::ReplaceErrors;
 fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
     let mut reader =
         FilesystemReader::new(path, ConnectorMode::Static, None, ReadMethod::Full, "*")?;
-    let mut parser = IdentityParser::new(vec!["data".to_string()], false, SessionType::Native);
+    let mut parser = IdentityParser::new(
+        vec!["data".to_string()],
+        false,
+        KeyGenerationPolicy::PreferMessageKey,
+        SessionType::Native,
+    );
     let mut events = Vec::new();
 
     loop {

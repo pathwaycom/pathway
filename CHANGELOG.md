@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.deltalake.write` now supports S3 destinations.
+- `pw.io.kafka.read` now accepts an autogenerate_key flag. This flag determines the primary key generation policy to apply when reading raw data from the source. You can either use the key from the Kafka message or have Pathway autogenerate one.
 
 ### Changed
 - `pw.debug.compute_and_print` now allows passing more than one table.

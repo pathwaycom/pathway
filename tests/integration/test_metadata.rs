@@ -5,7 +5,7 @@ use super::helpers::read_data_from_reader;
 use std::collections::HashMap;
 
 use pathway_engine::connectors::data_format::{
-    DsvParser, DsvSettings, IdentityParser, JsonLinesParser, ParsedEvent,
+    DsvParser, DsvSettings, IdentityParser, JsonLinesParser, KeyGenerationPolicy, ParsedEvent,
 };
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
@@ -210,6 +210,7 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
     let parser = IdentityParser::new(
         vec!["data".to_string(), "_metadata".to_string()],
         false,
+        KeyGenerationPolicy::PreferMessageKey,
         SessionType::Native,
     );
 
@@ -231,6 +232,7 @@ fn test_metadata_identity_dir() -> eyre::Result<()> {
     let parser = IdentityParser::new(
         vec!["data".to_string(), "_metadata".to_string()],
         false,
+        KeyGenerationPolicy::PreferMessageKey,
         SessionType::Native,
     );
 
