@@ -14,7 +14,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import jmespath
 import numpy as np
@@ -201,7 +201,7 @@ class VectorStoreServer:
                 f"found {type(transformations[-1])}."
             )
 
-        embedder: BaseEmbedding = transformations.pop()
+        embedder = cast(BaseEmbedding, transformations.pop())
 
         async def embedding_callable(x: str) -> list[float]:
             embedding = await embedder.aget_text_embedding(x)
