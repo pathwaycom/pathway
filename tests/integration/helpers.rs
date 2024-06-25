@@ -26,8 +26,11 @@ use pathway_engine::persistence::frontier::OffsetAntichain;
 
 #[derive(Debug)]
 pub struct FullReadResult {
+    #[allow(unused)]
     pub raw_entries: Vec<Entry>,
+    #[allow(unused)]
     pub snapshot_entries: Vec<SnapshotEvent>,
+    #[allow(unused)]
     pub new_parsed_entries: Vec<ParsedEvent>,
 }
 
