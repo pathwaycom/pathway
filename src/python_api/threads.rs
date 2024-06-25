@@ -1,10 +1,12 @@
 // Copyright © 2024 Pathway
 
+use pyo3::prelude::*;
+
 use pyo3::ffi::{
     PyEval_RestoreThread, PyEval_SaveThread, PyGILState_Ensure, PyGILState_GetThisThreadState,
     PyGILState_Release, PyGILState_STATE, PyThreadState,
 };
-use pyo3::{PyResult, Python};
+use pyo3::intern;
 
 pub struct PythonThreadState {
     gil_state: PyGILState_STATE,
@@ -64,16 +66,11 @@ impl Drop for PythonThreadState {
 
 fn attach_python_tracer() {
     Python::with_gil(|py| -> PyResult<()> {
-        let threading = py.import("threading")?;
-        let trace = if py.version_info() >= (3, 10) {
-            threading.call_method0("gettrace")?
-        } else {
-            // not public in old Python versions
-            threading.getattr("_trace_hook")?
-        };
+        let threading = py.import_bound(intern!(py, "threading"))?;
+        let trace = threading.call_method0(intern!(py, "gettrace"))?;
         if !trace.is_none() {
-            let sys = py.import("sys")?;
-            sys.call_method1("settrace", (trace,))?;
+            let sys = py.import_bound(intern!(py, "sys"))?;
+            sys.call_method1(intern!(py, "settrace"), (trace,))?;
         }
         Ok(())
     })

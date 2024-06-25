@@ -1,26 +1,37 @@
 // Copyright © 2024 Pathway
 
+use pyo3::prelude::*;
+
 use std::fmt::{self, Display};
 
-use pyo3::{sync::GILOnceCell, PyAny, PyObject, Python, ToPyObject};
+use pyo3::intern;
+use pyo3::sync::GILOnceCell;
+use pyo3::types::{PyBytes, PyModule};
 use serde::{ser::Error, Deserialize, Serialize};
 
 use super::error::DynResult;
 
-static PICKLE: GILOnceCell<PyObject> = GILOnceCell::new();
+static PICKLE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
-fn get_pickle_module(py: Python<'_>) -> &PyAny {
+fn get_pickle_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     PICKLE
-        .get_or_init(py, || py.import("pickle").unwrap().to_object(py))
-        .as_ref(py)
+        .get_or_init(py, || py.import_bound("pickle").unwrap().unbind())
+        .bind(py)
 }
 
-fn python_dumps(serializer: &PyAny, object: &PyObject) -> DynResult<Vec<u8>> {
-    Ok(serializer.call_method1("dumps", (object,))?.extract()?)
+fn python_dumps<'py>(
+    serializer: &Bound<'py, PyAny>,
+    object: &PyObject,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let py = serializer.py();
+    serializer
+        .call_method1(intern!(py, "dumps"), (object,))?
+        .extract()
 }
 
-fn python_loads(serializer: &PyAny, bytes: &[u8]) -> DynResult<PyObject> {
-    Ok(serializer.call_method1("loads", (bytes,))?.into())
+fn python_loads<'py>(serializer: &Bound<'py, PyAny>, bytes: &[u8]) -> PyResult<Bound<'py, PyAny>> {
+    let py = serializer.py();
+    serializer.call_method1(intern!(py, "loads"), (bytes,))
 }
 
 #[derive(Debug)]
@@ -45,24 +56,25 @@ impl PyObjectWrapper {
     }
 
     pub fn as_bytes(&self) -> DynResult<Vec<u8>> {
-        Python::with_gil(|py| {
+        Ok(Python::with_gil(|py| {
             let serializer = match self.serializer.as_ref() {
-                Some(serializer) => serializer.as_ref(py),
+                Some(serializer) => serializer.bind(py),
                 None => get_pickle_module(py),
             };
-            python_dumps(serializer, &self.object)
-        })
+            python_dumps(serializer, &self.object)?.extract()
+        })?)
     }
 
     pub fn from_bytes(bytes: &[u8], serializer: Option<PyObject>) -> DynResult<Self> {
-        let object = Python::with_gil(|py| {
+        let object = Python::with_gil(|py| -> PyResult<_> {
             let serializer = match serializer.as_ref() {
-                Some(serializer) => serializer.as_ref(py),
+                Some(serializer) => serializer.bind(py),
                 None => get_pickle_module(py),
             };
-            python_loads(serializer, bytes)
-        });
-        Ok(Self::new(object?, serializer))
+            let object = python_loads(serializer, bytes)?;
+            Ok(object.unbind())
+        })?;
+        Ok(Self::new(object, serializer))
     }
 }
 
@@ -83,15 +95,16 @@ impl Serialize for PyObjectWrapper {
     where
         S: serde::Serializer,
     {
-        let own_serializer_bytes: DynResult<_> = match self.serializer.as_ref() {
+        let own_serializer_bytes = match self.serializer.as_ref() {
             Some(serializer) => {
-                Python::with_gil(|py| python_dumps(get_pickle_module(py), serializer))
+                Python::with_gil(|py| python_dumps(get_pickle_module(py), serializer)?.extract())
             }
             None => Ok(vec![]),
-        };
+        }
+        .map_err(S::Error::custom)?;
         let intermediate = PyObjectWrapperIntermediate {
             object: self.as_bytes().map_err(S::Error::custom)?,
-            serializer: own_serializer_bytes.map_err(S::Error::custom)?,
+            serializer: own_serializer_bytes,
         };
         intermediate.serialize(serializer)
     }
@@ -109,6 +122,7 @@ impl<'de> Deserialize<'de> for PyObjectWrapper {
             Some(Python::with_gil(|py| {
                 python_loads(get_pickle_module(py), &intermediate.serializer)
                     .map_err(serde::de::Error::custom)
+                    .map(Bound::unbind)
             })?)
         };
         Self::from_bytes(&intermediate.object, own_serializer).map_err(serde::de::Error::custom)

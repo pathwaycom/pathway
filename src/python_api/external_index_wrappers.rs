@@ -1,10 +1,9 @@
 // Copyright © 2024 Pathway
 
+use pyo3::prelude::*;
+
 use std::sync::Arc;
 
-use pyo3::{
-    pyclass, pymethods, FromPyObject, IntoPy, Py, PyAny, PyObject, PyRef, PyResult, Python,
-};
 use usearch::ffi::MetricKind;
 
 use crate::engine::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
@@ -146,8 +145,8 @@ impl PyUSearchMetricKind {
     pub const SORENSEN: USearchMetricKind = USearchMetricKind(MetricKind::Sorensen);
 }
 
-impl<'source> FromPyObject<'source> for USearchMetricKind {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for USearchMetricKind {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyUSearchMetricKind>>()?.0)
     }
 }

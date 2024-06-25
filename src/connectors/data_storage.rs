@@ -47,7 +47,6 @@ use crate::fs_helpers::ensure_directory;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::python_api::threads::PythonThreadState;
-use crate::python_api::with_gil_and_pool;
 use crate::python_api::PythonSubject;
 use crate::python_api::ValueField;
 use crate::retry::{execute_with_retries, RetryConfig};
@@ -1517,14 +1516,14 @@ impl Reader for PythonReader {
 
     fn read(&mut self) -> Result<ReadResult, ReadError> {
         if !self.is_initialized {
-            with_gil_and_pool(|py| self.subject.borrow(py).start.call0(py))?;
+            Python::with_gil(|py| self.subject.borrow(py).start.call0(py))?;
             self.is_initialized = true;
         }
         if self.is_finished {
             return Ok(ReadResult::Finished);
         }
 
-        with_gil_and_pool(|py| {
+        Python::with_gil(|py| {
             let (event, key, values): (DataEventType, Option<Value>, HashMap<String, Value>) = self
                 .subject
                 .borrow(py)

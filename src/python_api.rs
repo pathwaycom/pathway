@@ -1,7 +1,5 @@
 // Copyright © 2024 Pathway
 
-// pyo3 macros seem to trigger this
-#![allow(clippy::used_underscore_binding)]
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
@@ -32,12 +30,11 @@ use pyo3::exceptions::{
     PyBaseException, PyException, PyIOError, PyIndexError, PyKeyError, PyRuntimeError, PyTypeError,
     PyValueError, PyZeroDivisionError,
 };
-use pyo3::marker::Ungil;
 use pyo3::prelude::*;
 use pyo3::pyclass::CompareOp;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyType};
-use pyo3::{AsPyPointer, PyTypeInfo};
+use pyo3::{intern, AsPyPointer, PyTypeInfo};
 use pyo3_log::ResetHandle;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
@@ -113,21 +110,17 @@ mod external_index_wrappers;
 mod logging;
 pub mod threads;
 
-pub fn with_gil_and_pool<R>(f: impl FnOnce(Python) -> R + Ungil) -> R {
-    Python::with_gil(|py| py.with_pool(f))
-}
-
 const S3_PATH_PREFIX: &str = "s3://";
-static CONVERT: GILOnceCell<PyObject> = GILOnceCell::new();
+static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
-fn get_convert_python_module(py: Python<'_>) -> &PyAny {
+fn get_convert_python_module(py: Python<'_>) -> &Bound<'_, PyModule> {
     CONVERT
         .get_or_init(py, || {
-            PyModule::import(py, "pathway.internals.utils.convert")
+            PyModule::import_bound(py, "pathway.internals.utils.convert")
                 .unwrap()
-                .to_object(py)
+                .unbind()
         })
-        .as_ref(py)
+        .bind(py)
 }
 
 #[allow(unused)] // XXX
@@ -140,8 +133,8 @@ macro_rules! pytodo {
     };
 }
 
-impl<'source> FromPyObject<'source> for Key {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for Key {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<Pointer>>()?.0)
     }
 }
@@ -158,10 +151,10 @@ impl IntoPy<PyObject> for Key {
     }
 }
 
-fn value_from_python_datetime(ob: &PyAny) -> PyResult<Value> {
+fn value_from_python_datetime(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let (timestamp_ns, is_tz_aware) = get_convert_python_module(py)
-        .call_method1("_datetime_to_rust", (ob,))?
+        .call_method1(intern!(py, "_datetime_to_rust"), (ob,))?
         .extract::<(i64, bool)>()?;
     if is_tz_aware {
         Ok(Value::DateTimeUtc(DateTimeUtc::new(timestamp_ns)))
@@ -170,18 +163,18 @@ fn value_from_python_datetime(ob: &PyAny) -> PyResult<Value> {
     }
 }
 
-fn value_from_python_timedelta(ob: &PyAny) -> PyResult<Value> {
+fn value_from_python_timedelta(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let duration_ns = get_convert_python_module(py)
-        .call_method1("_timedelta_to_rust", (ob,))?
+        .call_method1(intern!(py, "_timedelta_to_rust"), (ob,))?
         .extract::<i64>()?;
     Ok(Value::Duration(Duration::new(duration_ns)))
 }
 
-fn value_from_pandas_timestamp(ob: &PyAny) -> PyResult<Value> {
+fn value_from_pandas_timestamp(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let (timestamp, is_tz_aware) = get_convert_python_module(py)
-        .call_method1("_pd_timestamp_to_rust", (ob,))?
+        .call_method1(intern!(py, "_pd_timestamp_to_rust"), (ob,))?
         .extract::<(i64, bool)>()?;
     if is_tz_aware {
         Ok(Value::DateTimeUtc(DateTimeUtc::new(timestamp)))
@@ -190,19 +183,18 @@ fn value_from_pandas_timestamp(ob: &PyAny) -> PyResult<Value> {
     }
 }
 
-fn value_from_pandas_timedelta(ob: &PyAny) -> PyResult<Value> {
+fn value_from_pandas_timedelta(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
     let duration = get_convert_python_module(py)
-        .call_method1("_pd_timedelta_to_rust", (ob,))?
+        .call_method1(intern!(py, "_pd_timedelta_to_rust"), (ob,))?
         .extract::<i64>()?;
     Ok(Value::Duration(Duration::new(duration)))
 }
 
-fn value_json_from_py_any(ob: &PyAny) -> PyResult<Value> {
+fn value_json_from_py_any(ob: &Bound<PyAny>) -> PyResult<Value> {
     let py = ob.py();
-    let json_str = get_convert_python_module(py)
-        .call_method1("_json_dumps", (ob,))?
-        .extract()?;
+    let json_str = get_convert_python_module(py).call_method1(intern!(py, "_json_dumps"), (ob,))?;
+    let json_str = json_str.downcast::<PyString>()?.to_str()?;
     let json: JsonValue =
         serde_json::from_str(json_str).map_err(|_| PyValueError::new_err("malformed json"))?;
     Ok(Value::from(json))
@@ -211,7 +203,10 @@ fn value_json_from_py_any(ob: &PyAny) -> PyResult<Value> {
 impl ToPyObject for DateTimeNaive {
     fn to_object(&self, py: Python<'_>) -> PyObject {
         get_convert_python_module(py)
-            .call_method1("_pd_timestamp_from_naive_ns", (self.timestamp(),))
+            .call_method1(
+                intern!(py, "_pd_timestamp_from_naive_ns"),
+                (self.timestamp(),),
+            )
             .unwrap()
             .into_py(py)
     }
@@ -226,7 +221,10 @@ impl IntoPy<PyObject> for DateTimeNaive {
 impl ToPyObject for DateTimeUtc {
     fn to_object(&self, py: Python<'_>) -> PyObject {
         get_convert_python_module(py)
-            .call_method1("_pd_timestamp_from_utc_ns", (self.timestamp(),))
+            .call_method1(
+                intern!(py, "_pd_timestamp_from_utc_ns"),
+                (self.timestamp(),),
+            )
             .unwrap()
             .into_py(py)
     }
@@ -241,7 +239,7 @@ impl IntoPy<PyObject> for DateTimeUtc {
 impl ToPyObject for Duration {
     fn to_object(&self, py: Python<'_>) -> PyObject {
         get_convert_python_module(py)
-            .call_method1("_pd_timedelta_from_ns", (self.nanoseconds(),))
+            .call_method1(intern!(py, "_pd_timedelta_from_ns"), (self.nanoseconds(),))
             .unwrap()
             .into_py(py)
     }
@@ -253,51 +251,40 @@ impl IntoPy<PyObject> for Duration {
     }
 }
 
-fn is_pathway_json(ob: &PyAny) -> PyResult<bool> {
-    let type_name = ob.get_type().name()?;
+fn is_pathway_json(ob: &Bound<PyAny>) -> PyResult<bool> {
+    let type_name = ob.get_type().qualname()?;
     Ok(type_name == "Json")
 }
 
-impl<'source> FromPyObject<'source> for Value {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for Value {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let py = ob.py();
         if ob.is_none() {
             Ok(Value::None)
-        } else if PyString::is_exact_type_of(ob) {
-            Ok(Value::from(
-                ob.downcast::<PyString>()
-                    .expect("type conversion should work for str")
-                    .to_str()?,
-            ))
-        } else if PyBytes::is_exact_type_of(ob) {
-            Ok(Value::from(
-                ob.downcast::<PyBytes>()
-                    .expect("type conversion should work for bytes")
-                    .as_bytes(),
-            ))
-        } else if PyInt::is_exact_type_of(ob) {
+        } else if let Ok(s) = ob.downcast_exact::<PyString>() {
+            Ok(Value::from(s.to_str()?))
+        } else if let Ok(b) = ob.downcast_exact::<PyBytes>() {
+            Ok(Value::from(b.as_bytes()))
+        } else if ob.is_exact_instance_of::<PyInt>() {
             Ok(Value::Int(
                 ob.extract::<i64>()
                     .expect("type conversion should work for int"),
             ))
-        } else if PyFloat::is_exact_type_of(ob) {
+        } else if ob.is_exact_instance_of::<PyFloat>() {
             Ok(Value::Float(
                 ob.extract::<f64>()
                     .expect("type conversion should work for float")
                     .into(),
             ))
-        } else if PyBool::is_exact_type_of(ob) {
-            Ok(Value::Bool(
-                ob.extract::<&PyBool>()
-                    .expect("type conversion should work for bool")
-                    .is_true(),
-            ))
-        } else if Pointer::is_exact_type_of(ob) {
+        } else if let Ok(b) = ob.downcast_exact::<PyBool>() {
+            Ok(Value::Bool(b.is_true()))
+        } else if ob.is_exact_instance_of::<Pointer>() {
             Ok(Value::Pointer(
                 ob.extract::<Key>()
                     .expect("type conversion should work for Key"),
             ))
         } else if is_pathway_json(ob)? {
-            value_json_from_py_any(ob.getattr("value")?)
+            value_json_from_py_any(&ob.getattr(intern!(py, "value"))?)
         } else if let Ok(b) = ob.extract::<&PyBool>() {
             // Fallback checks from now on
             Ok(Value::Bool(b.is_true()))
@@ -331,18 +318,18 @@ impl<'source> FromPyObject<'source> for Value {
             Ok(Value::from(ob.into_internal()))
         } else {
             // XXX: check types, not names
-            let type_name = ob.get_type().name()?;
+            let type_name = ob.get_type().qualname()?;
             if type_name == "datetime" {
                 return value_from_python_datetime(ob);
             } else if type_name == "timedelta" {
                 return value_from_python_timedelta(ob);
-            } else if matches!(type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
+            } else if matches!(&*type_name, "Timestamp" | "DateTimeNaive" | "DateTimeUtc") {
                 return value_from_pandas_timestamp(ob);
-            } else if matches!(type_name, "Timedelta" | "Duration") {
+            } else if matches!(&*type_name, "Timedelta" | "Duration") {
                 return value_from_pandas_timedelta(ob);
             }
 
-            if let Ok(vec) = ob.extract::<Vec<&PyAny>>() {
+            if let Ok(vec) = ob.extract::<Vec<Bound<PyAny>>>() {
                 // generate a nicer error message if the type of an element is the problem
                 for v in vec {
                     v.extract::<Self>()?;
@@ -359,7 +346,7 @@ impl<'source> FromPyObject<'source> for Value {
 
 fn json_to_py_object(py: Python<'_>, json: &JsonValue) -> PyObject {
     get_convert_python_module(py)
-        .call_method1("_parse_to_json", (json.to_string(),))
+        .call_method1(intern!(py, "_parse_to_json"), (json.to_string(),))
         .unwrap()
         .into_py(py)
 }
@@ -373,10 +360,10 @@ impl ToPyObject for Value {
             Self::Float(f) => f.into_py(py),
             Self::Pointer(k) => k.into_py(py),
             Self::String(s) => s.into_py(py),
-            Self::Bytes(b) => PyBytes::new(py, b).into(),
-            Self::Tuple(t) => PyTuple::new(py, t.iter()).into(),
-            Self::IntArray(a) => PyArray::from_array(py, a).into(),
-            Self::FloatArray(a) => PyArray::from_array(py, a).into(),
+            Self::Bytes(b) => PyBytes::new_bound(py, b).unbind().into_any(),
+            Self::Tuple(t) => PyTuple::new_bound(py, t.iter()).unbind().into_any(),
+            Self::IntArray(a) => PyArray::from_array_bound(py, a).unbind().into_any(),
+            Self::FloatArray(a) => PyArray::from_array_bound(py, a).unbind().into_any(),
             Self::DateTimeNaive(dt) => dt.into_py(py),
             Self::DateTimeUtc(dt) => dt.into_py(py),
             Self::Duration(d) => d.into_py(py),
@@ -393,8 +380,14 @@ impl IntoPy<PyObject> for Value {
     }
 }
 
-impl<'source> FromPyObject<'source> for Reducer {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl IntoPy<PyObject> for &Value {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        self.to_object(py)
+    }
+}
+
+impl<'py> FromPyObject<'py> for Reducer {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReducer>>()?.0.clone())
     }
 }
@@ -405,8 +398,8 @@ impl IntoPy<PyObject> for Reducer {
     }
 }
 
-impl<'source> FromPyObject<'source> for Type {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for Type {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PathwayType>>()?.0)
     }
 }
@@ -417,8 +410,8 @@ impl IntoPy<PyObject> for Type {
     }
 }
 
-impl<'source> FromPyObject<'source> for ReadMethod {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for ReadMethod {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReadMethod>>()?.0)
     }
 }
@@ -429,8 +422,8 @@ impl IntoPy<PyObject> for ReadMethod {
     }
 }
 
-impl<'source> FromPyObject<'source> for ConnectorMode {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for ConnectorMode {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyConnectorMode>>()?.0)
     }
 }
@@ -441,8 +434,8 @@ impl IntoPy<PyObject> for ConnectorMode {
     }
 }
 
-impl<'source> FromPyObject<'source> for SessionType {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for SessionType {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySessionType>>()?.0)
     }
 }
@@ -453,8 +446,8 @@ impl IntoPy<PyObject> for SessionType {
     }
 }
 
-impl<'source> FromPyObject<'source> for DataEventType {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for DataEventType {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyDataEventType>>()?.0)
     }
 }
@@ -465,8 +458,8 @@ impl IntoPy<PyObject> for DataEventType {
     }
 }
 
-impl<'source> FromPyObject<'source> for DebeziumDBType {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for DebeziumDBType {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyDebeziumDBType>>()?.0)
     }
 }
@@ -477,8 +470,8 @@ impl IntoPy<PyObject> for DebeziumDBType {
     }
 }
 
-impl<'source> FromPyObject<'source> for KeyGenerationPolicy {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for KeyGenerationPolicy {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyKeyGenerationPolicy>>()?.0)
     }
 }
@@ -489,8 +482,8 @@ impl IntoPy<PyObject> for KeyGenerationPolicy {
     }
 }
 
-impl<'source> FromPyObject<'source> for MonitoringLevel {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for MonitoringLevel {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyMonitoringLevel>>()?.0)
     }
 }
@@ -511,31 +504,31 @@ impl From<EngineError> for PyErr {
             if let EngineError::WithTrace { inner, trace } = error {
                 let inner = PyErr::from(EngineError::from(inner));
                 let args = (inner, trace);
-                return PyErr::from_type(ENGINE_ERROR_WITH_TRACE_TYPE.as_ref(py), args);
+                return PyErr::from_type_bound(ENGINE_ERROR_WITH_TRACE_TYPE.bind(py).clone(), args);
             }
             let exception_type = match error {
                 EngineError::DataError(ref error) => match error {
-                    DataError::TypeMismatch { .. } => PyTypeError::type_object(py),
+                    DataError::TypeMismatch { .. } => PyTypeError::type_object_bound(py),
                     DataError::DuplicateKey(_)
                     | DataError::ValueMissing
                     | DataError::KeyMissingInOutputTable(_)
-                    | DataError::KeyMissingInInputTable(_) => PyKeyError::type_object(py),
-                    DataError::DivisionByZero => PyZeroDivisionError::type_object(py),
+                    | DataError::KeyMissingInInputTable(_) => PyKeyError::type_object_bound(py),
+                    DataError::DivisionByZero => PyZeroDivisionError::type_object_bound(py),
                     DataError::ParseError(_) | DataError::ValueError(_) => {
-                        PyValueError::type_object(py)
+                        PyValueError::type_object_bound(py)
                     }
-                    DataError::IndexOutOfBounds => PyIndexError::type_object(py),
-                    _ => ENGINE_ERROR_TYPE.as_ref(py),
+                    DataError::IndexOutOfBounds => PyIndexError::type_object_bound(py),
+                    _ => ENGINE_ERROR_TYPE.bind(py).clone(),
                 },
                 EngineError::IterationLimitTooSmall
                 | EngineError::NoPersistentStorage(_)
                 | EngineError::InconsistentColumnProperties
-                | EngineError::IdInTableProperties => PyValueError::type_object(py),
-                EngineError::ReaderFailed(_) => PyRuntimeError::type_object(py),
-                _ => ENGINE_ERROR_TYPE.as_ref(py),
+                | EngineError::IdInTableProperties => PyValueError::type_object_bound(py),
+                EngineError::ReaderFailed(_) => PyRuntimeError::type_object_bound(py),
+                _ => ENGINE_ERROR_TYPE.bind(py).clone(),
             };
             let message = error.to_string();
-            PyErr::from_type(exception_type, message)
+            PyErr::from_type_bound(exception_type, message)
         })
     }
 }
@@ -548,22 +541,36 @@ fn check_identity(a: &impl AsPyPointer, b: &impl AsPyPointer, msg: &'static str)
     }
 }
 
-fn from_py_iterable<'py, T>(iterable: &'py PyAny) -> PyResult<Vec<T>>
+fn from_py_iterable<'py, T>(iterable: &Bound<'py, PyAny>) -> PyResult<Vec<T>>
 where
     T: FromPyObject<'py>,
 {
     iterable.iter()?.map(|obj| obj?.extract()).collect()
 }
 
-fn engine_tables_from_py_iterable(iterable: &PyAny) -> PyResult<Vec<EngineLegacyTable>> {
-    let py = iterable.py();
+fn engine_tables_from_py_iterable(iterable: &Bound<PyAny>) -> PyResult<Vec<EngineLegacyTable>> {
     iterable
         .iter()?
         .map(|table| {
             let table: PyRef<LegacyTable> = table?.extract()?;
-            Ok(table.to_engine(py))
+            Ok(table.to_engine())
         })
         .collect()
+}
+
+pub fn generic_alias_class_getitem<'py>(
+    cls: &Bound<'py, PyType>,
+    item: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+
+    let py = cls.py();
+    GENERIC_ALIAS
+        .get_or_try_init(py, || -> PyResult<_> {
+            Ok(py.import_bound("types")?.getattr("GenericAlias")?.unbind())
+        })?
+        .bind(py)
+        .call1((cls, item))
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
@@ -587,7 +594,7 @@ impl Pointer {
         self.0 .0
     }
 
-    pub fn __richcmp__(&self, other: &PyAny, op: CompareOp) -> Py<PyAny> {
+    pub fn __richcmp__(&self, other: &Bound<PyAny>, op: CompareOp) -> Py<PyAny> {
         let py = other.py();
         if let Ok(other) = other.extract::<PyRef<Self>>() {
             return op.matches(self.0.cmp(&other.0)).into_py(py);
@@ -605,16 +612,11 @@ impl Pointer {
     }
 
     #[classmethod]
-    pub fn __class_getitem__<'py>(cls: &'py PyType, item: &'py PyAny) -> PyResult<&'py PyAny> {
-        static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-
-        let py = cls.py();
-        GENERIC_ALIAS
-            .get_or_try_init(py, || -> PyResult<_> {
-                Ok(py.import("types")?.getattr("GenericAlias")?.into())
-            })?
-            .as_ref(py)
-            .call1((cls, item))
+    pub fn __class_getitem__<'py>(
+        cls: &Bound<'py, PyType>,
+        item: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        generic_alias_class_getitem(cls, item)
     }
 }
 
@@ -648,17 +650,11 @@ impl PyObjectWrapper {
     }
 
     #[classmethod]
-    pub fn __class_getitem__<'py>(cls: &'py PyType, item: &'py PyAny) -> PyResult<&'py PyAny> {
-        // TODO: unify with Pointer
-        static GENERIC_ALIAS: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-
-        let py = cls.py();
-        GENERIC_ALIAS
-            .get_or_try_init(py, || -> PyResult<_> {
-                Ok(py.import("types")?.getattr("GenericAlias")?.into())
-            })?
-            .as_ref(py)
-            .call1((cls, item))
+    pub fn __class_getitem__<'py>(
+        cls: &Bound<'py, PyType>,
+        item: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        generic_alias_class_getitem(cls, item)
     }
 }
 
@@ -733,12 +729,7 @@ impl PyReducer {
 
 fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {
     Arc::new(move |state, values| {
-        with_gil_and_pool(|py| {
-            let combine = combine.as_ref(py);
-            let state = state.to_object(py);
-            let values = values.to_object(py);
-            Ok(combine.call1((state, values))?.extract()?)
-        })
+        Python::with_gil(|py| Ok(combine.bind(py).call1((state, values))?.extract()?))
     })
 }
 
@@ -763,8 +754,8 @@ impl PyReducerData {
     }
 }
 
-impl<'source> FromPyObject<'source> for ReducerData {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for ReducerData {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyReducerData>>()?.0.clone())
     }
 }
@@ -809,8 +800,8 @@ impl PyUnaryOperator {
     pub const NEG: UnaryOperator = UnaryOperator::Neg;
 }
 
-impl<'source> FromPyObject<'source> for UnaryOperator {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for UnaryOperator {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyUnaryOperator>>()?.0)
     }
 }
@@ -866,8 +857,8 @@ impl PyBinaryOperator {
     pub const MATMUL: BinaryOperator = BinaryOperator::MatMul;
 }
 
-impl<'source> FromPyObject<'source> for BinaryOperator {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for BinaryOperator {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyBinaryOperator>>()?.0)
     }
 }
@@ -959,8 +950,8 @@ impl PyExpression {
             .map(|expr| expr.inner.clone())
             .collect_vec();
         let func = Box::new(move |input: &[Value]| {
-            with_gil_and_pool(|py| -> DynResult<Value> {
-                let args = PyTuple::new(py, input);
+            Python::with_gil(|py| -> DynResult<Value> {
+                let args = PyTuple::new_bound(py, input);
                 Ok(function.call1(py, args)?.extract::<Value>(py)?)
             })
         });
@@ -1546,15 +1537,15 @@ pub struct Universe {
 }
 
 impl Universe {
-    fn new(scope: &PyCell<Scope>, handle: UniverseHandle) -> PyResult<Py<Self>> {
+    fn new<'py>(scope: &Bound<'py, Scope>, handle: UniverseHandle) -> PyResult<Bound<'py, Self>> {
         let py = scope.py();
         if let Some(universe) = scope.borrow().universes.borrow().get(&handle) {
-            return Ok(universe.clone());
+            return Ok(universe.bind(py).clone());
         }
-        let res = Py::new(
+        let res = Bound::new(
             py,
             Self {
-                scope: scope.into(),
+                scope: scope.clone().unbind(),
                 handle,
             },
         )?;
@@ -1562,7 +1553,7 @@ impl Universe {
             .borrow()
             .universes
             .borrow_mut()
-            .insert(handle, res.clone());
+            .insert(handle, res.clone().unbind());
         Ok(res)
     }
 }
@@ -1578,25 +1569,21 @@ impl Universe {
 pub struct ComplexColumn;
 
 impl ComplexColumn {
-    fn output_universe(self_: &PyCell<Self>) -> Option<Py<Universe>> {
-        if let Ok(_column) = self_.downcast::<PyCell<Column>>() {
+    fn output_universe(self_: &Bound<Self>) -> Option<Py<Universe>> {
+        if let Ok(_column) = self_.downcast_exact::<Column>() {
             None
-        } else if let Ok(computer) = self_.downcast::<PyCell<Computer>>() {
-            let computer = computer.borrow();
-            if computer.is_output {
-                Some(computer.universe.clone())
-            } else {
-                None
-            }
+        } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
+            let computer = computer.get();
+            computer.is_output.then(|| computer.universe.clone())
         } else {
             unreachable!("Unknown ComplexColumn subclass");
         }
     }
 
-    fn to_engine(self_: &PyCell<Self>) -> EngineComplexColumn {
-        if let Ok(column) = self_.downcast::<PyCell<Column>>() {
+    fn to_engine(self_: &Bound<Self>) -> EngineComplexColumn {
+        if let Ok(column) = self_.downcast_exact::<Column>() {
             EngineComplexColumn::Column(column.borrow().handle)
-        } else if let Ok(computer) = self_.downcast::<PyCell<Computer>>() {
+        } else if let Ok(computer) = self_.downcast_exact::<Computer>() {
             Computer::to_engine(computer)
         } else {
             unreachable!("Unknown ComplexColumn subclass");
@@ -1612,25 +1599,32 @@ pub struct Column {
 }
 
 impl Column {
-    fn new(universe: &PyCell<Universe>, handle: ColumnHandle) -> PyResult<Py<Self>> {
+    fn new<'py>(
+        universe: &Bound<'py, Universe>,
+        handle: ColumnHandle,
+    ) -> PyResult<Bound<'py, Self>> {
         let py = universe.py();
         let universe_ref = universe.borrow();
-        let scope = &universe_ref.scope.borrow(py);
+        let scope = universe_ref.scope.borrow(py);
         if let Some(column) = scope.columns.borrow().get(&handle) {
-            assert!(column.borrow(py).universe.is(universe));
-            return Ok(column.clone());
+            let column = column.bind(py).clone();
+            assert!(column.get().universe.is(universe));
+            return Ok(column);
         }
-        let res = Py::new(
+        let res = Bound::new(
             py,
             (
                 Self {
-                    universe: universe.into(),
+                    universe: universe.clone().unbind(),
                     handle,
                 },
                 ComplexColumn,
             ),
         )?;
-        scope.columns.borrow_mut().insert(handle, res.clone());
+        scope
+            .columns
+            .borrow_mut()
+            .insert(handle, res.clone().unbind());
         Ok(res)
     }
 }
@@ -1659,15 +1653,15 @@ pub struct LegacyTable {
 impl LegacyTable {
     #[new]
     pub fn new(
-        universe: &PyCell<Universe>,
+        universe: Bound<Universe>,
         #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<Py<Column>>,
     ) -> PyResult<Self> {
         let py = universe.py();
         for column in &columns {
-            check_identity(&column.borrow(py).universe, universe, "universe mismatch")?;
+            check_identity(&column.borrow(py).universe, &universe, "universe mismatch")?;
         }
         Ok(Self {
-            universe: universe.into(),
+            universe: universe.unbind(),
             columns,
         })
     }
@@ -1684,30 +1678,32 @@ impl LegacyTable {
 }
 
 impl LegacyTable {
-    fn to_engine(&self, py: Python) -> (UniverseHandle, Vec<ColumnHandle>) {
-        let universe = self.universe.borrow(py);
-        let column_handles = self.columns.iter().map(|c| c.borrow(py).handle).collect();
+    fn to_engine(&self) -> (UniverseHandle, Vec<ColumnHandle>) {
+        let universe = self.universe.get();
+        let column_handles = self.columns.iter().map(|c| c.get().handle).collect();
         (universe.handle, column_handles)
     }
 
-    fn from_handles(
-        scope: &PyCell<Scope>,
+    fn from_handles<'py>(
+        scope: &Bound<'py, Scope>,
         universe_handle: UniverseHandle,
         column_handles: impl IntoIterator<Item = ColumnHandle>,
-    ) -> PyResult<Self> {
+    ) -> PyResult<Bound<'py, Self>> {
         let py = scope.py();
         let universe = Universe::new(scope, universe_handle)?;
-        let universe = universe.as_ref(py);
         let columns = column_handles
             .into_iter()
-            .map(|column_handle| Column::new(universe, column_handle))
+            .map(|column_handle| Ok(Column::new(&universe, column_handle)?.unbind()))
             .collect::<PyResult<_>>()?;
-        Self::new(universe, columns)
+        Bound::new(py, Self::new(universe, columns)?)
     }
 
-    fn from_engine(scope: &PyCell<Scope>, table: EngineLegacyTable) -> Self {
+    fn from_engine<'py>(
+        scope: &Bound<'py, Scope>,
+        table: EngineLegacyTable,
+    ) -> PyResult<Bound<'py, Self>> {
         let (universe_handle, column_handles) = table;
-        Self::from_handles(scope, universe_handle, column_handles).unwrap()
+        Self::from_handles(scope, universe_handle, column_handles)
     }
 }
 
@@ -1718,15 +1714,15 @@ pub struct Table {
 }
 
 impl Table {
-    fn new(scope: &PyCell<Scope>, handle: TableHandle) -> PyResult<Py<Self>> {
+    fn new(scope: &Bound<Scope>, handle: TableHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
         if let Some(table) = scope.borrow().tables.borrow().get(&handle) {
-            return Ok(table.clone());
+            return Ok(table.clone_ref(py));
         }
         let res = Py::new(
             py,
             Self {
-                scope: scope.into(),
+                scope: scope.clone().unbind(),
                 handle,
             },
         )?;
@@ -1746,15 +1742,15 @@ pub struct ErrorLog {
 }
 
 impl ErrorLog {
-    fn new(scope: &PyCell<Scope>, handle: ErrorLogHandle) -> PyResult<Py<Self>> {
+    fn new(scope: &Bound<Scope>, handle: ErrorLogHandle) -> PyResult<Py<Self>> {
         let py = scope.py();
         if let Some(error_log) = scope.borrow().error_logs.borrow().get(&handle) {
-            return Ok(error_log.clone());
+            return Ok(error_log.clone_ref(py));
         }
         let res = Py::new(
             py,
             Self {
-                scope: scope.into(),
+                scope: scope.clone().unbind(),
                 handle,
             },
         )?;
@@ -1792,16 +1788,20 @@ mod error {
 }
 use error::{Error, ERROR};
 
-impl<'source> FromPyObject<'source> for ColumnPath {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        if ob.getattr("is_key").is_ok_and(|is_key| {
+impl<'py> FromPyObject<'py> for ColumnPath {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let py = ob.py();
+        if ob.getattr(intern!(py, "is_key")).is_ok_and(|is_key| {
             is_key
                 .extract::<&PyBool>()
                 .expect("is_key field in ColumnPath should be bool")
                 .is_true()
         }) {
             Ok(Self::Key)
-        } else if let Ok(path) = ob.getattr("path").and_then(PyAny::extract) {
+        } else if let Ok(path) = ob
+            .getattr(intern!(py, "path"))
+            .and_then(|path| path.extract())
+        {
             Ok(Self::ValuePath(path))
         } else {
             Err(PyTypeError::new_err(format!(
@@ -1814,11 +1814,11 @@ impl<'source> FromPyObject<'source> for ColumnPath {
 
 static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type(
+        PyErr::new_type_bound(
             py,
             "pathway.engine.MissingValueError",
             None,
-            Some(PyBaseException::type_object(py)),
+            Some(&PyBaseException::type_object_bound(py)),
             None,
         )
         .expect("creating MissingValueError type should not fail")
@@ -1827,11 +1827,11 @@ static MISSING_VALUE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 
 static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type(
+        PyErr::new_type_bound(
             py,
             "pathway.engine.EngineError",
             None,
-            Some(PyException::type_object(py)),
+            Some(&PyException::type_object_bound(py)),
             None,
         )
         .expect("creating EngineError type should not fail")
@@ -1840,11 +1840,11 @@ static ENGINE_ERROR_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
 
 static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
     Python::with_gil(|py| {
-        PyErr::new_type(
+        PyErr::new_type_bound(
             py,
             "pathway.engine.EngineErrorWithTrace",
             None,
-            Some(PyException::type_object(py)),
+            Some(&PyException::type_object_bound(py)),
             None,
         )
         .expect("creating EngineErrorWithTrace type should not fail")
@@ -1881,9 +1881,9 @@ impl Context {
     ) -> PyResult<Value> {
         self.0
             .with(|context| {
-                context
-                    .get(column, row, args)
-                    .ok_or_else(|| PyErr::from_type(MISSING_VALUE_ERROR_TYPE.as_ref(py), ()))
+                context.get(column, row, args).ok_or_else(|| {
+                    PyErr::from_type_bound(MISSING_VALUE_ERROR_TYPE.bind(py).clone(), ())
+                })
             })
             .unwrap_or_else(|| Err(PyValueError::new_err("context out of scope")))
     }
@@ -1949,19 +1949,18 @@ impl Computer {
         engine_context: &dyn EngineContext,
         args: &[Value],
     ) -> PyResult<Option<Value>> {
-        let context = PyCell::new(py, Context(SendWrapper::new(ScopedContext::default())))?;
+        let context = Bound::new(py, Context(SendWrapper::new(ScopedContext::default())))?;
         let mut all_args = Vec::with_capacity(args.len() + 1);
         all_args.push(context.to_object(py));
         all_args.extend(args.iter().map(|value| value.to_object(py)));
         let res = context.borrow().0.scoped(
             engine_context,
-            || self.fun.as_ref(py).call1(PyTuple::new(py, all_args)), // FIXME
+            || self.fun.bind(py).call1(PyTuple::new_bound(py, all_args)), // FIXME
         );
-        // let res = context.0. self.fun.as_ref(py).call1((context,));
         match res {
             Ok(value) => Ok(Some(value.extract()?)),
             Err(error) => {
-                if error.is_instance(py, MISSING_VALUE_ERROR_TYPE.as_ref(py)) {
+                if error.is_instance_bound(py, MISSING_VALUE_ERROR_TYPE.bind(py)) {
                     Ok(None)
                 } else {
                     Err(error)
@@ -1970,10 +1969,10 @@ impl Computer {
         }
     }
 
-    fn to_engine(self_: &PyCell<Self>) -> EngineComplexColumn {
+    fn to_engine(self_: &Bound<Self>) -> EngineComplexColumn {
         let py = self_.py();
         let self_ref = self_.borrow();
-        let computer: Py<Self> = self_.into();
+        let computer: Py<Self> = self_.clone().unbind();
         let engine_computer = if self_ref.is_method {
             let data_column_handle = self_ref
                 .data_column
@@ -1982,7 +1981,7 @@ impl Computer {
             EngineComputer::Method {
                 logic: Box::new(move |engine_context, args| {
                     let engine_context = SendWrapper::new(engine_context);
-                    Ok(with_gil_and_pool(|py| {
+                    Ok(Python::with_gil(|py| {
                         let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, args)
                     })?)
@@ -1998,7 +1997,7 @@ impl Computer {
             EngineComputer::Attribute {
                 logic: Box::new(move |engine_context| {
                     let engine_context = SendWrapper::new(engine_context);
-                    Ok(with_gil_and_pool(|py| {
+                    Ok(Python::with_gil(|py| {
                         let engine_context = engine_context.take();
                         computer.borrow(py).compute(py, engine_context, &[])
                     })?)
@@ -2076,7 +2075,7 @@ impl Scope {
     }
 
     pub fn empty_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         properties: ConnectorProperties,
     ) -> PyResult<Py<Table>> {
         let column_properties = properties.column_properties();
@@ -2087,31 +2086,31 @@ impl Scope {
         Table::new(self_, table_handle)
     }
 
-    pub fn static_universe(
-        self_: &PyCell<Self>,
+    pub fn static_universe<'py>(
+        self_: &Bound<'py, Self>,
         #[pyo3(from_py_with = "from_py_iterable")] keys: Vec<Key>,
-    ) -> PyResult<Py<Universe>> {
+    ) -> PyResult<Bound<'py, Universe>> {
         let handle = self_.borrow().graph.static_universe(keys)?;
         Universe::new(self_, handle)
     }
 
-    pub fn static_column(
-        self_: &PyCell<Self>,
-        universe: &PyCell<Universe>,
+    pub fn static_column<'py>(
+        self_: &Bound<'py, Self>,
+        universe: &Bound<'py, Universe>,
         #[pyo3(from_py_with = "from_py_iterable")] values: Vec<(Key, Value)>,
         properties: ColumnProperties,
-    ) -> PyResult<Py<Column>> {
-        check_identity(self_, &universe.borrow().scope, "scope mismatch")?;
+    ) -> PyResult<Bound<'py, Column>> {
+        check_identity(self_, &universe.get().scope, "scope mismatch")?;
         let handle =
             self_
                 .borrow()
                 .graph
-                .static_column(universe.borrow().handle, values, properties.0)?;
+                .static_column(universe.get().handle, values, properties.0)?;
         Column::new(universe, handle)
     }
 
     pub fn static_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         #[pyo3(from_py_with = "from_py_iterable")] data: Vec<DataRow>,
         properties: ConnectorProperties,
     ) -> PyResult<Py<Table>> {
@@ -2124,9 +2123,9 @@ impl Scope {
     }
 
     pub fn connector_table(
-        self_: &PyCell<Self>,
-        data_source: &PyCell<DataStorage>,
-        data_format: &PyCell<DataFormat>,
+        self_: &Bound<Self>,
+        data_source: &Bound<DataStorage>,
+        data_format: &Bound<DataFormat>,
         properties: ConnectorProperties,
     ) -> PyResult<Py<Table>> {
         let py = self_.py();
@@ -2168,16 +2167,16 @@ impl Scope {
 
     #[allow(clippy::type_complexity)]
     #[pyo3(signature = (iterated, iterated_with_universe, extra, logic, *, limit = None))]
-    pub fn iterate(
-        self_: &PyCell<Self>,
+    pub fn iterate<'py>(
+        self_: &Bound<'py, Self>,
         #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated: Vec<EngineLegacyTable>,
         #[pyo3(from_py_with = "engine_tables_from_py_iterable")] iterated_with_universe: Vec<
             EngineLegacyTable,
         >,
         #[pyo3(from_py_with = "engine_tables_from_py_iterable")] extra: Vec<EngineLegacyTable>,
-        logic: &PyAny,
+        logic: &Bound<'py, PyAny>,
         limit: Option<u32>,
-    ) -> PyResult<(Vec<Py<LegacyTable>>, Vec<Py<LegacyTable>>)> {
+    ) -> PyResult<(Vec<Bound<'py, LegacyTable>>, Vec<Bound<'py, LegacyTable>>)> {
         let py = self_.py();
         let (result, result_with_universe) = self_.borrow().graph.iterate(
             iterated,
@@ -2185,38 +2184,41 @@ impl Scope {
             extra,
             limit,
             Box::new(|graph, iterated, iterated_with_universe, extra| {
-                let scope = PyCell::new(
+                let scope = Bound::new(
                     py,
-                    Scope::new(Some(self_.into()), self_.borrow().event_loop.clone()),
+                    Scope::new(
+                        Some(self_.clone().unbind()),
+                        self_.borrow().event_loop.clone(),
+                    ),
                 )?;
                 scope.borrow().graph.scoped(graph, || {
                     let iterated = iterated
                         .into_iter()
-                        .map(|table| LegacyTable::from_engine(scope, table))
-                        .collect::<Vec<_>>();
+                        .map(|table| LegacyTable::from_engine(&scope, table))
+                        .collect::<PyResult<Vec<_>>>()?;
                     let iterated_with_universe = iterated_with_universe
                         .into_iter()
-                        .map(|table| LegacyTable::from_engine(scope, table))
-                        .collect::<Vec<_>>();
+                        .map(|table| LegacyTable::from_engine(&scope, table))
+                        .collect::<PyResult<Vec<_>>>()?;
                     let extra = extra
                         .into_iter()
-                        .map(|table| LegacyTable::from_engine(scope, table))
-                        .collect::<Vec<_>>();
-                    let (result, result_with_universe): (&PyAny, &PyAny) = logic
+                        .map(|table| LegacyTable::from_engine(&scope, table))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    let (result, result_with_universe): (Bound<PyAny>, Bound<PyAny>) = logic
                         .call1((scope, iterated, iterated_with_universe, extra))?
                         .extract()?;
                     let result = result
                         .iter()?
                         .map(|table| {
                             let table: PyRef<LegacyTable> = table?.extract()?;
-                            Ok(table.to_engine(py))
+                            Ok(table.to_engine())
                         })
                         .collect::<PyResult<_>>()?;
                     let result_with_universe = result_with_universe
                         .iter()?
                         .map(|table| {
                             let table: PyRef<LegacyTable> = table?.extract()?;
-                            Ok(table.to_engine(py))
+                            Ok(table.to_engine())
                         })
                         .collect::<PyResult<_>>()?;
                     Ok((result, result_with_universe))
@@ -2225,34 +2227,33 @@ impl Scope {
         )?;
         let result = result
             .into_iter()
-            .map(|table| Py::new(py, LegacyTable::from_engine(self_, table)))
+            .map(|table| LegacyTable::from_engine(self_, table))
             .collect::<PyResult<_>>()?;
         let result_with_universe = result_with_universe
             .into_iter()
-            .map(|table| Py::new(py, LegacyTable::from_engine(self_, table)))
+            .map(|table| LegacyTable::from_engine(self_, table))
             .collect::<PyResult<_>>()?;
         Ok((result, result_with_universe))
     }
 
-    pub fn map_column(
-        self_: &PyCell<Self>,
+    pub fn map_column<'py>(
+        self_: &Bound<'py, Self>,
         table: &LegacyTable,
         function: Py<PyAny>,
         properties: ColumnProperties,
-    ) -> PyResult<Py<Column>> {
+    ) -> PyResult<Bound<'py, Column>> {
         let py = self_.py();
-        let universe = table.universe.as_ref(py);
-        let universe_ref = universe.borrow();
+        let universe = table.universe.bind(py);
+        let universe_ref = universe.get();
         check_identity(self_, &universe_ref.scope, "scope mismatch")?;
         let column_handles = table.columns.iter().map(|c| c.borrow(py).handle).collect();
         let handle = self_.borrow().graph.expression_column(
             BatchWrapper::WithGil,
             Arc::new(Expression::Any(AnyExpression::Apply(
                 Box::new(move |input| {
-                    with_gil_and_pool(|py| -> DynResult<_> {
-                        let inputs = PyTuple::new(py, input);
-                        let args = PyTuple::new(py, [inputs]);
-                        Ok(function.call1(py, args)?.extract::<Value>(py)?)
+                    Python::with_gil(|py| -> DynResult<_> {
+                        let inputs = PyTuple::new_bound(py, input);
+                        Ok(function.call1(py, (inputs,))?.extract::<Value>(py)?)
                     })
                 }),
                 Expressions::Arguments(0..table.columns.len()),
@@ -2266,7 +2267,7 @@ impl Scope {
     }
 
     pub fn async_apply_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         function: Py<PyAny>,
@@ -2280,19 +2281,19 @@ impl Scope {
                 if propagate_none && values.iter().any(|a| matches!(a, Value::None)) {
                     return Box::pin(futures::future::ok(Value::None));
                 }
-                let future = with_gil_and_pool(|py| {
+                let future = Python::with_gil(|py| {
                     let event_loop = event_loop.clone();
-                    let args = PyTuple::new(py, values);
+                    let args = PyTuple::new_bound(py, values);
                     let awaitable = function.call1(py, args)?;
-                    let awaitable = awaitable.as_ref(py);
-                    let locals =
-                        pyo3_asyncio::TaskLocals::new(event_loop.as_ref(py)).copy_context(py)?;
+                    let awaitable = awaitable.into_bound(py);
+                    let locals = pyo3_asyncio::TaskLocals::new(event_loop.into_bound(py))
+                        .copy_context(py)?;
                     pyo3_asyncio::into_future_with_locals(&locals, awaitable)
                 });
 
                 Box::pin(async {
                     let result = future?.await?;
-                    with_gil_and_pool(|py| result.extract::<Value>(py).map_err(DynError::from))
+                    Python::with_gil(|py| result.extract::<Value>(py).map_err(DynError::from))
                 })
             }),
             table.handle,
@@ -2305,7 +2306,7 @@ impl Scope {
     }
 
     pub fn expression_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: &Table,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         #[pyo3(from_py_with = "from_py_iterable")] expressions: Vec<(
@@ -2339,8 +2340,8 @@ impl Scope {
     }
 
     pub fn columns_to_table(
-        self_: &PyCell<Self>,
-        universe: &PyCell<Universe>,
+        self_: &Bound<Self>,
+        universe: &Bound<Universe>,
         #[pyo3(from_py_with = "from_py_iterable")] columns: Vec<PyRef<Column>>,
     ) -> PyResult<Py<Table>> {
         let column_handles = columns.into_iter().map(|column| column.handle).collect();
@@ -2351,12 +2352,12 @@ impl Scope {
         Table::new(self_, table_handle)
     }
 
-    pub fn table_column(
-        self_: &PyCell<Self>,
-        universe: &PyCell<Universe>,
+    pub fn table_column<'py>(
+        self_: &Bound<'py, Self>,
+        universe: &Bound<'py, Universe>,
         table: PyRef<Table>,
         column_path: ColumnPath,
-    ) -> PyResult<Py<Column>> {
+    ) -> PyResult<Bound<'py, Column>> {
         let handle = self_.borrow().graph.table_column(
             universe.borrow().handle,
             table.handle,
@@ -2365,13 +2366,16 @@ impl Scope {
         Column::new(universe, handle)
     }
 
-    pub fn table_universe(self_: &PyCell<Self>, table: PyRef<Table>) -> PyResult<Py<Universe>> {
+    pub fn table_universe<'py>(
+        self_: &Bound<'py, Self>,
+        table: &Table,
+    ) -> PyResult<Bound<'py, Universe>> {
         let universe_handle = self_.borrow().graph.table_universe(table.handle)?;
         Universe::new(self_, universe_handle)
     }
 
     pub fn table_properties(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         path: ColumnPath,
     ) -> PyResult<Py<TableProperties>> {
@@ -2381,7 +2385,7 @@ impl Scope {
     }
 
     pub fn flatten_table_storage(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
     ) -> PyResult<Py<Table>> {
@@ -2393,7 +2397,7 @@ impl Scope {
     }
 
     pub fn filter_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         filtering_column_path: ColumnPath,
         table_properties: TableProperties,
@@ -2407,7 +2411,7 @@ impl Scope {
     }
 
     pub fn remove_retractions_from_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -2419,7 +2423,7 @@ impl Scope {
     }
 
     pub fn forget(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         threshold_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
@@ -2437,7 +2441,7 @@ impl Scope {
     }
 
     pub fn forget_immediately(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -2449,7 +2453,7 @@ impl Scope {
     }
 
     pub fn filter_out_results_of_forgetting(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -2461,7 +2465,7 @@ impl Scope {
     }
 
     pub fn freeze(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         threshold_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
@@ -2477,7 +2481,7 @@ impl Scope {
     }
 
     pub fn gradual_broadcast(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         input_table: PyRef<Table>,
         threshold_table: PyRef<Table>,
         lower_path: ColumnPath,
@@ -2497,7 +2501,7 @@ impl Scope {
     }
 
     pub fn use_external_index_as_of_now(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         index: &PyExternalIndexData,
         queries: &PyExternalIndexQuery,
         table_properties: TableProperties,
@@ -2513,7 +2517,7 @@ impl Scope {
     }
 
     pub fn buffer(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         threshold_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
@@ -2529,7 +2533,7 @@ impl Scope {
     }
 
     pub fn intersect_tables(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] tables: Vec<PyRef<Table>>,
         table_properties: TableProperties,
@@ -2544,7 +2548,7 @@ impl Scope {
     }
 
     pub fn subtract_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         left_table: PyRef<Table>,
         right_table: PyRef<Table>,
         table_properties: TableProperties,
@@ -2558,7 +2562,7 @@ impl Scope {
     }
 
     pub fn concat_tables(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         #[pyo3(from_py_with = "from_py_iterable")] tables: Vec<PyRef<Table>>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -2571,7 +2575,7 @@ impl Scope {
     }
 
     pub fn flatten_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         flatten_column_path: ColumnPath,
         table_properties: TableProperties,
@@ -2585,7 +2589,7 @@ impl Scope {
     }
 
     pub fn sort_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
@@ -2601,7 +2605,7 @@ impl Scope {
     }
 
     pub fn reindex_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         reindexing_column_path: ColumnPath,
         table_properties: TableProperties,
@@ -2615,24 +2619,22 @@ impl Scope {
     }
 
     pub fn restrict_column<'py>(
-        self_: &'py PyCell<Self>,
-        universe: &'py PyCell<Universe>,
-        column: &'py PyCell<Column>,
-    ) -> PyResult<Py<Column>> {
-        let universe_ref = universe.borrow();
-        check_identity(self_, &universe_ref.scope, "scope mismatch")?;
-        let column_ref = column.borrow();
-        let column_universe = column_ref.universe.as_ref(self_.py());
+        self_: &Bound<'py, Self>,
+        universe: &Bound<'py, Universe>,
+        column: &Bound<'py, Column>,
+    ) -> PyResult<Bound<'py, Column>> {
+        check_identity(self_, &universe.get().scope, "scope mismatch")?;
+        let column_universe = column.get().universe.bind(self_.py());
         check_identity(self_, &column_universe.borrow().scope, "scope mismatch")?;
         let new_column_handle = self_
             .borrow()
             .graph
-            .restrict_column(universe_ref.handle, column_ref.handle)?;
+            .restrict_column(universe.get().handle, column.get().handle)?;
         Column::new(universe, new_column_handle)
     }
 
     pub fn restrict_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         orig_table: PyRef<Table>,
         new_table: PyRef<Table>,
         table_properties: TableProperties,
@@ -2647,7 +2649,7 @@ impl Scope {
     }
 
     pub fn override_table_universe(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         orig_table: PyRef<Table>,
         new_table: PyRef<Table>,
         table_properties: TableProperties,
@@ -2662,24 +2664,26 @@ impl Scope {
     }
 
     pub fn table<'py>(
-        self_: &'py PyCell<Self>,
-        universe: &'py PyCell<Universe>,
-        columns: &'py PyAny,
+        self_: &Bound<'py, Self>,
+        universe: &Bound<'py, Universe>,
+        columns: &Bound<'py, PyAny>,
     ) -> PyResult<LegacyTable> {
         check_identity(self_, &universe.borrow().scope, "scope mismatch")?;
         let columns = columns
             .iter()?
             .map(|column| {
-                let column: &PyCell<Column> = column?.extract()?;
-                Self::restrict_column(self_, universe, column)
+                let column = column?;
+                let column = column.downcast()?;
+                let restricted = Self::restrict_column(self_, universe, column)?;
+                Ok(restricted.unbind())
             })
             .collect::<PyResult<_>>()?;
-        LegacyTable::new(universe, columns)
+        LegacyTable::new(universe.clone(), columns)
     }
 
     #[pyo3(signature = (table, grouping_columns_paths, last_column_is_instance, reducers, set_id, table_properties))]
     pub fn group_by_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
         last_column_is_instance: bool,
@@ -2700,7 +2704,7 @@ impl Scope {
 
     #[pyo3(signature = (table, grouping_columns_paths, reduced_column_paths, combine, persistent_id, table_properties))]
     pub fn deduplicate(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
         #[pyo3(from_py_with = "from_py_iterable")] reduced_column_paths: Vec<ColumnPath>,
@@ -2720,7 +2724,7 @@ impl Scope {
     }
 
     pub fn ix_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         to_ix_table: PyRef<Table>,
         key_table: PyRef<Table>,
         key_column_path: ColumnPath,
@@ -2743,7 +2747,7 @@ impl Scope {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::fn_params_excessive_bools)]
     pub fn join_tables(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         left_table: PyRef<Table>,
         right_table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] left_column_paths: Vec<ColumnPath>,
@@ -2765,16 +2769,16 @@ impl Scope {
         Table::new(self_, table_handle)
     }
 
-    fn complex_columns(
-        self_: &PyCell<Self>,
-        #[pyo3(from_py_with = "from_py_iterable")] inputs: Vec<&PyCell<ComplexColumn>>,
-    ) -> PyResult<Vec<Py<Column>>> {
+    fn complex_columns<'py>(
+        self_: &Bound<'py, Self>,
+        #[pyo3(from_py_with = "from_py_iterable")] inputs: Vec<Bound<'py, ComplexColumn>>,
+    ) -> PyResult<Vec<Bound<'py, Column>>> {
         let py = self_.py();
         let mut engine_complex_columns = Vec::new();
         let mut output_universes = Vec::new();
         for input in inputs {
-            engine_complex_columns.push(ComplexColumn::to_engine(input));
-            output_universes.extend(ComplexColumn::output_universe(input));
+            engine_complex_columns.push(ComplexColumn::to_engine(&input));
+            output_universes.extend(ComplexColumn::output_universe(&input));
         }
         let columns = self_
             .borrow()
@@ -2782,15 +2786,15 @@ impl Scope {
             .complex_columns(engine_complex_columns)?
             .into_iter()
             .zip_eq(output_universes)
-            .map(|(column_handle, universe)| Column::new(universe.as_ref(py), column_handle))
+            .map(|(column_handle, universe)| Column::new(universe.bind(py), column_handle))
             .collect::<PyResult<_>>()?;
         Ok(columns)
     }
 
     pub fn debug_universe<'py>(
-        self_: &'py PyCell<Self>,
+        self_: &'py Bound<Self>,
         name: String,
-        table: &'py PyCell<Table>,
+        table: &'py Bound<Table>,
     ) -> PyResult<()> {
         check_identity(self_, &table.borrow().scope, "scope mismatch")?;
         Ok(self_
@@ -2800,9 +2804,9 @@ impl Scope {
     }
 
     pub fn debug_column<'py>(
-        self_: &'py PyCell<Self>,
+        self_: &'py Bound<Self>,
         name: String,
-        table: &'py PyCell<Table>,
+        table: &'py Bound<Table>,
         column_path: ColumnPath,
     ) -> PyResult<()> {
         check_identity(self_, &table.borrow().scope, "scope mismatch")?;
@@ -2813,7 +2817,7 @@ impl Scope {
     }
 
     pub fn update_rows_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         update: PyRef<Table>,
         table_properties: TableProperties,
@@ -2828,7 +2832,7 @@ impl Scope {
     }
 
     pub fn update_cells_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         update: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
@@ -2847,11 +2851,11 @@ impl Scope {
     }
 
     pub fn output_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
-        data_sink: &PyCell<DataStorage>,
-        data_format: &PyCell<DataFormat>,
+        data_sink: &Bound<DataStorage>,
+        data_format: &Bound<DataFormat>,
     ) -> PyResult<()> {
         let py = self_.py();
 
@@ -2870,7 +2874,7 @@ impl Scope {
 
     #[allow(clippy::too_many_arguments)]
     pub fn subscribe_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         skip_persisted_batch: bool,
@@ -2882,19 +2886,19 @@ impl Scope {
         let callbacks = SubscribeCallbacksBuilder::new()
             .wrapper(BatchWrapper::WithGil)
             .on_data(Box::new(move |key, values, time, diff| {
-                with_gil_and_pool(|py| {
-                    on_change.call1(py, (key, PyTuple::new(py, values), time, diff))?;
+                Python::with_gil(|py| {
+                    on_change.call1(py, (key, PyTuple::new_bound(py, values), time, diff))?;
                     Ok(())
                 })
             }))
             .on_time_end(Box::new(move |new_time| {
-                with_gil_and_pool(|py| {
+                Python::with_gil(|py| {
                     on_time_end.call1(py, (new_time,))?;
                     Ok(())
                 })
             }))
             .on_end(Box::new(move || {
-                with_gil_and_pool(|py| {
+                Python::with_gil(|py| {
                     on_end.call0(py)?;
                     Ok(())
                 })
@@ -2911,7 +2915,7 @@ impl Scope {
     }
 
     pub fn set_operator_properties(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         operator_id: usize,
         depends_on_error_log: bool,
     ) -> PyResult<()> {
@@ -2924,7 +2928,7 @@ impl Scope {
             })?)
     }
 
-    pub fn set_error_log(self_: &PyCell<Self>, error_log: Option<PyRef<ErrorLog>>) -> PyResult<()> {
+    pub fn set_error_log(self_: &Bound<Self>, error_log: Option<PyRef<ErrorLog>>) -> PyResult<()> {
         if let Some(error_log) = error_log.as_ref() {
             check_identity(self_, &error_log.scope, "scope mismatch")?;
         }
@@ -2935,7 +2939,7 @@ impl Scope {
     }
 
     pub fn error_log(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         properties: ConnectorProperties,
     ) -> PyResult<(Py<Table>, Py<ErrorLog>)> {
         let column_properties = properties.column_properties();
@@ -2950,7 +2954,7 @@ impl Scope {
     }
 
     pub fn probe_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         operator_id: usize,
     ) -> PyResult<()> {
@@ -2962,7 +2966,7 @@ impl Scope {
     }
 
     pub fn export_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         column_paths: Vec<ColumnPath>,
     ) -> PyResult<PyExportedTable> {
@@ -2973,13 +2977,13 @@ impl Scope {
         Ok(PyExportedTable::new(exported_table))
     }
 
-    pub fn import_table(self_: &PyCell<Self>, table: &PyExportedTable) -> PyResult<Py<Table>> {
+    pub fn import_table(self_: &Bound<Self>, table: &PyExportedTable) -> PyResult<Py<Table>> {
         let table_handle = self_.borrow().graph.import_table(table.inner.clone())?;
         Table::new(self_, table_handle)
     }
 
     pub fn remove_errors_from_table(
-        self_: &PyCell<Self>,
+        self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         table_properties: TableProperties,
@@ -3064,8 +3068,9 @@ pub fn run_with_new_graph(
     defer! {
         log::logger().flush();
     }
-    let config = Config::from_env()
-        .map_err(|msg| PyErr::from_type(ENGINE_ERROR_TYPE.as_ref(py), msg.to_string()))?;
+    let config = Config::from_env().map_err(|msg| {
+        PyErr::from_type_bound(ENGINE_ERROR_TYPE.bind(py).clone(), msg.to_string())
+    })?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
             Some(persistence_config.prepare(py)?)
@@ -3083,11 +3088,10 @@ pub fn run_with_new_graph(
                     let thread_state = PythonThreadState::new();
 
                     let captured_tables = Python::with_gil(|py| {
-                        let our_scope = PyCell::new(py, Scope::new(None, event_loop.clone()))?;
+                        let our_scope = &Bound::new(py, Scope::new(None, event_loop.clone()))?;
                         let tables: Vec<(PyRef<Table>, Vec<ColumnPath>)> =
                             our_scope.borrow().graph.scoped(graph, || {
-                                let args = PyTuple::new(py, [our_scope]);
-                                from_py_iterable(logic.as_ref(py).call1(args)?)
+                                from_py_iterable(&logic.bind(py).call1((our_scope,))?)
                             })?;
                         our_scope.borrow().clear_caches();
                         tables
@@ -3126,8 +3130,8 @@ pub fn run_with_new_graph(
 
 #[pyfunction]
 #[pyo3(signature = (*values, optional = false))]
-pub fn ref_scalar(values: &PyTuple, optional: bool) -> PyResult<Option<Key>> {
-    if optional && values.iter().any(PyAny::is_none) {
+pub fn ref_scalar(values: &Bound<PyTuple>, optional: bool) -> PyResult<Option<Key>> {
+    if optional && values.iter().any(|v| v.is_none()) {
         return Ok(None);
     }
     let key = Key::for_values(&from_py_iterable(values)?);
@@ -3137,11 +3141,11 @@ pub fn ref_scalar(values: &PyTuple, optional: bool) -> PyResult<Option<Key>> {
 #[pyfunction]
 #[pyo3(signature = (*values, instance, optional = false))]
 pub fn ref_scalar_with_instance(
-    values: &PyTuple,
+    values: &Bound<PyTuple>,
     instance: Value,
     optional: bool,
 ) -> PyResult<Option<Key>> {
-    if optional && (values.iter().any(PyAny::is_none) || matches!(instance, Value::None)) {
+    if optional && (values.iter().any(|v| v.is_none()) || matches!(instance, Value::None)) {
         return Ok(None);
     }
     let mut values_with_instance: Vec<Value> = from_py_iterable(values)?;
@@ -3490,8 +3494,8 @@ impl PyPersistenceMode {
     pub const UDF_CACHING: PersistenceMode = PersistenceMode::UdfCaching;
 }
 
-impl<'source> FromPyObject<'source> for PersistenceMode {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for PersistenceMode {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PyPersistenceMode>>()?.0)
     }
 }
@@ -3515,8 +3519,8 @@ impl PySnapshotAccess {
     pub const FULL: SnapshotAccess = SnapshotAccess::Full;
 }
 
-impl<'source> FromPyObject<'source> for SnapshotAccess {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for SnapshotAccess {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySnapshotAccess>>()?.0)
     }
 }
@@ -3636,8 +3640,8 @@ impl From<EngineTelemetryConfig> for TelemetryConfig {
     }
 }
 
-impl<'source> FromPyObject<'source> for SnapshotEvent {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for SnapshotEvent {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         Ok(ob.extract::<PyRef<PySnapshotEvent>>()?.0.clone())
     }
 }
@@ -4626,8 +4630,8 @@ impl Trace {
     }
 }
 
-impl<'source> FromPyObject<'source> for EngineTrace {
-    fn extract(obj: &'source PyAny) -> PyResult<Self> {
+impl<'py> FromPyObject<'py> for EngineTrace {
+    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
         let Trace {
             file_name,
             line_number,
@@ -4687,12 +4691,12 @@ use done::{Done, DONE};
 
 #[pymethods]
 impl Done {
-    pub fn __hash__(self_: &PyCell<Self>) -> usize {
+    pub fn __hash__(self_: &Bound<Self>) -> usize {
         // mimic the default Python hash
         (self_.as_ptr() as usize).rotate_right(4)
     }
 
-    pub fn __richcmp__(self_: &PyCell<Self>, other: &PyAny, op: CompareOp) -> Py<PyAny> {
+    pub fn __richcmp__(self_: &Bound<Self>, other: &Bound<PyAny>, op: CompareOp) -> Py<PyAny> {
         let py = other.py();
         if other.is_instance_of::<Self>() {
             assert!(self_.is(other));
@@ -4705,11 +4709,11 @@ impl Done {
     }
 }
 
-impl<'source, T> FromPyObject<'source> for TotalFrontier<T>
+impl<'py, T> FromPyObject<'py> for TotalFrontier<T>
 where
-    T: FromPyObject<'source>,
+    T: FromPyObject<'py>,
 {
-    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         if ob.is_instance_of::<Done>() {
             Ok(TotalFrontier::Done)
         } else {
@@ -4768,19 +4772,18 @@ impl PyExportedTable {
     }
 }
 
+#[allow(clippy::struct_field_names)]
 struct WakeupHandler<'py> {
-    py: Python<'py>,
     _fd: OwnedFd,
-    set_wakeup_fd: &'py PyAny,
-    old_wakeup_fd: &'py PyAny,
+    set_wakeup_fd: Bound<'py, PyAny>,
+    old_wakeup_fd: Bound<'py, PyAny>,
 }
 
 impl<'py> WakeupHandler<'py> {
     fn new(py: Python<'py>, fd: OwnedFd) -> PyResult<Option<Self>> {
-        let signal_module = py.import("signal")?;
-        let set_wakeup_fd = signal_module.getattr("set_wakeup_fd")?;
-        let args = PyTuple::new(py, [fd.as_raw_fd()]);
-        let old_wakeup_fd = set_wakeup_fd.call1(args);
+        let signal_module = py.import_bound(intern!(py, "signal"))?;
+        let set_wakeup_fd = signal_module.getattr(intern!(py, "set_wakeup_fd"))?;
+        let old_wakeup_fd = set_wakeup_fd.call1((fd.as_raw_fd(),));
         if let Err(ref error) = old_wakeup_fd {
             if error.is_instance_of::<PyValueError>(py) {
                 // We are not the main thread. This means we can ignore signal handling.
@@ -4789,7 +4792,6 @@ impl<'py> WakeupHandler<'py> {
         }
         let old_wakeup_fd = old_wakeup_fd?;
         let res = Some(Self {
-            py,
             _fd: fd,
             set_wakeup_fd,
             old_wakeup_fd,
@@ -4801,10 +4803,8 @@ impl<'py> WakeupHandler<'py> {
 
 impl<'py> Drop for WakeupHandler<'py> {
     fn drop(&mut self) {
-        let py = self.py;
-        let args = PyTuple::new(py, [self.old_wakeup_fd]);
         self.set_wakeup_fd
-            .call1(args)
+            .call1((&self.old_wakeup_fd,))
             .expect("restoring the wakeup fd should not fail");
     }
 }
@@ -4846,10 +4846,8 @@ static LOGGING_RESET_HANDLE: Lazy<ResetHandle> = Lazy::new(logging::init);
 
 impl From<LicenseError> for PyErr {
     fn from(error: LicenseError) -> Self {
-        Python::with_gil(|py| {
-            let message = error.to_string();
-            PyErr::from_type(PyRuntimeError::type_object(py), message)
-        })
+        let message = error.to_string();
+        PyRuntimeError::new_err(message)
     }
 }
 
@@ -4866,7 +4864,7 @@ fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) ->
 
 #[pymodule]
 #[pyo3(name = "engine")]
-fn module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     // Initialize the logging
     let _ = Lazy::force(&LOGGING_RESET_HANDLE);
 

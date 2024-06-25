@@ -112,7 +112,7 @@ impl PathSummary<Timestamp> for Summary {
 
 // XXX
 mod python_conversions {
-    use pyo3::{FromPyObject, IntoPy, PyAny, PyObject, PyResult, Python};
+    use pyo3::prelude::*;
 
     use super::Timestamp;
 
@@ -122,8 +122,8 @@ mod python_conversions {
         }
     }
 
-    impl<'source> FromPyObject<'source> for Timestamp {
-        fn extract(ob: &'source PyAny) -> PyResult<Self> {
+    impl<'py> FromPyObject<'py> for Timestamp {
+        fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
             ob.extract().map(Self)
         }
     }
