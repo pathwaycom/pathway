@@ -7,6 +7,9 @@ use std::sync::Arc;
 use usearch::ffi::MetricKind;
 
 use crate::engine::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
+use crate::external_integration::brute_force_knn_integration::{
+    BruteForceKNNIndexFactory, BruteForceKnnMetricKind,
+};
 use crate::external_integration::tantivy_integration::TantivyIndexFactory;
 use crate::external_integration::usearch_integration::{USearchKNNIndexFactory, USearchMetricKind};
 use crate::external_integration::ExternalIndexFactory;
@@ -46,6 +49,21 @@ impl PyExternalIndexFactory {
     fn tantivy_factory(ram_budget: usize, in_memory_index: bool) -> PyExternalIndexFactory {
         PyExternalIndexFactory {
             inner: Arc::new(TantivyIndexFactory::new(ram_budget, in_memory_index)),
+        }
+    }
+
+    #[staticmethod]
+    fn brute_force_knn_factory(
+        dimensions: usize,
+        reserved_space: usize,
+        metric: BruteForceKnnMetricKind,
+    ) -> PyExternalIndexFactory {
+        PyExternalIndexFactory {
+            inner: Arc::new(BruteForceKNNIndexFactory::new(
+                dimensions,
+                reserved_space,
+                metric,
+            )),
         }
     }
 }
@@ -154,5 +172,28 @@ impl<'py> FromPyObject<'py> for USearchMetricKind {
 impl IntoPy<PyObject> for USearchMetricKind {
     fn into_py(self, py: Python<'_>) -> PyObject {
         PyUSearchMetricKind(self).into_py(py)
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "BruteForceKnnMetricKind")]
+pub struct PyBruteForceKnnMetricKind(BruteForceKnnMetricKind);
+
+#[pymethods]
+impl PyBruteForceKnnMetricKind {
+    #[classattr]
+    pub const L2SQ: BruteForceKnnMetricKind = BruteForceKnnMetricKind::L2sq;
+    #[classattr]
+    pub const COS: BruteForceKnnMetricKind = BruteForceKnnMetricKind::Cos;
+}
+
+impl<'source> FromPyObject<'source> for BruteForceKnnMetricKind {
+    fn extract(ob: &'source PyAny) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyBruteForceKnnMetricKind>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for BruteForceKnnMetricKind {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyBruteForceKnnMetricKind(self).into_py(py)
     }
 }

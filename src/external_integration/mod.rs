@@ -1,4 +1,6 @@
 // Copyright © 2024 Pathway
+
+pub mod brute_force_knn_integration;
 pub mod tantivy_integration;
 pub mod usearch_integration;
 use std::ops::Deref;
@@ -202,13 +204,13 @@ struct KeyToU64IdMapper {
 impl KeyToU64IdMapper {
     fn new() -> KeyToU64IdMapper {
         KeyToU64IdMapper {
-            next_id: 1,
+            next_id: 0,
             id_to_key_map: HashMap::new(),
             key_to_id_map: HashMap::new(),
         }
     }
 
-    fn get_noncolliding_u64_id(&mut self, key: Key) -> u64 {
+    fn get_next_free_u64_id(&mut self, key: Key) -> u64 {
         if let Some(ret) = self.key_to_id_map.get(&key) {
             return *ret;
         }
@@ -217,6 +219,15 @@ impl KeyToU64IdMapper {
         self.id_to_key_map.insert(id, key);
         self.key_to_id_map.insert(key, id);
         id
+    }
+
+    fn assign_key(&mut self, key: Key, id: u64) {
+        self.id_to_key_map.insert(id, key);
+        self.key_to_id_map.insert(key, id);
+    }
+
+    fn decrement_next_free_id(&mut self) {
+        self.next_id -= 1;
     }
 
     fn get_key_for_id(&self, id: u64) -> Key {

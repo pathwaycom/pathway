@@ -57,7 +57,7 @@ use std::thread;
 use std::time;
 
 use self::external_index_wrappers::{
-    PyExternalIndexData, PyExternalIndexQuery, PyUSearchMetricKind,
+    PyBruteForceKnnMetricKind, PyExternalIndexData, PyExternalIndexQuery, PyUSearchMetricKind,
 };
 use self::threads::PythonThreadState;
 
@@ -4921,6 +4921,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyExternalIndexData>()?;
     m.add_class::<PyExternalIndexQuery>()?;
     m.add_class::<PyUSearchMetricKind>()?;
+    m.add_class::<PyBruteForceKnnMetricKind>()?;
 
     m.add_function(wrap_pyfunction!(run_with_new_graph, m)?)?;
     m.add_function(wrap_pyfunction!(ref_scalar, m)?)?;

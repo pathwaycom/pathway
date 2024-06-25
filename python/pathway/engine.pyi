@@ -831,6 +831,13 @@ class ExternalIndexFactory:
         ram_budget: int,
         in_memory_index: bool,
     ) -> ExternalIndexFactory: ...
+    @staticmethod
+    def brute_force_knn_factory(
+        *,
+        dimensions: int,
+        reserved_space: int,
+        metric: BruteForceKnnMetricKind,
+    ) -> ExternalIndexFactory: ...
 
 @dataclasses.dataclass(frozen=True)
 class ExternalIndexData:
@@ -855,6 +862,10 @@ class USearchMetricKind(Enum):
     HAMMING: USearchMetricKind
     TANIMOTO: USearchMetricKind
     SORENSEN: USearchMetricKind
+
+class BruteForceKnnMetricKind(Enum):
+    L2SQ: BruteForceKnnMetricKind
+    COS: BruteForceKnnMetricKind
 
 def check_entitlements(
     *,

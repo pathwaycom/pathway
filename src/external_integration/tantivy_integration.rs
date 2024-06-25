@@ -83,7 +83,7 @@ impl TantivyIndex {
     }
 
     fn add_one(&mut self, key: Key, data: String) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.get_noncolliding_u64_id(key);
+        let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
         self.writer.add_document(doc!(
             self.id_field => key_id,
             self.data_field => data,

@@ -63,7 +63,7 @@ impl USearchKNNIndex {
     }
 
     fn add_one(&mut self, key: Key, data: &[f64]) -> DynResult<()> {
-        let key_id = self.key_to_id_mapper.get_noncolliding_u64_id(key);
+        let key_id = self.key_to_id_mapper.get_next_free_u64_id(key);
         self.index.add(key_id, data)?;
         Ok(())
     }
