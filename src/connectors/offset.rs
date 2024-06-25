@@ -43,7 +43,11 @@ pub enum OffsetValue {
         bytes_offset: u64,
     },
     PythonEntrySequentialId(u64),
-    DeltaLakeVersion(Option<i64>),
+    DeltaTablePosition {
+        version: i64,
+        rows_read_within_version: i64,
+        last_fully_read_version: Option<i64>,
+    },
     Empty,
 }
 
@@ -66,9 +70,17 @@ impl HashInto for OffsetValue {
             OffsetValue::PythonEntrySequentialId(sequential_id) => {
                 sequential_id.hash_into(hasher);
             }
-            OffsetValue::DeltaLakeVersion(version) => {
-                version.is_some().hash_into(hasher);
-                version.unwrap_or_default().hash_into(hasher);
+            OffsetValue::DeltaTablePosition {
+                version,
+                rows_read_within_version,
+                last_fully_read_version,
+            } => {
+                version.hash_into(hasher);
+                rows_read_within_version.hash_into(hasher);
+                last_fully_read_version.is_some().hash_into(hasher);
+                last_fully_read_version
+                    .unwrap_or_default()
+                    .hash_into(hasher);
             }
             OffsetValue::Empty => {}
         };

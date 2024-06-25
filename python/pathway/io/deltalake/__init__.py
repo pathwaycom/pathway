@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from os import PathLike, fspath
 from typing import Any
 
 from pathway.internals import api, datasink, datasource
@@ -21,7 +22,7 @@ S3_URI_PREFIX = "s3://"
 @check_arg_types
 @trace_user_frame
 def read(
-    uri: str,
+    uri: str | PathLike,
     schema: type[Schema],
     *,
     mode: str = "streaming",
@@ -57,13 +58,7 @@ def read(
     Consider an example with a stream of changes on a simple key-value table, streamed by
     another Pathway program with ``pw.io.deltalake.write`` method.
 
-    To set the stage you may need to clear the existing lake object. Since it's a directory
-    in the file system if can be done this way:
-
-    >>> import shutil
-    >>> shutil.rmtree("./local-lake", ignore_errors=True)
-
-    Now you can start wrinting Pathway code. First, the schema of the table needs to be created:
+    Let's start writing Pathway code. First, the schema of the table needs to be created:
 
     >>> import pathway as pw
     >>> class KVSchema(pw.Schema):
@@ -75,7 +70,9 @@ def read(
     saved into the locally located lake:
 
     >>> output_table = pw.debug.table_from_markdown("key value \\n one Hello \\n two World")
-    >>> pw.io.deltalake.write(output_table, "./local-lake")
+    >>> lake_path = "./local-lake"
+    >>> lake_path = getfixture("tmp_path") / "local-lake"  # NODOCS
+    >>> pw.io.deltalake.write(output_table, lake_path)
 
     Now the producer code can be run with with a simple ``pw.run``:
 
@@ -85,7 +82,7 @@ def read(
     of the URI and the schema that was created above. In addition, you can use the ``"static"``
     mode, so that the program finishes after the data is read:
 
-    >>> input_table = pw.io.deltalake.read("./local-lake", KVSchema, mode="static")
+    >>> input_table = pw.io.deltalake.read(lake_path, KVSchema, mode="static")
 
     Please note that the table doesn't necessary have to be created by Pathway: an
     append-only Delta Table created in any other way will also be processed correctly.
@@ -100,6 +97,7 @@ def read(
     """
     _check_entitlements("deltalake")
 
+    uri = fspath(uri)
     schema, api_schema = read_schema(
         schema=schema,
         value_columns=None,
@@ -139,7 +137,7 @@ def read(
 @trace_user_frame
 def write(
     table: Table,
-    uri: str,
+    uri: str | PathLike,
     *,
     s3_connection_settings: AwsS3Settings | None = None,
     min_commit_frequency: int | None = 60_000,
@@ -212,8 +210,9 @@ def write(
 
     >>> pw.io.deltalake.write(access_log, "s3://logs/access-log/")  # doctest: +SKIP
     """
-
     _check_entitlements("deltalake")
+
+    uri = fspath(uri)
     storage_options = {}
     if uri.startswith(S3_URI_PREFIX):
         if s3_connection_settings is None:

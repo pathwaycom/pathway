@@ -28,7 +28,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, FixedOffset};
-use log::{error, warn};
+use log::{error, info, warn};
 use postgres::types::ToSql;
 use tempfile::{tempdir, TempDir};
 use tokio::runtime::Runtime as TokioRuntime;
@@ -326,6 +326,9 @@ pub enum ReadError {
 
     #[error("parquet value type mismatch: got {0:?} expected {1:?}")]
     WrongParquetType(ParquetValue, Type),
+
+    #[error("only append-only delta tables are supported")]
+    DeltaLakeForbiddenRemoval,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -417,14 +420,18 @@ pub trait Reader {
                         }
                     }
                     (
-                        OffsetValue::DeltaLakeVersion(offset_version),
-                        OffsetValue::DeltaLakeVersion(other_version),
+                        OffsetValue::DeltaTablePosition {
+                            version: offset_version,
+                            rows_read_within_version: offset_position,
+                            ..
+                        },
+                        OffsetValue::DeltaTablePosition {
+                            version: other_version,
+                            rows_read_within_version: other_position,
+                            ..
+                        },
                     ) => {
-                        if let Some(existing_version) = offset_version {
-                            if other_version.unwrap_or(*existing_version) > *existing_version {
-                                result.advance_offset(offset_key.clone(), other_value.clone());
-                            }
-                        } else {
+                        if (other_version, other_position) > (offset_version, offset_position) {
                             result.advance_offset(offset_key.clone(), other_value.clone());
                         }
                     }
@@ -2929,11 +2936,9 @@ pub struct DeltaTableReader {
     reader: Option<ParquetRowIterator<'static>>,
     current_version: i64,
     last_fully_read_version: Option<i64>,
-    entries_expected: isize,
+    rows_read_within_version: i64,
     parquet_files_queue: VecDeque<String>,
 }
-
-const DELTA_APPEND_COMMIT_TYPE: &str = "WRITE";
 
 impl DeltaTableReader {
     pub fn new(
@@ -2959,7 +2964,7 @@ impl DeltaTableReader {
             last_fully_read_version: None,
             reader: None,
             parquet_files_queue,
-            entries_expected: 0,
+            rows_read_within_version: 0,
         })
     }
 
@@ -2978,9 +2983,10 @@ impl DeltaTableReader {
         }
     }
 
-    fn wait_for_new_parquet_files(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
+    fn upgrade_table_version(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
         let runtime = create_async_runtime(false)?;
         runtime.block_on(async {
+            self.parquet_files_queue.clear();
             while self.parquet_files_queue.is_empty() {
                 let diff = self.table.peek_next_commit(self.current_version).await?;
                 let DeltaLakePeekCommit::New(next_version, txn_actions) = diff else {
@@ -2993,20 +2999,29 @@ impl DeltaTableReader {
                 };
 
                 let mut added_blocks = VecDeque::new();
-                let mut operation = None;
+                let mut data_changed = false;
                 for action in txn_actions {
+                    // Protocol description for Delta Lake actions:
+                    // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#actions
                     match action {
-                        DeltaLakeAction::Add(data) => {
-                            added_blocks.push_back(self.ensure_absolute_path(&data.path));
+                        DeltaLakeAction::Remove(action) => {
+                            if action.data_change {
+                                return Err(ReadError::DeltaLakeForbiddenRemoval);
+                            }
                         }
-                        DeltaLakeAction::CommitInfo(data) => operation = data.operation,
+                        DeltaLakeAction::Add(action) => {
+                            data_changed |= action.data_change;
+                            added_blocks.push_back(self.ensure_absolute_path(&action.path));
+                        }
                         _ => continue,
                     };
                 }
 
+                self.last_fully_read_version = Some(self.current_version);
                 self.current_version = next_version;
-                if operation == Some(DELTA_APPEND_COMMIT_TYPE.to_string()) {
-                    self.parquet_files_queue = take(&mut added_blocks);
+                self.rows_read_within_version = 0;
+                if data_changed {
+                    self.parquet_files_queue = added_blocks;
                 }
             }
             Ok(())
@@ -3018,26 +3033,15 @@ impl DeltaTableReader {
             match &mut self.reader {
                 Some(ref mut reader) => {
                     match reader.next() {
-                        Some(Ok(row)) => {
-                            assert!(
-                                self.entries_expected > 0,
-                                "file contains more parquet entries than expected"
-                            );
-                            self.entries_expected -= 1;
-                            return Ok(row);
-                        }
+                        Some(Ok(row)) => return Ok(row),
                         Some(Err(parquet_err)) => return Err(ReadError::Parquet(parquet_err)),
-                        None => {
-                            assert!(self.entries_expected == 0, "unexpected end of file");
-                            self.reader = None;
-                        }
+                        None => self.reader = None,
                     };
                 }
                 None => {
                     if self.parquet_files_queue.is_empty() {
-                        if is_polling_enabled {
-                            self.wait_for_new_parquet_files(true)?;
-                        } else {
+                        self.upgrade_table_version(is_polling_enabled)?;
+                        if self.parquet_files_queue.is_empty() {
                             return Err(ReadError::NoObjectsToRead);
                         }
                     }
@@ -3048,20 +3052,19 @@ impl DeltaTableReader {
                         DeltaLakeParquetReader::try_from(Path::new(&next_parquet_file))?
                             .into_iter(),
                     );
-                    self.entries_expected = Self::rows_in_file_count(&next_parquet_file)?;
                 }
             }
         }
     }
 
-    fn rows_in_file_count(path: &str) -> Result<isize, ReadError> {
+    fn rows_in_file_count(path: &str) -> Result<i64, ReadError> {
         let reader = DeltaLakeParquetReader::try_from(Path::new(path))?;
         let metadata = reader.metadata();
         let mut n_rows = 0;
         for row_group in metadata.row_groups() {
             n_rows += row_group.num_rows();
         }
-        Ok(n_rows.try_into().unwrap())
+        Ok(n_rows)
     }
 }
 
@@ -3110,15 +3113,16 @@ impl Reader for DeltaTableReader {
             row_map.insert(name.clone(), value);
         }
 
-        if self.entries_expected == 0 && self.parquet_files_queue.is_empty() {
-            self.last_fully_read_version = Some(self.current_version);
-        }
-
+        self.rows_read_within_version += 1;
         Ok(ReadResult::Data(
             ReaderContext::from_diff(DataEventType::Insert, None, row_map.into()),
             (
                 OffsetKey::Empty,
-                OffsetValue::DeltaLakeVersion(self.last_fully_read_version),
+                OffsetValue::DeltaTablePosition {
+                    version: self.current_version,
+                    rows_read_within_version: self.rows_read_within_version,
+                    last_fully_read_version: self.last_fully_read_version,
+                },
             ),
         ))
     }
@@ -3128,32 +3132,50 @@ impl Reader for DeltaTableReader {
         // Then, the `seek` loads this checkpoint and ensures that no diffs
         // from the current version will be applied.
         let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::DeltaLakeVersion(last_fully_read_version)) = offset_value else {
+        let Some(OffsetValue::DeltaTablePosition {
+            version,
+            rows_read_within_version: n_rows_to_rewind,
+            last_fully_read_version,
+        }) = offset_value
+        else {
             if offset_value.is_some() {
                 warn!("Incorrect type of offset value in DeltaLake frontier: {offset_value:?}");
             }
             return Ok(());
         };
 
-        let Some(last_fully_read_version) = last_fully_read_version else {
-            return Ok(());
-        };
-
-        self.last_fully_read_version = Some(*last_fully_read_version);
-        self.current_version = *last_fully_read_version;
-
-        // The parquet files queue is empty because the version
-        // was fully processed in the previous run.
-        self.parquet_files_queue.clear();
-        self.entries_expected = 0;
         self.reader = None;
-
         let runtime = create_async_runtime(false)?;
-        runtime.block_on(async { self.table.load_version(self.current_version).await })?;
+        if let Some(last_fully_read_version) = last_fully_read_version {
+            // The offset is based on the diff between `last_fully_read_version` and `version`
+            self.current_version = *last_fully_read_version;
+            runtime.block_on(async { self.table.load_version(self.current_version).await })?;
+            self.upgrade_table_version(false)?;
+        } else {
+            // The offset is based on the full set of files present for `version`
+            self.current_version = *version;
+            runtime.block_on(async { self.table.load_version(self.current_version).await })?;
+            self.parquet_files_queue = Self::get_file_uris(&self.table)?;
+        }
 
-        // Prepare the state for the next read: advance to the next
-        // unprocessed version.
-        self.wait_for_new_parquet_files(false)?;
+        self.rows_read_within_version = 0;
+        while !self.parquet_files_queue.is_empty() {
+            let next_block = self.parquet_files_queue.front().unwrap();
+            let block_size = Self::rows_in_file_count(next_block)?;
+            if self.rows_read_within_version + block_size <= *n_rows_to_rewind {
+                info!("Skipping parquet block with the size of {block_size} entries: {next_block}");
+                self.rows_read_within_version += block_size;
+                self.parquet_files_queue.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        let rows_left_to_rewind = *n_rows_to_rewind - self.rows_read_within_version;
+        info!("Not quickly-rewindable entries count: {rows_left_to_rewind}");
+        for _ in 0..rows_left_to_rewind {
+            let _ = self.read_next_row_native(false)?;
+        }
 
         Ok(())
     }
