@@ -11,6 +11,7 @@ from io import BytesIO
 from typing import Any
 
 import pathway as pw
+from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 
 logger = logging.getLogger(__name__)
@@ -195,3 +196,72 @@ class ParseUnstructured(pw.UDF):
             removed if they are specific to a single element, e.g. `category_depth`.
         """
         return super().__call__(contents, **kwargs)
+
+
+# TODO: make llm model customizable
+class OpenParse(pw.UDF):
+    """
+    Parse PDFs using `open-parse library <https://github.com/Filimoa/open-parse>`_.
+
+    When used in the
+    `VectorStoreServer <https://pathway.com/developers/api-docs/pathway-xpacks-llm/vectorstore#pathway.xpacks.llm.vector_store.VectorStoreServer>`_,
+    splitter can be set to `None` as OpenParse already chunks the documents.
+
+    Args:
+        - table_args: dict containing the table parser arguments. Needs to have key `parsing_algorithm`,
+            with the value being one of `llm`, `unitable`, `pymupdf`, `table-transformers`.
+            If `llm` is chosen, `gpt-4o` is used for parsing and `OPENAI_API_KEY` environmental variable
+            needs to be set. For information on other parsing algorithms and supported
+            arguments check
+            `the OpenParse documentation <https://filimoa.github.io/open-parse/processing/parsing-tables/overview/>`_.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid :py:class:`~pathway.udfs.CacheStrategy` should be provided.
+            Defaults to None.
+    """  # noqa: 501
+
+    def __init__(
+        self,
+        table_args: dict = {"parsing_algorithm": "llm"},
+        cache_strategy: udfs.CacheStrategy | None = None,
+    ):
+        with optional_imports("xpack-llm-docs"):
+            import openparse  # noqa:F401
+            from pypdf import PdfReader  # noqa:F401
+
+            from ._parser_utils import CustomDocumentParser
+
+        super().__init__(cache_strategy=cache_strategy)
+
+        self.doc_parser = CustomDocumentParser(table_args=table_args)
+
+    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        import openparse
+        from pypdf import PdfReader
+
+        reader = PdfReader(stream=BytesIO(contents))
+        doc = openparse.Pdf(file=reader)
+
+        parsed_content = self.doc_parser.parse(doc)
+        nodes = list(parsed_content.nodes)
+
+        logger.info(
+            f"OpenParser completed parsing, total number of nodes: {len(nodes)}"
+        )
+
+        metadata: dict = {}
+        docs = [(node.model_dump()["text"], metadata) for node in nodes]
+
+        return docs
+
+    def __call__(self, contents: pw.ColumnExpression) -> pw.ColumnExpression:
+        """
+        Parse the given PDFs.
+
+        Args:
+            - contents (ColumnExpression[bytes]): A column with PDFs to be parsed, passed as bytes.
+
+        Returns:
+            A column with a list of pairs for each query. Each pair is a text chunk and
+            metadata, which in case of `OpenParse` is an empty dictionary.
+        """
+        return super().__call__(contents)

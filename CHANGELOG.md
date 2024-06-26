@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.kafka.read` now accepts an autogenerate_key flag. This flag determines the primary key generation policy to apply when reading raw data from the source. You can either use the key from the Kafka message or have Pathway autogenerate one.
 - `pw.io.deltalake.read` input connector that fetches changes from DeltaLake into a Pathway table.
+- `pw.xpacks.llm.parsers.OpenParse` which allows parsing tables and images in PDFs.
 
 ### Fixed
 - All S3 input connectors (including S3, Min.io, Digital Ocean, and Wasabi) now automatically retry network operations if a failure occurs.

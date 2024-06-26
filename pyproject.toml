@@ -66,6 +66,7 @@ xpack-llm-local = [
 xpack-llm-docs = [
     "unstructured[all-docs] == 0.10.28",
     "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
+    "openparse == 0.5.6",
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
