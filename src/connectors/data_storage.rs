@@ -1785,7 +1785,7 @@ impl CurrentlyProcessedS3Object {
     }
 }
 
-const MAX_S3_RETRIES: usize = 20;
+const MAX_S3_RETRIES: usize = 2;
 
 pub struct S3Scanner {
     /*
@@ -1841,16 +1841,7 @@ impl S3Scanner {
             .name(format!("pathway:s3_get-{object_path_ref}"))
             .spawn(move || {
                 let response = execute_with_retries(
-                    || {
-                        bucket.get_object(&object_path).map(|data| {
-                            if data.status_code() / 100 == 2 {
-                                Ok(data)
-                            } else {
-                                warn!("Bad S3 status code: {}", data.status_code());
-                                Err(S3Error::HttpFail)
-                            }
-                        })?
-                    },
+                    || bucket.get_object(&object_path), // returns Err on incorrect status code because fail-on-err feature is enabled
                     RetryConfig::default(),
                     MAX_S3_RETRIES,
                 )
