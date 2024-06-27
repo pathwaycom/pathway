@@ -19,6 +19,35 @@ from pathway.optional_import import optional_imports
 logger = logging.getLogger(__name__)
 
 
+def _prep_message_log(messages: list[dict], verbose: bool) -> str:
+    """
+    Prepare logs from OpenAI messages.
+
+    If `verbose` is `True`, shorten OpenAI chat logs by redacting images.
+    Otherwise, truncate the logs.
+
+    Returns:
+        str: Prepared log.
+    """
+    if verbose:
+        log_messages = copy.deepcopy(messages)
+        for message in log_messages:
+            msg_content = message["content"]
+            if isinstance(msg_content, list):
+                for c_msg in msg_content:
+                    if c_msg.get("type", "text") == "image_url":
+                        img_bytes = c_msg["image_url"]["url"]
+                        c_msg["image_url"]["url"] = (
+                            img_bytes[: img_bytes.index(",") + 25]
+                            + "...REDACTED_B64_IMAGE"
+                        )
+        logs = str(log_messages)
+    else:
+        str_msg = str(messages)
+        logs = str_msg[:100] + "..."
+    return logs
+
+
 class OpenAIChat(pw.UDF):
     """Pathway wrapper for OpenAI Chat services.
 
@@ -196,6 +225,7 @@ class OpenAIChat(pw.UDF):
 
         verbose = kwargs.pop("verbose", False)
         api_key = kwargs.pop("api_key", None)
+        base_url = kwargs.pop("base_url", None)
 
         msg_id = str(uuid.uuid4())[-8:]
 
@@ -203,19 +233,19 @@ class OpenAIChat(pw.UDF):
             "_type": "openai_chat_request",
             "kwargs": copy.deepcopy(kwargs),
             "id": msg_id,
-            "messages": (
-                messages_decoded if verbose else str(messages_decoded)[:100] + "..."
-            ),
+            "messages": _prep_message_log(messages_decoded, verbose),
         }
         logger.info(json.dumps(event))
 
-        client = openai.AsyncOpenAI(api_key=api_key)
+        client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
         response = ret.choices[0].message.content
 
         event = {
             "_type": "openai_chat_response",
-            "response": response if verbose else str(messages_decoded)[:100] + "...",
+            "response": (
+                response if verbose else response[: min(50, len(response))] + "..."
+            ),
             "id": msg_id,
         }
         logger.info(json.dumps(event))
