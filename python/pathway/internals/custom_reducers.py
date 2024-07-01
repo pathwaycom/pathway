@@ -58,7 +58,7 @@ def stateful_single(combine_single: CombineSingle[S, ...]) -> ReducerProtocol:
 
 
 class BaseCustomAccumulator(ABC):
-    """Utility class for defining custom accumulators, used for custom reducers.
+    """Utility class for defining custom accumulators, used for stateful reducers.
     Custom accumulators should inherit from this class, and should implement ``from_row``,
     ``update`` and ``compute_result``. Optionally ``neutral`` and ``retract`` can be provided
     for more efficient processing on streams with changing data. Additionally, ``serialize``
@@ -155,7 +155,7 @@ class BaseCustomAccumulator(ABC):
 
 
 def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
-    """Decorator for defining custom reducers. Requires custom accumulator as an argument.
+    """Decorator for defining stateful reducers. Requires custom accumulator as an argument.
     Custom accumulator should implement ``from_row``, ``update`` and ``compute_result``.
     Optionally ``neutral`` and ``retract`` can be provided for more efficient processing on
     streams with changing data.
@@ -237,7 +237,7 @@ def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
                         return None
                     else:
                         raise ValueError(
-                            "Unable to process negative update with this custom reducer."
+                            "Unable to process negative update with this stateful reducer."
                         )
                 else:
                     state = reducer_cls.from_row(list(positive_updates[0]))
@@ -260,7 +260,7 @@ def udf_reducer(reducer_cls: type[BaseCustomAccumulator]):
             for row_up in negative_updates:
                 if not retract_available:
                     raise ValueError(
-                        "Unable to process negative update with this custom reducer."
+                        "Unable to process negative update with this stateful reducer."
                     )
                 else:
                     _cnt -= 1

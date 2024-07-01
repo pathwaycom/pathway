@@ -1,6 +1,6 @@
 # ---
-# title: Writing Custom Reducers
-# description: An article explaining how to write custom reducers in Pathway
+# title: Writing Stateful Reducers
+# description: An article explaining how to write stateful reducers in Pathway
 # date: '2024-01-17'
 # thumbnail: '/assets/content/blog/th-json.png'
 # tags: ['tutorial']
@@ -21,11 +21,11 @@
 # ---
 
 # %% [markdown]
-# # Writing Simple Custom Reducer in Pathway
+# # Writing Simple Stateful Reducer in Pathway
 #
 # Pathway supports natively aggregation using a wide range of [reducers](/developers/api-docs/reducers/), e.g., [`sum`](/developers/api-docs/reducers#pathway.reducers.sum), [`count`](/developers/api-docs/reducers#pathway.reducers.count), or [`max`](/developers/api-docs/reducers#pathway.reducers.max). However, those might not cover all the necessary ways of aggregating values. In this tutorial, you learn how to write reducers implementing custom logic.
 #
-# For example, let's implement a custom `stdev` reducer that computes the standard deviation.
+# For example, let's implement a custom stateful `stdev` reducer that computes the standard deviation.
 # %%
 import pathway as pw
 
