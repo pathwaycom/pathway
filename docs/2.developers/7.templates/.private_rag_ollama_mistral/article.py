@@ -11,6 +11,7 @@
 # notebook_export_path: notebooks/showcases/mistral_adaptive_rag_question_answering.ipynb
 # author: 'berke'
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag', 'notebook']
+# run_template: "/developers/templates/template-private-rag"
 # ---
 
 # # Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway

@@ -15,7 +15,8 @@
 #   img: "/assets/authors/jan-chorowski.jpg"
 #   linkedin: "https://www.linkedin.com/in/janchorowski/"
 #   extra_info: joint work with Jacek Kowalski, Szymon Dudycz
-# keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability', 'notebook']
+# keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability', 'notebook', 'Docker']
+# run_template: "/developers/templates/template-adaptive-rag"
 # ---
 
 # # Adaptive RAG: cut your LLM costs without sacrificing accuracy
