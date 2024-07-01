@@ -10,7 +10,7 @@
 #     related: ['/developers/templates/adaptive-rag', '/developers/templates/llamaindex-pathway']
 # notebook_export_path: notebooks/showcases/mistral_adaptive_rag_question_answering.ipynb
 # author: 'berke'
-# keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag', 'notebook']
+# keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag', 'notebook', 'docker']
 # run_template: "/developers/templates/template-private-rag"
 # ---
 
