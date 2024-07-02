@@ -169,6 +169,7 @@ class GraphRunner:
                         worker_id=scope.worker_index,
                         worker_count=scope.worker_count,
                         graph_statistics=json.dumps(self._graph.statistics()),
+                        xpacks_used=telemetry.get_imported_xpacks(),
                     ),
                 ):
                     state = ScopeState(scope)

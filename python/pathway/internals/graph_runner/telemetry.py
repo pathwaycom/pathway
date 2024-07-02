@@ -127,3 +127,14 @@ def get_current_context() -> tuple[Context, str | None]:
     trace_parent = carrier.get("traceparent", None)
     assert trace_parent is None or isinstance(trace_parent, str)
     return context, trace_parent
+
+
+XPACKS = {
+    "pathway.xpacks.spatial",
+    "pathway.xpacks.llm",
+    "pathway.xpacks.connectors.sharepoint",
+}
+
+
+def get_imported_xpacks() -> list[str]:
+    return sorted(XPACKS.intersection(sys.modules.keys()))
