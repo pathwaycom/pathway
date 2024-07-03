@@ -26,12 +26,7 @@
 # # **Multimodal RAG for PDFs with Text, Images, and Charts**
 
 # + [markdown] id="TKIZcJebzBwZ"
-# ::true-img
-# ---
-# src: '/assets/content/showcases/multimodal-RAG/multimodalRAG-blog-banner.svg'
-# alt: "Multimodal RAG overview"
-# ---
-# ::
+# ![Multimodal RAG overview](/assets/content/showcases/multimodal-RAG/multimodalRAG-blog-banner.svg)
 
 # + [markdown] id="YQbScd7hUSrw"
 # Multimodal Retrieval-Augmented Generation (MM-RAG) systems are transforming the way you enhance Language Models and Generative AI. By incorporating a variety of data types within one application, these systems significantly expand their capabilities and applications.
@@ -119,12 +114,7 @@
 #
 
 # + [markdown] colab={"base_uri": "https://localhost:8080/", "height": 419} id="l_f-zWx3yFku" outputId="6a614d59-3ae6-41d2-8c7c-a4c1258c9f94"
-# ::true-img
-# ---
-# src: '/assets/content/showcases/multimodal-RAG/multimodalRAG-gpt4o.gif'
-# alt: "Multimodal RAG overview"
-# ---
-# ::
+# ![Multimodal RAG overview](/assets/content/showcases/multimodal-RAG/multimodalRAG-gpt4o.gif)
 
 # + [markdown] id="znH7QGu2-6qz"
 # ### Key Components of the Multimodal RAG Architecture
