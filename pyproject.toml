@@ -64,7 +64,7 @@ xpack-llm-local = [
     "transformers == 4.38.1"
 ]
 xpack-llm-docs = [
-    "unstructured[all-docs] == 0.10.28",
+    "unstructured[all-docs] >= 0.10.28, < 0.15",
     "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
     "openparse == 0.5.6",
 ]
