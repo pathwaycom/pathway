@@ -3,7 +3,7 @@
 # description: "End-to-end template showing how you can launch a document processing pipeline that utilizes GPT-4o in the parsing stage."
 # aside: true
 # article:
-#   thumbnail: '/assets/content/showcases/multimodal-RAG/multimodalRAG-blog-banner.svg'
+#   thumbnail: '/assets/content/showcases/multimodal-RAG/multimodalRAG-blog-banner.png'
 #   date: '2024-06-20'
 #   tags: ['showcase', 'llm']
 # keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'GPT-4o', 'multimodal RAG', 'unstructured', 'notebook']
