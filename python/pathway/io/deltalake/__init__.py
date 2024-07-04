@@ -6,7 +6,11 @@ from os import PathLike, fspath
 from typing import Any
 
 from pathway.internals import api, datasink, datasource
-from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals._io_helpers import (
+    AwsS3Settings,
+    _format_output_value_fields,
+    is_s3_path,
+)
 from pathway.internals.config import _check_entitlements
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -14,9 +18,17 @@ from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import internal_connector_mode, read_schema
-from pathway.io.s3 import AwsS3Settings
 
-S3_URI_PREFIX = "s3://"
+
+def _engine_s3_connection_settings(
+    uri: str, s3_connection_settings: AwsS3Settings | None
+) -> api.AwsS3Settings | None:
+    if is_s3_path(uri) and s3_connection_settings is None:
+        s3_connection_settings = AwsS3Settings.new_from_path(uri)
+    if s3_connection_settings is not None:
+        s3_connection_settings.authorize()
+        return s3_connection_settings.settings
+    return None
 
 
 @check_arg_types
@@ -26,13 +38,14 @@ def read(
     schema: type[Schema],
     *,
     mode: str = "streaming",
+    s3_connection_settings: AwsS3Settings | None = None,
     autocommit_duration_ms: int | None = 1500,
     persistent_id: str | None = None,
     debug_data: Any = None,
 ) -> Table:
     """
-    Reads an **append-only** table from Delta Lake. Currently, only local lakes are
-    supported, S3 support will be added soon.
+    Reads an **append-only** table from Delta Lake. Currently, local and S3 lakes are
+    supported.
 
     Args:
         uri: URI of the Delta Lake source that must be read.
@@ -43,6 +56,11 @@ def read(
             new row additions and reflect these events in the state. On the other hand,
             the ``"static"`` mode will only consider the available data and ingest all
             of it in one commit. The default value is ``"streaming"``.
+        s3_connection_settings: Configuration for S3 credentials when using S3 storage.
+            In addition to the access key and secret access key, you can specify a custom
+            endpoint, which is necessary for buckets hosted outside of Amazon AWS. If the
+            custom endpoint is left blank, the authorized user's credentials for S3 will
+            be used.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -94,6 +112,12 @@ def read(
     key | value
     one | Hello
     two | World
+
+    Please note that you can use the same communication approach if S3 is used as a
+    data storage. To do this, specify an S3 path starting with ``s3://``
+    or ``s3a://``, and provide the credentials object as a parameter. If no credentials
+    are provided but the path starts with ``s3://`` or ``s3a://``, Pathway will use the
+    credentials of the currently authenticated user.
     """
     _check_entitlements("deltalake")
 
@@ -110,6 +134,7 @@ def read(
         storage_type="deltalake",
         path=uri,
         mode=internal_connector_mode(mode),
+        aws_s3_settings=_engine_s3_connection_settings(uri, s3_connection_settings),
         persistent_id=persistent_id,
     )
     data_format = api.DataFormat(
@@ -213,16 +238,10 @@ def write(
     _check_entitlements("deltalake")
 
     uri = fspath(uri)
-    storage_options = {}
-    if uri.startswith(S3_URI_PREFIX):
-        if s3_connection_settings is None:
-            s3_connection_settings = AwsS3Settings.new_from_path(uri)
-        storage_options = s3_connection_settings.as_deltalake_storage_options()
-
     data_storage = api.DataStorage(
         storage_type="deltalake",
         path=uri,
-        storage_options=storage_options,
+        aws_s3_settings=_engine_s3_connection_settings(uri, s3_connection_settings),
         min_commit_frequency=min_commit_frequency,
     )
     data_format = api.DataFormat(

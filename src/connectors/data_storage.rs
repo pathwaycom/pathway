@@ -30,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{DateTime, FixedOffset};
 use log::{error, info, warn};
 use postgres::types::ToSql;
-use tempfile::{tempdir, TempDir};
+use tempfile::{tempdir, tempfile, TempDir};
 use tokio::runtime::Runtime as TokioRuntime;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
@@ -102,6 +102,7 @@ use rusqlite::types::{
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
+use s3::request::request_trait::ResponseData as S3ResponseData;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -232,13 +233,10 @@ impl From<HashMap<String, Value>> for ValuesMap {
     }
 }
 
-fn create_async_runtime(is_multi_thread: bool) -> Result<TokioRuntime, io::Error> {
-    let mut builder = if is_multi_thread {
-        tokio::runtime::Builder::new_multi_thread()
-    } else {
-        tokio::runtime::Builder::new_current_thread()
-    };
-    builder.enable_all().build()
+fn create_async_runtime() -> Result<TokioRuntime, io::Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -1786,6 +1784,7 @@ impl CurrentlyProcessedS3Object {
 }
 
 const MAX_S3_RETRIES: usize = 2;
+const S3_PATH_PREFIXES: [&str; 2] = ["s3://", "s3a://"];
 
 pub struct S3Scanner {
     /*
@@ -1830,6 +1829,33 @@ impl S3Scanner {
         })
     }
 
+    pub fn deduce_bucket_and_path(s3_path: &str) -> (Option<String>, String) {
+        for prefix in S3_PATH_PREFIXES {
+            let Some(bucket_and_path) = s3_path.strip_prefix(prefix) else {
+                continue;
+            };
+            let (bucket, path) = bucket_and_path
+                .split_once('/')
+                .unwrap_or((bucket_and_path, ""));
+            return (Some(bucket.to_string()), path.to_string());
+        }
+
+        (None, s3_path.to_string())
+    }
+
+    pub fn download_object_from_path_and_bucket(
+        object_path_ref: &str,
+        bucket: &S3Bucket,
+    ) -> Result<S3ResponseData, ReadError> {
+        let (_, deduced_path) = Self::deduce_bucket_and_path(object_path_ref);
+        execute_with_retries(
+            || bucket.get_object(&deduced_path), // returns Err on incorrect status code because fail-on-err feature is enabled
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )
+        .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))
+    }
+
     pub fn stream_object_from_path_and_bucket(
         object_path_ref: &str,
         bucket: S3Bucket,
@@ -1840,12 +1866,7 @@ impl S3Scanner {
         let loader_thread = thread::Builder::new()
             .name(format!("pathway:s3_get-{object_path_ref}"))
             .spawn(move || {
-                let response = execute_with_retries(
-                    || bucket.get_object(&object_path), // returns Err on incorrect status code because fail-on-err feature is enabled
-                    RetryConfig::default(),
-                    MAX_S3_RETRIES,
-                )
-                .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))?;
+                let response = Self::download_object_from_path_and_bucket(&object_path, &bucket)?;
                 pipe_writer.write_all(response.bytes()).unwrap();
                 Ok(())
             })
@@ -2273,7 +2294,7 @@ impl Writer for ElasticSearchWriter {
         if self.docs_buffer.is_empty() {
             return Ok(());
         }
-        create_async_runtime(false)?.block_on(async {
+        create_async_runtime()?.block_on(async {
             self.client
                 .bulk(BulkParts::Index(&self.index_name))
                 .body(take(&mut self.docs_buffer))
@@ -2858,8 +2879,7 @@ impl DeltaTableWriter {
             ));
         }
 
-        // Deadlocks if new_current_thread is used
-        let runtime = create_async_runtime(true)?;
+        let runtime = create_async_runtime()?;
         let table: DeltaTable = runtime
             .block_on(async {
                 let builder = DeltaTableCreateBuilder::new()
@@ -2904,7 +2924,7 @@ impl Writer for DeltaTableWriter {
                 || forced);
         if commit_needed {
             // Deadlocks if new_current_thread is used
-            create_async_runtime(true)?.block_on(async {
+            create_async_runtime()?.block_on(async {
                 self.writer.write(self.prepare_delta_batch()?).await?;
                 self.writer.flush_and_commit(&mut self.table).await?;
                 for column in &mut self.buffered_columns {
@@ -2917,12 +2937,35 @@ impl Writer for DeltaTableWriter {
     }
 }
 
+pub enum ObjectDownloader {
+    Local,
+    S3(S3Bucket),
+}
+
+impl ObjectDownloader {
+    fn download_object(&self, path: &str) -> Result<File, ReadError> {
+        let obj = match self {
+            Self::Local => File::open(path)?,
+            Self::S3(bucket) => {
+                let contents = S3Scanner::download_object_from_path_and_bucket(path, bucket)?;
+                let mut tempfile = tempfile()?;
+                tempfile.write_all(contents.bytes())?;
+                tempfile.flush()?;
+                tempfile.seek(SeekFrom::Start(0))?;
+                tempfile
+            }
+        };
+        Ok(obj)
+    }
+}
+
 pub struct DeltaTableReader {
     table: DeltaTable,
     streaming_mode: ConnectorMode,
     column_types: HashMap<String, Type>,
     persistent_id: Option<PersistentId>,
     base_path: String,
+    object_downloader: ObjectDownloader,
 
     reader: Option<ParquetRowIterator<'static>>,
     current_version: i64,
@@ -2934,12 +2977,13 @@ pub struct DeltaTableReader {
 impl DeltaTableReader {
     pub fn new(
         path: &str,
+        object_downloader: ObjectDownloader,
         storage_options: HashMap<String, String>,
         column_types: HashMap<String, Type>,
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
     ) -> Result<Self, ReadError> {
-        let runtime = create_async_runtime(false)?;
+        let runtime = create_async_runtime()?;
         let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
         let current_version = table.version();
         let parquet_files_queue = Self::get_file_uris(&table)?;
@@ -2952,6 +2996,7 @@ impl DeltaTableReader {
             base_path: path.to_string(),
 
             current_version,
+            object_downloader,
             last_fully_read_version: None,
             reader: None,
             parquet_files_queue,
@@ -2975,7 +3020,7 @@ impl DeltaTableReader {
     }
 
     fn upgrade_table_version(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
-        let runtime = create_async_runtime(false)?;
+        let runtime = create_async_runtime()?;
         runtime.block_on(async {
             self.parquet_files_queue.clear();
             while self.parquet_files_queue.is_empty() {
@@ -3037,12 +3082,9 @@ impl DeltaTableReader {
                         }
                     }
                     let next_parquet_file = self.parquet_files_queue.pop_front().unwrap();
-
-                    // TODO: implement for s3
-                    self.reader = Some(
-                        DeltaLakeParquetReader::try_from(Path::new(&next_parquet_file))?
-                            .into_iter(),
-                    );
+                    let local_object =
+                        self.object_downloader.download_object(&next_parquet_file)?;
+                    self.reader = Some(DeltaLakeParquetReader::try_from(local_object)?.into_iter());
                 }
             }
         }
@@ -3136,7 +3178,7 @@ impl Reader for DeltaTableReader {
         };
 
         self.reader = None;
-        let runtime = create_async_runtime(false)?;
+        let runtime = create_async_runtime()?;
         if let Some(last_fully_read_version) = last_fully_read_version {
             // The offset is based on the diff between `last_fully_read_version` and `version`
             self.current_version = *last_fully_read_version;

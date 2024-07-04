@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.deltalake.read` now supports S3 data sources.
+
 ## [0.13.1] - 2024-06-27
 
 ### Added

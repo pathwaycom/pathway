@@ -70,8 +70,8 @@ use crate::connectors::data_format::{
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, DataEventType, DeltaTableReader, DeltaTableWriter,
     ElasticSearchWriter, FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter,
-    PsqlWriter, PythonReaderBuilder, ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader,
-    SqliteReader, Writer,
+    ObjectDownloader, PsqlWriter, PythonReaderBuilder, ReadMethod, ReaderBuilder, S3CsvReader,
+    S3GenericReader, S3Scanner, SqliteReader, Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -110,7 +110,6 @@ mod external_index_wrappers;
 mod logging;
 pub mod threads;
 
-const S3_PATH_PREFIX: &str = "s3://";
 static CONVERT: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
 
 fn get_convert_python_module(py: Python<'_>) -> &Bound<'_, PyModule> {
@@ -3167,11 +3166,13 @@ pub struct AwsS3Settings {
     secret_access_key: Option<String>,
     with_path_style: bool,
     profile: Option<String>,
+    session_token: Option<String>,
 }
 
 #[pymethods]
 impl AwsS3Settings {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         bucket_name = None,
         access_key = None,
@@ -3180,6 +3181,7 @@ impl AwsS3Settings {
         region = None,
         endpoint = None,
         profile = None,
+        session_token = None,
     ))]
     fn new(
         bucket_name: Option<String>,
@@ -3189,6 +3191,7 @@ impl AwsS3Settings {
         region: Option<String>,
         endpoint: Option<String>,
         profile: Option<String>,
+        session_token: Option<String>,
     ) -> PyResult<Self> {
         Ok(AwsS3Settings {
             bucket_name,
@@ -3197,6 +3200,7 @@ impl AwsS3Settings {
             secret_access_key,
             with_path_style,
             profile,
+            session_token,
         })
     }
 }
@@ -3279,19 +3283,6 @@ impl AwsS3Settings {
         S3Bucket::new_public(&self.final_bucket_name(deduced_name)?, self.region.clone()).map_err(
             |err| PyRuntimeError::new_err(format!("Failed to connect to public AWS bucket: {err}")),
         )
-    }
-
-    fn deduce_bucket_and_path(s3_path: &str) -> (Option<String>, Option<String>) {
-        if !s3_path.starts_with(S3_PATH_PREFIX) {
-            return (None, Some(s3_path.to_string()));
-        }
-        let bucket_and_path = &s3_path[S3_PATH_PREFIX.len()..];
-        let bucket_and_path_tokenized: Vec<&str> = bucket_and_path.split('/').collect();
-
-        let bucket = bucket_and_path_tokenized[0];
-        let path = bucket_and_path_tokenized[1..].join("/");
-
-        (Some(bucket.to_string()), Some(path))
     }
 
     fn construct_bucket(&self, name_override: Option<&str>) -> PyResult<S3Bucket> {
@@ -3471,7 +3462,6 @@ pub struct DataStorage {
     column_names: Option<Vec<String>>,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
-    storage_options: Option<HashMap<String, String>>,
     min_commit_frequency: Option<u64>,
 }
 
@@ -3782,7 +3772,6 @@ impl DataStorage {
         column_names = None,
         header_fields = Vec::new(),
         key_field_index = None,
-        storage_options = None,
         min_commit_frequency = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -3808,7 +3797,6 @@ impl DataStorage {
         column_names: Option<Vec<String>>,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
-        storage_options: Option<HashMap<String, String>>,
         min_commit_frequency: Option<u64>,
     ) -> Self {
         DataStorage {
@@ -3833,7 +3821,6 @@ impl DataStorage {
             column_names,
             header_fields,
             key_field_index,
-            storage_options,
             min_commit_frequency,
         }
     }
@@ -3980,7 +3967,7 @@ impl DataStorage {
     }
 
     fn s3_bucket(&self, py: pyo3::Python) -> PyResult<S3Bucket> {
-        let (bucket_name, _) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
+        let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let bucket = self
             .aws_s3_settings
             .as_ref()
@@ -3990,6 +3977,60 @@ impl DataStorage {
             .borrow(py)
             .construct_bucket(bucket_name.as_deref())?;
         Ok(bucket)
+    }
+
+    fn delta_s3_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
+        let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
+        let s3_settings = self
+            .aws_s3_settings
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("S3 connection settings weren't specified for S3 data source")
+            })?
+            .borrow(py);
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "True".to_string());
+        storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
+
+        let virtual_hosted_style_request_flag = {
+            // Virtually hosted-style requests are mutually exclusive with path-style requests
+            if s3_settings.with_path_style {
+                "False".to_string()
+            } else {
+                "True".to_string()
+            }
+        };
+        storage_options.insert(
+            "AWS_VIRTUAL_HOSTED_STYLE_REQUEST".to_string(),
+            virtual_hosted_style_request_flag,
+        );
+        storage_options.insert(
+            "AWS_BUCKET_NAME".to_string(),
+            s3_settings.final_bucket_name(bucket_name.as_deref())?,
+        );
+
+        if let Some(access_key) = &s3_settings.access_key {
+            storage_options.insert("AWS_ACCESS_KEY_ID".to_string(), access_key.to_string());
+        }
+        if let Some(secret_access_key) = &s3_settings.secret_access_key {
+            storage_options.insert(
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                secret_access_key.to_string(),
+            );
+        }
+        if let Some(session_token) = &s3_settings.session_token {
+            storage_options.insert("AWS_SESSION_TOKEN".to_string(), session_token.to_string());
+        }
+        if let Some(profile) = &s3_settings.profile {
+            storage_options.insert("AWS_PROFILE".to_string(), profile.to_string());
+        }
+
+        if let s3::Region::Custom { endpoint, .. } = &s3_settings.region {
+            storage_options.insert("AWS_ENDPOINT_NAME".to_string(), endpoint.to_string());
+        }
+
+        Ok(storage_options)
     }
 
     fn kafka_client_config(&self) -> PyResult<ClientConfig> {
@@ -4045,10 +4086,10 @@ impl DataStorage {
     }
 
     fn construct_s3_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
+        let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let storage = S3GenericReader::new(
             self.s3_bucket(py)?,
-            deduced_path.unwrap_or(self.path()?.to_string()),
+            deduced_path,
             self.mode.is_polling_enabled(),
             self.internal_persistent_id(),
             self.read_method,
@@ -4061,10 +4102,10 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let (_, deduced_path) = AwsS3Settings::deduce_bucket_and_path(self.path()?);
+        let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let storage = S3CsvReader::new(
             self.s3_bucket(py)?,
-            deduced_path.unwrap_or(self.path()?.to_string()),
+            deduced_path,
             self.build_csv_parser_settings(py),
             self.mode.is_polling_enabled(),
             self.internal_persistent_id(),
@@ -4137,16 +4178,31 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn object_downloader(&self, py: pyo3::Python) -> PyResult<ObjectDownloader> {
+        if self.aws_s3_settings.is_some() {
+            Ok(ObjectDownloader::S3(self.s3_bucket(py)?))
+        } else {
+            Ok(ObjectDownloader::Local)
+        }
+    }
+
+    fn delta_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
+        if self.aws_s3_settings.is_some() {
+            self.delta_s3_storage_options(py)
+        } else {
+            Ok(HashMap::new())
+        }
+    }
+
     fn construct_deltalake_reader(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        // While S3 source is not implemented in our DeltaLake connector,
-        // we don't have storage_options to provide
         let reader = DeltaTableReader::new(
             self.path()?,
-            HashMap::new(),
+            self.object_downloader(py)?,
+            self.delta_storage_options(py)?,
             data_format.value_fields_type_map(py),
             self.mode,
             self.internal_persistent_id(),
@@ -4313,7 +4369,7 @@ impl DataStorage {
                 let writer = DeltaTableWriter::new(
                     path,
                     &value_fields,
-                    self.storage_options.clone().unwrap_or_default(),
+                    self.delta_storage_options(py)?,
                     self.min_commit_frequency.map(time::Duration::from_millis),
                 )
                 .map_err(|e| {
@@ -4869,7 +4925,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     let _ = Lazy::force(&LOGGING_RESET_HANDLE);
 
     // Enable S3 support in DeltaLake library
-    ::deltalake::aws::register_handlers(None);
+    deltalake::aws::register_handlers(None);
 
     m.add_class::<Pointer>()?;
     m.add_class::<PyObjectWrapper>()?;

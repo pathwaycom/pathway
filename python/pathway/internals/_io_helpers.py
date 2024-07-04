@@ -9,7 +9,7 @@ from pathway.internals import api, dtype as dt, schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
-S3_PATH_PREFIX = "s3://"
+S3_PATH_PREFIXES = ["s3://", "s3a://"]
 S3_DEFAULT_REGION = "us-east-1"
 S3_LOCATION_FIELD = "LocationConstraint"
 
@@ -26,6 +26,7 @@ class AwsS3Settings:
         with_path_style: Whether to use path-style requests.
         region: Region of the bucket.
         endpoint: Custom endpoint in case of self-hosted storage.
+        session_token: Session token, an alternative way to authenticate to S3.
     """
 
     @trace_user_frame
@@ -38,16 +39,18 @@ class AwsS3Settings:
         with_path_style=False,
         region=None,
         endpoint=None,
+        session_token=None,
     ):
         self._bucket_name = bucket_name
         self._access_key = access_key
         self._secret_access_key = secret_access_key
+        self._session_token = session_token
         self._with_path_style = with_path_style
         self._region = region
         self._endpoint = endpoint
 
     @property
-    def settings(self):
+    def settings(self) -> api.AwsS3Settings:
         return api.AwsS3Settings(
             self._bucket_name,
             self._access_key,
@@ -55,6 +58,7 @@ class AwsS3Settings:
             self._with_path_style,
             self._region,
             self._endpoint,
+            self._session_token,
         )
 
     @classmethod
@@ -73,54 +77,54 @@ class AwsS3Settings:
         Returns:
             Configuration object.
         """
-        starts_with_prefix = s3_path.startswith(S3_PATH_PREFIX)
-        has_extra_chars = len(s3_path) > len(S3_PATH_PREFIX)
-        if not starts_with_prefix or not has_extra_chars:
-            raise ValueError(f"Incorrect S3 path: {s3_path}")
-        bucket = s3_path[len(S3_PATH_PREFIX) :].split("/")[0]
+        for s3_path_prefix in S3_PATH_PREFIXES:
+            starts_with_prefix = s3_path.startswith(s3_path_prefix)
+            has_extra_chars = len(s3_path) > len(s3_path_prefix)
+            if not starts_with_prefix or not has_extra_chars:
+                continue
+            bucket = s3_path[len(s3_path_prefix) :].split("/")[0]
 
-        # the crate we use on the Rust-engine side can't detect the location
-        # of a bucket, so it's done on the Python side
-        s3_client = boto3.client("s3")
-        location_response = s3_client.get_bucket_location(Bucket=bucket)
+            # the crate we use on the Rust-engine side can't detect the location
+            # of a bucket, so it's done on the Python side
+            s3_client = boto3.client("s3")
+            location_response = s3_client.get_bucket_location(Bucket=bucket)
 
-        # Buckets in Region us-east-1 have a LocationConstraint of None
-        location_constraint = location_response[S3_LOCATION_FIELD]
-        if location_constraint is None:
-            region = S3_DEFAULT_REGION
-        else:
-            region = location_constraint.split("|")[0]
+            # Buckets in Region us-east-1 have a LocationConstraint of None
+            location_constraint = location_response[S3_LOCATION_FIELD]
+            if location_constraint is None:
+                region = S3_DEFAULT_REGION
+            else:
+                region = location_constraint.split("|")[0]
 
-        return cls(
-            bucket_name=bucket,
-            region=region,
-        )
+            return cls(
+                bucket_name=bucket,
+                region=region,
+            )
 
-    def as_deltalake_storage_options(self):
-        options = {
-            "AWS_S3_ALLOW_UNSAFE_RENAME": "True",
-            "AWS_REGION": self._region,
-            "AWS_VIRTUAL_HOSTED_STYLE_REQUEST": str(not self._with_path_style),
-        }
+        # If it doesn't start with a valid S3 prefix, it's not a full S3 path
+        raise ValueError(f"Incorrect S3 path: {s3_path}")
+
+    def authorize(self):
         if self._access_key is not None and self._secret_access_key is not None:
-            options["AWS_ACCESS_KEY_ID"] = self._access_key
-            options["AWS_SECRET_ACCESS_KEY"] = self._secret_access_key
-        else:
-            # DeltaLake underlying AWS S3 library may fail to deduce the credentials, so
-            # we use boto3 to do that, which is more reliable
-            # Related github issue: https://github.com/delta-io/delta-rs/issues/854
-            session = boto3.session.Session()
-            creds = session.get_credentials()
-            if creds.access_key is not None and creds.secret_key is not None:
-                options["AWS_ACCESS_KEY_ID"] = creds.access_key
-                options["AWS_SECRET_ACCESS_KEY"] = creds.secret_key
-            elif creds.token is not None:
-                options["AWS_SESSION_TOKEN"] = creds.token
-        if self._bucket_name is not None:
-            options["AWS_BUCKET_NAME"] = self._bucket_name
-        if self._endpoint is not None:
-            options["AWS_ENDPOINT_NAME"] = self._endpoint
-        return options
+            return
+
+        # DeltaLake underlying AWS S3 library may fail to deduce the credentials, so
+        # we use boto3 to do that, which is more reliable
+        # Related github issue: https://github.com/delta-io/delta-rs/issues/854
+        session = boto3.session.Session()
+        creds = session.get_credentials()
+        if creds.access_key is not None and creds.secret_key is not None:
+            self._access_key = creds.access_key
+            self._secret_access_key = creds.secret_key
+        elif creds.token is not None:
+            self._session_token = creds.token
+
+
+def is_s3_path(path: str) -> bool:
+    for s3_path_prefix in S3_PATH_PREFIXES:
+        if path.startswith(s3_path_prefix):
+            return True
+    return False
 
 
 def _format_output_value_fields(table: Table) -> list[api.ValueField]:

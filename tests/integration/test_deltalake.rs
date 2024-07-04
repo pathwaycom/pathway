@@ -13,7 +13,7 @@ use pathway_engine::connectors::data_format::{
     Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, DeltaTableReader, DeltaTableWriter, WriteError, Writer,
+    ConnectorMode, DeltaTableReader, DeltaTableWriter, ObjectDownloader, WriteError, Writer,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Timestamp, Type, Value};
@@ -64,8 +64,15 @@ fn read_with_connector(path: &str, type_: Type) -> Vec<Value> {
     );
     let mut type_map = HashMap::new();
     type_map.insert("field".to_string(), type_);
-    let reader =
-        DeltaTableReader::new(path, HashMap::new(), type_map, ConnectorMode::Static, None).unwrap();
+    let reader = DeltaTableReader::new(
+        path,
+        ObjectDownloader::Local,
+        HashMap::new(),
+        type_map,
+        ConnectorMode::Static,
+        None,
+    )
+    .unwrap();
     let parser =
         TransparentParser::new(None, vec!["field".to_string()], schema, SessionType::Native);
     let values_read = read_data_from_reader(Box::new(reader), Box::new(parser)).unwrap();
