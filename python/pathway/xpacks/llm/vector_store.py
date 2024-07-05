@@ -625,7 +625,7 @@ class VectorStoreClient:
         host: str | None = None,
         port: int | None = None,
         url: str | None = None,
-        timeout: int = 15,
+        timeout: int | None = 15,
         additional_headers: dict | None = None,
     ):
         err = "Either (`host` and `port`) or `url` must be provided, but not both."
