@@ -45,21 +45,21 @@ def mock_get_text_embedding(text: str) -> List[float]:
     """Mock get text embedding."""
     print("Embedder embedding:", text)
     if text == "Hello world.":
-        return [1, 0, 0, 0, 0]
+        return [1.0, 0.0, 0.0, 0.0, 0.0]
     elif text == "This is a test.":
-        return [0, 1, 0, 0, 0]
+        return [0.0, 1.0, 0.0, 0.0, 0.0]
     elif text == "This is another test.":
-        return [0, 0, 1, 0, 0]
+        return [0.0, 0.0, 1.0, 0.0, 0.0]
     elif text == "This is a test v2.":
-        return [0, 0, 0, 1, 0]
+        return [0.0, 0.0, 0.0, 1.0, 0.0]
     elif text == "This is a test v3.":
-        return [0, 0, 0, 0, 1]
+        return [0.0, 0.0, 0.0, 0.0, 1.0]
     elif text == "This is bar test.":
-        return [0, 0, 1, 0, 0]
+        return [0.0, 0.0, 1.0, 0.0, 0.0]
     elif text == "Hello world backup.":
-        return [0, 0, 0, 0, 1]
+        return [0.0, 0.0, 0.0, 0.0, 1.0]
     else:
-        return [0, 0, 0, 0, 0]
+        return [0.0, 0.0, 0.0, 0.0, 0.0]
 
 
 class NewlineTextSplitter(TextSplitter):
@@ -113,7 +113,7 @@ def test_llama_retriever():
 
     from llama_index.retrievers.pathway import PathwayRetriever
 
-    retriever = PathwayRetriever(host=PATHWAY_HOST, port=port)
+    retriever = PathwayRetriever(host=PATHWAY_HOST, port=port, similarity_top_k=1)
 
     MAX_ATTEMPTS = 8
     attempts = 0

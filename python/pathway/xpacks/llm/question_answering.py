@@ -187,7 +187,7 @@ def answer_with_geometric_rag_strategy_from_index(
     else:
         documents_column_name = documents_column
 
-    query_context = questions.table + index.query(
+    query_context = questions.table + index.query_as_of_now(
         questions,
         number_of_matches=max_documents,
         collapse_rows=True,
@@ -325,7 +325,9 @@ class BaseRAGQuestionAnswerer:
         self.indexer = indexer
 
         if default_llm_name is None:
-            default_llm_name = llm.kwargs.get("model", None)  # type: ignore
+            # user implemented udfs do not have to have kwargs attribute
+            if hasattr(llm, "kwargs"):
+                default_llm_name = llm.kwargs.get("model", None)
 
         self._init_schemas(default_llm_name)
 
@@ -413,7 +415,7 @@ class BaseRAGQuestionAnswerer:
             route=route,
             schema=schema,
             autocommit_duration_ms=50,
-            delete_completed_queries=True,
+            delete_completed_queries=False,
             **additional_endpoint_kwargs,
         )
         writer(handler(queries))
@@ -596,13 +598,13 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
     def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Create RAG response with adaptive retrieval."""
 
-        index = self.indexer
+        index = self.indexer.index
 
         result = pw_ai_queries.select(
             *pw.this,
             result=answer_with_geometric_rag_strategy_from_index(
                 pw_ai_queries.prompt,
-                index,  # type: ignore
+                index,
                 "data",  # knn index returns result in this column
                 self.llm,
                 n_starting_documents=self.n_starting_documents,

@@ -64,7 +64,9 @@ class BaseEmbedder(pw.UDF):
         """
         return len(_coerce_sync(self.__wrapped__)(".", **kwargs))
 
-    def __call__(self, input: pw.ColumnExpression, *args, **kwargs):
+    def __call__(
+        self, input: pw.ColumnExpression, *args, **kwargs
+    ) -> pw.ColumnExpression:
         """Embeds texts in a Column.
 
         Args:

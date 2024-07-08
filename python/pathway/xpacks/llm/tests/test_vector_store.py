@@ -14,11 +14,14 @@ class DebugStatsInputSchema(VectorStoreServer.StatisticsQuerySchema):
 
 
 def _test_vs(fake_embeddings_model):
-    docs = pw.io.fs.read(
-        __file__,
-        format="binary",
-        mode="static",
-        with_metadata=True,
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
     )
 
     vector_server = VectorStoreServer(
@@ -78,14 +81,13 @@ def _test_vs(fake_embeddings_model):
     input_result = val.value
     assert isinstance(input_result, dict)
 
-    assert "owner" in input_result.keys()
-    assert "modified_at" in input_result.keys()
+    assert "path" in input_result.keys()
 
     # parse_graph.G.clear()
     retrieve_queries = pw.debug.table_from_markdown(
         """
-        query | k metadata_filter | filepath_globpattern
-        "Foo" | 1                 |
+        query | k | metadata_filter | filepath_globpattern
+        "Foo" | 1 |                 |
         """,
         schema=VectorStoreServer.RetrieveQuerySchema,
     )
@@ -102,7 +104,7 @@ def _test_vs(fake_embeddings_model):
 
 def test_sync_embedder():
     @pw.udf
-    def fake_embeddings_model(x: str):
+    def fake_embeddings_model(x: str) -> list[float]:
         return [1.0, 1.0, 0.0]
 
     _test_vs(fake_embeddings_model)
@@ -110,7 +112,7 @@ def test_sync_embedder():
 
 def test_async_embedder():
     @pw.udf_async
-    async def fake_embeddings_model(x: str):
+    async def fake_embeddings_model(x: str) -> list[float]:
         asyncio.sleep
         return [1.0, 1.0, 0.0]
 

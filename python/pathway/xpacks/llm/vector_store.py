@@ -9,7 +9,6 @@ HTTP requests.
 The client queries the server and returns matching documents.
 """
 
-import asyncio
 import json
 import logging
 import threading
@@ -17,13 +16,13 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
 import jmespath
-import numpy as np
 import requests
 
 import pathway as pw
 import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
-from pathway.stdlib.ml import index
+from pathway.stdlib.indexing import default_usearch_knn_document_index
+from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.ml.classifiers import _knn_lsh
 from pathway.xpacks.llm._utils import _coerce_sync
 
@@ -63,7 +62,6 @@ class VectorStoreServer:
         doc_post_processors: (
             list[Callable[[str, dict], tuple[str, dict]] | pw.UDF] | None
         ) = None,
-        index_params: dict | None = None,
     ):
         self.docs = docs
 
@@ -84,21 +82,14 @@ class VectorStoreServer:
             if splitter is not None
             else pathway.xpacks.llm.splitters.null_splitter
         )
-        self.embedder = _unwrap_udf(embedder)
         if isinstance(embedder, pw.UDF):
-            self.embedder_config = embedder._get_config()
+            self.embedder = embedder
         else:
-            self.embedder_config = {}
+            self.embedder = pw.udf(embedder)
 
         # detect the dimensionality of the embeddings
-        self.embedding_dimension = len(_coerce_sync(self.embedder)("."))
+        self.embedding_dimension = len(_coerce_sync(self.embedder.__wrapped__)("."))
         logging.debug("Embedder has dimension %s", self.embedding_dimension)
-
-        DEFAULT_INDEX_PARAMS = dict(distance_type="cosine")
-        if index_params is not None:
-            DEFAULT_INDEX_PARAMS.update(index_params)
-
-        self.index_params = DEFAULT_INDEX_PARAMS
 
         self._graph = self._build_graph()
 
@@ -134,7 +125,7 @@ class VectorStoreServer:
                 for doc in splitter.transform_documents([Document(page_content=x)])
             ]
 
-        async def generic_embedded(x: str):
+        async def generic_embedded(x: str) -> list[float]:
             res = await embedder.aembed_documents([x])
             return res[0]
 
@@ -276,30 +267,14 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             pw.this.data
         )
 
-        if asyncio.iscoroutinefunction(self.embedder):
+        chunked_docs += chunked_docs.select(text=pw.this.data["text"].as_str())
 
-            @pw.udf(**self.embedder_config)
-            async def embedder(txt):
-                result = await self.embedder(txt)
-                return np.asarray(result)
-
-        else:
-
-            @pw.udf(**self.embedder_config)
-            def embedder(txt):
-                result = self.embedder(txt)
-                return np.asarray(result)
-
-        chunked_docs += chunked_docs.select(
-            embedding=embedder(pw.this.data["text"].as_str())
-        )
-
-        knn_index = index.KNNIndex(
-            chunked_docs.embedding,
+        knn_index = default_usearch_knn_document_index(
+            chunked_docs.text,
             chunked_docs,
-            n_dimensions=self.embedding_dimension,
-            metadata=chunked_docs.data["metadata"],
-            **self.index_params,  # type:ignore
+            dimensions=self.embedding_dimension,
+            metadata_column=chunked_docs.data["metadata"],
+            embedder=self.embedder,
         )
 
         parsed_docs += parsed_docs.select(
@@ -443,62 +418,40 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
     def retrieve_query(
         self, retrieval_queries: pw.Table[RetrieveQuerySchema]
     ) -> pw.Table[QueryResultSchema]:
-        embedder = self._graph["embedder"]
-        knn_index = self._graph["knn_index"]
+        knn_index: DataIndex = self._graph["knn_index"]
 
         # Relevant document search
         retrieval_queries = self.merge_filters(retrieval_queries)
-        retrieval_queries += retrieval_queries.select(
-            embedding=embedder(pw.this.query),
-        )
 
-        retrieval_results = retrieval_queries + knn_index.get_nearest_items(
-            retrieval_queries.embedding,
-            k=pw.this.k,
+        retrieval_results = retrieval_queries + knn_index.query_as_of_now(
+            retrieval_queries.query,
+            number_of_matches=retrieval_queries.k,
             collapse_rows=True,
             metadata_filter=retrieval_queries.metadata_filter,
-            with_distances=True,
         ).select(
-            result=pw.this.data,
-            dist=pw.this.dist,
+            result=pw.coalesce(pw.right.data, ()),  # replace None results with []
+            score=pw.coalesce(pw.right[_SCORE], ()),
         )
 
         retrieval_results = retrieval_results.select(
             result=pw.apply_with_type(
                 lambda x, y: pw.Json(
                     sorted(
-                        [{**res.value, "dist": dist} for res, dist in zip(x, y)],
+                        [{**res.value, "dist": -score} for res, score in zip(x, y)],
                         key=lambda x: x["dist"],  # type: ignore
                     )
                 ),
                 pw.Json,
                 pw.this.result,
-                pw.this.dist,
+                pw.this.score,
             )
         )
 
         return retrieval_results
 
-    @pw.table_transformer
-    def query(
-        self,
-        query_column: pw.ColumnReference,
-        number_of_matches: pw.ColumnExpression | int = 3,
-        collapse_rows: bool = True,
-        with_distances: bool = False,
-        metadata_filter: pw.ColumnExpression | None = None,
-    ):
-        embedder = self._graph["embedder"]
-        knn_index = self._graph["knn_index"]
-
-        query_embedding = query_column.table.select(embeddings=embedder(query_column))
-        return knn_index.get_nearest_items(
-            query_embedding.embeddings,
-            number_of_matches,
-            collapse_rows,
-            with_distances,
-            metadata_filter,
-        )
+    @property
+    def index(self) -> DataIndex:
+        return self._graph["knn_index"]
 
     def run_server(
         self,
@@ -538,7 +491,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                 methods=("GET", "POST"),
                 schema=schema,
                 autocommit_duration_ms=50,
-                delete_completed_queries=True,
+                delete_completed_queries=False,
                 documentation=documentation,
             )
             writer(handler(queries))
