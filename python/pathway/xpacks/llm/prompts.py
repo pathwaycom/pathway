@@ -338,3 +338,18 @@ def parse_cited_response(response_text, docs):
             cleaned_citations.append(doc)
 
     return response_text, cleaned_citations
+
+
+DEFAULT_JSON_TABLE_PARSE_PROMPT = """Explain the given table in JSON format in detail.
+Do not skip over details or units/metrics.
+Make sure column and row names are understandable.
+If it is not a table, return 'No table.'."""
+
+DEFAULT_MD_TABLE_PARSE_PROMPT = """Explain the given table in markdown format in detail.
+Do not skip over details or units/metrics.
+Make sure column and row names are understandable.
+If it is not a table, return 'No table.'."""
+
+DEFAULT_IMAGE_PARSE_PROMPT = """Explain the given image in detail.
+If there is text, make sure to spell out all the text.
+If info is formatted as table, your output should be also formatted."""

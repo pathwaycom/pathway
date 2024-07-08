@@ -44,6 +44,7 @@ dependencies = [
     "networkx >= 3.2.1",
     "google-cloud-pubsub >= 2.21.1",
     "google-cloud-bigquery",
+    "pydantic ~= 2.7.0",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +59,7 @@ xpack-llm = [
     "llama-index-readers-pathway ~= 0.1.0",
     "llama-index-retrievers-pathway ~= 0.1.0",
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
+    "instructor == 1.2.6",
 ]
 xpack-llm-local = [
     "sentence_transformers == 2.4.0", 

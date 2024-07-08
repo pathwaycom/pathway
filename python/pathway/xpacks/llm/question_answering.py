@@ -618,6 +618,45 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         return result
 
 
+class DeckRetriever(BaseRAGQuestionAnswerer):
+    """Class for slides search."""
+
+    excluded_response_metadata = ["b64_image"]
+
+    @pw.table_transformer
+    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+        """Return similar docs from the index."""
+
+        pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
+            pw_ai_queries.select(
+                metadata_filter=pw.this.filters,
+                filepath_globpattern=None,
+                query=pw.this.prompt,
+                k=self.search_topk,
+            )
+        ).select(
+            docs=pw.this.result,
+        )
+
+        @pw.udf
+        def _format_results(docs: pw.Json) -> pw.Json:
+            docs_ls = docs.as_list()
+
+            for docs_dc in docs_ls:
+                metadata: dict = docs_dc["metadata"]
+
+                for metadata_key in self.excluded_response_metadata:
+                    metadata.pop(metadata_key, None)
+
+                docs_dc["metadata"] = metadata
+
+            return pw.Json(docs_ls)
+
+        pw_ai_results += pw_ai_results.select(result=_format_results(pw.this.docs))
+
+        return pw_ai_results
+
+
 def send_post_request(
     url: str, data: dict, headers: dict = {}, timeout: int | None = None
 ):

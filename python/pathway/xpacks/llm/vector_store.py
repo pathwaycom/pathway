@@ -378,7 +378,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         def format_inputs(
             metadatas: list[pw.Json] | None, metadata_filter: str | None
         ) -> list[pw.Json]:
-            metadatas: list = metadatas if metadatas is not None else []  # type:ignore
+            metadatas = metadatas if metadatas is not None else []
             assert metadatas is not None
             if metadata_filter:
                 metadatas = [
@@ -558,6 +558,62 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
     def __repr__(self):
         return f"VectorStoreServer({str(self._graph)})"
+
+
+class SlidesVectorStoreServer(VectorStoreServer):
+    """
+    Accompanying vector index server for the ``slide-search`` demo.
+    Builds a document indexing pipeline and starts an HTTP REST server.
+
+    Modifies the ``VectorStoreServer``'s ``pw_list_document`` endpoint to return set of
+    metadata after the parsing and document post processing stages.
+    """
+
+    excluded_response_metadata = ["b64_image"]
+
+    @pw.table_transformer
+    def inputs_query(
+        self,
+        input_queries: pw.Table[VectorStoreServer.InputsQuerySchema],  # type:ignore
+    ) -> pw.Table:
+        docs = self._graph["parsed_docs"]
+
+        all_metas = docs.reduce(metadatas=pw.reducers.tuple(pw.this.data["metadata"]))
+
+        input_queries = self.merge_filters(input_queries)
+
+        @pw.udf
+        def format_inputs(
+            metadatas: list[pw.Json] | None,
+            metadata_filter: str | None,
+        ) -> list[pw.Json]:
+            metadatas = metadatas if metadatas is not None else []
+            assert metadatas is not None
+            if metadata_filter:
+                metadatas = [
+                    m
+                    for m in metadatas
+                    if jmespath.search(
+                        metadata_filter, m.value, options=_knn_lsh._glob_options
+                    )
+                ]
+
+            metadata_list: list[dict] = [m.as_dict() for m in metadatas]
+
+            for metadata in metadata_list:
+                for metadata_key in self.excluded_response_metadata:
+                    metadata.pop(metadata_key, None)
+
+            return [pw.Json(m) for m in metadata_list]
+
+        input_results = input_queries.join_left(all_metas, id=input_queries.id).select(
+            all_metas.metadatas,
+            input_queries.metadata_filter,
+        )
+        input_results = input_results.select(
+            result=format_inputs(pw.this.metadatas, pw.this.metadata_filter)
+        )
+        return input_results
 
 
 class VectorStoreClient:
