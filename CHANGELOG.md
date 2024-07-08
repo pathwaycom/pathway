@@ -9,6 +9,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.deltalake.read` now supports S3 data sources.
+- `pw.xpacks.llm.parsers.ImageParser` which allows parsing images with the vision LMs.
+- `pw.xpacks.llm.parsers.SlideParser` that enables parsing PDF and PPTX slides with the vision LMs.
+- `pw.xpacks.llm.parsers.question_answering.RAGClient`, Python client for Pathway hosted RAG apps.
+- `pw.xpacks.llm.parsers.question_answeringDeckRetriever`, a RAG app that enables searching through slide decks with visual-heavy elements.
+
+### Fixed
+- `pw.xpacks.llm.vector_store.VectorStoreServer` now uses new indexes.
+
+### Changed
+- `pw.xpacks.llm.parsers.OpenParse` now supports any vision Language model including local and proprietary models via LiteLLM.
+
 
 ## [0.13.1] - 2024-06-27
 
