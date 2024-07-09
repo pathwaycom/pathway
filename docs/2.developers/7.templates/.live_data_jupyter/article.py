@@ -13,8 +13,7 @@
 #   tags: ['tutorial', 'data-pipeline', 'showcase']
 # keywords: ['Jupyter notebook', 'interactivity', 'bokeh', 'panel', 'Bollinger bands', 'vizualization', 'Weighted Average', 'rolling statistics', 'dashboard', 'notebook', 'Docker']
 # notebook_export_path: notebooks/showcases/live-data-jupyter.ipynb
-# github_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/from_jupyter_to_deploy/part4_deployment"
-# docker_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/from_jupyter_to_deploy/part4_deployment"
+# docker_github_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/from_jupyter_to_deploy/part4_deployment"
 # jupyter:
 #   jupytext:
 #     formats: py:percent
