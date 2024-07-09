@@ -165,7 +165,8 @@ class AirbyteSourceException(Exception):
 
 class ExecutableAirbyteSource(AbstractAirbyteSource):
 
-    def __init__(self, executable=None, config=None, streams=None):
+    def __init__(self, executable=None, config=None, streams=None, env_vars=None):
+        self.env_vars = env_vars
         self.executable = executable
         self.config = config
         self.streams = (
@@ -204,7 +205,11 @@ class ExecutableAirbyteSource(AbstractAirbyteSource):
             command += add_argument("state", state)
 
         process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            shell=True,
+            env=self.env_vars,
         )
         if process.stdout is not None:
             for line in iter(process.stdout.readline, b""):

@@ -37,6 +37,8 @@ xfail_on_multiple_threads = pytest.mark.xfail(
     os.getenv("PATHWAY_THREADS", "1") != "1", reason="multiple threads"
 )
 
+AIRBYTE_CONNECTION_REL_PATH = "connections/new_source.yaml"
+
 
 def skip_on_multiple_workers() -> None:
     if os.environ.get("PATHWAY_THREADS", "1") != "1":

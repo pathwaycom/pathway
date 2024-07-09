@@ -1,13 +1,32 @@
 """
-There are two options for how the extraction may work: the local one, which is done by
-`DockerAirbyteSource` and the remote one was done by `RemoteAirbyteSource`.
+There are two global options for how the extraction may work: the local one, which is
+done by `DockerAirbyteSource` or `VenvAirbyteSource` and the remote one was done by
+`RemoteAirbyteSource`.
+
+When executing locally, there are two options: the Docker option and the
+venv option. The point of the venv option is the following: most of the airbyte connectors
+were implemented in Python. Each of them is a separate library with a well-defined name:
+`airbyte-source-<kind of source>`, for example: `airbyte-source-github` or
+`airbyte-source-faker`. Of source, such packages can be used for the local execution:
+all you need is to perform the `pip install` and then you can communicate with the
+installed console tool following the well-defined protocol:
+https://docs.airbyte.com/understanding-airbyte/airbyte-protocol#common-interface. To make
+the installed packages not to interfere with the developer's environment, virtualenv
+is used, hence the name `VenvAirbyteSource`.
 
 The `DockerAirbyteSource` works as follows: we run a subprocess that calls Docker and
 provides it with arguments such as the user-provided config, the connector catalog
 (you may think of it as a static config containing the descriptions of the available
 data streams), the previous state of the connector, environment variables, etc. Then,
 the result of the execution is read from stderr and stdout and translated into the
-extracted data.
+extracted data. This option is heavier: there is a much bigger overhead for the Docker
+container to start, rather than for a console tool. However, sometimes it may be needed:
+- Not all connectors are implemented in Python, but all of them can be run via Docker.
+One example of a connector that wasn't implemented in Python is Postgres.
+- The venv option doesn't provide a way to select the version of the connector. If, for some
+reason, you need to use the specific option of a Docker image, you can use this option.
+Note that there is no mapping between Python package version and the Docker version in the
+registry.
 
 The `RemoteAirbyteSource` is a bit different: it uses the fact that any airbyte connector
 is a Docker image having an environment variable AIRBYTE_ENTRYPOINT corresponding to the
@@ -40,8 +59,12 @@ import shutil
 import logging
 import time
 import shlex
+import subprocess
+import tempfile
+import pathlib
 from typing import Iterable
 
+import venv
 import yaml
 
 from . import airbyte_utils
@@ -106,6 +129,42 @@ class DockerAirbyteSource(ExecutableAirbyteSource):
             '"https://hub.docker.com/search?q=airbyte%2Fsource-" )',
             yaml_definition_example,
         )
+
+
+class VenvAirbyteSource(ExecutableAirbyteSource):
+
+    def __init__(
+        self,
+        connector: str,
+        config: dict | None = None,
+        streams: Iterable[str] | None = None,
+        env_vars: dict | None = None,
+    ):
+        super().__init__("", config, streams, env_vars)
+        self._venv_directory = tempfile.TemporaryDirectory()
+        self._venv_path = pathlib.Path(self._venv_directory.name)
+        logging.info(f"Creating an isolated virtual environment for {connector}...")
+        venv.create(self._venv_path, with_pip=True)
+
+        logging.info(f"Installing python connector package for {connector}...")
+        pip_path = os.fspath(self._venv_path / "bin" / "pip")
+        process = subprocess.run(
+            f"{pip_path} install airbyte-{connector}",
+            stderr=subprocess.STDOUT,
+            shell=True,
+        )
+        if process.returncode != 0:
+            process_stderr = process.stderr.decode("utf-8")
+            logging.error(f"Failed to install airbyte-{connector}:\n{process_stderr}")
+            raise RuntimeError(
+                f"Failed to install package airbyte-{connector} into a virtual "
+                "environment. If the problem persists, please check that the package "
+                "exists on PyPI and consider using the enforce_docker_image flag."
+            )
+        logging.info(
+            f"The connector package for {connector} had successfully been installed"
+        )
+        self.executable = self._venv_path / "bin" / connector
 
 
 class RemoteAirbyteSource(AbstractAirbyteSource):

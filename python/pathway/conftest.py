@@ -6,11 +6,12 @@ import os
 from collections.abc import Generator
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from pathway import cli
 from pathway.internals import config, parse_graph
-from pathway.tests.utils import UniquePortDispenser
+from pathway.tests.utils import AIRBYTE_CONNECTION_REL_PATH, UniquePortDispenser
 
 
 @pytest.fixture(autouse=True)
@@ -98,4 +99,13 @@ def tmp_path_with_airbyte_config(tmp_path):
         assert result.exit_code == 0
     finally:
         os.chdir(start_dir)
+
+    with open(tmp_path / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
+        config = yaml.safe_load(f)
+    config["source"]["config"]["records_per_slice"] = 500
+    config["source"]["config"]["records_per_sync"] = 500
+    config["source"]["config"]["count"] = 500
+    with open(tmp_path / AIRBYTE_CONNECTION_REL_PATH, "w") as f:
+        yaml.dump(config, f)
+
     return tmp_path

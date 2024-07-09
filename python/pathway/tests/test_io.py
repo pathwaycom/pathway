@@ -13,6 +13,7 @@ from unittest import mock
 
 import pandas as pd
 import pytest
+import yaml
 from deltalake import DeltaTable, write_deltalake
 from fs import open_fs
 
@@ -22,6 +23,7 @@ from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.io.airbyte.logic import _PathwayAirbyteDestination
 from pathway.tests.utils import (
+    AIRBYTE_CONNECTION_REL_PATH,
     CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
     FileLinesNumberChecker,
@@ -36,6 +38,10 @@ from pathway.tests.utils import (
     wait_result_with_checker,
     write_csv,
     write_lines,
+)
+from pathway.third_party.airbyte_serverless.sources import (
+    DockerAirbyteSource,
+    VenvAirbyteSource,
 )
 
 
@@ -3022,12 +3028,56 @@ def test_deltalake_append(min_commit_frequency, tmp_path: pathlib.Path):
 @pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
 def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
     table = pw.io.airbyte.read(
-        tmp_path_with_airbyte_config / "connections/new_source.yaml",
-        ["Users"],
+        tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+        ["users"],
         mode="static",
         execution_type="local",
         env_vars=env_vars,
     )
+
+    with open(tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
+        config = yaml.safe_load(f)["source"]
+    airbyte_source = pw.io.airbyte._construct_local_source(
+        config,
+        streams=["users"],
+        env_vars=env_vars,
+    )
+    assert isinstance(airbyte_source, VenvAirbyteSource)
+
+    output_path = tmp_path_with_airbyte_config / "table.jsonl"
+    pw.io.jsonlines.write(table, output_path)
+    run_all()
+    total_lines = 0
+    with open(output_path, "r") as f:
+        for _ in f:
+            total_lines += 1
+    assert total_lines == 500
+
+
+@needs_multiprocessing_fork
+@pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
+def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
+    # Version 0.1.4 has a different API, so we use Docker to specify that we need
+    # this one, and not the latest
+    table = pw.io.airbyte.read(
+        tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+        ["Users"],
+        mode="static",
+        execution_type="local",
+        env_vars=env_vars,
+        enforce_method="docker",
+    )
+
+    with open(tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
+        config = yaml.safe_load(f)["source"]
+    airbyte_source = pw.io.airbyte._construct_local_source(
+        config,
+        streams=["Users"],
+        env_vars=env_vars,
+        enforce_method="docker",
+    )
+    assert isinstance(airbyte_source, DockerAirbyteSource)
+
     output_path = tmp_path_with_airbyte_config / "table.jsonl"
     pw.io.jsonlines.write(table, output_path)
     run_all()
