@@ -1912,7 +1912,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         key_column_path: ColumnPath,
         instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
-    ) -> Result<TableHandle> {
+    ) -> Result<TableHandle>
+    where
+        <S as MaybeTotalScope>::MaybeTotalTimestamp: TotalOrder,
+    {
         let table = self
             .tables
             .get(table_handle)
@@ -4536,17 +4539,12 @@ where
 
     fn sort_table(
         &self,
-        table_handle: TableHandle,
-        key_column_path: ColumnPath,
-        instance_column_path: ColumnPath,
-        table_properties: Arc<TableProperties>,
+        _table_handle: TableHandle,
+        _key_column_path: ColumnPath,
+        _instance_column_path: ColumnPath,
+        _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0.borrow_mut().sort_table(
-            table_handle,
-            key_column_path,
-            instance_column_path,
-            table_properties,
-        )
+        Err(Error::NotSupportedInIteration)
     }
 
     fn reindex_table(

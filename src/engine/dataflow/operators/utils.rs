@@ -1,13 +1,18 @@
 // Copyright © 2024 Pathway
 
+use itertools::EitherOrBoth;
+use itertools::Itertools;
+use std::cmp::Ord;
+use std::collections::{BTreeMap, BTreeSet};
+
 use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::cursor::Cursor;
 use differential_dataflow::trace::implementations::ord::{OrdValBatch, OrdValBuilder};
 use differential_dataflow::trace::{BatchReader, Builder};
-use std::cmp::Ord;
-use std::collections::BTreeMap;
+use timely::order::TotalOrder;
 use timely::progress::{Antichain, Timestamp};
+
 /// This struct allows to sort entries by key, val, time, before building a batch
 /// it is essentially a buffer than later calls the DD batch builder
 /// possible improvement: write a batch builder that allows sorting entries without buffering them
@@ -76,6 +81,30 @@ where
     ret
 }
 
+/// Returns the weight associated with the current position at times up to `time` (`time` included) [i.e. a fixed (key, val) pair in storage] of
+/// the cursor passed in wrapper.
+pub(crate) fn key_val_weight_up_to_time<C: Cursor>(
+    wrapper: &mut CursorStorageWrapper<C>,
+    time: &C::Time,
+) -> Option<C::R>
+where
+    C::R: Semigroup,
+    C::Time: Timestamp,
+{
+    let mut ret: Option<C::R> = None;
+
+    wrapper.cursor.map_times(wrapper.storage, |t, diff| {
+        if t <= time {
+            if let Some(ref mut ret) = ret {
+                ret.plus_equals(diff);
+            } else {
+                ret = Some(diff.clone());
+            }
+        }
+    });
+    ret
+}
+
 /// Reorganizes a set of batches into set of vectors, each vector corresponding
 /// to updates from a specific time. While doing so, it applies logic to each
 /// (key, val, time, diff) tuple.
@@ -102,6 +131,44 @@ where
                 cursor.step_val(batch);
             }
             cursor.step_key(batch);
+        }
+    }
+    ret
+}
+
+pub(crate) fn get_upper_antichain_by_time<B>(input: &[B]) -> BTreeMap<B::Time, Antichain<B::Time>>
+where
+    B: BatchReader,
+    B::Time: Timestamp + TotalOrder,
+{
+    let mut ret = BTreeMap::new();
+    for batch in input {
+        let mut times = BTreeSet::new();
+        let mut cursor = batch.cursor();
+        while let Some(_key) = cursor.get_key(batch) {
+            while let Some(_val) = cursor.get_val(batch) {
+                cursor.map_times(batch, |time, _diff| {
+                    if !times.contains(time) {
+                        times.insert(time.clone());
+                    }
+                });
+                cursor.step_val(batch);
+            }
+            cursor.step_key(batch);
+        }
+
+        let upper_ac_for_batch = batch.upper();
+
+        for pair in times.iter().zip_longest(times.iter().skip(1)) {
+            match pair {
+                EitherOrBoth::Both(l, r) => {
+                    ret.insert(l.clone(), Antichain::from_elem(r.clone()));
+                }
+                EitherOrBoth::Left(l) => {
+                    ret.insert(l.clone(), upper_ac_for_batch.clone());
+                }
+                EitherOrBoth::Right(_) => unreachable!(),
+            }
         }
     }
     ret

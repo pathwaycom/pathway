@@ -1,24 +1,29 @@
 // Copyright © 2024 Pathway
 
-use crate::engine::dataflow::operators::utils::{
-    key_val_total_weight, CursorStorageWrapper, SortingBatchBuilder,
-};
+use std::cmp::Ord;
+use std::fmt::Debug;
+use std::iter::Peekable;
+use std::rc::Rc;
+
 use differential_dataflow::difference::{Abelian, Semigroup};
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::pathway::cursor::BidirectionalCursor;
 use differential_dataflow::pathway::trace::BidirectionalTraceReader;
-use differential_dataflow::trace::cursor::{Cursor, CursorList};
+use differential_dataflow::trace::cursor::Cursor;
 use differential_dataflow::trace::implementations::ord::{OrdKeyBatch, OrdValBatch};
-use differential_dataflow::trace::{BatchReader, Trace, TraceReader};
+use differential_dataflow::trace::{Trace, TraceReader};
 use differential_dataflow::{Data, ExchangeData};
-use std::cmp::{max, Ord};
-use std::fmt::Debug;
-use std::rc::Rc;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::Operator;
 use timely::dataflow::scopes::{Scope, ScopeParent};
+use timely::order::TotalOrder;
 use timely::progress::{Antichain, Timestamp};
+
+use super::utils::{get_upper_antichain_by_time, key_val_weight_up_to_time};
+use crate::engine::dataflow::operators::utils::{
+    batch_by_time, CursorStorageWrapper, SortingBatchBuilder,
+};
 
 type OutputBatchBuilder<K, V, T, R> = SortingBatchBuilder<K, V, T, R>;
 
@@ -66,15 +71,16 @@ impl<K, T> CarryEntry<K, T> {
 
 /// Returns true, if total weight associated with the current key  
 /// of the cursor passed in wrapper is zero.
-fn key_has_zero_weight<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>) -> bool
+fn key_has_zero_weight<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>, time: &C::Time) -> bool
 where
     C::R: Semigroup,
     C::Key: Debug,
+    C::Time: Timestamp,
 {
     let mut sum = None;
 
     while wrapper.cursor.val_valid(wrapper.storage) {
-        let curr = key_val_total_weight(wrapper);
+        let curr = key_val_weight_up_to_time(wrapper, time);
 
         match (sum.clone(), curr) {
             (None | Some(_), None) => (),
@@ -90,14 +96,15 @@ where
     sum.is_none() || sum.unwrap().is_zero()
 }
 
-/// Returns true, if total weight associated with the current position [i.e. a fixed (key, val) pair in storage]
+/// Returns true, if total weight associated with the current position up to `time` (including `time`) [i.e. a fixed (key, val) pair in storage]
 /// of the cursor passed in wrapper is zero.
-fn key_val_has_zero_weight<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>) -> bool
+fn key_val_has_zero_weight<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>, time: &C::Time) -> bool
 where
     C::R: Semigroup,
     C::Key: Debug,
+    C::Time: Timestamp,
 {
-    let sum: Option<C::R> = key_val_total_weight(wrapper);
+    let sum: Option<C::R> = key_val_weight_up_to_time(wrapper, time);
     sum.is_none() || sum.unwrap().is_zero()
 }
 
@@ -149,25 +156,14 @@ where
     wrapper.cursor.key_valid(wrapper.storage) && wrapper.cursor.key(wrapper.storage).eq(key)
 }
 
-fn rewind_zero_weight_val_forward<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>)
+fn rewind_zero_weight_val_forward<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>, time: &C::Time)
 where
     C::R: Semigroup,
     C::Key: Debug,
+    C::Time: Timestamp,
 {
-    while wrapper.cursor.val_valid(wrapper.storage) && key_val_has_zero_weight(wrapper) {
+    while wrapper.cursor.val_valid(wrapper.storage) && key_val_has_zero_weight(wrapper, time) {
         wrapper.cursor.step_val(wrapper.storage);
-    }
-}
-
-// if the current key has total weight zero, moves cursor forward,
-// to the first position with non zero total weight
-fn rewind_zero_weight_key_forward<C: Cursor>(wrapper: &mut CursorStorageWrapper<C>)
-where
-    C::R: Semigroup,
-    C::Key: Debug,
-{
-    while wrapper.cursor.key_valid(wrapper.storage) && key_has_zero_weight(wrapper) {
-        wrapper.cursor.step_key(wrapper.storage);
     }
 }
 
@@ -192,11 +188,11 @@ fn push_insert_replace<C: Cursor>(
 {
     move_to_key_or_upper_bound(wrapper, key);
 
-    if key_present(wrapper, key) && !key_has_zero_weight(wrapper) {
+    if key_present(wrapper, key) && !key_has_zero_weight(wrapper, time) {
         wrapper.cursor.rewind_vals(wrapper.storage);
-        rewind_zero_weight_val_forward(wrapper);
+        rewind_zero_weight_val_forward(wrapper, time);
         let old_val = wrapper.cursor.val(wrapper.storage);
-        let old_weight = key_val_total_weight(wrapper);
+        let old_weight = key_val_weight_up_to_time(wrapper, time);
         log::debug!("bb.p deleting {old_val:?} for {key:?} with time {time:?} and weight {old_weight:?} in push-replace");
         batch_builder.push((
             key.clone(),
@@ -206,7 +202,7 @@ fn push_insert_replace<C: Cursor>(
         ));
     }
     log::debug!(
-        "bb.p inserting {val:?} for {key:?} with time {time:?} and weight {diff:?} in push-replace"
+        "bb.p inserting {val:?} for {key:?} with time {time:?} and weight {diff:?} in push-replace",
     );
 
     batch_builder.push((key.clone(), val.clone(), time.clone(), diff.clone()));
@@ -230,9 +226,9 @@ fn push_prev_replace<K, C: Cursor<Key = K, Val = (Option<K>, Option<K>)>>(
 {
     move_to_key_or_upper_bound(wrapper, key);
 
-    rewind_zero_weight_val_forward(wrapper);
+    rewind_zero_weight_val_forward(wrapper, time);
     let val = wrapper.cursor.val(wrapper.storage);
-    let weight = key_val_total_weight(wrapper);
+    let weight = key_val_weight_up_to_time(wrapper, time);
     log::debug!("bb.p deleting {val:?} for {key:?} in push-prev-replace");
     batch_builder.push((
         key.clone(),
@@ -261,6 +257,7 @@ fn push_prev_replace<K, C: Cursor<Key = K, Val = (Option<K>, Option<K>)>>(
 fn find_non_zero_prev<K, T, R, C: BidirectionalCursor<Key = K, Val = (), Time = T, R = R>>(
     wrapper: &mut CursorStorageWrapper<C>,
     key: &K,
+    time: &T,
 ) -> Option<K>
 where
     K: Data,
@@ -269,7 +266,7 @@ where
 {
     move_to_key_or_lower_bound(wrapper, key);
     wrapper.cursor.step_back_key(wrapper.storage);
-    while wrapper.cursor.key_valid(wrapper.storage) && key_val_has_zero_weight(wrapper) {
+    while wrapper.cursor.key_valid(wrapper.storage) && key_val_has_zero_weight(wrapper, time) {
         wrapper.cursor.step_back_key(wrapper.storage);
     }
 
@@ -286,21 +283,21 @@ where
 // along the way, pushes delete entries for each
 // zero weight key that was also present in the input batch
 fn process_to_non_zero_next<
+    'a,
     K,
     T,
     R,
     C1: Cursor<Key = K, Val = (), Time = T, R = R>,
     C2: Cursor<Key = K, Val = (Option<K>, Option<K>), Time = T, R = R>,
-    C3: Cursor<Key = K, Val = (), Time = T, R = R>,
 >(
     input_wrapper: &mut CursorStorageWrapper<C1>,
     output_wrapper: &mut CursorStorageWrapper<C2>,
-    batch_wrapper: &mut CursorStorageWrapper<C3>,
+    batch_iter: &mut Peekable<impl Iterator<Item = &'a (K, R)>>,
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     key: &K,
     time: &T,
     instance_filter: (impl Fn(&K) -> bool + Sized),
-) -> (Option<K>, Option<T>)
+) -> Option<K>
 where
     K: Data,
     T: Timestamp + Lattice + Clone,
@@ -314,23 +311,17 @@ where
     if input_trace_key.is_some() && key.eq(input_trace_key.unwrap()) {
         input_wrapper.cursor.step_key(input_wrapper.storage);
     }
-    batch_wrapper.cursor.step_key(batch_wrapper.storage);
-    rewind_zero_weight_key_forward(batch_wrapper);
+    batch_iter.next();
+
     // here we find the first non-zero weight successor in the input trace
     // if along the way, we find some batch entries, we process them (generate
     // proper entries and push them to batch_builder)
-    let mut max_seen_time = Some(time.clone());
     while input_wrapper.cursor.key_valid(input_wrapper.storage)
         && instance_filter(input_wrapper.cursor.key(input_wrapper.storage))
-        && key_val_has_zero_weight(input_wrapper)
+        && key_val_has_zero_weight(input_wrapper, time)
     {
-        if batch_wrapper.cursor.key_valid(batch_wrapper.storage)
-            && instance_filter(batch_wrapper.cursor.key(batch_wrapper.storage))
-        {
-            let batch_key = batch_wrapper.cursor.key(batch_wrapper.storage);
-            batch_wrapper.cursor.rewind_vals(batch_wrapper.storage);
-            rewind_zero_weight_val_forward(batch_wrapper);
-            let batch_weight = key_val_total_weight(batch_wrapper);
+        if key_valid(batch_iter) && instance_filter(peek_key(batch_iter)) {
+            let (batch_key, batch_weight) = batch_iter.peek().unwrap();
 
             if batch_key.eq(input_wrapper.cursor.key(input_wrapper.storage)) {
                 assert!(
@@ -338,38 +329,20 @@ where
                     "internal sort error - deleting non existing key"
                 );
 
-                rewind_zero_weight_val_forward(output_wrapper);
+                rewind_zero_weight_val_forward(output_wrapper, time);
                 let val = output_wrapper.cursor.val(output_wrapper.storage);
-
                 log::debug!(
                     "bb.p deleting {val:?} for {batch_key:?} while process to non-zero-next"
                 );
 
-                let mut max_curr_time = None;
-                input_wrapper
-                    .cursor
-                    .map_times(input_wrapper.storage, |t, _diff| {
-                        if max_curr_time.is_none() || max_curr_time.as_ref().unwrap() < t {
-                            max_curr_time = Some(t.clone());
-                        };
-                    });
-
-                //update min / max time seen so far for values in the whole batch
-                max_seen_time = match (max_seen_time, max_curr_time.clone()) {
-                    (None, None) => None,
-                    (None, Some(val)) | (Some(val), None) => Some(val),
-                    (Some(val1), Some(val2)) => Some(max(val1, val2)),
-                };
-
                 batch_builder.push((
                     batch_key.clone(),
                     val.clone(),
-                    max_seen_time.clone().unwrap(),
-                    batch_weight.unwrap(),
+                    time.clone(),
+                    batch_weight.clone(),
                 ));
 
-                batch_wrapper.cursor.step_key(batch_wrapper.storage);
-                rewind_zero_weight_key_forward(batch_wrapper);
+                batch_iter.next();
             }
         }
 
@@ -381,41 +354,41 @@ where
     } else {
         None
     };
-    (next, max_seen_time)
+    next
 }
 
 fn get_non_zero_prev_next<
+    'a,
     K,
     T,
     R,
     C1: BidirectionalCursor<Key = K, Val = (), Time = T, R = R>,
     C2: Cursor<Key = K, Val = (Option<K>, Option<K>), Time = T, R = R>,
-    C3: Cursor<Key = K, Val = (), Time = T, R = R>,
 >(
     input_wrapper: &mut CursorStorageWrapper<C1>,
     output_wrapper: &mut CursorStorageWrapper<C2>,
-    batch_wrapper: &mut CursorStorageWrapper<C3>,
+    batch_iter: &mut Peekable<impl Iterator<Item = &'a (K, R)>>,
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     key: &K,
     time: &T,
     instance_filter: (impl Fn(&K) -> bool + Sized),
-) -> (Option<K>, Option<K>, Option<K>, Option<T>)
+) -> (Option<K>, Option<K>, Option<K>)
 where
     K: Data,
     T: Timestamp + Lattice + Clone,
     R: Abelian,
 {
-    let prev = find_non_zero_prev(input_wrapper, key);
+    let prev = find_non_zero_prev(input_wrapper, key, time);
     let mut prev_prev = None;
 
     if prev.is_some() {
-        prev_prev = find_non_zero_prev(input_wrapper, prev.as_ref().unwrap());
+        prev_prev = find_non_zero_prev(input_wrapper, prev.as_ref().unwrap(), time);
     }
 
-    let (next, max_seen_time) = process_to_non_zero_next(
+    let next = process_to_non_zero_next(
         input_wrapper,
         output_wrapper,
-        batch_wrapper,
+        batch_iter,
         batch_builder,
         key,
         time,
@@ -425,22 +398,33 @@ where
         other_instance_to_none(&instance_filter, prev_prev),
         other_instance_to_none(&instance_filter, prev),
         other_instance_to_none(&instance_filter, next),
-        max_seen_time,
     )
+}
+
+fn key_valid<I: Iterator>(batch_iter: &mut Peekable<I>) -> bool {
+    batch_iter.peek().is_some()
+}
+
+fn peek_key<'a, K, D, I: Iterator<Item = &'a (K, D)>>(batch_iter: &mut Peekable<I>) -> &'a K
+where
+    K: 'a + Clone,
+    D: 'a,
+{
+    &batch_iter.peek().unwrap().0
 }
 
 #[allow(clippy::too_many_lines)]
 fn handle_delete<
+    'a,
     K,
     T,
     R,
     C1: BidirectionalCursor<Key = K, Val = (), Time = T, R = R>,
     C2: Cursor<Key = K, Val = (Option<K>, Option<K>), Time = T, R = R>,
-    C3: Cursor<Key = K, Val = (), Time = T, R = R>,
 >(
     input_wrapper: &mut CursorStorageWrapper<C1>,
     output_wrapper: &mut CursorStorageWrapper<C2>,
-    batch_wrapper: &mut CursorStorageWrapper<C3>,
+    batch_iter: &mut Peekable<impl Iterator<Item = &'a (K, R)>>,
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     time: &T,
     mut carry_entry: CarryEntry<K, T>,
@@ -452,30 +436,26 @@ where
     R: Abelian,
 {
     log::debug!("delete, with carried entry {carry_entry:?}");
-    debug_assert!(batch_wrapper.cursor.key_valid(batch_wrapper.storage));
-    let key = batch_wrapper.cursor.key(batch_wrapper.storage);
 
-    let (prev_prev, prev, next, max_skipped_time) = get_non_zero_prev_next(
+    debug_assert!(key_valid(batch_iter));
+    let key = peek_key(batch_iter);
+
+    let (prev_prev, prev, next) = get_non_zero_prev_next(
         input_wrapper,
         output_wrapper,
-        batch_wrapper,
+        batch_iter,
         batch_builder,
         key,
         time,
         &instance_filter,
     );
 
-    let adjusted_time = match max_skipped_time {
-        None => time.clone(),
-        Some(skipped_time) => max(time, &skipped_time).clone(),
-    };
-
     if prev.is_some() {
         //delete entry associated with key
         move_to_key_or_upper_bound(output_wrapper, key);
-        rewind_zero_weight_val_forward(output_wrapper);
+        rewind_zero_weight_val_forward(output_wrapper, time);
         let val = output_wrapper.cursor.val(output_wrapper.storage);
-        let weight = key_val_total_weight(output_wrapper);
+        let weight = key_val_weight_up_to_time(output_wrapper, time);
         log::debug!("bb.p deleting {val:?} for {key:?} in regular item-delete");
 
         batch_builder.push((
@@ -509,7 +489,7 @@ where
             */
             carry_entry = carry_entry
                 .replace_next(next)
-                .replace_time(Some(adjusted_time));
+                .replace_time(Some(time.clone()));
         } else {
             //push carried entry to batch builder
 
@@ -522,7 +502,7 @@ where
             if !carry_entry.is_empty() {
                 if carry_entry.key.is_some() {
                     move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
-                    let weight = key_val_total_weight(input_wrapper);
+                    let weight = key_val_weight_up_to_time(input_wrapper, time);
                     log::debug!("pushing carry entry {carry_entry:?}",);
                     push_insert_replace(
                         output_wrapper,
@@ -548,7 +528,7 @@ where
                 key: prev,
                 prev: prev_prev,
                 next,
-                time: Some(adjusted_time),
+                time: Some(time.clone()),
             };
         }
     } else {
@@ -556,9 +536,9 @@ where
         assert!(carry_entry.key.is_none(),
                 "sort internal error: predecessor of entry to delete is none, but carry is {carry_entry:?}");
         move_to_key_or_upper_bound(output_wrapper, key);
-        rewind_zero_weight_val_forward(output_wrapper);
+        rewind_zero_weight_val_forward(output_wrapper, time);
         let val = output_wrapper.cursor.val(output_wrapper.storage);
-        let weight = key_val_total_weight(output_wrapper);
+        let weight = key_val_weight_up_to_time(output_wrapper, time);
         log::debug!("bb.p deleting {val:?} for {key:?} in first-item-delete");
         batch_builder.push((
             key.clone(),
@@ -584,16 +564,16 @@ where
 }
 
 fn handle_insert<
+    'a,
     K,
     T,
     R,
     C1: BidirectionalCursor<Key = K, Val = (), Time = T, R = R>,
     C2: Cursor<Key = K, Val = (Option<K>, Option<K>), Time = T, R = R>,
-    C3: Cursor<Key = K, Val = (), Time = T, R = R>,
 >(
     input_wrapper: &mut CursorStorageWrapper<C1>,
     output_wrapper: &mut CursorStorageWrapper<C2>,
-    batch_wrapper: &mut CursorStorageWrapper<C3>,
+    batch_iter: &mut Peekable<impl Iterator<Item = &'a (K, R)>>,
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     time: &T,
     carry_entry: CarryEntry<K, T>,
@@ -604,14 +584,17 @@ where
     T: Timestamp + Lattice + Clone,
     R: Abelian,
 {
-    log::debug!("insert, with carried entry {carry_entry:?}");
-    debug_assert!(batch_wrapper.cursor.key_valid(batch_wrapper.storage));
-    let key = batch_wrapper.cursor.key(batch_wrapper.storage);
+    log::debug!(
+        "insert {:?}, with carried entry {carry_entry:?}",
+        &batch_iter.peek().unwrap()
+    );
+    debug_assert!(key_valid(batch_iter));
+    let key = peek_key(batch_iter);
 
-    let (prev_prev, prev, next, _max_skipped_time) = get_non_zero_prev_next(
+    let (prev_prev, prev, next) = get_non_zero_prev_next(
         input_wrapper,
         output_wrapper,
-        batch_wrapper,
+        batch_iter,
         batch_builder,
         key,
         time,
@@ -634,7 +617,7 @@ where
 
         if carry_entry.key.is_some() && !carry_entry.key.eq(&prev) {
             move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
-            let weight = key_val_total_weight(input_wrapper);
+            let weight = key_val_weight_up_to_time(input_wrapper, time);
             push_insert_replace(
                 output_wrapper,
                 carry_entry.key.as_ref().unwrap(),
@@ -656,7 +639,7 @@ where
         }
 
         move_to_key_or_upper_bound(input_wrapper, prev.as_ref().unwrap());
-        let weight = key_val_total_weight(input_wrapper);
+        let weight = key_val_weight_up_to_time(input_wrapper, time);
         log::debug!(
             "bb.push_insert_replace key {:?}, val {:?}",
             prev,
@@ -690,55 +673,54 @@ where
 }
 
 fn handle_one_instance<
+    'a,
     K,
     T,
     R,
     C1: BidirectionalCursor<Key = K, Val = (), Time = T, R = R>,
     C2: Cursor<Key = K, Val = (Option<K>, Option<K>), Time = T, R = R>,
-    C3: Cursor<Key = K, Val = (), Time = T, R = R>,
 >(
     input_wrapper: &mut CursorStorageWrapper<C1>,
     output_wrapper: &mut CursorStorageWrapper<C2>,
-    batch_wrapper: &mut CursorStorageWrapper<C3>,
+    batch_iter: &mut Peekable<impl Iterator<Item = &'a (K, R)>>,
     batch_builder: &mut OutputBatchBuilder<K, (Option<K>, Option<K>), T, R>,
     instance_filter: impl Fn(&K, &K) -> bool,
+    time: &T,
 ) where
     K: Data,
     T: Timestamp + Lattice + Clone,
     R: Abelian,
 {
-    let instance_representant = batch_wrapper.cursor.key(batch_wrapper.storage);
+    let instance_representative = peek_key(batch_iter);
+
     let unary_instance_filter: &dyn Fn(&K) -> bool =
-        &|element| instance_filter(instance_representant, element);
+        &|element| instance_filter(instance_representative, element);
 
     let mut carry_entry = CarryEntry::<K, T>::make_empty();
-    while batch_wrapper.cursor.key_valid(batch_wrapper.storage)
-        && unary_instance_filter(batch_wrapper.cursor.key(batch_wrapper.storage))
-    {
-        let key = batch_wrapper.cursor.key(batch_wrapper.storage);
+    while key_valid(batch_iter) && unary_instance_filter(peek_key(batch_iter)) {
+        log::debug!(
+            "repr {:?} current {:?} ",
+            &instance_representative,
+            peek_key(batch_iter)
+        );
+
+        let (key, _diff) = &batch_iter.peek().unwrap();
+
         // find the total weight of given key in the input trace
         // 0 total weight indicates that the key just got deleted
         move_to_key_or_upper_bound(input_wrapper, key);
-        let mut max_curr_time = None;
-        input_wrapper
-            .cursor
-            .map_times(input_wrapper.storage, |t, _diff| {
-                if max_curr_time.is_none() || max_curr_time.as_ref().unwrap() < t {
-                    max_curr_time = Some(t.clone());
-                };
-            });
 
         let is_weight_zero = !(input_wrapper.cursor.key_valid(input_wrapper.storage)
             && input_wrapper.cursor.key(input_wrapper.storage) == key)
-            || key_val_has_zero_weight(input_wrapper);
-        let time = max_curr_time.unwrap();
+            || key_val_has_zero_weight(input_wrapper, time);
+
         if is_weight_zero {
             carry_entry = handle_delete(
                 input_wrapper,
                 output_wrapper,
-                batch_wrapper,
+                batch_iter,
                 batch_builder,
-                &time,
+                time,
                 carry_entry,
                 unary_instance_filter,
             );
@@ -746,9 +728,9 @@ fn handle_one_instance<
             carry_entry = handle_insert(
                 input_wrapper,
                 output_wrapper,
-                batch_wrapper,
+                batch_iter,
                 batch_builder,
-                &time,
+                time,
                 carry_entry,
                 unary_instance_filter,
             );
@@ -758,7 +740,7 @@ fn handle_one_instance<
     if !carry_entry.is_empty() {
         if carry_entry.key.is_some() {
             move_to_key_or_upper_bound(input_wrapper, carry_entry.key.as_ref().unwrap());
-            let weight = key_val_total_weight(input_wrapper);
+            let weight = key_val_weight_up_to_time(input_wrapper, time);
             push_insert_replace(
                 output_wrapper,
                 carry_entry.key.as_ref().unwrap(),
@@ -772,7 +754,7 @@ fn handle_one_instance<
         if carry_entry.next.is_some() {
             let key_to_fix = carry_entry.next.unwrap();
             move_to_key_or_upper_bound(output_wrapper, &key_to_fix);
-            rewind_zero_weight_val_forward(output_wrapper);
+            rewind_zero_weight_val_forward(output_wrapper, time);
             push_prev_replace(
                 output_wrapper,
                 &key_to_fix,
@@ -803,7 +785,7 @@ pub fn add_prev_next_pointers<G: Scope, K: ExchangeData, R: ExchangeData + Abeli
     >,
 >
 where
-    G::Timestamp: Lattice + Ord,
+    G::Timestamp: Lattice + Ord + TotalOrder,
 {
     let mut result_trace = None;
     let stream = {
@@ -825,90 +807,77 @@ where
                 move |input, output| {
                     input.for_each(|capability, batches| {
                         batches.swap(&mut input_buffer);
+                        let grouped = batch_by_time(&input_buffer, |key, _val, _time, diff| {
+                            (key.clone(), diff.clone())
+                        });
 
-                        let mut batch_cursor_list = Vec::new();
-                        let mut batch_storage_list = Vec::new();
-                        let mut upper_limit = Antichain::from_elem(
-                            <G::Timestamp as timely::progress::Timestamp>::minimum(),
-                        );
+                        let upper_antichains_for_times = get_upper_antichain_by_time(&input_buffer);
 
-                        //merge batches, to use one cursor?
-                        let mut total_update_size_ub = 0;
-                        for batch in input_buffer.drain(..) {
-                            upper_limit.clone_from(batch.upper());
-                            batch_cursor_list.push(batch.cursor());
-                            total_update_size_ub += batch.len() * 3;
-                            batch_storage_list.push(batch);
-                        }
-                        let (mut output_cursor, output_storage) = output_reader.cursor();
-                        let (mut cursor, storage) = input_arrangement.trace.bidirectional_cursor();
+                        for (time, entries) in grouped {
+                            let (mut output_cursor, output_storage) = output_reader.cursor();
+                            let upper_limit = &upper_antichains_for_times[&time];
 
-                        let mut batch_wrapper = CursorStorageWrapper {
-                            cursor: &mut CursorList::new(batch_cursor_list, &batch_storage_list),
-                            storage: &batch_storage_list,
-                        };
-                        let mut output_wrapper = CursorStorageWrapper {
-                            cursor: &mut output_cursor,
-                            storage: &output_storage,
-                        };
-                        let mut input_wrapper = CursorStorageWrapper {
-                            cursor: &mut cursor,
-                            storage: &storage,
-                        };
+                            let (mut cursor, storage) =
+                                input_arrangement.trace.bidirectional_cursor();
 
-                        batch_wrapper.cursor.rewind_keys(batch_wrapper.storage);
+                            log::debug!("pushing batch {:?}", entries);
+                            let mut output_wrapper = CursorStorageWrapper {
+                                cursor: &mut output_cursor,
+                                storage: &output_storage,
+                            };
+                            let mut input_wrapper = CursorStorageWrapper {
+                                cursor: &mut cursor,
+                                storage: &storage,
+                            };
 
-                        let mut batch_builder = <OutputBatchBuilder<
-                            K,
-                            (Option<K>, Option<K>),
-                            G::Timestamp,
-                            R,
-                        >>::with_capacity(
-                            total_update_size_ub
-                        );
-
-                        rewind_zero_weight_key_forward(&mut batch_wrapper);
-                        while batch_wrapper.cursor.key_valid(batch_wrapper.storage) {
-                            handle_one_instance(
-                                &mut input_wrapper,
-                                &mut output_wrapper,
-                                &mut batch_wrapper,
-                                &mut batch_builder,
-                                instance_filter,
+                            let mut batch_builder = <OutputBatchBuilder<
+                                K,
+                                (Option<K>, Option<K>),
+                                G::Timestamp,
+                                R,
+                            >>::with_capacity(
+                                3 * entries.len()
                             );
+
+                            let mut batch_iter = entries.iter().peekable();
+                            while key_valid(&mut batch_iter) {
+                                handle_one_instance(
+                                    &mut input_wrapper,
+                                    &mut output_wrapper,
+                                    &mut batch_iter,
+                                    &mut batch_builder,
+                                    instance_filter,
+                                    &time,
+                                );
+                            }
+
+                            let mut output_upper_antichain = Antichain::default();
+                            output_reader.read_upper(&mut output_upper_antichain);
+                            let res_batch = Rc::new(batch_builder.done(
+                                output_upper_antichain.clone(),
+                                upper_antichains_for_times[&time].clone(),
+                                Antichain::from_elem(
+                                    <G::Timestamp as timely::progress::Timestamp>::minimum(),
+                                ),
+                            ));
+
+                            log::debug!("pushing batch with upper{:?}", upper_limit.clone());
+                            log::debug!("pushing batch with content {res_batch:?}");
+
+                            output.session(&capability).give(res_batch.clone());
+                            output_writer.insert(res_batch, Some(time));
+                            output_writer.seal(upper_limit.clone());
+
+                            input_arrangement
+                                .trace
+                                .set_logical_compaction(upper_limit.borrow());
+                            output_reader.set_logical_compaction(upper_limit.borrow());
+
+                            input_arrangement
+                                .trace
+                                .set_physical_compaction(upper_limit.borrow());
+                            output_reader.set_physical_compaction(upper_limit.borrow());
                         }
-
-                        let mut target = Antichain::from_elem(
-                            <G::Timestamp as timely::progress::Timestamp>::minimum(),
-                        );
-                        input_arrangement.trace.advance_upper(&mut upper_limit);
-
-                        output_reader.read_upper(&mut target);
-
-                        let res_batch = Rc::new(batch_builder.done(
-                            target.clone(),
-                            upper_limit.clone(),
-                            Antichain::from_elem(
-                                <G::Timestamp as timely::progress::Timestamp>::minimum(),
-                            ),
-                        ));
-
-                        log::debug!("pushing batch with upper{:?}", upper_limit.clone());
-                        log::debug!("pushing batch with content {res_batch:?}");
-
-                        output.session(&capability).give(res_batch.clone());
-                        output_writer.insert(res_batch, Some(capability.retain().time().clone()));
-                        output_writer.seal(upper_limit.clone());
-
-                        input_arrangement
-                            .trace
-                            .set_logical_compaction(upper_limit.borrow());
-                        output_reader.set_logical_compaction(upper_limit.borrow());
-
-                        input_arrangement
-                            .trace
-                            .set_physical_compaction(upper_limit.borrow());
-                        output_reader.set_physical_compaction(upper_limit.borrow());
                     });
                 }
             })

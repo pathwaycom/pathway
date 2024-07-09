@@ -5,6 +5,7 @@
 use super::operator_test_utils::run_test;
 
 use pathway_engine::engine::dataflow::operators::prev_next::add_prev_next_pointers;
+
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::{BTreeSet, HashSet};
@@ -26,7 +27,7 @@ type OutputBatch<K> = Vec<(D<K>, T, i32)>;
 #[allow(clippy::disallowed_methods)]
 fn test_prev_next_insert_00() {
     let res = timely::example(|scope| {
-        let col = vec![(1, 11, 1), (3, 13, 1), (5, 15, 1), (7, 17, 1)]
+        let col = vec![(1, 1, 1), (3, 1, 1), (5, 1, 1), (7, 1, 1)]
             .into_iter()
             .to_stream(scope)
             .as_collection();
@@ -40,10 +41,10 @@ fn test_prev_next_insert_00() {
     });
     let to_print: Vec<_> = res.extract();
     let expected = vec![
-        ((1, (None, Some(3))), 13, 1),
-        ((3, (Some(1), Some(5))), 15, 1),
-        ((5, (Some(3), Some(7))), 17, 1),
-        ((7, (Some(5), None)), 17, 1),
+        ((1, (None, Some(3))), 1, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), None)), 1, 1),
     ];
     assert!(to_print[0].1.eq(&expected));
 }
@@ -54,35 +55,32 @@ fn test_prev_next_insert_01() {
     let mut input = Vec::new();
     let size = 4;
     for item in 0..size {
-        input.push((2 * item + 1, item, 1));
+        input.push((2 * item + 1, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..size {
-        input2.push((2 * item, size + item, 1));
+        input2.push((2 * item, 2, 1));
     }
 
     let expected: OutputBatch<i32> = vec![
         ((1, (None, Some(3))), 1, 1),
-        ((3, (Some(1), Some(5))), 2, 1),
-        ((5, (Some(3), Some(7))), 3, 1),
-        ((7, (Some(5), None)), 3, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 5, -1),
-        ((3, (Some(1), Some(5))), 6, -1),
-        ((5, (Some(3), Some(7))), 7, -1),
-        ((7, (Some(5), None)), 7, -1),
-        ((0, (None, Some(1))), 4, 1),
-        ((1, (Some(0), Some(2))), 5, 1),
-        ((2, (Some(1), Some(3))), 5, 1),
-        ((3, (Some(2), Some(4))), 6, 1),
-        ((4, (Some(3), Some(5))), 6, 1),
-        ((5, (Some(4), Some(6))), 7, 1),
-        ((6, (Some(5), Some(7))), 7, 1),
-        ((7, (Some(6), None)), 7, 1),
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(5))), 2, -1),
+        ((5, (Some(3), Some(7))), 2, -1),
+        ((7, (Some(5), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(4))), 2, 1),
+        ((4, (Some(3), Some(5))), 2, 1),
+        ((5, (Some(4), Some(6))), 2, 1),
+        ((6, (Some(5), Some(7))), 2, 1),
+        ((7, (Some(6), None)), 2, 1),
     ];
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
@@ -95,36 +93,34 @@ fn test_prev_next_insert_02() {
     let mut input = Vec::new();
     let size = 4;
     for item in 0..size {
-        input.push((2 * item + 1, item, 1));
+        input.push((2 * item + 1, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..size {
         if item != 2 {
-            input2.push((2 * item, size + item, 1));
+            input2.push((2 * item, 2, 1));
         }
     }
 
     let expected: OutputBatch<i32> = vec![
         ((1, (None, Some(3))), 1, 1),
-        ((3, (Some(1), Some(5))), 2, 1),
-        ((5, (Some(3), Some(7))), 3, 1),
-        ((7, (Some(5), None)), 3, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
+
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 5, -1),
-        ((3, (Some(1), Some(5))), 5, -1),
-        ((5, (Some(3), Some(7))), 7, -1),
-        ((7, (Some(5), None)), 7, -1),
-        ((0, (None, Some(1))), 4, 1),
-        ((1, (Some(0), Some(2))), 5, 1),
-        ((2, (Some(1), Some(3))), 5, 1),
-        ((3, (Some(2), Some(5))), 5, 1),
-        ((5, (Some(3), Some(6))), 7, 1),
-        ((6, (Some(5), Some(7))), 7, 1),
-        ((7, (Some(6), None)), 7, 1),
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(5))), 2, -1),
+        ((5, (Some(3), Some(7))), 2, -1),
+        ((7, (Some(5), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(5))), 2, 1),
+        ((5, (Some(3), Some(6))), 2, 1),
+        ((6, (Some(5), Some(7))), 2, 1),
+        ((7, (Some(6), None)), 2, 1),
     ];
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
@@ -137,45 +133,38 @@ fn test_prev_next_insert_03() {
     let mut input = Vec::new();
     let size = 6;
     for item in 0..size {
-        input.push((2 * item + 1, item, 1));
+        input.push((2 * item + 1, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..size {
         if item != 2 && item != 3 {
-            input2.push((2 * item, size + item, 1));
+            input2.push((2 * item, 2, 1));
         }
     }
 
     let expected: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 1, 1),     // time(3) = 1
-        ((3, (Some(1), Some(5))), 2, 1),  // time(5) = 2
-        ((5, (Some(3), Some(7))), 3, 1),  // time(7) = 3
-        ((7, (Some(5), Some(9))), 4, 1),  // time(9) = 4
-        ((9, (Some(7), Some(11))), 5, 1), // time(11) = 5
-        ((11, (Some(9), None)), 5, 1),    // time(11) = 5
+        ((1, (None, Some(3))), 1, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), Some(9))), 1, 1),
+        ((9, (Some(7), Some(11))), 1, 1),
+        ((11, (Some(9), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 7, -1),    // time(2) = 7
-        ((3, (Some(1), Some(5))), 7, -1), // time(2) = 7, time(4)=8, 4 not in the test
-        // ((5, (Some(3), Some(7))), 8, -1),    // time(6) = 9
-        ((7, (Some(5), Some(9))), 10, -1),  // time(8) = 10
-        ((9, (Some(7), Some(11))), 11, -1), // time(10) = 11
-        ((11, (Some(9), None)), 11, -1),    // time(10) = 11
-        ((0, (None, Some(1))), 6, 1),       // time(0) = 6
-        ((1, (Some(0), Some(2))), 7, 1),    // time(2) = 7
-        ((2, (Some(1), Some(3))), 7, 1),    // time(2) = 7
-        ((3, (Some(2), Some(5))), 7, 1),    // time(2) = 7, time(4)=8 4 not present in the test
-        //4
-        //((5, (Some(3), Some(7))), _, 1),
-        //6
-        ((7, (Some(5), Some(8))), 10, 1),   // time(8) = 10
-        ((8, (Some(7), Some(9))), 10, 1),   // time(8) = 10
-        ((9, (Some(8), Some(10))), 11, 1),  // time(10) = 11
-        ((10, (Some(9), Some(11))), 11, 1), // time(10) = 11
-        ((11, (Some(10), None)), 11, 1),    // time(10) = 11
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(5))), 2, -1),
+        ((7, (Some(5), Some(9))), 2, -1),
+        ((9, (Some(7), Some(11))), 2, -1),
+        ((11, (Some(9), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(5))), 2, 1),
+        ((7, (Some(5), Some(8))), 2, 1),
+        ((8, (Some(7), Some(9))), 2, 1),
+        ((9, (Some(8), Some(10))), 2, 1),
+        ((10, (Some(9), Some(11))), 2, 1),
+        ((11, (Some(10), None)), 2, 1),
     ];
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
@@ -188,36 +177,33 @@ fn test_prev_next_insert_04() {
     let size = 4;
     for item in 0..size {
         if item != 2 {
-            input.push((2 * item + 1, item, 1));
+            input.push((2 * item + 1, 1, 1));
         }
     }
     let mut input2 = Vec::new();
     for item in 0..size {
-        input2.push((2 * item, size + item, 1));
+        input2.push((2 * item, 2, 1));
     }
 
     let expected: OutputBatch<i32> = vec![
         ((1, (None, Some(3))), 1, 1),
-        ((3, (Some(1), Some(7))), 3, 1),
-        // ((5, (Some(3), Some(7))), 3, 1),
-        ((7, (Some(3), None)), 3, 1),
+        ((3, (Some(1), Some(7))), 1, 1),
+        ((7, (Some(3), None)), 1, 1),
     ];
     // the way we derive times is not fixed yet;
     // at the moment it is the largest time that is involved in producing the update entry
     // it may be changed to something else, then this test needs to be adjusted
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 5, -1),
-        ((3, (Some(1), Some(7))), 6, -1),
-        // ((5, (Some(3), Some(7))), 7, -1),
-        ((7, (Some(3), None)), 7, -1),
-        ((0, (None, Some(1))), 4, 1),
-        ((1, (Some(0), Some(2))), 5, 1),
-        ((2, (Some(1), Some(3))), 5, 1),
-        ((3, (Some(2), Some(4))), 6, 1),
-        ((4, (Some(3), Some(6))), 7, 1),
-        // ((5, (Some(3), Some(6))), 7, 1),
-        ((6, (Some(4), Some(7))), 7, 1),
-        ((7, (Some(6), None)), 7, 1),
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(7))), 2, -1),
+        ((7, (Some(3), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(4))), 2, 1),
+        ((4, (Some(3), Some(6))), 2, 1),
+        ((6, (Some(4), Some(7))), 2, 1),
+        ((7, (Some(6), None)), 2, 1),
     ];
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
@@ -230,47 +216,78 @@ fn test_prev_next_insert_05() {
     let size = 6;
     for item in 0..size {
         if item != 2 && item != 3 {
-            input.push((2 * item + 1, item, 1));
+            input.push((2 * item + 1, 1, 1));
         }
     }
     let mut input2 = Vec::new();
     for item in 0..size {
-        input2.push((2 * item, size + item, 1));
+        input2.push((2 * item, 2, 1));
     }
 
     let expected: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 1, 1),    // time(3) = 1
-        ((3, (Some(1), Some(9))), 4, 1), // time(5) = 2, time(9) = 4
-        // ((5, (Some(3), Some(7))), 3, 1),  // time(7) = 3
-        // ((7, (Some(5), Some(9))), 4, 1),  // time(9) = 4
-        ((9, (Some(3), Some(11))), 5, 1), // time(11) = 5
-        ((11, (Some(9), None)), 5, 1),    // time(11) = 5
+        ((1, (None, Some(3))), 1, 1),
+        ((3, (Some(1), Some(9))), 1, 1),
+        ((9, (Some(3), Some(11))), 1, 1),
+        ((11, (Some(9), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
+
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 7, -1),    // time(2) = 7
-        ((3, (Some(1), Some(9))), 8, -1), // time(4) = 8,
-        // ((5, (Some(3), Some(7))), 3, -1),
-        // ((7, (Some(5), Some(9))), 4, -1),
-        ((9, (Some(3), Some(11))), 11, -1), // time(10) = 11
-        ((11, (Some(9), None)), 11, -1),    // time(10) = 11
-        ((0, (None, Some(1))), 6, 1),       // time(0) = 6
-        ((1, (Some(0), Some(2))), 7, 1),    // time(2) = 7
-        ((2, (Some(1), Some(3))), 7, 1),    // time(2) = 7
-        ((3, (Some(2), Some(4))), 8, 1),    // time(4) = 8
-        ((4, (Some(3), Some(6))), 9, 1),    // time(6) = 9
-        // ((5, (Some(2), Some(5))), 7, 1),
-        ((6, (Some(4), Some(8))), 10, 1),
-        // ((7, (Some(5), Some(8))), 10, 1),// time(8) = 10
-        ((8, (Some(6), Some(9))), 10, 1),   // time(8) = 10
-        ((9, (Some(8), Some(10))), 11, 1),  // time(10) = 11
-        ((10, (Some(9), Some(11))), 11, 1), // time(10) = 11
-        ((11, (Some(10), None)), 11, 1),    // time(10) = 11
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(9))), 2, -1),
+        ((9, (Some(3), Some(11))), 2, -1),
+        ((11, (Some(9), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(4))), 2, 1),
+        ((4, (Some(3), Some(6))), 2, 1),
+        ((6, (Some(4), Some(8))), 2, 1),
+        ((8, (Some(6), Some(9))), 2, 1),
+        ((9, (Some(8), Some(10))), 2, 1),
+        ((10, (Some(9), Some(11))), 2, 1),
+        ((11, (Some(10), None)), 2, 1),
     ];
 
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
+        add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
+    });
+}
+
+// same data as test_prev_next_batch_splitting_01, but given as single batch with two times
+#[test]
+fn test_prev_next_multiple_times_00() {
+    let mut input = Vec::new();
+    let size = 4;
+    for item in 0..size {
+        input.push((2 * item + 1, 1, 1));
+    }
+    for item in 0..size {
+        input.push((2 * item, 2, 1));
+    }
+
+    let mut expected: OutputBatch<i32> = vec![
+        ((1, (None, Some(3))), 1, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), None)), 1, 1),
+    ];
+    let expected2: OutputBatch<i32> = vec![
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(5))), 2, -1),
+        ((5, (Some(3), Some(7))), 2, -1),
+        ((7, (Some(5), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(4))), 2, 1),
+        ((4, (Some(3), Some(5))), 2, 1),
+        ((5, (Some(4), Some(6))), 2, 1),
+        ((6, (Some(5), Some(7))), 2, 1),
+        ((7, (Some(6), None)), 2, 1),
+    ];
+
+    expected.extend(expected2.iter());
+    run_test(vec![input], vec![expected], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
     });
 }
@@ -281,34 +298,32 @@ fn test_prev_next_zero_entries_00() {
     let mut input = Vec::new();
     let size = 4;
     for item in 0..size {
-        input.push((2 * item + 1, item, 1));
+        input.push((2 * item + 1, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..size {
-        input2.push((2 * item, size + item, if item != 2 { 1 } else { 0 }));
+        input2.push((2 * item, 2, if item != 2 { 1 } else { 0 }));
     }
 
     let expected: OutputBatch<i32> = vec![
         ((1, (None, Some(3))), 1, 1),
-        ((3, (Some(1), Some(5))), 2, 1),
-        ((5, (Some(3), Some(7))), 3, 1),
-        ((7, (Some(5), None)), 3, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
+
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 5, -1),
-        ((3, (Some(1), Some(5))), 5, -1),
-        ((5, (Some(3), Some(7))), 7, -1),
-        ((7, (Some(5), None)), 7, -1),
-        ((0, (None, Some(1))), 4, 1),
-        ((1, (Some(0), Some(2))), 5, 1),
-        ((2, (Some(1), Some(3))), 5, 1),
-        ((3, (Some(2), Some(5))), 5, 1),
-        ((5, (Some(3), Some(6))), 7, 1),
-        ((6, (Some(5), Some(7))), 7, 1),
-        ((7, (Some(6), None)), 7, 1),
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(5))), 2, -1),
+        ((5, (Some(3), Some(7))), 2, -1),
+        ((7, (Some(5), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(5))), 2, 1),
+        ((5, (Some(3), Some(6))), 2, 1),
+        ((6, (Some(5), Some(7))), 2, 1),
+        ((7, (Some(6), None)), 2, 1),
     ];
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
@@ -321,47 +336,36 @@ fn test_prev_next_zero_entries_01() {
     let mut input = Vec::new();
     let size = 6;
     for item in 0..size {
-        input.push((2 * item + 1, item, 1));
+        input.push((2 * item + 1, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..size {
-        input2.push((
-            2 * item,
-            size + item,
-            if item != 2 && item != 3 { 1 } else { 0 },
-        ));
+        input2.push((2 * item, 2, if item != 2 && item != 3 { 1 } else { 0 }));
     }
 
     let expected: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 1, 1),     // time(3) = 1
-        ((3, (Some(1), Some(5))), 2, 1),  // time(5) = 2
-        ((5, (Some(3), Some(7))), 3, 1),  // time(7) = 3
-        ((7, (Some(5), Some(9))), 4, 1),  // time(9) = 4
-        ((9, (Some(7), Some(11))), 5, 1), // time(11) = 5
-        ((11, (Some(9), None)), 5, 1),    // time(11) = 5
+        ((1, (None, Some(3))), 1, 1),
+        ((3, (Some(1), Some(5))), 1, 1),
+        ((5, (Some(3), Some(7))), 1, 1),
+        ((7, (Some(5), Some(9))), 1, 1),
+        ((9, (Some(7), Some(11))), 1, 1),
+        ((11, (Some(9), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
     let expected2: OutputBatch<i32> = vec![
-        ((1, (None, Some(3))), 7, -1),    // time(2) = 7
-        ((3, (Some(1), Some(5))), 7, -1), // time(2) = 7, time(4)=8, 4 not in the test
-        // ((5, (Some(3), Some(7))), 8, -1),    // time(6) = 9
-        ((7, (Some(5), Some(9))), 10, -1),  // time(8) = 10
-        ((9, (Some(7), Some(11))), 11, -1), // time(10) = 11
-        ((11, (Some(9), None)), 11, -1),    // time(10) = 11
-        ((0, (None, Some(1))), 6, 1),       // time(0) = 6
-        ((1, (Some(0), Some(2))), 7, 1),    // time(2) = 7
-        ((2, (Some(1), Some(3))), 7, 1),    // time(2) = 7
-        ((3, (Some(2), Some(5))), 7, 1),    // time(2) = 7, time(4)=8 4 not present in the test
-        //4
-        //((5, (Some(3), Some(7))), _, 1),
-        //6
-        ((7, (Some(5), Some(8))), 10, 1),   // time(8) = 10
-        ((8, (Some(7), Some(9))), 10, 1),   // time(8) = 10
-        ((9, (Some(8), Some(10))), 11, 1),  // time(10) = 11
-        ((10, (Some(9), Some(11))), 11, 1), // time(10) = 11
-        ((11, (Some(10), None)), 11, 1),    // time(10) = 11
+        ((1, (None, Some(3))), 2, -1),
+        ((3, (Some(1), Some(5))), 2, -1),
+        ((7, (Some(5), Some(9))), 2, -1),
+        ((9, (Some(7), Some(11))), 2, -1),
+        ((11, (Some(9), None)), 2, -1),
+        ((0, (None, Some(1))), 2, 1),
+        ((1, (Some(0), Some(2))), 2, 1),
+        ((2, (Some(1), Some(3))), 2, 1),
+        ((3, (Some(2), Some(5))), 2, 1),
+        ((7, (Some(5), Some(8))), 2, 1),
+        ((8, (Some(7), Some(9))), 2, 1),
+        ((9, (Some(8), Some(10))), 2, 1),
+        ((10, (Some(9), Some(11))), 2, 1),
+        ((11, (Some(10), None)), 2, 1),
     ];
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
         add_prev_next_pointers(coll.arrange_by_self(), &|_a, _b| true)
@@ -374,44 +378,41 @@ fn test_prev_next_delete_00() {
     let mut input = Vec::new();
     let size = 10;
     for item in 0..size {
-        input.push((item, item, 1));
+        input.push((item, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..(size / 2) {
-        input2.push((2 * item, size + item, -1));
+        input2.push((2 * item, 2, -1));
     }
 
     let expected: OutputBatch<i32> = vec![
         ((0, (None, Some(1))), 1, 1),
-        ((1, (Some(0), Some(2))), 2, 1),
-        ((2, (Some(1), Some(3))), 3, 1),
-        ((3, (Some(2), Some(4))), 4, 1),
-        ((4, (Some(3), Some(5))), 5, 1),
-        ((5, (Some(4), Some(6))), 6, 1),
-        ((6, (Some(5), Some(7))), 7, 1),
-        ((7, (Some(6), Some(8))), 8, 1),
-        ((8, (Some(7), Some(9))), 9, 1),
-        ((9, (Some(8), None)), 9, 1),
+        ((1, (Some(0), Some(2))), 1, 1),
+        ((2, (Some(1), Some(3))), 1, 1),
+        ((3, (Some(2), Some(4))), 1, 1),
+        ((4, (Some(3), Some(5))), 1, 1),
+        ((5, (Some(4), Some(6))), 1, 1),
+        ((6, (Some(5), Some(7))), 1, 1),
+        ((7, (Some(6), Some(8))), 1, 1),
+        ((8, (Some(7), Some(9))), 1, 1),
+        ((9, (Some(8), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
     let expected2: OutputBatch<i32> = vec![
-        ((0, (None, Some(1))), 10, -1),
-        ((1, (Some(0), Some(2))), 11, -1),
-        ((2, (Some(1), Some(3))), 11, -1),
-        ((3, (Some(2), Some(4))), 12, -1),
-        ((4, (Some(3), Some(5))), 12, -1),
-        ((5, (Some(4), Some(6))), 13, -1),
-        ((6, (Some(5), Some(7))), 13, -1),
-        ((7, (Some(6), Some(8))), 14, -1),
-        ((8, (Some(7), Some(9))), 14, -1),
-        ((9, (Some(8), None)), 14, -1),
-        ((1, (None, Some(3))), 11, 1),    // time(2)=11
-        ((3, (Some(1), Some(5))), 12, 1), // time(4)=12
-        ((5, (Some(3), Some(7))), 13, 1), // time(6)=13
-        ((7, (Some(5), Some(9))), 14, 1), // time(8)=14
-        ((9, (Some(7), None)), 14, 1),    // time(8)=14
+        ((0, (None, Some(1))), 2, -1),
+        ((1, (Some(0), Some(2))), 2, -1),
+        ((2, (Some(1), Some(3))), 2, -1),
+        ((3, (Some(2), Some(4))), 2, -1),
+        ((4, (Some(3), Some(5))), 2, -1),
+        ((5, (Some(4), Some(6))), 2, -1),
+        ((6, (Some(5), Some(7))), 2, -1),
+        ((7, (Some(6), Some(8))), 2, -1),
+        ((8, (Some(7), Some(9))), 2, -1),
+        ((9, (Some(8), None)), 2, -1),
+        ((1, (None, Some(3))), 2, 1),
+        ((3, (Some(1), Some(5))), 2, 1),
+        ((5, (Some(3), Some(7))), 2, 1),
+        ((7, (Some(5), Some(9))), 2, 1),
+        ((9, (Some(7), None)), 2, 1),
     ];
 
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
@@ -426,51 +427,36 @@ fn test_prev_next_delete_01() {
     let mut input = Vec::new();
     let size = 10;
     for item in 0..size {
-        input.push((item, item, 1));
+        input.push((item, 1, 1));
     }
     let mut input2 = Vec::new();
     for item in 0..(size / 2) {
-        input2.push((item + 3, size + item, -1));
+        input2.push((item + 3, 2, -1));
     }
 
     let expected: OutputBatch<i32> = vec![
         ((0, (None, Some(1))), 1, 1),
-        ((1, (Some(0), Some(2))), 2, 1),
-        ((2, (Some(1), Some(3))), 3, 1),
-        ((3, (Some(2), Some(4))), 4, 1),
-        ((4, (Some(3), Some(5))), 5, 1),
-        ((5, (Some(4), Some(6))), 6, 1),
-        ((6, (Some(5), Some(7))), 7, 1),
-        ((7, (Some(6), Some(8))), 8, 1),
-        ((8, (Some(7), Some(9))), 9, 1),
-        ((9, (Some(8), None)), 9, 1),
+        ((1, (Some(0), Some(2))), 1, 1),
+        ((2, (Some(1), Some(3))), 1, 1),
+        ((3, (Some(2), Some(4))), 1, 1),
+        ((4, (Some(3), Some(5))), 1, 1),
+        ((5, (Some(4), Some(6))), 1, 1),
+        ((6, (Some(5), Some(7))), 1, 1),
+        ((7, (Some(6), Some(8))), 1, 1),
+        ((8, (Some(7), Some(9))), 1, 1),
+        ((9, (Some(8), None)), 1, 1),
     ];
-    // the way we derive times is not fixed yet;
-    // at the moment it is the largest time that is involved in producing the update entry
-    // it may be changed to something else, then this test needs to be adjusted
-    let expected2: OutputBatch<i32> = vec![
-        /*
-            at the moment, the first entry has time 14;
-            the logic behind is that 1-2-3
-            was replaced by 1-2-4, then by 1-2-5, 1-2-6, 1-2-7, 1-2-8;
-            time of 1-2-8 is 14; we aggregated all of those changes into one:
-            1-2-3 -> 1,2,8, with time 14; it's far from clear whether this is
-            right logic (alternative would be 10, as this is the time of first disappearance,
-            but then there are no insert-delete entries related to intermediate states, which
-            is somewhat inconsistent with this approach);
 
-            in Pathway usage, that should not matter too much, as all times in a batch of updates
-            should be the same
-        */
-        ((2, (Some(1), Some(3))), 14, -1),
-        ((3, (Some(2), Some(4))), 10, -1), // time(3)=10
-        ((4, (Some(3), Some(5))), 11, -1), // time(4)=11
-        ((5, (Some(4), Some(6))), 12, -1), // time(5)=12
-        ((6, (Some(5), Some(7))), 13, -1), // time(6)=13
-        ((7, (Some(6), Some(8))), 14, -1),
-        ((8, (Some(7), Some(9))), 14, -1),
-        ((2, (Some(1), Some(8))), 14, 1), // time(7) = 14
-        ((8, (Some(2), Some(9))), 14, 1), //time(7) = 14
+    let expected2: OutputBatch<i32> = vec![
+        ((2, (Some(1), Some(3))), 2, -1),
+        ((3, (Some(2), Some(4))), 2, -1),
+        ((4, (Some(3), Some(5))), 2, -1),
+        ((5, (Some(4), Some(6))), 2, -1),
+        ((6, (Some(5), Some(7))), 2, -1),
+        ((7, (Some(6), Some(8))), 2, -1),
+        ((8, (Some(7), Some(9))), 2, -1),
+        ((2, (Some(1), Some(8))), 2, 1),
+        ((8, (Some(2), Some(9))), 2, 1),
     ];
 
     run_test(vec![input, input2], vec![expected, expected2], |coll| {
