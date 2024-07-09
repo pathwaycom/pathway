@@ -80,7 +80,7 @@ def _construct_local_source(
             env_vars=copy.copy(env_vars),
         )
 
-    # Run Docker image with Airbyte connection locally and check streams
+    # Run airbyte connector locally and check streams
     for stream in source.configured_catalog["streams"]:
         name = stream["stream"]["name"]
         sync_mode = stream["sync_mode"]
@@ -117,6 +117,10 @@ mode.
     environment. If the connector isn't written in Python or isn't found on PyPI, it
     will be executed using a Docker image. Keep in mind, you can change this behavior
     using the ``enforce_method`` parameter.
+
+    Please be aware that it is highly recommended to use the ``enforce_method`` parameter
+    in production deployments. This is because autodetection can fail if the PyPI service
+    is unavailable.
 
     Args:
         config_file_path: Path to the config file, created with

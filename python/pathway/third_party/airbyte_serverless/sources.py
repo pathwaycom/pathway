@@ -154,12 +154,12 @@ class VenvAirbyteSource(ExecutableAirbyteSource):
             shell=True,
         )
         if process.returncode != 0:
-            process_stderr = process.stderr.decode("utf-8")
-            logging.error(f"Failed to install airbyte-{connector}:\n{process_stderr}")
+            process_stdout = process.stdout.decode("utf-8")
+            logging.error(f"Failed to install airbyte-{connector}:\n{process_stdout}")
             raise RuntimeError(
                 f"Failed to install package airbyte-{connector} into a virtual "
                 "environment. If the problem persists, please check that the package "
-                "exists on PyPI and consider using the enforce_docker_image flag."
+                "exists on PyPI and consider using enforce_method setting."
             )
         logging.info(
             f"The connector package for {connector} had successfully been installed"
