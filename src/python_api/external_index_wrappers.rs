@@ -56,12 +56,14 @@ impl PyExternalIndexFactory {
     fn brute_force_knn_factory(
         dimensions: usize,
         reserved_space: usize,
+        auxiliary_space: usize,
         metric: BruteForceKnnMetricKind,
     ) -> PyExternalIndexFactory {
         PyExternalIndexFactory {
             inner: Arc::new(BruteForceKNNIndexFactory::new(
                 dimensions,
                 reserved_space,
+                auxiliary_space,
                 metric,
             )),
         }

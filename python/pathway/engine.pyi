@@ -836,6 +836,7 @@ class ExternalIndexFactory:
         *,
         dimensions: int,
         reserved_space: int,
+        auxiliary_space: int,
         metric: BruteForceKnnMetricKind,
     ) -> ExternalIndexFactory: ...
 

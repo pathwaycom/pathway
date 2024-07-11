@@ -6,6 +6,22 @@ from pathway.stdlib.utils.col import unpack_col
 from pathway.tests.utils import assert_table_equality
 
 
+class InnerSchema(pw.Schema):
+    matched_item_id: pw.Pointer
+    matched_item_score: float
+
+
+class InputSchema(pw.Schema):
+    pk_source: int = pw.column_definition(primary_key=True)
+    data: str
+
+
+class QuerySchema(pw.Schema):
+    pk_source: int = pw.column_definition(primary_key=True)
+    data: str
+    limit: int
+
+
 def make_list(vector_as_str: str) -> list[float]:
     return [float(x) for x in vector_as_str.split(",")]
 
@@ -82,15 +98,6 @@ def test_filter():
 
 
 def test_auto_resize():
-    class InputSchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-
-    class QuerySchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-        limit: int
-
     index = pw.debug.table_from_markdown(
         """
     pk_source |data
@@ -151,14 +158,6 @@ def test_auto_resize():
 
 
 def test_distance_simple():
-    class InputSchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-
-    class QuerySchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-        limit: int
 
     index = pw.debug.table_from_markdown(
         """
@@ -196,10 +195,6 @@ def test_distance_simple():
         expansion_search=0,
     )
 
-    class InnerSchema(pw.Schema):
-        _pw_index_reply_id: pw.Pointer
-        _pw_index_reply_score: float
-
     answers = index._external_index_as_of_now(
         queries,
         index_column=index.data,
@@ -212,7 +207,7 @@ def test_distance_simple():
     unpacked = flattened + unpack_col(flattened._pw_index_reply, schema=InnerSchema)
 
     ret = (
-        unpacked.join(index, pw.left._pw_index_reply_id == index.id)
+        unpacked.join(index, pw.left.matched_item_id == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
     )
@@ -242,14 +237,6 @@ def test_distance_simple():
 
 
 def test_with_distance_simple():
-    class InputSchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-
-    class QuerySchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-        limit: int
 
     index = pw.debug.table_from_markdown(
         """
@@ -295,11 +282,6 @@ def test_with_distance_simple():
     ).with_columns(q_pk_source=queries.pk_source)
 
     flattened_ret = raw_ret.flatten(pw.this._pw_index_reply)
-
-    class InnerSchema(pw.Schema):
-        matched_item_id: pw.Pointer
-        matched_item_score: float
-
     unpacked_ret = flattened_ret + unpack_col(
         flattened_ret._pw_index_reply, schema=InnerSchema
     )
@@ -339,14 +321,6 @@ def test_with_distance_simple():
 
 
 def test_distance_with_deletion():
-    class InputSchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-
-    class QuerySchema(pw.Schema):
-        pk_source: int = pw.column_definition(primary_key=True)
-        data: str
-        limit: int
 
     index = pw.debug.table_from_markdown(
         """
@@ -398,15 +372,11 @@ def test_distance_with_deletion():
         query_responses_limit_column=queries.limit,
     ).with_columns(q_pk_source=queries.pk_source)
 
-    class InnerSchema(pw.Schema):
-        _pw_index_reply_id: pw.Pointer
-        _pw_index_reply_score: float
-
     flattened = answers.flatten(pw.this._pw_index_reply)
     unpacked = flattened + unpack_col(flattened._pw_index_reply, schema=InnerSchema)
 
     ret = (
-        unpacked.asof_now_join(index, pw.left._pw_index_reply_id == index.id)
+        unpacked.asof_now_join(index, pw.left.matched_item_id == index.id)
         .select(pw.left.q_pk_source, i_pk_source=pw.right.pk_source, data=pw.right.data)
         .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
     )
@@ -449,4 +419,91 @@ def test_distance_with_deletion():
     """,
         schema=ExpectedSchema,
     ).with_columns(data=pw.apply(make_list, pw.this.data))
+    assert_table_equality(ret, expected)
+
+
+def test_cosine_distance():
+
+    index = pw.debug.table_from_markdown(
+        """
+    pk_source |data
+    1         | 1,0.1,0.1
+    2         | 2,0.1,0.1
+    3         | 3,0.1,0.1
+    4         | 4,0.1,0.1
+    5         | 5,0.1,0.1
+    6         | 6,0.1,0.1
+    7         | 7,0.1,0.1
+    8         | 8,0.1,0.1
+    9         | 9,0.1,0.1
+    """,
+        schema=InputSchema,
+    ).with_columns(data=pw.apply(make_list, pw.this.data))
+
+    queries = pw.debug.table_from_markdown(
+        """
+    pk_source|data       |limit
+    1        |0.5,0.1,0.1|1
+    2        |0.5,0.1,0.1|2
+    3        |0.5,0.1,0.1|3
+    4        |0.5,0.1,0.1|4
+    """,
+        schema=QuerySchema,
+    ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
+
+    index_factory = ExternalIndexFactory.usearch_knn_factory(
+        dimensions=3,
+        reserved_space=10,
+        metric=USearchMetricKind.COS,
+        connectivity=0,
+        expansion_add=0,
+        expansion_search=0,
+    )
+
+    raw_ret = index._external_index_as_of_now(
+        queries,
+        index_column=index.data,
+        query_column=queries.data,
+        index_factory=index_factory,
+        query_responses_limit_column=queries.limit,
+    ).with_columns(q_pk_source=queries.pk_source)
+
+    flattened_ret = raw_ret.flatten(pw.this._pw_index_reply)
+
+    unpacked_ret = flattened_ret + unpack_col(
+        flattened_ret._pw_index_reply, schema=InnerSchema
+    )
+    ret = (
+        unpacked_ret.join(index, pw.left.matched_item_id == index.id)
+        .select(
+            pw.left.q_pk_source,
+            i_pk_source=pw.right.pk_source,
+            distance=-pw.left.matched_item_score,
+        )
+        .with_id_from(pw.this.q_pk_source, pw.this.i_pk_source)
+        .with_columns(distance=pw.this.distance.num.round(2))
+    )
+
+    class ExpectedSchema(pw.Schema):
+        q_pk_source: int = pw.column_definition(primary_key=True)
+        i_pk_source: int = pw.column_definition(primary_key=True)
+        distance: float
+
+    expected = pw.debug.table_from_markdown(
+        """
+        q_pk_source | i_pk_source | distance
+        1           | 1           | 0.01
+        2           | 1           | 0.01
+        2           | 2           | 0.02
+        3           | 1           | 0.01
+        3           | 2           | 0.02
+        3           | 3           | 0.03
+        4           | 1           | 0.01
+        4           | 2           | 0.02
+        4           | 3           | 0.03
+        4           | 4           | 0.03
+    """,
+        schema=ExpectedSchema,
+    )
+
     assert_table_equality(ret, expected)

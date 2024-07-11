@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Tuple
 
 import pathway.internals as pw
-from pathway.engine import ExternalIndexFactory, USearchMetricKind
+from pathway.engine import (
+    BruteForceKnnMetricKind,
+    ExternalIndexFactory,
+    USearchMetricKind,
+)
 from pathway.internals import dtype as dt
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.stdlib.indexing.colnames import _INDEX_REPLY, _NO_OF_MATCHES, _QUERY_ID
@@ -48,30 +52,34 @@ class USearchKnn(InnerIndex):
 
     To understand meaning of the explanation of some of the parameters, you might need
     some familiarity with either `HNSW algorithm <https://arxiv.org/abs/1603.09320>`_ or
-    its implementation provided by `USearch <https://github.com/unum-cloud/usearch>`_
+    its implementation provided by `USearch <https://github.com/unum-cloud/usearch>`_.
 
     Args:
-        data_column ( pw.ColumnExpression [list[float]]): the column expression representing the data.
-        metadata_column ( pw.ColumnExpression [str] | None): optional column expression,
+        data_column (pw.ColumnExpression [list[float]]): the column expression representing the data.
+        metadata_column (pw.ColumnExpression [str] | None): optional column expression,
             string representation of some auxiliary data, in JSON format.
         dimensions (int): number of dimensions of vectors that are used by the index and
             queries
-        reserved_space (int): initial capacity (in number of entries) of the index
+        reserved_space (int): initial capacity (in the number of entries) of the index
         metric (USearchMetricKind): metric kind that is used to determine distance
-        connectivity (int): maximum number of edges for a node in the HNSW index
+        connectivity (int): maximum number of edges for a node in the HNSW index, setting
+            this value to 0 tells usearch to configure it on its own
         expansion_add (int): indicates amount of work spent while adding elements to the index
-            (higher = more accurate placement, more work)
+            (higher = more accurate placement, more work), setting this value to 0 tells
+            usearch to configure it on its own
         expansion_search (int): indicates amount of work spent while searching for elements in
-            the index (higher = more accurate results, more work)
+            the index (higher = more accurate results, more work), setting this value to
+            0 tells usearch to configure it on its own
 
     """
 
     dimensions: int
     reserved_space: int
     metric: USearchMetricKind
-    connectivity: int = 2
-    expansion_add: int = 2
-    expansion_search: int = 2
+    # setting values below to zero tells usearch figure those values on its own
+    connectivity: int = 0
+    expansion_add: int = 0
+    expansion_search: int = 0
 
     def query(
         self,
@@ -79,6 +87,7 @@ class USearchKnn(InnerIndex):
         number_of_matches: pw.ColumnExpression | int = 3,
         metadata_filter: pw.ColumnExpression | None = None,
     ) -> pw.Table:
+        """Currently, usearch knn index is supported only in the as-of-now variant"""
         raise NotImplementedError(
             "Currently, usearch knn index is supported only in the as-of-now variant"
         )
@@ -129,14 +138,94 @@ class USearchKnn(InnerIndex):
 
 
 @dataclass(frozen=True, kw_only=True)
+class BruteForceKnn(InnerIndex):
+    """
+    Interface for a brute force implementation of a nearest neighbors index.
+
+    Args:
+        data_column (pw.ColumnExpression [list[float]]): the column expression representing the data.
+        metadata_column (pw.ColumnExpression [str] | None): optional column expression,
+            string representation of some auxiliary data, in JSON format.
+        dimensions (int): number of dimensions of vectors that are used by the index and
+            queries
+        reserved_space (int): initial capacity (in the number of entries) of the index
+        auxiliary_space (int): auxiliary space (in the number of entries), the maximum
+            number of distances that are stored in memory, while evaluating queries, in
+            case ``auxiliary_space`` is set to a value smaller than the current number
+            of entries in the index, it is still proportional to
+            the size of the index (the value given in this parameter is ignored)
+        metric (BruteForceKnnMetricKind): metric kind that is used to determine distance
+
+    """
+
+    dimensions: int
+    reserved_space: int
+    auxiliary_space: int = 1024 * 128
+    metric: BruteForceKnnMetricKind
+
+    def query(
+        self,
+        query_column: pw.ColumnReference,
+        number_of_matches: pw.ColumnExpression | int = 3,
+        metadata_filter: pw.ColumnExpression | None = None,
+    ) -> pw.Table:
+        """Currently, brute force knn index is supported only in the as-of-now variant"""
+        raise NotImplementedError(
+            "Currently, brute force knn index is supported only in the as-of-now variant"
+        )
+
+    @check_arg_types
+    def query_as_of_now(
+        self,
+        query_column: pw.ColumnReference,
+        number_of_matches: pw.ColumnExpression | int = 3,
+        metadata_filter: pw.ColumnExpression | None = None,
+    ) -> pw.Table:
+
+        check_default_knn_column_types(
+            self.data_column,
+            query_column,
+            number_of_matches,
+            self.metadata_column,
+            metadata_filter,
+        )
+
+        index = self.data_column.table
+        queries = query_column.table
+
+        index_factory = ExternalIndexFactory.brute_force_knn_factory(
+            dimensions=self.dimensions,
+            reserved_space=self.reserved_space,
+            auxiliary_space=self.auxiliary_space,
+            metric=self.metric,
+        )
+
+        number_of_matches_ref = number_of_matches
+        if isinstance(number_of_matches, int):
+            queries = queries.with_columns(**{_NO_OF_MATCHES: number_of_matches})
+            number_of_matches_ref = queries[_NO_OF_MATCHES]
+
+        return index._external_index_as_of_now(
+            queries,
+            index_column=self.data_column,
+            query_column=query_column,
+            index_factory=index_factory,
+            res_type=dt.List(dt.Tuple(dt.ANY_POINTER, float)),
+            query_responses_limit_column=number_of_matches_ref,
+            index_filter_data_column=self.metadata_column,
+            query_filter_column=metadata_filter,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class LshKnn(InnerIndex):
     """
     Interface for Pathway's implementation of KNN via LSH.
 
     Args:
-        data_column ( pw.ColumnExpression [list[float]]): the column expression
+        data_column (pw.ColumnExpression [list[float]]): the column expression
             representing the data.
-        metadata_column ( pw.ColumnExpression [str] | None): optional column expression,
+        metadata_column (pw.ColumnExpression [str] | None): optional column expression,
             string representation of metadata as dictionary, in JSON format.
         dimensions (int): number of dimensions in the data
         n_or (int): number of ORs
@@ -185,11 +274,11 @@ class LshKnn(InnerIndex):
     ) -> pw.Table:
         """
         Args:
-            query_column ( pw.ColumnExpression [list[float]]):
+            query_column (pw.ColumnExpression [list[float]]):
                 column containing data that is used to query the index;
-            number_of_matches ( pw.ColumnExpression [int] | int ):
+            number_of_matches (pw.ColumnExpression [int] | int):
                 number of nearest neighbors in the index response; defaults to 3
-            metadata_filter ( pw.ColumnExpression [str] | None):
+            metadata_filter (pw.ColumnExpression [str] | None):
                 optional, column expression evaluating to the text representation
                 of a boolean JMESPath query. The index will consider only the entries
                 with metadata that satisfies the condition in the filter.
@@ -246,7 +335,7 @@ class LshKnn(InnerIndex):
         Args:
             query_column (pw.ColumnExpression [list[float]]):
                 column containing data that is used to query the index;
-            number_of_matches (pw.ColumnExpression[int] | int ):
+            number_of_matches (pw.ColumnExpression[int] | int):
                 number of nearest neighbors in the index response; defaults to 3
             metadata_filter (pw.ColumnExpression [str] | None): optional,
                 column expression evaluating to the text representation

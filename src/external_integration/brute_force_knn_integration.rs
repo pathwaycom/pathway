@@ -24,6 +24,7 @@ pub struct BruteForceKNNIndex {
     current_size: usize,
     current_allocated: usize,
     minimum_allocated: usize,
+    auxiliary_space: usize,
     dimensions: usize,
     metric: BruteForceKnnMetricKind,
     key_to_id_mapper: KeyToU64IdMapper,
@@ -33,6 +34,7 @@ impl BruteForceKNNIndex {
     pub fn new(
         dimensions: usize,
         reserved_space: usize,
+        auxiliary_space: usize,
         metric: BruteForceKnnMetricKind,
     ) -> DynResult<BruteForceKNNIndex> {
         let arr = Array2::default((reserved_space, dimensions));
@@ -41,6 +43,7 @@ impl BruteForceKNNIndex {
             current_size: 0,
             current_allocated: reserved_space,
             minimum_allocated: reserved_space,
+            auxiliary_space,
             dimensions,
             metric,
             key_to_id_mapper: KeyToU64IdMapper::new(),
@@ -50,7 +53,7 @@ impl BruteForceKNNIndex {
     fn fill_distances(
         &self,
         index_arr: &ArrayView2<f64>,
-        query_arr: &Array2<f64>,
+        query_arr: &ArrayView2<f64>,
         dot_p: &mut Array2<f64>,
     ) {
         match self.metric {
@@ -66,7 +69,7 @@ impl BruteForceKNNIndex {
 
 fn fill_cos_distances(
     index_arr: &ArrayView2<f64>,
-    query_arr: &Array2<f64>,
+    query_arr: &ArrayView2<f64>,
     dot_p: &mut Array2<f64>,
 ) {
     let index_sq_norms: Vec<f64> = index_arr
@@ -88,7 +91,7 @@ fn fill_cos_distances(
 
 fn fill_l2sq_distances(
     index_arr: &ArrayView2<f64>,
-    query_arr: &Array2<f64>,
+    query_arr: &ArrayView2<f64>,
     dot_p: &mut Array2<f64>,
 ) {
     let index_sq_norms: Vec<f64> = index_arr
@@ -188,41 +191,46 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for BruteForceKNNIndex {
             .index_array
             .slice(s![..self.current_size, ..self.dimensions]);
 
-        let mut query_arr = Array2::<f64>::default((self.dimensions, queries.len()));
-        for (mut col, (_key, data, _k)) in query_arr.axis_iter_mut(Axis(1)).zip(queries) {
-            for (entry, val) in col.iter_mut().zip(data) {
-                *entry = *val;
+        let mut ret = Vec::with_capacity(queries.len());
+        let max_queries = max(1, self.auxiliary_space / self.current_size);
+        let query_batches = queries.chunks(max_queries);
+        let mut query_arr = Array2::<f64>::default((self.dimensions, max_queries));
+        for query_batch in query_batches {
+            for (mut col, (_key, data, _k)) in query_arr.axis_iter_mut(Axis(1)).zip(query_batch) {
+                for (entry, val) in col.iter_mut().zip(data) {
+                    *entry = *val;
+                }
             }
+            let slice_query_array = query_arr.slice(s![..self.dimensions, ..query_batch.len()]);
+            let mut dot_p = index_arr.dot(&slice_query_array);
+            self.fill_distances(&index_arr, &slice_query_array, &mut dot_p);
+
+            ret.extend(dot_p.axis_iter(Axis(1)).zip(query_batch).map(
+                |(col, (key, _data, limit))| {
+                    let result = col
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, x)| (OrderedFloat::from(*x), idx)) //order by distance
+                        .k_smallest(*limit)
+                        .map(|(distance, i)| KeyScoreMatch {
+                            key: self
+                                .key_to_id_mapper
+                                .get_key_for_id(u64::try_from(i).unwrap()),
+                            score: -(*distance),
+                        })
+                        .collect();
+                    (*key, Ok(result))
+                },
+            ));
         }
-
-        let mut dot_p = index_arr.dot(&query_arr);
-        self.fill_distances(&index_arr, &query_arr, &mut dot_p);
-
-        dot_p
-            .axis_iter(Axis(1))
-            .zip(queries)
-            .map(|(col, (key, _data, limit))| {
-                let result = col
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, x)| (OrderedFloat::from(*x), idx)) //order by distance
-                    .k_smallest(*limit)
-                    .map(|(distance, i)| KeyScoreMatch {
-                        key: self
-                            .key_to_id_mapper
-                            .get_key_for_id(u64::try_from(i).unwrap()),
-                        score: -(*distance),
-                    })
-                    .collect();
-                (*key, Ok(result))
-            })
-            .collect()
+        ret
     }
 }
 
 pub struct BruteForceKNNIndexFactory {
     dimensions: usize,
     reserved_space: usize,
+    auxiliary_space: usize,
     metric: BruteForceKnnMetricKind,
 }
 
@@ -230,11 +238,13 @@ impl BruteForceKNNIndexFactory {
     pub fn new(
         dimensions: usize,
         reserved_space: usize,
+        auxiliary_space: usize,
         metric: BruteForceKnnMetricKind,
     ) -> BruteForceKNNIndexFactory {
         BruteForceKNNIndexFactory {
             dimensions,
             reserved_space,
+            auxiliary_space,
             metric,
         }
     }
@@ -242,7 +252,12 @@ impl BruteForceKNNIndexFactory {
 
 impl ExternalIndexFactory for BruteForceKNNIndexFactory {
     fn make_instance(&self) -> Result<Box<dyn ExternalIndex>, Error> {
-        let u_index = BruteForceKNNIndex::new(self.dimensions, self.reserved_space, self.metric)?;
+        let u_index = BruteForceKNNIndex::new(
+            self.dimensions,
+            self.reserved_space,
+            self.auxiliary_space,
+            self.metric,
+        )?;
         Ok(Box::new(DerivedFilteredSearchIndex::new(Box::new(u_index))))
     }
 }

@@ -36,9 +36,6 @@ def check_default_bm25_column_types(
 
 @dataclass(frozen=True)
 class TantivyBM25(InnerIndex):
-    ram_budget: int = 50 * 1024 * 1024  # 50 MB
-    in_memory_index: bool = True
-
     """
     Interface for full text index based on `BM25 <https://en.wikipedia.org/wiki/Okapi_BM25>`_,
     provided via `tantivy <https://github.com/quickwit-oss/tantivy>`_.
@@ -54,12 +51,16 @@ class TantivyBM25(InnerIndex):
             if set to false, the index is stored in some default Pathway disk storage
     """
 
+    ram_budget: int = 50 * 1024 * 1024  # 50 MB
+    in_memory_index: bool = True
+
     def query(
         self,
         query_column: pw.ColumnReference,
         number_of_matches: pw.ColumnExpression | int = 3,
         metadata_filter: pw.ColumnExpression | None = None,
-    ):
+    ) -> pw.Table:
+        """Currently, tantivy bm25 index is supported only in the as-of-now variant"""
         raise NotImplementedError(
             "Currently, tantivy bm25 index is supported only in the as-of-now variant"
         )
@@ -70,7 +71,7 @@ class TantivyBM25(InnerIndex):
         query_column: pw.ColumnReference,
         number_of_matches: pw.ColumnExpression | int = 3,
         metadata_filter: pw.ColumnExpression | None = None,
-    ):
+    ) -> pw.Table:
         check_default_bm25_column_types(
             self.data_column,
             query_column,

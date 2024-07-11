@@ -308,6 +308,7 @@ pub fn make_option_accessor(
     }
 }
 
+#[derive(Debug)]
 pub struct KeyScoreMatch {
     key: Key,
     score: f64,

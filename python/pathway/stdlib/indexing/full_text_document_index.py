@@ -14,7 +14,7 @@ def default_full_text_document_index(
 ) -> DataIndex:
     """
     Returns an instance of DataIndex
-    ( :py:class:`~pathway.stdlib.indexing.DataIndex`),
+    (:py:class:`~pathway.stdlib.indexing.DataIndex`),
     with inner index (data structure) of our choosing. This method chooses an arbitrary
     implementation of :py:class:`~pathway.stdlib.indexing.InnerIndex`
     (that supports text queries), but it's not necessarily the best choice of

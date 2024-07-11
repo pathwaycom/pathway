@@ -1,5 +1,7 @@
 # Copyright © 2024 Pathway
 
+import pytest
+
 import pathway as pw
 from pathway.engine import BruteForceKnnMetricKind, ExternalIndexFactory
 from pathway.stdlib.utils.col import unpack_col
@@ -58,7 +60,15 @@ def get_ret(queries, index, index_factory):
     return ret
 
 
-def test_resize():
+@pytest.mark.parametrize(
+    ("res_space", "aux_space"),
+    [
+        (1, 1000),
+        (1000, 1),
+    ],
+    ids=["test resize", "test slice queries"],
+)
+def test_space_shenanigans(res_space, aux_space):
     index = pw.debug.table_from_markdown(
         """
     pk_source |data         | __time__
@@ -88,7 +98,8 @@ def test_resize():
 
     index_factory = ExternalIndexFactory.brute_force_knn_factory(
         dimensions=3,
-        reserved_space=1,
+        reserved_space=res_space,
+        auxiliary_space=aux_space,
         metric=BruteForceKnnMetricKind.COS,
     )
 
@@ -154,6 +165,7 @@ def test_resize_after_delete():
     index_factory = ExternalIndexFactory.brute_force_knn_factory(
         dimensions=3,
         reserved_space=1,
+        auxiliary_space=1000,
         metric=BruteForceKnnMetricKind.COS,
     )
 
@@ -211,6 +223,7 @@ def test_cosine_distance():
     index_factory = ExternalIndexFactory.brute_force_knn_factory(
         dimensions=3,
         reserved_space=10,
+        auxiliary_space=1000,
         metric=BruteForceKnnMetricKind.COS,
     )
 
@@ -268,6 +281,7 @@ def test_euclidean_sq_distance():
     index_factory = ExternalIndexFactory.brute_force_knn_factory(
         dimensions=3,
         reserved_space=10,
+        auxiliary_space=1000,
         metric=BruteForceKnnMetricKind.L2SQ,
     )
 
