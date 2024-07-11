@@ -60,7 +60,7 @@ def _check_model_accepts_arg(model_name: str, provider: str, arg: str):
 def _check_llm_accepts_arg(llm: pw.UDF, arg: str) -> bool:
     try:
         model_name = llm.kwargs["model"]  # type: ignore
-    except KeyError:
+    except (AttributeError, KeyError):
         return False
 
     if isinstance(llm, llms.OpenAIChat):

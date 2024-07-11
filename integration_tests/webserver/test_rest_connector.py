@@ -1,6 +1,5 @@
 # Copyright © 2024 Pathway
 
-import multiprocessing
 import pathlib
 import threading
 import time
@@ -352,28 +351,18 @@ def test_server_schema_generation_via_endpoint(port: int) -> None:
     uppercase_responses = uppercase_logic(uppercase_queries)
     uppercase_response_writer(uppercase_responses)
 
-    pw_run_process = multiprocessing.Process(target=pw.run)
-    pw_run_process.start()
-
-    succeeded = False
-    for _ in range(10):
+    def checker() -> bool:
         try:
             response = requests.get(
                 f"http://127.0.0.1:{port}/_schema?format=json", timeout=1
             )
             response.raise_for_status()
+            schema = response.json()
+            return schema["paths"].keys() == {"/uppercase"}
         except Exception:
-            time.sleep(0.5)
-            continue
+            return False
 
-        schema = response.json()
-        assert schema["paths"].keys() == {"/uppercase"}
-        succeeded = True
-        break
-
-    pw_run_process.terminate()
-    pw_run_process.join()
-    assert succeeded
+    wait_result_with_checker(checker, 5)
 
 
 def test_server_parameter_cast(tmp_path: pathlib.Path, port: int) -> None:

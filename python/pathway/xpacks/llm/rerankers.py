@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @pw.udf
 def rerank_topk_filter(
-    docs: list[Doc], scores: list[float], k=5
+    docs: list[Doc], scores: list[float], k: int = 5
 ) -> tuple[list[Doc], list[float]]:
     """Apply top-k filtering to docs using the relevance scores.
 
@@ -161,7 +161,8 @@ class LLMReranker(pw.UDF):
 
         if match:
             number = int(match.group(1))
-            assert number >= 0 and number <= 5, "Number should be between 1 and 5"
+            if number < 1 or number > 5:
+                raise ValueError("Ranking should be between 1 and 5")
             return number
         else:
             raise ValueError(
