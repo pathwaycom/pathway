@@ -18,6 +18,26 @@
 # * [Updating](#updating)
 # * [Computing](#operations)
 #
+# Here is a quick summary of the available transformations:
+# | Category                       | Operations                       | Example                                           |
+# |--------------------------------|----------------------------------|---------------------------------------------------|
+# | Selection of a column          | select and dot/bracket notation  | `t.select(t.colA, t['colB'], pw.this.colC)`       |
+# | Selection of all columns       | select and star notation         | `t.select(*pw.this)`                              |
+# | Removing columns               | without and dot/bracket notation   | `t.without(t.colA, t.colB)`                       |
+# | Arithmetic operations          | +, -, *, /, //, %, **              | `t.select(new_col = t.colA + t.colB)`             |
+# | Comparison operations          | ==, !=, <, <=, >, >=               | `t.select(new_col = t.colA <= t.colB)`            |
+# | Boolean operations             | & (AND), \| (OR), ~ (NOT), ^ (XOR) | `t.select(new_col = t.colA & (t.colB < 3))`       |
+# | Filtering                      | filter                             | `t.filter(pw.this.column > value)`                |
+# | Reindexing                     | with_id_from                       | `t.with_id_from(t_new_ids.new_id_source)`         |
+# | [Reference Indexing](/developers/user-guide/data-transformation/indexing-grouped-tables)       | ix_ref                           | `t_selected_ids.select(selected=t.ix_ref(column).name)` |
+# | [Group-by and Aggregation](/developers/user-guide/data-transformation/groupby-reduce-manual) | groupby, reduce                  | `t.groupby(pw.this.column).reduce(sum=pw.reducers.sum(pw.this.column))` |
+# | Union and Concatenation  | union (+, +=), concat_reindex    | `t_union = t1 + t2`                                |
+# | [Join Operations](/developers/user-guide/data-transformation/join-manual)          | join (inner, outer, left, right) | `t1.join(t2, pw.left.column == pw.right.column).select(...)` |
+# | Adding/Renaming Columns  | select (add), rename             | `t.select(*pw.this, new_col=t.old_col)`, `t.rename(new_col=pw.this.old_col)` |
+# | Updating Cell Values     | update_cells, <<                 | `t.update_cells(t_new)`                            |
+# | Applying a function      | pw.apply                         | `t.select(new_col=pw.apply(func, pw.this.colA))` |
+#
+#
 # If you want more information you can review our complete [API docs](/developers/api-docs/pathway) or some of our [tutorials](/developers/templates/suspicious_activity_tumbling_window).
 
 # ## Streaming and static modes
