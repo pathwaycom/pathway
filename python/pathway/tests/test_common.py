@@ -2570,6 +2570,62 @@ def test_ix_self_select():
     )
 
 
+def test_ix_sort_1():
+    data = T(
+        """
+        a | t
+        0 | 1
+        0 | 2
+        0 | 3
+        1 | 1
+        1 | 2
+    """
+    )
+    data_prev_next = data.sort(key=pw.this.t, instance=pw.this.a)
+    data_prev = data.ix(data_prev_next.prev, optional=True)
+    data_next = data.ix(data_prev_next.next, optional=True)
+    result = data.select(pw.this.a, pw.this.t, prev_t=data_prev.t, next_t=data_next.t)
+    expected = T(
+        """
+        a | t | prev_t | next_t
+        0 | 1 |        |    2
+        0 | 2 |    1   |    3
+        0 | 3 |    2   |
+        1 | 1 |        |    2
+        1 | 2 |    1   |
+    """
+    )
+    assert_table_equality(result, expected)
+
+
+def test_ix_sort_2():
+    data = T(
+        """
+        a | t
+        0 | 1
+        0 | 2
+        0 | 3
+        1 | 1
+        1 | 2
+    """
+    )
+    data += data.sort(key=pw.this.t, instance=pw.this.a)
+    data_prev = data.ix(data.prev, optional=True)
+    data_next = data.ix(data.next, optional=True)
+    result = data.select(pw.this.a, pw.this.t, prev_t=data_prev.t, next_t=data_next.t)
+    expected = T(
+        """
+        a | t | prev_t | next_t
+        0 | 1 |        |    2
+        0 | 2 |    1   |    3
+        0 | 3 |    2   |
+        1 | 1 |        |    2
+        1 | 2 |    1   |
+    """
+    )
+    assert_table_equality(result, expected)
+
+
 def test_groupby_ix_this():
     left = T(
         """

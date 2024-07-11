@@ -256,6 +256,7 @@ class RowwiseEvaluator(
             properties = api.TableProperties.column(self.column_properties(column))
 
             engine_expression = self.eval_expression(expression, eval_state=eval_state)
+            assert ColumnPath((len(expressions),)) == output_storage.get_path(column)
             expressions.append((engine_expression, properties))
 
         # START temporary solution for eval_async_apply

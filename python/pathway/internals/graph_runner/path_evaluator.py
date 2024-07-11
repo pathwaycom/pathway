@@ -86,13 +86,14 @@ class DeduplicatePathEvaluator(
         return Storage.flat(self.context.universe, output_columns, shift=1)
 
 
+# WARNING: new columns are assigned column paths in the order of arrival in input_storage.
+# ExpressionEvaluator for a given context has to preserve this order.
 class AddNewColumnsPathEvaluator(
     PathEvaluator,
     context_types=[
         clmn.TableRestrictedRowwiseContext,
         clmn.RowwiseContext,
         clmn.JoinRowwiseContext,
-        clmn.SortingContext,
         clmn.GradualBroadcastContext,
         clmn.ExternalIndexAsOfNowContext,
     ],
@@ -152,6 +153,26 @@ class AddNewColumnsPathEvaluator(
                 paths[column] = (0,) + input_storage.get_path(column)
             else:
                 paths[column] = ColumnPath((next(counter),))
+        return Storage(self.context.universe, paths)
+
+
+class SortingPathEvaluator(PathEvaluator, context_types=[clmn.SortingContext]):
+    context: clmn.SortingContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        input_storage = input_storages[self.context.universe]
+        paths = {}
+        for column in output_columns:
+            if column == self.context.prev_column:
+                paths[column] = ColumnPath((1,))
+            elif column == self.context.next_column:
+                paths[column] = ColumnPath((2,))
+            else:
+                paths[column] = (0,) + input_storage.get_path(column)
         return Storage(self.context.universe, paths)
 
 
