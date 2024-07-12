@@ -13,13 +13,13 @@ use nix::sys::{
     resource::{getrusage, UsageWho},
     time::TimeValLike,
 };
-use opentelemetry::metrics::Unit;
-use opentelemetry::{global, Key};
+use opentelemetry::metrics::{noop::NoopMeterProvider, Unit};
+use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{
     metrics::{
         reader::{DefaultAggregationSelector, DefaultTemporalitySelector},
-        MeterProvider, PeriodicReader,
+        PeriodicReader, SdkMeterProvider,
     },
     propagation::TraceContextPropagator,
     runtime,
@@ -29,7 +29,6 @@ use opentelemetry_sdk::{
 use opentelemetry_semantic_conventions::resource::{
     SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
 };
-use scopeguard::defer;
 use sysinfo::{get_current_pid, System};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -44,9 +43,9 @@ const PROCESS_CPU_SYSTEM_TIME: &str = "process.cpu.stime";
 const INPUT_LATENCY: &str = "latency.input";
 const OUTPUT_LATENCY: &str = "latency.output";
 
-const ROOT_TRACE_ID: Key = Key::from_static_str("root.trace.id");
-const RUN_ID: Key = Key::from_static_str("run.id");
-const LICENSE_KEY: Key = Key::from_static_str("license.key");
+const ROOT_TRACE_ID: &str = "root.trace.id";
+const RUN_ID: &str = "run.id";
+const LICENSE_KEY: &str = "license.key";
 
 const LOCAL_DEV_NAMESPACE: &str = "local-dev";
 
@@ -63,13 +62,13 @@ impl Telemetry {
         let root_trace_id = root_trace_id(self.config.trace_parent.as_deref()).unwrap_or_default();
 
         Resource::new([
-            SERVICE_NAME.string(self.config.service_name.clone()),
-            SERVICE_VERSION.string(self.config.service_version.clone()),
-            SERVICE_INSTANCE_ID.string(self.config.service_instance_id.clone()),
-            SERVICE_NAMESPACE.string(self.config.service_namespace.clone()),
-            ROOT_TRACE_ID.string(root_trace_id.to_string()),
-            RUN_ID.string(self.config.run_id.clone()),
-            LICENSE_KEY.string(self.config.license_key.clone()),
+            KeyValue::new(SERVICE_NAME, self.config.service_name.clone()),
+            KeyValue::new(SERVICE_VERSION, self.config.service_version.clone()),
+            KeyValue::new(SERVICE_INSTANCE_ID, self.config.service_instance_id.clone()),
+            KeyValue::new(SERVICE_NAMESPACE, self.config.service_namespace.clone()),
+            KeyValue::new(ROOT_TRACE_ID, root_trace_id.to_string()),
+            KeyValue::new(RUN_ID, self.config.run_id.clone()),
+            KeyValue::new(LICENSE_KEY, self.config.license_key.clone()),
         ])
     }
 
@@ -102,11 +101,12 @@ impl Telemetry {
         global::set_tracer_provider(provider_builder.build().clone());
     }
 
-    fn init_meter_provider(&self) {
+    fn init_meter_provider(&self) -> Option<SdkMeterProvider> {
         if self.config.metrics_servers.is_empty() {
-            return;
+            return None;
         }
-        let mut provider_builder = MeterProvider::builder().with_resource(self.resource());
+
+        let mut provider_builder = SdkMeterProvider::builder().with_resource(self.resource());
 
         for endpoint in &self.config.metrics_servers {
             let exporter = Telemetry::base_otel_exporter_builder(endpoint)
@@ -123,16 +123,33 @@ impl Telemetry {
             provider_builder = provider_builder.with_reader(reader);
         }
 
-        global::set_meter_provider(provider_builder.build().clone());
+        let meter_provider = provider_builder.build();
+
+        global::set_meter_provider(meter_provider.clone());
+
+        Some(meter_provider)
     }
 
-    fn init(&self) {
-        self.init_meter_provider();
+    fn init(&self) -> TelemetryGuard {
+        let meter_provider = self.init_meter_provider();
         self.init_tracer_provider();
-    }
 
-    fn teardown() {
-        global::shutdown_meter_provider();
+        TelemetryGuard { meter_provider }
+    }
+}
+
+#[must_use]
+struct TelemetryGuard {
+    meter_provider: Option<SdkMeterProvider>,
+}
+
+impl Drop for TelemetryGuard {
+    fn drop(&mut self) {
+        if let Some(provider) = self.meter_provider.take() {
+            provider.shutdown().unwrap_or(());
+        }
+        global::set_meter_provider(NoopMeterProvider::new());
+
         global::shutdown_tracer_provider();
     }
 }
@@ -278,10 +295,7 @@ fn start_telemetry_thread(
                 .unwrap()
                 .block_on(async {
                     let (tx, mut rx) = mpsc::channel::<()>(1);
-                    telemetry.init();
-                    defer! {
-                        Telemetry::teardown();
-                    }
+                    let _telemetry_guard = telemetry.init();
                     register_stats_metrics(&stats);
                     register_sys_metrics();
                     start_sender.send(tx).await.expect("should not fail");

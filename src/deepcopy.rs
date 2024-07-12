@@ -11,7 +11,7 @@ impl DeepCopy for S3Bucket {
     fn deep_copy(&self) -> Self {
         let mut result = self.clone();
 
-        let credentials = self.credentials.read().unwrap().clone();
+        let credentials = self.credentials().unwrap().clone();
         result.set_credentials(credentials);
 
         result
