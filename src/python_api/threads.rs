@@ -1,5 +1,7 @@
 // Copyright © 2024 Pathway
 
+#![deny(unsafe_op_in_unsafe_fn)]
+
 use pyo3::prelude::*;
 
 use pyo3::ffi::{

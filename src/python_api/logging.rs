@@ -1,7 +1,10 @@
 // Copyright © 2024 Pathway
 
+#![deny(unsafe_op_in_unsafe_fn)]
+
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 
 use crossbeam_channel as channel;
@@ -85,38 +88,49 @@ enum Message {
 
 struct Logger {
     inner: Arc<PyLogger>,
-    sender: channel::Sender<Message>,
+    sender: OnceLock<channel::Sender<Message>>,
 }
 
 impl Logger {
+    fn sender(&self) -> &channel::Sender<Message> {
+        self.sender.get_or_init(|| {
+            let inner = self.inner.clone();
+            let (sender, receiver) = channel::unbounded();
+            let _thread = {
+                thread::Builder::new()
+                    .name("pathway:logger".to_owned())
+                    .spawn(move || {
+                        let thread_state = PythonThreadState::new();
+                        loop {
+                            match receiver.recv() {
+                                Ok(Message::Record(record)) => {
+                                    record.with(|record| inner.log(&record));
+                                }
+                                Ok(Message::Flush(ack_sender)) => {
+                                    inner.flush();
+                                    ack_sender.send(()).unwrap_or(());
+                                }
+                                Err(channel::RecvError) => break,
+                            };
+                        }
+                        drop(thread_state);
+                    })
+                    .expect("logger thread creation should not fail")
+            };
+            sender
+        })
+    }
+
     pub fn new(inner: Arc<PyLogger>) -> Self {
-        let (sender, receiver) = channel::unbounded();
-        let _thread = {
-            let inner = inner.clone();
-            thread::Builder::new()
-                .name("pathway:logger".to_owned())
-                .spawn(move || {
-                    let thread_state = PythonThreadState::new();
-                    loop {
-                        match receiver.recv() {
-                            Ok(Message::Record(record)) => record.with(|record| inner.log(&record)),
-                            Ok(Message::Flush(sender)) => {
-                                inner.flush();
-                                sender.send(()).unwrap_or(());
-                            }
-                            Err(channel::RecvError) => break,
-                        };
-                    }
-                    drop(thread_state);
-                })
-                .expect("logger thread creation should not fail")
-        };
+        let sender = OnceLock::new();
         Self { inner, sender }
     }
 
     pub fn install(self) -> Result<ResetHandle, SetLoggerError> {
         let reset_handle = self.inner.reset_handle();
-        log::set_boxed_logger(Box::new(self))?;
+        let logger = Box::leak(Box::new(self));
+        log::set_logger(logger)?;
+        fork_hack::enable(logger);
         log::set_max_level(LevelFilter::Debug); // XXX: `pyo3_log::Logger` does not allow us to get the level
         Ok(reset_handle)
     }
@@ -138,17 +152,21 @@ impl Log for Logger {
         if !self.inner.enabled(record.metadata()) {
             return;
         }
-        self.sender
+        self.sender()
             .send(Message::Record(record.into()))
             .expect("sending the log record should not fail");
     }
 
     fn flush(&self) {
+        let Some(sender) = self.sender.get() else {
+            // No need to flush anything if nothing was ever sent
+            return;
+        };
         Python::with_gil(|py| {
             py.allow_threads(|| {
-                let (sender, receiver) = channel::bounded(1);
-                if let Ok(()) = self.sender.send(Message::Flush(sender)) {
-                    receiver.recv().unwrap_or(());
+                let (ack_sender, ack_receiver) = channel::bounded(1);
+                if let Ok(()) = sender.send(Message::Flush(ack_sender)) {
+                    ack_receiver.recv().unwrap_or(());
                 }
             });
         });
@@ -159,4 +177,41 @@ pub fn init() -> ResetHandle {
     Logger::default()
         .install()
         .expect("initializing the logger should not fail")
+}
+
+/// Running non-trivial code after a `fork()` in a multithreading program is not really allowed, but
+/// this is what the `multiprocessing` module does.
+/// What happens in practice is that threads other than the main one disappear.
+/// We register a function to be called after fork in the child that resets the sending channel to
+/// uninitialized to try to make it work (next send will recreate the logging thread) – otherwise
+/// there is no logging thread that will ever read the sent events and waiting for flush never
+/// ends.
+mod fork_hack {
+    use std::ptr;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::OnceLock;
+
+    use super::Logger;
+
+    static LOGGER: AtomicPtr<Logger> = AtomicPtr::new(ptr::null_mut());
+
+    unsafe extern "C" fn child_handler() {
+        let logger = LOGGER.load(Ordering::SeqCst);
+        let new_sender = OnceLock::new();
+        // SAFETY: we are running early after fork, no other code should be accessing the logger
+        unsafe {
+            ptr::write(ptr::addr_of_mut!((*logger).sender), new_sender);
+        }
+    }
+
+    pub fn enable(logger: &'static Logger) {
+        let logger = ptr::addr_of!(*logger).cast_mut();
+        let old_logger = LOGGER.swap(logger, Ordering::SeqCst);
+        assert!(old_logger.is_null());
+
+        // SAFETY: `child_handler` is an appropriate handler for `pthread_atfork`
+        unsafe {
+            libc::pthread_atfork(None, None, Some(child_handler));
+        }
+    }
 }

@@ -263,7 +263,7 @@ def test_serialization(tmp_path: Path, serialization: str, port: int) -> None:
     class Checker:
         error: AssertionError | None = None
 
-        def __call__(self):
+        def __call__(self) -> bool:
             try:
                 G.clear()
                 result = pw.io.csv.read(output_path, schema=OutputSchema, mode="static")
@@ -284,7 +284,7 @@ def test_serialization(tmp_path: Path, serialization: str, port: int) -> None:
                 return False
 
         def provide_information_on_failure(self) -> str:
-            return repr(self.error)
+            return str(self.error)
 
     wait_result_with_checker(
         Checker(),

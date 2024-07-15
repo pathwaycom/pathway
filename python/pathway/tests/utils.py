@@ -542,13 +542,13 @@ def wait_result_with_checker(
     args: Iterable[Any] = (),
     kwargs: Mapping[str, Any] = {},
 ) -> None:
+    handles: list[multiprocessing.Process] = []
     try:
         if target is not None:
             assert (
                 multiprocessing.get_start_method() == "fork"
             ), "multiprocessing does not use fork(), pw.run() will not work"
 
-            handles: list[multiprocessing.Process] = []
             if processes != 1:
                 assert first_port is not None
                 run_id = uuid.uuid4()
@@ -579,6 +579,7 @@ def wait_result_with_checker(
 
             elapsed = time.monotonic() - start_time
             if elapsed >= timeout_sec:
+                print("Timed out", file=sys.stderr)
                 break
 
             succeeded = checker()
@@ -587,6 +588,11 @@ def wait_result_with_checker(
                     f"Correct result obtained after {elapsed:.1f} seconds",
                     file=sys.stderr,
                 )
+                break
+
+            if target is not None and not any(handle.is_alive() for handle in handles):
+                print("All processes are done", file=sys.stderr)
+                assert all(handle.exitcode == 0 for handle in handles)
                 break
 
         if not succeeded:

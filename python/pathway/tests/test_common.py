@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import multiprocessing
 import os
 import pathlib
 import re
@@ -27,6 +28,7 @@ from pathway.tests.utils import (
     assert_table_equality_wo_index,
     assert_table_equality_wo_index_types,
     assert_table_equality_wo_types,
+    needs_multiprocessing_fork,
     run_all,
     warns_here,
 )
@@ -6432,3 +6434,15 @@ def test_remove_retractions():
     )
 
     assert_stream_equality(res, expected_stream)
+
+
+@needs_multiprocessing_fork
+def test_termination_after_fork():
+    p = multiprocessing.Process(target=pw.run)
+    p.start()
+    try:
+        p.join(timeout=1)
+        assert p.exitcode == 0
+    finally:
+        p.terminate()
+        p.join()
