@@ -19,6 +19,7 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::io::{Seek, SeekFrom};
 use std::mem::take;
+use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::str::{from_utf8, Utf8Error};
@@ -104,66 +105,6 @@ use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
 use s3::request::request_trait::ResponseData as S3ResponseData;
 use serde::{Deserialize, Serialize};
-
-#[cfg(target_os = "linux")]
-mod inotify_support {
-    use inotify::WatchMask;
-    use std::path::Path;
-    use std::thread::sleep;
-    use std::time::Duration;
-
-    pub use inotify::Inotify;
-
-    #[allow(dead_code)]
-    pub fn subscribe_inotify(path: impl AsRef<Path>) -> Option<Inotify> {
-        let inotify = Inotify::init().ok()?;
-
-        inotify
-            .watches()
-            .add(
-                path,
-                WatchMask::ATTRIB
-                    | WatchMask::CLOSE_WRITE
-                    | WatchMask::DELETE
-                    | WatchMask::DELETE_SELF
-                    | WatchMask::MOVE_SELF
-                    | WatchMask::MOVED_FROM
-                    | WatchMask::MOVED_TO,
-            )
-            .ok()?;
-
-        Some(inotify)
-    }
-
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn wait(_inotify: &mut Inotify) -> Option<()> {
-        sleep(Duration::from_millis(500));
-        None
-
-        // Commented out due to using recursive subdirs
-        //
-        // inotify
-        //     .read_events_blocking(&mut [0; 1024])
-        //     .ok()
-        //     .map(|_events| ())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod inotify_support {
-    use std::path::Path;
-
-    #[derive(Debug)]
-    pub struct Inotify;
-
-    pub fn subscribe_inotify(_path: impl AsRef<Path>) -> Option<Inotify> {
-        None
-    }
-
-    pub fn wait(_inotify: &mut Inotify) -> Option<()> {
-        None
-    }
-}
 
 #[derive(Debug)]
 pub enum S3CommandName {
@@ -725,9 +666,7 @@ impl Reader for FilesystemReader {
                 return Ok(next_read_result);
             }
 
-            if self.filesystem_scanner.is_polling_enabled() {
-                self.filesystem_scanner.wait_for_new_files();
-            } else {
+            if self.filesystem_scanner.wait_for_new_files().is_break() {
                 return Ok(ReadResult::Finished);
             }
         }
@@ -893,7 +832,6 @@ struct FilesystemScanner {
 
     current_action: Option<PosixScannerAction>,
     cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
-    inotify: Option<inotify_support::Inotify>,
     next_file_for_insertion: Option<PathBuf>,
     cached_metadata: HashMap<PathBuf, Option<SourceMetadata>>,
 
@@ -910,10 +848,6 @@ impl FilesystemScanner {
         object_pattern: &str,
     ) -> Result<FilesystemScanner, ReadError> {
         let path_glob = GlobPattern::new(path)?;
-
-        // Alternative solution here is to do inotify_support::subscribe_inotify(path)
-        // if streaming mode allows polling.
-        let inotify = None;
 
         let (cache_directory_path, connector_tmp_storage) = {
             if streaming_mode.are_deletions_enabled() {
@@ -947,7 +881,6 @@ impl FilesystemScanner {
             known_files: HashMap::new(),
             current_action: None,
             cached_modify_times: HashMap::new(),
-            inotify,
             next_file_for_insertion: None,
             cached_metadata: HashMap::new(),
             _connector_tmp_storage: connector_tmp_storage,
@@ -1237,13 +1170,13 @@ impl FilesystemScanner {
         Duration::from_millis(500)
     }
 
-    fn wait_for_new_files(&mut self) {
-        self.inotify
-            .as_mut()
-            .and_then(inotify_support::wait)
-            .unwrap_or_else(|| {
-                sleep(Self::sleep_duration());
-            });
+    fn wait_for_new_files(&self) -> ControlFlow<()> {
+        if self.is_polling_enabled() {
+            sleep(Self::sleep_duration());
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        }
     }
 }
 
@@ -1423,9 +1356,7 @@ impl Reader for CsvFilesystemReader {
                 }
             }
 
-            if self.filesystem_scanner.is_polling_enabled() {
-                self.filesystem_scanner.wait_for_new_files();
-            } else {
+            if self.filesystem_scanner.wait_for_new_files().is_break() {
                 return Ok(ReadResult::Finished);
             }
         }

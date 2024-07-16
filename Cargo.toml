@@ -81,9 +81,6 @@ usearch = "~2.9.2" # 2.10 seems to have build problems (https://github.com/unum-
 uuid = { version = "1.9.1", features = ["v4"] }
 xxhash-rust = { version = "0.8.11", features = ["xxh3"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-inotify = "0.10.2"
-
 [features]
 unlimited-workers = []
 
