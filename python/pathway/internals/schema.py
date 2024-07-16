@@ -23,6 +23,7 @@ from pathway.internals.helpers import StableSet
 from pathway.internals.runtime_type_check import check_arg_types
 
 if TYPE_CHECKING:
+    import pathway.internals.expression as expr
     from pathway.internals import column as clmn
 
 
@@ -352,10 +353,27 @@ class SchemaMetaclass(type):
         for name, dtype in kwargs.items():
             if name not in columns:
                 raise ValueError(
-                    "Schema.with_types() argument name has to be an existing column name."
+                    f"Schema.with_types() argument name has to be an existing column name, received f{name}."
                 )
             columns[name] = dataclasses.replace(columns[name], dtype=dt.wrap(dtype))
 
+        return schema_builder(columns=columns, id_dtype=self.id.dtype)
+
+    def without(self, *args: str | expr.ColumnReference) -> type[Schema]:
+        columns: dict[str, ColumnDefinition] = {
+            col.name: col.to_definition() for col in self.__columns__.values()
+        }
+        for arg in args:
+            if isinstance(arg, str):
+                name = arg
+            else:
+                name = arg._name
+            try:
+                columns.pop(name)
+            except KeyError:
+                raise ValueError(
+                    f"Schema.without() argument {name!r} has to refer to an existing column."
+                )
         return schema_builder(columns=columns, id_dtype=self.id.dtype)
 
     def with_id_type(self, type):
