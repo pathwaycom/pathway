@@ -149,7 +149,8 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for BruteForceKNNIndex {
             .map(|key| {
                 let last_row_key = self
                     .key_to_id_mapper
-                    .get_key_for_id(u64::try_from(self.current_size).unwrap() - 1);
+                    .get_key_for_id(u64::try_from(self.current_size).unwrap() - 1)
+                    .unwrap();
                 match self.key_to_id_mapper.remove_key(key) {
                     Ok(removed_key_id) => {
                         let last_row = &self.index_array.row(self.current_size - 1).to_owned();
@@ -215,7 +216,8 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for BruteForceKNNIndex {
                         .map(|(distance, i)| KeyScoreMatch {
                             key: self
                                 .key_to_id_mapper
-                                .get_key_for_id(u64::try_from(i).unwrap()),
+                                .get_key_for_id(u64::try_from(i).unwrap())
+                                .unwrap(),
                             score: -(*distance),
                         })
                         .collect();

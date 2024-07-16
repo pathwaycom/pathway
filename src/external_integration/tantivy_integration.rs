@@ -75,7 +75,10 @@ impl TantivyIndex {
                 .unwrap();
 
             ret_vec.push(KeyScoreMatch {
-                key: self.key_to_id_mapper.get_key_for_id(match_proxy_id),
+                key: self
+                    .key_to_id_mapper
+                    .get_key_for_id(match_proxy_id)
+                    .unwrap(),
                 score: f64::from(score),
             });
         }

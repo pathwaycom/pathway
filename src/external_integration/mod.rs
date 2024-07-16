@@ -230,8 +230,8 @@ impl KeyToU64IdMapper {
         self.next_id -= 1;
     }
 
-    fn get_key_for_id(&self, id: u64) -> Key {
-        self.id_to_key_map[&id]
+    fn get_key_for_id(&self, id: u64) -> Option<Key> {
+        self.id_to_key_map.get(&id).copied()
     }
 
     fn remove_key(&mut self, key: Key) -> DynResult<u64> {

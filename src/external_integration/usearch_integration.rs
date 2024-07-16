@@ -55,9 +55,11 @@ impl USearchKNNIndex {
             .keys
             .into_iter()
             .zip(matches.distances)
-            .map(|(k, d)| KeyScoreMatch {
-                key: self.key_to_id_mapper.get_key_for_id(k),
-                score: -f64::from(d),
+            .filter_map(|(k, d)| {
+                Some(KeyScoreMatch {
+                    key: self.key_to_id_mapper.get_key_for_id(k)?,
+                    score: -f64::from(d),
+                })
             })
             .collect())
     }
