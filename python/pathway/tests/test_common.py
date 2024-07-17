@@ -6446,3 +6446,18 @@ def test_termination_after_fork():
     finally:
         p.terminate()
         p.join()
+
+
+def test_dtype_pandas():
+    assert (
+        pw.debug.table_to_pandas(
+            pw.debug.table_from_markdown(
+                """
+                a
+                None
+                1
+                """
+            )
+        )["a"].dtype
+        == pd.Int64Dtype()
+    )

@@ -23,6 +23,7 @@ import itertools
 import re
 from collections.abc import Iterable
 from os import PathLike
+from typing import Any
 from warnings import warn
 
 import pandas as pd
@@ -250,16 +251,28 @@ def compute_and_print_update_stream(
     )
 
 
+def _dtype_to_pandas(dtype):
+    if dtype == (int | None):
+        return pd.Int64Dtype()
+    else:
+        return None
+
+
 @check_arg_types
 @trace_user_frame
 def table_to_pandas(table: Table, *, include_id: bool = True):
     keys, columns = table_to_dicts(table)
-    if include_id:
-        res = pd.DataFrame(columns, index=keys)
-    else:
-        # we need to remove keys, otherwise pandas will use them to create index
-        columns_wo_keys = {name: columns[name].values() for name in columns}
-        res = pd.DataFrame(columns_wo_keys)
+    series_dict = {}
+    for name in columns:
+        dtype = _dtype_to_pandas(table.schema.typehints()[name])
+        if include_id:
+            vals: Any = columns[name]
+        else:
+            # we need to remove keys, otherwise pandas will use them to create index
+            vals = columns[name].values()
+        series = pd.Series(vals, dtype=dtype)
+        series_dict[name] = series
+    res = pd.DataFrame(series_dict, index=keys)
     return res
 
 
