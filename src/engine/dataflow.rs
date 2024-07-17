@@ -2529,7 +2529,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-        println!("[{worker}][{tag}] {table_handle:?}");
+        // println!("[{worker}][{tag}] {table_handle:?}");
         table.keys().inspect(move |(key, time, diff)| {
             println!("[{worker}][{tag}] @{time:?} {diff:+} {key}");
         });
@@ -2548,7 +2548,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
-        println!("[{worker}][{tag}] {table_handle:?} {column_path:?}");
+        // println!("[{worker}][{tag}] {table_handle:?} {column_path:?}");
         table
             .values()
             .map_named("debug_column", move |(key, values)| {
