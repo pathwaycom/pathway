@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::engine::error::DynResult;
 use crate::engine::{Error, Key};
+use log::warn;
 use usearch::ffi::{IndexOptions, MetricKind, ScalarKind};
 use usearch::{new_index, Index};
 
@@ -56,8 +57,12 @@ impl USearchKNNIndex {
             .into_iter()
             .zip(matches.distances)
             .filter_map(|(k, d)| {
+                let Some(key) = self.key_to_id_mapper.get_key_for_id(k) else {
+                    warn!("USearch index returned a nonexistent ID {k}, ignoring");
+                    return None;
+                };
                 Some(KeyScoreMatch {
-                    key: self.key_to_id_mapper.get_key_for_id(k)?,
+                    key,
                     score: -f64::from(d),
                 })
             })

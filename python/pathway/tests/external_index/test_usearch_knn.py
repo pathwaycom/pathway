@@ -334,6 +334,9 @@ def test_distance_with_deletion():
     6         | 0.1,0.1,0.1 | 7        | -1
     5         | 0.2,0.1,0.1 | 8        | -1
     4         | 0.3,0.1,0.1 | 9        | -1
+    3         | 0.4,0.1,0.1 | 10       | -1
+    2         | 0.5,0.1,0.1 | 11       | -1
+    1         | 0.6,0.1,0.1 | 12       | -1
 
     """,
         schema=InputSchema,
@@ -341,6 +344,7 @@ def test_distance_with_deletion():
     queries = pw.debug.table_from_markdown(
         """
     pk_source|data        |limit | __time__ | __diff__
+    0        |0.05,0.1,0.1|3     | 0        | 1
     1        |0.05,0.1,0.1|3     | 1        | 1
     2        |0.05,0.1,0.1|3     | 2        | 1
     3        |0.05,0.1,0.1|3     | 3        | 1
@@ -351,6 +355,9 @@ def test_distance_with_deletion():
     8        |0.05,0.1,0.1|3     | 8        | 1
     9        |0.05,0.1,0.1|3     | 9        | 1
     10       |0.05,0.1,0.1|3     | 10       | 1
+    11       |0.05,0.1,0.1|3     | 11       | 1
+    12       |0.05,0.1,0.1|3     | 12       | 1
+    13       |0.05,0.1,0.1|3     | 13       | 1
     """,
         schema=QuerySchema,
     ).with_columns(data=pw.apply_with_type(make_list, list[float], pw.this.data))
@@ -415,7 +422,7 @@ def test_distance_with_deletion():
     9           | 3           |0.4,0.1,0.1
     10          | 1           |0.6,0.1,0.1
     10          | 2           |0.5,0.1,0.1
-    10          | 3           |0.4,0.1,0.1
+    11          | 1           |0.6,0.1,0.1
     """,
         schema=ExpectedSchema,
     ).with_columns(data=pw.apply(make_list, pw.this.data))

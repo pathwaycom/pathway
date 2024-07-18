@@ -2,6 +2,7 @@
 
 use crate::engine::error::DynResult;
 use crate::engine::{Error, Key};
+use log::warn;
 use tantivy::collector::TopDocs;
 use tantivy::query::{Query, QueryParser};
 use tantivy::schema::{Field, Schema, Term, Value, INDEXED, STORED, TEXT};
@@ -74,11 +75,13 @@ impl TantivyIndex {
                 .as_u64()
                 .unwrap();
 
+            let Some(key) = self.key_to_id_mapper.get_key_for_id(match_proxy_id) else {
+                warn!("Tantivy index returned a nonexistent ID {match_proxy_id}, ignoring");
+                continue;
+            };
+
             ret_vec.push(KeyScoreMatch {
-                key: self
-                    .key_to_id_mapper
-                    .get_key_for_id(match_proxy_id)
-                    .unwrap(),
+                key,
                 score: f64::from(score),
             });
         }
