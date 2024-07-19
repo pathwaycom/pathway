@@ -30,7 +30,7 @@ class Pointer(Generic[_T]):
 def ref_scalar(*args, optional=False) -> Pointer: ...
 def ref_scalar_with_instance(*args, instance: Value, optional=False) -> Pointer: ...
 
-class PathwayType(Enum):
+class PathwayType:
     ANY: PathwayType
     STRING: PathwayType
     INT: PathwayType
@@ -40,11 +40,17 @@ class PathwayType(Enum):
     DATE_TIME_NAIVE: PathwayType
     DATE_TIME_UTC: PathwayType
     DURATION: PathwayType
-    ARRAY: PathwayType
+    @staticmethod
+    def array(dim: int | None, wrapped: PathwayType) -> PathwayType: ...
     JSON: PathwayType
-    TUPLE: PathwayType
+    @staticmethod
+    def tuple(*args: PathwayType) -> PathwayType: ...
+    @staticmethod
+    def list(arg: PathwayType) -> PathwayType: ...
     BYTES: PathwayType
     PY_OBJECT_WRAPPER: PathwayType
+    @staticmethod
+    def optional(arg: PathwayType) -> PathwayType: ...
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode
@@ -133,9 +139,11 @@ class DataRow:
         self,
         key: Pointer,
         values: list[Value],
+        *,
         time: int = 0,
         diff: int = 1,
         shard: int | None = None,
+        dtypes: list[PathwayType],
     ) -> None: ...
 
 class MissingValueError(BaseException):
@@ -202,12 +210,16 @@ class BinaryOperator:
 
 class Expression:
     @staticmethod
-    def const(value: Value) -> Expression: ...
+    def const(value: Value, dtype: PathwayType) -> Expression: ...
     @staticmethod
     def argument(index: int) -> Expression: ...
     @staticmethod
     def apply(
-        fun: Callable, /, *args: Expression, propagate_none=False
+        fun: Callable,
+        /,
+        *args: Expression,
+        dtype: PathwayType,
+        propagate_none: bool = False,
     ) -> Expression: ...
     @staticmethod
     def is_none(expr: Expression) -> Expression: ...
@@ -480,6 +492,7 @@ class Scope:
         propagate_none: bool,
         deterministic: bool,
         properties: TableProperties,
+        dtype: PathwayType,
     ) -> Table: ...
     def gradual_broadcast(
         self,
@@ -713,7 +726,7 @@ def run_with_new_graph(
 def unsafe_make_pointer(arg) -> Pointer: ...
 
 class DataFormat:
-    value_fields: Any
+    value_fields: list[ValueField]
 
     def __init__(self, *args, **kwargs): ...
 
@@ -735,7 +748,6 @@ class DataStorage:
     object_pattern: str
     mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None
     table_name: str | None
-    column_names: list[str] | None
     def __init__(self, *args, **kwargs): ...
 
 class CsvParserSettings:
@@ -746,7 +758,7 @@ class AwsS3Settings:
 
 class ValueField:
     name: str
-    def __init__(self, name: str, type_: PathwayType, *, is_optional: bool = False): ...
+    def __init__(self, name: str, type_: PathwayType): ...
     def set_default(self, *args, **kwargs): ...
 
 class PythonSubject:

@@ -995,3 +995,29 @@ def test_udf_dont_warn_on_broader_return_type() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         f(pw.this.a)
+
+
+def test_cast_on_return() -> None:
+    @pw.udf()
+    def f(a: int) -> float:
+        return a
+
+    t = pw.debug.table_from_markdown(
+        """
+        a |  b
+        1 | 1.5
+        2 | 2.5
+        3 | 3.5
+    """
+    ).with_columns(a=f(pw.this.a))
+
+    res = t.select(c=pw.this.a + pw.this.b)
+    expected = pw.debug.table_from_markdown(
+        """
+        c
+        2.5
+        4.5
+        6.5
+    """
+    )
+    assert_table_equality(res, expected)

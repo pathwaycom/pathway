@@ -25,11 +25,8 @@ if typing.TYPE_CHECKING:
 class DType(ABC):
     _cache: dict[typing.Any, DType] = {}
 
-    def to_engine(self) -> api.PathwayType | None:
-        return None
-
-    def map_to_engine(self) -> api.PathwayType:
-        return self.to_engine() or api.PathwayType.ANY
+    @abstractmethod
+    def to_engine(self) -> api.PathwayType: ...
 
     @abstractmethod
     def is_value_compatible(self, arg) -> bool: ...
@@ -125,6 +122,9 @@ class _NoneDType(DType):
     def is_value_compatible(self, arg):
         return arg is None or isinstance(arg, pd._libs.missing.NAType)
 
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.ANY
+
     @property
     def typehint(self) -> None:
         return None
@@ -184,6 +184,9 @@ class Callable(DType):
     def is_value_compatible(self, arg):
         return callable(arg)
 
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.ANY  # also passed to the engine as column properties
+
     @cached_property
     def typehint(self) -> typing.Any:
         if isinstance(self.arg_types, EllipsisType):
@@ -207,7 +210,7 @@ class Array(DType):
         self.n_dim = n_dim
 
     def to_engine(self) -> api.PathwayType:
-        return api.PathwayType.ARRAY
+        return api.PathwayType.array(self.n_dim, self.wrapped.to_engine())
 
     def __new__(cls, n_dim, wrapped) -> Array:
         dtype = wrap(wrapped)
@@ -298,6 +301,9 @@ class Optional(DType):
     def _set_args(self, wrapped):
         self.wrapped = wrapped
 
+    def to_engine(self) -> api.PathwayType:
+        return api.PathwayType.optional(self.wrapped.to_engine())
+
     def __new__(cls, arg: DType) -> DType:  # type:ignore[misc]
         arg = wrap(arg)
         if arg == NONE or isinstance(arg, Optional) or arg == ANY:
@@ -327,7 +333,7 @@ class Tuple(DType):
         self.args = args
 
     def to_engine(self) -> PathwayType:
-        return api.PathwayType.TUPLE
+        return api.PathwayType.tuple(*[arg.to_engine() for arg in self.args])
 
     def __new__(cls, *args: DType | EllipsisType) -> Tuple | List:  # type: ignore[misc]
         if any(isinstance(arg, EllipsisType) for arg in args):
@@ -391,7 +397,7 @@ class List(DType):
         self.wrapped = wrapped
 
     def to_engine(self) -> PathwayType:
-        return api.PathwayType.TUPLE
+        return api.PathwayType.list(self.wrapped.to_engine())
 
     def is_value_compatible(self, arg):
         return isinstance(arg, (tuple, list)) and all(

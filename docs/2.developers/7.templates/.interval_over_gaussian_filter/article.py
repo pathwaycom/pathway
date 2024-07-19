@@ -218,7 +218,7 @@ time_series.typehints()
 points_within_50 = time_series.windowby(
     time_series.x,
     window=pw.temporal.intervals_over(
-        at=time_series.x, lower_bound=-50.0, upper_bound=50.0
+        at=time_series.x, lower_bound=-50.0, upper_bound=50.0, is_outer=False
     ),
 ).reduce(
     pw.this._pw_window_location,
@@ -378,7 +378,7 @@ def smooth_table(table):
     points_within_50 = table.windowby(
         table.x,
         window=pw.temporal.intervals_over(
-            at=table.x, lower_bound=-50.0, upper_bound=50.0
+            at=table.x, lower_bound=-50.0, upper_bound=50.0, is_outer=False
         ),
     ).reduce(
         pw.this._pw_window_location,

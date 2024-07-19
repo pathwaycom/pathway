@@ -5,13 +5,14 @@ use super::helpers::read_data_from_reader;
 use std::collections::HashMap;
 
 use pathway_engine::connectors::data_format::{
-    DsvParser, DsvSettings, IdentityParser, JsonLinesParser, KeyGenerationPolicy, ParsedEvent,
+    DsvParser, DsvSettings, IdentityParser, InnerSchemaField, JsonLinesParser, KeyGenerationPolicy,
+    ParsedEvent,
 };
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
 use pathway_engine::connectors::SessionType;
-use pathway_engine::engine::Value;
+use pathway_engine::engine::{Type, Value};
 
 /// This function requires that _metadata field is the last in the `value_names_list`
 fn check_file_name_in_metadata(data_read: &ParsedEvent, name: &str) {
@@ -36,6 +37,14 @@ fn test_metadata_fs_dir() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "_metadata".to_string(),
+            InnerSchemaField::new(Type::Json, None),
+        ),
+    ];
     let parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
@@ -46,8 +55,8 @@ fn test_metadata_fs_dir() -> eyre::Result<()> {
             ],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/csvdir/a.txt\"");
@@ -66,6 +75,14 @@ fn test_metadata_fs_file() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "_metadata".to_string(),
+            InnerSchemaField::new(Type::Json, None),
+        ),
+    ];
     let parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
@@ -76,8 +93,8 @@ fn test_metadata_fs_file() -> eyre::Result<()> {
             ],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/minimal.txt\"");
@@ -97,6 +114,14 @@ fn test_metadata_csv_dir() -> eyre::Result<()> {
         None,
         "*",
     )?;
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "_metadata".to_string(),
+            InnerSchemaField::new(Type::Json, None),
+        ),
+    ];
     let parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
@@ -107,8 +132,8 @@ fn test_metadata_csv_dir() -> eyre::Result<()> {
             ],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/csvdir/a.txt\"");
@@ -130,6 +155,14 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
         None,
         "*",
     )?;
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "_metadata".to_string(),
+            InnerSchemaField::new(Type::Json, None),
+        ),
+    ];
     let parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
@@ -140,8 +173,8 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
             ],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/minimal.txt\"");
@@ -158,14 +191,21 @@ fn test_metadata_json_file() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "_metadata".to_string(),
+            InnerSchemaField::new(Type::Json, None),
+        ),
+    ];
     let parser = JsonLinesParser::new(
         None,
         vec!["a".to_string(), "_metadata".to_string()],
         HashMap::new(),
         false,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/jsonlines.txt\"");
@@ -182,14 +222,21 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "_metadata".to_string(),
+            InnerSchemaField::new(Type::Json, None),
+        ),
+    ];
     let parser = JsonLinesParser::new(
         None,
         vec!["a".to_string(), "_metadata".to_string()],
         HashMap::new(),
         false,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let data_read = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     check_file_name_in_metadata(&data_read[0], "tests/data/jsonlines/one.jsonlines\"");

@@ -29,6 +29,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, FixedOffset};
+use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
 use tempfile::{tempdir, tempfile, TempDir};
@@ -40,6 +41,9 @@ use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
 use crate::deepcopy::DeepCopy;
+use crate::engine::error::limit_length;
+use crate::engine::error::DynResult;
+use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
 use crate::engine::time::DateTime as EngineDateTime;
 use crate::engine::Type;
 use crate::engine::Value;
@@ -47,6 +51,7 @@ use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::{ExternalPersistentId, PersistentId};
+use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::PythonSubject;
 use crate::python_api::ValueField;
@@ -97,9 +102,6 @@ use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedPr
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
 use rdkafka::Message;
 use rusqlite::types::ValueRef as SqliteValue;
-use rusqlite::types::{
-    FromSql as FromSqlite, FromSqlError as FromSqliteError, FromSqlResult as FromSqliteResult,
-};
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
@@ -145,9 +147,9 @@ impl TryFrom<&str> for SpecialEvent {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct ValuesMap {
-    map: HashMap<String, Value>,
+    map: HashMap<String, Result<Value, Box<ConversionError>>>,
     // TODO: use a vector if performance improvement is needed
     // then Reader has to be aware of the columns order
 }
@@ -156,20 +158,27 @@ impl ValuesMap {
     const SPECIAL_FIELD_NAME: &'static str = "_pw_special";
     pub fn get_special(&self) -> Option<SpecialEvent> {
         if self.map.len() == 1 {
-            let value = self.map.get(Self::SPECIAL_FIELD_NAME)?;
-            value.as_string().ok()?.as_str().try_into().ok()
+            let value = self.map.get(Self::SPECIAL_FIELD_NAME)?.as_ref();
+            value.ok()?.as_string().ok()?.as_str().try_into().ok()
         } else {
             None
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<&Value> {
+    pub fn get(&self, key: &str) -> Option<&Result<Value, Box<ConversionError>>> {
         self.map.get(key)
+    }
+
+    pub fn to_pure_hashmap(self) -> DynResult<HashMap<String, Value>> {
+        self.map
+            .into_iter()
+            .map(|(key, value)| Ok((key, value?)))
+            .try_collect()
     }
 }
 
-impl From<HashMap<String, Value>> for ValuesMap {
-    fn from(value: HashMap<String, Value>) -> Self {
+impl From<HashMap<String, Result<Value, Box<ConversionError>>>> for ValuesMap {
+    fn from(value: HashMap<String, Result<Value, Box<ConversionError>>>) -> Self {
         ValuesMap { map: value }
     }
 }
@@ -180,7 +189,7 @@ fn create_async_runtime() -> Result<TokioRuntime, io::Error> {
         .build()
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug)]
 pub enum ReaderContext {
     RawBytes(DataEventType, Vec<u8>),
     TokenizedEntries(DataEventType, Vec<String>),
@@ -213,7 +222,7 @@ impl ReaderContext {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum ReadResult {
     Finished,
     NewSource(Option<SourceMetadata>),
@@ -268,6 +277,14 @@ pub enum ReadError {
 
     #[error("only append-only delta tables are supported")]
     DeltaLakeForbiddenRemoval,
+}
+
+#[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
+#[error("cannot create a field {field_name:?} with type {type_} from value {value_repr}")]
+pub struct ConversionError {
+    value_repr: String,
+    field_name: String,
+    type_: Type,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -1378,11 +1395,13 @@ impl Reader for CsvFilesystemReader {
 pub struct PythonReaderBuilder {
     subject: Py<PythonSubject>,
     persistent_id: Option<PersistentId>,
+    schema: HashMap<String, Type>,
 }
 
 pub struct PythonReader {
     subject: Py<PythonSubject>,
     persistent_id: Option<PersistentId>,
+    schema: HashMap<String, Type>,
     total_entries_read: u64,
     is_initialized: bool,
     is_finished: bool,
@@ -1392,10 +1411,15 @@ pub struct PythonReader {
 }
 
 impl PythonReaderBuilder {
-    pub fn new(subject: Py<PythonSubject>, persistent_id: Option<PersistentId>) -> Self {
+    pub fn new(
+        subject: Py<PythonSubject>,
+        persistent_id: Option<PersistentId>,
+        schema: HashMap<String, Type>,
+    ) -> Self {
         Self {
             subject,
             persistent_id,
+            schema,
         }
     }
 }
@@ -1406,11 +1430,13 @@ impl ReaderBuilder for PythonReaderBuilder {
         let Self {
             subject,
             persistent_id,
+            schema,
         } = *self;
 
         Ok(Box::new(PythonReader {
             subject,
             persistent_id,
+            schema,
             python_thread_state,
             total_entries_read: 0,
             is_initialized: false,
@@ -1432,6 +1458,17 @@ impl ReaderBuilder for PythonReaderBuilder {
 
     fn storage_type(&self) -> StorageType {
         StorageType::Python
+    }
+}
+
+impl PythonReader {
+    fn conversion_error(ob: &Bound<PyAny>, name: String, type_: Type) -> ConversionError {
+        let value_repr = limit_length(format!("{ob}"), STANDARD_OBJECT_LENGTH_LIMIT);
+        ConversionError {
+            value_repr,
+            field_name: name,
+            type_,
+        }
     }
 }
 
@@ -1460,14 +1497,26 @@ impl Reader for PythonReader {
         }
 
         Python::with_gil(|py| {
-            let (event, key, values): (DataEventType, Option<Value>, HashMap<String, Value>) = self
-                .subject
-                .borrow(py)
-                .read
-                .call0(py)?
-                .extract(py)
-                .map_err(ReadError::Py)?;
+            let (event, key, objects): (DataEventType, Option<Value>, HashMap<String, Py<PyAny>>) =
+                self.subject
+                    .borrow(py)
+                    .read
+                    .call0(py)?
+                    .extract(py)
+                    .map_err(ReadError::Py)?;
             let key = key.map(|key| vec![key]);
+            let mut values = HashMap::with_capacity(objects.len());
+            for (name, ob) in objects {
+                let dtype = self.schema.get(&name).unwrap_or(&Type::Any); // Any for special values
+                let value = extract_value(ob.bind(py), dtype).map_err(|_err| {
+                    Box::new(Self::conversion_error(
+                        ob.bind(py),
+                        name.clone(),
+                        dtype.clone(),
+                    ))
+                });
+                values.insert(name, value);
+            }
             let values: ValuesMap = values.into();
 
             if event != DataEventType::Insert && !self.subject.borrow(py).deletions_enabled {
@@ -2429,31 +2478,12 @@ impl Reader for S3GenericReader {
     }
 }
 
-impl FromSqlite for Value {
-    /// Convert raw `SQLite` field into one of internal value types
-    /// There are only five supported types: null, integer, real, text, blob
-    /// See also: <https://www.sqlite.org/datatype3.html>
-    fn column_result(value: SqliteValue<'_>) -> FromSqliteResult<Self> {
-        match value {
-            SqliteValue::Null => Ok(Value::None),
-            SqliteValue::Integer(val) => Ok(Value::Int(val)),
-            SqliteValue::Real(val) => Ok(Value::Float(val.into())),
-            SqliteValue::Text(val) => {
-                let parsed_string =
-                    from_utf8(val).map_err(|e| FromSqliteError::Other(Box::new(e)))?;
-                Ok(Value::String(parsed_string.into()))
-            }
-            SqliteValue::Blob(val) => Ok(Value::Bytes(val.into())),
-        }
-    }
-}
-
 const SQLITE_DATA_VERSION_PRAGMA: &str = "data_version";
 
 pub struct SqliteReader {
     connection: SqliteConnection,
     table_name: String,
-    column_names: Vec<String>,
+    schema: Vec<(String, Type)>,
 
     last_saved_data_version: Option<i64>,
     stored_state: HashMap<i64, ValuesMap>,
@@ -2464,12 +2494,12 @@ impl SqliteReader {
     pub fn new(
         connection: SqliteConnection,
         table_name: String,
-        column_names: Vec<String>,
+        schema: Vec<(String, Type)>,
     ) -> Self {
         Self {
             connection,
             table_name,
-            column_names,
+            schema,
 
             last_saved_data_version: None,
             queued_updates: VecDeque::new(),
@@ -2490,10 +2520,52 @@ impl SqliteReader {
         version.expect("pragma.data_version request should not fail")
     }
 
+    /// Convert raw `SQLite` field into one of internal value types
+    /// There are only five supported types: null, integer, real, text, blob
+    /// See also: <https://www.sqlite.org/datatype3.html>
+    fn convert_to_value(
+        value: SqliteValue<'_>,
+        field_name: &str,
+        dtype: &Type,
+    ) -> Result<Value, Box<ConversionError>> {
+        let value = match (dtype, value) {
+            (Type::Optional(_) | Type::Any, SqliteValue::Null) => Some(Value::None),
+            (Type::Optional(arg), value) => Self::convert_to_value(value, field_name, arg).ok(),
+            (Type::Int | Type::Any, SqliteValue::Integer(val)) => Some(Value::Int(val)),
+            (Type::Float | Type::Any, SqliteValue::Real(val)) => Some(Value::Float(val.into())),
+            (Type::String | Type::Any, SqliteValue::Text(val)) => from_utf8(val)
+                .ok()
+                .map(|parsed_string| Value::String(parsed_string.into())),
+            (Type::Json, SqliteValue::Text(val)) => from_utf8(val)
+                .ok()
+                .and_then(|parsed_string| {
+                    serde_json::from_str::<serde_json::Value>(parsed_string).ok()
+                })
+                .map(Value::from),
+            (Type::Bytes | Type::Any, SqliteValue::Blob(val)) => Some(Value::Bytes(val.into())),
+            _ => None,
+        };
+        if let Some(value) = value {
+            Ok(value)
+        } else {
+            let value_repr = limit_length(format!("{value:?}"), STANDARD_OBJECT_LENGTH_LIMIT);
+            Err(Box::new(ConversionError {
+                value_repr,
+                field_name: field_name.to_owned(),
+                type_: dtype.clone(),
+            }))
+        }
+    }
+
     fn load_table(&mut self) -> Result<(), ReadError> {
+        let column_names: Vec<&str> = self
+            .schema
+            .iter()
+            .map(|(name, _dtype)| name.as_str())
+            .collect();
         let query = format!(
             "SELECT {},_rowid_ FROM {}",
-            self.column_names.join(","),
+            column_names.join(","),
             self.table_name
         );
 
@@ -2502,10 +2574,12 @@ impl SqliteReader {
 
         let mut present_rowids = HashSet::new();
         while let Some(row) = rows.next()? {
-            let rowid: i64 = row.get(self.column_names.len())?;
-            let mut values = HashMap::with_capacity(self.column_names.len());
-            for (column_idx, column_name) in self.column_names.iter().enumerate() {
-                values.insert(column_name.clone(), row.get(column_idx)?);
+            let rowid: i64 = row.get(self.schema.len())?;
+            let mut values = HashMap::with_capacity(self.schema.len());
+            for (column_idx, (column_name, column_dtype)) in self.schema.iter().enumerate() {
+                let value =
+                    Self::convert_to_value(row.get_ref(column_idx)?, column_name, column_dtype);
+                values.insert(column_name.clone(), value);
             }
             let values: ValuesMap = values.into();
             self.stored_state
@@ -2740,7 +2814,7 @@ impl DeltaTableWriter {
         Ok(DTRecordBatch::try_new(self.schema.clone(), data_columns)?)
     }
 
-    fn delta_table_primitive_type(type_: Type) -> Result<DeltaTableKernelType, WriteError> {
+    fn delta_table_primitive_type(type_: &Type) -> Result<DeltaTableKernelType, WriteError> {
         Ok(DeltaTableKernelType::Primitive(match type_ {
             Type::Bool => DeltaTablePrimitiveType::Boolean,
             Type::Float => DeltaTablePrimitiveType::Double,
@@ -2749,13 +2823,17 @@ impl DeltaTableWriter {
             Type::DateTimeNaive => DeltaTablePrimitiveType::TimestampNtz,
             Type::DateTimeUtc => DeltaTablePrimitiveType::Timestamp,
             Type::Int | Type::Duration => DeltaTablePrimitiveType::Long,
-            Type::Any | Type::Array | Type::Tuple | Type::PyObjectWrapper | Type::Pointer => {
-                return Err(WriteError::UnsupportedType(type_))
-            }
+            Type::Optional(wrapped) => return Self::delta_table_primitive_type(wrapped),
+            Type::Any
+            | Type::Array(_, _)
+            | Type::Tuple(_)
+            | Type::List(_)
+            | Type::PyObjectWrapper
+            | Type::Pointer => return Err(WriteError::UnsupportedType(type_.clone())),
         }))
     }
 
-    fn arrow_data_type(type_: Type) -> Result<ArrowDataType, WriteError> {
+    fn arrow_data_type(type_: &Type) -> Result<ArrowDataType, WriteError> {
         Ok(match type_ {
             Type::Bool => ArrowDataType::Boolean,
             Type::Int | Type::Duration => ArrowDataType::Int64,
@@ -2768,9 +2846,12 @@ impl DeltaTableWriter {
             Type::DateTimeUtc => {
                 ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, Some("UTC".into()))
             }
-            Type::Any | Type::Array | Type::Tuple | Type::PyObjectWrapper => {
-                return Err(WriteError::UnsupportedType(type_))
-            }
+            Type::Optional(wrapped) => return Self::arrow_data_type(wrapped),
+            Type::Any
+            | Type::Array(_, _)
+            | Type::Tuple(_)
+            | Type::List(_)
+            | Type::PyObjectWrapper => return Err(WriteError::UnsupportedType(type_.clone())),
         })
     }
 
@@ -2779,12 +2860,16 @@ impl DeltaTableWriter {
         for field in value_fields {
             schema_fields.push(ArrowField::new(
                 field.name.clone(),
-                Self::arrow_data_type(field.type_)?,
-                field.is_optional,
+                Self::arrow_data_type(&field.type_)?,
+                field.type_.can_be_none(),
             ));
         }
         for (field, type_) in SPECIAL_OUTPUT_FIELDS {
-            schema_fields.push(ArrowField::new(field, Self::arrow_data_type(type_)?, false));
+            schema_fields.push(ArrowField::new(
+                field,
+                Self::arrow_data_type(&type_)?,
+                false,
+            ));
         }
         Ok(ArrowSchema::new(schema_fields))
     }
@@ -2798,14 +2883,14 @@ impl DeltaTableWriter {
         for field in schema_fields {
             struct_fields.push(DeltaTableStructField::new(
                 field.name.clone(),
-                Self::delta_table_primitive_type(field.type_)?,
-                field.is_optional,
+                Self::delta_table_primitive_type(&field.type_)?,
+                field.type_.can_be_none(),
             ));
         }
         for (field, type_) in SPECIAL_OUTPUT_FIELDS {
             struct_fields.push(DeltaTableStructField::new(
                 field,
-                Self::delta_table_primitive_type(type_)?,
+                Self::delta_table_primitive_type(&type_)?,
                 false,
             ));
         }
@@ -3048,31 +3133,40 @@ impl Reader for DeltaTableReader {
             };
 
             let value = match (parquet_value, expected_type) {
-                (ParquetValue::Null, _) => Value::None,
-                (ParquetValue::Bool(b), Type::Bool | Type::Any) => Value::from(*b),
-                (ParquetValue::Long(i), Type::Int | Type::Any) => Value::from(*i),
-                (ParquetValue::Long(i), Type::Duration) => {
-                    Value::from(EngineDuration::new_with_unit(*i, "us").unwrap())
+                (ParquetValue::Null, _) => Some(Value::None),
+                (ParquetValue::Bool(b), Type::Bool | Type::Any) => Some(Value::from(*b)),
+                (ParquetValue::Long(i), Type::Int | Type::Any) => Some(Value::from(*i)),
+                (ParquetValue::Long(i), Type::Duration) => Some(Value::from(
+                    EngineDuration::new_with_unit(*i, "us").unwrap(),
+                )),
+                (ParquetValue::Double(f), Type::Float | Type::Any) => {
+                    Some(Value::Float((*f).into()))
                 }
-                (ParquetValue::Double(f), Type::Float | Type::Any) => Value::Float((*f).into()),
-                (ParquetValue::Str(s), Type::String | Type::Any) => Value::String(s.into()),
-                (ParquetValue::Str(s), Type::Json) => {
-                    let json: serde_json::Value = serde_json::from_str(s).unwrap();
-                    Value::from(json)
-                }
-                (ParquetValue::TimestampMicros(us), Type::DateTimeNaive | Type::Any) => {
-                    Value::from(DateTimeNaive::from_timestamp(*us, "us").unwrap())
-                }
+                (ParquetValue::Str(s), Type::String | Type::Any) => Some(Value::String(s.into())),
+                (ParquetValue::Str(s), Type::Json) => serde_json::from_str::<serde_json::Value>(s)
+                    .ok()
+                    .map(Value::from),
+                (ParquetValue::TimestampMicros(us), Type::DateTimeNaive | Type::Any) => Some(
+                    Value::from(DateTimeNaive::from_timestamp(*us, "us").unwrap()),
+                ),
                 (ParquetValue::TimestampMicros(us), Type::DateTimeUtc) => {
-                    Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap())
+                    Some(Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap()))
                 }
-                (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => Value::Bytes(b.data().into()),
-                _ => {
-                    return Err(ReadError::WrongParquetType(
-                        parquet_value.clone(),
-                        *expected_type,
-                    ))
+                (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => {
+                    Some(Value::Bytes(b.data().into()))
                 }
+                _ => None,
+            };
+            let value = if let Some(value) = value {
+                Ok(value)
+            } else {
+                let value_repr =
+                    limit_length(format!("{parquet_value:?}"), STANDARD_OBJECT_LENGTH_LIMIT);
+                Err(Box::new(ConversionError {
+                    value_repr,
+                    field_name: name.clone(),
+                    type_: expected_type.clone(),
+                }))
             };
             row_map.insert(name.clone(), value);
         }

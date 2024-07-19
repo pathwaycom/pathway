@@ -49,7 +49,6 @@ def read(
         storage_type="sqlite",
         path=fspath(path),
         table_name=table_name,
-        column_names=schema.column_names(),
         mode=api.ConnectorMode.STREAMING,
     )
     data_format = api.DataFormat(

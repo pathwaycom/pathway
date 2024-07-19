@@ -47,7 +47,7 @@ def static_table_from_pandas(scope, df, ptr_columns=(), legacy=True):
     for col in schema.columns().values():
         columns.append(
             api.ColumnProperties(
-                dtype=col.dtype.map_to_engine(),
+                dtype=col.dtype.to_engine(),
                 append_only=col.append_only,
             )
         )
@@ -1188,7 +1188,7 @@ def test_value_type_via_python(event_loop, value):
     def build(s):
         key = api.ref_scalar()
         universe = s.static_universe([key])
-        dtype = dt.wrap(type(value)).map_to_engine()
+        dtype = dt.wrap(type(value)).to_engine()
         column = s.static_column(
             universe, [(key, value)], properties=api.ColumnProperties(dtype=dtype)
         )

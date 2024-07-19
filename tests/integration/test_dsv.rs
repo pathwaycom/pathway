@@ -27,8 +27,12 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
-        HashMap::new(),
-    );
+        [
+            ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+            ("b".to_string(), InnerSchemaField::new(Type::String, None)),
+        ]
+        .into(),
+    )?;
 
     reader.read()?;
     let header_read_result = reader.read()?;
@@ -75,8 +79,12 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["c".to_string()], ','),
-        HashMap::new(),
-    );
+        [
+            ("a".to_string(), InnerSchemaField::new(Type::Int, None)),
+            ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ]
+        .into(),
+    )?;
 
     assert_error_shown(
         Box::new(reader),
@@ -99,8 +107,12 @@ fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
-        HashMap::new(),
-    );
+        [
+            ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+            ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ]
+        .into(),
+    )?;
 
     reader.read()?;
     let header_read_result = reader.read()?;
@@ -135,8 +147,12 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
-        HashMap::new(),
-    );
+        [
+            ("a".to_string(), InnerSchemaField::new(Type::Int, None)),
+            ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ]
+        .into(),
+    )?;
 
     let _ = reader
         .read()
@@ -181,8 +197,12 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(None, vec!["a".to_string(), "b".to_string()], ','),
-        HashMap::new(),
-    );
+        [
+            ("a".to_string(), InnerSchemaField::new(Type::Int, None)),
+            ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ]
+        .into(),
+    )?;
 
     let mut keys: HashSet<Key> = HashSet::new();
 
@@ -229,8 +249,13 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
             vec!["c".to_string()],
             ',',
         ),
-        HashMap::new(),
-    );
+        [
+            ("a".to_string(), InnerSchemaField::new(Type::Int, None)),
+            ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+            ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ]
+        .into(),
+    )?;
 
     let mut keys = Vec::new();
 
@@ -269,21 +294,16 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
 #[test]
 fn test_dsv_read_schema_ok() -> eyre::Result<()> {
     let mut schema = HashMap::new();
-    schema.insert(
-        "bool".to_string(),
-        InnerSchemaField::new(Type::Bool, false, None),
-    );
-    schema.insert(
-        "int".to_string(),
-        InnerSchemaField::new(Type::Int, false, None),
-    );
+    schema.insert("key".to_string(), InnerSchemaField::new(Type::String, None));
+    schema.insert("bool".to_string(), InnerSchemaField::new(Type::Bool, None));
+    schema.insert("int".to_string(), InnerSchemaField::new(Type::Int, None));
     schema.insert(
         "float".to_string(),
-        InnerSchemaField::new(Type::Float, false, None),
+        InnerSchemaField::new(Type::Float, None),
     );
     schema.insert(
         "string".to_string(),
-        InnerSchemaField::new(Type::String, false, None),
+        InnerSchemaField::new(Type::String, None),
     );
 
     let mut reader = FilesystemReader::new(
@@ -305,7 +325,7 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
             ',',
         ),
         schema,
-    );
+    )?;
 
     reader.read()?;
     let header_read_result = reader.read()?;
@@ -349,21 +369,15 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
 #[test]
 fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
     let mut schema = HashMap::new();
-    schema.insert(
-        "bool".to_string(),
-        InnerSchemaField::new(Type::Bool, false, None),
-    );
-    schema.insert(
-        "int".to_string(),
-        InnerSchemaField::new(Type::Int, false, None),
-    );
+    schema.insert("bool".to_string(), InnerSchemaField::new(Type::Bool, None));
+    schema.insert("int".to_string(), InnerSchemaField::new(Type::Int, None));
     schema.insert(
         "float".to_string(),
-        InnerSchemaField::new(Type::Float, false, None),
+        InnerSchemaField::new(Type::Float, None),
     );
     schema.insert(
         "string".to_string(),
-        InnerSchemaField::new(Type::String, false, None),
+        InnerSchemaField::new(Type::String, None),
     );
 
     let mut reader = FilesystemReader::new(
@@ -385,7 +399,7 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
             ',',
         ),
         schema,
-    );
+    )?;
 
     reader.read()?;
     let header_read_result = reader.read()?;
@@ -404,7 +418,7 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
             assert_error_shown_for_reader_context(
                 &bytes,
                 Box::new(parser),
-                r#"failed to parse value "zzz" at field "int" according to the type Int in schema: invalid digit found in string"#,
+                r#"failed to parse value "zzz" at field "int" according to the type int in schema: invalid digit found in string"#,
                 ErrorPlacement::Value(1),
             );
         }

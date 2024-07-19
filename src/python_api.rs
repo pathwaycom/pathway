@@ -23,6 +23,7 @@ use elasticsearch::{
 };
 use itertools::Itertools;
 use log::warn;
+use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
 use postgres::{Client, NoTls};
@@ -45,6 +46,7 @@ use s3::bucket::Bucket as S3Bucket;
 use scopeguard::defer;
 use send_wrapper::SendWrapper;
 use serde_json::Value as JsonValue;
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -255,6 +257,155 @@ fn is_pathway_json(ob: &Bound<PyAny>) -> PyResult<bool> {
     Ok(type_name == "Json")
 }
 
+fn array_with_proper_dimensions<T>(
+    array: ndarray::ArrayD<T>,
+    dim: Option<usize>,
+) -> Option<ndarray::ArrayD<T>> {
+    match dim {
+        Some(dim) if array.ndim() == dim => Some(array),
+        Some(_) => None,
+        None => Some(array),
+    }
+}
+
+fn extract_datetime(ob: &Bound<PyAny>, type_: &Type) -> Option<Value> {
+    let type_name = ob.get_type().qualname().ok()?;
+    let value = if type_name == "datetime" {
+        value_from_python_datetime(ob).ok()
+    } else if matches!(
+        type_name.as_ref(),
+        "Timestamp" | "DateTimeNaive" | "DateTimeUtc"
+    ) {
+        value_from_pandas_timestamp(ob).ok()
+    } else {
+        None
+    }?;
+    match (&value, type_) {
+        (Value::DateTimeNaive(_), Type::DateTimeNaive)
+        | (Value::DateTimeUtc(_), Type::DateTimeUtc) => Some(value),
+        _ => None,
+    }
+}
+
+fn extract_int_array(ob: &Bound<PyAny>, dim: Option<usize>) -> Option<ndarray::ArrayD<i64>> {
+    let array = if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i64>>() {
+        Some(array.as_array().to_owned())
+    } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<i32>>() {
+        Some(array.as_array().mapv(i64::from))
+    } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<u32>>() {
+        Some(array.as_array().mapv(i64::from))
+    } else {
+        None
+    }?;
+    array_with_proper_dimensions(array, dim)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn extract_float_array(ob: &Bound<PyAny>, dim: Option<usize>) -> Option<ndarray::ArrayD<f64>> {
+    let array = if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<f64>>() {
+        array.as_array().to_owned()
+    } else if let Ok(array) = ob.extract::<PyReadonlyArrayDyn<f32>>() {
+        array.as_array().mapv(f64::from)
+    } else {
+        extract_int_array(ob, dim).map(|array| array.mapv(|v| v as f64))?
+    };
+    array_with_proper_dimensions(array, dim)
+}
+
+fn py_type_error(ob: &Bound<PyAny>, type_: &Type) -> PyErr {
+    PyTypeError::new_err(format!(
+        "cannot create an object of type {type_:?} from value {ob}"
+    ))
+}
+
+pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
+    let extracted = match type_ {
+        Type::Any => ob.extract().ok(),
+        Type::Optional(arg) => {
+            if ob.is_none() {
+                Some(Value::None)
+            } else {
+                Some(extract_value(ob, arg)?)
+            }
+        }
+        Type::Bool => ob
+            .extract::<&PyBool>()
+            .ok()
+            .map(|b| Value::from(b.is_true())),
+        Type::Int => ob.extract::<i64>().ok().map(Value::from),
+        Type::Float => ob.extract::<f64>().ok().map(Value::from),
+        Type::Pointer => ob.extract::<Key>().ok().map(Value::from),
+        Type::String => ob
+            .downcast::<PyString>()
+            .ok()
+            .and_then(|s| s.to_str().ok())
+            .map(Value::from),
+        Type::Bytes => ob
+            .downcast::<PyBytes>()
+            .ok()
+            .map(|b| Value::from(b.as_bytes())),
+        Type::DateTimeNaive | Type::DateTimeUtc => extract_datetime(ob, type_),
+        Type::Duration => {
+            // XXX: check types, not names
+            let type_name = ob.get_type().qualname()?;
+            if type_name == "timedelta" {
+                value_from_python_timedelta(ob).ok()
+            } else if matches!(type_name.as_ref(), "Timedelta" | "Duration") {
+                value_from_pandas_timedelta(ob).ok()
+            } else {
+                None
+            }
+        }
+        Type::Array(dim, wrapped) => match wrapped.borrow() {
+            Type::Int => Ok(extract_int_array(ob, *dim).map(Value::from)),
+            Type::Float => Ok(extract_float_array(ob, *dim).map(Value::from)),
+            Type::Any => Ok(extract_int_array(ob, *dim)
+                .map(Value::from)
+                .or_else(|| extract_float_array(ob, *dim).map(Value::from))),
+            wrapped => Err(PyValueError::new_err(format!(
+                "{wrapped:?} is invalid type for Array"
+            ))),
+        }?,
+        Type::Json => {
+            if is_pathway_json(ob)? {
+                value_json_from_py_any(&ob.getattr("value")?).ok()
+            } else {
+                value_json_from_py_any(ob).ok()
+            }
+        }
+        Type::Tuple(args) => {
+            let obs = ob.extract::<Vec<Bound<PyAny>>>()?;
+            if obs.len() == args.len() {
+                let values: Vec<_> = obs
+                    .into_iter()
+                    .zip(args.iter())
+                    .map(|(ob, type_)| extract_value(&ob, type_))
+                    .try_collect()?;
+                Some(Value::from(values.as_slice()))
+            } else {
+                None
+            }
+        }
+        Type::List(arg) => {
+            let obs = ob.extract::<Vec<Bound<PyAny>>>()?;
+            let values: Vec<_> = obs
+                .into_iter()
+                .map(|ob| extract_value(&ob, arg))
+                .try_collect()?;
+            Some(Value::from(values.as_slice()))
+        }
+        Type::PyObjectWrapper => {
+            let value = if let Ok(ob) = ob.extract::<PyObjectWrapper>() {
+                ob
+            } else {
+                PyObjectWrapper::new(ob.clone().unbind())
+            };
+            Some(Value::from(value.into_internal()))
+        }
+    };
+    extracted.ok_or_else(|| py_type_error(ob, type_))
+}
+
 impl<'py> FromPyObject<'py> for Value {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
         let py = ob.py();
@@ -399,7 +550,7 @@ impl IntoPy<PyObject> for Reducer {
 
 impl<'py> FromPyObject<'py> for Type {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(ob.extract::<PyRef<PathwayType>>()?.0)
+        Ok(ob.extract::<PyRef<PathwayType>>()?.0.clone())
     }
 }
 
@@ -929,8 +1080,9 @@ macro_rules! binary_expr {
 #[pymethods]
 impl PyExpression {
     #[staticmethod]
-    fn r#const(value: Value) -> Self {
-        Self::new(Arc::new(Expression::new_const(value)), false)
+    fn r#const(ob: &Bound<PyAny>, type_: Type) -> PyResult<Self> {
+        let value = extract_value(ob, &type_)?;
+        Ok(Self::new(Arc::new(Expression::new_const(value)), false))
     }
 
     #[staticmethod]
@@ -942,8 +1094,13 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (function, *args, propagate_none=false))]
-    fn apply(function: Py<PyAny>, args: Vec<PyRef<PyExpression>>, propagate_none: bool) -> Self {
+    #[pyo3(signature = (function, *args, dtype, propagate_none=false))]
+    fn apply(
+        function: Py<PyAny>,
+        args: Vec<PyRef<PyExpression>>,
+        dtype: Type,
+        propagate_none: bool,
+    ) -> Self {
         let args = args
             .into_iter()
             .map(|expr| expr.inner.clone())
@@ -951,10 +1108,10 @@ impl PyExpression {
         let func = Box::new(move |input: &[Value]| {
             Python::with_gil(|py| -> DynResult<Value> {
                 let args = PyTuple::new_bound(py, input);
-                Ok(function.call1(py, args)?.extract::<Value>(py)?)
+                let result = function.call1(py, args)?;
+                Ok(extract_value(result.bind(py), &dtype)?)
             })
         });
-
         let expression = if propagate_none {
             AnyExpression::OptionalApply(func, args.into())
         } else {
@@ -1139,13 +1296,27 @@ impl PyExpression {
                 Some(binary_op!(FloatExpression::DurationTrueDiv, lhs, rhs))
             }
             (Op::Mod, Tp::Duration, Tp::Duration) => Some(binary_op!(DurationE::Mod, lhs, rhs)),
-            (Op::MatMul, Tp::Array, Tp::Array) => Some(binary_op!(AnyE::MatMul, lhs, rhs)),
-            (Op::Eq, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleEq, lhs, rhs)),
-            (Op::Ne, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleNe, lhs, rhs)),
-            (Op::Lt, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleLt, lhs, rhs)),
-            (Op::Le, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleLe, lhs, rhs)),
-            (Op::Gt, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleGt, lhs, rhs)),
-            (Op::Ge, Tp::Tuple, Tp::Tuple) => Some(binary_op!(BoolE::TupleGe, lhs, rhs)),
+            (Op::MatMul, Tp::Array(_, _), Tp::Array(_, _)) => {
+                Some(binary_op!(AnyE::MatMul, lhs, rhs))
+            }
+            (Op::Eq, Tp::Tuple(_) | Tp::List(_), Tp::Tuple(_) | Tp::List(_)) => {
+                Some(binary_op!(BoolE::TupleEq, lhs, rhs))
+            }
+            (Op::Ne, Tp::Tuple(_) | Tp::List(_), Tp::Tuple(_) | Tp::List(_)) => {
+                Some(binary_op!(BoolE::TupleNe, lhs, rhs))
+            }
+            (Op::Lt, Tp::Tuple(_) | Tp::List(_), Tp::Tuple(_) | Tp::List(_)) => {
+                Some(binary_op!(BoolE::TupleLt, lhs, rhs))
+            }
+            (Op::Le, Tp::Tuple(_) | Tp::List(_), Tp::Tuple(_) | Tp::List(_)) => {
+                Some(binary_op!(BoolE::TupleLe, lhs, rhs))
+            }
+            (Op::Gt, Tp::Tuple(_) | Tp::List(_), Tp::Tuple(_) | Tp::List(_)) => {
+                Some(binary_op!(BoolE::TupleGt, lhs, rhs))
+            }
+            (Op::Ge, Tp::Tuple(_) | Tp::List(_), Tp::Tuple(_) | Tp::List(_)) => {
+                Some(binary_op!(BoolE::TupleGe, lhs, rhs))
+            }
             _ => None,
         }
     }
@@ -1189,7 +1360,7 @@ impl PyExpression {
     #[staticmethod]
     fn convert_optional(expr: &PyExpression, source_type: Type, target_type: Type) -> Option<Self> {
         type Tp = Type;
-        match (source_type, target_type) {
+        match (&source_type, &target_type) {
             (Tp::Json, Tp::Int | Tp::Float | Tp::Bool | Tp::String) => {
                 Some(unary_op!(AnyExpression::JsonToOptional, expr, target_type))
             }
@@ -1430,16 +1601,30 @@ impl PathwayType {
     pub const DATE_TIME_UTC: Type = Type::DateTimeUtc;
     #[classattr]
     pub const DURATION: Type = Type::Duration;
-    #[classattr]
-    pub const ARRAY: Type = Type::Array;
+    #[staticmethod]
+    #[pyo3(signature = (dim, wrapped))]
+    pub fn array(dim: Option<usize>, wrapped: Type) -> Type {
+        Type::Array(dim, wrapped.into())
+    }
     #[classattr]
     pub const JSON: Type = Type::Json;
-    #[classattr]
-    pub const TUPLE: Type = Type::Tuple;
+    #[staticmethod]
+    #[pyo3(signature = (*args))]
+    pub fn tuple(args: Vec<Type>) -> Type {
+        Type::Tuple(args.into())
+    }
+    #[staticmethod]
+    pub fn list(arg: Type) -> Type {
+        Type::List(arg.into())
+    }
     #[classattr]
     pub const BYTES: Type = Type::Bytes;
     #[classattr]
     pub const PY_OBJECT_WRAPPER: Type = Type::PyObjectWrapper;
+    #[staticmethod]
+    pub fn optional(wrapped: Type) -> Type {
+        Type::Optional(wrapped.into())
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]
@@ -2265,6 +2450,7 @@ impl Scope {
         Column::new(universe, handle)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn async_apply_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
@@ -2273,7 +2459,9 @@ impl Scope {
         propagate_none: bool,
         deterministic: bool,
         properties: TableProperties,
+        dtype: Type,
     ) -> PyResult<Py<Table>> {
+        let dtype = Arc::new(dtype);
         let event_loop = self_.borrow().event_loop.clone();
         let table_handle = self_.borrow().graph.async_apply_table(
             Arc::new(move |_, values: &[Value]| {
@@ -2290,9 +2478,12 @@ impl Scope {
                     pyo3_asyncio::into_future_with_locals(&locals, awaitable)
                 });
 
-                Box::pin(async {
-                    let result = future?.await?;
-                    Python::with_gil(|py| result.extract::<Value>(py).map_err(DynError::from))
+                Box::pin({
+                    let dtype = dtype.clone();
+                    async {
+                        let result = future?.await?;
+                        Python::with_gil(move |py| Ok(extract_value(result.bind(py), &dtype)?))
+                    }
                 })
             }),
             table.handle,
@@ -3459,7 +3650,6 @@ pub struct DataStorage {
     object_pattern: String,
     mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
     table_name: Option<String>,
-    column_names: Option<Vec<String>>,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
     min_commit_frequency: Option<u64>,
@@ -3702,32 +3892,30 @@ pub struct ValueField {
     #[pyo3(get)]
     pub type_: Type,
     #[pyo3(get)]
-    pub is_optional: bool,
-    #[pyo3(get)]
     pub default: Option<Value>,
 }
 
 impl ValueField {
     fn as_inner_schema_field(&self) -> InnerSchemaField {
-        InnerSchemaField::new(self.type_, self.is_optional, self.default.clone())
+        InnerSchemaField::new(self.type_.clone(), self.default.clone())
     }
 }
 
 #[pymethods]
 impl ValueField {
     #[new]
-    #[pyo3(signature = (name, type_, is_optional=false))]
-    fn new(name: String, type_: Type, is_optional: bool) -> Self {
+    #[pyo3(signature = (name, type_))]
+    fn new(name: String, type_: Type) -> Self {
         ValueField {
             name,
             type_,
-            is_optional,
             default: None,
         }
     }
 
-    fn set_default(&mut self, value: Value) {
-        self.default = Some(value);
+    fn set_default(&mut self, ob: &Bound<PyAny>) -> PyResult<()> {
+        self.default = Some(extract_value(ob, &self.type_)?);
+        Ok(())
     }
 }
 
@@ -3769,7 +3957,6 @@ impl DataStorage {
         object_pattern = "*".to_string(),
         mock_events = None,
         table_name = None,
-        column_names = None,
         header_fields = Vec::new(),
         key_field_index = None,
         min_commit_frequency = None,
@@ -3794,7 +3981,6 @@ impl DataStorage {
         object_pattern: String,
         mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
         table_name: Option<String>,
-        column_names: Option<Vec<String>>,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
         min_commit_frequency: Option<u64>,
@@ -3818,7 +4004,6 @@ impl DataStorage {
             object_pattern,
             mock_events,
             table_name,
-            column_names,
             header_fields,
             key_field_index,
             min_commit_frequency,
@@ -4147,6 +4332,7 @@ impl DataStorage {
     fn construct_python_reader(
         &self,
         py: pyo3::Python,
+        data_format: &DataFormat,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let subject = self.python_subject.clone().ok_or_else(|| {
             PyValueError::new_err("For Python connector, python_subject should be specified")
@@ -4158,11 +4344,19 @@ impl DataStorage {
             ));
         }
 
-        let reader = PythonReaderBuilder::new(subject, self.internal_persistent_id());
+        let reader = PythonReaderBuilder::new(
+            subject,
+            self.internal_persistent_id(),
+            data_format.value_fields_type_map(py),
+        );
         Ok((Box::new(reader), 1))
     }
 
-    fn construct_sqlite_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_sqlite_reader(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let connection = SqliteConnection::open_with_flags(
             self.path()?,
             SqliteOpenFlags::SQLITE_OPEN_READ_ONLY | SqliteOpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -4171,10 +4365,12 @@ impl DataStorage {
         let table_name = self.table_name.clone().ok_or_else(|| {
             PyValueError::new_err("For Sqlite connector, table_name should be specified")
         })?;
-        let column_names = self.column_names.clone().ok_or_else(|| {
-            PyValueError::new_err("For Sqlite connector, column_names should be specified")
-        })?;
-        let reader = SqliteReader::new(connection, table_name, column_names);
+
+        let reader = SqliteReader::new(
+            connection,
+            table_name,
+            data_format.value_fields_type_map(py).into_iter().collect(),
+        );
         Ok((Box::new(reader), 1))
     }
 
@@ -4222,8 +4418,8 @@ impl DataStorage {
             "s3_csv" => self.construct_s3_csv_reader(py),
             "csv" => self.construct_csv_reader(py),
             "kafka" => self.construct_kafka_reader(),
-            "python" => self.construct_python_reader(py),
-            "sqlite" => self.construct_sqlite_reader(),
+            "python" => self.construct_python_reader(py, data_format),
+            "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
@@ -4387,10 +4583,10 @@ impl DataStorage {
 
 impl DataFormat {
     pub fn value_fields_type_map(&self, py: pyo3::Python) -> HashMap<String, Type> {
-        let mut result = HashMap::new();
+        let mut result = HashMap::with_capacity(self.value_fields.len());
         for field in &self.value_fields {
             let name = field.borrow(py).name.clone();
-            let type_ = field.borrow(py).type_;
+            let type_ = field.borrow(py).type_.clone();
             result.insert(name, type_);
         }
         result
@@ -4451,7 +4647,7 @@ impl DataFormat {
         match self.format_type.as_ref() {
             "dsv" => {
                 let settings = self.construct_dsv_settings(py)?;
-                Ok(settings.parser(self.schema(py)?))
+                Ok(settings.parser(self.schema(py)?)?)
             }
             "debezium" => {
                 let parser = DebeziumMessageParser::new(
@@ -4470,7 +4666,7 @@ impl DataFormat {
                     self.field_absence_is_error,
                     self.schema(py)?,
                     self.session_type,
-                );
+                )?;
                 Ok(Box::new(parser))
             }
             "identity" => Ok(Box::new(IdentityParser::new(
@@ -4484,7 +4680,7 @@ impl DataFormat {
                 self.value_field_names(py),
                 self.schema(py)?,
                 self.session_type,
-            ))),
+            )?)),
             _ => Err(PyValueError::new_err("Unknown data format")),
         }
     }

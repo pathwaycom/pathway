@@ -5,7 +5,7 @@ from __future__ import annotations
 import boto3
 import boto3.session
 
-from pathway.internals import api, dtype as dt, schema
+from pathway.internals import api, schema
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
 
@@ -133,8 +133,7 @@ def _format_output_value_fields(table: Table) -> list[api.ValueField]:
         value_fields.append(
             api.ValueField(
                 column_name,
-                column_data.dtype.map_to_engine(),
-                is_optional=isinstance(column_data.dtype, dt.Optional),
+                column_data.dtype.to_engine(),
             )
         )
 
@@ -146,19 +145,11 @@ def _form_value_fields(schema: type[schema.Schema]) -> list[api.ValueField]:
     default_values = schema.default_values()
     result = []
 
-    # XXX fix mapping schema types to PathwayType
-    types = {
-        name: (dt.unoptionalize(dtype).to_engine(), isinstance(dtype, dt.Optional))
-        for name, dtype in schema._dtypes().items()
-    }
+    types = {name: dtype.to_engine() for name, dtype in schema._dtypes().items()}
 
     for f in schema.column_names():
-        simple_type, is_optional = types.get(f, (None, False))
-        if (
-            simple_type is None
-        ):  # types can contain None if there is field of type None in the schema
-            simple_type = api.PathwayType.ANY
-        value_field = api.ValueField(f, simple_type, is_optional=is_optional)
+        dtype = types.get(f, api.PathwayType.ANY)
+        value_field = api.ValueField(f, dtype)
         if f in default_values:
             value_field.set_default(default_values[f])
         result.append(value_field)

@@ -8,10 +8,10 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use pathway_engine::connectors::data_format::{JsonLinesParser, ParsedEvent};
+use pathway_engine::connectors::data_format::{InnerSchemaField, JsonLinesParser, ParsedEvent};
 use pathway_engine::connectors::data_storage::{ConnectorMode, FilesystemReader, ReadMethod};
 use pathway_engine::connectors::SessionType;
-use pathway_engine::engine::Value;
+use pathway_engine::engine::{Type, Value};
 
 #[test]
 fn test_jsonlines_ok() -> eyre::Result<()> {
@@ -22,14 +22,19 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
         vec!["b".to_string(), "c".to_string()],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -62,14 +67,20 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("d".to_string(), InnerSchemaField::new(Type::Int, None)),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
         vec!["b".to_string(), "c".to_string()],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     assert_error_shown(
         Box::new(reader),
@@ -90,14 +101,20 @@ fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("d".to_string(), InnerSchemaField::new(Type::Int, None)),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
         vec!["b".to_string(), "c".to_string()],
         HashMap::new(),
         false,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     assert_eq!(entries.len(), 4);
@@ -114,14 +131,19 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("qqq".to_string(), InnerSchemaField::new(Type::Int, None)),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
         vec!["b".to_string(), "qqq".to_string()],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     assert_error_shown(
         Box::new(reader),
@@ -142,6 +164,49 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "float".to_string(),
+            InnerSchemaField::new(Type::Float, None),
+        ),
+        (
+            "int_positive".to_string(),
+            InnerSchemaField::new(Type::Int, None),
+        ),
+        (
+            "int_negative".to_string(),
+            InnerSchemaField::new(Type::Int, None),
+        ),
+        (
+            "string".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "array".to_string(),
+            InnerSchemaField::new(
+                Type::Tuple(
+                    [
+                        Type::String,
+                        Type::Int,
+                        Type::Int,
+                        Type::Float,
+                        Type::Tuple([].into()),
+                    ]
+                    .into(),
+                ),
+                None,
+            ),
+        ),
+        (
+            "bool_true".to_string(),
+            InnerSchemaField::new(Type::Bool, None),
+        ),
+        (
+            "bool_false".to_string(),
+            InnerSchemaField::new(Type::Bool, None),
+        ),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string()]),
         vec![
@@ -155,9 +220,9 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
         ],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -200,6 +265,24 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
     routes.insert("pet_name".to_string(), "/pet/name".to_string());
     routes.insert("pet_height".to_string(), "/pet/measurements/1".to_string());
 
+    let schema = [
+        (
+            "owner".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_kind".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_name".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_height".to_string(),
+            InnerSchemaField::new(Type::Int, None),
+        ),
+    ];
     let parser = JsonLinesParser::new(
         None,
         vec![
@@ -210,9 +293,9 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
         ],
         routes,
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -251,6 +334,24 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
         "*",
     )?;
 
+    let schema = [
+        (
+            "owner".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_kind".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_name".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_height".to_string(),
+            InnerSchemaField::new(Type::Int, None),
+        ),
+    ];
     let mut routes = HashMap::new();
     routes.insert("owner".to_string(), "/name".to_string());
     routes.insert("pet_kind".to_string(), "/pet/animal".to_string());
@@ -270,9 +371,9 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
         ],
         routes,
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     assert_error_shown(
         Box::new(reader),
@@ -294,6 +395,24 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
         "*",
     )?;
 
+    let schema = [
+        (
+            "owner".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_kind".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_name".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "pet_height".to_string(),
+            InnerSchemaField::new(Type::Int, None),
+        ),
+    ];
     let mut routes = HashMap::new();
     routes.insert("owner".to_string(), "/name".to_string());
     routes.insert("pet_kind".to_string(), "/pet/animal".to_string());
@@ -313,9 +432,9 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
         ],
         routes,
         false,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     assert_eq!(entries.len(), 2);
@@ -332,14 +451,20 @@ fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("d".to_string(), InnerSchemaField::new(Type::Int, None)),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
         vec!["b".to_string(), "c".to_string()],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     assert_error_shown(
         Box::new(reader),
@@ -363,14 +488,20 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("c".to_string(), InnerSchemaField::new(Type::Int, None)),
+        ("d".to_string(), InnerSchemaField::new(Type::Int, None)),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["a".to_string(), "d".to_string()]),
         vec!["b".to_string(), "c".to_string()],
         routes,
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     assert_error_shown(
         Box::new(reader),
@@ -391,19 +522,20 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
         ReadMethod::ByLine,
         "*",
     )?;
+    let schema = [("pet".to_string(), InnerSchemaField::new(Type::Any, None))];
     let parser = JsonLinesParser::new(
         None,
         vec!["pet".to_string()],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
+    )?;
 
     assert_error_shown(
         Box::new(reader),
         Box::new(parser),
-        r#"failed to create a field "pet" with type Any from the following json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
+        r#"failed to create a field "pet" with type Any from json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
         ErrorPlacement::Value(0),
     );
 

@@ -428,6 +428,12 @@ impl From<&[Value]> for Value {
     }
 }
 
+impl From<Vec<Value>> for Value {
+    fn from(t: Vec<Value>) -> Self {
+        Self::Tuple(t.into())
+    }
+}
+
 impl From<ArrayD<i64>> for Value {
     fn from(a: ArrayD<i64>) -> Self {
         Self::IntArray(Handle::new(a))
@@ -486,7 +492,7 @@ impl From<PyObjectWrapper> for Value {
 // so changing them will result in changed IDs
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum SimpleType {
+pub enum Kind {
     None,
     Bool,
     Int,
@@ -505,30 +511,8 @@ pub enum SimpleType {
     PyObjectWrapper,
 }
 
-impl SimpleType {
-    pub fn to_type(&self) -> Option<Type> {
-        match self {
-            SimpleType::None | SimpleType::Error => None,
-            SimpleType::Bool => Some(Type::Bool),
-            SimpleType::Int => Some(Type::Int),
-            SimpleType::Float => Some(Type::Float),
-            SimpleType::Pointer => Some(Type::Pointer),
-            SimpleType::String => Some(Type::String),
-            SimpleType::Tuple => Some(Type::Tuple),
-            SimpleType::IntArray | SimpleType::FloatArray => Some(Type::Array),
-            SimpleType::DateTimeNaive => Some(Type::DateTimeNaive),
-            SimpleType::DateTimeUtc => Some(Type::DateTimeUtc),
-            SimpleType::Duration => Some(Type::Duration),
-            SimpleType::Bytes => Some(Type::Bytes),
-            SimpleType::Json => Some(Type::Json),
-            SimpleType::PyObjectWrapper => Some(Type::PyObjectWrapper),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
-    #[default]
     Any,
     Bool,
     Int,
@@ -539,83 +523,75 @@ pub enum Type {
     DateTimeNaive,
     DateTimeUtc,
     Duration,
-    Array,
+    Array(Option<usize>, Arc<Type>),
     Json,
-    Tuple,
+    Tuple(Arc<[Type]>),
+    List(Arc<Type>),
     PyObjectWrapper,
+    Optional(Arc<Type>),
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct CompoundType {
-    pub type_: Type,
-    pub is_optional: bool,
-}
-
-impl CompoundType {
-    pub fn new(type_: Type, is_optional: bool) -> Self {
-        Self { type_, is_optional }
+impl Type {
+    pub fn can_be_none(&self) -> bool {
+        matches!(self, Self::Optional(_) | Self::Any)
     }
-
-    pub fn matches(&self, value: &Value) -> bool {
-        if self.type_ == Type::Any {
-            true
-        } else if let Some(value_type) = value.simple_type().to_type() {
-            self.type_ == value_type
-        } else {
-            false
+    pub fn unoptionalize(&self) -> &Self {
+        match self {
+            Self::Optional(arg) => arg,
+            type_ => type_,
         }
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    pub fn convert_value(&self, value: Value) -> DynResult<Value> {
-        if self.matches(&value) || self.is_optional && value == Value::None {
-            return Ok(value);
-        }
-        match (value, self.type_) {
-            (Value::Int(i), Type::Float) => Ok(Value::from(i as f64)),
-            (value, _) => Err(DataError::IncorrectType {
-                value,
-                type_: *self,
-            }
-            .into()),
-        }
-    }
-
-    pub fn get_main_type(&self) -> Type {
-        self.type_
     }
 }
 
-impl Display for CompoundType {
+impl Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_optional {
-            write!(f, "{:?} | None", self.type_)
-        } else {
-            write!(f, "{:?}", self.type_)
+        match self {
+            Type::Any => write!(f, "Any"),
+            Type::Bool => write!(f, "bool"),
+            Type::Int => write!(f, "int"),
+            Type::Float => write!(f, "float"),
+            Type::Pointer => write!(f, "Pointer"),
+            Type::String => write!(f, "str"),
+            Type::Bytes => write!(f, "bytes"),
+            Type::DateTimeNaive => write!(f, "DateTimeNaive"),
+            Type::DateTimeUtc => write!(f, "DateTimeUtc"),
+            Type::Duration => write!(f, "Duration"),
+            Type::Array(dim, arg) => {
+                if let Some(dim) = dim {
+                    write!(f, "Array({dim}, {arg})")
+                } else {
+                    write!(f, "Array({arg})")
+                }
+            }
+            Type::Json => write!(f, "Json"),
+            Type::Tuple(args) => write!(f, "tuple[{}]", args.iter().format(", ")),
+            Type::List(arg) => write!(f, "list[{arg}]"),
+            Type::PyObjectWrapper => write!(f, "PyObjectWrapper"),
+            Type::Optional(arg) => write!(f, "{arg} | None"),
         }
     }
 }
 
 impl Value {
     #[must_use]
-    pub fn simple_type(&self) -> SimpleType {
+    pub fn kind(&self) -> Kind {
         match self {
-            Self::None => SimpleType::None,
-            Self::Bool(_) => SimpleType::Bool,
-            Self::Int(_) => SimpleType::Int,
-            Self::Float(_) => SimpleType::Float,
-            Self::Pointer(_) => SimpleType::Pointer,
-            Self::String(_) => SimpleType::String,
-            Self::Bytes(_) => SimpleType::Bytes,
-            Self::Tuple(_) => SimpleType::Tuple,
-            Self::IntArray(_) => SimpleType::IntArray,
-            Self::FloatArray(_) => SimpleType::FloatArray,
-            Self::DateTimeNaive(_) => SimpleType::DateTimeNaive,
-            Self::DateTimeUtc(_) => SimpleType::DateTimeUtc,
-            Self::Duration(_) => SimpleType::Duration,
-            Self::Json(_) => SimpleType::Json,
-            Self::Error => SimpleType::Error,
-            Self::PyObjectWrapper(_) => SimpleType::PyObjectWrapper,
+            Self::None => Kind::None,
+            Self::Bool(_) => Kind::Bool,
+            Self::Int(_) => Kind::Int,
+            Self::Float(_) => Kind::Float,
+            Self::Pointer(_) => Kind::Pointer,
+            Self::String(_) => Kind::String,
+            Self::Bytes(_) => Kind::Bytes,
+            Self::Tuple(_) => Kind::Tuple,
+            Self::IntArray(_) => Kind::IntArray,
+            Self::FloatArray(_) => Kind::FloatArray,
+            Self::DateTimeNaive(_) => Kind::DateTimeNaive,
+            Self::DateTimeUtc(_) => Kind::DateTimeUtc,
+            Self::Duration(_) => Kind::Duration,
+            Self::Json(_) => Kind::Json,
+            Self::Error => Kind::Error,
+            Self::PyObjectWrapper(_) => Kind::PyObjectWrapper,
         }
     }
 }
@@ -742,7 +718,7 @@ impl HashInto for Duration {
 
 impl HashInto for Value {
     fn hash_into(&self, hasher: &mut Hasher) {
-        (self.simple_type() as u8).hash_into(hasher);
+        (self.kind() as u8).hash_into(hasher);
         match self {
             Self::None => {}
             Self::Bool(b) => b.hash_into(hasher),

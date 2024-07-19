@@ -232,6 +232,8 @@ def assert_equal_tables(t0: api.CapturedStream, t1: api.CapturedStream) -> None:
 def make_value_hashable(val: api.Value):
     if isinstance(val, np.ndarray):
         return (type(val), val.dtype, val.shape, str(val))
+    elif isinstance(val, pw.Json):
+        return (type(val), repr(val))
     else:
         return val
 

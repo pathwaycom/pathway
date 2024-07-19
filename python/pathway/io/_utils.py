@@ -46,9 +46,7 @@ _PATHWAY_TYPE_MAPPING: dict[PathwayType, dt.DType] = {
     PathwayType.DATE_TIME_NAIVE: dt.DATE_TIME_NAIVE,
     PathwayType.DATE_TIME_UTC: dt.DATE_TIME_UTC,
     PathwayType.DURATION: dt.DURATION,
-    PathwayType.ARRAY: dt.ANY_ARRAY,
     PathwayType.JSON: dt.JSON,
-    PathwayType.TUPLE: dt.ANY_TUPLE,
     PathwayType.BYTES: dt.BYTES,
     PathwayType.PY_OBJECT_WRAPPER: dt.ANY_PY_OBJECT_WRAPPER,
 }

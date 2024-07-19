@@ -2,17 +2,20 @@
 
 use super::helpers::read_data_from_reader;
 
-use std::collections::HashMap;
-
-use pathway_engine::connectors::data_format::ParsedEvent;
 use pathway_engine::connectors::data_format::{DsvParser, DsvSettings};
+use pathway_engine::connectors::data_format::{InnerSchemaField, ParsedEvent};
 use pathway_engine::connectors::data_storage::{ConnectorMode, CsvFilesystemReader};
-use pathway_engine::engine::Value;
+use pathway_engine::engine::{Type, Value};
 
 #[test]
 fn test_dsv_dir_ok() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
+
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
+    ];
 
     let reader = CsvFilesystemReader::new(
         "tests/data/csvdir",
@@ -23,8 +26,8 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["key".to_string()]), vec!["foo".to_string()], ','),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -47,6 +50,11 @@ fn test_single_file_ok() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
+    let schema = [
+        ("a".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("b".to_string(), InnerSchemaField::new(Type::String, None)),
+    ];
+
     let reader = CsvFilesystemReader::new(
         "tests/data/sample.txt",
         builder,
@@ -56,8 +64,8 @@ fn test_single_file_ok() -> eyre::Result<()> {
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -72,6 +80,15 @@ fn test_custom_delimiter() -> eyre::Result<()> {
     builder.delimiter(b'+');
     builder.has_headers(false);
 
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::String, None)),
+        ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "foofoo".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+    ];
+
     let reader = CsvFilesystemReader::new(
         "tests/data/sql_injection.txt",
         builder,
@@ -85,8 +102,8 @@ fn test_custom_delimiter() -> eyre::Result<()> {
             vec!["foo".to_string(), "foofoo".to_string()],
             '+',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
     assert_eq!(read_lines.len(), 2);
@@ -98,6 +115,18 @@ fn test_custom_delimiter() -> eyre::Result<()> {
 fn test_escape_fields() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
+
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "value,with,comma".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "some other value".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+    ];
 
     let reader = CsvFilesystemReader::new(
         "tests/data/csv_fields_escaped.txt",
@@ -115,8 +144,8 @@ fn test_escape_fields() -> eyre::Result<()> {
             ],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -145,6 +174,14 @@ fn test_escape_newlines() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "value".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+    ];
+
     let reader = CsvFilesystemReader::new(
         "tests/data/csv_escaped_newlines.txt",
         builder,
@@ -158,8 +195,8 @@ fn test_escape_newlines() -> eyre::Result<()> {
             vec!["value".to_string()],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
@@ -202,6 +239,18 @@ fn test_special_fields() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "value".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+        (
+            "data".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+    ];
+
     let reader = CsvFilesystemReader::new(
         "tests/data/csv_special_fields.txt",
         builder,
@@ -215,8 +264,8 @@ fn test_special_fields() -> eyre::Result<()> {
             vec!["value".to_string(), "data".to_string()],
             ',',
         ),
-        HashMap::new(),
-    );
+        schema.into(),
+    )?;
 
     let read_lines = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 

@@ -124,12 +124,16 @@ class NumericalNamespace:
                 (
                     (dt.INT, dt.INT),
                     dt.INT,
-                    lambda x, y: api.Expression.apply(round, x, y),
+                    lambda x, y: api.Expression.apply(
+                        round, x, y, dtype=dt.INT.to_engine()
+                    ),
                 ),
                 (
                     (dt.FLOAT, dt.INT),
                     dt.FLOAT,
-                    lambda x, y: api.Expression.apply(round, x, y),
+                    lambda x, y: api.Expression.apply(
+                        round, x, y, dtype=dt.FLOAT.to_engine()
+                    ),
                 ),
             ),
             "num.round",
@@ -175,14 +179,18 @@ class NumericalNamespace:
                     dt.FLOAT,
                     dt.FLOAT,
                     lambda x: api.Expression.apply(
-                        lambda y: float(default_value) if math.isnan(y) else y, x
+                        lambda y: float(default_value) if math.isnan(y) else y,
+                        x,
+                        dtype=dt.FLOAT.to_engine(),
                     ),
                 ),
                 (
                     dt.Optional(dt.INT),
                     dt.INT,
                     lambda x: api.Expression.apply(
-                        lambda y: int(default_value) if y is None else y, x
+                        lambda y: int(default_value) if y is None else y,
+                        x,
+                        dtype=dt.INT.to_engine(),
                     ),
                 ),
                 (
@@ -195,6 +203,7 @@ class NumericalNamespace:
                             else y
                         ),
                         x,
+                        dtype=dt.FLOAT.to_engine(),
                     ),
                 ),
             ),

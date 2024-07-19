@@ -3,6 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use assert_matches::assert_matches;
+use eyre::eyre;
+
 use pathway_engine::connectors::data_format::InnerSchemaField;
 use pathway_engine::connectors::data_format::ParseError;
 use pathway_engine::connectors::data_format::TransparentParser;
@@ -29,10 +32,10 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
         SqliteOpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let value_field_names = vec![
-        "id".to_string(),
-        "name".to_string(),
-        "price".to_string(),
-        "photo".to_string(),
+        ("id".to_string(), Type::Int),
+        ("name".to_string(), Type::String),
+        ("price".to_string(), Type::Float),
+        ("photo".to_string(), Type::Optional(Type::Bytes.into())),
     ];
     let mut reader = SqliteReader::new(connection, "goods".to_string(), value_field_names);
     let mut read_results = Vec::new();
@@ -44,36 +47,16 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
             break;
         }
     }
-    assert_eq!(
-        read_results,
-        vec![
+    assert_matches!(
+        read_results.as_slice(),
+        [
             ReadResult::NewSource(None),
             ReadResult::Data(
-                ReaderContext::Diff((
-                    DataEventType::Insert,
-                    Some(vec![Value::Int(1)]),
-                    HashMap::from([
-                        ("id".to_owned(), Value::Int(1)),
-                        ("name".to_owned(), Value::String("Milk".into())),
-                        ("price".to_owned(), Value::Float(1.1.into())),
-                        ("photo".to_owned(), Value::None)
-                    ])
-                    .into(),
-                )),
+                ReaderContext::Diff((DataEventType::Insert, Some(_), _)),
                 EMPTY_OFFSET
             ),
             ReadResult::Data(
-                ReaderContext::Diff((
-                    DataEventType::Insert,
-                    Some(vec![Value::Int(2)]),
-                    HashMap::from([
-                        ("id".to_owned(), Value::Int(2)),
-                        ("name".to_owned(), Value::String("Bread".into())),
-                        ("price".to_owned(), Value::Float(0.75.into())),
-                        ("photo".to_owned(), Value::Bytes(Arc::new([0, 0])))
-                    ])
-                    .into(),
-                )),
+                ReaderContext::Diff((DataEventType::Insert, Some(_), _,)),
                 EMPTY_OFFSET
             ),
             ReadResult::FinishedSource {
@@ -81,6 +64,45 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
             }
         ]
     );
+    read_results.pop().unwrap();
+    let read_result_2 = read_results.pop().unwrap();
+    let read_result_1 = read_results.pop().unwrap(); // pop().unwrap()s are safe because read_results matches the pattern above
+    if let ReadResult::Data(
+        ReaderContext::Diff((DataEventType::Insert, Some(key), values_map)),
+        EMPTY_OFFSET,
+    ) = read_result_1
+    {
+        assert_eq!(key, vec![Value::Int(1)]);
+        assert_eq!(
+            values_map.to_pure_hashmap().map_err(|e| eyre!(e))?,
+            HashMap::from([
+                ("id".to_owned(), Value::Int(1)),
+                ("name".to_owned(), Value::String("Milk".into())),
+                ("price".to_owned(), Value::Float(1.1.into())),
+                ("photo".to_owned(), Value::None)
+            ])
+        )
+    } else {
+        unreachable!(); //data in read_results[1] matches the structure above
+    }
+    if let ReadResult::Data(
+        ReaderContext::Diff((DataEventType::Insert, Some(key), values_map)),
+        EMPTY_OFFSET,
+    ) = read_result_2
+    {
+        assert_eq!(key, vec![Value::Int(2)]);
+        assert_eq!(
+            values_map.to_pure_hashmap().map_err(|e| eyre!(e))?,
+            HashMap::from([
+                ("id".to_owned(), Value::Int(2)),
+                ("name".to_owned(), Value::String("Bread".into())),
+                ("price".to_owned(), Value::Float(0.75.into())),
+                ("photo".to_owned(), Value::Bytes(Arc::new([0, 0])))
+            ])
+        )
+    } else {
+        unreachable!(); //data in read_results[1] matches the structure above
+    }
     Ok(())
 }
 
@@ -90,32 +112,21 @@ fn test_sqlite_read_table_with_parser() -> eyre::Result<()> {
         "tests/data/sqlite/goods_test.db",
         SqliteOpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
-    let value_field_names = vec![
-        "id".to_string(),
-        "name".to_string(),
-        "price".to_string(),
-        "photo".to_string(),
+    let schema = vec![
+        ("id".to_string(), Type::Int),
+        ("name".to_string(), Type::String),
+        ("price".to_string(), Type::Float),
+        ("photo".to_string(), Type::Optional(Type::Bytes.into())),
     ];
-    let schema = HashMap::from([
-        (
-            "id".to_owned(),
-            InnerSchemaField::new(Type::Int, false, None),
-        ),
-        (
-            "name".to_owned(),
-            InnerSchemaField::new(Type::String, false, None),
-        ),
-        (
-            "price".to_owned(),
-            InnerSchemaField::new(Type::Float, false, None),
-        ),
-        (
-            "photo".to_owned(),
-            InnerSchemaField::new(Type::Bytes, true, None),
-        ),
-    ]);
-    let mut reader = SqliteReader::new(connection, "goods".to_string(), value_field_names.clone());
-    let mut parser = TransparentParser::new(None, value_field_names, schema, SessionType::Native);
+    let value_field_names = schema.iter().map(|(name, _dtype)| name.clone()).collect();
+    let schema_map = schema
+        .clone()
+        .into_iter()
+        .map(|(name, dtype)| (name, InnerSchemaField::new(dtype, None)))
+        .collect();
+    let mut reader = SqliteReader::new(connection, "goods".to_string(), schema);
+    let mut parser =
+        TransparentParser::new(None, value_field_names, schema_map, SessionType::Native)?;
 
     let mut parsed_events: Vec<ParsedEvent> = Vec::new();
     loop {
@@ -163,32 +174,20 @@ fn test_sqlite_read_table_nonparsable() -> eyre::Result<()> {
         "tests/data/sqlite/goods_test.db",
         SqliteOpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
-    let value_field_names = vec![
-        "id".to_string(),
-        "name".to_string(),
-        "price".to_string(),
-        "photo".to_string(),
+    let schema = vec![
+        ("id".to_string(), Type::Int),
+        ("name".to_string(), Type::String),
+        ("price".to_string(), Type::Float),
+        ("photo".to_string(), Type::Bytes),
     ];
-    let schema = HashMap::from([
-        (
-            "id".to_owned(),
-            InnerSchemaField::new(Type::Int, false, None),
-        ),
-        (
-            "name".to_owned(),
-            InnerSchemaField::new(Type::String, false, None),
-        ),
-        (
-            "price".to_owned(),
-            InnerSchemaField::new(Type::Float, false, None),
-        ),
-        (
-            "photo".to_owned(),
-            InnerSchemaField::new(Type::Bytes, false, None),
-        ),
-    ]);
-    let mut reader = SqliteReader::new(connection, "goods".to_string(), value_field_names.clone());
-    let parser = TransparentParser::new(None, value_field_names, schema, SessionType::Native);
+    let value_field_names = schema.iter().map(|(name, _dtype)| name.clone()).collect();
+    let schema_map = schema
+        .clone()
+        .into_iter()
+        .map(|(name, dtype)| (name, InnerSchemaField::new(dtype, None)))
+        .collect();
+    let mut reader = SqliteReader::new(connection, "goods".to_string(), schema.clone());
+    let parser = TransparentParser::new(None, value_field_names, schema_map, SessionType::Native)?;
 
     reader.read()?;
     let read_result = reader.read()?;
@@ -196,17 +195,17 @@ fn test_sqlite_read_table_nonparsable() -> eyre::Result<()> {
         ReadResult::Data(context, _) => assert_error_shown_for_reader_context(
             &context,
             Box::new(parser),
-            r#"value None in field "photo" is inconsistent with type Bytes from schema"#,
+            r#"cannot create a field "photo" with type bytes from value None"#,
             ErrorPlacement::Value(3),
         ),
         _ => panic!("row_read_result is not Data"),
     }
     reader.read()?;
-    assert_eq!(
+    assert_matches!(
         reader.read()?,
         ReadResult::FinishedSource {
             commit_allowed: true,
-        },
+        }
     );
     Ok(())
 }

@@ -394,6 +394,51 @@ def test_udf(sync: bool) -> None:
     )
 
 
+def test_udf_return_type():
+    @pw.udf
+    def f(a: int) -> str:
+        if a % 2 == 0:
+            return str(a) + "x"
+        else:
+            return a  # type: ignore[return-value]
+
+    res = (
+        T(
+            """
+        a
+        1
+        2
+        3
+        4
+    """
+        )
+        .select(a=f(pw.this.a))
+        .select(a=pw.fill_error(pw.this.a, "xx"))
+    )
+    expected = T(
+        """
+        a
+        xx
+        2x
+        xx
+        4x
+    """
+    )
+    expected_err = T(
+        """
+        message
+        TypeError: cannot create an object of type String from value 1
+        TypeError: cannot create an object of type String from value 3
+    """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_err),
+        terminate_on_error=False,
+    )
+
+
 def test_concat():
     t1 = pw.debug.table_from_markdown(
         """
@@ -1077,10 +1122,10 @@ def test_csv_reading(tmp_path):
     expected_errors = T(
         """
         message
-        failed to parse value "t" at field "c" according to the type Int in schema: invalid digit found in string
-        failed to parse value "x" at field "b" according to the type Int in schema: invalid digit found in string
-        failed to parse value "y" at field "c" according to the type Int in schema: invalid digit found in string
-        failed to parse value "z" at field "b" according to the type Int in schema: invalid digit found in string
+        failed to parse value "t" at field "c" according to the type int in schema: invalid digit found in string
+        failed to parse value "x" at field "b" according to the type int in schema: invalid digit found in string
+        failed to parse value "y" at field "c" according to the type int in schema: invalid digit found in string
+        failed to parse value "z" at field "b" according to the type int in schema: invalid digit found in string
     """,
         split_on_whitespace=False,
     )
@@ -1114,10 +1159,10 @@ def test_csv_reading_pk(tmp_path):
         """
         message
         error in primary key, skipping the row: failed to parse value "x" at field "b" \
-according to the type Int in schema: invalid digit found in string
-        failed to parse value "y" at field "c" according to the type Int in schema: invalid digit found in string
+according to the type int in schema: invalid digit found in string
+        failed to parse value "y" at field "c" according to the type int in schema: invalid digit found in string
         error in primary key, skipping the row: failed to parse value "z" at field "b" \
-according to the type Int in schema: invalid digit found in string
+according to the type int in schema: invalid digit found in string
     """,
         split_on_whitespace=False,
     )
@@ -1153,10 +1198,10 @@ def test_jsonlines_reading(tmp_path):
     expected_errors = T(
         """
         message
-        value "x" in field "b" is inconsistent with type Int from schema
-        value "1" in field "b" is inconsistent with type Int from schema
-        value "t" in field "c" is inconsistent with type Int / None from schema
-        value "y" in field "c" is inconsistent with type Int / None from schema
+        failed to create a field "b" with type int from json payload: "x"
+        failed to create a field "b" with type int from json payload: "1"
+        failed to create a field "c" with type int / None from json payload: "t"
+        failed to create a field "c" with type int / None from json payload: "y"
     """,
         split_on_whitespace=False,
     ).select(message=pw.this.message.str.replace("/", "|"))
@@ -1192,9 +1237,9 @@ def test_jsonlines_reading_pk(tmp_path):
     expected_errors = T(
         """
         message
-        error in primary key, skipping the row: value "x" in field "b" is inconsistent with type Int from schema
-        error in primary key, skipping the row: value "1" in field "b" is inconsistent with type Int from schema
-        value "y" in field "c" is inconsistent with type Int / None from schema
+        error in primary key, skipping the row: failed to create a field "b" with type int from json payload: "x"
+        error in primary key, skipping the row: failed to create a field "b" with type int from json payload: "1"
+        failed to create a field "c" with type int / None from json payload: "y"
     """,
         split_on_whitespace=False,
     ).select(message=pw.this.message.str.replace("/", "|"))
@@ -1236,8 +1281,8 @@ def test_python_connector():
     expected_errors = T(
         """
         message
-        value 2.3 in field "a" is inconsistent with type Int from schema
-        value 11 in field "b" is inconsistent with type String from schema
+        cannot create a field "a" with type int from value 2.3
+        cannot create a field "b" with type str from value 11
         no value for "b" field and no default specified
     """,
         split_on_whitespace=False,
@@ -1275,8 +1320,8 @@ def test_python_connector_pk():
     expected_errors = T(
         """
         message
-        value 2.3 in field "a" is inconsistent with type Int from schema
-        error in primary key, skipping the row: value 11 in field "b" is inconsistent with type String from schema
+        cannot create a field "a" with type int from value 2.3
+        error in primary key, skipping the row: cannot create a field "b" with type str from value 11
         error in primary key, skipping the row: no value for "b" field and no default specified
     """,
         split_on_whitespace=False,

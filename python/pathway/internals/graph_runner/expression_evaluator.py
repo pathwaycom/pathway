@@ -73,7 +73,7 @@ class ExpressionEvaluator(ABC):
         props = column.properties
         return api.ColumnProperties(
             trace=column.trace.to_engine(),
-            dtype=props.dtype.map_to_engine(),
+            dtype=props.dtype.to_engine(),
             append_only=props.append_only,
         )
 
@@ -337,7 +337,9 @@ class RowwiseEvaluator(
         ) is not None:
             return result_expression
 
-        return api.Expression.apply(operator_fun, arg)
+        return api.Expression.apply(
+            operator_fun, arg, dtype=expression._dtype.to_engine()
+        )
 
     def eval_binary_op(
         self,
@@ -400,7 +402,7 @@ class RowwiseEvaluator(
         expression: expr.ColumnConstExpression,
         eval_state: RowwiseEvalState | None = None,
     ):
-        return api.Expression.const(expression._val)
+        return api.Expression.const(expression._val, expression._dtype.to_engine())
 
     def eval_call(
         self,
@@ -425,6 +427,7 @@ class RowwiseEvaluator(
             fun,
             *(self.eval_expression(arg, eval_state=eval_state) for arg in args),
             propagate_none=expression._propagate_none,
+            dtype=expression._dtype.to_engine(),
         )
 
     def eval_async_apply(
@@ -451,6 +454,7 @@ class RowwiseEvaluator(
             expression._propagate_none,
             expression._deterministic,
             self._table_properties(output_storage),
+            expression._dtype.to_engine(),
         )
 
         assert eval_state is not None
@@ -555,10 +559,13 @@ class RowwiseEvaluator(
         ]
 
         res = val
+        none_expr = api.Expression.const(
+            None, dt.Optional(expression._dtype).to_engine()
+        )
         for arg in reversed(args):
             res = api.Expression.if_else(
                 api.Expression.is_none(arg),
-                api.Expression.const(None),
+                none_expr,
                 res,
             )
 

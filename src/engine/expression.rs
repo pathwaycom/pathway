@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 
 use super::error::{DataError, DynError, DynResult};
 use super::time::{DateTime, DateTimeNaive, DateTimeUtc, Duration};
-use super::value::SimpleType;
+use super::value::Kind;
 use super::{Key, Type, Value};
 use crate::engine::ShardPolicy;
 use crate::mat_mul::mat_mul;
@@ -432,8 +432,8 @@ fn are_tuples_equal(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<bool> {
             (Value::Int(val_l), Value::Float(val_r)) => Ok(OrderedFloat(*val_l as f64).eq(val_r)),
             (val, Value::None) | (Value::None, val) => Ok(val == &Value::None),
             (val_l, val_r) => {
-                let type_l = val_l.simple_type();
-                let type_r = val_r.simple_type();
+                let type_l = val_l.kind();
+                let type_r = val_r.kind();
                 if type_l == type_r {
                     Ok(val_l.eq(val_r))
                 } else {
@@ -459,14 +459,10 @@ fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering>
             #[allow(clippy::cast_precision_loss)]
             (Value::Int(val_l), Value::Float(val_r)) => Ok(OrderedFloat(*val_l as f64).cmp(val_r)),
             (val_l, val_r) => {
-                let type_l = val_l.simple_type();
-                let type_r = val_r.simple_type();
-                let is_incomparable_type = [
-                    SimpleType::Json,
-                    SimpleType::IntArray,
-                    SimpleType::FloatArray,
-                ]
-                .contains(&type_l);
+                let type_l = val_l.kind();
+                let type_r = val_r.kind();
+                let is_incomparable_type =
+                    [Kind::Json, Kind::IntArray, Kind::FloatArray].contains(&type_l);
                 if type_l != type_r || is_incomparable_type {
                     let msg = format!(
                         "comparison not supported between instances of '{type_l:?}' and '{type_r:?}'",
@@ -651,8 +647,8 @@ impl AnyExpression {
                     (Value::FloatArray(lhs), Value::FloatArray(rhs)) => mat_mul_wrapper(&lhs, &rhs),
                     (Value::IntArray(lhs), Value::IntArray(rhs)) => mat_mul_wrapper(&lhs, &rhs),
                     (lhs_val, rhs_val) => {
-                        let lhs_type = lhs_val.simple_type();
-                        let rhs_type = rhs_val.simple_type();
+                        let lhs_type = lhs_val.kind();
+                        let rhs_type = rhs_val.kind();
                         Err(DynError::from(DataError::ValueError(format!(
                             "can't perform matrix multiplication on {lhs_type:?} and {rhs_type:?}",
                         ))))

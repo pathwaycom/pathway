@@ -9,14 +9,14 @@ use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 use pathway_engine::connectors::data_format::{
-    DsvParser, DsvSettings, JsonLinesParser, ParsedEvent, Parser,
+    DsvParser, DsvSettings, InnerSchemaField, JsonLinesParser, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::ReaderBuilder;
 use pathway_engine::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
 };
 use pathway_engine::connectors::SessionType;
-use pathway_engine::engine::Value;
+use pathway_engine::engine::{Result, Type, Value};
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 enum TestedFormat {
@@ -24,23 +24,30 @@ enum TestedFormat {
     Json,
 }
 
-fn csv_reader_parser_pair(input_path: &str) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
+fn csv_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, Box<dyn Parser>)> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
     let reader =
         CsvFilesystemReader::new(input_path, builder, ConnectorMode::Static, Some(1), "*").unwrap();
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::String, None)),
+        (
+            "value".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+    ];
     let parser = DsvParser::new(
         DsvSettings::new(
             Some(vec!["key".to_string()]),
             vec!["value".to_string()],
             ',',
         ),
-        HashMap::new(),
-    );
-    (Box::new(reader), Box::new(parser))
+        schema.into(),
+    )?;
+    Ok((Box::new(reader), Box::new(parser)))
 }
 
-fn json_reader_parser_pair(input_path: &str) -> (Box<dyn ReaderBuilder>, Box<dyn Parser>) {
+fn json_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, Box<dyn Parser>)> {
     let reader = FilesystemReader::new(
         input_path,
         ConnectorMode::Static,
@@ -49,27 +56,34 @@ fn json_reader_parser_pair(input_path: &str) -> (Box<dyn ReaderBuilder>, Box<dyn
         "*",
     )
     .unwrap();
+    let schema = [
+        ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
+        (
+            "value".to_string(),
+            InnerSchemaField::new(Type::String, None),
+        ),
+    ];
     let parser = JsonLinesParser::new(
         Some(vec!["key".to_string()]),
         vec!["value".to_string()],
         HashMap::new(),
         true,
-        HashMap::new(),
+        schema.into(),
         SessionType::Native,
-    );
-    (Box::new(reader), Box::new(parser))
+    )?;
+    Ok((Box::new(reader), Box::new(parser)))
 }
 
 fn full_cycle_read_kv(
     format: TestedFormat,
     input_path: &Path,
     persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
-) -> FullReadResult {
+) -> Result<FullReadResult> {
     let (reader, mut parser) = match format {
-        TestedFormat::Csv => csv_reader_parser_pair(input_path.to_str().unwrap()),
-        TestedFormat::Json => json_reader_parser_pair(input_path.to_str().unwrap()),
+        TestedFormat::Csv => csv_reader_parser_pair(input_path.to_str().unwrap())?,
+        TestedFormat::Json => json_reader_parser_pair(input_path.to_str().unwrap())?,
     };
-    full_cycle_read(reader, parser.as_mut(), persistent_storage)
+    Ok(full_cycle_read(reader, parser.as_mut(), persistent_storage))
 }
 
 #[test]
@@ -83,7 +97,7 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
     std::fs::write(&input_path, "key,value\n1,2\na,b").unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &input_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &input_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -102,7 +116,7 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
     std::fs::write(&input_path, "key,value\n1,2\na,b\nc,d\n55,66").unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &input_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &input_path, Some(&tracker))?;
         eprintln!("data stream after: {:?}", data_stream.new_parsed_entries);
         assert_eq!(
             data_stream.new_parsed_entries,
@@ -140,7 +154,7 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
 
     {
         let tracker = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -176,7 +190,7 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![ParsedEvent::Insert((
@@ -205,7 +219,7 @@ fn test_json_file_recovery() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -224,7 +238,7 @@ fn test_json_file_recovery() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![ParsedEvent::Insert((
@@ -260,7 +274,7 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -286,7 +300,7 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -323,7 +337,7 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, true);
-        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
@@ -347,7 +361,7 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
     .unwrap();
     {
         let tracker = create_persistence_manager(&pstorage_root_path, false);
-        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker));
+        let data_stream = full_cycle_read_kv(TestedFormat::Json, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![

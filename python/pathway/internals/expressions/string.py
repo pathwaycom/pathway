@@ -58,7 +58,15 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.lower, x)),),
+            (
+                (
+                    dt.STR,
+                    dt.STR,
+                    lambda x: api.Expression.apply(
+                        str.lower, x, dtype=dt.STR.to_engine()
+                    ),
+                ),
+            ),
             "str.lower",
             self._expression,
         )
@@ -91,7 +99,15 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.upper, x)),),
+            (
+                (
+                    dt.STR,
+                    dt.STR,
+                    lambda x: api.Expression.apply(
+                        str.upper, x, dtype=dt.STR.to_engine()
+                    ),
+                ),
+            ),
             "str.upper",
             self._expression,
         )
@@ -124,7 +140,15 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            ((dt.STR, dt.STR, lambda x: api.Expression.apply(lambda y: y[::-1], x)),),
+            (
+                (
+                    dt.STR,
+                    dt.STR,
+                    lambda x: api.Expression.apply(
+                        lambda y: y[::-1], x, dtype=dt.STR.to_engine()
+                    ),
+                ),
+            ),
             "str.reverse",
             self._expression,
         )
@@ -157,7 +181,13 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            ((dt.STR, dt.INT, lambda x: api.Expression.apply(len, x)),),
+            (
+                (
+                    dt.STR,
+                    dt.INT,
+                    lambda x: api.Expression.apply(len, x, dtype=dt.INT.to_engine()),
+                ),
+            ),
             "str.len",
             self._expression,
         )
@@ -225,7 +255,12 @@ class StringNamespace:
                     (dt.STR, dt.STR, dt.STR, dt.INT),
                     dt.STR,
                     lambda x, y, z, c: api.Expression.apply(
-                        lambda s1, s2, s3, cnt: s1.replace(s2, s3, cnt), x, y, z, c
+                        lambda s1, s2, s3, cnt: s1.replace(s2, s3, cnt),
+                        x,
+                        y,
+                        z,
+                        c,
+                        dtype=dt.STR.to_engine(),
                     ),
                 ),
             ),
@@ -268,7 +303,9 @@ class StringNamespace:
                 (
                     (dt.STR, dt.STR),
                     dt.BOOL,
-                    lambda x, y: api.Expression.apply(str.startswith, x, y),
+                    lambda x, y: api.Expression.apply(
+                        str.startswith, x, y, dtype=dt.BOOL.to_engine()
+                    ),
                 ),
             ),
             "str.starts_with",
@@ -308,7 +345,9 @@ class StringNamespace:
                 (
                     (dt.STR, dt.STR),
                     dt.BOOL,
-                    lambda x, y: api.Expression.apply(str.endswith, x, y),
+                    lambda x, y: api.Expression.apply(
+                        str.endswith, x, y, dtype=dt.BOOL.to_engine()
+                    ),
                 ),
             ),
             "str.ends_with",
@@ -341,7 +380,15 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.swapcase, x)),),
+            (
+                (
+                    dt.STR,
+                    dt.STR,
+                    lambda x: api.Expression.apply(
+                        str.swapcase, x, dtype=dt.STR.to_engine()
+                    ),
+                ),
+            ),
             "str.swap_case",
             self._expression,
         )
@@ -379,7 +426,9 @@ class StringNamespace:
                 (
                     (dt.STR, dt.Optional(dt.STR)),
                     dt.STR,
-                    lambda x, y: api.Expression.apply(str.strip, x, y),
+                    lambda x, y: api.Expression.apply(
+                        str.strip, x, y, dtype=dt.STR.to_engine()
+                    ),
                 ),
             ),
             "str.strip",
@@ -408,7 +457,15 @@ class StringNamespace:
         """
 
         return expr.MethodCallExpression(
-            ((dt.STR, dt.STR, lambda x: api.Expression.apply(str.title, x)),),
+            (
+                (
+                    dt.STR,
+                    dt.STR,
+                    lambda x: api.Expression.apply(
+                        str.title, x, dtype=dt.STR.to_engine()
+                    ),
+                ),
+            ),
             "str.title",
             self._expression,
         )
@@ -454,7 +511,9 @@ class StringNamespace:
                         dt.Optional(dt.INT),
                     ),
                     dt.INT,
-                    lambda *args: api.Expression.apply(str.count, *args),
+                    lambda *args: api.Expression.apply(
+                        str.count, *args, dtype=dt.INT.to_engine()
+                    ),
                 ),
             ),
             "str.count",
@@ -506,7 +565,9 @@ class StringNamespace:
                         dt.Optional(dt.INT),
                     ),
                     dt.INT,
-                    lambda *args: api.Expression.apply(str.find, *args),
+                    lambda *args: api.Expression.apply(
+                        str.find, *args, dtype=dt.INT.to_engine()
+                    ),
                 ),
             ),
             "str.find",
@@ -558,7 +619,9 @@ class StringNamespace:
                         dt.Optional(dt.INT),
                     ),
                     dt.INT,
-                    lambda *args: api.Expression.apply(str.rfind, *args),
+                    lambda *args: api.Expression.apply(
+                        str.rfind, *args, dtype=dt.INT.to_engine()
+                    ),
                 ),
             ),
             "str.rfind",
@@ -617,7 +680,9 @@ class StringNamespace:
                 (
                     (dt.STR, dt.STR),
                     dt.STR,
-                    lambda x, y: api.Expression.apply(str.removeprefix, x, y),
+                    lambda x, y: api.Expression.apply(
+                        str.removeprefix, x, y, dtype=dt.STR.to_engine()
+                    ),
                 ),
             ),
             "str.remove_prefix",
@@ -674,7 +739,9 @@ class StringNamespace:
                 (
                     (dt.STR, dt.STR),
                     dt.STR,
-                    lambda x, y: api.Expression.apply(str.removesuffix, x, y),
+                    lambda x, y: api.Expression.apply(
+                        str.removesuffix, x, y, dtype=dt.STR.to_engine()
+                    ),
                 ),
             ),
             "str.remove_suffix",
@@ -721,6 +788,7 @@ class StringNamespace:
                         x,
                         y,
                         z,
+                        dtype=dt.STR.to_engine(),
                     ),
                 ),
             ),

@@ -30,7 +30,7 @@ class DataSource(ABC):
         for column in self.schema.columns().values():
             columns.append(
                 api.ColumnProperties(
-                    dtype=column.dtype.map_to_engine(),
+                    dtype=column.dtype.to_engine(),
                     append_only=column.append_only,
                 )
             )

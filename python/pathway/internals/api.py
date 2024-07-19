@@ -154,6 +154,10 @@ def static_table_from_pandas(
     ordinary_columns = [
         column for column in df.columns if column not in PANDAS_PSEUDOCOLUMNS
     ]
+    if column_types:
+        dtypes = [column_types[c].to_engine() for c in ordinary_columns]
+    else:
+        dtypes = [PathwayType.ANY] * len(ordinary_columns)
 
     if connector_properties is None:
         column_properties = []
@@ -163,9 +167,7 @@ def static_table_from_pandas(
                 if v is not None:
                     dtype = type(v)
                     break
-            column_properties.append(
-                ColumnProperties(dtype=dt.wrap(dtype).map_to_engine())
-            )
+            column_properties.append(ColumnProperties(dtype=dt.wrap(dtype).to_engine()))
         connector_properties = ConnectorProperties(column_properties=column_properties)
 
     assert len(connector_properties.column_properties) == len(
@@ -181,7 +183,9 @@ def static_table_from_pandas(
         if diff not in [-1, 1]:
             raise ValueError(f"Column {DIFF_PSEUDOCOLUMN} can only contain 1 and -1.")
         shard = data[SHARD_PSEUDOCOLUMN][i] if SHARD_PSEUDOCOLUMN in data else None
-        input_row = DataRow(key, values, time=time, diff=diff, shard=shard)
+        input_row = DataRow(
+            key, values, time=time, diff=diff, shard=shard, dtypes=dtypes
+        )
         input_data.append(input_row)
 
     return scope.static_table(input_data, connector_properties)

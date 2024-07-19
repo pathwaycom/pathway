@@ -9,10 +9,11 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::BoxFuture;
 use id_arena::ArenaBehavior;
-use pyo3::exceptions::PyTypeError;
+use itertools::Itertools;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::pymethods;
 use pyo3::pyclass::CompareOp;
-use pyo3::{pyclass, PyResult, Python};
+use pyo3::{pyclass, Bound, PyAny, PyResult, Python};
 use scopeguard::defer;
 
 use crate::connectors::data_format::{Formatter, Parser};
@@ -20,6 +21,7 @@ use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::ConnectorStats;
 use crate::external_integration::ExternalIndex;
 use crate::persistence::ExternalPersistentId;
+use crate::python_api::extract_value;
 
 use super::error::{DynResult, Trace};
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
@@ -201,24 +203,41 @@ impl DataRow {
     #[pyo3(signature = (
         key,
         values,
+        *,
         time = Timestamp(0),
         diff = 1,
         shard = None,
+        dtypes,
     ))]
+    #[allow(clippy::needless_pass_by_value)] // can't use &[Type] with pyo3
     pub fn new(
         key: Key,
-        values: Vec<Value>,
+        values: Vec<Bound<PyAny>>,
         time: Timestamp,
         diff: isize,
         shard: Option<usize>,
-    ) -> Self {
-        Self {
+        dtypes: Vec<Type>,
+    ) -> PyResult<Self> {
+        if values.len() != dtypes.len() {
+            let message = format!(
+                "Length of values ({}) should be equal to the length of dtypes ({}).",
+                values.len(),
+                dtypes.len()
+            );
+            return Err(PyValueError::new_err(message));
+        }
+        let extracted_values: Vec<_> = values
+            .into_iter()
+            .zip(dtypes)
+            .map(|(ob, dtype)| extract_value(&ob, &dtype))
+            .try_collect()?;
+        Ok(Self {
             key,
-            values,
+            values: extracted_values,
             time,
             diff,
             shard,
-        }
+        })
     }
 
     fn __repr__(&self) -> String {

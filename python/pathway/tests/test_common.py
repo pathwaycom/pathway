@@ -3199,6 +3199,39 @@ def test_ndarray_reducer():
     assert_table_equality_wo_index(res, expected)
 
 
+def test_ndarray_reducer_on_ndarrays():
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | val
+        0 | 0 | 1
+        0 | 0 | 2
+        0 | 1 | 3
+        0 | 1 | 4
+        1 | 0 | 5
+        1 | 0 | 6
+        1 | 0 | 7
+        1 | 1 | 8
+        1 | 1 | 9
+        1 | 1 | 0
+    """
+    )
+    s = t.groupby(pw.this.a, pw.this.b, sort_by=pw.this.val).reduce(
+        pw.this.a, val=pw.reducers.ndarray(pw.this.val)
+    )
+    res = s.groupby(pw.this.a, sort_by=pw.this.val).reduce(
+        pw.this.a, val=pw.reducers.ndarray(pw.this.val)
+    )
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame(
+            {
+                "a": [0, 1],
+                "val": [np.array([[1, 2], [3, 4]]), np.array([[0, 8, 9], [5, 6, 7]])],
+            }
+        )
+    )
+    assert_table_equality_wo_index(res, expected)
+
+
 def test_earliest_and_latest_reducer():
     t = T(
         """

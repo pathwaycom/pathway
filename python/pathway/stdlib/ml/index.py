@@ -135,13 +135,13 @@ class KNNIndex:
         >>> pw.debug.compute_and_print(relevant_docs)
                     | document                     | embeddings
         ^YYY4HAB... | ()                           | ()
-        ^X1MXHYY... | ('document 2', 'document 3') | ((1, 1, 0), (0, 0, 1))
+        ^X1MXHYY... | ('document 2', 'document 3') | ((1.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         >>> index = KNNIndex(documents.embeddings, documents, n_dimensions=3, metadata=documents.metadata)
         >>> relevant_docs_meta = index.get_nearest_items(queries.embeddings, k=2, metadata_filter="foo >= `3`")
         >>> pw.debug.compute_and_print(relevant_docs_meta)
-                    | document        | embeddings   | metadata
-        ^YYY4HAB... | ()              | ()           | ()
-        ^X1MXHYY... | ('document 3',) | ((0, 0, 1),) | (pw.Json({'foo': 3}),)
+                    | document        | embeddings         | metadata
+        ^YYY4HAB... | ()              | ()                 | ()
+        ^X1MXHYY... | ('document 3',) | ((0.0, 0.0, 1.0),) | (pw.Json({'foo': 3}),)
         >>> data = pw.debug.table_from_markdown(
         ...     '''
         ...      x | y | __time__

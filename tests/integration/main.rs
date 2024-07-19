@@ -27,5 +27,6 @@ mod test_sqlite;
 mod test_stream_snapshot;
 mod test_time;
 mod test_time_column;
+mod test_types;
 mod test_upsert_session;
 mod test_value_to_sql;

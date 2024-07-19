@@ -194,7 +194,7 @@ data_stream_B = load_to_pathway(x_B, y_B)
 upsampled_stream = data_stream_B.windowby(
     data_stream_B.x,
     window=pw.temporal.intervals_over(
-        at=data_stream_A.x, lower_bound=-100.0, upper_bound=100.0
+        at=data_stream_A.x, lower_bound=-100.0, upper_bound=100.0, is_outer=False
     ),
 ).reduce(
     x=pw.this._pw_window_location,

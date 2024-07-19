@@ -246,7 +246,7 @@ way, one can exclude certain endpoints and methods from being documented.
             }
             self._add_optional_traits_if_present(field_description, props)
             openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(
-                unoptionalize(props.dtype).map_to_engine()
+                unoptionalize(props.dtype).to_engine()
             )
             if openapi_type:
                 field_description["schema"] = {
@@ -266,7 +266,7 @@ way, one can exclude certain endpoints and methods from being documented.
 
         for name, props in schema.columns().items():
             openapi_type = _ENGINE_TO_OPENAPI_TYPE.get(
-                unoptionalize(props.dtype).map_to_engine()
+                unoptionalize(props.dtype).to_engine()
             )
             if openapi_type is None:
                 # not something we can clearly define the type for, so it will be
@@ -284,7 +284,7 @@ way, one can exclude certain endpoints and methods from being documented.
                 field_description["default"] = props.default_value
 
             self._add_optional_traits_if_present(field_description, props)
-            openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(props.dtype.map_to_engine())
+            openapi_format = _ENGINE_TO_OPENAPI_FORMAT.get(props.dtype.to_engine())
             if openapi_format is not None:
                 field_description["format"] = openapi_format
 

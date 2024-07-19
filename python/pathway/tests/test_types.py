@@ -1,7 +1,14 @@
 # Copyright © 2024 Pathway
 
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import pytest
+
 import pathway as pw
 import pathway.internals.dtype as dt
+from pathway.internals.schema import schema_from_types
 from pathway.tests.utils import T, assert_table_equality_wo_index
 
 
@@ -186,3 +193,49 @@ def test_markdown_type_str():
     )
 
     assert_table_equality_wo_index(t, expected)
+
+
+@pytest.mark.parametrize(
+    "data,dtype",
+    [
+        ([0.5, 1, 2, 3], float),
+        ([[1, 2, 3], [0.4, 0.4, 2], [0.1, 0.2, 0.3]], list[float]),
+        ([[1, 2], [3, 4.2], [5, 6.2]], tuple[int, float]),
+        (
+            [1, "a", "xyz", "", [4, 3, 2], {"a": 2, "b": 3}, pw.Json(10), True, 13.5],
+            pw.Json,
+        ),
+        ([np.array([1, 2, 3]), np.array([2.3, 3.4, 1.2])], dt.Array(None, float)),
+    ],
+)
+def test_udfs_and_python_connectors_take_type_into_account(
+    data: list[Any], dtype: type
+):
+    internal_dtype = dt.wrap(dtype)
+    schema = schema_from_types(a=dtype)
+
+    class Subject(pw.io.python.ConnectorSubject):
+        def run(self):
+            for entry in data:
+                self.next(a=entry)
+
+    @pw.udf(return_type=dtype)
+    def producer(index: int):
+        return data[index]
+
+    @pw.udf(return_type=dtype)
+    def assert_type_is_correct(entry):
+        print(entry)
+        internal_dtype.is_value_compatible(entry)
+        return entry
+
+    t1 = pw.io.python.read(Subject(), schema=schema).select(
+        a=assert_type_is_correct(pw.this.a)
+    )
+    t2 = (
+        pw.debug.table_from_pandas(pd.DataFrame({"a": np.arange(len(data))}))
+        .select(a=producer(pw.this.a))
+        .select(a=assert_type_is_correct(pw.this.a))
+    )
+
+    assert_table_equality_wo_index(t1, t2)

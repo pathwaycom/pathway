@@ -184,6 +184,24 @@ class TupleWrappingReducer(Reducer):
             return ()
 
 
+class TupleConvertibleToNDArrayWrappingReducer(TupleWrappingReducer):
+    def return_type(
+        self, arg_types: builtins.list[dt.DType], id_type: dt.DType
+    ) -> dt.DType:
+        arg_type = arg_types[0]
+        if self._skip_nones:
+            arg_type = dt.unoptionalize(arg_type)
+        if builtins.any(
+            dt.dtype_issubclass(arg_type, dtype)
+            for dtype in [dt.FLOAT, dt.ANY_ARRAY, dt.ANY_TUPLE]
+        ):
+            return dt.List(arg_type)
+        raise TypeError(
+            f"Pathway does not support using reducer {self.name}"
+            + f" on column of type {arg_type}.\n"
+        )
+
+
 class StatefulManyReducer(Reducer):
     name = "stateful_many"
     combine_many: api.CombineMany
@@ -215,6 +233,14 @@ def _sorted_tuple(skip_nones: bool):
 def _tuple(skip_nones: bool):
     return TupleWrappingReducer(
         name="tuple",
+        engine_reducer=api.Reducer.tuple(skip_nones),
+        skip_nones=skip_nones,
+    )
+
+
+def _ndarray(skip_nones: bool):
+    return TupleConvertibleToNDArrayWrappingReducer(
+        name="ndarray",
         engine_reducer=api.Reducer.tuple(skip_nones),
         skip_nones=skip_nones,
     )
@@ -618,9 +644,10 @@ def ndarray(expression: expr.ColumnExpression, *, skip_nones: bool = False):
     """
     from pathway.internals.common import apply_with_type
 
-    return apply_with_type(
-        np.array, np.ndarray, tuple(expression, skip_nones=skip_nones)
+    tuples = _apply_unary_reducer(
+        _ndarray(skip_nones), expression, skip_nones=skip_nones
     )
+    return apply_with_type(np.array, np.ndarray, tuples)
 
 
 def earliest(expression: expr.ColumnExpression) -> expr.ColumnExpression:

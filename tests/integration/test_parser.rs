@@ -15,36 +15,34 @@ use pathway_engine::engine::{Type, Value};
 #[test]
 fn test_transparent_parser() -> eyre::Result<()> {
     let value_field_names = vec!["a".to_owned(), "b".to_owned()];
-    let schema = HashMap::from([
-        (
-            "a".to_owned(),
-            InnerSchemaField::new(Type::Int, false, None),
-        ),
+    let schema = [
+        ("a".to_owned(), InnerSchemaField::new(Type::Int, None)),
         (
             "b".to_owned(),
-            InnerSchemaField::new(Type::String, true, None),
+            InnerSchemaField::new(Type::Optional(Type::String.into()), None),
         ),
-    ]);
-    let mut parser = TransparentParser::new(None, value_field_names, schema, SessionType::Native);
+    ];
+    let mut parser =
+        TransparentParser::new(None, value_field_names, schema.into(), SessionType::Native)?;
     let contexts = vec![
         ReaderContext::from_diff(
             DataEventType::Insert,
             None,
             HashMap::from([
-                ("a".to_owned(), Value::Int(3)),
-                ("b".to_owned(), Value::from("abc")),
+                ("a".to_owned(), Ok(Value::Int(3))),
+                ("b".to_owned(), Ok(Value::from("abc"))),
             ])
             .into(),
         ),
         ReaderContext::from_diff(
             DataEventType::Insert,
             None,
-            HashMap::from([("b".to_owned(), Value::from("abc"))]).into(),
+            HashMap::from([("b".to_owned(), Ok(Value::from("abc")))]).into(),
         ),
         ReaderContext::from_diff(
             DataEventType::Insert,
             None,
-            HashMap::from([("a".to_owned(), Value::Int(2))]).into(),
+            HashMap::from([("a".to_owned(), Ok(Value::Int(2)))]).into(),
         ),
     ];
     let expected = vec![
@@ -69,41 +67,45 @@ fn test_transparent_parser() -> eyre::Result<()> {
 #[test]
 fn test_transparent_parser_defaults() -> eyre::Result<()> {
     let value_field_names = vec!["a".to_owned(), "b".to_owned()];
-    let schema = HashMap::from([
+    let schema = [
         (
             "a".to_owned(),
-            InnerSchemaField::new(Type::Int, false, Some(Value::Int(10))),
+            InnerSchemaField::new(Type::Int, Some(Value::Int(10))),
         ),
         (
             "b".to_owned(),
-            InnerSchemaField::new(Type::String, true, Some(Value::from("default"))),
+            InnerSchemaField::new(
+                Type::Optional(Type::String.into()),
+                Some(Value::from("default")),
+            ),
         ),
-    ]);
-    let mut parser = TransparentParser::new(None, value_field_names, schema, SessionType::Native);
+    ];
+    let mut parser =
+        TransparentParser::new(None, value_field_names, schema.into(), SessionType::Native)?;
     let contexts = vec![
         ReaderContext::from_diff(
             DataEventType::Insert,
             None,
             HashMap::from([
-                ("a".to_owned(), Value::Int(3)),
-                ("b".to_owned(), Value::from("abc")),
+                ("a".to_owned(), Ok(Value::Int(3))),
+                ("b".to_owned(), Ok(Value::from("abc"))),
             ])
             .into(),
         ),
         ReaderContext::from_diff(
             DataEventType::Insert,
             None,
-            HashMap::from([("b".to_owned(), Value::from("abc"))]).into(),
+            HashMap::from([("b".to_owned(), Ok(Value::from("abc")))]).into(),
         ),
         ReaderContext::from_diff(
             DataEventType::Insert,
             None,
-            HashMap::from([("a".to_owned(), Value::Int(2))]).into(),
+            HashMap::from([("a".to_owned(), Ok(Value::Int(2)))]).into(),
         ),
         ReaderContext::from_diff(
             DataEventType::Delete,
             None,
-            HashMap::from([("a".to_owned(), Value::Int(2))]).into(),
+            HashMap::from([("a".to_owned(), Ok(Value::Int(2)))]).into(),
         ),
     ];
     let expected = vec![
@@ -129,24 +131,19 @@ fn test_transparent_parser_defaults() -> eyre::Result<()> {
 #[test]
 fn test_transparent_parser_upsert() -> eyre::Result<()> {
     let value_field_names = vec!["a".to_owned(), "b".to_owned()];
-    let schema = HashMap::from([
-        (
-            "a".to_owned(),
-            InnerSchemaField::new(Type::Int, false, None),
-        ),
-        (
-            "b".to_owned(),
-            InnerSchemaField::new(Type::String, false, None),
-        ),
-    ]);
-    let mut parser = TransparentParser::new(None, value_field_names, schema, SessionType::Upsert);
+    let schema = [
+        ("a".to_owned(), InnerSchemaField::new(Type::Int, None)),
+        ("b".to_owned(), InnerSchemaField::new(Type::String, None)),
+    ];
+    let mut parser =
+        TransparentParser::new(None, value_field_names, schema.into(), SessionType::Upsert)?;
     let contexts = vec![
         ReaderContext::from_diff(
             DataEventType::Upsert,
             None,
             HashMap::from([
-                ("a".to_owned(), Value::Int(3)),
-                ("b".to_owned(), Value::from("abc")),
+                ("a".to_owned(), Ok(Value::Int(3))),
+                ("b".to_owned(), Ok(Value::from("abc"))),
             ])
             .into(),
         ),
@@ -154,8 +151,8 @@ fn test_transparent_parser_upsert() -> eyre::Result<()> {
             DataEventType::Delete,
             None,
             HashMap::from([
-                ("a".to_owned(), Value::Int(3)),
-                ("b".to_owned(), Value::from("abc")),
+                ("a".to_owned(), Ok(Value::Int(3))),
+                ("b".to_owned(), Ok(Value::from("abc"))),
             ])
             .into(),
         ),
