@@ -6,6 +6,7 @@
 
 # # Pathway Tutorial for Pandas Users
 # This tutorial gets you up and running with Pathway in 10 minutes. It is specificaly designed for users coming from `pandas`.
+# For more advanced users, you can find a Pandas-to-Pathway cheat sheet [here](/developers/user-guide/migrating/pandas-cheat-sheet).
 #
 # In this tutorial, you will learn how to:
 # - build a real-time data streaming pipeline
@@ -261,6 +262,7 @@ output.head(1)
 #
 # <img src="/assets/content/documentation/manul-celebrate.svg" width=250>
 #
-# Now that you're up and running, consider taking a look at our [showcases](/developers/templates).
+# For more Pandas-to-Pathway conversion, take a look at the [cheat sheet](/developers/user-guide/migrating/pandas-cheat-sheet).
+# Now that you're up and running, consider taking trying one of our [templates](/developers/templates).
 #
 # We would love to hear your feedback about our product. Come say hi on our [Discord](https://discord.com/invite/pathway)!
