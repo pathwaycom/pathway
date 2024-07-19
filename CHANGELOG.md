@@ -7,6 +7,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - `pw.debug.table_to_pandas` now exports `int | None` columns correctly.
 
+### Changed
+- `pw.io.airbyte.read` can now be used with Airbyte connectors implemented in Python without requiring Docker.
+
 ## [0.13.2] - 2024-07-08
 
 ### Added
