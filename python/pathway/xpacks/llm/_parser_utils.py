@@ -67,7 +67,7 @@ async def parse(
         {"type": "text", "text": prompt},
         {
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b_64_img}"},
+            "image_url": {"url": f"data:image/png;base64,{b_64_img}"},
         },
     ]
 
