@@ -27,6 +27,11 @@
 #
 # As an example, we'll use JSON objects loaded directly from python list. However, JSON data can come from various sources that support this format, such as [Kafka](/developers/user-guide/connect/connectors/kafka_connectors) or an [HTTP connector](/developers/api-docs/pathway-io/http#pathway.io.http.rest_connector).
 # %%
+
+# _MD_COMMENT_START_
+import logging
+
+# _MD_COMMENT_END_
 rows = [
     (
         1,
@@ -64,14 +69,12 @@ rows = [
     ),
 ]
 
-# _MD_COMMENT_START_
-import logging
-
 # %% [markdown]
 # Each JSON object carries information about an author and their associated books. To load it, let's establish a [schema](/developers/user-guide/connect/schema#understanding-data-types-and-schemas) reflecting the data's structure and then proceed to load this data into a table.
 # %%
 import pathway as pw
 
+# _MD_COMMENT_START_
 logging.basicConfig(level=logging.CRITICAL)
 # _MD_COMMENT_END_
 
