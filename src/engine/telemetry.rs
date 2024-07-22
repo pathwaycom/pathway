@@ -146,7 +146,7 @@ struct TelemetryGuard {
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         if let Some(provider) = self.meter_provider.take() {
-            provider.shutdown().unwrap_or(());
+            provider.force_flush().unwrap_or(());
         }
         global::set_meter_provider(NoopMeterProvider::new());
 
