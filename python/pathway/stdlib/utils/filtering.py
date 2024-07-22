@@ -12,8 +12,9 @@ def argmax_rows(
         table.groupby(*on)
         .reduce(argmax_id=pw.reducers.argmax(what))
         .with_id(pw.this.argmax_id)
+        .promise_universe_is_subset_of(table)
     )
-    return table.ix(filter.argmax_id).promise_universe_is_subset_of(table)
+    return table.restrict(filter)
 
 
 def argmin_rows(
@@ -23,5 +24,6 @@ def argmin_rows(
         table.groupby(*on)
         .reduce(argmin_id=pw.reducers.argmin(what))
         .with_id(pw.this.argmin_id)
+        .promise_universe_is_subset_of(table)
     )
-    return table.ix(filter.argmin_id).promise_universe_is_subset_of(table)
+    return table.restrict(filter)
