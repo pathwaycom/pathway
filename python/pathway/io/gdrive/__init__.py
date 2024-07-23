@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import io
 import json
 import logging
@@ -71,11 +72,15 @@ def add_status(metadata: GDriveFile) -> GDriveFile:
 
 class _GDriveClient:
     def __init__(
-        self, credentials: ServiceCredentials, object_size_limit: int | None = None
+        self,
+        credentials: ServiceCredentials,
+        object_size_limit: int | None = None,
+        file_name_pattern: list | str | None = None,
     ) -> None:
         self.drive = build("drive", "v3", credentials=credentials, num_retries=3)
         self.export_type_mapping = DEFAULT_MIME_TYPE_MAPPING
         self.object_size_limit = object_size_limit
+        self.file_name_pattern = file_name_pattern
 
     def _query(self, q: str = "") -> list:
         items = []
@@ -110,13 +115,35 @@ class _GDriveClient:
         else:
             subitems = self._query(f"'{id}' in parents and trashed=false")
             files = [i for i in subitems if i["mimeType"] != MIME_TYPE_FOLDER]
-            files = self._filter_by_size(files)
+            files = self._apply_filters(files)
             subdirs = [i for i in subitems if i["mimeType"] == MIME_TYPE_FOLDER]
             for subdir in subdirs:
                 files.extend(self._ls(subdir["id"]))
 
             files = [extend_metadata(file) for file in files]
             return files
+
+    def _apply_filters(self, files: list[GDriveFile]) -> list[GDriveFile]:
+        files = self._filter_by_size(files)
+        files = self._filter_by_pattern(files)
+        return files
+
+    def _filter_by_pattern(self, files: list[GDriveFile]) -> list[GDriveFile]:
+        if self.file_name_pattern is None:
+            return files
+        elif isinstance(self.file_name_pattern, str):
+            return [
+                i for i in files if fnmatch.fnmatch(i["name"], self.file_name_pattern)
+            ]
+        else:
+            return [
+                i
+                for i in files
+                if any(
+                    fnmatch.fnmatch(i["name"], pattern)
+                    for pattern in self.file_name_pattern
+                )
+            ]
 
     def _filter_by_size(self, files: list[GDriveFile]) -> list[GDriveFile]:
         if self.object_size_limit is None:
@@ -238,6 +265,7 @@ class _GDriveSubject(ConnectorSubject):
     _mode: str
     _append_metadata: bool
     _object_size_limit: int | None
+    _file_name_pattern: list | str | None
 
     def __init__(
         self,
@@ -248,6 +276,7 @@ class _GDriveSubject(ConnectorSubject):
         mode: str,
         with_metadata: bool,
         object_size_limit: int | None,
+        file_name_pattern: list | str | None,
     ) -> None:
         super().__init__()
         self._credentials_factory = credentials_factory
@@ -256,6 +285,7 @@ class _GDriveSubject(ConnectorSubject):
         self._mode = mode
         self._append_metadata = with_metadata
         self._object_size_limit = object_size_limit
+        self._file_name_pattern = file_name_pattern
         assert mode in ["streaming", "static"]
 
     @property
@@ -267,7 +297,11 @@ class _GDriveSubject(ConnectorSubject):
         return self._append_metadata
 
     def run(self) -> None:
-        client = _GDriveClient(self._credentials_factory(), self._object_size_limit)
+        client = _GDriveClient(
+            self._credentials_factory(),
+            self._object_size_limit,
+            self._file_name_pattern,
+        )
         prev = _GDriveTree({})
 
         while True:
@@ -307,6 +341,7 @@ def read(
     refresh_interval: int = 30,
     service_user_credentials_file: str,
     with_metadata: bool = False,
+    file_name_pattern: list | str | None = None,
 ) -> pw.Table:
     """Reads a table from a Google Drive directory or file.
 
@@ -329,6 +364,9 @@ def read(
         with_metadata: when set to True, the connector will add an additional column named
             `_metadata` to the table. This column will contain file metadata,
             such as: `id`, `name`, `mimeType`, `parents`, `modifiedTime`, `thumbnailLink`, `lastModifyingUser`.
+        file_name_pattern: glob pattern (or list of patterns) to be used to filter files based on their names.
+            Defaults to `None` which doesn't filter anything. Doesn't apply to folder names.
+            For example, `*.pdf` will only return files that has `.pdf` extension.
     Returns:
         The table read.
 
@@ -357,6 +395,7 @@ def read(
         mode=mode,
         with_metadata=with_metadata,
         object_size_limit=object_size_limit,
+        file_name_pattern=file_name_pattern,
     )
 
     return pw.io.python.read(subject, format="binary", name="gdrive")
