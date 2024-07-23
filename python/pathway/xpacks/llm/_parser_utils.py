@@ -25,7 +25,13 @@ def img_to_b64(img: PIL.Image.Image) -> str:
 def maybe_downscale(
     img: PIL.Image.Image, max_image_size: int, downsize_horizontal_width: int
 ) -> PIL.Image.Image:
-    """Downscale an image if necessary, preserve image ratio."""
+    """Downscale an image if it exceeds `max_image_size` limit, while maintaining the aspect ratio.
+
+    Args:
+        - img: The image to be downscaled.
+        - max_image_size: The maximum allowable size of the image in bytes.
+        - downsize_horizontal_width: The target width for the downscaled image if resizing is needed.
+    """
     img_size = img.size[0] * img.size[1] * 3
 
     if img_size > max_image_size:

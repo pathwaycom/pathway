@@ -61,14 +61,17 @@ xpack-llm = [
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
     "instructor == 1.2.6",
 ]
-xpack-llm-local = [
-    "sentence_transformers == 2.4.0", 
-    "transformers == 4.38.1"
+xpack-llm-local = [  # requirements that allow local ML inference
+    "unstructured[all-docs] >= 0.10.28, < 0.15",
+    "surya-ocr ~= 0.4.14",
+    "sentence_transformers", 
+    "transformers",
 ]
 xpack-llm-docs = [
-    "unstructured[all-docs] >= 0.10.28, < 0.15",
     "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
     "openparse == 0.5.6",
+    "unstructured >= 0.10.28, < 0.15",
+    "pdf2image",
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",

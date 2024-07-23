@@ -4,6 +4,7 @@
 A library for document parsers: functions that take raw bytes and return a list of text
 chunks along with their metadata.
 """
+from __future__ import annotations
 
 import asyncio
 import io
@@ -13,7 +14,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from io import BytesIO
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from PIL import Image
 from pydantic import BaseModel
@@ -30,6 +31,9 @@ from pathway.xpacks.llm._parser_utils import (
     parse_image_details,
 )
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
+
+if TYPE_CHECKING:
+    from openparse.processing import IngestionPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -233,13 +237,28 @@ class OpenParse(pw.UDF):
     splitter can be set to ``None`` as OpenParse already chunks the documents.
 
     Args:
-        - table_args: dict containing the table parser arguments. Needs to have key ``parsing_algorithm``,
+        - table_args: dictionary containing the table parser arguments. Needs to have key ``parsing_algorithm``,
             with the value being one of ``"llm"``, ``"unitable"``, ``"pymupdf"``, ``"table-transformers"``.
-            If ``llm`` is chosen, ``OpenAI`` ``gpt-4o`` is used for parsing by default,
-            and ``OPENAI_API_KEY`` environment variable needs to be set.
             ``"llm"`` parameter can be specified to modify the vision LLM used for parsing.
+            Will default to ``OpenAI`` ``gpt-4o``, with markdown table parsing prompt.
+            Default config requires ``OPENAI_API_KEY`` environment variable to be set.
             For information on other parsing algorithms and supported arguments check
             `the OpenParse documentation <https://filimoa.github.io/open-parse/processing/parsing-tables/overview/>`_.
+        - image_args: dictionary containing the image parser arguments.
+            Needs to have the following keys ``parsing_algorithm``, ``llm``, ``prompt``.
+            Currently, only supported ``parsing_algorithm`` is ``"llm"``.
+            ``"llm"`` parameter can be specified to modify the vision LLM used for parsing.
+            Will default to ``OpenAI`` ``gpt-4o``, with markdown image parsing prompt.
+            Default config requires ``OPENAI_API_KEY`` environment variable to be set.
+        - parse_images: whether to parse the images from the PDF. Detected images will be
+            indexed by their description from the parsing algorithm.
+            Note that images are parsed with separate OCR model, parsing may take a while.
+        - processing_pipeline: ``openparse.processing.IngestionPipeline`` that will post process
+            the extracted elements. Can be set to Pathway defined ``CustomIngestionPipeline``
+            by setting to ``"pathway_pdf_default"``,
+            ``SamePageIngestionPipeline`` by setting to ``"merge_same_page"``,
+            or any of the pipelines under the ``openparse.processing``.
+            Defaults to ``CustomIngestionPipeline``.
         - cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
@@ -248,13 +267,20 @@ class OpenParse(pw.UDF):
     def __init__(
         self,
         table_args: dict | None = None,
+        image_args: dict | None = None,
+        parse_images: bool = False,
+        processing_pipeline: IngestionPipeline | str | None = None,
         cache_strategy: udfs.CacheStrategy | None = None,
     ):
         with optional_imports("xpack-llm-docs"):
             import openparse  # noqa:F401
             from pypdf import PdfReader  # noqa:F401
 
-            from ._openparse_utils import CustomDocumentParser
+            from ._openparse_utils import (
+                CustomDocumentParser,
+                CustomIngestionPipeline,
+                SamePageIngestionPipeline,
+            )
 
         super().__init__(cache_strategy=cache_strategy)
 
@@ -265,7 +291,42 @@ class OpenParse(pw.UDF):
                 "prompt": prompts.DEFAULT_MD_TABLE_PARSE_PROMPT,
             }
 
-        self.doc_parser = CustomDocumentParser(table_args=table_args)
+        if parse_images:
+            if image_args is None:
+                logger.warn(
+                    "`parse_images` is set to `True`, but `image_args` is not specified, defaulting to `gpt-4o`."
+                )
+                image_args = {
+                    "parsing_algorithm": "llm",
+                    "llm": DEFAULT_VISION_LLM,
+                    "prompt": prompts.DEFAULT_IMAGE_PARSE_PROMPT,
+                }
+            else:
+                if image_args["parsing_algorithm"] != "llm":
+                    raise ValueError(
+                        "Image parsing is only supported with LLMs.",
+                        "Either change the `parsing_algorithm` to `llm` or set the `parse_images` to `False`.",
+                        f"Given args: {image_args}",
+                    )
+        else:
+            logger.warn(
+                "`parse_images` is set to `False`, but `image_args` is specified, skipping image parsing."
+            )
+            image_args = None
+
+        if processing_pipeline is None:
+            processing_pipeline = CustomIngestionPipeline()
+        elif isinstance(processing_pipeline, str):
+            if processing_pipeline == "pathway_pdf_default":
+                processing_pipeline = CustomIngestionPipeline()
+            elif processing_pipeline == "merge_same_page":
+                processing_pipeline = SamePageIngestionPipeline()
+
+        self.doc_parser = CustomDocumentParser(
+            table_args=table_args,
+            image_args=image_args,
+            processing_pipeline=processing_pipeline,
+        )
 
     def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         import openparse
@@ -380,7 +441,7 @@ class ImageParser(pw.UDF):
     def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse image bytes with GPT-v model."""
 
-        images = [Image.open(BytesIO(contents))]
+        images: list[Image.Image] = [Image.open(BytesIO(contents))]
 
         logger.info("`ImageParser` applying `maybe_downscale`.")
 
