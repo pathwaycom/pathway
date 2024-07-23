@@ -44,15 +44,7 @@ impl Key {
     const FOR_EMPTY_TUPLE: Self = Self(0x40_10_8D_33_B7); // PWSRT42
 
     pub(crate) fn from_hasher(hasher: &Hasher) -> Self {
-        cfg_if! {
-            if #[cfg(feature="strong-hash")] {
-                let mut res = [0; KEY_BYTES];
-                hasher.finalize_xof().fill(&mut res);
-                Self(KeyImpl::from_le_bytes(res))
-            } else {
-                Self(hasher.digest128() as KeyImpl)
-            }
-        }
+        Self(hasher.digest128() as KeyImpl)
     }
 
     pub fn for_value(value: &Value) -> Self {

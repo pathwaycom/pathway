@@ -30,6 +30,7 @@ type OutputBatchBuilder<K, V, T, R> = SortingBatchBuilder<K, V, T, R>;
 /// This struct is a wrapper for an entry that:
 /// - needs to be inserted into the output batch
 /// - does not have all fields
+///
 /// The need for such entry arises, when we process the input data. Whenever we delete entries,
 /// the previous-non deleted entry may need to adjust its next. Then, if we delete a block of entries
 /// we don't really know what is the proper value of next. As such, we store half build replacement entry
