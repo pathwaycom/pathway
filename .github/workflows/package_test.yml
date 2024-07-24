@@ -61,7 +61,7 @@ jobs:
           before-script-linux: yum install -y perl-core
 
       - name: Build package macOS Apple silicon
-        if: ${{ matrix.os == 'ec2-macOS'}}
+        if: ${{ matrix.os == 'macos-14'}}
         uses: PyO3/maturin-action@v1
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Set up Python ${{ matrix.python-version }}
-        if: ${{ matrix.os != 'ec2-macOS'}}
+        # if: ${{ matrix.os != 'macos-14'}}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
