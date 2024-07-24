@@ -50,7 +50,7 @@ jobs:
           echo $DEV_VERSION
           echo "__version__ = ${DEV_VERSION}" > python/pathway/internals/version.py
 
-      - name: Build package Ubuntu x86-x64
+      - name: Build package for ${{ matrix.os }}
         uses: PyO3/maturin-action@v1
         with:
           command: build
@@ -77,7 +77,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Set up Python ${{ matrix.python-version }}
-        # if: ${{ matrix.os != 'macos-14'}}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
