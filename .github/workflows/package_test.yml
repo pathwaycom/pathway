@@ -50,7 +50,7 @@ jobs:
           echo $DEV_VERSION
           echo "__version__ = ${DEV_VERSION}" > python/pathway/internals/version.py
 
-      - name: Build package for ${{ matrix.os }}
+      - name: Build package Ubuntu for ${{ matrix.os }}
         uses: PyO3/maturin-action@v1
         with:
           command: build
@@ -58,6 +58,7 @@ jobs:
           manylinux: auto
           sccache: true
           before-script-linux: yum install -y perl-core
+          target: universal2-apple-darwin
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

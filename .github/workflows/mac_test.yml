@@ -10,5 +10,5 @@ jobs:
       fail-fast: false
     uses: pathwaycom/pathway/.github/workflows/package_test.yml@pawel/gh-actions-runner
     with:
-      runner: 'macos-14'
+      runner: 'macos-13'
     secrets: inherit
