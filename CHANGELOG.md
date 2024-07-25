@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
+
+## [0.14.0] - 2024-07-25
+
 ### Fixed
 - `pw.debug.table_to_pandas` now exports `int | None` columns correctly.
 
