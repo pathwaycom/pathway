@@ -223,6 +223,7 @@ jobs:
           python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
           WHEEL=(./wheels/pathway-*.whl)
+          pip install -U pip
           export PATHWAY_MONITORING_HTTP_PORT=20099
           export LLAMA_READER_PORT=8799
           pip install --no-cache-dir --prefer-binary "${WHEEL}[tests]"
