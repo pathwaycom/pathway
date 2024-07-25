@@ -175,6 +175,7 @@ jobs:
           rm -rf "${ENV_NAME}"
           python -m venv "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
+          pip install -U pip
           WHEEL=(./wheels/pathway-*.whl)
           pip install --no-cache-dir --prefer-binary "${WHEEL}[tests]"
           # --confcutdir anything below to avoid picking REPO_TOP_DIR/conftest.py
