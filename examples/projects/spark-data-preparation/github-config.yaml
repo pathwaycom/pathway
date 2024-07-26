@@ -1,0 +1,10 @@
+source:
+  docker_image: "airbyte/source-github:latest"
+  config:
+    credentials:
+      option_title: "PAT Credentials"
+      personal_access_token: # Insert your PAT token from https://github.com/settings/tokens here
+    repositories:
+      - pathwaycom/pathway
+    api_url: "https://api.github.com/"
+  streams: commits
