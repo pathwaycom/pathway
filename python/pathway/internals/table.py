@@ -1370,8 +1370,22 @@ id_type=<class 'pathway.engine.Pointer'>>
         """
         for other in others:
             if other.keys() != self.keys():
+                self_keys = set(self.keys())
+                other_keys = set(other.keys())
+                missing_keys = self_keys - other_keys
+                superfluous_keys = other_keys - self_keys
                 raise ValueError(
-                    "columns do not match in the argument of Table.concat()"
+                    "columns do not match in the argument of Table.concat()."
+                    + (
+                        f" Missing columns: {missing_keys}."
+                        if missing_keys is not None
+                        else ""
+                    )
+                    + (
+                        f" Superfluous columns: {superfluous_keys}."
+                        if superfluous_keys is not None
+                        else ""
+                    )
                 )
         schema = {}
         all_args: list[Table] = [self, *others]
@@ -1381,6 +1395,7 @@ id_type=<class 'pathway.engine.Pointer'>>
                 *[arg.schema._dtypes()[key] for arg in all_args],
                 function_name="a concat",
                 pointers=False,
+                key=key,
             )
         id_type = _types_lca_with_error(
             *[arg.schema._id_dtype for arg in all_args],
@@ -2594,7 +2609,9 @@ def groupby(
     return grouped.groupby(*args, id=id, **kwargs)
 
 
-def _types_lca_with_error(*dtypes, function_name: str, pointers: bool):
+def _types_lca_with_error(
+    *dtypes, function_name: str, pointers: bool, key: str | None = None
+):
     try:
         return dt.types_lca_many(
             *dtypes,
@@ -2604,6 +2621,7 @@ def _types_lca_with_error(*dtypes, function_name: str, pointers: bool):
         msg = (
             f"Incompatible types for {function_name} operation.\n"
             + f"The types are: {dtypes}. "
+            + (f"Affected column: '{key}'. " if key is not None else "")
         )
         if pointers:
             msg += (
