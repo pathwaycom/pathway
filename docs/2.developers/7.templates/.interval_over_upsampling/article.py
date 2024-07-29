@@ -9,6 +9,7 @@
 #   thumbnail: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
 #   tags: ['tutorial', 'Time Series']
 #   related: ['/blog/signal-processing', '/developers/templates/gaussian_filtering_python']
+# popular: true
 # keywords: ['signal processing', 'upsampling', 'out-of-order data', 'resampling', 'interpolation', 'intervals_over', 'window', 'notebook']
 # ---
 

@@ -17,6 +17,7 @@
 #   extra_info: joint work with Jacek Kowalski, Szymon Dudycz
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability', 'notebook', 'Docker']
 # run_template: "/developers/templates/template-adaptive-rag"
+# popular: true
 # ---
 
 # # Adaptive RAG: cut your LLM costs without sacrificing accuracy

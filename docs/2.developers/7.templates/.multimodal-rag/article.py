@@ -9,6 +9,7 @@
 # keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'GPT-4o', 'multimodal RAG', 'unstructured', 'notebook']
 # notebook_export_path: notebooks/showcases/multimodal-rag.ipynb
 # run_template: "/developers/templates/template-multimodal-rag"
+# popular: true
 # author: 'pathway'
 # jupyter:
 #   jupytext:
