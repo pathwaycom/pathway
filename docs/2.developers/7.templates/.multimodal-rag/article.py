@@ -4,6 +4,7 @@
 # aside: true
 # article:
 #   thumbnail: '/assets/content/showcases/multimodal-RAG/multimodalRAG-blog-banner.png'
+#   thumbnailFit: 'contain'
 #   date: '2024-06-20'
 #   tags: ['showcase', 'llm']
 # keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'GPT-4o', 'multimodal RAG', 'unstructured', 'notebook']
