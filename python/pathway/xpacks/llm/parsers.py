@@ -7,12 +7,14 @@ chunks along with their metadata.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import logging
 import os
 import subprocess
 import tempfile
 from collections.abc import Callable
+from functools import partial
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -405,6 +407,9 @@ class ImageParser(pw.UDF):
         ) = udfs.ExponentialBackoffRetryStrategy(max_retries=6),
         cache_strategy: udfs.CacheStrategy | None = None,
     ):
+        with optional_imports("xpack-llm"):
+            import openai
+
         super().__init__(cache_strategy=cache_strategy)
         self.llm = llm
         self.parse_prompt = parse_prompt
@@ -434,8 +439,24 @@ class ImageParser(pw.UDF):
                 capacity=None, retry_strategy=retry_strategy
             )
 
+            llm_args: dict = llm.kwargs  # type: ignore
+
+            allowed_client_args = inspect.signature(
+                openai.AsyncOpenAI.__init__
+            ).parameters.keys()
+
+            parse_image_details_fn = partial(
+                parse_image_details,
+                model=llm_args["model"],
+                openai_client_args={
+                    key: llm_args[key]
+                    for key in llm_args.keys()
+                    if key in allowed_client_args
+                },
+            )
+
             self.parse_image_details_fn = _schema_parser_executor._wrap(
-                parse_image_details
+                parse_image_details_fn
             )
 
     def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
@@ -573,6 +594,8 @@ class SlideParser(pw.UDF):
                 FileType,
                 detect_filetype,
             )
+        with optional_imports("xpack-llm"):
+            import openai
 
         super().__init__(cache_strategy=cache_strategy)
         self.llm = llm
@@ -603,8 +626,24 @@ class SlideParser(pw.UDF):
                 capacity=None, retry_strategy=retry_strategy
             )
 
+            llm_args: dict = llm.kwargs  # type: ignore
+
+            allowed_client_args = inspect.signature(
+                openai.AsyncOpenAI.__init__
+            ).parameters.keys()
+
+            parse_image_details_fn = partial(
+                parse_image_details,
+                model=llm_args["model"],
+                openai_client_args={
+                    key: llm_args[key]
+                    for key in llm_args.keys()
+                    if key in allowed_client_args
+                },
+            )
+
             self.parse_image_details_fn = _schema_parser_executor._wrap(
-                parse_image_details
+                parse_image_details_fn
             )
 
     def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
