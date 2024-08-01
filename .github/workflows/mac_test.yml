@@ -3,11 +3,12 @@ on:
   push:
     branches: 
       - 'main'
+      - 'pawel/gh-actions-runner'
 jobs:
   test-macos:
     strategy:
       fail-fast: false
-    uses: pathwaycom/pathway/.github/workflows/package_test.yml@main
+    uses: pathwaycom/pathway/.github/workflows/package_test.yml@pawel/gh-actions-runner
     with:
-      runner: 'ec2-macOS'
+      runner: 'macos-13'
     secrets: inherit
