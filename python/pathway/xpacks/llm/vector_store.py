@@ -462,6 +462,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         cache_backend: (
             pw.persistence.Backend | None
         ) = pw.persistence.Backend.filesystem("./Cache"),
+        **kwargs,
     ):
         """
         Builds the document processing pipeline and runs it.
@@ -476,6 +477,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
               can use ``Backend`` class of the
               [`persistence API`](/developers/api-docs/persistence-api/#pathway.persistence.Backend)
               to override it.
+            - kwargs: optional parameters to be passed to :py:func:`~pathway.run`.
 
         Returns:
             If threaded, return the Thread object. Else, does not return.
@@ -547,6 +549,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             pw.run(
                 monitoring_level=pw.MonitoringLevel.NONE,
                 persistence_config=persistence_config,
+                **kwargs,
             )
 
         if threaded:
