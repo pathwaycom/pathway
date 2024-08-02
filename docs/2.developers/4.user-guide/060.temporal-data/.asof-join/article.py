@@ -131,7 +131,7 @@ price_table = pw.debug.table_from_pandas(prices).select(
 def preview_table(table, time_col="t"):
     end = datetime.strptime("2023-01-03", fmt)
     table = table.filter(table[time_col] <= end)
-    pw.debug.compute_and_print(table)
+    pw.debug.compute_and_print(table, include_id=False)
 
 
 preview_table(events_table)
@@ -201,7 +201,7 @@ highest_impact_events = filtered.filter(
     event_t=pw.this.event_t.dt.strftime(fmt),
 )
 
-pw.debug.compute_and_print(highest_impact_events)
+pw.debug.compute_and_print(highest_impact_events, include_id=False)
 
 # %% [markdown] tags=[]
 # ## Conclusion
