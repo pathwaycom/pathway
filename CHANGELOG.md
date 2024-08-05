@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
+
+## [0.14.1] - 2024-08-05
+
 ### Added
 - `pw.xpacks.llm.embedders.GeminiEmbedder` which is a wrapper for Google Gemini Embedding services.
 
