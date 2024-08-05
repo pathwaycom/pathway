@@ -9,7 +9,12 @@ from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm._utils import _coerce_sync
 
-__all__ = ["OpenAIEmbedder", "LiteLLMEmbedder", "SentenceTransformerEmbedder"]
+__all__ = [
+    "OpenAIEmbedder",
+    "LiteLLMEmbedder",
+    "SentenceTransformerEmbedder",
+    "GeminiEmbedder",
+]
 
 
 async def _safe_aclose(self):
@@ -56,7 +61,7 @@ def _monkeypatch_openai_async():
 
 class BaseEmbedder(pw.UDF):
     def get_embedding_dimension(self, **kwargs):
-        """Computes number of embedder's dimensions by asking the embedder to embed `.`.
+        """Computes number of embedder's dimensions by asking the embedder to embed ``"."``.
 
         Args:
             - **kwargs: parameters of the embedder, if unset defaults from the constructor
@@ -318,3 +323,89 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         """  # noqa: E501
         kwargs = {**self.kwargs, **kwargs}
         return self.model.encode(input, **kwargs).tolist()
+
+
+class GeminiEmbedder(BaseEmbedder):
+    """Pathway wrapper for Google Gemini Embedding services.
+
+    The ``capacity``, ``retry_strategy`` and ``cache_strategy`` need to be specified during object
+    construction. All other arguments can be overridden during application.
+
+    Args:
+        - capacity: Maximum number of concurrent operations allowed.
+            Defaults to ``None``, indicating no specific limit.
+        - retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to ``None``, meaning no retries.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid ``CacheStrategy`` should be provided.
+            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
+            for more information. Defaults to None.
+        - model: ID of the model to use. Check the
+            `Gemini documentation <https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding>`_
+            for list of available models. To specify the `model` in the UDF call, set it to None in the constructor.
+        - api_key: API key for Gemini API services. Can be provided in the constructor,
+            in ``__call__`` or by setting ``GOOGLE_API_KEY`` environment variable
+        - gemini_kwargs: any other arguments accepted by gemini embedding service. Check
+            the `Gemini documentation <https://ai.google.dev/api/embeddings#method:-models.embedcontent>`_
+            for list of accepted arguments.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import embedders
+    >>> embedder = embedders.GeminiEmbedder(model="models/text-embedding-004")
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt
+    ... Text
+    ... ''')
+    >>> t.select(ret=embedder(pw.this.txt))
+    <pathway.Table schema={'ret': list[float]}>
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import embedders
+    >>> embedder = embedders.GeminiEmbedder()
+    >>> t = pw.debug.table_from_markdown('''
+    ... txt  | model
+    ... Text | models/embedding-001
+    ... ''')
+    >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
+    <pathway.Table schema={'ret': list[float]}>
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
+        model: str | None = "models/embedding-001",
+        api_key: str | None = None,
+        **gemini_kwargs,
+    ):
+        with optional_imports("xpack-llm"):
+            import google.generativeai as genai  # noqa: 401
+
+        executor = udfs.async_executor(capacity=capacity, retry_strategy=retry_strategy)
+        super().__init__(
+            executor=executor,
+            cache_strategy=cache_strategy,
+        )
+        self.kwargs = dict(gemini_kwargs)
+        if model is not None:
+            self.kwargs["model"] = model
+        if api_key is not None:
+            self.kwargs["api_key"] = api_key
+
+    async def __wrapped__(self, input: str, **kwargs) -> list[float]:
+        import google.generativeai as genai
+
+        kwargs = {**self.kwargs, **kwargs}
+        model = kwargs.pop("model", None)
+
+        api_key = kwargs.pop("api_key", None)
+        if api_key is not None:
+            genai.configure(api_key=api_key)
+
+        response = await genai.embed_content_async(model, content=[input], **kwargs)
+        embedding = response["embedding"][0]
+        return embedding

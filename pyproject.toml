@@ -60,6 +60,7 @@ xpack-llm = [
     "llama-index-retrievers-pathway ~= 0.1.0",
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
     "instructor == 1.2.6",
+    "google-generativeai >= 0.7.0",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "unstructured[all-docs] >= 0.10.28, < 0.15",
