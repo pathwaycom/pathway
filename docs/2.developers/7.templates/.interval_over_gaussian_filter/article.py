@@ -422,6 +422,13 @@ pw.run()
 
 results = pd.read_csv("./ooo_results.csv")
 results = results.sort_values(by=["x"])
+# _MD_COMMENT_START_
+new_time = 1722589159134 # random time
+new_time_late = new_time + 1316
+time_min = results["time"].min()
+time_max = results["time"].max()
+results["time"] = results["time"].replace({time_min: new_time, time_max: new_time_late})
+# _MD_COMMENT_END_
 results.head()
 
 # There are two new columns: `time` and `diff`.

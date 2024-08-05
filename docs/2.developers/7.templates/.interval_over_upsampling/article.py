@@ -73,6 +73,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+np.random.seed(10)
 
 # Generate x values
 def generate_x_values(nb_points):
