@@ -1,0 +1,5 @@
+databento
+pandas
+scipy
+pathway
+python-dotenv
