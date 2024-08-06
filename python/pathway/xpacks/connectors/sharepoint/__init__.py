@@ -23,6 +23,9 @@ from pathway.optional_import import optional_imports
 with optional_imports("xpack-sharepoint"):
     from office365.sharepoint.client_context import ClientContext
 
+from typing import Any
+from urllib.parse import quote, urlparse
+
 
 class _SharePointEntryMeta:
     def __init__(self, entry):
@@ -32,6 +35,7 @@ class _SharePointEntryMeta:
         self.size = entry.length
         self.seen_at = int(time.time())
         self.status = STATUS_DOWNLOADED
+        self.base_url: str | None = None
 
     def __eq__(self, other):
         if not isinstance(other, _SharePointEntryMeta):
@@ -51,10 +55,25 @@ class _SharePointEntryMeta:
             "size": self.size,
             "seen_at": self.seen_at,
             "status": self.status,
+            "url": self.url or "",
         }
 
     def as_json(self):
         return json.dumps(self.as_dict())
+
+    def update(self, data):
+        for key, value in data.items():
+            setattr(self, key, value)
+
+    @property
+    def url(self) -> str | None:
+        base_url = self.base_url
+        if base_url:
+            encoded_path = quote(self.path)
+            url = f"{base_url}{encoded_path}"
+            return url
+        else:
+            return None
 
 
 class _SharePointUpdate:
@@ -71,12 +90,14 @@ class _SharePointScanner:
         recursive: bool,
         stored_metadata: dict[str, _SharePointEntryMeta],
         object_size_limit: int | None = None,
+        common_metadata: dict[str, Any] = {},
     ):
         self._context = context
         self._root_path = root_path
         self._recursive = recursive
         self._stored_metadata = stored_metadata
         self._object_size_limit = object_size_limit
+        self.common_metadata = common_metadata
 
     def _is_changed(self, metadata):
         return self._stored_metadata.get(metadata.path) != metadata
@@ -93,6 +114,7 @@ class _SharePointScanner:
 
         for file in files:
             metadata = _SharePointEntryMeta(file)
+            metadata.update(self.common_metadata)
             size_limit_exceeded = (
                 self._object_size_limit is not None
                 and metadata.size > self._object_size_limit
@@ -163,12 +185,14 @@ class _SharePointSubject(ConnectorSubject):
     def run(self) -> None:
         while True:
             try:
+                _url = urlparse(self._context_wrapper._url)
                 scanner = _SharePointScanner(
                     self._context,
                     self._root_path,
                     self._recursive,
                     self._stored_metadata,
                     self._object_size_limit,
+                    common_metadata={"base_url": f"{_url.scheme}://{_url.netloc}"},
                 )
                 diff = scanner.get_snapshot_diff()
             except Exception as e:
