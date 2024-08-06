@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- Switched `pw.xpacks.llm.embedders.GeminiEmbedder` to be sync to resolve compatibility issues with the Google Colab runs.
+- Pinned `surya-ocr` module version for stability.
+
 ## [0.14.1] - 2024-08-05
 
 ### Added

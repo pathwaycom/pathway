@@ -396,7 +396,7 @@ class GeminiEmbedder(BaseEmbedder):
         if api_key is not None:
             self.kwargs["api_key"] = api_key
 
-    async def __wrapped__(self, input: str, **kwargs) -> list[float]:
+    def __wrapped__(self, input: str, **kwargs) -> list[float]:
         import google.generativeai as genai
 
         kwargs = {**self.kwargs, **kwargs}
@@ -406,6 +406,6 @@ class GeminiEmbedder(BaseEmbedder):
         if api_key is not None:
             genai.configure(api_key=api_key)
 
-        response = await genai.embed_content_async(model, content=[input], **kwargs)
+        response = genai.embed_content(model, content=[input], **kwargs)
         embedding = response["embedding"][0]
         return embedding
