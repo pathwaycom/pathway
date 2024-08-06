@@ -64,7 +64,7 @@ xpack-llm = [
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "unstructured[all-docs] >= 0.10.28, < 0.15",
-    "surya-ocr ~= 0.4.14",
+    "surya-ocr == 0.4.14",
     "sentence_transformers", 
     "transformers",
 ]
