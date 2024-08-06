@@ -9,6 +9,7 @@ mod export;
 pub mod maybe_total;
 pub mod operators;
 pub mod shard;
+mod variable;
 
 use crate::connectors::adaptors::{GenericValues, ValuesSessionAdaptor};
 use crate::connectors::data_format::{Formatter, Parser};
@@ -56,7 +57,6 @@ use differential_dataflow::collection::concatenate;
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
-use differential_dataflow::operators::iterate::Variable;
 use differential_dataflow::operators::reduce::{Reduce, ReduceCore};
 use differential_dataflow::operators::JoinCore;
 use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpine};
@@ -90,6 +90,7 @@ use self::operators::time_column::{MaxTimestamp, TimeColumnBuffer};
 use self::operators::{ArrangeWithTypes, MapWithConsistentDeletions, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
+use self::variable::SafeVariable;
 use super::error::{DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
@@ -156,7 +157,7 @@ type ArrangedBySelf<S, K, R = isize> =
 type ArrangedByKey<S, K, V, R = isize> =
     Arranged<S, TraceAgent<OrdValSpine<K, V, <S as MaybeTotalScope>::MaybeTotalTimestamp, R>>>;
 
-type Var<S, D, R = isize> = Variable<S, D, R>;
+type Var<S, D, R = isize> = SafeVariable<S, D, R>;
 
 type Keys<S> = Collection<S, Key>;
 type KeysArranged<S> = ArrangedBySelf<S, Key>;
@@ -3876,7 +3877,7 @@ impl<'c, S: MaybeTotalScope> InnerUniverse
             .universes
             .get(outer_handle)
             .ok_or(Error::InvalidUniverseHandle)?;
-        let keys_var = Variable::new_from(
+        let keys_var = SafeVariable::new_from(
             universe.keys().enter(&state.inner.scope),
             state.step.clone(),
         );
@@ -4005,7 +4006,7 @@ where
             .columns
             .get(outer_handle)
             .ok_or(Error::InvalidColumnHandle)?;
-        let values_var = Variable::new_from(
+        let values_var = SafeVariable::new_from(
             column.values().enter(&state.inner.scope),
             state.step.clone(),
         );

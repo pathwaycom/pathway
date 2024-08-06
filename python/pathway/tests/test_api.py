@@ -33,7 +33,7 @@ def table_to_legacy(scope, table, column_count):
 
 def static_table_from_md(scope, txt, ptr_columns=(), legacy=True):
     df = _markdown_to_pandas(txt)
-    return static_table_from_pandas(scope, df, ptr_columns)
+    return static_table_from_pandas(scope, df, ptr_columns, legacy)
 
 
 def static_table_from_pandas(scope, df, ptr_columns=(), legacy=True):
@@ -832,6 +832,28 @@ def test_iteration(event_loop):
     result_tab, expected = api.run_with_new_graph(build, event_loop)
 
     assert_equal_tables(result_tab, expected)
+
+
+def test_iteration_exception(event_loop):
+    def logic(s: api.Scope, iterated, iterated_with_universe, extra):
+        raise ValueError("manul")
+
+    def build(s):
+        with pytest.raises(ValueError, match="manul"):
+            iterated = [
+                static_table_from_md(
+                    s,
+                    """
+                    a
+                    42
+                    """,
+                )
+            ]
+            s.iterate(iterated, [], [], logic)
+
+        return []
+
+    api.run_with_new_graph(build, event_loop)
 
 
 @pytest.mark.parametrize("limit", [2, 10])
