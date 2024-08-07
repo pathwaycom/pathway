@@ -9,7 +9,7 @@ The Option Greeks are metrics used to assess the sensitivity of option prices an
 The Option Greeks are computed by Pathway on the data obtained using Databento APIs.
 The results are displayed in a Streamlit Dashboard.
 
-![Option Greeks workflow with Pathway and Databento](../../../../website3/public/assets/content/showcases/option-greeks/option-greeks.svg)
+![Option Greeks workflow with Pathway and Databento](option-greeks.svg)
 
 You can learn more in our [dedicated article](https://pathway.com/developers/templates/option-greeks).
 
