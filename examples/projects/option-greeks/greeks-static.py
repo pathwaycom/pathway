@@ -93,11 +93,11 @@ def compute_price(
     r: float = interest_rate,
     is_call: bool = True,
 ) -> float:
-    d1 = (math.log(F / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(F / K) + (sigma**2 / 2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
     sign = 2 * int(is_call) - 1
 
-    return sign * (norm.cdf(sign * d1) * F - norm.cdf(sign * d2) * K * math.exp(-r * T))
+    return math.exp(-r * T) * sign * (norm.cdf(sign * d1) * F - norm.cdf(sign * d2) * K)
 
 
 # The volatility is computed by solving the following equation, by finding the roots of
