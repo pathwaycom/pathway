@@ -146,14 +146,14 @@ def get_d1(
     sigma: float,
     r: float = interest_rate,
 ) -> float:
-    return (math.log(F / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    return (math.log(F / K) + (sigma**2 / 2) * T) / (sigma * math.sqrt(T))
 
 
 @pw.udf
 def get_d2(
     F: float, K: float, T: float, sigma: float, r: float = interest_rate
 ) -> float:
-    return (math.log(F / K) + (r + 0.5 * sigma**2) * T) / (
+    return (math.log(F / K) + (sigma**2 / 2) * T) / (
         sigma * math.sqrt(T)
     ) - sigma * math.sqrt(T)
 

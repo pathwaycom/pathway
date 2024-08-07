@@ -75,7 +75,7 @@
 # - $N'(x)$ is the standard normal probability density function.
 #
 # $$
-# d_1 = \frac{ln(\frac{F}{K}) + (r + 0.5 \cdot \sigma^2)T}{\sigma \sqrt{T}}, d_2 = d_1 - \sigma\sqrt{T}
+# d_1 = \frac{ln(\frac{F}{K}) + (0.5 \cdot \sigma^2)T}{\sigma \sqrt{T}}, d_2 = d_1 - \sigma\sqrt{T}
 # $$
 #
 # The Option Greeks are defined using $d_1$ and $d_2$.
@@ -536,7 +536,7 @@ def compute_d1(
     sigma: float,
     r: float = interest_rate,
 ) -> float:
-    return (math.log(F / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    return (math.log(F / K) + (sigma**2 / 2) * T) / (sigma * math.sqrt(T))
 
 @pw.udf
 def compute_d2(
@@ -546,7 +546,7 @@ def compute_d2(
     sigma: float,
     r: float = interest_rate
 ) -> float:
-    return (math.log(F / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T)) - sigma * math.sqrt(T)
+    return (math.log(F / K) + (sigma**2 / 2) * T) / (sigma * math.sqrt(T)) - sigma * math.sqrt(T)
 
 
 # -
