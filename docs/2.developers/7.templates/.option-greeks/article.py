@@ -3,7 +3,7 @@
 # description: "Computing the Option Greeks using Pathway and Databento, in the Black Model"
 # author: 'luca'
 # article:
-#   thumbnail: 'assets/content/showcases/option-greeks/option-greeks.png'
+#   thumbnail: '/assets/content/showcases/option-greeks/option-greeks.png'
 #   thumbnailFit: 'contain'
 #   date: '2024-08-06'
 #   tags: ['tutorial', 'data-pipeline']
