@@ -7,21 +7,24 @@ from __future__ import annotations
 import builtins
 import importlib
 import io
+import os
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Callable, cast, overload
 
 import yaml
+from typing_extensions import Self
 
 VARIABLE_TAG = "tag:pathway.com,2024:variable"
 
 
-def verify_string_keys(d: dict[object, object]) -> dict[str, object]:
+def verify_dict_keys(d: dict[object, object]) -> dict[str | Variable, object]:
     for key in d.keys():
-        if not isinstance(key, str):
-            raise ValueError("expected string key, got {type(key)}")
-    return cast(dict[str, object], d)
+        if not isinstance(key, str) and not isinstance(key, Variable):
+            raise ValueError(f"expected string key, got {type(key)}")
+    return cast(dict[str | Variable, object], d)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +38,7 @@ class Variable:
 @dataclass(slots=True, eq=False)
 class Value:
     constructor: Callable[..., object]
-    kwargs: dict[str, object]
+    kwargs: dict[str | Variable, object]
     constructed: bool = False
     value: object = None
 
@@ -96,7 +99,7 @@ class PathwayYamlLoader(yaml.Loader):
             case yaml.ScalarNode(value=""):
                 kwargs = {}
             case yaml.MappingNode():
-                kwargs = verify_string_keys(self.construct_mapping(node))
+                kwargs = verify_dict_keys(self.construct_mapping(node))
             case _:
                 raise yaml.MarkedYAMLError(
                     problem="expected a mapping or empty node",
@@ -113,65 +116,99 @@ PathwayYamlLoader.add_constructor(
 PathwayYamlLoader.add_multi_constructor("!", PathwayYamlLoader.construct_pathway_value)
 
 
-@overload
-def resolve_node(
-    obj: dict[str, object], context: dict[Variable, object], resolved: dict[int, object]
-) -> dict[str, object]: ...
+@dataclass(slots=True, eq=False)
+class Resolver:
+    context: dict[Variable, object] = field(default_factory=dict)
+    done: dict[int, object] = field(default_factory=dict)
+    parent: Resolver | None = None
 
+    def subresolver(self, context: dict[Variable, object]) -> Self:
+        return type(self)(parent=self, context=context, done=self.done)
 
-@overload
-def resolve_node(
-    obj: object, context: dict[Variable, object], resolved: dict[int, object]
-) -> object: ...
+    def _resolve_variable(self, v: Variable) -> object:
+        if v in self.context:
+            return self.resolve(self.context[v])
 
+        if self.parent is not None:
+            return self.parent.resolve_variable(v)
 
-def resolve_node(
-    obj: object, context: dict[Variable, object], resolved: dict[int, object]
-) -> object:
-    if id(obj) in resolved:
+        if all(c.upper() or c == "_" for c in v.name):
+            s = os.environ.get(v.name)
+            if s is not None:
+                return load_yaml(s)
+
+        raise KeyError(f"variable {v} is not defined")
+
+    def resolve_variable(self, v: Variable) -> object:
+        res = self._resolve_variable(v)
+        self.context[v] = res
+        self.done[id(res)] = res
+        return res
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> None:
+        if exc_value is not None:
+            return
+        self.check_unused_variables()
+
+    def check_unused_variables(self) -> None:
+        for name, value in self.context.items():
+            if id(value) not in self.done:
+                warnings.warn(f"unused YAML variable {name}", stacklevel=2)
+
+    @overload
+    def resolve(self, obj: dict[str | Variable, object]) -> dict[str, object]: ...
+
+    @overload
+    def resolve(self, obj: object) -> object: ...
+
+    def resolve(self, obj: object) -> object:
+        if id(obj) in self.done:
+            return obj
+
+        match obj:
+            case Variable() as v:
+                return self.resolve_variable(v)
+            case Value(constructed=True, value=value):
+                return value
+            case Value(constructor=constructor, kwargs=kwargs) as v:
+                resolved_kwargs = self.resolve(kwargs)
+                obj = constructor(**resolved_kwargs)
+                v.constructed = True
+                v.value = obj
+            case dict() as d:
+                context = {}
+                variables = list(v for v in d.keys() if isinstance(v, Variable))
+                if variables:
+                    for v in variables:
+                        context[v] = d.pop(v)
+                    with self.subresolver(context) as resolver:
+                        return resolver.resolve(d)
+                for key, value in d.items():
+                    d[key] = self.resolve(value)
+            case list() as ls:
+                for index, value in enumerate(ls):
+                    ls[index] = self.resolve(value)
+
+        self.done[id(obj)] = obj
         return obj
-
-    match obj:
-        case Variable() as v:
-            context[v] = resolve_node(context[v], context, resolved)
-            return context[v]
-        case Value(constructed=True, value=value):
-            return value
-        case Value(constructor=constructor, kwargs=kwargs) as v:
-            kwargs = resolve_node(kwargs, context, resolved)
-            obj = constructor(**kwargs)
-            v.constructed = True
-            v.value = obj
-        case dict() as d:
-            for key, value in d.items():
-                if not isinstance(key, str):
-                    raise ValueError("expected string key, got {type(key)}")
-                d[key] = resolve_node(value, context, resolved)
-        case list() as ls:
-            for index, value in enumerate(ls):
-                ls[index] = resolve_node(value, context, resolved)
-
-    resolved[id(obj)] = obj
-    return obj
 
 
 def resolve(obj: object) -> object:
-    if not isinstance(obj, dict):
-        return obj
-    context = {}
-    variables = list(v for v in obj.keys() if isinstance(v, Variable))
-    for v in variables:
-        context[v] = obj.pop(v)
-
-    resolved: dict[int, object] = {}
-    obj = resolve_node(obj, context, resolved)
-
-    for name, value in context.items():
-        if id(value) not in resolved:
-            warnings.warn(f"unused YAML variable {name}", stacklevel=2)
-
-    return obj
+    with Resolver() as resolver:
+        return resolver.resolve(obj)
 
 
 def load_yaml(stream: str | bytes | io.IOBase) -> Any:
     return resolve(yaml.load(stream, PathwayYamlLoader))
+
+
+__all__ = ["load_yaml"]

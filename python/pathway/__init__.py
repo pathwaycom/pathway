@@ -53,6 +53,7 @@ from pathway.internals import (
     join_outer,
     join_right,
     left,
+    load_yaml,
     local_error_log,
     make_tuple,
     require,
@@ -182,6 +183,7 @@ __all__ = [
     "set_monitoring_config",
     "global_error_log",
     "local_error_log",
+    "load_yaml",
 ]
 
 

@@ -71,6 +71,7 @@ from pathway.internals.table_slice import TableSlice
 from pathway.internals.thisclass import left, right, this
 from pathway.internals.udfs import UDF, UDFAsync, UDFSync, udf, udf_async
 from pathway.internals.version import __version__
+from pathway.internals.yaml_loader import load_yaml
 
 __all__ = [
     "JoinMode",
@@ -153,4 +154,5 @@ __all__ = [
     "global_error_log",
     "local_error_log",
     "ColumnDefinition",
+    "load_yaml",
 ]
