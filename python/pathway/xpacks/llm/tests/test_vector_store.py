@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm.vector_store import VectorStoreServer
@@ -117,3 +119,186 @@ def test_async_embedder():
         return [1.0, 1.0, 0.0]
 
     _test_vs(fake_embeddings_model)
+
+
+@pytest.mark.parametrize(
+    "glob_filter",
+    [
+        "",
+        "**/*.py",
+        "pathway/xpacks/llm/tests/test_vector_store.py",
+    ],
+)
+def test_vs_filtering(glob_filter):
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=fake_embeddings_model,
+    )
+
+    # parse_graph.G.clear()
+    retrieve_queries = pw.debug.table_from_markdown(
+        f"""
+        query | k | metadata_filter | filepath_globpattern
+        "Foo" | 1 |                 | {glob_filter}
+        """,
+        schema=VectorStoreServer.RetrieveQuerySchema,
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["dist"] < 1.0e-6  # type: ignore # the dist is not 0 due to float normalization
+    assert query_result["text"]  # just check if some text was returned
+
+
+@pytest.mark.parametrize(
+    "glob_filter",
+    [
+        "somefile.pdf",
+        "**/*.txt",
+        "pathway/test_vector_store.py",
+        "src.py",
+        "`pathway/xpacks/llm/tests/test_vector_store.py`",
+    ],
+)
+def test_vs_filtering_negatives(glob_filter):
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=fake_embeddings_model,
+    )
+
+    # parse_graph.G.clear()
+    retrieve_queries = pw.debug.table_from_markdown(
+        f"""
+        query | k | metadata_filter | filepath_globpattern
+        "Foo" | 1 |                 | {glob_filter}
+        """,
+        schema=VectorStoreServer.RetrieveQuerySchema,
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    assert len(val.as_list()) == 0
+
+
+@pytest.mark.parametrize(
+    "metadata_filter",
+    [
+        "",
+        "contains(path, `test_vector_store`)",
+        'contains(path, `"test_vector_store"`)',
+        "contains(path, `pathway/xpacks/llm/tests/test_vector_store.py`)",
+        "path == `pathway/xpacks/llm/tests/test_vector_store.py`",
+        "globmatch(`pathway/xpacks/llm/tests/test_vector_store.py`, path)",
+    ],
+)
+def test_vs_filtering_metadata(metadata_filter):
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=fake_embeddings_model,
+    )
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=VectorStoreServer.RetrieveQuerySchema,
+        rows=[("Foo", 1, metadata_filter, None)],
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["dist"] < 1.0e-6  # type: ignore # the dist is not 0 due to float normalization
+    assert query_result["text"]  # just check if some text was returned
+
+
+@pytest.mark.parametrize(
+    "metadata_filter",
+    [
+        "",
+        "contains(path, `Document Enregistrement Universel 2023 publié à l'XYZ le 28 février 2024.pdf`)",
+        "path == `Document Enregistrement Universel 2023 publié à l'XYZ le 28 février 2024.pdf`",
+        'path == "`Document Enregistrement Universel 2023 publié à l\'XYZ le 28 février 2024.pdf"`',
+        "contains(path, `Document Enregistrement`)",
+    ],
+)
+@pytest.mark.parametrize("globbing_filter", [None, "*.pdf"])
+def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {
+                    "path": "Document Enregistrement Universel 2023 publié à l'XYZ le 28 février 2024.pdf"
+                },
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=fake_embeddings_model,
+    )
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=VectorStoreServer.RetrieveQuerySchema,
+        rows=[("Foo", 1, metadata_filter, globbing_filter)],
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["text"]  # just check if some text was returned

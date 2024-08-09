@@ -346,9 +346,14 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         ) -> str | None:
             ret_parts = []
             if metadata_filter:
+                metadata_filter = (
+                    metadata_filter.replace("'", r"\'")
+                    .replace("`", "'")
+                    .replace('"', "")
+                )
                 ret_parts.append(f"({metadata_filter})")
             if filepath_globpattern:
-                ret_parts.append(f'globmatch(`"{filepath_globpattern}"`, path)')
+                ret_parts.append(f"globmatch('{filepath_globpattern}', path)")
             if ret_parts:
                 return " && ".join(ret_parts)
             return None
