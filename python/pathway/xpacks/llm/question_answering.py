@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 import json
+import threading
 from enum import Enum
 
 import requests
@@ -468,6 +469,7 @@ class BaseRAGQuestionAnswerer:
 
     def run_server(
         self,
+        threaded: bool = False,
         with_cache: bool = True,
         cache_backend: (
             pw.persistence.Backend | None
@@ -490,12 +492,28 @@ class BaseRAGQuestionAnswerer:
         else:
             persistence_config = None
 
-        pw.run(
-            monitoring_level=pw.MonitoringLevel.NONE,
-            persistence_config=persistence_config,
-            *args,
-            **kwargs,
+        run_kwargs = (
+            dict(
+                monitoring_level=pw.MonitoringLevel.NONE,
+                persistence_config=persistence_config,
+            )
+            | kwargs
         )
+
+        if threaded:
+            t = threading.Thread(
+                target=pw.run,
+                name="BaseRAGQuestionAnswerer",
+                args=args,
+                kwargs=run_kwargs,
+            )
+            t.start()
+            return t
+        else:
+            pw.run(
+                *args,
+                **run_kwargs,
+            )
 
 
 class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
