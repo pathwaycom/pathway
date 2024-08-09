@@ -27,7 +27,7 @@ def verify_dict_keys(d: dict[object, object]) -> dict[str | Variable, object]:
     return cast(dict[str | Variable, object], d)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Variable:
     name: str
 
@@ -35,7 +35,7 @@ class Variable:
         return f"${self.name}"
 
 
-@dataclass(slots=True, eq=False)
+@dataclass(eq=False)
 class Value:
     constructor: Callable[..., object]
     kwargs: dict[str | Variable, object]
@@ -116,7 +116,7 @@ PathwayYamlLoader.add_constructor(
 PathwayYamlLoader.add_multi_constructor("!", PathwayYamlLoader.construct_pathway_value)
 
 
-@dataclass(slots=True, eq=False)
+@dataclass(eq=False)
 class Resolver:
     context: dict[Variable, object] = field(default_factory=dict)
     done: dict[int, object] = field(default_factory=dict)
