@@ -193,7 +193,7 @@ def answer_with_geometric_rag_strategy_from_index(
         collapse_rows=True,
         metadata_filter=metadata_filter,
     ).select(
-        documents_list=pw.this[documents_column_name],
+        documents_list=pw.coalesce(pw.this[documents_column_name], ()),
     )
 
     return answer_with_geometric_rag_strategy(

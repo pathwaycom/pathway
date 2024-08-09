@@ -270,7 +270,11 @@ df = pd.DataFrame(
         "query": [
             "When it is burned what does hydrogen make?",
             "What was undertaken in 2010 to determine where dogs originated from?",
-        ]
+        ],
+        "__time__": [  # Queries need to be processed after documents, this sets arbitrarily high processing time
+            2723124827240,
+            2723124827240,
+        ],
     }
 )
 query = pw.debug.table_from_pandas(df)
