@@ -1,12 +1,17 @@
 # Copyright © 2024 Pathway
 
+import logging
 import os
+import pathlib
 import subprocess
 import sys
+import tempfile
 import uuid
-from typing import NoReturn
+import venv
+from typing import NoReturn, Tuple
 
 import click
+import git
 
 import pathway as pw
 from pathway.optional_import import optional_imports
@@ -18,7 +23,65 @@ def plural(n, singular, plural):
     return f"{n} {plural}"
 
 
-def spawn_program(threads, processes, first_port, program, arguments, env_base):
+def get_temporary_paths(
+    temp_root_directory: tempfile.TemporaryDirectory,
+) -> Tuple[pathlib.Path, pathlib.Path]:
+    temp_root_path = pathlib.Path(temp_root_directory.name)
+    repository_path = temp_root_path / "repository"
+    venv_path = temp_root_path / "venv"
+    return (repository_path, venv_path)
+
+
+def checkout_repository(
+    repository_url: str | None, branch: str | None
+) -> tempfile.TemporaryDirectory | None:
+    if repository_url is None:
+        return None
+    temp_root_directory = tempfile.TemporaryDirectory()
+    repository_path, venv_path = get_temporary_paths(temp_root_directory)
+    repository = git.Repo.clone_from(repository_url, repository_path)
+    if branch is not None:
+        repository.git.checkout(branch)
+    venv.create(venv_path, with_pip=True)
+    return temp_root_directory
+
+
+def spawn_program(
+    *,
+    threads,
+    processes,
+    first_port,
+    repository_url,
+    branch,
+    program,
+    arguments,
+    env_base,
+):
+    temp_root_directory = checkout_repository(repository_url, branch)
+    if temp_root_directory is not None:
+        repository_path, venv_path = get_temporary_paths(temp_root_directory)
+        requirements_path = repository_path / "requirements.txt"
+        if program.startswith("python"):
+            program = venv_path / "bin" / program
+        if requirements_path.exists():
+            pip_path = venv_path / "bin" / "pip"
+            command = [
+                os.fspath(pip_path),
+                "install",
+                "-r",
+                os.fspath(requirements_path),
+            ]
+            pip_handle = subprocess.run(
+                " ".join(command),
+                stderr=subprocess.STDOUT,
+                shell=True,
+            )
+            if pip_handle.returncode != 0:
+                process_stdout = pip_handle.stdout.decode("utf-8")
+                logging.error(f"Failed to install requirements:\n{process_stdout}")
+                raise RuntimeError("Failed to install dependencies")
+        os.chdir(repository_path)
+
     processes_str = plural(processes, "process", "processes")
     workers_str = plural(processes * threads, "total worker", "total workers")
     click.echo(f"Preparing {processes_str} ({workers_str})", err=True)
@@ -79,20 +142,49 @@ def cli() -> None:
 )
 @click.option("--record", is_flag=True, help="record data in the input connectors")
 @click.option(
-    "--record_path",
+    "--record-path",
     type=str,
     default="record",
     help="directory in which record will be saved",
 )
+@click.option(
+    "--repository-url",
+    type=str,
+    help="github repository path if the program is spawned from a repository",
+)
+@click.option(
+    "--branch",
+    type=str,
+    help="branch if different from the default branch",
+)
 @click.argument("program")
 @click.argument("arguments", nargs=-1)
-def spawn(threads, processes, first_port, record, record_path, program, arguments):
+def spawn(
+    threads,
+    processes,
+    first_port,
+    record,
+    record_path,
+    repository_url,
+    branch,
+    program,
+    arguments,
+):
     env = os.environ.copy()
     if record:
         env["PATHWAY_REPLAY_STORAGE"] = record_path
         env["PATHWAY_SNAPSHOT_ACCESS"] = "record"
         env["PATHWAY_CONTINUE_AFTER_REPLAY"] = "true"
-    spawn_program(threads, processes, first_port, program, arguments, env)
+    spawn_program(
+        threads=threads,
+        processes=processes,
+        first_port=first_port,
+        repository_url=repository_url,
+        branch=branch,
+        program=program,
+        arguments=arguments,
+        env_base=env,
+    )
 
 
 @cli.command(
@@ -125,7 +217,7 @@ def spawn(threads, processes, first_port, record, record_path, program, argument
     help="first port to use for communication",
 )
 @click.option(
-    "--record_path",
+    "--record-path",
     type=str,
     default="record",
     help="directory in which recording is stored",
@@ -141,6 +233,16 @@ def spawn(threads, processes, first_port, record, record_path, program, argument
     is_flag=True,
     help="continue with realtime data from connectors after stored recording is replayed",
 )
+@click.option(
+    "--repository-url",
+    type=str,
+    help="github repository path if the program is spawned from a repository",
+)
+@click.option(
+    "--branch",
+    type=str,
+    help="branch if different from the default branch",
+)
 @click.argument("program")
 @click.argument("arguments", nargs=-1)
 def replay(
@@ -150,6 +252,8 @@ def replay(
     record_path,
     mode,
     continue_after_replay,
+    repository_url,
+    branch,
     program,
     arguments,
 ):
@@ -160,7 +264,26 @@ def replay(
     env["PATHWAY_REPLAY_MODE"] = mode
     if continue_after_replay:
         env["PATHWAY_CONTINUE_AFTER_REPLAY"] = "true"
-    spawn_program(threads, processes, first_port, program, arguments, env)
+    spawn_program(
+        threads=threads,
+        processes=processes,
+        first_port=first_port,
+        repository_url=repository_url,
+        branch=branch,
+        program=program,
+        arguments=arguments,
+        env_base=env,
+    )
+
+
+@cli.command()
+def spawn_from_env():
+    cli_spawn_arguments = os.environ.get("PATHWAY_SPAWN_ARGS")
+    if cli_spawn_arguments is not None:
+        args = ["spawn"] + cli_spawn_arguments.split(" ")
+        os.execl(sys.executable, sys.executable, sys.argv[0], *args)
+    else:
+        logging.warning("PATHWAY_SPAWN_ARGS variable is unspecified, exiting...")
 
 
 @cli.group()

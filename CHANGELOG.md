@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- The Pathway CLI command `spawn` can now execute code directly from a specified GitHub repository.
+- A new CLI command, `spawn-from-env`, has been added. This command runs the Pathway CLI `spawn` command using arguments provided in the `PATHWAY_SPAWN_ARGS` environment variable.
+
 ## [0.14.2] - 2024-08-06
 
 ### Fixed

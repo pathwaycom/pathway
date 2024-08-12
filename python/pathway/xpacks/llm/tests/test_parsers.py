@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import nltk
 import pandas as pd
 import pytest
 
@@ -10,6 +11,20 @@ from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm.parsers import ParseUnstructured, ParseUtf8
 
 pw.Type
+
+
+for _ in range(10):
+    try:
+        nltk.download("stopwords", force=True)
+        nltk.download("wordnet", force=True)
+        nltk.download("punkt", force=True)
+        nltk.download("punkt_tab", force=True)
+        nltk.download("averaged_perceptron_tagger", force=True)
+        nltk.download("averaged_perceptron_tagger_eng", force=True)
+    except Exception:
+        pass
+    else:
+        break
 
 
 def test_parseutf8():

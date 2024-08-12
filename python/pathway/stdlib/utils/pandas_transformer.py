@@ -65,7 +65,7 @@ def _pandas_transformer(
         if isinstance(result, pd.Series):
             result = pd.DataFrame(result)
 
-        result.columns = output_schema.column_names()
+        result.columns = output_schema.column_names()  # type: ignore
 
         if output_universe_arg_index is not None and not result.index.equals(
             pandas_input[output_universe_arg_index].index
@@ -78,7 +78,7 @@ def _pandas_transformer(
                 raise ValueError("index of resulting DataFrame must be unique")
             index_as_series = result.index.to_series()
             if not index_as_series.map(lambda x: isinstance(x, Pointer)).all():
-                new_index = index_as_series.map(lambda x: ref_scalar(x))
+                new_index = index_as_series.map(lambda x: ref_scalar(x))  # type: ignore
                 result.reindex(new_index)
             assert result.index.is_unique
 

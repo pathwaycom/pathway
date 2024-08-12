@@ -205,7 +205,7 @@ def write(
 
     Examples:
 
-    For the sake of demonstation, let's try different ways to send the stream of changes
+    For the sake of demonstration, let's try different ways to send the stream of changes
     on a table ``pets``, containing data about pets and their owners. The table contains
     just two columns: the pet and the owner's name.
 
@@ -213,7 +213,7 @@ def write(
     >>> pets = pw.debug.table_from_markdown("owner pet \\n Alice dog \\n Bob cat \\n Alice cat")
 
     Consider that there is a need to send the stream of changes on such table to the
-    external API endpoint (let's pick some exemplary URL for the sake of demonstation).
+    external API endpoint (let's pick some exemplary URL for the sake of demonstration).
 
     To keep things simple, we can suppose that this API accepts flat JSON objects, which
     are sent in POST requests. Then, the communication can be done with a simple code

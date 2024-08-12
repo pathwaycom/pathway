@@ -21,7 +21,7 @@ def run_record(
         cli.spawn,
         [
             "--record",
-            "--record_path",
+            "--record-path",
             path,
             "python",
             script_path,
@@ -45,7 +45,7 @@ def run_replay(
     result = runner.invoke(
         cli.replay,
         [
-            "--record_path",
+            "--record-path",
             path,
             "--mode",
             mode,
