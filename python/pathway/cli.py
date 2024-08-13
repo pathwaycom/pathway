@@ -11,7 +11,6 @@ import venv
 from typing import NoReturn, Tuple
 
 import click
-import git
 
 import pathway as pw
 from pathway.optional_import import optional_imports
@@ -37,6 +36,11 @@ def checkout_repository(
 ) -> tempfile.TemporaryDirectory | None:
     if repository_url is None:
         return None
+    try:
+        import git
+    except ImportError:
+        logging.error("To run the code from Git repository please have git installed")
+        exit(1)
     temp_root_directory = tempfile.TemporaryDirectory()
     repository_path, venv_path = get_temporary_paths(temp_root_directory)
     repository = git.Repo.clone_from(repository_url, repository_path)
