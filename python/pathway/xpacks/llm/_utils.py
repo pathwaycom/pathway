@@ -7,7 +7,6 @@ from collections.abc import Callable
 from typing import Any
 
 import pathway as pw
-from pathway.xpacks.llm import llms
 
 
 # https://stackoverflow.com/a/75094151
@@ -50,35 +49,12 @@ def _coerce_sync(func: Callable) -> Callable:
 def _check_model_accepts_arg(model_name: str, provider: str, arg: str):
     from litellm import get_supported_openai_params
 
-    response: list[str] = get_supported_openai_params(
-        model=model_name, custom_llm_provider=provider
+    supported_params = (
+        get_supported_openai_params(model=model_name, custom_llm_provider=provider)
+        or []
     )
 
-    return arg in response
-
-
-def _check_llm_accepts_arg(llm: pw.UDF, arg: str) -> bool:
-    try:
-        model_name = llm.kwargs["model"]  # type: ignore
-    except (AttributeError, KeyError):
-        return False
-
-    if isinstance(llm, llms.OpenAIChat):
-        return _check_model_accepts_arg(model_name, "openai", arg)
-    elif isinstance(llm, llms.LiteLLMChat):
-        provider = model_name.split("/")[0]
-        model = "".join(
-            model_name.split("/")[1:]
-        )  # handle case: replicate/meta/meta-llama-3-8b
-        return _check_model_accepts_arg(model, provider, arg)
-    elif isinstance(llm, llms.CohereChat):
-        return _check_model_accepts_arg(model_name, "cohere", arg)
-
-    return False
-
-
-def _check_llm_accepts_logit_bias(llm: pw.UDF) -> bool:
-    return _check_llm_accepts_arg(llm, "logit_bias")
+    return arg in supported_params
 
 
 def _extract_value(data: Any | pw.Json) -> Any:

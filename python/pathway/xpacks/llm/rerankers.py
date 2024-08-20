@@ -4,12 +4,8 @@ import re
 import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm import Doc
-from pathway.xpacks.llm._utils import (
-    _check_llm_accepts_logit_bias,
-    _coerce_sync,
-    _extract_value,
-)
+from pathway.xpacks.llm import Doc, llms
+from pathway.xpacks.llm._utils import _coerce_sync, _extract_value
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
 
 logger = logging.getLogger(__name__)
@@ -93,7 +89,7 @@ class LLMReranker(pw.UDF):
 
     def __init__(
         self,
-        llm: pw.UDF,
+        llm: llms.BaseChat,
         *,
         retry_strategy: (
             udfs.AsyncRetryStrategy | None
@@ -111,7 +107,7 @@ class LLMReranker(pw.UDF):
         self.llm = llm
 
         if use_logit_bias is None:
-            use_logit_bias = _check_llm_accepts_logit_bias(self.llm)
+            use_logit_bias = self.llm._accepts_call_arg("logit_bias")
             logger.info(
                 f"""`use_logit_bias` not specified, setting to model default: {use_logit_bias}"""
             )

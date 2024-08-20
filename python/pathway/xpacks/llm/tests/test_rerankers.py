@@ -3,6 +3,7 @@ import pytest
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
+from pathway.xpacks.llm import llms
 from pathway.xpacks.llm.rerankers import LLMReranker, rerank_topk_filter
 
 
@@ -31,29 +32,29 @@ def _test_llm_reranker_raises(llm):
 
 
 def test_llm_reranker():
-    @pw.udf
-    def llm1(*args, **kwargs) -> str:
-        return "1"
+    class LLM1(llms.OpenAIChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "1"
 
-    _test_llm_reranker(llm1, 1.0)
+    _test_llm_reranker(LLM1(), 1.0)
 
-    @pw.udf
-    def llm2(*args, **kwargs) -> str:
-        return "5.0"
+    class LLM2(llms.OpenAIChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "5.0"
 
-    _test_llm_reranker(llm2, 5.0)
+    _test_llm_reranker(LLM2(), 5.0)
 
-    @pw.udf
-    def llm3(*args, **kwargs) -> str:
-        return "6"
+    class LLM3(llms.OpenAIChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "6"
 
-    _test_llm_reranker_raises(llm3)
+    _test_llm_reranker_raises(LLM3())
 
-    @pw.udf
-    def llm4(*args, **kwargs) -> str:
-        return "text"
+    class LLM4(llms.OpenAIChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "text"
 
-    _test_llm_reranker_raises(llm4)
+    _test_llm_reranker_raises(LLM4())
 
 
 def test_rerank_topk_filter():

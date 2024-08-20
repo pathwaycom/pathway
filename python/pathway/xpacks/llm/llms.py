@@ -11,12 +11,45 @@ import copy
 import json
 import logging
 import uuid
+from abc import abstractmethod
+from collections.abc import Coroutine
+from typing import Any
 
 import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 
+from ._utils import _check_model_accepts_arg
+
 logger = logging.getLogger(__name__)
+
+
+class BaseChat(pw.UDF):
+    """Base class for the LLM chat instances.
+
+    Subclasses need to implement ``__wrapped__`` for use in Pathway.
+
+    Constructor arguments are passed to the :py:func:`~pathway.UDF` constructor.
+    Refer to :py:func:`~pathway.UDF` for more information.
+    """
+
+    kwargs: dict[str, Any]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.kwargs = {}
+
+    @abstractmethod
+    def __wrapped__(
+        self, messages: list[dict] | pw.Json, *args, **kwargs
+    ) -> str | Coroutine[Any, Any, str | None] | Any: ...
+
+    @abstractmethod
+    def _accepts_call_arg(self, arg_name: str) -> bool: ...
+
+    @property
+    def model(self) -> str | None:
+        return self.kwargs.get("model")
 
 
 def _prep_message_log(messages: list[dict], verbose: bool) -> str:
@@ -48,7 +81,7 @@ def _prep_message_log(messages: list[dict], verbose: bool) -> str:
     return logs
 
 
-class OpenAIChat(pw.UDF):
+class OpenAIChat(BaseChat):
     """Pathway wrapper for OpenAI Chat services.
 
     The capacity, retry_strategy and cache_strategy need to be specified during object
@@ -209,7 +242,7 @@ class OpenAIChat(pw.UDF):
             executor=executor,
             cache_strategy=cache_strategy,
         )
-        self.kwargs = dict(openai_kwargs)
+        self.kwargs.update(openai_kwargs)
         if model is not None:
             self.kwargs["model"] = model
 
@@ -261,8 +294,20 @@ class OpenAIChat(pw.UDF):
         """
         return super().__call__(messages, **kwargs)
 
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        """Check whether the LLM accepts the argument during the inference.
+        If ``model`` is not set, return ``False``.
 
-class LiteLLMChat(pw.UDF):
+        Args:
+            - arg_name: Argument name to be checked.
+        """
+
+        if self.model is None:
+            return False
+        return _check_model_accepts_arg(self.model, "openai", arg_name)
+
+
+class LiteLLMChat(BaseChat):
     """Pathway wrapper for LiteLLM Chat services.
 
     Model has to be specified either in constructor call or in each application, no default
@@ -328,7 +373,7 @@ class LiteLLMChat(pw.UDF):
             executor=executor,
             cache_strategy=cache_strategy,
         )
-        self.kwargs = litellm_kwargs
+        self.kwargs.update(litellm_kwargs)
         if model is not None:
             self.kwargs["model"] = model
 
@@ -372,8 +417,25 @@ class LiteLLMChat(pw.UDF):
         """
         return super().__call__(messages, **kwargs)
 
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        """Check whether the LLM accepts the argument during the inference.
+        If ``model`` is not set, return ``False``.
 
-class HFPipelineChat(pw.UDF):
+        Args:
+            - arg_name: Argument name to be checked.
+        """
+
+        if self.model is None:
+            return False
+
+        provider = self.model.split("/")[0]
+        model = "".join(
+            self.model.split("/")[1:]
+        )  # handle case: replicate/meta/meta-llama-3-8b
+        return _check_model_accepts_arg(model, provider, arg_name)
+
+
+class HFPipelineChat(BaseChat):
     """
     Pathway wrapper for HuggingFace Pipeline.
 
@@ -420,7 +482,7 @@ class HFPipelineChat(pw.UDF):
             model=model, device=device, **pipeline_kwargs
         )
         self.tokenizer = self.pipeline.tokenizer
-        self.kwargs = call_kwargs
+        self.kwargs.update(call_kwargs)
 
     def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
         if isinstance(messages, pw.Json):
@@ -459,8 +521,24 @@ class HFPipelineChat(pw.UDF):
         """
         return super().__call__(messages, **kwargs)
 
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        """Check whether the LLM accepts the argument during the inference.
+        If ``model`` is not set, return ``False``.
 
-class CohereChat(pw.UDF):
+        Note that some OpenAI generation params have different names in ``transformers.pipelines``,
+        for example, ``logit_bias`` can be set with ``sequence_bias``.
+
+        Args:
+            - arg_name: Argument name to be checked.
+        """
+
+        if self.model is None:
+            return False
+
+        return _check_model_accepts_arg(self.model, "huggingface", arg_name)
+
+
+class CohereChat(BaseChat):
     """Pathway wrapper for Cohere Chat services.
     Returns answer and cited docs as tuple[str, list[dict]]. Cited docs is empty list if
     there are no citations.
@@ -524,7 +602,7 @@ class CohereChat(pw.UDF):
             executor=executor,
             cache_strategy=cache_strategy,
         )
-        self.kwargs = dict(cohere_kwargs)
+        self.kwargs.update(cohere_kwargs)
         if model is not None:
             self.kwargs["model"] = model
 
@@ -586,6 +664,19 @@ class CohereChat(pw.UDF):
             - **kwargs: override for defaults set in the constructor.
         """
         return super().__call__(messages, documents, **kwargs)
+
+    def _accepts_call_arg(self, arg_name: str) -> bool:
+        """Check whether the LLM accepts the argument during the inference.
+        If ``model`` is not set, return ``False``.
+
+        Args:
+            - arg_name: Argument name to be checked.
+        """
+
+        if self.model is None:
+            return False
+
+        return _check_model_accepts_arg(self.model, "cohere", arg_name)
 
 
 @pw.udf
