@@ -264,6 +264,23 @@ class OpenParse(pw.UDF):
         - cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import llms, parsers, prompts
+    >>> chat = llms.OpenAIChat(model="gpt-4o")
+    >>> table_args = {
+    ...    "parsing_algorithm": "llm",
+    ...    "llm": chat,
+    ...    "prompt": prompts.DEFAULT_MD_TABLE_PARSE_PROMPT,
+    ... }
+    >>> image_args = {
+    ...     "parsing_algorithm": "llm",
+    ...     "llm": chat,
+    ...     "prompt": prompts.DEFAULT_IMAGE_PARSE_PROMPT,
+    ... }
+    >>> parser = parsers.OpenParse(table_args=table_args, image_args=image_args)
     """
 
     def __init__(
