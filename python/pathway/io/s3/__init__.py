@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pathway.internals import api, datasource
+from pathway.internals import datasource
 from pathway.internals._io_helpers import AwsS3Settings
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -38,13 +38,19 @@ class DigitalOceanS3Settings:
         secret_access_key=None,
         region=None,
     ):
-        self.settings = api.AwsS3Settings(
-            bucket_name,
-            access_key,
-            secret_access_key,
-            False,
-            region,
-            None,
+        self.bucket_name = bucket_name
+        self.access_key = access_key
+        self.secret_access_key = secret_access_key
+        self.region = region
+
+    def create_aws_settings(self):
+        return AwsS3Settings(
+            endpoint=None,
+            bucket_name=self.bucket_name,
+            access_key=self.access_key,
+            secret_access_key=self.secret_access_key,
+            with_path_style=False,
+            region=self.region,
         )
 
 
@@ -67,13 +73,19 @@ class WasabiS3Settings:
         secret_access_key=None,
         region=None,
     ):
-        self.settings = api.AwsS3Settings(
-            bucket_name,
-            access_key,
-            secret_access_key,
-            False,
-            f"wa-{region}",
-            None,
+        self.bucket_name = bucket_name
+        self.access_key = access_key
+        self.secret_access_key = secret_access_key
+        self.region = region
+
+    def create_aws_settings(self):
+        return AwsS3Settings(
+            endpoint=None,
+            bucket_name=self.bucket_name,
+            access_key=self.access_key,
+            secret_access_key=self.secret_access_key,
+            with_path_style=False,
+            region=f"wa-{self.region}",
         )
 
 
@@ -357,10 +369,11 @@ def read_from_digital_ocean(
     therefore all examples concerning different data formats in ``pw.io.s3.read`` also
     work with Digital Ocean version.
     """
+    prepared_s3_settings = do_s3_settings.create_aws_settings()
     internal_mode = internal_connector_mode(mode)
     data_storage = construct_s3_data_storage(
         path=path,
-        rust_engine_s3_settings=do_s3_settings.settings,
+        rust_engine_s3_settings=prepared_s3_settings.settings,
         format=format,
         mode=internal_mode,
         csv_settings=csv_settings,
@@ -473,9 +486,10 @@ def read_from_wasabi(
     work with Wasabi version.
     """
     internal_mode = internal_connector_mode(mode)
+    prepared_s3_settings = wasabi_s3_settings.create_aws_settings()
     data_storage = construct_s3_data_storage(
         path=path,
-        rust_engine_s3_settings=wasabi_s3_settings.settings,
+        rust_engine_s3_settings=prepared_s3_settings.settings,
         format=format,
         mode=internal_mode,
         csv_settings=csv_settings,

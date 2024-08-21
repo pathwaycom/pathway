@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- `pw.io.deltalake.read` and `pw.io.deltalake.write` now correctly work with lakes hosted in S3 over min.io, Wasabi and Digital Ocean.
+
 ### Added
 - The Pathway CLI command `spawn` can now execute code directly from a specified GitHub repository.
 - A new CLI command, `spawn-from-env`, has been added. This command runs the Pathway CLI `spawn` command using arguments provided in the `PATHWAY_SPAWN_ARGS` environment variable.

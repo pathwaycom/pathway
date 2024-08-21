@@ -4176,7 +4176,6 @@ impl DataStorage {
 
         let mut storage_options = HashMap::new();
         storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "True".to_string());
-        storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
 
         let virtual_hosted_style_request_flag = {
             // Virtually hosted-style requests are mutually exclusive with path-style requests
@@ -4212,8 +4211,19 @@ impl DataStorage {
         }
 
         if let s3::Region::Custom { endpoint, .. } = &s3_settings.region {
-            storage_options.insert("AWS_ENDPOINT_NAME".to_string(), endpoint.to_string());
+            if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
+                storage_options.insert("AWS_ENDPOINT_URL".to_string(), endpoint.to_string());
+            } else {
+                storage_options.insert(
+                    "AWS_ENDPOINT_URL".to_string(),
+                    format!("https://{endpoint}"),
+                );
+            }
+        } else {
+            storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
         }
+
+        warn!("{:?}", storage_options);
 
         Ok(storage_options)
     }

@@ -18,6 +18,8 @@ from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import internal_connector_mode, read_schema
+from pathway.io.minio import MinIOSettings
+from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
 
 def _engine_s3_connection_settings(
@@ -38,7 +40,9 @@ def read(
     schema: type[Schema],
     *,
     mode: str = "streaming",
-    s3_connection_settings: AwsS3Settings | None = None,
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ) = None,
     autocommit_duration_ms: int | None = 1500,
     persistent_id: str | None = None,
     debug_data: Any = None,
@@ -120,6 +124,7 @@ def read(
     credentials of the currently authenticated user.
     """
     _check_entitlements("deltalake")
+    prepared_connection_settings = _prepare_connection_settings(s3_connection_settings)
 
     uri = fspath(uri)
     schema, api_schema = read_schema(
@@ -134,7 +139,9 @@ def read(
         storage_type="deltalake",
         path=uri,
         mode=internal_connector_mode(mode),
-        aws_s3_settings=_engine_s3_connection_settings(uri, s3_connection_settings),
+        aws_s3_settings=_engine_s3_connection_settings(
+            uri, prepared_connection_settings
+        ),
         persistent_id=persistent_id,
     )
     data_format = api.DataFormat(
@@ -164,7 +171,9 @@ def write(
     table: Table,
     uri: str | PathLike,
     *,
-    s3_connection_settings: AwsS3Settings | None = None,
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ) = None,
     min_commit_frequency: int | None = 60_000,
 ) -> None:
     """
@@ -236,12 +245,15 @@ def write(
     >>> pw.io.deltalake.write(access_log, "s3://logs/access-log/")  # doctest: +SKIP
     """
     _check_entitlements("deltalake")
+    prepared_connection_settings = _prepare_connection_settings(s3_connection_settings)
 
     uri = fspath(uri)
     data_storage = api.DataStorage(
         storage_type="deltalake",
         path=uri,
-        aws_s3_settings=_engine_s3_connection_settings(uri, s3_connection_settings),
+        aws_s3_settings=_engine_s3_connection_settings(
+            uri, prepared_connection_settings
+        ),
         min_commit_frequency=min_commit_frequency,
     )
     data_format = api.DataFormat(
@@ -257,3 +269,16 @@ def write(
             datasink_name="deltalake",
         )
     )
+
+
+def _prepare_connection_settings(
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ),
+) -> AwsS3Settings | None:
+    if isinstance(s3_connection_settings, AwsS3Settings):
+        return s3_connection_settings
+    elif s3_connection_settings is None:
+        return None
+    else:
+        return s3_connection_settings.create_aws_settings()

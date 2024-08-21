@@ -6,6 +6,9 @@ import boto3
 import pathway as pw
 from pathway.tests.utils import get_aws_s3_settings, get_minio_settings
 
+MINIO_BUCKET_NAME = "minio-integrationtest"
+S3_BUCKET_NAME = "aws-integrationtest"
+
 
 def put_aws_object(path, contents):
     s3_client = boto3.client(
@@ -28,7 +31,7 @@ def put_minio_object(path, contents):
         endpoint_url="https://minio-api.deploys.pathway.com",
     )
     s3_client.put_object(
-        Bucket="minio-integrationtest",
+        Bucket=MINIO_BUCKET_NAME,
         Key=path,
         Body=contents,
     )
