@@ -1,13 +1,13 @@
 # ---
 # title: Multimodal RAG with Gemini
-# description: "End-to-end template showing how you can launch a document processing pipeline that utilizes Gemini and Pathway"
+# description: "End-to-end template showing how you can launch a document processing RAG pipeline that utilizes Gemini and Pathway"
 # aside: true
 # article:
 #   thumbnail: '/assets/content/showcases/gemini_rag/Blog_Banner.png'
 #   thumbnailFit: 'contain'
 #   date: '2024-08-06'
 #   tags: ['showcase', 'llm']
-# keywords: ['LLM', 'RAG', 'GPT', 'OpenAI','Gemini', 'multimodal RAG', 'MM-RAG', 'unstructured', 'notebook']
+# keywords: ['LLM', 'RAG', 'GPT', 'OpenAI','Gemini', 'multimodal RAG', 'MM-RAG', 'unstructured', 'notebook', 'Gemini RAG', 'RAG Gemini']
 # notebook_export_path: notebooks/showcases/multimodal-rag-using-Gemini.ipynb
 # run_template: "/developers/templates/template-multimodal-rag"
 # author: 'pathway'
