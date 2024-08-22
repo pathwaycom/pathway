@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.14.3] - 2024-08-22
+
 ### Fixed
 - `pw.io.deltalake.read` and `pw.io.deltalake.write` now correctly work with lakes hosted in S3 over min.io, Wasabi and Digital Ocean.
 
