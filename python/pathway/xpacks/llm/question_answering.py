@@ -1,7 +1,8 @@
 # Copyright © 2024 Pathway
 import json
-import threading
+from abc import abstractmethod
 from enum import Enum
+from warnings import warn
 
 import requests
 
@@ -250,7 +251,33 @@ def _filter_document_metadata(
     return filtered_docs
 
 
-class BaseRAGQuestionAnswerer:
+class BaseQuestionAnswerer:
+    AnswerQuerySchema: type[pw.Schema] = pw.Schema
+    RetrieveQuerySchema: type[pw.Schema] = pw.Schema
+    StatisticsQuerySchema: type[pw.Schema] = pw.Schema
+    InputsQuerySchema: type[pw.Schema] = pw.Schema
+
+    @abstractmethod
+    def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table: ...
+
+    @abstractmethod
+    def retrieve(self, retrieve_queries: pw.Table) -> pw.Table: ...
+
+    @abstractmethod
+    def statistics(self, statistics_queries: pw.Table) -> pw.Table: ...
+
+    @abstractmethod
+    def list_documents(self, list_documents_queries: pw.Table) -> pw.Table: ...
+
+
+class SummaryQuestionAnswerer(BaseQuestionAnswerer):
+    SummarizeQuerySchema: type[pw.Schema] = pw.Schema
+
+    @abstractmethod
+    def summarize_query(self, summarize_queries: pw.Table) -> pw.Table: ...
+
+
+class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     """
     Builds the logic and the API for basic RAG application.
 
@@ -280,6 +307,7 @@ class BaseRAGQuestionAnswerer:
     >>> from pathway.xpacks.llm.vector_store import VectorStoreServer  # doctest: +SKIP
     >>> from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy  # doctest: +SKIP
     >>> from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer  # doctest: +SKIP
+    >>> from pathway.xpacks.llm.servers import QASummaryRestServer # doctest: +SKIP
     >>> my_folder = pw.io.fs.read(
     ...     path="/PATH/TO/MY/DATA/*",  # replace with your folder
     ...     format="binary",
@@ -302,11 +330,11 @@ class BaseRAGQuestionAnswerer:
     ...     cache_strategy=DiskCache(),
     ...     temperature=0.05,
     ... )
-    >>> app = BaseRAGQuestionAnswerer(  # doctest: +SKIP
+    >>> rag = BaseRAGQuestionAnswerer(  # doctest: +SKIP
     ...     llm=chat,
     ...     indexer=vector_server,
     ... )
-    >>> app.build_server(host=app_host, port=app_port)  # doctest: +SKIP
+    >>> app = QASummaryRestServer(app_host, app_port, rag)  # doctest: +SKIP
     >>> app.run_server()  # doctest: +SKIP
     """  # noqa: E501
 
@@ -353,11 +381,14 @@ class BaseRAGQuestionAnswerer:
             text_list: list[str]
             model: str | None = pw.column_definition(default_value=default_llm_name)
 
-        self.PWAIQuerySchema = PWAIQuerySchema
+        self.AnswerQuerySchema = PWAIQuerySchema
         self.SummarizeQuerySchema = SummarizeQuerySchema
+        self.RetrieveQuerySchema = self.indexer.RetrieveQuerySchema
+        self.StatisticsQuerySchema = self.indexer.StatisticsQuerySchema
+        self.InputsQuerySchema = self.indexer.InputsQuerySchema
 
     @pw.table_transformer
-    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+    def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Main function for RAG applications that answer questions
         based on available information."""
 
@@ -392,6 +423,14 @@ class BaseRAGQuestionAnswerer:
         )
         return pw_ai_results
 
+    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+        warn(
+            "pw_ai_query method is deprecated. Its content has been moved to answer_query method.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.answer_query(pw_ai_queries)
+
     @pw.table_transformer
     def summarize_query(self, summarize_queries: pw.Table) -> pw.Table:
         """Function for summarizing given texts."""
@@ -408,112 +447,32 @@ class BaseRAGQuestionAnswerer:
         )
         return summarize_results
 
-    # connect http endpoint to output writer
-    def serve(self, route, schema, handler, webserver, **additional_endpoint_kwargs):
+    @pw.table_transformer
+    def retrieve(self, retrieve_queries: pw.Table) -> pw.Table:
+        return self.indexer.retrieve_query(retrieve_queries)
 
-        queries, writer = pw.io.http.rest_connector(
-            webserver=webserver,
-            route=route,
-            schema=schema,
-            autocommit_duration_ms=50,
-            delete_completed_queries=False,
-            **additional_endpoint_kwargs,
-        )
-        writer(handler(queries))
+    @pw.table_transformer
+    def statistics(self, statistics_queries: pw.Table) -> pw.Table:
+        return self.indexer.statistics_query(statistics_queries)
+
+    @pw.table_transformer
+    def list_documents(self, list_documents_queries: pw.Table) -> pw.Table:
+        return self.indexer.inputs_query(list_documents_queries)
 
     def build_server(
         self,
         host: str,
         port: int,
         **rest_kwargs,
-    ) -> None:
-        """Adds HTTP connectors to input tables, connects them with table transformers."""
-
-        webserver = pw.io.http.PathwayWebserver(host=host, port=port)
-
-        self.serve(
-            "/v1/retrieve",
-            self.indexer.RetrieveQuerySchema,
-            self.indexer.retrieve_query,
-            webserver,
-            **rest_kwargs,
-        )
-        self.serve(
-            "/v1/statistics",
-            self.indexer.StatisticsQuerySchema,
-            self.indexer.statistics_query,
-            webserver,
-            **rest_kwargs,
-        )
-        self.serve(
-            "/v1/pw_list_documents",
-            self.indexer.InputsQuerySchema,
-            self.indexer.inputs_query,
-            webserver,
-            **rest_kwargs,
-        )
-        self.serve(
-            "/v1/pw_ai_answer",
-            self.PWAIQuerySchema,
-            self.pw_ai_query,
-            webserver,
-            **rest_kwargs,
-        )
-        self.serve(
-            "/v1/pw_ai_summary",
-            self.SummarizeQuerySchema,
-            self.summarize_query,
-            webserver,
-            **rest_kwargs,
-        )
-
-    def run_server(
-        self,
-        threaded: bool = False,
-        with_cache: bool = True,
-        cache_backend: (
-            pw.persistence.Backend | None
-        ) = pw.persistence.Backend.filesystem("./Cache"),
-        *args,
-        **kwargs,
     ):
-        """Start the app with cache configs. Enabling persistence will cache the embedding,
-        and LLM requests between the runs."""
+        """Adds HTTP connectors to input tables, connects them with table transformers."""
+        # circular import
+        from pathway.xpacks.llm.servers import QASummaryRestServer
 
-        if with_cache:
-            if cache_backend is None:
-                raise ValueError(
-                    "Cache usage was requested but the backend is unspecified"
-                )
-            persistence_config = pw.persistence.Config.simple_config(
-                cache_backend,
-                persistence_mode=pw.PersistenceMode.UDF_CACHING,
-            )
-        else:
-            persistence_config = None
+        self.server = QASummaryRestServer(host, port, self, **rest_kwargs)
 
-        run_kwargs = (
-            dict(
-                monitoring_level=pw.MonitoringLevel.NONE,
-                persistence_config=persistence_config,
-            )
-            | kwargs
-        )
-
-        if threaded:
-            t = threading.Thread(
-                target=pw.run,
-                name="BaseRAGQuestionAnswerer",
-                args=args,
-                kwargs=run_kwargs,
-            )
-            t.start()
-            return t
-        else:
-            pw.run(
-                *args,
-                **run_kwargs,
-            )
+    def run_server(self, *args, **kwargs):
+        self.server.run(*args, **kwargs)
 
 
 class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
@@ -613,7 +572,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         self.strict_prompt = strict_prompt
 
     @pw.table_transformer
-    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+    def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Create RAG response with adaptive retrieval."""
 
         index = self.indexer.index
@@ -642,7 +601,7 @@ class DeckRetriever(BaseRAGQuestionAnswerer):
     excluded_response_metadata = ["b64_image"]
 
     @pw.table_transformer
-    def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
+    def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Return similar docs from the index."""
 
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(

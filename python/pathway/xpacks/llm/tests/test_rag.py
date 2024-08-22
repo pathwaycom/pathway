@@ -58,14 +58,14 @@ def test_base_rag():
     )
 
     answer_queries = pw.debug.table_from_rows(
-        schema=rag.PWAIQuerySchema,
+        schema=rag.AnswerQuerySchema,
         rows=[
             ("foo", None, "gpt3.5", "short"),
             ("baz", None, "gpt4", "long"),
         ],
     )
 
-    answer_output = rag.pw_ai_query(answer_queries)
+    answer_output = rag.answer_query(answer_queries)
     assert_table_equality(
         answer_output.select(result=pw.this.result),
         pw.debug.table_from_markdown(
