@@ -409,17 +409,36 @@ table = pw.debug.table_from_markdown('''
     ''')
 table1 = table + table.diff(pw.this.timestamp, pw.this.values)
 print(table1.schema)
+
+# %%
 pw.debug.compute_and_print(table1, include_id=False)
 
+# %% [markdown]
+#
 
+# %%
 table = table.with_columns(date = table.values.dt.from_timestamp("ms"))
 
 table2 = table + table.diff(pw.this.timestamp, pw.this.date)
 print(table2.schema)
+
+# %% [markdown]
+#
+
+# %%
 pw.debug.compute_and_print(table2, include_id=False)
 
+# %% [markdown]
+#
+
+# %%
 table3 = table + table.diff(pw.this.values_str, pw.this.values)
 print(table3.schema)
+
+# %% [markdown]
+#
+
+# %%
 pw.debug.compute_and_print(table3, include_id=False)
 
 # %% [markdown]
