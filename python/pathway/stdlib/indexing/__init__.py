@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathway.engine import BruteForceKnnMetricKind, USearchMetricKind
+
 from .bm25 import TantivyBM25
 from .data_index import DataIndex
 from .full_text_document_index import default_full_text_document_index
@@ -25,7 +27,9 @@ __all__ = [
     "DataIndex",
     "InnerIndex",
     "USearchKnn",
+    "USearchMetricKind",
     "BruteForceKnn",
+    "BruteForceKnnMetricKind",
     "LshKnn",
     "TantivyBM25",
     "SortedIndex",
