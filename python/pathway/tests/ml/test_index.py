@@ -11,7 +11,9 @@ import pathway as pw
 from pathway.engine import BruteForceKnnMetricKind, USearchMetricKind
 from pathway.stdlib.indexing.bm25 import TantivyBM25, TantivyBM25Factory
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
+from pathway.stdlib.indexing.hybrid_index import HybridIndex, HybridIndexFactory
 from pathway.stdlib.indexing.nearest_neighbors import (
+    BruteForceKnn,
     BruteForceKnnFactory,
     LshKnn,
     LshKnnFactory,
@@ -762,6 +764,17 @@ def fake_embedder(x: str) -> list[float]:
             embedder=fake_embedder,
         ),
         TantivyBM25Factory(),
+        HybridIndexFactory(
+            [
+                TantivyBM25Factory(),
+                UsearchKnnFactory(
+                    dimensions=3,
+                    reserved_space=3,
+                    embedder=fake_embedder,
+                    metric=USearchMetricKind.COS,
+                ),
+            ]
+        ),
     ],
 )
 def test_index_factory(factory):
@@ -777,5 +790,112 @@ def test_index_factory(factory):
     ).select(pw.right.doc)
     expected = pw.debug.table_from_pandas(
         pd.DataFrame({"query": ["a"], "doc": [("a",)]})
+    )
+    assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)
+
+
+def test_hybrid_index():
+
+    @pw.udf
+    def embedder1(x: str) -> list[float]:
+        if x == "query" or x == "doc1":
+            return [1.0, 2.0, 3.0]
+        elif x == "doc2":
+            return [1.0, 2.0, 4.0]
+        else:
+            return [4.0, 5.0, 6.0]
+
+    @pw.udf
+    def embedder2(x: str) -> list[float]:
+        if x == "query" or x == "doc2":
+            return [1.0, 2.0, 3.0]
+        elif x == "doc3":
+            return [1.0, 2.0, 4.0]
+        else:
+            return [4.0, 5.0, 6.0]
+
+    query = pw.debug.table_from_rows(pw.schema_from_types(query=str), [("query",)])
+    docs = pw.debug.table_from_rows(
+        pw.schema_from_types(doc=str), [("doc1",), ("doc2",), ("doc3",)]
+    )
+
+    index1 = BruteForceKnn(
+        docs.doc,
+        None,
+        dimensions=3,
+        reserved_space=3,
+        metric=BruteForceKnnMetricKind.COS,
+        embedder=embedder1,
+    )
+    index2 = BruteForceKnn(
+        docs.doc,
+        None,
+        dimensions=3,
+        reserved_space=3,
+        metric=BruteForceKnnMetricKind.COS,
+        embedder=embedder2,
+    )
+    hybrid_index = HybridIndex([index1, index2], k=2)
+    index = DataIndex(docs, hybrid_index)
+    res = query + index.query_as_of_now(
+        query.query, collapse_rows=True, number_of_matches=2
+    ).select(pw.right.doc, pw.right[_SCORE])
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame(
+            {
+                "query": ["query"],
+                "doc": [("doc2", "doc1")],
+                _SCORE: [(1 / 3 + 1 / 4, 1 / 3)],
+            }
+        )
+    )
+    assert_table_equality_wo_index(
+        res.update_types(doc=list[str], **{_SCORE: list[float]}), expected
+    )
+
+
+def test_hybrid_index_ignores_duplicates():
+
+    @pw.udf
+    def embedder1(x: str) -> list[float]:
+        if x == "query" or x == "doc1":
+            return [1.0, 2.0, 3.0]
+        elif x == "doc3":
+            return [1.0, 2.0, 4.0]
+        else:
+            return [4.0, 5.0, 6.0]
+
+    @pw.udf
+    def sort_docs(x: list[str]) -> list[str]:
+        return sorted(x)
+
+    query = pw.debug.table_from_rows(pw.schema_from_types(query=str), [("query",)])
+    docs = pw.debug.table_from_rows(
+        pw.schema_from_types(doc=str), [("doc1",), ("doc2",), ("doc3",)]
+    )
+
+    index1 = BruteForceKnn(
+        docs.doc,
+        None,
+        dimensions=3,
+        reserved_space=3,
+        metric=BruteForceKnnMetricKind.COS,
+        embedder=embedder1,
+    )
+    index2 = BruteForceKnn(
+        docs.doc,
+        None,
+        dimensions=3,
+        reserved_space=3,
+        metric=BruteForceKnnMetricKind.COS,
+        embedder=embedder1,
+    )
+    hybrid_index = HybridIndex([index1, index2])
+    index = DataIndex(docs, hybrid_index)
+    res = query + index.query_as_of_now(
+        query.query, collapse_rows=True, number_of_matches=2
+    ).select(doc=sort_docs(pw.right.doc))
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame({"query": ["query"], "doc": [("doc1", "doc3")]})
     )
     assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)

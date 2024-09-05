@@ -9,6 +9,7 @@ from pathway.engine import BruteForceKnnMetricKind, USearchMetricKind
 from .bm25 import TantivyBM25, TantivyBM25Factory
 from .data_index import DataIndex
 from .full_text_document_index import default_full_text_document_index
+from .hybrid_index import HybridIndex, HybridIndexFactory
 from .nearest_neighbors import (
     BruteForceKnn,
     BruteForceKnnFactory,
@@ -45,6 +46,8 @@ __all__ = [
     "LshKnnFactory",
     "TantivyBM25",
     "TantivyBM25Factory",
+    "HybridIndex",
+    "HybridIndexFactory",
     "SortedIndex",
     "default_vector_document_index",
     "default_lsh_knn_document_index",
