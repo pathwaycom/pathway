@@ -10,7 +10,7 @@ import pathway as pw
 from pathway.internals import ColumnReference, Table
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
-from pathway.xpacks.llm.llms import prompt_chat_single_qa
+from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
 
@@ -24,7 +24,7 @@ _answer_not_known = "I could not find an answer."
 _answer_not_known_open_source = "No information available."
 
 
-def _query_chat_strict_json(chat: pw.UDF, t: Table) -> pw.Table:
+def _query_chat_strict_json(chat: BaseChat, t: Table) -> pw.Table:
 
     t += t.select(
         prompt=prompt_qa_geometric_rag(
@@ -56,7 +56,7 @@ def _query_chat_strict_json(chat: pw.UDF, t: Table) -> pw.Table:
     return answer
 
 
-def _query_chat_gpt(chat: pw.UDF, t: Table) -> pw.Table:
+def _query_chat_gpt(chat: BaseChat, t: Table) -> pw.Table:
     t += t.select(
         prompt=prompt_qa_geometric_rag(t.query, t.documents, _answer_not_known)
     )
@@ -68,7 +68,7 @@ def _query_chat_gpt(chat: pw.UDF, t: Table) -> pw.Table:
     return answer
 
 
-def _query_chat(chat: pw.UDF, t: Table, strict_prompt: bool) -> pw.Table:
+def _query_chat(chat: BaseChat, t: Table, strict_prompt: bool) -> pw.Table:
     if strict_prompt:
         return _query_chat_strict_json(chat, t)
     else:
@@ -76,7 +76,7 @@ def _query_chat(chat: pw.UDF, t: Table, strict_prompt: bool) -> pw.Table:
 
 
 def _query_chat_with_k_documents(
-    chat: pw.UDF, k: int, t: pw.Table, strict_prompt: bool
+    chat: BaseChat, k: int, t: pw.Table, strict_prompt: bool
 ) -> pw.Table:
     limited_documents = t.select(
         pw.this.query, documents=_limit_documents(t.documents, k)
@@ -88,7 +88,7 @@ def _query_chat_with_k_documents(
 def answer_with_geometric_rag_strategy(
     questions: ColumnReference,
     documents: ColumnReference,
-    llm_chat_model: pw.UDF,
+    llm_chat_model: BaseChat,
     n_starting_documents: int,
     factor: int,
     max_iterations: int,
@@ -154,7 +154,7 @@ def answer_with_geometric_rag_strategy_from_index(
     questions: ColumnReference,
     index: DataIndex,
     documents_column: str | ColumnReference,
-    llm_chat_model: pw.UDF,
+    llm_chat_model: BaseChat,
     n_starting_documents: int,
     factor: int,
     max_iterations: int,
@@ -340,7 +340,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
     def __init__(
         self,
-        llm: pw.UDF,
+        llm: BaseChat,
         indexer: VectorStoreServer,
         *,
         default_llm_name: str | None = None,
@@ -354,9 +354,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self.indexer = indexer
 
         if default_llm_name is None:
-            # user implemented udfs do not have to have kwargs attribute
-            if hasattr(llm, "kwargs"):
-                default_llm_name = llm.kwargs.get("model", None)
+            default_llm_name = llm.model
 
         self._init_schemas(default_llm_name)
 
@@ -546,7 +544,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
 
     def __init__(
         self,
-        llm: pw.UDF,
+        llm: BaseChat,
         indexer: VectorStoreServer,
         *,
         default_llm_name: str | None = None,
@@ -582,7 +580,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             result=answer_with_geometric_rag_strategy_from_index(
                 pw_ai_queries.prompt,
                 index,
-                "data",  # knn index returns result in this column
+                "data",  # index returns result in this column
                 self.llm,
                 n_starting_documents=self.n_starting_documents,
                 factor=self.factor,

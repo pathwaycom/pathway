@@ -7,6 +7,8 @@ from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
+from .mocks import IdentityMockChat
+
 
 @pw.udf
 def fake_embeddings_model(x: str) -> list[float]:
@@ -49,7 +51,7 @@ def test_base_rag():
     )
 
     rag = BaseRAGQuestionAnswerer(
-        identity_chat_model,
+        IdentityMockChat(),
         vector_server,
         short_prompt_template=_short_template,
         long_prompt_template=_long_template,
