@@ -9,6 +9,7 @@ from pathway.internals import dtype as dt
 from pathway.internals.expression import ColumnExpression
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.stdlib.indexing.data_index import InnerIndex
+from pathway.stdlib.indexing.retrievers import InnerIndexFactory
 from pathway.stdlib.indexing.typecheck_utils import check_column_reference_type
 
 
@@ -41,7 +42,7 @@ class TantivyBM25(InnerIndex):
     provided via `tantivy <https://github.com/quickwit-oss/tantivy>`_.
 
     Args:
-        data_column (pw.ColumnExpression[list[float]]): the column expression representing the data.
+        data_column (pw.ColumnExpression[str]): the column expression representing the data.
         metadata_column (pw.ColumnExpression[str] | None): optional column expression,
             string representation of some auxiliary data, in JSON format.
         ram_budget (int): maximum capacity in bytes. When reached, the index moves a block of data
@@ -100,3 +101,33 @@ class TantivyBM25(InnerIndex):
             index_filter_data_column=self.metadata_column,
             query_filter_column=metadata_filter,
         )
+
+
+@dataclass
+class TantivyBM25Factory(InnerIndexFactory):
+    """
+    Factory for creating a TantivyBM25 index.
+
+    Args:
+        ram_budget (int): maximum capacity in bytes. When reached, the index moves a block of data
+            to storage (hence, larger budget means faster index operations, but higher
+            memory cost)
+        in_memory_index (bool): indicates, whether the whole index is stored in RAM;
+            if set to false, the index is stored in some default Pathway disk storage
+    """
+
+    ram_budget: int = 50 * 1024 * 1024  # 50 MB
+    in_memory_index: bool = True
+
+    def build_inner_index(
+        self,
+        data_column: pw.ColumnReference,
+        metadata_column: pw.ColumnExpression | None = None,
+    ) -> InnerIndex:
+        inner_index = TantivyBM25(
+            data_column,
+            metadata_column,
+            ram_budget=self.ram_budget,
+            in_memory_index=self.in_memory_index,
+        )
+        return inner_index

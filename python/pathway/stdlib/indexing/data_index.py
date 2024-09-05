@@ -151,7 +151,7 @@ class InnerIndex(ABC):
     which is a wrapper that augments the matching IDs with some additional data.
 
     Args:
-        data_column (pw.ColumnExpression [list[float]]): the column expression
+        data_column (pw.ColumnExpression): the column expression
             representing the data.
         metadata_column (pw.ColumnExpression [str] | None): optional column expression,
             string representation of some auxiliary data, in JSON format.
@@ -222,14 +222,10 @@ class DataIndex:
         inner_index (InnerIndex): a data structure that accepts data from some ``data_column``
             and for each query answers with a list of IDs, one ID per matched row from ``data_column``.
             The IDs are taken from the table that contains the ``data_column`` column
-        embedder (pw.UDF | None): optional, if set, the index applies the ``embedder`` on
-            the column passed to ``inner_index``;
-
     """
 
     data_table: pw.Table
     inner_index: InnerIndex
-    embedder: pw.UDF | None = None
 
     def _repack_results(
         self,
@@ -334,14 +330,8 @@ class DataIndex:
 
         """
 
-        q_col = query_column
-        if self.embedder is not None:
-            q_col = query_column.table.select(
-                _pw_embedded_query=self.embedder(query_column)
-            )._pw_embedded_query
-
         raw_results = self.inner_index.query(
-            query_column=q_col,
+            query_column=query_column,
             number_of_matches=number_of_matches,
             metadata_filter=metadata_filter,
         )
@@ -402,14 +392,8 @@ class DataIndex:
                 the filtering step.
         """
 
-        q_col = query_column
-        if self.embedder is not None:
-            q_col = query_column.table.select(
-                _pw_embedded_query=self.embedder(query_column)
-            )._pw_embedded_query
-
         raw_results = self.inner_index.query_as_of_now(
-            query_column=q_col,
+            query_column=query_column,
             number_of_matches=number_of_matches,
             metadata_filter=metadata_filter,
         )

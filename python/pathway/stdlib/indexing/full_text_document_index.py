@@ -9,7 +9,6 @@ def default_full_text_document_index(
     data_column: pw.ColumnReference,
     data_table: pw.Table,
     *,
-    embedder: pw.UDF | None = None,
     metadata_column: pw.ColumnExpression | None = None,
 ) -> DataIndex:
     """
@@ -24,4 +23,4 @@ def default_full_text_document_index(
     """
 
     inner = TantivyBM25(data_column, metadata_column=metadata_column)
-    return DataIndex(data_table, inner_index=inner, embedder=embedder)
+    return DataIndex(data_table, inner_index=inner)

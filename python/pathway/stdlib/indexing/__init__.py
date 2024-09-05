@@ -6,10 +6,18 @@ from __future__ import annotations
 
 from pathway.engine import BruteForceKnnMetricKind, USearchMetricKind
 
-from .bm25 import TantivyBM25
+from .bm25 import TantivyBM25, TantivyBM25Factory
 from .data_index import DataIndex
 from .full_text_document_index import default_full_text_document_index
-from .nearest_neighbors import BruteForceKnn, LshKnn, USearchKnn
+from .nearest_neighbors import (
+    BruteForceKnn,
+    BruteForceKnnFactory,
+    LshKnn,
+    LshKnnFactory,
+    USearchKnn,
+    UsearchKnnFactory,
+)
+from .retrievers import AbstractRetrieverFactory
 from .sorting import (
     SortedIndex,
     build_sorted_index,
@@ -24,14 +32,19 @@ from .vector_document_index import (
 )
 
 __all__ = [
+    "AbstractRetrieverFactory",
     "DataIndex",
     "InnerIndex",
     "USearchKnn",
+    "UsearchKnnFactory",
     "USearchMetricKind",
     "BruteForceKnn",
+    "BruteForceKnnFactory",
     "BruteForceKnnMetricKind",
     "LshKnn",
+    "LshKnnFactory",
     "TantivyBM25",
+    "TantivyBM25Factory",
     "SortedIndex",
     "default_vector_document_index",
     "default_lsh_knn_document_index",

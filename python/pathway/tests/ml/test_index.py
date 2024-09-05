@@ -8,10 +8,16 @@ import pandas as pd
 import pytest
 
 import pathway as pw
-from pathway.engine import USearchMetricKind
-from pathway.stdlib.indexing.bm25 import TantivyBM25
+from pathway.engine import BruteForceKnnMetricKind, USearchMetricKind
+from pathway.stdlib.indexing.bm25 import TantivyBM25, TantivyBM25Factory
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
-from pathway.stdlib.indexing.nearest_neighbors import LshKnn, USearchKnn
+from pathway.stdlib.indexing.nearest_neighbors import (
+    BruteForceKnnFactory,
+    LshKnn,
+    LshKnnFactory,
+    USearchKnn,
+    UsearchKnnFactory,
+)
 from pathway.stdlib.indexing.vector_document_index import default_lsh_knn_document_index
 from pathway.stdlib.ml.index import KNNIndex
 from pathway.tests.utils import (
@@ -101,12 +107,12 @@ def make_usearch_data_index(
         dimensions=dimensions,
         reserved_space=1000,
         metric=USearchMetricKind.L2SQ,
+        embedder=embedder,
     )
 
     return DataIndex(
         data_table=data_table,
         inner_index=inner_index,
-        embedder=embedder,
     )
 
 
@@ -542,7 +548,7 @@ def test_full_text_search():
     )
 
     index = TantivyBM25(index_data.index_text, metadata_column=None)
-    data_index = DataIndex(index_data, index, embedder=None)
+    data_index = DataIndex(index_data, index)
     ret = data_index.query_as_of_now(
         query_column=queries.query_text, number_of_matches=4
     ).select(qtext=pw.left.query_text, info=pw.right.extra_info)
@@ -730,5 +736,46 @@ def test_output_joined_with_other_columns():
     )
     expected = pw.debug.table_from_pandas(
         pd.DataFrame({"query": ["a"], "doc": [("a", "b", "c")]})
+    )
+    assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)
+
+
+@pw.udf
+def fake_embedder(x: str) -> list[float]:
+    return [0.0, 1.0, float(ord(x[0]))]
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        UsearchKnnFactory(
+            dimensions=3,
+            reserved_space=3,
+            embedder=fake_embedder,
+            metric=USearchMetricKind.COS,
+        ),
+        LshKnnFactory(dimensions=3, embedder=fake_embedder),
+        BruteForceKnnFactory(
+            dimensions=3,
+            reserved_space=3,
+            metric=BruteForceKnnMetricKind.COS,
+            embedder=fake_embedder,
+        ),
+        TantivyBM25Factory(),
+    ],
+)
+def test_index_factory(factory):
+
+    query = pw.debug.table_from_rows(pw.schema_from_types(query=str), [("a",)])
+    docs = pw.debug.table_from_rows(
+        pw.schema_from_types(doc=str), [("a",), ("b",), ("c",)]
+    )
+
+    index = factory.build_index(docs.doc, docs)
+    res = query + index.query_as_of_now(
+        query.query, collapse_rows=True, number_of_matches=1
+    ).select(pw.right.doc)
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame({"query": ["a"], "doc": [("a",)]})
     )
     assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)

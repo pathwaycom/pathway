@@ -90,23 +90,18 @@ def default_lsh_knn_document_index(
     of :py:class:`~pathway.stdlib.indexing.LshKnn` to see
     the parameters that can be adjusted.
     """
-    d_col = data_column
-    if embedder is not None:
-        d_col = data_column.table.select(
-            _pw_embedded_data=embedder(data_column)
-        )._pw_embedded_data
 
     inner_index = LshKnn(
-        data_column=d_col,
+        data_column=data_column,
         metadata_column=metadata_column,
         dimensions=dimensions,
         # maybe initialize parameters so that they make sense in
         # expected-user-interaction?
+        embedder=embedder,
     )
     return DataIndex(
         data_table=data_table,
         inner_index=inner_index,
-        embedder=embedder,
     )
 
 
@@ -139,11 +134,6 @@ def default_usearch_knn_document_index(
     parameters that can be adjusted.
 
     """
-    if embedder is not None:
-        data_column = data_column.table.select(
-            _pw_embedded_data=embedder(data_column)
-        )._pw_embedded_data
-
     inner_index = USearchKnn(
         data_column=data_column,
         metadata_column=metadata_column,
@@ -152,12 +142,12 @@ def default_usearch_knn_document_index(
         metric=USearchMetricKind.COS,
         # maybe initialize parameters so that they make sense in
         # expected-user-interaction?
+        embedder=embedder,
     )
 
     return DataIndex(
         data_table=data_table,
         inner_index=inner_index,
-        embedder=embedder,
     )
 
 
@@ -190,10 +180,6 @@ def default_brute_force_knn_document_index(
     parameters that can be adjusted.
 
     """
-    if embedder is not None:
-        data_column = data_column.table.select(
-            _pw_embedded_data=embedder(data_column)
-        )._pw_embedded_data
 
     inner_index = BruteForceKnn(
         data_column=data_column,
@@ -201,10 +187,10 @@ def default_brute_force_knn_document_index(
         dimensions=dimensions,
         reserved_space=1000,
         metric=BruteForceKnnMetricKind.COS,
+        embedder=embedder,
     )
 
     return DataIndex(
         data_table=data_table,
         inner_index=inner_index,
-        embedder=embedder,
     )
