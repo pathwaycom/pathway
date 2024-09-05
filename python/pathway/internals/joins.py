@@ -941,6 +941,7 @@ class JoinResult(Joinable, OperatorInput):
         id: expr.ColumnReference | None = None,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        exact_match: bool = False,  # if True do not optionalize output columns even if other than inner join is used
     ) -> JoinResult:
         if left == right:
             raise ValueError(
@@ -1019,6 +1020,7 @@ class JoinResult(Joinable, OperatorInput):
                 id_column is not None,
                 mode in [JoinMode.RIGHT, JoinMode.OUTER],
                 mode in [JoinMode.LEFT, JoinMode.OUTER],
+                exact_match,
             )
         else:
             context = clmn.JoinContext(
@@ -1031,6 +1033,7 @@ class JoinResult(Joinable, OperatorInput):
                 id_column is not None,
                 mode in [JoinMode.LEFT, JoinMode.OUTER],
                 mode in [JoinMode.RIGHT, JoinMode.OUTER],
+                exact_match,
             )
         inner_table, columns_mapping = JoinResult._prepare_inner_table_with_mapping(
             context,

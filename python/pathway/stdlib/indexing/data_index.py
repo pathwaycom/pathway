@@ -3,8 +3,10 @@
 # TODO: adjust so that it can be extended to cover H3index
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Protocol, TypeVar
 
 import pathway.internals as pw
+from pathway.internals import expression as expr
 from pathway.internals.dtype import FLOAT, DType, List
 from pathway.internals.joins import JoinResult
 from pathway.stdlib.indexing.colnames import (
@@ -15,6 +17,7 @@ from pathway.stdlib.indexing.colnames import (
     _SCORE,
     _TOPK,
 )
+from pathway.stdlib.temporal._asof_now_join import AsofNowJoinResult
 from pathway.stdlib.utils.col import unpack_col
 
 
@@ -23,12 +26,30 @@ class IdScoreSchema(pw.Schema):
     _pw_index_reply_score: float
 
 
+T = TypeVar("T", AsofNowJoinResult, JoinResult, covariant=True)
+
+
+class GeneralJoin(Protocol[T]):
+    def __call__(
+        self,
+        left: pw.Table,
+        right: pw.Table,
+        *on: expr.ColumnExpression,
+        mode: pw.JoinMode,
+        id: expr.ColumnReference | None = None,
+        left_instance: expr.ColumnReference | None = None,
+        right_instance: expr.ColumnReference | None = None,
+        exact_match: bool = False,
+    ) -> T: ...
+
+
 def _extract_data_flat(
     data_table: pw.Table,
     id_matching: pw.Table,
     query_table: pw.Table,
+    join_general: GeneralJoin[T],
     as_of_now: bool = False,
-) -> JoinResult:
+) -> T:
     """
     This function takes `query_table` and left-joins it with `data_table`, using
     `id_matching` table to determine which query and data rows should be joined.
@@ -50,22 +71,30 @@ def _extract_data_flat(
     Returns:
     JoinResult, with one row corresponding to one matching between queries and data.
     """
-    join_inner = pw.Table.asof_now_join_inner if as_of_now else pw.Table.join_inner
-    join_left = pw.Table.asof_now_join_left if as_of_now else pw.Table.join_left
-
-    joined = join_inner(id_matching, data_table, pw.left[_MATCHED_ID] == pw.right.id)
+    joined = join_general(
+        id_matching,
+        data_table,
+        id_matching[_MATCHED_ID] == data_table.id,
+        mode=pw.JoinMode.INNER,
+    )
     selected_data = joined.select(pw.left[_QUERY_ID], pw.left[_SCORE], *pw.right)
     if as_of_now:
         selected_data = selected_data._forget_immediately()
-    return join_left(query_table, selected_data, pw.left.id == pw.right[_QUERY_ID])
+    return join_general(
+        query_table,
+        selected_data,
+        query_table.id == selected_data[_QUERY_ID],
+        mode=pw.JoinMode.LEFT,
+    )
 
 
 def _extract_data_collapsed_rows(
     data_table: pw.Table,
     id_matching: pw.Table,
     query_table: pw.Table,
+    join_general: GeneralJoin[T],
     as_of_now: bool = False,
-) -> JoinResult:
+) -> T:
     """
     This function takes `query_table` and left-joins it with `data_table`, using
     `id_matching` table to determine which query and data rows should be joined.
@@ -89,35 +118,65 @@ def _extract_data_collapsed_rows(
         collapsed into tuples.
     """
 
-    join_inner = pw.Table.asof_now_join_inner if as_of_now else pw.Table.join_inner
-    join_left = pw.Table.asof_now_join_left if as_of_now else pw.Table.join_left
-    compacted_data = data_table + data_table.select(
-        **{_PACKED_DATA: pw.make_tuple(*data_table)}
-    )
+    compacted_data = data_table.select(**{_PACKED_DATA: pw.make_tuple(*data_table)})
 
-    joined = join_inner(
-        id_matching, compacted_data, pw.left[_MATCHED_ID] == pw.right.id
+    joined = join_general(
+        id_matching,
+        compacted_data,
+        id_matching[_MATCHED_ID] == compacted_data.id,
+        mode=pw.JoinMode.INNER,
     ).select(
         pw.left[_QUERY_ID],
         pw.left[_SCORE],
+        pw.this[_PACKED_DATA],
         _pw_groupby_sort_key=-pw.this[_SCORE],
-        *pw.right,
     )
 
     if as_of_now:
         joined = joined._forget_immediately()
-    selected_data = joined.groupby(
-        id=pw.this[_QUERY_ID],
-        sort_by=pw.this._pw_groupby_sort_key,
-    ).reduce(
+    pw.universes.promise_are_pairwise_disjoint(joined, query_table)
+    artificial_result = query_table.select(  # create artificial_result to have responses for all queries
         **{
-            _TOPK: pw.reducers.tuple(pw.this[_PACKED_DATA]),
-            _SCORE: pw.reducers.tuple(pw.this[_SCORE]),
+            _QUERY_ID: query_table.id,
+            _SCORE: 0,
+            _PACKED_DATA: None,
+            "_pw_groupby_sort_key": 0,
         }
     )
+    joined = pw.Table.concat(joined, artificial_result)
+
+    @pw.udf
+    def remove_artificial_entries(array: tuple, indicator: tuple) -> tuple:
+        return tuple(x for x, i in zip(array, indicator) if i is not None)
+
+    selected_data = (
+        joined.groupby(
+            id=pw.this[_QUERY_ID],
+            sort_by=pw.this._pw_groupby_sort_key,
+        )
+        .reduce(
+            **{
+                _TOPK: pw.reducers.tuple(pw.this[_PACKED_DATA]),
+                _SCORE: pw.reducers.tuple(pw.this[_SCORE]),
+            }
+        )
+        .select(
+            **{
+                _TOPK: remove_artificial_entries(pw.this[_TOPK], pw.this[_TOPK]),
+                _SCORE: remove_artificial_entries(pw.this[_SCORE], pw.this[_TOPK]),
+            }
+        )
+    )
+
+    @pw.udf
+    def transpose(x: tuple) -> tuple:
+        if x:
+            return tuple(zip(*x))
+        else:
+            return tuple(() for _ in range(len(data_table.keys())))
 
     selected_data_rows = selected_data.select(
-        transposed=pw.apply(lambda x: tuple(zip(*x)), pw.this[_TOPK]),
+        transposed=transpose(pw.this[_TOPK]),
     )
     new_type_map: dict[str, DType] = {}
     for key in data_table.keys():
@@ -129,12 +188,16 @@ def _extract_data_collapsed_rows(
 
     selected_data_rows = selected_data_rows.update_types(**new_type_map)
 
-    # Keep queries that didn't match with anything, hence left join
-    return join_left(
+    # Results for all queries are in selected_data_rows, so inner join would be enough from this side.
+    # However, we also want to keep the universe of query_table and left join is a convenient way of doing this.
+    # In order not to make columns on the right side optional, exact_match=True is used.
+    return join_general(
         query_table,
         selected_data_rows,
         query_table.id == selected_data_rows.id,
+        mode=pw.JoinMode.LEFT,
         id=query_table.id,
+        exact_match=True,
     )
 
 
@@ -232,8 +295,9 @@ class DataIndex:
         raw_result: pw.Table,
         query_table: pw.Table,
         collapse_rows: bool,
+        join_general: GeneralJoin[T],
         as_of_now: bool,
-    ) -> JoinResult:
+    ) -> T:
         """
         Method used internally to augment the InnerIndex response with
         data from ``self.data_table``.
@@ -277,6 +341,7 @@ class DataIndex:
             self.data_table,
             unpacked_results.without(_INDEX_REPLY),
             query_table,
+            join_general,
             as_of_now=as_of_now,
         )
 
@@ -339,6 +404,7 @@ class DataIndex:
             raw_results,
             query_column.table,
             collapse_rows,
+            JoinResult._table_join,
             as_of_now=False,
         )
 
@@ -348,7 +414,7 @@ class DataIndex:
         number_of_matches: pw.ColumnExpression | int = 3,
         collapse_rows: bool = True,
         metadata_filter: pw.ColumnExpression | None = None,
-    ) -> JoinResult:
+    ) -> AsofNowJoinResult:
         """
         This method takes the query from ``query_column``, optionally applies
         self.embedder on it and passes it to inner index to obtain matching entries
@@ -401,5 +467,6 @@ class DataIndex:
             raw_results,
             query_column.table,
             collapse_rows,
+            AsofNowJoinResult._asof_now_join,
             as_of_now=True,
         )

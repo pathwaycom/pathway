@@ -557,12 +557,12 @@ def test_full_text_search():
 
     class ExpSchema(pw.Schema):
         qtext: str
-        info: list[int] | None
+        info: list[int]
 
     df = pd.DataFrame(
         {
             "qtext": ["elit", "lorem", "marchewka", "nisi"],
-            "info": [(1,), (1, 2), None, (4, 5)],
+            "info": [(1,), (1, 2), (), (4, 5)],
         },
     )
     expected = pw.debug.table_from_pandas(df, schema=ExpSchema)
@@ -740,6 +740,46 @@ def test_output_joined_with_other_columns():
         pd.DataFrame({"query": ["a"], "doc": [("a", "b", "c")]})
     )
     assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)
+
+
+def test_no_match_is_empty_list():
+    @pw.udf
+    def make_point(r: int) -> list[float]:
+        return [float(r), float(r)]
+
+    @pw.udf
+    def load_json(s: str) -> pw.Json:
+        return json.loads(s)
+
+    data = pw.debug.table_from_markdown(
+        """
+        r | filter_data
+        1 | {"v":2}
+        5 | {"v":1}
+        8 | {"v":1}
+    """
+    ).with_columns(d=make_point(pw.this.r), filter_data=load_json(pw.this.filter_data))
+    queries = pw.debug.table_from_markdown(
+        """
+        r | filter_expr
+        4 | v==`1`
+        6 | v==`3`
+    """
+    ).with_columns(d=make_point(pw.this.r))
+
+    index = make_usearch_data_index(
+        data.d, data, dimensions=2, metadata_column=data.filter_data
+    )
+    result = index.query_as_of_now(
+        queries.d,
+        number_of_matches=2,
+        collapse_rows=True,
+        metadata_filter=queries.filter_expr,
+    ).select(l=pw.left.r, r=pw.right.r)
+    expected = pw.debug.table_from_pandas(
+        pd.DataFrame({"l": [4, 6], "r": [[5, 8], []]})
+    )
+    assert_table_equality_wo_index(result, expected)
 
 
 @pw.udf

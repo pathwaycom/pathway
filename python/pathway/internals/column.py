@@ -901,6 +901,7 @@ class JoinContext(Context):
     assign_id: bool
     left_ear: bool
     right_ear: bool
+    exact_match: bool
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return chain(self.on_left.columns, self.on_right.columns)
@@ -909,7 +910,10 @@ class JoinContext(Context):
         from pathway.internals.type_interpreter import JoinTypeInterpreter
 
         return JoinTypeInterpreter(
-            self.left_table, self.right_table, self.right_ear, self.left_ear
+            self.left_table,
+            self.right_table,
+            self.right_ear and (not self.exact_match),
+            self.left_ear and (not self.exact_match),
         )
 
     def intermediate_tables(self) -> Iterable[Table]:

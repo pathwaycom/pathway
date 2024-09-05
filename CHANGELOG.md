@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - Running servers for answering queries is extracted from `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` into `pw.xpacks.llm.servers.QARestServer` and `pw.xpacks.llm.servers.QASummaryRestServer`.
+- **BREAKING**: `query` and `query_as_of_now` of `pathway.stdlib.indexing.data_index.DataIndex` now produce an empty list instead of `None` if no match is found
 
 ## [0.14.3] - 2024-08-22
 

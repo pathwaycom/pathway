@@ -14,7 +14,7 @@ from pathway.internals.desugaring import (
     TableSubstitutionDesugaring,
     desugar,
 )
-from pathway.internals.joins import validate_join_condition
+from pathway.internals.joins import JoinResult, validate_join_condition
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.thisclass import ThisMetaclass
 from pathway.internals.trace import trace_user_frame
@@ -57,9 +57,10 @@ class AsofNowJoinResult(DesugaringContext):
         right: pw.Table,
         *on: expr.ColumnExpression,
         mode: pw.JoinMode,
-        id: expr.ColumnReference | None,
+        id: expr.ColumnReference | None = None,
         left_instance: expr.ColumnReference | None = None,
         right_instance: expr.ColumnReference | None = None,
+        exact_match: bool = False,  # if True do not optionalize output columns even if other than inner join is used
     ) -> AsofNowJoinResult:
         # TODO assert that left is append-only
 
@@ -82,7 +83,9 @@ class AsofNowJoinResult(DesugaringContext):
         table_substitution: dict[pw.TableLike, pw.Table] = {
             left: left_with_forgetting,
         }
-        join_result = left_with_forgetting.join(right, *on, id=id, how=mode)
+        join_result = JoinResult._table_join(
+            left_with_forgetting, right, *on, id=id, mode=mode, exact_match=exact_match
+        )
 
         return AsofNowJoinResult(
             original_left=left,
