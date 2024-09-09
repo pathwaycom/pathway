@@ -2,6 +2,7 @@ import threading
 from typing import Callable
 
 import pathway as pw
+from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.question_answering import (
     BaseQuestionAnswerer,
     SummaryQuestionAnswerer,
@@ -76,6 +77,52 @@ class BaseRestServer:
             return t
         else:
             run()
+
+
+class DocumentStoreServer(BaseRestServer):
+    """
+    Creates a REST Server for answering queries to a given instance of ``DocumentStore``.
+    It exposes three endpoints:
+    - ``/v1/retrieve`` which is answered using ``retrieve`` method,
+    - ``/v1/statistics`` which is answered using ``statistics`` method,
+    - ``/v1/inputs`` which is answered using ``list_documents`` method,
+
+    Args:
+        - host: host on which server will run
+        - port: port on which server will run
+        - doc_store: instance of ``DocumentStore`` which is used
+            to answer queries received in the endpoints.
+        - rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        doc_store: DocumentStore,
+        **rest_kwargs,
+    ):
+        super().__init__(host, port, **rest_kwargs)
+
+        self.serve(
+            "/v1/retrieve",
+            doc_store.RetrieveQuerySchema,
+            doc_store.retrieve_query,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v1/statistics",
+            doc_store.StatisticsQuerySchema,
+            doc_store.statistics_query,
+            **rest_kwargs,
+        )
+
+        self.serve(
+            "/v1/inputs",
+            doc_store.InputsQuerySchema,
+            doc_store.inputs_query,
+            **rest_kwargs,
+        )
 
 
 class QARestServer(BaseRestServer):

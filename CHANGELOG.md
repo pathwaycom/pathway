@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - **Experimental** A ``pw.xpacks.llm.document_store.DocumentStore`` to process and index documents.
+- ``pw.xpacks.llm.servers.DocumentStoreServer`` used to expose REST server for retrieving documents from ``pw.xpacks.llm.document_store.DocumentStore``.
 - `pw.xpacks.stdlib.indexing.HybridIndex` used for querying multiple indices and combining their results.
 
 ### Changed
