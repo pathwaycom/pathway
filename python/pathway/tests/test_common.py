@@ -20,6 +20,7 @@ import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
 from pathway.internals import dtype as dt
+from pathway.internals.parse_graph import warn_if_some_operators_unused
 from pathway.internals.table_io import empty_from_schema
 from pathway.tests.utils import (
     T,
@@ -6494,3 +6495,34 @@ def test_dtype_pandas():
         )["a"].dtype
         == pd.Int64Dtype()
     )
+
+
+def test_warns_if_unused_operators():
+    T(
+        """
+        a | b
+        1 | 2
+    """
+    )
+    with pytest.warns(
+        UserWarning,
+        match=re.escape(
+            "There are operators in the computation graph that haven't been used."
+            + " Use pathway.run() (or similar) to run the computation involving these nodes."
+        ),
+    ):
+        warn_if_some_operators_unused()
+
+
+def test_doesnt_warn_if_all_operators_used():
+    t = T(
+        """
+        a | b
+        1 | 2
+    """
+    )
+    pw.debug.compute_and_print(t)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        warn_if_some_operators_unused()

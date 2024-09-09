@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import itertools
+import warnings
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from types import TracebackType
@@ -110,6 +112,7 @@ class ParseGraph:
     static_tables_cache: dict[int, Table[Any]]
     interactive_mode_controller: interactive.InteractiveModeController | None = None
     error_log_stack: list[Table[ErrorLogSchema]]
+    unused_operators: bool
 
     def __init__(self) -> None:
         self.clear()
@@ -148,6 +151,7 @@ class ParseGraph:
         node.set_error_log(self.error_log_stack[-1] if require_error_log else None)
         result = call_operator(node)
         self._current_scope.add_node(node, special=special)
+        self.unused_operators = True
         return result
 
     def add_iterate(
@@ -206,6 +210,10 @@ class ParseGraph:
         self.cache = {}
         self.static_tables_cache = {}
         self.error_log_stack = []
+        self.mark_all_operators_as_used()
+
+    def mark_all_operators_as_used(self) -> None:
+        self.unused_operators = False
 
     def sig(self) -> str:
         return hashlib.sha256(repr(self).encode()).hexdigest()
@@ -234,3 +242,14 @@ class ErrorLogSchema(Schema):
 
 
 G = ParseGraph()
+
+
+def warn_if_some_operators_unused() -> None:
+    if G.unused_operators:
+        warnings.warn(
+            "There are operators in the computation graph that haven't been used."
+            + " Use pathway.run() (or similar) to run the computation involving these nodes."
+        )
+
+
+atexit.register(warn_if_some_operators_unused)

@@ -135,6 +135,7 @@ class GraphRunner:
         after_build: Callable[[ScopeState, OperatorStorageGraph], None] | None = None,
         run_all: bool = False,
     ) -> list[api.CapturedStream]:
+        self._graph.mark_all_operators_as_used()
         run_id = self._get_run_id()
         pathway_config = get_pathway_config()
         otel = telemetry.Telemetry.create(
