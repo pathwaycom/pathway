@@ -21,7 +21,7 @@ class HybridIndex(InnerIndex):
 
     Args:
         retrievers: list of indices to be used to compose the hybrid index.
-        k: constant used for calculating ranking score
+        k: constant used for calculating ranking score.
 
     """
 
@@ -131,14 +131,16 @@ class HybridIndexFactory(InnerIndexFactory):
 
     Args:
         retriever_factories: list of factories of indices that will be used in the hybrid index
+        k: constant used for calculating ranking score.
     """
 
-    def __init__(self, retriever_factories: list[InnerIndexFactory]):
+    def __init__(self, retriever_factories: list[InnerIndexFactory], k: float = 60):
         if len(retriever_factories) < 2:
             raise ValueError(
                 "HybridIndexFactory requires at least two retriever factories to be provided during initialization"
             )
         self.retriever_factories = retriever_factories
+        self.k = k
 
     def build_inner_index(
         self,
@@ -149,5 +151,5 @@ class HybridIndexFactory(InnerIndexFactory):
             retriever_factory.build_inner_index(data_column, metadata_column)
             for retriever_factory in self.retriever_factories
         ]
-        hybrid_index = HybridIndex(retrievers)
+        hybrid_index = HybridIndex(retrievers, self.k)
         return hybrid_index
