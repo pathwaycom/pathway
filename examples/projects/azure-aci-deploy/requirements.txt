@@ -1,0 +1,5 @@
+boto3
+deltalake
+pandas
+azure-identity
+azure-mgmt-containerinstance
