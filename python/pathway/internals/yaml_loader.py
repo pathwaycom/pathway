@@ -37,8 +37,8 @@ class Variable:
 
 @dataclass(eq=False)
 class Value:
-    constructor: Callable[..., object]
-    kwargs: dict[str | Variable, object]
+    constructor: Callable[..., object] | None = None
+    kwargs: dict[str | Variable, object] = field(default_factory=lambda: {})
     constructed: bool = False
     value: object = None
 
@@ -89,24 +89,27 @@ class PathwayYamlLoader(yaml.Loader):
 
     def construct_pathway_value(self, tag: str, node: yaml.Node) -> Value:
         constructor = import_object(tag)
-        if not callable(constructor):
-            raise yaml.MarkedYAMLError(
-                problem=f"constructor {tag!r} is not callable",
-                problem_mark=node.start_mark,
-            )
 
         match node:
-            case yaml.ScalarNode(value=""):
-                kwargs = {}
-            case yaml.MappingNode():
+            case yaml.ScalarNode(value="") if callable(constructor):
+                kwargs: dict[str | Variable, object] = {}
+                return Value(constructor, kwargs)
+            case yaml.ScalarNode(value="") if not callable(constructor):
+                return Value(constructed=True, value=constructor)
+            case yaml.MappingNode() if callable(constructor):
                 kwargs = verify_dict_keys(self.construct_mapping(node))
+                return Value(constructor, kwargs)
             case _:
-                raise yaml.MarkedYAMLError(
-                    problem="expected a mapping or empty node",
-                    problem_mark=node.start_mark,
-                )
-
-        return Value(constructor, kwargs)
+                if not callable(constructor):
+                    raise yaml.MarkedYAMLError(
+                        problem=f"constructor {tag!r} is not callable",
+                        problem_mark=node.start_mark,
+                    )
+                else:
+                    raise yaml.MarkedYAMLError(
+                        problem="expected a mapping or empty node",
+                        problem_mark=node.start_mark,
+                    )
 
 
 PathwayYamlLoader.add_implicit_resolver(VARIABLE_TAG, re.compile(r"\$.*"), "$")
@@ -181,6 +184,7 @@ class Resolver:
                 return value
             case Value(constructor=constructor, kwargs=kwargs) as v:
                 resolved_kwargs = self.resolve(kwargs)
+                assert constructor is not None
                 obj = constructor(**resolved_kwargs)
                 v.constructed = True
                 v.value = obj
