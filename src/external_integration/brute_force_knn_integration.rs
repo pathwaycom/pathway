@@ -188,6 +188,13 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for BruteForceKNNIndex {
         &self,
         queries: &[(Key, Vec<f64>, usize)],
     ) -> Vec<(Key, DynResult<Vec<KeyScoreMatch>>)> {
+        if self.current_size == 0 {
+            return queries
+                .iter()
+                .map(|(key, _, _)| (*key, Ok(Vec::new())))
+                .collect();
+        }
+
         let index_arr = self
             .index_array
             .slice(s![..self.current_size, ..self.dimensions]);

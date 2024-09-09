@@ -939,3 +939,35 @@ def test_hybrid_index_ignores_duplicates():
         pd.DataFrame({"query": ["query"], "doc": [("doc1", "doc3")]})
     )
     assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        UsearchKnnFactory(
+            dimensions=3,
+            reserved_space=3,
+            embedder=fake_embedder,
+            metric=USearchMetricKind.COS,
+        ),
+        LshKnnFactory(dimensions=3, embedder=fake_embedder),
+        BruteForceKnnFactory(
+            dimensions=3,
+            reserved_space=3,
+            metric=BruteForceKnnMetricKind.COS,
+            embedder=fake_embedder,
+        ),
+        TantivyBM25Factory(),
+    ],
+)
+def test_empty_index(factory):
+
+    query = pw.debug.table_from_rows(pw.schema_from_types(query=str), [("a",)])
+    docs = pw.debug.table_from_rows(pw.schema_from_types(doc=str), [])
+
+    index = factory.build_index(docs.doc, docs)
+    res = query + index.query_as_of_now(
+        query.query, collapse_rows=True, number_of_matches=1
+    ).select(pw.right.doc)
+    expected = pw.debug.table_from_pandas(pd.DataFrame({"query": ["a"], "doc": [[]]}))
+    assert_table_equality_wo_index(res, expected.update_types(doc=list[str]))
