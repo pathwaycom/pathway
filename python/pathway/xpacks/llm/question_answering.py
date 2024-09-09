@@ -10,6 +10,7 @@ import pathway as pw
 from pathway.internals import ColumnReference, Table
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
+from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
@@ -341,7 +342,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def __init__(
         self,
         llm: BaseChat,
-        indexer: VectorStoreServer,
+        indexer: VectorStoreServer | DocumentStore,
         *,
         default_llm_name: str | None = None,
         short_prompt_template: pw.UDF = prompts.prompt_short_qa,
@@ -545,7 +546,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
     def __init__(
         self,
         llm: BaseChat,
-        indexer: VectorStoreServer,
+        indexer: VectorStoreServer | DocumentStore,
         *,
         default_llm_name: str | None = None,
         short_prompt_template: pw.UDF = prompts.prompt_short_qa,
@@ -574,13 +575,17 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         """Create RAG response with adaptive retrieval."""
 
         index = self.indexer.index
+        if isinstance(self.indexer, VectorStoreServer):
+            data_column_name = "data"
+        else:
+            data_column_name = "text"
 
         result = pw_ai_queries.select(
             *pw.this,
             result=answer_with_geometric_rag_strategy_from_index(
                 pw_ai_queries.prompt,
                 index,
-                "data",  # index returns result in this column
+                data_column_name,  # index returns result in this column
                 self.llm,
                 n_starting_documents=self.n_starting_documents,
                 factor=self.factor,
