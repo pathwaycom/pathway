@@ -17,7 +17,7 @@ use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{read_persisted_state, ARTIFICIAL_TIME_ON_REWIND_START};
-use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
+use crate::connectors::{Connector, PersistenceMode, SnapshotAccess, SnapshotMode};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
@@ -3101,7 +3101,7 @@ where
                 .unwrap()
                 .lock()
                 .unwrap()
-                .create_snapshot_writer(persistent_id)
+                .create_snapshot_writer(persistent_id, SnapshotMode::Full)
                 .expect("Failed to create a snapshot writer in deduplicate");
             new_values
                 .consolidate()

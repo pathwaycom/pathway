@@ -70,10 +70,10 @@ use crate::connectors::data_format::{
     TransparentParser,
 };
 use crate::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, DataEventType, DeltaTableReader, DeltaTableWriter,
-    ElasticSearchWriter, FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter,
-    ObjectDownloader, PsqlWriter, PythonReaderBuilder, ReadMethod, ReaderBuilder, S3CsvReader,
-    S3GenericReader, S3Scanner, SqliteReader, Writer,
+    ConnectorMode, CsvFilesystemReader, DeltaTableReader, DeltaTableWriter, ElasticSearchWriter,
+    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter, ObjectDownloader,
+    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
+    ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader, Writer,
 };
 use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -596,15 +596,15 @@ impl IntoPy<PyObject> for SessionType {
     }
 }
 
-impl<'py> FromPyObject<'py> for DataEventType {
+impl<'py> FromPyObject<'py> for PythonConnectorEventType {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(ob.extract::<PyRef<PyDataEventType>>()?.0)
+        Ok(ob.extract::<PyRef<PyPythonConnectorEventType>>()?.0)
     }
 }
 
-impl IntoPy<PyObject> for DataEventType {
+impl IntoPy<PyObject> for PythonConnectorEventType {
     fn into_py(self, py: Python<'_>) -> PyObject {
-        PyDataEventType(self).into_py(py)
+        PyPythonConnectorEventType(self).into_py(py)
     }
 }
 
@@ -674,7 +674,7 @@ impl From<EngineError> for PyErr {
                 | EngineError::NoPersistentStorage(_)
                 | EngineError::InconsistentColumnProperties
                 | EngineError::IdInTableProperties => PyValueError::type_object_bound(py),
-                EngineError::ReaderFailed(_) => PyRuntimeError::type_object_bound(py),
+                EngineError::ReaderFailed(ReadError::Py(e)) => return e,
                 _ => ENGINE_ERROR_TYPE.bind(py).clone(),
             };
             let message = error.to_string();
@@ -1664,17 +1664,19 @@ impl PySessionType {
     pub const UPSERT: SessionType = SessionType::Upsert;
 }
 
-#[pyclass(module = "pathway.engine", frozen, name = "DataEventType")]
-pub struct PyDataEventType(DataEventType);
+#[pyclass(module = "pathway.engine", frozen, name = "PythonConnectorEventType")]
+pub struct PyPythonConnectorEventType(PythonConnectorEventType);
 
 #[pymethods]
-impl PyDataEventType {
+impl PyPythonConnectorEventType {
     #[classattr]
-    pub const INSERT: DataEventType = DataEventType::Insert;
+    pub const INSERT: PythonConnectorEventType = PythonConnectorEventType::Insert;
     #[classattr]
-    pub const DELETE: DataEventType = DataEventType::Delete;
+    pub const DELETE: PythonConnectorEventType = PythonConnectorEventType::Delete;
     #[classattr]
-    pub const UPSERT: DataEventType = DataEventType::Upsert;
+    pub const UPSERT: PythonConnectorEventType = PythonConnectorEventType::Upsert;
+    #[classattr]
+    pub const EXTERNAL_OFFSET: PythonConnectorEventType = PythonConnectorEventType::ExternalOffset;
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "DebeziumDBType")]
@@ -3697,6 +3699,8 @@ impl PySnapshotAccess {
     pub const RECORD: SnapshotAccess = SnapshotAccess::Record;
     #[classattr]
     pub const FULL: SnapshotAccess = SnapshotAccess::Full;
+    #[classattr]
+    pub const OFFSETS_ONLY: SnapshotAccess = SnapshotAccess::OffsetsOnly;
 }
 
 impl<'py> FromPyObject<'py> for SnapshotAccess {
@@ -3858,6 +3862,8 @@ impl PySnapshotEvent {
 pub struct PythonSubject {
     pub start: Py<PyAny>,
     pub read: Py<PyAny>,
+    pub seek: Py<PyAny>,
+    pub on_persisted_run: Py<PyAny>,
     pub end: Py<PyAny>,
     pub is_internal: bool,
     pub deletions_enabled: bool,
@@ -3866,10 +3872,12 @@ pub struct PythonSubject {
 #[pymethods]
 impl PythonSubject {
     #[new]
-    #[pyo3(signature = (start, read, end, is_internal, deletions_enabled))]
+    #[pyo3(signature = (start, read, seek, on_persisted_run, end, is_internal, deletions_enabled))]
     fn new(
         start: Py<PyAny>,
         read: Py<PyAny>,
+        seek: Py<PyAny>,
+        on_persisted_run: Py<PyAny>,
         end: Py<PyAny>,
         is_internal: bool,
         deletions_enabled: bool,
@@ -3877,6 +3885,8 @@ impl PythonSubject {
         Self {
             start,
             read,
+            seek,
+            on_persisted_run,
             end,
             is_internal,
             deletions_enabled,
@@ -5143,7 +5153,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PathwayType>()?;
     m.add_class::<PyConnectorMode>()?;
     m.add_class::<PySessionType>()?;
-    m.add_class::<PyDataEventType>()?;
+    m.add_class::<PyPythonConnectorEventType>()?;
     m.add_class::<PyDebeziumDBType>()?;
     m.add_class::<PyKeyGenerationPolicy>()?;
     m.add_class::<PyReadMethod>()?;

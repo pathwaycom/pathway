@@ -42,7 +42,10 @@ pub enum OffsetValue {
         path: Arc<String>,
         bytes_offset: u64,
     },
-    PythonEntrySequentialId(u64),
+    PythonCursor {
+        raw_external_offset: Arc<[u8]>,
+        total_entries_read: u64,
+    },
     DeltaTablePosition {
         version: i64,
         rows_read_within_version: i64,
@@ -67,8 +70,12 @@ impl HashInto for OffsetValue {
                 hasher.update(path.as_bytes());
                 bytes_offset.hash_into(hasher);
             }
-            OffsetValue::PythonEntrySequentialId(sequential_id) => {
-                sequential_id.hash_into(hasher);
+            OffsetValue::PythonCursor {
+                total_entries_read,
+                raw_external_offset,
+            } => {
+                total_entries_read.hash_into(hasher);
+                hasher.update(raw_external_offset);
             }
             OffsetValue::DeltaTablePosition {
                 version,

@@ -785,11 +785,13 @@ class SnapshotAccess(Enum):
     RECORD: SnapshotAccess
     REPLAY: SnapshotAccess
     FULL: SnapshotAccess
+    OFFSETS_ONLY: SnapshotAccess
 
-class DataEventType(Enum):
-    INSERT: DataEventType
-    DELETE: DataEventType
-    UPSERT: DataEventType
+class PythonConnectorEventType(Enum):
+    INSERT: PythonConnectorEventType
+    DELETE: PythonConnectorEventType
+    UPSERT: PythonConnectorEventType
+    EXTERNAL_OFFSET: PythonConnectorEventType
 
 class SessionType(Enum):
     NATIVE: SessionType

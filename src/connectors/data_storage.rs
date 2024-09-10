@@ -1,10 +1,12 @@
 // Copyright © 2024 Pathway
 
 use pyo3::exceptions::PyValueError;
+use pyo3::types::PyBytes;
 use rand::Rng;
 use rdkafka::util::Timeout;
 use s3::error::S3Error;
 use std::any::type_name;
+use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -125,6 +127,14 @@ pub enum DataEventType {
     Upsert,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Copy)]
+pub enum PythonConnectorEventType {
+    Insert,
+    Delete,
+    Upsert,
+    ExternalOffset,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialEvent {
     Finish,
@@ -195,6 +205,7 @@ pub enum ReaderContext {
     TokenizedEntries(DataEventType, Vec<String>),
     KeyValue((Option<Vec<u8>>, Option<Vec<u8>>)),
     Diff((DataEventType, Option<Vec<Value>>, ValuesMap)),
+    Empty,
 }
 
 impl ReaderContext {
@@ -344,8 +355,14 @@ pub trait Reader {
                         }
                     }
                     (
-                        OffsetValue::PythonEntrySequentialId(offset_position),
-                        OffsetValue::PythonEntrySequentialId(other_position),
+                        OffsetValue::PythonCursor {
+                            total_entries_read: offset_position,
+                            ..
+                        },
+                        OffsetValue::PythonCursor {
+                            total_entries_read: other_position,
+                            ..
+                        },
                     ) => {
                         if other_position > offset_position {
                             result.advance_offset(offset_key.clone(), other_value.clone());
@@ -613,6 +630,15 @@ impl Reader for FilesystemReader {
         // Filesystem scanner part: detect already processed file
         self.filesystem_scanner
             .seek_to_file(file_path_arc.as_path())?;
+
+        // If the last file read is missing from the offset, the program will read all files in the directory.
+        // We could consider alternative strategies:
+        //  1. Return an error and stop the program;
+        //  2. Track all files that have been read in the offset (though this would greatly increase the offset size);
+        //  3. Only use the file's last modification time.
+        if !file_path_arc.exists() {
+            return Ok(());
+        }
 
         // Seek within a particular file
         self.reader = {
@@ -1271,6 +1297,15 @@ impl Reader for CsvFilesystemReader {
         self.filesystem_scanner
             .seek_to_file(file_path_arc.as_path())?;
 
+        // If the last file read is missing from the offset, the program will read all files in the directory.
+        // We could consider alternative strategies:
+        //  1. Return an error and stop the program;
+        //  2. Track all files that have been read in the offset (though this would greatly increase the offset size);
+        //  3. Only use the file's last modification time.
+        if !file_path_arc.exists() {
+            return Ok(());
+        }
+
         // Seek within a particular file
         self.total_entries_read = *total_entries_read;
         self.reader = {
@@ -1403,6 +1438,7 @@ pub struct PythonReader {
     persistent_id: Option<PersistentId>,
     schema: HashMap<String, Type>,
     total_entries_read: u64,
+    current_external_offset: Arc<[u8]>,
     is_initialized: bool,
     is_finished: bool,
 
@@ -1441,6 +1477,7 @@ impl ReaderBuilder for PythonReaderBuilder {
             total_entries_read: 0,
             is_initialized: false,
             is_finished: false,
+            current_external_offset: vec![].into(),
         }))
     }
 
@@ -1470,19 +1507,55 @@ impl PythonReader {
             type_,
         }
     }
+
+    fn current_offset(&self) -> Offset {
+        (
+            OffsetKey::Empty,
+            OffsetValue::PythonCursor {
+                total_entries_read: self.total_entries_read,
+                raw_external_offset: self.current_external_offset.clone(),
+            },
+        )
+    }
 }
+
+const PW_OFFSET_FIELD_NAME: &str = "_pw_offset";
 
 impl Reader for PythonReader {
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
+        Python::with_gil(|py| {
+            self.subject
+                .borrow(py)
+                .on_persisted_run
+                .call0(py)
+                .map_err(ReadError::Py)
+        })?;
+
         let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::PythonEntrySequentialId(offset_value)) = offset_value else {
+        let Some(OffsetValue::PythonCursor {
+            total_entries_read,
+            raw_external_offset,
+        }) = offset_value
+        else {
             if offset_value.is_some() {
                 warn!("Incorrect type of offset value in Python frontier: {offset_value:?}");
             }
             return Ok(());
         };
 
-        self.total_entries_read = *offset_value;
+        self.total_entries_read = *total_entries_read;
+        if !raw_external_offset.is_empty() {
+            Python::with_gil(|py| {
+                let data: Vec<u8> = raw_external_offset.to_vec();
+                let py_external_offset = PyBytes::new_bound(py, &data).unbind().into_any();
+                self.subject
+                    .borrow(py)
+                    .seek
+                    .call1(py, (py_external_offset.borrow(),))
+                    .map_err(ReadError::Py)
+            })?;
+            self.current_external_offset = raw_external_offset.clone();
+        }
 
         Ok(())
     }
@@ -1497,13 +1570,40 @@ impl Reader for PythonReader {
         }
 
         Python::with_gil(|py| {
-            let (event, key, objects): (DataEventType, Option<Value>, HashMap<String, Py<PyAny>>) =
-                self.subject
-                    .borrow(py)
-                    .read
-                    .call0(py)?
-                    .extract(py)
-                    .map_err(ReadError::Py)?;
+            let (py_event, key, objects): (
+                PythonConnectorEventType,
+                Option<Value>,
+                HashMap<String, Py<PyAny>>,
+            ) = self
+                .subject
+                .borrow(py)
+                .read
+                .call0(py)?
+                .extract(py)
+                .map_err(ReadError::Py)?;
+
+            let event = match py_event {
+                PythonConnectorEventType::Insert => DataEventType::Insert,
+                PythonConnectorEventType::Delete => DataEventType::Delete,
+                PythonConnectorEventType::Upsert => DataEventType::Upsert,
+                PythonConnectorEventType::ExternalOffset => {
+                    let py_external_offset =
+                        objects.get(PW_OFFSET_FIELD_NAME).unwrap_or_else(|| {
+                            panic!(
+                                "In ExternalOffset event '{PW_OFFSET_FIELD_NAME}' must be present"
+                            )
+                        });
+                    self.current_external_offset = py_external_offset
+                        .extract::<Vec<u8>>(py)
+                        .expect("ExternalOffset must be bytes")
+                        .into();
+                    return Ok(ReadResult::Data(
+                        ReaderContext::Empty,
+                        self.current_offset(),
+                    ));
+                }
+            };
+
             let key = key.map(|key| vec![key]);
             let mut values = HashMap::with_capacity(objects.len());
             for (name, ob) in objects {
@@ -1550,14 +1650,9 @@ impl Reader for PythonReader {
             //
             // If it's changed, add worker_id to the offset.
             self.total_entries_read += 1;
-            let offset = (
-                OffsetKey::Empty,
-                OffsetValue::PythonEntrySequentialId(self.total_entries_read),
-            );
-
             Ok(ReadResult::Data(
                 ReaderContext::from_diff(event, key, values),
-                offset,
+                self.current_offset(),
             ))
         })
     }

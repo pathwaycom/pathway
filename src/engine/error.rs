@@ -122,7 +122,7 @@ pub enum Error {
     #[error("snapshot writer failed: {0}")]
     SnapshotWriterError(#[source] WriteError),
 
-    #[error("exception in Python subject: {0}")]
+    #[error("reader failed: {0:?}")]
     ReaderFailed(#[source] ReadError),
 
     #[error("computation of imported table failed")]

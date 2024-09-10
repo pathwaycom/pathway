@@ -16,7 +16,7 @@ use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::snapshot::{
     LocalBinarySnapshotReader, LocalBinarySnapshotWriter, ReadSnapshotEvent, WriteSnapshotEvent,
 };
-use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
+use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotMode};
 use pathway_engine::engine::{Key, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;
 use pathway_engine::persistence::PersistentId;
@@ -87,8 +87,9 @@ fn test_stream_snapshot_io() -> eyre::Result<()> {
     let test_storage_path = test_storage.path();
 
     {
-        let mut snapshot_writer = LocalBinarySnapshotWriter::new(test_storage_path)
-            .expect("Failed to create test snapshot storage");
+        let mut snapshot_writer =
+            LocalBinarySnapshotWriter::new(test_storage_path, SnapshotMode::Full)
+                .expect("Failed to create test snapshot storage");
         snapshot_writer
             .write(&event1)
             .expect("Failed to write event into snapshot file");
@@ -167,7 +168,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
     let buffer = tracker
         .lock()
         .unwrap()
-        .create_snapshot_writer(42)
+        .create_snapshot_writer(42, SnapshotMode::Full)
         .expect("Failed to create snapshot writer");
 
     let mock_sink_id = tracker.lock().unwrap().register_sink();
@@ -248,7 +249,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         let buffer = tracker
             .lock()
             .unwrap()
-            .create_snapshot_writer(42)
+            .create_snapshot_writer(42, SnapshotMode::Full)
             .expect("Failed to create snapshot writer");
 
         buffer.lock().unwrap().write(&event1).unwrap();
@@ -276,7 +277,7 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
         let buffer = tracker
             .lock()
             .unwrap()
-            .create_snapshot_writer(42)
+            .create_snapshot_writer(42, SnapshotMode::Full)
             .expect("Failed to create snapshot writer");
 
         buffer.lock().unwrap().write(&event2).unwrap();
@@ -316,7 +317,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
     let buffer = tracker
         .lock()
         .unwrap()
-        .create_snapshot_writer(42)
+        .create_snapshot_writer(42, SnapshotMode::Full)
         .expect("Failed to create snapshot writer");
 
     let mock_sink_id = tracker.lock().unwrap().register_sink();
@@ -357,6 +358,50 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
             event3.clone(),
             event4.clone()
         ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_stream_snapshot_stateless() -> eyre::Result<()> {
+    let event1 = SnapshotEvent::Insert(
+        Key::random(),
+        vec![
+            Value::Int(1),
+            Value::Float(1.0.into()),
+            Value::String("test string".into()),
+        ],
+    );
+    let event2 = SnapshotEvent::AdvanceTime(Timestamp(2), OffsetAntichain::new());
+    let event3 = SnapshotEvent::Insert(
+        Key::random(),
+        vec![
+            Value::Bool(false),
+            Value::None,
+            Value::Tuple(Arc::new([Value::Int(1), Value::Float(1.1.into())])),
+        ],
+    );
+    let event4 = SnapshotEvent::AdvanceTime(Timestamp(4), OffsetAntichain::new());
+    let events = vec![&event1, &event2, &event3, &event4];
+
+    let test_storage = tempdir()?;
+    let test_storage_path = test_storage.path();
+
+    {
+        let mut snapshot_writer =
+            LocalBinarySnapshotWriter::new(test_storage_path, SnapshotMode::OffsetsOnly)
+                .expect("Failed to create test snapshot storage");
+        for event in events {
+            snapshot_writer
+                .write(event)
+                .expect("Failed to create test snapshot storage");
+        }
+    }
+
+    assert_eq!(
+        read_persistent_buffer(test_storage_path),
+        vec![event2, event4]
     );
 
     Ok(())

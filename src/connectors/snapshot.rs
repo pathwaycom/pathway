@@ -42,6 +42,22 @@ pub enum Event {
     Finished,
 }
 
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Clone, Copy)]
+pub enum SnapshotMode {
+    Full,
+    OffsetsOnly,
+}
+
+impl SnapshotMode {
+    pub fn is_event_included(self, event: &Event) -> bool {
+        match (self, event) {
+            (SnapshotMode::Full, _) | (SnapshotMode::OffsetsOnly, Event::AdvanceTime(_, _)) => true,
+            (SnapshotMode::OffsetsOnly, _) => false,
+        }
+    }
+}
+
 pub trait ReadSnapshotEvent {
     /// This method will be called every so often to read the persisted snapshot.
     /// When there are no entries left, it must return `Event::Finished`.
@@ -172,21 +188,27 @@ impl ReadSnapshotEvent for LocalBinarySnapshotReader {
 pub struct LocalBinarySnapshotWriter {
     root_path: PathBuf,
     lazy_writer: Option<BufWriter<std::fs::File>>,
+    mode: SnapshotMode,
 }
 
 impl LocalBinarySnapshotWriter {
-    pub fn new(path: &Path) -> Result<LocalBinarySnapshotWriter, WriteError> {
+    pub fn new(path: &Path, mode: SnapshotMode) -> Result<LocalBinarySnapshotWriter, WriteError> {
         ensure_directory(path)?;
 
         Ok(Self {
             root_path: path.to_owned(),
             lazy_writer: None,
+            mode,
         })
     }
 }
 
 impl WriteSnapshotEvent for LocalBinarySnapshotWriter {
     fn write(&mut self, event: &Event) -> Result<(), WriteError> {
+        if !self.mode.is_event_included(event) {
+            return Ok(());
+        }
+
         let writer = {
             if let Some(lazy_writer) = &mut self.lazy_writer {
                 lazy_writer
@@ -461,6 +483,7 @@ pub struct S3SnapshotWriter {
     current_chunk: Vec<Event>,
     chunk_events_sender: Sender<S3SnapshotWriterEvent>,
     uploader_thread: Option<std::thread::JoinHandle<()>>,
+    mode: SnapshotMode,
 }
 
 impl Drop for S3SnapshotWriter {
@@ -478,7 +501,7 @@ impl Drop for S3SnapshotWriter {
 }
 
 impl S3SnapshotWriter {
-    pub fn new(bucket: S3Bucket, chunks_root_path: &str) -> Self {
+    pub fn new(bucket: S3Bucket, chunks_root_path: &str, mode: SnapshotMode) -> Self {
         let (chunk_events_sender, chunk_events_receiver) = mpsc::channel();
 
         let inner_chunks_root_path = chunks_root_path.to_string();
@@ -509,12 +532,17 @@ impl S3SnapshotWriter {
             current_chunk: Vec::new(),
             chunk_events_sender,
             uploader_thread: Some(uploader_thread),
+            mode,
         }
     }
 }
 
 impl WriteSnapshotEvent for S3SnapshotWriter {
     fn write(&mut self, event: &Event) -> Result<(), WriteError> {
+        if !self.mode.is_event_included(event) {
+            return Ok(());
+        }
+
         self.current_chunk.push(event.clone());
         if self.current_chunk.len() == MAX_CHUNK_LEN {
             self.chunk_events_sender

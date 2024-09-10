@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections.abc import Sequence
 
 from pathway.io._utils import STATIC_MODE_NAME
 from pathway.io.python import ConnectorSubject
@@ -18,13 +19,39 @@ AIRBYTE_STATE_RECORD_TYPE = "_airbyte_states"
 
 
 class _PathwayAirbyteDestination(BaseAirbyteDestination):
-    def __init__(self, on_event, *args, **kwargs):
+    def __init__(self, on_event, on_state, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.on_event = on_event
+        self.on_state = on_state
         self._state = {}
+        self._shared_state = None
 
     def get_state(self):
-        return self._state
+        stream_states = []
+        for stream_name, stream_state in self._state.items():
+            stream_states.append(
+                {
+                    "stream_descriptor": {
+                        "name": stream_name,
+                    },
+                    "stream_state": stream_state,
+                }
+            )
+        global_state = {
+            "stream_states": stream_states,
+        }
+        if self._shared_state is not None:
+            global_state["shared_state"] = self._shared_state
+        result = {
+            "type": "GLOBAL",
+            "global": global_state,
+        }
+        return result
+
+    def set_state(self, state):
+        self._state = {}
+        self._shared_state = None
+        self._handle_global_state(state)
 
     def _write(self, record_type, records):
         if record_type.startswith(AIRBYTE_STREAM_RECORD_PREFIX):
@@ -48,6 +75,7 @@ class _PathwayAirbyteDestination(BaseAirbyteDestination):
                     logging.warning(
                         f"Unknown state type: {state_type}. Ignoring state: {full_state}"
                     )
+            self.on_state(self.get_state())
 
     def _handle_stream_state(self, full_state):
         stream = full_state.get("stream")
@@ -83,12 +111,21 @@ class _PathwayAirbyteDestination(BaseAirbyteDestination):
             logging.warning("Legacy state doesn't contain 'data' field")
 
     def _handle_global_state(self, full_state):
-        stream_states = full_state.get("stream_states")
+        global_ = full_state.get("global")
+        if global_ is None:
+            logging.warning("Global state doesn't contain 'global' section")
+            return
+        stream_states = global_.get("stream_states")
         if stream_states is None:
             logging.warning("Global state doesn't contain 'stream_states' section")
             return
         for stream_state in stream_states:
             self._handle_stream_state_inner(stream_state)
+        shared_state = global_.get("shared_state")
+        if shared_state is not None:
+            self._shared_state = shared_state
+        else:
+            self._shared_state = None
 
 
 class _PathwayAirbyteSubject(ConnectorSubject):
@@ -98,6 +135,7 @@ class _PathwayAirbyteSubject(ConnectorSubject):
         source: AbstractAirbyteSource,
         mode: str,
         refresh_interval_ms: int,
+        streams: Sequence[str],
         *args,
         **kwargs,
     ):
@@ -105,16 +143,24 @@ class _PathwayAirbyteSubject(ConnectorSubject):
         self.source = source
         self.mode = mode
         self.refresh_interval = refresh_interval_ms / 1000.0
+        self.destination = _PathwayAirbyteDestination(
+            on_event=lambda payload: self.next_json({"data": payload}),
+            on_state=self.on_state,
+        )
+        self.streams = streams
+
+    def on_state(self, state):
+        self._report_offset(json.dumps(state).encode("utf-8"))
+        self._enable_commits()  # A commit is done here
+        self._disable_commits()  # Disable commits till the next state
 
     def run(self):
-        destination = _PathwayAirbyteDestination(
-            on_event=lambda payload: self.next_json({"data": payload})
-        )
+        self._disable_commits()
         n_times_failed = 0
         while True:
             time_before_start = time.time()
             try:
-                messages = self.source.extract(destination.get_state())
+                messages = self.source.extract([self.destination.get_state()])
             except Exception:
                 logging.exception(
                     "Failed to query airbyte-serverless source, retrying..."
@@ -129,7 +175,7 @@ class _PathwayAirbyteSubject(ConnectorSubject):
                 continue
 
             n_times_failed = 0
-            destination.load(messages)
+            self.destination.load(messages)
 
             if self.mode == STATIC_MODE_NAME:
                 break
@@ -140,3 +186,13 @@ class _PathwayAirbyteSubject(ConnectorSubject):
 
     def on_stop(self):
         self.source.on_stop()
+
+    def _seek(self, state):
+        self.destination.set_state(json.loads(state.decode("utf-8")))
+
+    def on_persisted_run(self):
+        if len(self.streams) != 1:
+            raise RuntimeError(
+                "Persistence in airbyte connector is supported only for the case of a single stream. "
+                "Please use several airbyte connectors with one stream per connector to persist the state."
+            )

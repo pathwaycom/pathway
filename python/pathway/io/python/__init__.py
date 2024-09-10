@@ -6,14 +6,19 @@ import time
 import warnings
 from abc import ABC, abstractmethod
 from queue import Queue
-from typing import Any
+from typing import Any, final
 
 import pandas as pd
 import panel as pn
 from IPython.display import display
 
 from pathway.internals import Table, api, datasource
-from pathway.internals.api import DataEventType, PathwayType, Pointer, SessionType
+from pathway.internals.api import (
+    PathwayType,
+    Pointer,
+    PythonConnectorEventType,
+    SessionType,
+)
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table_io import table_from_datasource
@@ -37,6 +42,8 @@ COMMIT_LITERAL = "*COMMIT*"
 ENABLE_COMMITS_LITERAL = "*ENABLE_COMMITS*"
 DISABLE_COMMITS_LITERAL = "*DISABLE_COMMITS*"
 FINISH_LITERAL = "*FINISH*"
+
+PW_SPECIAL_OFFSET_KEY = "_pw_offset"
 
 
 class ConnectorSubject(ABC):
@@ -92,9 +99,26 @@ class ConnectorSubject(ABC):
         self._thread = None
         self._exception = None
         self._already_used = False
+        self._started = False
 
     @abstractmethod
     def run(self) -> None: ...
+
+    @final
+    def seek(self, state: bytes) -> None:
+        """Called by Rust core on start to resume reading from the last stopping point."""
+        assert not self._started
+        self._seek(state)
+
+    def _seek(self, state: bytes) -> None:
+        """Connector-dependant logic to perform seek up to specific state."""
+        pass
+
+    def on_persisted_run(self) -> None:
+        """
+        This method is called by Rust core to notify that the state will be persisted in this run.
+        """
+        pass
 
     def on_stop(self) -> None:
         """Called after the end of the :py:meth:`run` function."""
@@ -190,6 +214,15 @@ class ConnectorSubject(ABC):
         """Disables autocommits. Useful if you want to have a few messages in the same batch."""
         self._send_special_message(DISABLE_COMMITS_LITERAL)
 
+    def _report_offset(self, offset) -> None:
+        self._buffer.put(
+            (
+                PythonConnectorEventType.EXTERNAL_OFFSET,
+                None,
+                {PW_SPECIAL_OFFSET_KEY: offset},
+            )
+        )
+
     def close(self) -> None:
         """Sends a sentinel message.
 
@@ -199,9 +232,9 @@ class ConnectorSubject(ABC):
 
     def _send_special_message(self, msg: str) -> None:
         event_type = (
-            DataEventType.INSERT
+            PythonConnectorEventType.INSERT
             if self._session_type == SessionType.NATIVE
-            else DataEventType.UPSERT
+            else PythonConnectorEventType.UPSERT
         )
         self._buffer.put((event_type, None, {"_pw_special": msg}))
 
@@ -221,6 +254,7 @@ class ConnectorSubject(ABC):
                     self.on_stop()
                     self.close()
 
+        self._started = True
         self._thread = threading.Thread(target=target)
         self._thread.start()
 
@@ -256,13 +290,13 @@ class ConnectorSubject(ABC):
 
     def _add_inner(self, key: Pointer | None, values: dict[str, Any]) -> None:
         if self._session_type == SessionType.NATIVE:
-            self._buffer.put((DataEventType.INSERT, key, values))
+            self._buffer.put((PythonConnectorEventType.INSERT, key, values))
         elif self._session_type == SessionType.UPSERT:
             if not self._deletions_enabled:
                 raise ValueError(
                     f"Trying to modify a row in {type(self)} but deletions_enabled is set to False."
                 )
-            self._buffer.put((DataEventType.UPSERT, key, values))
+            self._buffer.put((PythonConnectorEventType.UPSERT, key, values))
         else:
             raise NotImplementedError(f"session type {self._session_type} not handled")
 
@@ -276,7 +310,7 @@ class ConnectorSubject(ABC):
             raise ValueError(
                 f"Trying to delete a row in {type(self)} but deletions_enabled is set to False."
             )
-        self._buffer.put((DataEventType.DELETE, key, values))
+        self._buffer.put((PythonConnectorEventType.DELETE, key, values))
 
     def _read(self) -> Any:
         """Allows to retrieve data from a buffer.
@@ -409,6 +443,8 @@ computations from the moment they were terminated last time.
         storage_type="python",
         python_subject=api.PythonSubject(
             start=subject.start,
+            seek=subject.seek,
+            on_persisted_run=subject.on_persisted_run,
             read=subject._read,
             end=subject.end,
             is_internal=subject._is_internal(),

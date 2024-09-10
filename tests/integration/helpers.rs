@@ -73,7 +73,9 @@ pub fn full_cycle_read(
         &sender,
         PersistenceMode::Batch,
         SnapshotAccess::Full,
-    );
+        true,
+    )
+    .unwrap();
 
     let reporter = PanicErrorReporter::default();
     Connector::read_realtime_updates(&mut *reader, &sender, &main_thread, &reporter);

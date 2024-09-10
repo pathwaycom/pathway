@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 import pathway as pw
+from pathway.internals import api
 from pathway.internals.monitoring import MonitoringLevel
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import get_aws_s3_settings, write_lines
@@ -14,7 +15,10 @@ from pathway.tests.utils import get_aws_s3_settings, write_lines
 from .base import create_jsonlines, put_aws_object, read_jsonlines_fields
 
 
-def test_s3_backfilling(tmp_path: pathlib.Path, s3_path: str):
+@pytest.mark.parametrize(
+    "snapshot_access", [api.SnapshotAccess.FULL, api.SnapshotAccess.OFFSETS_ONLY]
+)
+def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     pathway_persistent_storage = tmp_path / "PStorage"
     s3_input_path = f"{s3_path}/input.csv"
 
@@ -33,6 +37,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path, s3_path: str):
         monitoring_level=MonitoringLevel.NONE,
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pathway_persistent_storage),
+            snapshot_access=snapshot_access,
         ),
     )
     G.clear()
@@ -52,6 +57,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path, s3_path: str):
         monitoring_level=MonitoringLevel.NONE,
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pathway_persistent_storage),
+            snapshot_access=snapshot_access,
         ),
     )
     G.clear()
@@ -75,6 +81,7 @@ def test_s3_backfilling(tmp_path: pathlib.Path, s3_path: str):
         monitoring_level=MonitoringLevel.NONE,
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pathway_persistent_storage),
+            snapshot_access=snapshot_access,
         ),
     )
 
@@ -91,7 +98,12 @@ def test_s3_backfilling(tmp_path: pathlib.Path, s3_path: str):
     assert result.equals(expected)
 
 
-def test_s3_json_read_and_recovery(tmp_path: pathlib.Path, s3_path: str):
+@pytest.mark.parametrize(
+    "snapshot_access", [api.SnapshotAccess.FULL, api.SnapshotAccess.OFFSETS_ONLY]
+)
+def test_s3_json_read_and_recovery(
+    snapshot_access, tmp_path: pathlib.Path, s3_path: str
+):
     pstorage_s3_path = f"{s3_path}/PStorage"
     input_s3_path = f"{s3_path}/input"
     output_path = tmp_path / "output.json"
@@ -118,6 +130,7 @@ def test_s3_json_read_and_recovery(tmp_path: pathlib.Path, s3_path: str):
                     root_path=pstorage_s3_path,
                     bucket_settings=get_aws_s3_settings(),
                 ),
+                snapshot_access=snapshot_access,
             ),
         )
 

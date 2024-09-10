@@ -16,7 +16,7 @@ use crate::connectors::data_storage::S3CommandName;
 use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::connectors::snapshot::{
     Event, LocalBinarySnapshotReader, LocalBinarySnapshotWriter, MockSnapshotReader,
-    ReadSnapshotEvent, S3SnapshotReader, S3SnapshotWriter, SnapshotReader,
+    ReadSnapshotEvent, S3SnapshotReader, S3SnapshotWriter, SnapshotMode, SnapshotReader,
 };
 use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
@@ -238,11 +238,13 @@ impl PersistenceManagerConfig {
     pub fn create_snapshot_writer(
         &mut self,
         persistent_id: PersistentId,
+        snapshot_mode: SnapshotMode,
     ) -> Result<SharedSnapshotWriter, WriteError> {
         match &self.stream_storage {
             StreamStorageConfig::Filesystem(root_path) => Ok(Arc::new(Mutex::new(Box::new(
                 LocalBinarySnapshotWriter::new(
                     &self.snapshot_writer_path(root_path, persistent_id)?,
+                    snapshot_mode,
                 )?,
             )))),
             StreamStorageConfig::S3 { bucket, root_path } => {
@@ -250,6 +252,7 @@ impl PersistenceManagerConfig {
                 Ok(Arc::new(Mutex::new(Box::new(S3SnapshotWriter::new(
                     bucket.deep_copy(),
                     &snapshot_path,
+                    snapshot_mode,
                 )))))
             }
             StreamStorageConfig::Mock(_) => {

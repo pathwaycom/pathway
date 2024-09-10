@@ -6,7 +6,7 @@ use std::mem::take;
 use std::time::Instant;
 
 use crate::connectors::data_storage::{ReadError, StorageType, WriteError};
-use crate::connectors::snapshot::{SnapshotReader, SnapshotWriterFlushFuture};
+use crate::connectors::snapshot::{SnapshotMode, SnapshotReader, SnapshotWriterFlushFuture};
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
@@ -192,11 +192,14 @@ impl WorkerPersistentStorage {
     pub fn create_snapshot_writer(
         &mut self,
         persistent_id: PersistentId,
+        snapshot_mode: SnapshotMode,
     ) -> Result<SharedSnapshotWriter, WriteError> {
         if let Some(snapshot_writer) = self.snapshot_writers.get(&persistent_id) {
             Ok(snapshot_writer.clone())
         } else {
-            let writer = self.config.create_snapshot_writer(persistent_id)?;
+            let writer = self
+                .config
+                .create_snapshot_writer(persistent_id, snapshot_mode)?;
             self.snapshot_writers.insert(persistent_id, writer.clone());
             Ok(writer)
         }

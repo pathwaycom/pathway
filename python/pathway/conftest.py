@@ -93,7 +93,7 @@ def tmp_path_with_airbyte_config(tmp_path):
             [
                 "new_source",
                 "--image",
-                "airbyte/source-faker:0.1.4",
+                "airbyte/source-faker:6.2.10",
             ],
         )
         assert result.exit_code == 0
@@ -102,9 +102,12 @@ def tmp_path_with_airbyte_config(tmp_path):
 
     with open(tmp_path / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
         config = yaml.safe_load(f)
+
+    # https://docs.airbyte.com/integrations/sources/faker#reference
     config["source"]["config"]["records_per_slice"] = 500
     config["source"]["config"]["records_per_sync"] = 500
     config["source"]["config"]["count"] = 500
+    config["source"]["config"]["always_updated"] = False
     with open(tmp_path / AIRBYTE_CONNECTION_REL_PATH, "w") as f:
         yaml.dump(config, f)
 

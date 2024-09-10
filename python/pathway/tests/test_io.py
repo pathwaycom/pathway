@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import sqlite3
 import sys
 import threading
@@ -362,7 +363,7 @@ def test_python_connector_deletions_disabled_logs_error_on_delete():
     )
 
     with pytest.raises(
-        RuntimeError,
+        ValueError,
         match="Trying to delete a row in .* but deletions_enabled is set to False",
     ):
         run_all()
@@ -395,7 +396,7 @@ def test_python_connector_deletions_disabled_logs_error_on_upsert():
     )
 
     with pytest.raises(
-        RuntimeError,
+        ValueError,
         match=r"Trying to modify a row in .* but deletions_enabled is set to False",
     ):
         run_all()
@@ -1563,7 +1564,10 @@ def test_text_files_directory_read_in_full(tmp_path: pathlib.Path):
     assert output_lines[2] == input_contents_3
 
 
-def test_persistent_subscribe(tmp_path):
+@pytest.mark.parametrize(
+    "snapshot_access", [api.SnapshotAccess.FULL, api.SnapshotAccess.OFFSETS_ONLY]
+)
+def test_persistent_subscribe(snapshot_access, tmp_path):
     pstorage_dir = tmp_path / "PStorage"
     input_path = tmp_path / "input.csv"
 
@@ -1589,6 +1593,7 @@ def test_persistent_subscribe(tmp_path):
     pw.run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pstorage_dir),
+            snapshot_access=snapshot_access,
         ),
     )
 
@@ -1627,6 +1632,7 @@ def test_persistent_subscribe(tmp_path):
     run(
         persistence_config=pw.persistence.Config.simple_config(
             pw.persistence.Backend.filesystem(pstorage_dir),
+            snapshot_access=snapshot_access,
         ),
     )
     root.assert_has_calls(
@@ -2541,7 +2547,7 @@ def test_server_fail_on_port_wrong_range():
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 
-    with pytest.raises(RuntimeError, match="port must be 0-65535."):
+    with pytest.raises(OverflowError, match="port must be 0-65535."):
         pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
 
@@ -2586,7 +2592,7 @@ def test_server_fail_on_incorrect_host():
     )
     response_writer(queries.select(query_id=queries.id, result=pw.this.v))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(socket.gaierror):
         pw.run(monitoring_level=pw.MonitoringLevel.NONE)
 
 
@@ -2727,8 +2733,8 @@ def test_pyfilesystem_streaming(tmp_path: pathlib.Path):
 def test_airbyte_stream_state():
     # Actual github state used for commits
     # not_commits is a mock to check that one stream won't overwrite another
-    destination = _PathwayAirbyteDestination(lambda x: print(x))
-    assert destination.get_state() == {}
+    destination = _PathwayAirbyteDestination(print, print)
+    assert destination._state == {}
     destination._write(
         "_airbyte_states",
         [
@@ -2742,7 +2748,7 @@ def test_airbyte_stream_state():
             }
         ],
     )
-    assert destination.get_state() == {
+    assert destination._state == {
         "commits": {
             "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:53Z"}}
         },
@@ -2760,7 +2766,7 @@ def test_airbyte_stream_state():
             }
         ],
     )
-    assert destination.get_state() == {
+    assert destination._state == {
         "commits": {
             "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:53Z"}}
         },
@@ -2782,7 +2788,7 @@ def test_airbyte_stream_state():
             }
         ],
     )
-    assert destination.get_state() == {
+    assert destination._state == {
         "commits": {
             "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T11:13:55Z"}}
         },
@@ -2792,9 +2798,72 @@ def test_airbyte_stream_state():
     }
 
 
+def test_airbyte_global_state():
+    destination = _PathwayAirbyteDestination(print, print)
+    assert destination._state == {}
+    assert destination._shared_state is None
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "4450e616-fb46-458e-aa78-16c1f631dbfb",
+                "_airbyte_job_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_slice_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-15T16:01:13.809156",
+                "_airbyte_data": '{"type": "GLOBAL", "global": {"stream_states": [{"stream_descriptor": {"name": "commits"}, "stream_state": {"pathwaycom/pathway": {"main": {"created_at": "2024-08-29T22:00:10Z"}}}}]}}',  # noqa
+            }
+        ],
+    )
+    assert destination._state == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-08-29T22:00:10Z"}}
+        },
+    }
+    assert destination._shared_state is None
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "4450e616-fb46-458e-aa78-16c1f631dbfb",
+                "_airbyte_job_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_slice_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-15T16:01:13.809156",
+                "_airbyte_data": '{"type": "GLOBAL", "global": {"shared_state": "shared_test", "stream_states": [{"stream_descriptor": {"name": "commits"}, "stream_state": {"pathwaycom/pathway": {"main": {"created_at": "2024-08-29T22:00:10Z"}}}}]}}',  # noqa
+            }
+        ],
+    )
+    assert destination._state == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-08-29T22:00:10Z"}}
+        },
+    }
+    assert destination._shared_state == "shared_test"
+    destination._write(
+        "_airbyte_states",
+        [
+            {
+                "_airbyte_raw_id": "4450e616-fb46-458e-aa78-16c1f631dbfb",
+                "_airbyte_job_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_slice_started_at": "2024-03-15T16:01:07.374909",
+                "_airbyte_extracted_at": None,
+                "_airbyte_loaded_at": "2024-03-15T16:01:13.809156",
+                "_airbyte_data": '{"type": "GLOBAL", "global": {"stream_states": [{"stream_descriptor": {"name": "commits"}, "stream_state": {"pathwaycom/pathway": {"main": {"created_at": "2024-08-29T22:00:10Z"}}}}]}}',  # noqa
+            }
+        ],
+    )
+    assert destination._state == {
+        "commits": {
+            "pathwaycom/pathway": {"main": {"created_at": "2024-08-29T22:00:10Z"}}
+        },
+    }
+    assert destination._shared_state is None
+
+
 def test_airbyte_legacy_state():
-    destination = _PathwayAirbyteDestination(on_event=lambda x: print(x))
-    assert destination.get_state() == {}
+    destination = _PathwayAirbyteDestination(lambda x: print(x), lambda x: print(x))
+    assert destination._state == {}
     destination._write(
         "_airbyte_states",
         [
@@ -2808,7 +2877,7 @@ def test_airbyte_legacy_state():
             }
         ],
     )
-    assert destination.get_state() == {
+    assert destination._state == {
         "commits": {
             "pathwaycom/pathway": {"main": {"created_at": "2024-03-15T18:24:20Z"}}
         },
@@ -3057,11 +3126,9 @@ def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
 @needs_multiprocessing_fork
 @pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
 def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
-    # Version 0.1.4 has a different API, so we use Docker to specify that we need
-    # this one, and not the latest
     table = pw.io.airbyte.read(
         tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
-        ["Users"],
+        ["users"],
         mode="static",
         execution_type="local",
         env_vars=env_vars,
@@ -3072,7 +3139,7 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
         config = yaml.safe_load(f)["source"]
     airbyte_source = pw.io.airbyte._construct_local_source(
         config,
-        streams=["Users"],
+        streams=["users"],
         env_vars=env_vars,
         enforce_method="docker",
     )
@@ -3118,31 +3185,35 @@ def test_deltalake_roundtrip(tmp_path: pathlib.Path):
     assert final.equals(original)
 
 
-def test_deltalake_recovery(tmp_path: pathlib.Path):
+@pytest.mark.parametrize(
+    "snapshot_access", [api.SnapshotAccess.FULL, api.SnapshotAccess.OFFSETS_ONLY]
+)
+def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
     data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
     df = pd.DataFrame(data).set_index("k")
     lake_path = str(tmp_path / "lake")
     output_path = str(tmp_path / "output.csv")
     write_deltalake(lake_path, df)
 
-    persistence_config = pw.persistence.Config.simple_config(
-        pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
-    )
-
     class InputSchema(pw.Schema):
         k: int = pw.column_definition(primary_key=True)
         v: str
 
     def run_pathway_program(expected_key_set):
-        G.clear()
         table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
         pw.io.csv.write(table, output_path)
+
+        persistence_config = pw.persistence.Config.simple_config(
+            pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
+            snapshot_access=snapshot_access,
+        )
         run_all(persistence_config=persistence_config)
         try:
             result = pd.read_csv(output_path)
             assert set(result["k"]) == expected_key_set
         except pd.errors.EmptyDataError:
             assert expected_key_set == {}
+        G.clear()
 
     run_pathway_program({1, 2, 3})
 
@@ -3207,3 +3278,59 @@ def test_streaming_from_deltalake(tmp_path):
     )
     pw.io.csv.write(table, output_path)
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 30)
+
+
+@needs_multiprocessing_fork
+@pytest.mark.parametrize("enforce_method", ["venv", "docker"])
+def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
+    output_path = tmp_path_with_airbyte_config / "table.jsonl"
+    pstorage_path = tmp_path_with_airbyte_config / "PStorage"
+
+    def run_pathway_program(n_expected_records):
+        table = pw.io.airbyte.read(
+            tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+            ["users"],
+            mode="static",
+            execution_type="local",
+            enforce_method=enforce_method,
+        )
+        pw.io.jsonlines.write(table, output_path)
+        run_all(
+            persistence_config=pw.persistence.Config.simple_config(
+                backend=pw.persistence.Backend.filesystem(pstorage_path),
+                snapshot_access=api.SnapshotAccess.OFFSETS_ONLY,
+            )
+        )
+
+        total_lines = 0
+        with open(output_path, "r") as f:
+            for _ in f:
+                total_lines += 1
+        assert total_lines == n_expected_records
+        G.clear()
+
+    run_pathway_program(500)
+    run_pathway_program(0)
+
+
+@needs_multiprocessing_fork
+def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
+    output_path = tmp_path_with_airbyte_config / "table.jsonl"
+    pstorage_path = tmp_path_with_airbyte_config / "PStorage"
+    table = pw.io.airbyte.read(
+        tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+        streams=["users", "purchases"],
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, output_path)
+    with pytest.raises(
+        RuntimeError,
+        match="Persistence in airbyte connector is supported only for the case of a single stream. "
+        "Please use several airbyte connectors with one stream per connector to persist the state.",
+    ):
+        run_all(
+            persistence_config=pw.persistence.Config.simple_config(
+                backend=pw.persistence.Backend.filesystem(pstorage_path),
+                snapshot_access=api.SnapshotAccess.OFFSETS_ONLY,
+            )
+        )

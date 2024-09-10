@@ -236,7 +236,7 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> Non
     pw.io.csv.write(sum, output_path)
     pw.io.csv.write(sum_dup, output_path)
 
-    with pytest.raises(RuntimeError, match="error while attempting to bind on address"):
+    with pytest.raises(OSError, match="error while attempting to bind on address"):
         pw.run()
 
 

@@ -42,11 +42,14 @@ use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWrite
 use crate::timestamp::current_unix_timestamp_ms;
 
 use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
-use data_storage::{DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError};
+use data_storage::{
+    DataEventType, ReadError, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError,
+};
 
 pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
+pub use snapshot::SnapshotMode;
 
 pub const ARTIFICIAL_TIME_ON_REWIND_START: Timestamp = Timestamp(0); // XXX
 
@@ -154,20 +157,30 @@ pub enum SnapshotAccess {
     Replay,
     Record,
     Full,
+    OffsetsOnly,
 }
 
 impl SnapshotAccess {
     fn is_replay_allowed(self) -> bool {
         match self {
-            SnapshotAccess::Full | SnapshotAccess::Replay => true,
+            SnapshotAccess::Full | SnapshotAccess::Replay | SnapshotAccess::OffsetsOnly => true,
             SnapshotAccess::Record => false,
         }
     }
 
     fn is_snapshot_writing_allowed(self) -> bool {
         match self {
-            SnapshotAccess::Full | SnapshotAccess::Record => true,
+            SnapshotAccess::Full | SnapshotAccess::Record | SnapshotAccess::OffsetsOnly => true,
             SnapshotAccess::Replay => false,
+        }
+    }
+
+    fn snapshot_mode(self) -> SnapshotMode {
+        match self {
+            SnapshotAccess::Full | SnapshotAccess::Record | SnapshotAccess::Replay => {
+                SnapshotMode::Full
+            }
+            SnapshotAccess::OffsetsOnly => SnapshotMode::OffsetsOnly,
         }
     }
 }
@@ -337,7 +350,8 @@ impl Connector {
         sender: &Sender<Entry>,
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
-    ) {
+        realtime_reader_needed: bool,
+    ) -> Result<(), ReadError> {
         let mut frontier = OffsetAntichain::new();
         if snapshot_access.is_replay_allowed() {
             persistence_mode.on_before_reading_snapshot(sender);
@@ -351,10 +365,10 @@ impl Connector {
                         persistence_mode,
                     );
 
-                    frontier = Self::frontier_for(reader, persistent_id, persistent_storage);
-                    info!("Seek the data source to the frontier {frontier:?}");
-                    if let Err(e) = reader.seek(&frontier) {
-                        error!("Failed to seek to frontier: {e}");
+                    if realtime_reader_needed {
+                        frontier = Self::frontier_for(reader, persistent_id, persistent_storage);
+                        info!("Seek the data source to the frontier {frontier:?}");
+                        reader.seek(&frontier)?;
                     }
                 }
             }
@@ -364,6 +378,8 @@ impl Connector {
         if let Err(e) = send_res {
             panic!("Failed to switch from persisted to realtime: {e}");
         }
+
+        Ok(())
     }
 
     pub fn snapshot_writer(
@@ -379,7 +395,7 @@ impl Connector {
                     persistent_storage
                         .lock()
                         .unwrap()
-                        .create_snapshot_writer(persistent_id)?,
+                        .create_snapshot_writer(persistent_id, snapshot_access.snapshot_mode())?,
                 ))
             } else {
                 let persistent_ids_enforced = persistent_storage
@@ -448,7 +464,9 @@ impl Connector {
                     &sender,
                     persistence_mode,
                     snapshot_access,
-                );
+                    realtime_reader_needed,
+                )
+                .map_err(EngineError::ReaderFailed)?;
                 if realtime_reader_needed {
                     Self::read_realtime_updates(&mut *reader, &sender, &main_thread, reporter);
                 }

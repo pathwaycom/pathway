@@ -11,7 +11,7 @@ use std::mem::take;
 use std::str::{from_utf8, Utf8Error};
 
 use crate::connectors::metadata::SourceMetadata;
-use crate::connectors::ReaderContext::{Diff, KeyValue, RawBytes, TokenizedEntries};
+use crate::connectors::ReaderContext::{Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
 use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::{Error, Key, Result, Timestamp, Type, Value};
@@ -662,6 +662,7 @@ impl Parser for DsvParser {
                 None => Err(ParseError::EmptyKafkaPayload.into()),
             },
             Diff(_) => Err(ParseError::UnsupportedReaderContext.into()),
+            Empty => Ok(vec![]),
         }
     }
 
@@ -750,6 +751,7 @@ impl Parser for IdentityParser {
             Diff(_) | TokenizedEntries(_, _) => {
                 return Err(ParseError::UnsupportedReaderContext.into())
             }
+            Empty => return Ok(vec![]),
         };
 
         let is_commit = is_commit_literal(&value);
@@ -1250,7 +1252,7 @@ impl Parser for DebeziumMessageParser {
                 };
                 (key, value)
             }
-            Diff(_) | TokenizedEntries(_, _) => {
+            Diff(_) | TokenizedEntries(_, _) | Empty => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
         };
@@ -1365,6 +1367,7 @@ impl Parser for JsonLinesParser {
             Diff(_) | TokenizedEntries(..) => {
                 return Err(ParseError::UnsupportedReaderContext.into());
             }
+            Empty => return Ok(vec![]),
         };
 
         if line.is_empty() {
@@ -1457,8 +1460,10 @@ impl TransparentParser {
 
 impl Parser for TransparentParser {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult {
-        let Diff((data_event, key, values)) = data else {
-            return Err(ParseError::UnsupportedReaderContext.into());
+        let (data_event, key, values) = match data {
+            Empty => return Ok(vec![]),
+            Diff((data_event, key, values)) => (data_event, key, values),
+            _ => return Err(ParseError::UnsupportedReaderContext.into()),
         };
         if values.get_special() == Some(SpecialEvent::Commit) {
             return Ok(vec![ParsedEventWithErrors::AdvanceTime]);

@@ -106,6 +106,7 @@ def read(
     gcp_job_name: str | None = None,
     enforce_method: str | None = None,
     refresh_interval_ms: int = 60000,
+    persistent_id: int | None = None,
 ):
     """
     Reads a table with an Airbyte connector that supports the \
@@ -315,6 +316,7 @@ mode.
 
     subject = _PathwayAirbyteSubject(
         source=source,
+        streams=streams,
         mode=mode,
         refresh_interval_ms=refresh_interval_ms,
     )
@@ -324,4 +326,5 @@ mode.
         schema=_AirbyteRecordSchema,
         autocommit_duration_ms=max(refresh_interval_ms, 1),
         name="airbyte",
+        persistent_id=persistent_id,
     )
