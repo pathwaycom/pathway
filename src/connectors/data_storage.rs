@@ -2705,7 +2705,7 @@ impl DeltaTableWriter {
         let writer = DTRecordBatchWriter::for_table(&table)?;
 
         let mut empty_buffered_columns = Vec::new();
-        for _ in 0..schema.all_fields().len() {
+        for _ in 0..schema.flattened_fields().len() {
             empty_buffered_columns.push(Vec::new());
         }
         Ok(Self {

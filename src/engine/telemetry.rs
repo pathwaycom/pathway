@@ -13,7 +13,7 @@ use nix::sys::{
     resource::{getrusage, UsageWho},
     time::TimeValLike,
 };
-use opentelemetry::metrics::{noop::NoopMeterProvider, Unit};
+use opentelemetry::metrics::noop::NoopMeterProvider;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{
@@ -29,7 +29,7 @@ use opentelemetry_sdk::{
 use opentelemetry_semantic_conventions::resource::{
     SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
 };
-use sysinfo::{get_current_pid, System};
+use sysinfo::{get_current_pid, ProcessesToUpdate, System};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -313,12 +313,12 @@ fn register_stats_metrics(stats: &Arc<ArcSwapOption<ProberStats>>) {
 
     let input_latency_gauge = meter
         .u64_observable_gauge(INPUT_LATENCY)
-        .with_unit(Unit::new("ms"))
+        .with_unit("ms")
         .init();
 
     let output_latency_gauge = meter
         .u64_observable_gauge(OUTPUT_LATENCY)
-        .with_unit(Unit::new("ms"))
+        .with_unit("ms")
         .init();
 
     meter
@@ -347,17 +347,17 @@ fn register_sys_metrics() {
 
     let memory_usage_gauge = meter
         .u64_observable_gauge(PROCESS_MEMORY_USAGE)
-        .with_unit(Unit::new("byte"))
+        .with_unit("byte")
         .init();
 
     let cpu_user_time_gauge = meter
         .i64_observable_gauge(PROCESS_CPU_USER_TIME)
-        .with_unit(Unit::new("s"))
+        .with_unit("s")
         .init();
 
     let cpu_system_time_gauge = meter
         .i64_observable_gauge(PROCESS_CPU_SYSTEM_TIME)
-        .with_unit(Unit::new("s"))
+        .with_unit("s")
         .init();
 
     meter
@@ -370,7 +370,7 @@ fn register_sys_metrics() {
             move |observer| {
                 let mut sys: System = System::new();
                 let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
-                sys.refresh_process(pid);
+                sys.refresh_processes(ProcessesToUpdate::Some(&[pid]));
 
                 if let Some(process) = sys.process(pid) {
                     observer.observe_u64(&memory_usage_gauge, process.memory(), &[]);
