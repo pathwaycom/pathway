@@ -16,9 +16,7 @@ class BaseRestServer:
         port: int,
         **rest_kwargs,
     ):
-        self.webserver = pw.io.http.PathwayWebserver(
-            host=host, port=port, **rest_kwargs
-        )
+        self.webserver = pw.io.http.PathwayWebserver(host=host, port=port)
 
     def serve(
         self,
@@ -103,6 +101,8 @@ class DocumentStoreServer(BaseRestServer):
         **rest_kwargs,
     ):
         super().__init__(host, port, **rest_kwargs)
+
+        rest_kwargs = {"methods": ("GET", "POST"), **rest_kwargs}
 
         self.serve(
             "/v1/retrieve",
