@@ -4,7 +4,6 @@
 # date: '2023-11-15'
 # thumbnail: '/assets/content/blog/th-computing-pagerank.png'
 # tags: ['tutorial', 'engineering']
-# related: ['/developers/templates/lsh/lsh_chapter1', '/developers/templates/llm-alert-pathway']
 # keywords: ['index', 'indexing', 'join', 'asof join', 'asof_now', 'KNN']
 # notebook_export_path: notebooks/tutorials/indexes.ipynb
 # ---
@@ -431,8 +430,8 @@ response_writer(result)
 #     run(data_dir=args.data_dir, host=args.host, port=args.port)
 # ```
 # %% [markdown]
-# A similar approach was taken in our [alerting example](/developers/templates/llm-alert-pathway/).
-# It is an LLM app that can send you alerts on slack when the response to your query has  changed significantly.
+# A similar approach was taken in our [alerting example](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/drive_alert).
+# It is an LLM app that can send you alerts on slack when the response to your query has changed significantly.
 # %% [markdown]
 # ## Summary
 # In this article you learned about the differences in indexing between databases and Pathway. You can see that both approaches - keeping the queries to update them in the future or forgetting queries immediately after answering, are useful. It depends on your objective which approach should be used. Pathway provides methods to handle both variants.
