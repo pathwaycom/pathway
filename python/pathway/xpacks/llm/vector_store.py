@@ -26,16 +26,12 @@ from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.ml.classifiers import _knn_lsh
 from pathway.xpacks.llm._utils import _coerce_sync
 
+from ._utils import _unwrap_udf
+
 if TYPE_CHECKING:
     import langchain_core.documents
     import langchain_core.embeddings
     import llama_index.core.schema
-
-
-def _unwrap_udf(func):
-    if isinstance(func, pw.UDF):
-        return func.__wrapped__
-    return func
 
 
 class VectorStoreServer:
