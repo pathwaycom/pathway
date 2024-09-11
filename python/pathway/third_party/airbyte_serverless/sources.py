@@ -62,6 +62,7 @@ import shlex
 import subprocess
 import tempfile
 import pathlib
+import zlib
 from typing import Iterable
 
 import venv
@@ -74,6 +75,7 @@ from .executable_runner import (
     ExecutableAirbyteSource,
     ConnectorResultProcessor,
     MAX_GCP_ENV_VAR_LENGTH,
+    get_configured_catalog,
 )
 from google.oauth2.service_account import Credentials as ServiceCredentials
 
@@ -172,6 +174,7 @@ class RemoteAirbyteSource(AbstractAirbyteSource):
     def __init__(
         self,
         config: dict,
+        streams: Iterable[str],
         job_id: str,
         credentials: ServiceCredentials,
         region: str,
@@ -180,6 +183,7 @@ class RemoteAirbyteSource(AbstractAirbyteSource):
         import google.cloud.run_v2
 
         self.config = config
+        self.streams = streams
         if len(self.yaml_config_b64) > MAX_GCP_ENV_VAR_LENGTH:
             # Not sure, but perhaps we should deliver GZip-ed config to enhance the limit
             raise ValueError(
@@ -194,6 +198,18 @@ class RemoteAirbyteSource(AbstractAirbyteSource):
 
         self.cloud_run = google.cloud.run_v2.JobsClient(credentials=self.credentials)
         self.create_gcp_job()
+
+    @property
+    def configured_catalog(self):
+        if self._cached_catalog is None:
+            self.extract()
+        if self._cached_catalog is not None:
+            catalog = json.loads(
+                zlib.decompress(base64.b64decode(self._cached_catalog))
+            )
+            return get_configured_catalog(catalog, self.streams)
+        else:
+            raise RuntimeError("No catalog after performing extraction iteration")
 
     def maybe_delete_google_cloud_job(self):
         import google.api_core.exceptions

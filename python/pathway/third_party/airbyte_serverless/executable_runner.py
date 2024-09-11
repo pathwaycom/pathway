@@ -19,9 +19,31 @@ import yaml
 MAX_GCP_ENV_VAR_LENGTH = 32768
 
 
+def get_configured_catalog(catalog, streams):
+    configured_catalog = catalog
+    configured_catalog["streams"] = [
+        {
+            "stream": stream,
+            "sync_mode": (
+                "incremental"
+                if "incremental" in stream["supported_sync_modes"]
+                else "full_refresh"
+            ),
+            "destination_sync_mode": "append",
+            "cursor_field": stream.get("default_cursor_field", []),
+        }
+        for stream in configured_catalog["streams"]
+        if not streams or stream["name"] in streams
+    ]
+    return configured_catalog
+
+
 class AbstractAirbyteSource(ABC):
     @abstractmethod
     def extract(self, state=None): ...
+
+    @property
+    def configured_catalog(self): ...
 
     def on_stop(self):
         pass
@@ -252,22 +274,7 @@ class ExecutableAirbyteSource(AbstractAirbyteSource):
 
     @property
     def configured_catalog(self):
-        configured_catalog = self.catalog
-        configured_catalog["streams"] = [
-            {
-                "stream": stream,
-                "sync_mode": (
-                    "incremental"
-                    if "incremental" in stream["supported_sync_modes"]
-                    else "full_refresh"
-                ),
-                "destination_sync_mode": "append",
-                "cursor_field": stream.get("default_cursor_field", []),
-            }
-            for stream in configured_catalog["streams"]
-            if not self.streams or stream["name"] in self.streams
-        ]
-        return configured_catalog
+        return get_configured_catalog(self.catalog, self.streams)
 
     def load_cached_catalog(self, cached_catalog):
         self._cached_catalog = cached_catalog

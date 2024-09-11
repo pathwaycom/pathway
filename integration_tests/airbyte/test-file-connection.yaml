@@ -1,0 +1,8 @@
+source:
+  docker_image: "airbyte/source-file:latest"
+  config:
+    dataset_name: "dataset"
+    format: "csv"
+    url: "./input.txt"
+    provider:
+      storage: "local"

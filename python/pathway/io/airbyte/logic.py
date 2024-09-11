@@ -3,6 +3,7 @@ import logging
 import time
 from collections.abc import Sequence
 
+from pathway.internals import api
 from pathway.io._utils import STATIC_MODE_NAME
 from pathway.io.python import ConnectorSubject
 from pathway.third_party.airbyte_serverless.destinations import (
@@ -12,6 +13,7 @@ from pathway.third_party.airbyte_serverless.sources import AbstractAirbyteSource
 
 MAX_RETRIES = 5
 INCREMENTAL_SYNC_MODE = "incremental"
+FULL_REFRESH_SYNC_MODE = "full_refresh"
 
 AIRBYTE_STREAM_RECORD_PREFIX = "_airbyte_raw_"
 AIRBYTE_DATA_RECORD_FIELD = "_airbyte_data"
@@ -144,10 +146,28 @@ class _PathwayAirbyteSubject(ConnectorSubject):
         self.mode = mode
         self.refresh_interval = refresh_interval_ms / 1000.0
         self.destination = _PathwayAirbyteDestination(
-            on_event=lambda payload: self.next_json({"data": payload}),
+            on_event=self.on_event,
             on_state=self.on_state,
         )
         self.streams = streams
+        self.sync_mode = self._sync_mode()
+        self._cache: dict[api.Pointer, bytes] = {}
+        self._present_keys: set[api.Pointer] = set()
+
+    def on_event(self, payload):
+        if self.sync_mode == INCREMENTAL_SYNC_MODE:
+            self.next_json({"data": payload})
+        elif self.sync_mode == FULL_REFRESH_SYNC_MODE:
+            message = json.dumps(
+                {"data": payload}, ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+            key = api.ref_scalar(message)
+            if self._cache.get(key) != message:
+                self._cache[key] = message
+                self._add(key, message)
+            self._present_keys.add(key)
+        else:
+            raise RuntimeError(f"Unknown sync_mode: {self.sync_mode}")
 
     def on_state(self, state):
         self._report_offset(json.dumps(state).encode("utf-8"))
@@ -179,6 +199,17 @@ class _PathwayAirbyteSubject(ConnectorSubject):
 
             if self.mode == STATIC_MODE_NAME:
                 break
+            if self.sync_mode == FULL_REFRESH_SYNC_MODE:
+                absent_keys = set()
+                for key, message in self._cache.items():
+                    if key not in self._present_keys:
+                        self._remove(key, message)
+                        absent_keys.add(key)
+                for key in absent_keys:
+                    self._cache.pop(key)
+                self._present_keys.clear()
+                self._enable_commits()
+                self._disable_commits()
 
             time_elapsed = time.time() - time_before_start
             if time_elapsed < self.refresh_interval:
@@ -186,6 +217,11 @@ class _PathwayAirbyteSubject(ConnectorSubject):
 
     def on_stop(self):
         self.source.on_stop()
+
+    def _sync_mode(self):
+        stream = self.source.configured_catalog["streams"][0]
+        sync_mode = stream["sync_mode"]
+        return sync_mode
 
     def _seek(self, state):
         self.destination.set_state(json.loads(state.decode("utf-8")))

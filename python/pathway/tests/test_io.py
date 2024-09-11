@@ -24,7 +24,7 @@ from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.io.airbyte.logic import _PathwayAirbyteDestination
 from pathway.tests.utils import (
-    AIRBYTE_CONNECTION_REL_PATH,
+    AIRBYTE_FAKER_CONNECTION_REL_PATH,
     CountDifferentTimestampsCallback,
     CsvLinesNumberChecker,
     FileLinesNumberChecker,
@@ -3097,14 +3097,16 @@ def test_deltalake_append(min_commit_frequency, tmp_path: pathlib.Path):
 @pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
 def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
     table = pw.io.airbyte.read(
-        tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+        tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH,
         ["users"],
         mode="static",
         execution_type="local",
         env_vars=env_vars,
     )
 
-    with open(tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
+    with open(
+        tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH, "r"
+    ) as f:
         config = yaml.safe_load(f)["source"]
     airbyte_source = pw.io.airbyte._construct_local_source(
         config,
@@ -3127,7 +3129,7 @@ def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
 @pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
 def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
     table = pw.io.airbyte.read(
-        tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+        tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH,
         ["users"],
         mode="static",
         execution_type="local",
@@ -3135,7 +3137,9 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
         enforce_method="docker",
     )
 
-    with open(tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
+    with open(
+        tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH, "r"
+    ) as f:
         config = yaml.safe_load(f)["source"]
     airbyte_source = pw.io.airbyte._construct_local_source(
         config,
@@ -3288,7 +3292,7 @@ def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
 
     def run_pathway_program(n_expected_records):
         table = pw.io.airbyte.read(
-            tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+            tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH,
             ["users"],
             mode="static",
             execution_type="local",
@@ -3318,7 +3322,7 @@ def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
     output_path = tmp_path_with_airbyte_config / "table.jsonl"
     pstorage_path = tmp_path_with_airbyte_config / "PStorage"
     table = pw.io.airbyte.read(
-        tmp_path_with_airbyte_config / AIRBYTE_CONNECTION_REL_PATH,
+        tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH,
         streams=["users", "purchases"],
         mode="static",
     )

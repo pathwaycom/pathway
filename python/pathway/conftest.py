@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from pathway import cli
 from pathway.internals import config, parse_graph
-from pathway.tests.utils import AIRBYTE_CONNECTION_REL_PATH, UniquePortDispenser
+from pathway.tests.utils import AIRBYTE_FAKER_CONNECTION_REL_PATH, UniquePortDispenser
 
 
 @pytest.fixture(autouse=True)
@@ -91,7 +91,7 @@ def tmp_path_with_airbyte_config(tmp_path):
         result = runner.invoke(
             cli.create_source,
             [
-                "new_source",
+                "faker",
                 "--image",
                 "airbyte/source-faker:6.2.10",
             ],
@@ -100,7 +100,7 @@ def tmp_path_with_airbyte_config(tmp_path):
     finally:
         os.chdir(start_dir)
 
-    with open(tmp_path / AIRBYTE_CONNECTION_REL_PATH, "r") as f:
+    with open(tmp_path / AIRBYTE_FAKER_CONNECTION_REL_PATH, "r") as f:
         config = yaml.safe_load(f)
 
     # https://docs.airbyte.com/integrations/sources/faker#reference
@@ -108,7 +108,7 @@ def tmp_path_with_airbyte_config(tmp_path):
     config["source"]["config"]["records_per_sync"] = 500
     config["source"]["config"]["count"] = 500
     config["source"]["config"]["always_updated"] = False
-    with open(tmp_path / AIRBYTE_CONNECTION_REL_PATH, "w") as f:
+    with open(tmp_path / AIRBYTE_FAKER_CONNECTION_REL_PATH, "w") as f:
         yaml.dump(config, f)
 
     return tmp_path
