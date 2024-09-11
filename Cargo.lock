@@ -3638,6 +3638,7 @@ dependencies = [
  "thiserror",
  "timely",
  "tokio",
+ "tonic",
  "usearch",
  "uuid",
  "xxhash-rust",

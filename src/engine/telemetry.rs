@@ -31,6 +31,7 @@ use opentelemetry_semantic_conventions::resource::{
 };
 use sysinfo::{get_current_pid, ProcessesToUpdate, System};
 use tokio::sync::mpsc;
+use tonic::transport::ClientTlsConfig;
 use uuid::Uuid;
 
 const PATHWAY_TELEMETRY_SERVER: &str = "https://usage.pathway.com";
@@ -75,11 +76,13 @@ impl Telemetry {
     fn base_otel_exporter_builder(
         server_endpoint: &str,
     ) -> opentelemetry_otlp::TonicExporterBuilder {
+        let tls_config = ClientTlsConfig::new().with_enabled_roots();
         opentelemetry_otlp::new_exporter()
             .tonic()
             .with_protocol(Protocol::Grpc)
             .with_endpoint(server_endpoint)
             .with_timeout(OPENTELEMETRY_EXPORT_TIMEOUT)
+            .with_tls_config(tls_config)
     }
 
     fn init_tracer_provider(&self) {
