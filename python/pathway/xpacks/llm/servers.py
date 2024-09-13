@@ -88,7 +88,7 @@ class DocumentStoreServer(BaseRestServer):
     Args:
         - host: host on which server will run
         - port: port on which server will run
-        - doc_store: instance of ``DocumentStore`` which is used
+        - document_store: instance of ``DocumentStore`` which is used
             to answer queries received in the endpoints.
         - rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
     """
@@ -97,7 +97,7 @@ class DocumentStoreServer(BaseRestServer):
         self,
         host: str,
         port: int,
-        doc_store: DocumentStore,
+        document_store: DocumentStore,
         **rest_kwargs,
     ):
         super().__init__(host, port, **rest_kwargs)
@@ -106,21 +106,21 @@ class DocumentStoreServer(BaseRestServer):
 
         self.serve(
             "/v1/retrieve",
-            doc_store.RetrieveQuerySchema,
-            doc_store.retrieve_query,
+            document_store.RetrieveQuerySchema,
+            document_store.retrieve_query,
             **rest_kwargs,
         )
         self.serve(
             "/v1/statistics",
-            doc_store.StatisticsQuerySchema,
-            doc_store.statistics_query,
+            document_store.StatisticsQuerySchema,
+            document_store.statistics_query,
             **rest_kwargs,
         )
 
         self.serve(
             "/v1/inputs",
-            doc_store.InputsQuerySchema,
-            doc_store.inputs_query,
+            document_store.InputsQuerySchema,
+            document_store.inputs_query,
             **rest_kwargs,
         )
 

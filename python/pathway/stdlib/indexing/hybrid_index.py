@@ -86,6 +86,11 @@ class HybridIndex(InnerIndex):
             }
         )
 
+        if isinstance(number_of_matches, pw.ColumnExpression):
+            grouped_by_query = grouped_by_query.with_universe_of(
+                number_of_matches.table  # type: ignore
+            )  # fix universe error while using DocStore with Server
+
         limited_results = grouped_by_query.select(
             **{_INDEX_REPLY: limit_results(pw.this[_INDEX_REPLY], number_of_matches)}
         )

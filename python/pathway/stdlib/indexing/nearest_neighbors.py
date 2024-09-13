@@ -409,7 +409,8 @@ class UsearchKnnFactory(InnerIndexFactory):
         dimensions (int): number of dimensions of vectors that are used by the index and
             queries
         reserved_space (int): initial capacity (in the number of entries) of the index
-        metric (USearchMetricKind): metric kind that is used to determine distance
+        metric (USearchMetricKind): metric kind that is used to determine distance.
+            Defaults to cosine similarity.
         connectivity (int): maximum number of edges for a node in the HNSW index, setting
             this value to 0 tells usearch to configure it on its own
         expansion_add (int): indicates amount of work spent while adding elements to the index
@@ -425,7 +426,7 @@ class UsearchKnnFactory(InnerIndexFactory):
 
     dimensions: int
     reserved_space: int
-    metric: USearchMetricKind
+    metric: USearchMetricKind = USearchMetricKind.COS
     # setting values below to zero tells usearch figure those values on its own
     connectivity: int = 0
     expansion_add: int = 0
@@ -465,7 +466,8 @@ class BruteForceKnnFactory(InnerIndexFactory):
             case ``auxiliary_space`` is set to a value smaller than the current number
             of entries in the index, it is still proportional to
             the size of the index (the value given in this parameter is ignored)
-        metric (BruteForceKnnMetricKind): metric kind that is used to determine distance
+        metric (BruteForceKnnMetricKind): metric kind that is used to determine distance.
+            Defaults to cosine similarity.
         embedder: :py:class:`~pathway.UDF` used for calculating embeddings of string. It is needed, if index
             is used for indexing texts.
 
@@ -474,7 +476,7 @@ class BruteForceKnnFactory(InnerIndexFactory):
     dimensions: int
     reserved_space: int
     auxiliary_space: int = 1024 * 128
-    metric: BruteForceKnnMetricKind
+    metric: BruteForceKnnMetricKind = BruteForceKnnMetricKind.COS
     embedder: pw.UDF | None = None
 
     def build_inner_index(

@@ -8,9 +8,15 @@ import pytest
 
 import pathway as pw
 from pathway.engine import BruteForceKnnMetricKind
-from pathway.stdlib.indexing.nearest_neighbors import BruteForceKnnFactory
+from pathway.stdlib.indexing import (
+    BruteForceKnnFactory,
+    HybridIndexFactory,
+    TantivyBM25Factory,
+    UsearchKnnFactory,
+)
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm.document_store import DocumentStore
+from pathway.xpacks.llm.servers import DocumentStoreServer
 
 
 class DebugStatsInputSchema(DocumentStore.StatisticsQuerySchema):
@@ -321,6 +327,57 @@ def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
     )
 
     retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["text"]  # just check if some text was returned
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["0.0.0.0"],
+)
+@pytest.mark.parametrize(
+    "port",
+    [8000],
+)
+def test_docstore_server_hybridindex_builds(host, port):
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+    vector_index = UsearchKnnFactory(
+        embedder=fake_embeddings_model, reserved_space=40, dimensions=3
+    )
+    bm25 = TantivyBM25Factory()
+
+    hybrid_index = HybridIndexFactory([vector_index, bm25])
+
+    document_store = DocumentStore(docs, retriever_factory=hybrid_index)
+
+    document_server = DocumentStoreServer(
+        host=host, port=port, document_store=document_store
+    )
+
+    assert document_server is not None  # :)
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=DocumentStore.RetrieveQuerySchema,
+        rows=[("Foo", 1, None, None)],
+    )
+
+    retrieve_outputs = document_store.retrieve_query(retrieve_queries)
     _, rows = pw.debug.table_to_dicts(retrieve_outputs)
     (val,) = rows["result"].values()
     assert isinstance(val, pw.Json)
