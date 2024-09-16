@@ -1,12 +1,18 @@
+# flake8: noqa
+# ignore the imports
 import os
 import pathlib
 from typing import List
+
+import nltk
+
+nltk.download("punkt")
 
 import openapi_spec_validator
 import requests
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_core.embeddings import Embeddings
-from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.node_parser import TextSplitter
 from llama_index.readers.pathway import PathwayReader
 from llama_index.retrievers.pathway import PathwayRetriever
