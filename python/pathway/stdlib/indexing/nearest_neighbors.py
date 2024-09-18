@@ -12,6 +12,7 @@ from pathway.engine import (
 )
 from pathway.internals import dtype as dt
 from pathway.internals.runtime_type_check import check_arg_types
+from pathway.internals.udfs.utils import _coerce_sync
 from pathway.stdlib.indexing.colnames import _INDEX_REPLY, _NO_OF_MATCHES, _QUERY_ID
 from pathway.stdlib.indexing.data_index import InnerIndex
 from pathway.stdlib.indexing.retrievers import InnerIndexFactory
@@ -401,7 +402,28 @@ class LshKnn(InnerIndex):
 
 
 @dataclass(kw_only=True)
-class UsearchKnnFactory(InnerIndexFactory):
+class KnnIndexFactory(InnerIndexFactory):
+    dimensions: int | None = None
+    embedder: pw.UDF | None = None
+
+    def _get_embed_dimensions(self) -> int:
+        if isinstance(self.embedder, pw.UDF):
+            dim = len(_coerce_sync(self.embedder.__wrapped__)("."))
+            return dim
+        else:
+            raise TypeError("Embedder is not a valid `pw.UDF`.")
+
+    def __post_init__(self):
+        if self.dimensions is None and self.embedder is not None:
+            self.dimensions: int = self._get_embed_dimensions()
+        elif self.dimensions is None and self.embedder is None:
+            raise ValueError(
+                "Either `dimensions` or `embedder` must be provided to index factory."
+            )
+
+
+@dataclass(kw_only=True)
+class UsearchKnnFactory(KnnIndexFactory):
     """
     Factory for creating UsearchKNN indices.
 
@@ -424,20 +446,22 @@ class UsearchKnnFactory(InnerIndexFactory):
 
     """
 
-    dimensions: int
-    reserved_space: int
+    reserved_space: int = 400
     metric: USearchMetricKind = USearchMetricKind.COS
     # setting values below to zero tells usearch figure those values on its own
     connectivity: int = 0
     expansion_add: int = 0
     expansion_search: int = 0
-    embedder: pw.UDF | None = None
 
     def build_inner_index(
         self,
         data_column: pw.ColumnReference,
         metadata_column: pw.ColumnExpression | None = None,
     ) -> InnerIndex:
+        assert isinstance(
+            self.dimensions, int
+        ), "`dimensions` is not set, this may indicate something is wrong with embedder."
+
         inner_index = USearchKnn(
             data_column,
             metadata_column,
@@ -453,7 +477,7 @@ class UsearchKnnFactory(InnerIndexFactory):
 
 
 @dataclass(kw_only=True)
-class BruteForceKnnFactory(InnerIndexFactory):
+class BruteForceKnnFactory(KnnIndexFactory):
     """
     Factory for creating BruteForceKnn indices.
 
@@ -473,17 +497,19 @@ class BruteForceKnnFactory(InnerIndexFactory):
 
     """
 
-    dimensions: int
-    reserved_space: int
+    reserved_space: int = 400
     auxiliary_space: int = 1024 * 128
     metric: BruteForceKnnMetricKind = BruteForceKnnMetricKind.COS
-    embedder: pw.UDF | None = None
 
     def build_inner_index(
         self,
         data_column: pw.ColumnReference,
         metadata_column: pw.ColumnExpression | None = None,
     ) -> InnerIndex:
+        assert isinstance(
+            self.dimensions, int
+        ), "`dimensions` is not set, this may indicate something is wrong with embedder."
+
         inner_index = BruteForceKnn(
             data_column,
             metadata_column,
@@ -496,8 +522,8 @@ class BruteForceKnnFactory(InnerIndexFactory):
         return inner_index
 
 
-@dataclass(frozen=True, kw_only=True)
-class LshKnnFactory(InnerIndexFactory):
+@dataclass(kw_only=True)
+class LshKnnFactory(KnnIndexFactory):
     """
     Factory for creating LshKnn indices.
 
@@ -511,18 +537,19 @@ class LshKnnFactory(InnerIndexFactory):
             is used for indexing texts.
     """
 
-    dimensions: int
     n_or: int = 20
     n_and: int = 10
     bucket_length: float = 10.0
     distance_type: DistanceTypes = "euclidean"
-    embedder: pw.UDF | None = None
 
     def build_inner_index(
         self,
         data_column: pw.ColumnReference,
         metadata_column: pw.ColumnExpression | None = None,
     ) -> InnerIndex:
+        assert isinstance(
+            self.dimensions, int
+        ), "`dimensions` is not set, this may indicate something is wrong with embedder."
 
         return LshKnn(
             data_column,

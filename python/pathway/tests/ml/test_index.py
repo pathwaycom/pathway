@@ -803,6 +803,20 @@ def fake_embedder(x: str) -> list[float]:
             metric=BruteForceKnnMetricKind.COS,
             embedder=fake_embedder,
         ),
+        UsearchKnnFactory(  # without dimensions
+            reserved_space=3,
+            embedder=fake_embedder,
+            metric=USearchMetricKind.COS,
+        ),
+        LshKnnFactory(embedder=fake_embedder),
+        BruteForceKnnFactory(
+            reserved_space=3,
+            metric=BruteForceKnnMetricKind.COS,
+            embedder=fake_embedder,
+        ),
+        UsearchKnnFactory(  # without optional params
+            embedder=fake_embedder,
+        ),
         TantivyBM25Factory(),
         HybridIndexFactory(
             [
@@ -832,6 +846,57 @@ def test_index_factory(factory):
         pd.DataFrame({"query": ["a"], "doc": [("a",)]})
     )
     assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        UsearchKnnFactory,
+        LshKnnFactory,
+        BruteForceKnnFactory,
+    ],
+)
+def test_knn_index_factory_init(factory):
+    index = factory(
+        dimensions=3,
+        embedder=None,
+    )
+    index = factory(dimensions=3)
+    index = factory(
+        dimensions=3,
+        embedder=None,
+    )
+    index = factory(
+        embedder=fake_embedder,
+    )
+    index = factory(embedder=fake_embedder)
+    index = factory(embedder=fake_embedder)
+    assert index is not None  # for flake8 F841
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        UsearchKnnFactory,
+        LshKnnFactory,
+        BruteForceKnnFactory,
+    ],
+)
+def test_knn_index_factory_creation_error(factory):
+    with pytest.raises(
+        ValueError,
+        match="Either `dimensions` or `embedder` must be provided to index factory.",
+    ):
+        index = factory(
+            dimensions=None,
+            embedder=None,
+        )
+        index = factory(dimensions=None)
+        index = factory(
+            dimensions=None,
+            embedder=None,
+        )
+        assert index is not None  # for flake8 F841
 
 
 def test_hybrid_index():
