@@ -812,12 +812,11 @@ def test_windows_with_utc_datetimes(w):
         expected = T(
             """
          | min_a | max_a
-       1 |   1   |   2
-       2 |   3   |   3
-       3 |   4   |   5
-       4 |   6   |   6
+       1 |   1   |   3
+       2 |   4   |   5
+       3 |   6   |   6
         """
-        )  # FIXME merge rows 1, 2 when sorting is fixed
+        )
 
     elif w == pw.temporal.tumbling(duration=datetime.timedelta(minutes=30)):
         expected = T(
@@ -876,12 +875,11 @@ def test_windows_with_datetimes(w):
         expected = T(
             """
          | min_a | max_a
-       1 |   1   |   2
-       2 |   3   |   3
-       3 |   4   |   5
-       4 |   6   |   6
+       1 |   1   |   3
+       2 |   4   |   5
+       3 |   6   |   6
         """
-        )  # FIXME merge rows 1, 2 when sorting is fixed
+        )
 
     elif w == pw.temporal.tumbling(duration=datetime.timedelta(minutes=30)):
         expected = T(

@@ -86,11 +86,7 @@ class _SessionWindow(Window):
         instance: pw.ColumnExpression | None,
     ) -> pw.Table:
         target = table.select(key=key, instance=instance)
-        import pathway.stdlib.indexing
-
-        target = target + pathway.stdlib.indexing.sort_from_index(
-            **pathway.stdlib.indexing.build_sorted_index(target)
-        )
+        target += target.sort(key=pw.this.key, instance=pw.this.instance)
 
         sel_key = target.select(next_key=target.ix(target.next, optional=True).key)
         target += target.select(

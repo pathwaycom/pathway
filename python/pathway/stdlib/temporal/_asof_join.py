@@ -9,7 +9,6 @@ from typing import Any
 
 import pathway.internals as pw
 import pathway.internals.expression as expr
-import pathway.stdlib.indexing
 from pathway.internals.arg_handlers import (
     arg_handler,
     join_kwargs_handler,
@@ -277,9 +276,7 @@ class AsofJoinResult(DesugaringContext):
         }
         target = pw.Table.concat_reindex(*orig_data.values())
 
-        target += pathway.stdlib.indexing.sort_from_index(
-            **pathway.stdlib.indexing.build_sorted_index(target)
-        )
+        target += target.sort(key=pw.this.key, instance=pw.this.instance)
 
         next_table = _build_groups(target, dir_next=True)
         prev_table = _build_groups(target, dir_next=False)
