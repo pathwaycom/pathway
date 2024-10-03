@@ -222,6 +222,7 @@ def test_vs_filtering_negatives(glob_filter):
         "contains(path, `pathway/xpacks/llm/tests/test_vector_store.py`)",
         "path == `pathway/xpacks/llm/tests/test_vector_store.py`",
         "globmatch(`pathway/xpacks/llm/tests/test_vector_store.py`, path)",
+        "(path == `pathway/xpacks/llm/tests/test_vector_store.py`) && (published_date >= to_number(`1724351400`))",
     ],
 )
 def test_vs_filtering_metadata(metadata_filter):
@@ -233,7 +234,10 @@ def test_vs_filtering_metadata(metadata_filter):
         rows=[
             (
                 "test".encode("utf-8"),
-                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+                {
+                    "path": "pathway/xpacks/llm/tests/test_vector_store.py",
+                    "published_date": 1724351401,
+                },
             )
         ],
     )
