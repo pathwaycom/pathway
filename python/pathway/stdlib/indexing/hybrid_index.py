@@ -36,6 +36,7 @@ class HybridIndex(InnerIndex):
     def _combine_results(
         self,
         query_retriever: Callable[[InnerIndex], pw.Table],
+        query_table: pw.Table,
         number_of_matches: pw.ColumnExpression | int,
     ) -> pw.Table:
         @pw.udf
@@ -87,9 +88,14 @@ class HybridIndex(InnerIndex):
         )
 
         if isinstance(number_of_matches, pw.ColumnExpression):
-            grouped_by_query = grouped_by_query.with_universe_of(
-                number_of_matches.table  # type: ignore
-            )  # fix universe error while using DocStore with Server
+            number_of_matches_table = query_table.select(
+                _pw_number_of_matches=number_of_matches
+            )
+            grouped_by_query.promise_universe_is_subset_of(number_of_matches_table)
+            number_of_matches_table_restricted = number_of_matches_table.restrict(
+                grouped_by_query
+            )
+            number_of_matches = number_of_matches_table_restricted._pw_number_of_matches
 
         limited_results = grouped_by_query.select(
             **{_INDEX_REPLY: limit_results(pw.this[_INDEX_REPLY], number_of_matches)}
@@ -111,7 +117,9 @@ class HybridIndex(InnerIndex):
                 metadata_filter=metadata_filter,
             )
 
-        return self._combine_results(query_retriever, number_of_matches)
+        return self._combine_results(
+            query_retriever, query_column.table, number_of_matches
+        )
 
     def query_as_of_now(
         self,
@@ -127,7 +135,9 @@ class HybridIndex(InnerIndex):
                 metadata_filter=metadata_filter,
             )
 
-        return self._combine_results(query_retriever, number_of_matches)
+        return self._combine_results(
+            query_retriever, query_column.table, number_of_matches
+        )
 
 
 class HybridIndexFactory(InnerIndexFactory):

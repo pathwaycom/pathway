@@ -11,6 +11,7 @@ from pathway.engine import BruteForceKnnMetricKind
 from pathway.stdlib.indexing import (
     BruteForceKnnFactory,
     HybridIndexFactory,
+    LshKnnFactory,
     TantivyBM25Factory,
     UsearchKnnFactory,
 )
@@ -140,7 +141,16 @@ def test_async_embedder():
         "pathway/xpacks/llm/tests/test_vector_store.py",
     ],
 )
-def test_vs_filtering(glob_filter):
+@pytest.mark.parametrize(
+    "index_cls",
+    [
+        BruteForceKnnFactory,
+        UsearchKnnFactory,
+        TantivyBM25Factory,
+        LshKnnFactory,
+    ],
+)
+def test_vectorstore_glob_filtering(glob_filter, index_cls):
     @pw.udf
     def fake_embeddings_model(x: str) -> list[float]:
         return [1.0, 1.0, 0.0]
@@ -155,20 +165,20 @@ def test_vs_filtering(glob_filter):
         ],
     )
 
-    index_factory = BruteForceKnnFactory(
-        dimensions=3,
-        reserved_space=10,
-        embedder=fake_embeddings_model,
-        metric=BruteForceKnnMetricKind.COS,
-    )
+    if index_cls == TantivyBM25Factory:
+        index_factory = index_cls()
+    else:
+        index_factory = index_cls(
+            dimensions=3,
+            embedder=fake_embeddings_model,
+        )
 
     vector_server = DocumentStore(docs, retriever_factory=index_factory)
 
-    # parse_graph.G.clear()
     retrieve_queries = pw.debug.table_from_markdown(
         f"""
-        query | k | metadata_filter | filepath_globpattern
-        "Foo" | 1 |                 | {glob_filter}
+        query  | k | metadata_filter | filepath_globpattern
+        "test" | 1 |                 | {glob_filter}
         """,
         schema=DocumentStore.RetrieveQuerySchema,
     )
@@ -181,6 +191,195 @@ def test_vs_filtering(glob_filter):
     assert isinstance(query_result, dict)
     assert query_result["dist"] < 1.0e-6  # type: ignore # the dist is not 0 due to float normalization
     assert query_result["text"]  # just check if some text was returned
+
+
+@pytest.mark.parametrize(
+    "glob_filter",
+    [
+        "**/abc.py",
+    ],
+)
+@pytest.mark.parametrize(
+    "index_cls",
+    [
+        TantivyBM25Factory,
+    ],
+)
+def test_vectorstore_tantivy_negative_glob_filtering(glob_filter, index_cls):
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+
+    index_factory = index_cls()
+
+    doc_store = DocumentStore(docs, retriever_factory=index_factory)
+
+    retrieve_queries = pw.debug.table_from_markdown(
+        f"""
+        query  | k | metadata_filter | filepath_globpattern
+        "test" | 1 |                 | {glob_filter}
+        """,
+        schema=DocumentStore.RetrieveQuerySchema,
+    )
+
+    retrieve_outputs = doc_store.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    assert len(val.as_list()) == 0
+
+
+@pytest.mark.parametrize(
+    "glob_filter",
+    [
+        "",
+        "**/*.py",
+        "pathway/xpacks/llm/tests/test_vector_store.py",
+    ],
+)
+@pytest.mark.parametrize(
+    "index_cls1",
+    [
+        BruteForceKnnFactory,
+        UsearchKnnFactory,
+        TantivyBM25Factory,
+        LshKnnFactory,
+    ],
+)
+@pytest.mark.parametrize(
+    "index_cls2",
+    [
+        UsearchKnnFactory,
+        TantivyBM25Factory,
+    ],
+)
+def test_hybrid_docstore_glob_filtering(glob_filter, index_cls1, index_cls2):
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+
+    vector_index_construct_args = dict(embedder=fake_embeddings_model)
+
+    index1_args = {}
+    index2_args = {}
+
+    if index_cls1 != TantivyBM25Factory:
+        index1_args = vector_index_construct_args
+
+    if index_cls2 != TantivyBM25Factory:
+        index2_args = vector_index_construct_args
+
+    index1 = index_cls1(**index1_args)
+    index2 = index_cls2(**index2_args)
+
+    index_factory = HybridIndexFactory(retriever_factories=[index1, index2])
+
+    vector_server = DocumentStore(docs, retriever_factory=index_factory)
+
+    retrieve_queries = pw.debug.table_from_markdown(
+        f"""
+        query  | k | metadata_filter | filepath_globpattern
+        "test" | 1 |                 | {glob_filter}
+        """,
+        schema=DocumentStore.RetrieveQuerySchema,
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["dist"] < 1.0e-6  # type: ignore
+    assert query_result["text"]  # just check if some text was returned
+
+
+@pytest.mark.parametrize(
+    "glob_filter",
+    [
+        "**/*xyz.py",
+        "pathway/xpacks/llm/tests/abc.py",
+    ],
+)
+@pytest.mark.parametrize(
+    "index_cls1",
+    [
+        BruteForceKnnFactory,
+        UsearchKnnFactory,
+        TantivyBM25Factory,
+        LshKnnFactory,
+    ],
+)
+@pytest.mark.parametrize(
+    "index_cls2",
+    [
+        UsearchKnnFactory,
+        TantivyBM25Factory,
+    ],
+)
+def test_hybrid_docstore_glob_filtering_negative(glob_filter, index_cls1, index_cls2):
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "pathway/xpacks/llm/tests/test_vector_store.py"},
+            )
+        ],
+    )
+
+    vector_index_construct_args = dict(embedder=fake_embeddings_model)
+
+    index1_args = {}
+    index2_args = {}
+
+    if index_cls1 != TantivyBM25Factory:
+        index1_args = vector_index_construct_args
+
+    if index_cls2 != TantivyBM25Factory:
+        index2_args = vector_index_construct_args
+
+    index1 = index_cls1(**index1_args)
+    index2 = index_cls2(**index2_args)
+
+    index_factory = HybridIndexFactory(retriever_factories=[index1, index2])
+
+    vector_server = DocumentStore(docs, retriever_factory=index_factory)
+
+    retrieve_queries = pw.debug.table_from_markdown(
+        f"""
+        query  | k | metadata_filter | filepath_globpattern
+        "test" | 1 |                 | {glob_filter}
+        """,
+        schema=DocumentStore.RetrieveQuerySchema,
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    assert len(val.as_list()) == 0
 
 
 @pytest.mark.parametrize(
