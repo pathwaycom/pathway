@@ -2,6 +2,7 @@
 import json
 from abc import abstractmethod
 from enum import Enum
+from typing import TYPE_CHECKING
 from warnings import warn
 
 import requests
@@ -14,6 +15,9 @@ from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
+
+if TYPE_CHECKING:
+    from pathway.xpacks.llm.servers import QASummaryRestServer
 
 
 @pw.udf
@@ -365,6 +369,9 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         self.search_topk = search_topk
 
+        self.server: None | QASummaryRestServer = None
+        self._pending_endpoints: list[tuple] = []
+
     def _init_schemas(self, default_llm_name: str | None = None) -> None:
         """Initialize API schemas with optional and non-optional arguments."""
 
@@ -470,7 +477,69 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         self.server = QASummaryRestServer(host, port, self, **rest_kwargs)
 
+        # register awaiting endpoints
+        for (
+            route,
+            schema,
+            callable_func,
+            additional_endpoint_kwargs,
+        ) in self._pending_endpoints:
+            self.server.serve_callable(
+                route=route,
+                schema=schema,
+                callable_func=callable_func,
+                **additional_endpoint_kwargs,
+            )
+        self._pending_endpoints.clear()
+
+    def serve_callable(
+        self,
+        route: str,
+        schema: type[pw.Schema] | None = None,
+        **additional_endpoint_kwargs,
+    ):
+        """Serve additional endpoints by wrapping callables.
+        Expects an endpoint route. Schema is optional, adding schema type will enforce the
+            webserver to check arguments.
+        Beware that if Schema is not set, incorrect types may cause runtime error.
+
+        Example:
+
+        >>> @rag_app.serve_callable(route="/agent")  # doctest: +SKIP
+        ... async def some_func(user_query: str) -> str:
+        ...     # define your agent, or custom RAG using any framework or plain Python
+        ...     # ...
+        ...     messages = [{"role": "user", "content": user_query}]
+        ...     result = agent.invoke(messages)
+        ...     return result
+        """
+
+        def decorator(callable_func):
+
+            if self.server is None:
+                self._pending_endpoints.append(
+                    (route, schema, callable_func, additional_endpoint_kwargs)
+                )
+                warn(
+                    "Adding an endpoint while webserver is not built, \
+                    it will be registered when `build_server` is called."
+                )
+            else:
+                self.server.serve_callable(
+                    route=route,
+                    schema=schema,
+                    callable_func=callable_func,
+                    **additional_endpoint_kwargs,
+                )
+            return callable_func
+
+        return decorator
+
     def run_server(self, *args, **kwargs):
+        if self.server is None:
+            raise ValueError(
+                "HTTP server is not built, initialize it with `build_server`"
+            )
         self.server.run(*args, **kwargs)
 
 

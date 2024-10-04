@@ -8,7 +8,10 @@ import nltk
 
 nltk.download("punkt")
 
+from typing import Any, TypeAlias
+
 import openapi_spec_validator
+import pytest
 import requests
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_core.embeddings import Embeddings
@@ -19,6 +22,8 @@ from llama_index.retrievers.pathway import PathwayRetriever
 
 import pathway as pw
 from pathway.tests.utils import wait_result_with_checker
+from pathway.xpacks.llm import llms
+from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
 
 PATHWAY_HOST = "127.0.0.1"
@@ -255,4 +260,224 @@ def test_llama_reader(port: int):
 
     wait_result_with_checker(
         checker, 20, target=pathway_server_from_llama_index, args=[port]
+    )
+
+
+def build_rag_app(port: int) -> BaseRAGQuestionAnswerer:
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    class FakeChatModel(llms.BaseChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "Text"
+
+        def _accepts_call_arg(self, arg_name: str) -> bool:
+            return True
+
+    chat = FakeChatModel()
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "test_module.py"},
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=fake_embeddings_model,
+    )
+
+    rag_app = BaseRAGQuestionAnswerer(
+        llm=chat,
+        indexer=vector_server,
+        default_llm_name="gpt-4o-mini",
+    )
+
+    rag_app.build_server(host=PATHWAY_HOST, port=port)
+
+    return rag_app
+
+
+@pytest.mark.parametrize("input", [1, 2, 3, 99])
+@pytest.mark.parametrize(
+    "async_mode",
+    [False, True],
+)
+def test_serve_callable(port: int, input: int, async_mode: bool):
+    TEST_ENDPOINT = "test_add_1"
+    expected = input + 1
+
+    rag_app = build_rag_app(port)
+
+    if async_mode:
+
+        @rag_app.serve_callable(
+            route=f"/{TEST_ENDPOINT}", schema=pw.schema_from_types(input=int)
+        )
+        async def increment(input: int) -> int:
+            return input + 1
+
+    else:
+
+        @rag_app.serve_callable(
+            route=f"/{TEST_ENDPOINT}", schema=pw.schema_from_types(input=int)
+        )
+        def increment(input: int) -> int:
+            return input + 1
+
+    def checker() -> bool:
+        try:
+            response = requests.post(
+                f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
+                json={"input": input},
+                timeout=4,
+            )
+            result = response.json()
+
+            assert expected == result
+        except Exception:
+            return False
+
+        return True
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=rag_app.run_server,
+    )
+
+
+@pytest.mark.parametrize(
+    "input", [1, None, {"a": "b"}, {"a": {"b": "c"}}, [1, 2, 3], "str"]
+)
+def test_serve_callable_symmetric(port: int, input: Any):
+    TEST_ENDPOINT = "symmetric"
+    expected = input
+
+    rag_app = build_rag_app(port)
+
+    UType: TypeAlias = int | dict | str | list | None
+
+    @rag_app.serve_callable(route=f"/{TEST_ENDPOINT}")
+    async def symmetric_fn(
+        input: UType,
+    ) -> UType:
+        return input
+
+    def checker() -> bool:
+        retries = 3
+        for _ in range(retries):
+            try:
+                response = requests.post(
+                    f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
+                    json={"input": input},
+                    timeout=4,
+                )
+                result = response.json()
+
+                assert expected == result
+                return True
+            except requests.exceptions.Timeout:
+                continue
+            except Exception:
+                return False
+        return False
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=rag_app.run_server,
+    )
+
+
+@pytest.mark.parametrize("dc", [{"l": 3, "k": "2", "nested": {"a": "b"}}])
+@pytest.mark.parametrize("name", ["name"])
+@pytest.mark.parametrize("typed", [True, False])
+@pytest.mark.parametrize("schema", [None, pw.schema_from_types(dc=dict, name=str)])
+def test_serve_callable_nested_async_typing(
+    port: int, dc: dict, name: str, typed: bool, schema: type[pw.Schema] | None
+):
+    TEST_ENDPOINT = "nested"
+    expected = [{"name": name, "value": dc}]
+
+    rag_app = build_rag_app(port)
+
+    if typed:
+
+        @rag_app.serve_callable(route=f"/{TEST_ENDPOINT}", schema=schema)
+        async def embed_dict(request_dc: dict, request_name: str) -> list[dict]:
+            return [{"name": request_name, "value": request_dc}]
+
+    else:
+
+        @rag_app.serve_callable(route=f"/{TEST_ENDPOINT}", schema=schema)
+        async def embed_dict(request_dc, request_name):
+            return [{"name": request_name, "value": request_dc}]
+
+    def checker() -> bool:
+        retries = 3
+        for _ in range(retries):
+            try:
+                response = requests.post(
+                    f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
+                    json={"dc": dc, "name": name},
+                    timeout=6,
+                )
+                result = response.json()
+
+                assert expected == result
+                return True
+            except requests.exceptions.Timeout:
+                continue
+            except Exception:
+                return False
+
+        return True
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=rag_app.run_server,
+    )
+
+
+def test_serve_callable_with_search(port: int):
+    TEST_ENDPOINT = "custom_search"
+    expected = "test"  # set in the docs part of `build_rag_app`
+
+    rag_app = build_rag_app(port)
+
+    @rag_app.serve_callable(route=f"/{TEST_ENDPOINT}")
+    async def return_top_doc_text(query):
+        vs_client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+        return vs_client.query(query, k=1)[0]["text"]
+
+    def checker() -> bool:
+        retries = 3
+        for _ in range(retries):
+            try:
+                response = requests.post(
+                    f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
+                    json={"query": "test"},
+                    timeout=4,
+                )
+                result = response.json()
+
+                assert expected == result
+                return True
+            except requests.exceptions.Timeout:
+                continue
+            except Exception:
+                return False
+        return False
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=rag_app.run_server,
     )

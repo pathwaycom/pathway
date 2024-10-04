@@ -2,11 +2,14 @@ import threading
 from typing import Callable
 
 import pathway as pw
+from pathway.internals.udfs.utils import coerce_async
 from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.question_answering import (
     BaseQuestionAnswerer,
     SummaryQuestionAnswerer,
 )
+
+from ._utils import get_func_arg_names
 
 
 class BaseRestServer:
@@ -211,3 +214,60 @@ class QASummaryRestServer(QARestServer):
             rag_question_answerer.summarize_query,
             **rest_kwargs,
         )
+
+    def serve_callable(
+        self,
+        route: str,
+        schema: type[pw.Schema] | None,
+        callable_func: Callable,
+        **additional_endpoint_kwargs,
+    ):
+        if schema is None:
+            args = get_func_arg_names(callable_func)
+            schema_type_maps = {i: pw.PyObjectWrapper for i in args}
+            schema = pw.schema_from_types(**schema_type_maps)
+
+        def func_to_transformer(fn):
+            HTTP_CONN_RESPONSE_KEY = "result"
+
+            async_fn = coerce_async(fn)
+
+            class FuncAsyncTransformer(
+                pw.AsyncTransformer, output_schema=pw.schema_from_types(result=dict)
+            ):
+
+                async def invoke(self, *args, **kwargs) -> dict:
+                    args = tuple(
+                        (
+                            arg.value
+                            if isinstance(arg, (pw.Json, pw.PyObjectWrapper))
+                            else arg
+                        )
+                        for arg in args
+                    )
+                    kwargs = {
+                        k: (
+                            v.value
+                            if isinstance(v, (pw.Json, pw.PyObjectWrapper))
+                            else v
+                        )
+                        for k, v in kwargs.items()
+                    }
+
+                    result = await async_fn(*args, **kwargs)
+
+                    return {HTTP_CONN_RESPONSE_KEY: result}
+
+            def table_transformer(table: pw.Table) -> pw.Table:
+                return FuncAsyncTransformer(input_table=table).successful
+
+            return table_transformer
+
+        self.serve(
+            route,
+            schema,
+            handler=func_to_transformer(callable_func),
+            **additional_endpoint_kwargs,
+        )
+
+        return callable_func

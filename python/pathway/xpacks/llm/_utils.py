@@ -2,6 +2,7 @@
 
 import asyncio
 import functools
+import inspect
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -68,3 +69,8 @@ def _unwrap_udf(func: pw.UDF | Callable) -> Callable:
     if isinstance(func, pw.UDF):
         return func.__wrapped__
     return func
+
+
+def get_func_arg_names(func):
+    sig = inspect.signature(func)
+    return [param.name for param in sig.parameters.values()]
