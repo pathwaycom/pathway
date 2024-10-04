@@ -7,6 +7,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - `pw.temporal.session` and `pw.temporal.asof_join` now correctly works with multiple entries with the same time.
+- Fixed an issue in `pw.stdlib.indexing` where filters would cause runtime errors while using `HybridIndexFactory`.
+
 
 ## [0.15.0] - 2024-09-12
 
