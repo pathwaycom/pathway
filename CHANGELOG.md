@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.15.1] - 2024-10-04
+
 ### Fixed
 - `pw.temporal.session` and `pw.temporal.asof_join` now correctly works with multiple entries with the same time.
 - Fixed an issue in `pw.stdlib.indexing` where filters would cause runtime errors while using `HybridIndexFactory`.
@@ -20,7 +22,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - Running servers for answering queries is extracted from `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` into `pw.xpacks.llm.servers.QARestServer` and `pw.xpacks.llm.servers.QASummaryRestServer`.
-- **BREAKING**: `query` and `query_as_of_now` of `pathway.stdlib.indexing.data_index.DataIndex` now produce an empty list instead of `None` if no match is found
+- **BREAKING**: `query` and `query_as_of_now` of `pathway.stdlib.indexing.data_index.DataIndex` now produce an empty list instead of `None` if no match is found.
 
 ## [0.14.3] - 2024-08-22
 
