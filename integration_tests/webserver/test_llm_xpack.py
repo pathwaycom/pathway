@@ -398,7 +398,9 @@ def test_serve_callable_symmetric(port: int, input: Any):
 @pytest.mark.parametrize("dc", [{"l": 3, "k": "2", "nested": {"a": "b"}}])
 @pytest.mark.parametrize("name", ["name"])
 @pytest.mark.parametrize("typed", [True, False])
-@pytest.mark.parametrize("schema", [None, pw.schema_from_types(dc=dict, name=str)])
+@pytest.mark.parametrize(
+    "schema", [None, pw.schema_from_types(request_dc=dict, request_name=str)]
+)
 def test_serve_callable_nested_async_typing(
     port: int, dc: dict, name: str, typed: bool, schema: type[pw.Schema] | None
 ):
@@ -425,7 +427,7 @@ def test_serve_callable_nested_async_typing(
             try:
                 response = requests.post(
                     f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
-                    json={"dc": dc, "name": name},
+                    json={"request_dc": dc, "request_name": name},
                     timeout=6,
                 )
                 result = response.json()
