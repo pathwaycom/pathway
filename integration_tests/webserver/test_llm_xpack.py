@@ -2,13 +2,7 @@
 # ignore the imports
 import os
 import pathlib
-from typing import List
-
-import nltk
-
-nltk.download("punkt")
-
-from typing import Any, TypeAlias
+from typing import Any, List, TypeAlias
 
 import openapi_spec_validator
 import pytest
