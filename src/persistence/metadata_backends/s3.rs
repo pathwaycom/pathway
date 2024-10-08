@@ -2,7 +2,8 @@
 
 use s3::bucket::Bucket as S3Bucket;
 
-use crate::persistence::metadata_backends::{Error, MetadataBackend};
+use crate::persistence::metadata_backends::MetadataBackend;
+use crate::persistence::BackendError as Error;
 
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]

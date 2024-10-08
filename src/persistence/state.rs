@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::connectors::data_storage::StorageType;
 use crate::engine::{Timestamp, TotalFrontier};
-use crate::persistence::metadata_backends::{Error, MetadataBackend};
-use crate::persistence::PersistentId;
+use crate::persistence::metadata_backends::MetadataBackend;
+use crate::persistence::{BackendError as Error, PersistentId};
 
 const EXPECTED_KEY_PARTS: usize = 3;
 
@@ -42,7 +42,7 @@ impl StoredMetadata {
 
     pub fn parse(data: &str) -> Result<Self, Error> {
         let result = serde_json::from_str::<StoredMetadata>(data.trim_end())
-            .map_err(|e| Error::IncorrectFormat(data.to_string(), e))?;
+            .map_err(|e| Error::IncorrectMetadataFormat(data.to_string(), e))?;
         Ok(result)
     }
 

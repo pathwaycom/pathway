@@ -5,7 +5,8 @@ use log::{error, warn};
 use std::path::{Path, PathBuf};
 
 use crate::fs_helpers::ensure_directory;
-use crate::persistence::metadata_backends::{Error, MetadataBackend};
+use crate::persistence::metadata_backends::MetadataBackend;
+use crate::persistence::BackendError as Error;
 
 #[derive(Debug)]
 pub struct FilesystemKVStorage {

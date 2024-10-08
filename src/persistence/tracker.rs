@@ -10,8 +10,8 @@ use crate::connectors::snapshot::{SnapshotMode, SnapshotReader, SnapshotWriterFl
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
-use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::state::MetadataAccessor;
+use crate::persistence::BackendError as MetadataBackendError;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 /// The main coordinator for state persistence within a worker

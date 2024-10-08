@@ -7,7 +7,7 @@ use std::result;
 
 use super::ColumnPath;
 use super::{Key, Value};
-use crate::persistence::metadata_backends::Error as MetadataBackendError;
+use crate::persistence::BackendError as MetadataBackendError;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::persistence::ExternalPersistentId;

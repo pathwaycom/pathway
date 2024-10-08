@@ -22,11 +22,11 @@ use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
-use crate::persistence::metadata_backends::Error as MetadataBackendError;
 use crate::persistence::metadata_backends::{
     FilesystemKVStorage, MetadataBackend, MockKVStorage, S3KVStorage,
 };
 use crate::persistence::state::MetadataAccessor;
+use crate::persistence::BackendError as MetadataBackendError;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
