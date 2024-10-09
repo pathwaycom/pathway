@@ -7,7 +7,7 @@ use std::result;
 
 use super::ColumnPath;
 use super::{Key, Value};
-use crate::persistence::BackendError as MetadataBackendError;
+use crate::persistence::Error as PersistenceBackendError;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
 use crate::persistence::ExternalPersistentId;
@@ -103,8 +103,8 @@ pub enum Error {
     #[error("this method cannot extract from key, use extract instead")]
     ExtractFromValueNotSupportedForKey,
 
-    #[error("persistent metadata backend failed: {0}")]
-    PersistentStorageError(#[from] MetadataBackendError),
+    #[error("persistence backend failed: {0}")]
+    PersistentStorageError(#[from] PersistenceBackendError),
 
     #[error(transparent)]
     Other(DynError),

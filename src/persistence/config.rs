@@ -22,11 +22,11 @@ use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
-use crate::persistence::metadata_backends::{
+use crate::persistence::backends::{
     FilesystemKVStorage, MetadataBackend, MockKVStorage, S3KVStorage,
 };
 use crate::persistence::state::MetadataAccessor;
-use crate::persistence::BackendError as MetadataBackendError;
+use crate::persistence::Error as PersistenceBackendError;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
@@ -162,7 +162,7 @@ impl PersistenceManagerConfig {
         }
     }
 
-    pub fn create_metadata_storage(&self) -> Result<MetadataAccessor, MetadataBackendError> {
+    pub fn create_metadata_storage(&self) -> Result<MetadataAccessor, PersistenceBackendError> {
         let backend: Box<dyn MetadataBackend> = match &self.metadata_storage {
             MetadataStorageConfig::Filesystem(root_path) => {
                 Box::new(FilesystemKVStorage::new(root_path)?)

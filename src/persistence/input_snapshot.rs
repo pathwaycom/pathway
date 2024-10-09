@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::{Key, Timestamp, Value};
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::BackendError;
+use crate::persistence::Error;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Event {
@@ -27,7 +27,7 @@ pub struct InputSnapshotReader {}
 impl InputSnapshotReader {
     /// This method will be called every so often to read the persisted snapshot.
     /// When there are no entries left, it must return `Event::Finished`.
-    pub fn read(&mut self) -> Result<Event, BackendError> {
+    pub fn read(&mut self) -> Result<Event, Error> {
         todo!()
     }
 
@@ -50,7 +50,7 @@ pub struct InputSnapshotWriter {}
 impl InputSnapshotWriter {
     /// A non-blocking call, pushing an entry in the buffer.
     /// The buffer should not be flushed in the same thread.
-    pub fn write(&mut self, _event: &Event) -> Result<(), BackendError> {
+    pub fn write(&mut self, _event: &Event) -> Result<(), Error> {
         todo!()
     }
 
@@ -59,7 +59,7 @@ impl InputSnapshotWriter {
     ///
     /// We use `futures::channel::oneshot::channel` here instead of Future/Promise
     /// because it uses modern Rust Futures that are also used by `async`.
-    pub fn flush(&mut self) -> OneShotReceiver<Result<(), BackendError>> {
+    pub fn flush(&mut self) -> OneShotReceiver<Result<(), Error>> {
         todo!()
     }
 }

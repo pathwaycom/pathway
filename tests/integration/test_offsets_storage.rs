@@ -13,8 +13,8 @@ use pathway_engine::connectors::data_storage::StorageType;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
 use pathway_engine::connectors::{OffsetKey, OffsetValue};
 use pathway_engine::engine::{Timestamp, TotalFrontier};
+use pathway_engine::persistence::backends::FilesystemKVStorage;
 use pathway_engine::persistence::frontier::OffsetAntichain;
-use pathway_engine::persistence::metadata_backends::FilesystemKVStorage;
 use pathway_engine::persistence::state::MetadataAccessor;
 
 fn assert_frontiers_equal(

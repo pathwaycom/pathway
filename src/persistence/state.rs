@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::connectors::data_storage::StorageType;
 use crate::engine::{Timestamp, TotalFrontier};
-use crate::persistence::metadata_backends::MetadataBackend;
-use crate::persistence::{BackendError as Error, PersistentId};
+use crate::persistence::backends::MetadataBackend;
+use crate::persistence::{Error, PersistentId};
 
 const EXPECTED_KEY_PARTS: usize = 3;
 
@@ -40,7 +40,8 @@ impl StoredMetadata {
         }
     }
 
-    pub fn parse(data: &str) -> Result<Self, Error> {
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let data = std::str::from_utf8(bytes)?;
         let result = serde_json::from_str::<StoredMetadata>(data.trim_end())
             .map_err(|e| Error::IncorrectMetadataFormat(data.to_string(), e))?;
         Ok(result)
@@ -222,8 +223,12 @@ impl MetadataAccessor {
 
     pub fn save_current_state(&mut self) -> Result<(), Error> {
         let serialized_state = self.internal_state.serialize();
-        self.backend
-            .put_value(&self.current_key_to_use, &serialized_state)?;
+        futures::executor::block_on(async {
+            self.backend
+                .put_value(&self.current_key_to_use, serialized_state.as_bytes())
+                .await
+                .expect("unexpected future cancelling")
+        })?;
         swap(&mut self.current_key_to_use, &mut self.next_key_to_use);
         Ok(())
     }
