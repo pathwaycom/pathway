@@ -1,13 +1,11 @@
 import argparse
-import os
 import time
 
-from lib import TEST_BUCKET_NAME, TEST_ENDPOINT, TEST_REGION, AdhocConsumer
-
-import pathway as pw
+from lib import AdhocConsumer, get_s3_backend_settings
 
 PERCENTILES = [50, 75, 85, 95, 99]
 MAX_LATENCY = 100
+WARMUP_PERIOD = 30
 
 
 def create_consumer(output_path, expected_messages, log_frequency):
@@ -47,6 +45,8 @@ def create_consumer(output_path, expected_messages, log_frequency):
         for time_from_start, latency in timeline:
             if latency > MAX_LATENCY:
                 latency = MAX_LATENCY
+            if time_from_start <= WARMUP_PERIOD:
+                continue
             latencies[int(latency * 100)] += 1
             total_processed += 1
             if total_processed % log_frequency == 0:
@@ -79,17 +79,16 @@ if __name__ == "__main__":
     parser.add_argument("--output-path", type=str, required=True)
     parser.add_argument("--expected-messages", type=int, required=True)
     parser.add_argument("--log-frequency", type=int, required=True)
+    parser.add_argument(
+        "--s3-backend", type=str, choices=["minio", "s3"], required=True
+    )
+    parser.add_argument("--autocommit-duration-ms", type=int, required=True)
     args = parser.parse_args()
 
     consumer = AdhocConsumer(
         args.lake_path,
-        pw.io.minio.MinIOSettings(
-            access_key=os.environ["MINIO_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-            bucket_name=TEST_BUCKET_NAME,
-            region=TEST_REGION,
-            endpoint=TEST_ENDPOINT,
-        ),
+        get_s3_backend_settings(args.s3_backend),
         create_consumer(args.output_path, args.expected_messages, args.log_frequency),
+        args.autocommit_duration_ms,
     )
     consumer.start()

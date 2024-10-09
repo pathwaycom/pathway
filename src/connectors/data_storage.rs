@@ -3085,6 +3085,10 @@ pub struct DeltaTableReader {
     parquet_files_queue: VecDeque<String>,
 }
 
+const DELTA_LAKE_INITIAL_POLL_DURATION: Duration = Duration::from_millis(5);
+const DELTA_LAKE_MAX_POLL_DURATION: Duration = Duration::from_millis(100);
+const DELTA_LAKE_POLL_BACKOFF: u32 = 2;
+
 impl DeltaTableReader {
     pub fn new(
         path: &str,
@@ -3134,6 +3138,7 @@ impl DeltaTableReader {
         let runtime = create_async_runtime()?;
         runtime.block_on(async {
             self.parquet_files_queue.clear();
+            let mut sleep_duration = DELTA_LAKE_INITIAL_POLL_DURATION;
             while self.parquet_files_queue.is_empty() {
                 let diff = self.table.peek_next_commit(self.current_version).await?;
                 let DeltaLakePeekCommit::New(next_version, txn_actions) = diff else {
@@ -3141,7 +3146,11 @@ impl DeltaTableReader {
                         break;
                     }
                     // Fully up to date, no changes yet
-                    sleep(Duration::from_millis(100));
+                    sleep(sleep_duration);
+                    sleep_duration *= DELTA_LAKE_POLL_BACKOFF;
+                    if sleep_duration > DELTA_LAKE_MAX_POLL_DURATION {
+                        sleep_duration = DELTA_LAKE_MAX_POLL_DURATION;
+                    }
                     continue;
                 };
 

@@ -1,10 +1,7 @@
 import argparse
-import os
 import time
 
-from lib import TEST_BUCKET_NAME, TEST_ENDPOINT, TEST_REGION, AdhocProducer
-
-import pathway as pw
+from lib import AdhocProducer, get_s3_backend_settings
 
 
 def create_producer(rate_per_second, streaming_time, delay_check_per_iterations=10000):
@@ -40,18 +37,17 @@ if __name__ == "__main__":
     parser.add_argument("--lake-path", type=str, required=True)
     parser.add_argument("--rate", type=int, required=True)
     parser.add_argument("--seconds-to-stream", type=int, required=True)
+    parser.add_argument(
+        "--s3-backend", type=str, choices=["minio", "s3"], required=True
+    )
+    parser.add_argument("--autocommit-duration-ms", type=int, required=True)
     args = parser.parse_args()
 
     produce_messages = create_producer(args.rate, args.seconds_to_stream)
     producer = AdhocProducer(
         args.lake_path,
-        pw.io.minio.MinIOSettings(
-            access_key=os.environ["MINIO_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-            bucket_name=TEST_BUCKET_NAME,
-            region=TEST_REGION,
-            endpoint=TEST_ENDPOINT,
-        ),
+        get_s3_backend_settings(args.s3_backend),
         produce_messages,
+        args.autocommit_duration_ms,
     )
     producer.start()
