@@ -5,11 +5,11 @@ import pandas as pd
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+from querying import register_table, run_with_querying
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import pathway as pw
-from common.pathway.querying import register_table, run_with_querying
 
 
 def send_table_to_web(port: int, table: pw.Table, alias: str):

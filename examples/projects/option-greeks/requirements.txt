@@ -3,3 +3,7 @@ pandas
 scipy
 pathway
 python-dotenv
+fastapi
+pydantic
+streamlit
+uvicorn
