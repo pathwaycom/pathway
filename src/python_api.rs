@@ -4220,7 +4220,7 @@ impl DataStorage {
             storage_options.insert("AWS_PROFILE".to_string(), profile.to_string());
         }
 
-        if let s3::Region::Custom { endpoint, .. } = &s3_settings.region {
+        if let s3::Region::Custom { endpoint, region } = &s3_settings.region {
             if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
                 storage_options.insert("AWS_ENDPOINT_URL".to_string(), endpoint.to_string());
             } else {
@@ -4229,11 +4229,14 @@ impl DataStorage {
                     format!("https://{endpoint}"),
                 );
             }
+            storage_options.insert("AWS_ALLOW_HTTP".to_string(), "True".to_string());
+            storage_options.insert("AWS_STORAGE_ALLOW_HTTP".to_string(), "True".to_string());
+            if region != endpoint {
+                storage_options.insert("AWS_REGION".to_string(), region.to_string());
+            }
         } else {
             storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
         }
-
-        warn!("{:?}", storage_options);
 
         Ok(storage_options)
     }
