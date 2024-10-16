@@ -79,11 +79,10 @@ Pathway provides dedicated LLM tooling to build LLM and RAG pipelines. Wrappers 
 Don't hesitate to try one of our runnable examples featuring LLM tooling.
 You can find such examples [here](https://pathway.com/developers/user-guide/llm-xpack/llm-examples).
 
-  - [Showcase: LLM-powered data pipeline.](https://pathway.com/developers/templates/llm-alert-pathway/)
-  - [Showcase: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/templates/unstructured-to-structured/)
-  - [Template: Private RAG with Ollama and Mistral AI](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/private-rag)
-  - [Template: Adaptive RAG](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/adaptive-rag)
-  - [Template: Multimodal RAG with gpt4-0](https://github.com/pathwaycom/llm-app/tree/main/examples/pipelines/gpt_4o_multimodal_rag)
+  - [Template: Unstructured data to SQL on-the-fly.](https://pathway.com/developers/templates/unstructured-to-structured/)
+  - [Template: Private RAG with Ollama and Mistral AI](https://pathway.com/developers/templates/private-rag-ollama-mistral)
+  - [Template: Adaptive RAG](https://pathway.com/developers/templates/adaptive-rag)
+  - [Template: Multimodal RAG with gpt-4o](https://pathway.com/developers/templates/multimodal-rag)
 
 ## Features
 
