@@ -30,7 +30,7 @@ use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::{DateTime, FixedOffset};
+use chrono::DateTime;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
@@ -1871,6 +1871,7 @@ pub struct S3Scanner {
     objects_prefix: String,
     current_object: Option<CurrentlyProcessedS3Object>,
     processed_objects: HashSet<String>,
+    objects_for_processing: VecDeque<String>,
 }
 
 impl S3Scanner {
@@ -1901,6 +1902,7 @@ impl S3Scanner {
 
             current_object: None,
             processed_objects: HashSet::new(),
+            objects_for_processing: VecDeque::new(),
         })
     }
 
@@ -1963,11 +1965,7 @@ impl S3Scanner {
         pipe_reader
     }
 
-    fn stream_next_object(&mut self) -> Result<Option<PipeReader>, ReadError> {
-        if let Some(state) = self.current_object.take() {
-            state.loader_thread.join().expect("s3 thread panic")?;
-        }
-
+    fn find_new_objects_for_processing(&mut self) -> Result<(), ReadError> {
         let object_lists = execute_with_retries(
             || self.bucket.list(self.objects_prefix.to_string(), None),
             RetryConfig::default(),
@@ -1975,32 +1973,35 @@ impl S3Scanner {
         )
         .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
 
-        let mut selected_object: Option<(DateTime<FixedOffset>, String)> = None;
+        let mut new_objects = Vec::new();
         for list in &object_lists {
             for object in &list.contents {
                 if self.processed_objects.contains(&object.key) {
                     continue;
                 }
-
                 let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified) else {
                     continue;
                 };
-
-                match &selected_object {
-                    Some((earliest_modify_time, selected_object_name)) => {
-                        if (earliest_modify_time, selected_object_name)
-                            > (&last_modified, &object.key)
-                        {
-                            selected_object = Some((last_modified, object.key.clone()));
-                        }
-                    }
-                    None => selected_object = Some((last_modified, object.key.clone())),
-                };
+                new_objects.push((last_modified, object.key.clone()));
             }
         }
+        new_objects.sort_unstable();
+        for (_, object_key) in new_objects {
+            self.objects_for_processing.push_back(object_key);
+        }
 
-        match selected_object {
-            Some((_earliest_modify_time, selected_object_name)) => {
+        Ok(())
+    }
+
+    fn stream_next_object(&mut self) -> Result<Option<PipeReader>, ReadError> {
+        if let Some(state) = self.current_object.take() {
+            state.loader_thread.join().expect("s3 thread panic")?;
+        }
+        if self.objects_for_processing.is_empty() {
+            self.find_new_objects_for_processing()?;
+        }
+        match self.objects_for_processing.pop_front() {
+            Some(selected_object_name) => {
                 let pipe_reader = self.stream_object_from_path(&selected_object_name);
                 self.processed_objects.insert(selected_object_name);
                 Ok(Some(pipe_reader))

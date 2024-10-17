@@ -9,6 +9,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.deltalake.read` now supports custom S3 Delta Lakes with HTTP endpoints.
 - `pw.io.deltalake.read` now supports specifying both a custom endpoint and a custom region for Delta Lakes via `pw.io.s3.AwsS3Settings`.
 
+### Changed
+- `pw.io.s3.read` has been optimized to minimize new object requests whenever possible.
+
 ## [0.15.1] - 2024-10-04
 
 ### Fixed
