@@ -27,9 +27,11 @@ from pathway.stdlib.ml.utils import _predict_asof_now
 def check_default_knn_column_types(
     data_column, query_column, number_of_matches, metadata_column, metadata_filter
 ):
-    typecheck_list: list[Tuple[str, Tuple[pw.ColumnExpression, dt.DType]]] = [
-        ("data column", (data_column, dt.List(dt.FLOAT))),
-        ("query column", (query_column, dt.List(dt.FLOAT))),
+    typecheck_list: list[
+        Tuple[str, Tuple[pw.ColumnExpression, dt.DType | tuple[dt.DType, ...]]]
+    ] = [
+        ("data column", (data_column, (dt.ANY_ARRAY, dt.List(dt.FLOAT)))),
+        ("query column", (query_column, (dt.ANY_ARRAY, dt.List(dt.FLOAT)))),
     ]
 
     if metadata_column is not None:

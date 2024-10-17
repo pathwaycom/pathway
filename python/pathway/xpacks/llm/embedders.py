@@ -4,6 +4,8 @@ Pathway embedder UDFs.
 """
 import asyncio
 
+import numpy as np
+
 import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
@@ -123,7 +125,7 @@ class OpenAIEmbedder(BaseEmbedder):
     ... Text
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
@@ -133,7 +135,7 @@ class OpenAIEmbedder(BaseEmbedder):
     ... Text | text-embedding-ada-002
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
     """
 
     def __init__(
@@ -158,7 +160,7 @@ class OpenAIEmbedder(BaseEmbedder):
         if model is not None:
             self.kwargs["model"] = model
 
-    async def __wrapped__(self, input, **kwargs) -> list[float]:
+    async def __wrapped__(self, input, **kwargs) -> np.ndarray:
         """Embed the documents
 
         Args:
@@ -172,7 +174,7 @@ class OpenAIEmbedder(BaseEmbedder):
         api_key = kwargs.pop("api_key", None)
         client = openai.AsyncOpenAI(api_key=api_key)
         ret = await client.embeddings.create(input=[input or "."], **kwargs)
-        return ret.data[0].embedding
+        return np.array(ret.data[0].embedding)
 
 
 class LiteLLMEmbedder(BaseEmbedder):
@@ -215,7 +217,7 @@ class LiteLLMEmbedder(BaseEmbedder):
     ... Text
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
@@ -225,7 +227,7 @@ class LiteLLMEmbedder(BaseEmbedder):
     ... Text | text-embedding-ada-002
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
     """
 
     def __init__(
@@ -250,7 +252,7 @@ class LiteLLMEmbedder(BaseEmbedder):
         if model is not None:
             self.kwargs["model"] = model
 
-    async def __wrapped__(self, input, **kwargs) -> list[float]:
+    async def __wrapped__(self, input, **kwargs) -> np.ndarray:
         """Embed the documents
 
         Args:
@@ -262,7 +264,7 @@ class LiteLLMEmbedder(BaseEmbedder):
 
         kwargs = {**self.kwargs, **kwargs}
         ret = await litellm.aembedding(input=[input or "."], **kwargs)
-        return ret.data[0]["embedding"]
+        return np.array(ret.data[0]["embedding"])
 
 
 class SentenceTransformerEmbedder(BaseEmbedder):
@@ -291,7 +293,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
     ... Text
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
     """  # noqa: E501
 
     def __init__(
@@ -310,7 +312,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         )
         self.kwargs = call_kwargs
 
-    def __wrapped__(self, input: str, **kwargs) -> list[float]:
+    def __wrapped__(self, input: str, **kwargs) -> np.ndarray:
         """
         Embed the text
 
@@ -322,7 +324,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         """  # noqa: E501
         kwargs = {**self.kwargs, **kwargs}
-        return self.model.encode(input, **kwargs).tolist()
+        return self.model.encode(input, **kwargs)
 
 
 class GeminiEmbedder(BaseEmbedder):
@@ -359,7 +361,7 @@ class GeminiEmbedder(BaseEmbedder):
     ... Text
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
@@ -369,7 +371,7 @@ class GeminiEmbedder(BaseEmbedder):
     ... Text | models/embedding-001
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
-    <pathway.Table schema={'ret': list[float]}>
+    <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
     """
 
     def __init__(
@@ -396,7 +398,7 @@ class GeminiEmbedder(BaseEmbedder):
         if api_key is not None:
             self.kwargs["api_key"] = api_key
 
-    def __wrapped__(self, input: str, **kwargs) -> list[float]:
+    def __wrapped__(self, input: str, **kwargs) -> np.ndarray:
         import google.generativeai as genai
 
         kwargs = {**self.kwargs, **kwargs}
@@ -408,4 +410,4 @@ class GeminiEmbedder(BaseEmbedder):
 
         response = genai.embed_content(model, content=[input], **kwargs)
         embedding = response["embedding"][0]
-        return embedding
+        return np.array(embedding)

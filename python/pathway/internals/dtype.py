@@ -203,7 +203,16 @@ class Array(DType):
     wrapped: DType
 
     def __repr__(self):
-        return f"Array({self.n_dim}, {self.wrapped})"
+        args = []
+        if self.n_dim is not None:
+            args.append(repr(self.n_dim))
+        if self.wrapped != ANY:
+            args.append(repr(self.wrapped))
+        args_str = ", ".join(args)
+        if args_str:
+            return f"Array({args_str})"
+        else:
+            return "Array"
 
     def _set_args(self, n_dim, wrapped):
         self.wrapped = wrapped

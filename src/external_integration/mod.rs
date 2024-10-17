@@ -332,8 +332,17 @@ pub trait Unpack<Type> {
 
 // to vector of floats
 impl Unpack<Vec<f64>> for Value {
+    #[allow(clippy::cast_precision_loss)]
     fn unpack(self) -> DynResult<Vec<f64>> {
-        self.as_tuple()?.iter().map(Value::as_float).try_collect()
+        match self {
+            Value::Tuple(values) => Ok(values.iter().map(Value::as_float).try_collect()?),
+            Value::IntArray(values) => Ok(values.iter().map(|i| *i as f64).collect()),
+            Value::FloatArray(values) => Ok(values.iter().copied().collect()),
+            value => Err(Box::new(DataError::TypeMismatch {
+                expected: "vector of floats",
+                value,
+            })),
+        }
     }
 }
 

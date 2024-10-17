@@ -16,7 +16,9 @@ from pathway.stdlib.indexing.typecheck_utils import check_column_reference_type
 def check_default_bm25_column_types(
     data_column, query_column, number_of_matches, metadata_column, metadata_filter
 ):
-    typecheck_list: list[Tuple[str, Tuple[pw.ColumnExpression, dt.DType]]] = [
+    typecheck_list: list[
+        Tuple[str, Tuple[pw.ColumnExpression, dt.DType | tuple[dt.DType, ...]]]
+    ] = [
         ("data column", (data_column, dt.STR)),
         ("query column", (query_column, dt.STR)),
     ]

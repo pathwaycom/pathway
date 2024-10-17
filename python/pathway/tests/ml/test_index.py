@@ -515,8 +515,8 @@ def test_mismatched_type_error_message_knn_lsh():
 
     exp_message = (
         "Some columns have types incompatible with expected types: "
-        + "data column should be compatible with type List\\(FLOAT\\) but is of type "
-        + "STR, query column should be compatible with type List\\(FLOAT\\) but is of type STR"
+        + "data column should be compatible with type Array but is of type "
+        + "STR, query column should be compatible with type Array but is of type STR"
     )
     with pytest.raises(TypeError, match=exp_message):
         index.query(table.text, number_of_matches=2).select(
@@ -1036,3 +1036,49 @@ def test_empty_index(factory):
     ).select(pw.right.doc)
     expected = pw.debug.table_from_pandas(pd.DataFrame({"query": ["a"], "doc": [[]]}))
     assert_table_equality_wo_index(res, expected.update_types(doc=list[str]))
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        UsearchKnnFactory(
+            dimensions=2,
+            reserved_space=0,
+            metric=USearchMetricKind.L2SQ,
+        ),
+        BruteForceKnnFactory(
+            dimensions=3,
+            reserved_space=3,
+            metric=BruteForceKnnMetricKind.L2SQ,
+        ),
+    ],
+)
+def test_asof_now_on_numpy_arrays(factory):
+    points, queries = stream_points()
+    points = points.with_columns(
+        coords=pw.apply_with_type(np.array, np.ndarray, pw.this.coords)
+    )
+    queries = queries.with_columns(
+        coords=pw.apply_with_type(np.array, np.ndarray, pw.this.coords)
+    )
+    index = KNNIndex(points.coords, points, n_dimensions=2, n_and=5)
+    result = queries + index.get_nearest_items_asof_now(queries.coords, k=2).select(
+        nn=pw.apply(sort_arrays, pw.this.coords)
+    )
+    expected = nn_as_table(
+        [
+            ((0, 0), ((2, 2), (3, -2))),
+            ((2, -2), ((-1, 0), (3, -2))),
+            ((-1, 1), ((-1, 0), (1, 2))),
+            ((-2, -3), ((-3, 1), (-1, 0))),
+        ]
+    ).with_columns(coords=pw.apply_with_type(np.array, np.ndarray, pw.this.coords))
+
+    index = factory.build_index(points.coords, points)
+
+    result = index.query_as_of_now(
+        queries.coords,
+        number_of_matches=2,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
+    assert_table_equality_wo_index(result, expected)

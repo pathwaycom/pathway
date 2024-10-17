@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.deltalake.read` now supports specifying both a custom endpoint and a custom region for Delta Lakes via `pw.io.s3.AwsS3Settings`.
 
 ### Changed
+- Indices in `pathway.stdlib.indexing.nearest_neighbors` can now work also on numpy arrays. Previously they only accepted `list[float]`. Working with numpy arrays improves memory efficiency.
 - `pw.io.s3.read` has been optimized to minimize new object requests whenever possible.
 
 ## [0.15.1] - 2024-10-04
