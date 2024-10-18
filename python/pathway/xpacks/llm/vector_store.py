@@ -13,7 +13,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import jmespath
 import requests
@@ -46,8 +46,6 @@ class VectorStoreServer:
         - doc_post_processors: optional list of callables that modify parsed files and metadata.
             any callable takes two arguments (text: str, metadata: dict) and returns them as a tuple.
     """
-
-    embedder_config: dict[str, Any]
 
     def __init__(
         self,
@@ -84,7 +82,7 @@ class VectorStoreServer:
             self.embedder = pw.udf(embedder)
 
         # detect the dimensionality of the embeddings
-        self.embedding_dimension = len(_coerce_sync(self.embedder.__wrapped__)("."))
+        self.embedding_dimension = len(_coerce_sync(self.embedder.func)("."))
         logging.debug("Embedder has dimension %s", self.embedding_dimension)
 
         self._graph = self._build_graph()

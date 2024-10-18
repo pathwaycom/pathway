@@ -21,7 +21,7 @@ class PWAIQuerySchema(pw.Schema):
 
 def _unwrap_udf(func):
     if isinstance(func, pw.UDF):
-        return func.__wrapped__
+        return func.func
     return func
 
 

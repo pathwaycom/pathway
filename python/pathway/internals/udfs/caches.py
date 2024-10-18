@@ -8,12 +8,12 @@ import inspect
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import ClassVar, ParamSpec, TypeVar, overload
+from typing import Any, ClassVar, ParamSpec, TypeVar, overload
 
 import async_lru
 import diskcache
 
-from pathway.internals import trace
+from pathway.internals import api, trace
 from pathway.internals.runtime_type_check import check_arg_types
 
 T = TypeVar("T")
@@ -48,11 +48,14 @@ class DiskCache(CacheStrategy):
         self._name = name
         self._cache = None
 
+    def make_key(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+        return str(api.ref_scalar(args, tuple(kwargs.items())))
+
     def wrap_async(self, func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             cache = self._get_cache(func)
-            key = str((args, kwargs))
+            key = self.make_key(args, kwargs)
             if cache is None:
                 return await func(*args, **kwargs)
             if key not in cache:
@@ -66,7 +69,7 @@ class DiskCache(CacheStrategy):
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             cache = self._get_cache(func)
-            key = str((args, kwargs))
+            key = self.make_key(args, kwargs)
             if cache is None:
                 return func(*args, **kwargs)
             if key not in cache:

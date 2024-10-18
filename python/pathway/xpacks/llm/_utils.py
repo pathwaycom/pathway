@@ -67,7 +67,7 @@ def _extract_value(data: Any | pw.Json) -> Any:
 def _unwrap_udf(func: pw.UDF | Callable) -> Callable:
     """Turn a Pathway UDF function into regular callable function."""
     if isinstance(func, pw.UDF):
-        return func.__wrapped__
+        return func.func  # use settings applied to a UDF
     return func
 
 

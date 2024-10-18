@@ -115,10 +115,39 @@ def test_sync_embedder():
 def test_async_embedder():
     @pw.udf_async
     async def fake_embeddings_model(x: str) -> list[float]:
-        asyncio.sleep
+        await asyncio.sleep(0.001)
         return [1.0, 1.0, 0.0]
 
     _test_vs(fake_embeddings_model)
+
+
+def test_embedder_preserves_params():
+    call_count = 0
+
+    @pw.udf(cache_strategy=pw.udfs.InMemoryCache())
+    def fake_embeddings_model(x: str) -> list[float]:
+        nonlocal call_count
+        call_count += 1
+        return [1.0, 1.0, 0.0]
+
+    _test_vs(fake_embeddings_model)
+    _test_vs(fake_embeddings_model)
+    assert call_count == 3  # dimension, doc, query
+
+
+def test_async_embedder_preserves_params():
+    call_count = 0
+
+    @pw.udf_async(cache_strategy=pw.udfs.InMemoryCache())
+    async def fake_embeddings_model(x: str) -> list[float]:
+        await asyncio.sleep(0.001)
+        nonlocal call_count
+        call_count += 1
+        return [1.0, 1.0, 0.0]
+
+    _test_vs(fake_embeddings_model)
+    _test_vs(fake_embeddings_model)
+    assert call_count == 3  # dimension, doc, query
 
 
 @pytest.mark.parametrize(
