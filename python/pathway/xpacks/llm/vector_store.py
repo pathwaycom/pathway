@@ -225,7 +225,10 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         @pw.udf
         def parse_doc(data: bytes, metadata) -> list[pw.Json]:
             rets = self.parser(data)
-            metadata = metadata.value
+            if metadata is None:
+                metadata = {}
+            else:
+                metadata = metadata.value
             return [dict(text=ret[0], metadata={**metadata, **ret[1]}) for ret in rets]  # type: ignore
 
         parsed_docs = docs.select(data=parse_doc(docs.data, docs._metadata)).flatten(
