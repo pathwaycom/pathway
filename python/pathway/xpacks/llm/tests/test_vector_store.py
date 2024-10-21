@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import pytest
 
@@ -15,7 +16,7 @@ class DebugStatsInputSchema(VectorStoreServer.StatisticsQuerySchema):
     debug: str | None = pw.column_definition(default_value=None)
 
 
-def _test_vs(fake_embeddings_model):
+def _test_vs(fake_embeddings_model, **run_kwargs):
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes, _metadata=dict),
         rows=[
@@ -47,6 +48,7 @@ def _test_vs(fake_embeddings_model):
             1
             """
         ),
+        **run_kwargs,
     )
 
     input_queries = pw.debug.table_from_rows(
@@ -73,9 +75,10 @@ def _test_vs(fake_embeddings_model):
             test_vector_store.py
             """
         ),
+        **run_kwargs,
     )
 
-    _, rows = pw.debug.table_to_dicts(input_outputs)
+    _, rows = pw.debug.table_to_dicts(input_outputs, **run_kwargs)
     (val,) = rows["result"].values()
     val = val[0]  # type: ignore
 
@@ -95,7 +98,7 @@ def _test_vs(fake_embeddings_model):
     )
 
     retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
-    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs, **run_kwargs)
     (val,) = rows["result"].values()
     assert isinstance(val, pw.Json)
     (query_result,) = val.value  # type: ignore # extract the single match
@@ -132,7 +135,34 @@ def test_embedder_preserves_params():
 
     _test_vs(fake_embeddings_model)
     _test_vs(fake_embeddings_model)
-    assert call_count == 3  # dimension, doc, query
+    assert call_count == 4  # dimension x 2 (no cache used), doc, query
+
+
+@pytest.mark.parametrize(
+    "cache_strategy_cls",
+    [
+        None,
+        pw.udfs.InMemoryCache,
+        pw.udfs.DiskCache,
+    ],
+)
+def test_embedder_cache_strategy(cache_strategy_cls, tmp_path: pathlib.Path):
+    if cache_strategy_cls is not None:
+        cache_strategy = cache_strategy_cls()
+    else:
+        cache_strategy = None
+
+    persistent_storage_path = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config.simple_config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+    )
+
+    @pw.udf_async(cache_strategy=cache_strategy)
+    async def fake_embeddings_model(x: str) -> list[float]:
+        await asyncio.sleep(0.001)
+        return [1.0, 1.0, 0.0]
+
+    _test_vs(fake_embeddings_model, persistence_config=persistence_config)
 
 
 def test_async_embedder_preserves_params():
@@ -147,7 +177,7 @@ def test_async_embedder_preserves_params():
 
     _test_vs(fake_embeddings_model)
     _test_vs(fake_embeddings_model)
-    assert call_count == 3  # dimension, doc, query
+    assert call_count == 4  # dimension x 2 (no cache used), doc, query
 
 
 @pytest.mark.parametrize(

@@ -257,6 +257,69 @@ def test_llama_reader(port: int):
     )
 
 
+def build_vector_store(embedder) -> VectorStoreServer:
+    """From a given embedder, with a single doc."""
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "test_module.py"},
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=embedder,
+    )
+
+    return vector_server
+
+
+@pytest.mark.parametrize(
+    "cache_strategy_cls",
+    [
+        None,
+        pw.udfs.InMemoryCache,
+        pw.udfs.DiskCache,
+    ],
+)
+def test_vectorstore_builds(port: int, cache_strategy_cls):
+    if cache_strategy_cls is not None:
+        cache_strategy = cache_strategy_cls()
+    else:
+        cache_strategy = None
+
+    @pw.udf(cache_strategy=cache_strategy)
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    indexer = build_vector_store(fake_embeddings_model)
+
+    def checker() -> bool:
+        try:
+            client = VectorStoreClient(host=PATHWAY_HOST, port=port)
+            inputs = client.get_input_files()
+
+            assert len(inputs) == 1
+        except Exception:
+            return False
+
+        return True
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=indexer.run_server,
+        kwargs=dict(
+            host=PATHWAY_HOST,
+            port=port,
+            with_cache=True,
+        ),
+    )
+
+
 def build_rag_app(port: int) -> BaseRAGQuestionAnswerer:
     @pw.udf
     def fake_embeddings_model(x: str) -> list[float]:
@@ -271,20 +334,7 @@ def build_rag_app(port: int) -> BaseRAGQuestionAnswerer:
 
     chat = FakeChatModel()
 
-    docs = pw.debug.table_from_rows(
-        schema=pw.schema_from_types(data=bytes, _metadata=dict),
-        rows=[
-            (
-                "test".encode("utf-8"),
-                {"path": "test_module.py"},
-            )
-        ],
-    )
-
-    vector_server = VectorStoreServer(
-        docs,
-        embedder=fake_embeddings_model,
-    )
+    vector_server = build_vector_store(fake_embeddings_model)
 
     rag_app = BaseRAGQuestionAnswerer(
         llm=chat,

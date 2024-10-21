@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import pytest
 
@@ -535,15 +536,25 @@ def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
 
 
 @pytest.mark.parametrize(
-    "host",
-    ["0.0.0.0"],
+    "cache_strategy_cls",
+    [
+        None,
+        pw.udfs.InMemoryCache,
+        pw.udfs.DiskCache,
+    ],
 )
-@pytest.mark.parametrize(
-    "port",
-    [8000],
-)
-def test_docstore_server_hybridindex_builds(host, port):
-    @pw.udf
+def test_docstore_server_hybridindex_builds(cache_strategy_cls, tmp_path: pathlib.Path):
+    if cache_strategy_cls is not None:
+        cache_strategy = cache_strategy_cls()
+    else:
+        cache_strategy = None
+
+    persistent_storage_path = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config.simple_config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+    )
+
+    @pw.udf(cache_strategy=cache_strategy)
     def fake_embeddings_model(x: str) -> list[float]:
         return [1.0, 1.0, 0.0]
 
@@ -565,11 +576,9 @@ def test_docstore_server_hybridindex_builds(host, port):
 
     document_store = DocumentStore(docs, retriever_factory=hybrid_index)
 
-    document_server = DocumentStoreServer(
-        host=host, port=port, document_store=document_store
-    )
-
-    assert document_server is not None  # :)
+    DocumentStoreServer(host="0.0.0.0", port=8000, document_store=document_store)
+    # server is not run, so host/port don't matter
+    # it is just used to check if it is created correctly
 
     retrieve_queries = pw.debug.table_from_rows(
         schema=DocumentStore.RetrieveQuerySchema,
@@ -577,7 +586,9 @@ def test_docstore_server_hybridindex_builds(host, port):
     )
 
     retrieve_outputs = document_store.retrieve_query(retrieve_queries)
-    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    _, rows = pw.debug.table_to_dicts(
+        retrieve_outputs, persistence_config=persistence_config
+    )
     (val,) = rows["result"].values()
     assert isinstance(val, pw.Json)
     (query_result,) = val.as_list()  # extract the single match

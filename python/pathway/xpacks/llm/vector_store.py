@@ -82,7 +82,7 @@ class VectorStoreServer:
             self.embedder = pw.udf(embedder)
 
         # detect the dimensionality of the embeddings
-        self.embedding_dimension = len(_coerce_sync(self.embedder.func)("."))
+        self.embedding_dimension = len(_coerce_sync(self.embedder.__wrapped__)("."))
         logging.debug("Embedder has dimension %s", self.embedding_dimension)
 
         self._graph = self._build_graph()

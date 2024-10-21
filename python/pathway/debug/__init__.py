@@ -60,8 +60,9 @@ def _compute_tables(
 
 def table_to_dicts(
     table: Table,
+    **kwargs,
 ) -> tuple[list[api.Pointer], dict[str, dict[api.Pointer, api.Value]]]:
-    captured = _compute_tables(table)[0]
+    captured = _compute_tables(table, **kwargs)[0]
     output_data = api.squash_updates(captured)
     keys = list(output_data.keys())
     columns = {
