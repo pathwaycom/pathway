@@ -33,13 +33,21 @@ class CacheStrategy(abc.ABC):
 
 
 class DiskCache(CacheStrategy):
+    """On disk cache."""
+
     _cache: diskcache.Cache
     _name: str | None
+    _size_limit: int
 
     _custom_names: ClassVar[set[str]] = set()
 
     @trace.trace_user_frame
-    def __init__(self, name: str | None = None) -> None:
+    def __init__(self, name: str | None = None, size_limit=2**30) -> None:
+        """
+        Args:
+            name: name of the cache. When multiple caches have the same name, they share a storage.
+            size_limit: a memory limit of the cache in bytes.
+        """
         super().__init__()
         if name is not None:
             if name in self._custom_names:
@@ -47,6 +55,7 @@ class DiskCache(CacheStrategy):
             self._custom_names.add(name)
         self._name = name
         self._cache = None
+        self._size_limit = size_limit
 
     def make_key(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
         return str(api.ref_scalar(args, tuple(kwargs.items())))
@@ -90,7 +99,9 @@ class DiskCache(CacheStrategy):
                     "no persistent storage configured for the disk cache"
                 )
             cache_dir = Path(storage_root) / "runtime_calls"
-            self._cache = diskcache.Cache(cache_dir / self._name)
+            self._cache = diskcache.Cache(
+                cache_dir / self._name, size_limit=self._size_limit
+            )
         return self._cache
 
 

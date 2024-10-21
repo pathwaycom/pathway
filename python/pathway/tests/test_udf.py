@@ -611,6 +611,30 @@ def test_udf_cache(monkeypatch, tmp_path: pathlib.Path):
     assert internal_inc.call_count == 3
 
 
+def test_udf_cache_too_small_size_limit(monkeypatch, tmp_path: pathlib.Path):
+    monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE", raising=False)
+
+    @pw.udf(deterministic=True, cache_strategy=pw.udfs.DiskCache(size_limit=10))
+    def inc(a: int) -> int:
+        return a + 1
+
+    input = T(
+        """
+        a
+        1
+        """
+    )
+    input.select(ret=inc(pw.this.a))
+
+    pstorage_dir = tmp_path / "PStorage"
+    persistence_config = pw.persistence.Config.simple_config(
+        backend=pw.persistence.Backend.filesystem(pstorage_dir),
+        persistence_mode=api.PersistenceMode.UDF_CACHING,
+    )
+    with pytest.raises(KeyError):
+        run_all(persistence_config=persistence_config)
+
+
 @pytest.mark.parametrize("sync", [True, False])
 def test_udf_deterministic_not_stored(monkeypatch, tmp_path: pathlib.Path, sync):
     monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE", raising=False)
