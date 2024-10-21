@@ -144,7 +144,7 @@ def run_backfilling_program(
 def test_backfilling_fs_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext
 ):
-    fs_persistence_config = pw.persistence.Config.simple_config(
+    fs_persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
         snapshot_interval_ms=5000,
     )
@@ -156,7 +156,7 @@ def test_backfilling_s3_storage(
     tmp_path: pathlib.Path, kafka_context: KafkaTestContext, s3_path: str
 ):
     pstorage_s3_path = f"{s3_path}/PStorage"
-    s3_persistence_config = pw.persistence.Config.simple_config(
+    s3_persistence_config = pw.persistence.Config(
         pw.persistence.Backend.s3(
             root_path=pstorage_s3_path,
             bucket_settings=get_aws_s3_settings(),

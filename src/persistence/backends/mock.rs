@@ -5,14 +5,14 @@ use log::error;
 use futures::channel::oneshot;
 use futures::channel::oneshot::Receiver as OneShotReceiver;
 
-use crate::persistence::backends::MetadataBackend;
+use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
 
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct MockKVStorage {}
 
-impl MetadataBackend for MockKVStorage {
+impl PersistenceBackend for MockKVStorage {
     fn list_keys(&self) -> Result<Vec<String>, Error> {
         Ok(vec![])
     }
@@ -21,7 +21,7 @@ impl MetadataBackend for MockKVStorage {
         unreachable!()
     }
 
-    fn put_value(&mut self, _key: &str, _value: &[u8]) -> OneShotReceiver<Result<(), Error>> {
+    fn put_value(&mut self, _key: &str, _value: Vec<u8>) -> OneShotReceiver<Result<(), Error>> {
         let (sender, receiver) = oneshot::channel();
         let send_result = sender.send(Ok(()));
         if let Err(unsent_flush_result) = send_result {

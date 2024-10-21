@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import warnings
 from collections.abc import Generator
 from dataclasses import KW_ONLY, dataclass
 
@@ -11,9 +12,7 @@ from pathway.internals._io_helpers import AwsS3Settings
 
 class Backend:
     """
-    The settings of a backend, which is used to persist the computation state. There
-    are two kinds of data backends: metadata backend and snapshot backend. Both are
-    configurable via this class.
+    The settings of a backend, which is used to persist the computation state.
     """
 
     def __init__(
@@ -91,23 +90,18 @@ class Config:
     Configure the data persistence. An instance of this class should be passed as a
     parameter to pw.run in case persistence is enabled.
 
-    Please note that if you'd like to use the same backend for both metadata and
-    snapshot storages, you can use the convenience method ``simple_config``.
-
     Args:
-        metadata_storage: metadata backend configuration;
-        snapshot_storage: snapshots backend configuration;
+        backend: persistence backend configuration;
         snapshot_interval_ms: the desired duration between snapshot updates in \
 milliseconds;
     """
 
+    backend: Backend
     _: KW_ONLY
     snapshot_interval_ms: int = 0
-    metadata_storage: Backend
-    snapshot_storage: Backend
-    snapshot_access: api.SnapshotAccess
-    persistence_mode: api.PersistenceMode
-    continue_after_replay: bool
+    snapshot_access: api.SnapshotAccess = api.SnapshotAccess.FULL
+    persistence_mode: api.PersistenceMode = api.PersistenceMode.PERSISTING
+    continue_after_replay: bool = True
 
     @classmethod
     def simple_config(
@@ -119,24 +113,32 @@ milliseconds;
         continue_after_replay=True,
     ):
         """
-        Construct config from a single instance of the \
-``Backend`` class, using this backend to persist metadata and \
-snapshot.
+        Construct config from a single instance of the ``Backend`` class, using this
+        backend to persist metadata and snapshot.
+
+        Note that this method is deprecated and is left for the backward compatibility
+        purposes only. Please use the `pw.persistence.Config` constructor instead.
 
         Args:
             backend: storage backend settings;
-            snapshot_interval_ms: the desired freshness of the persisted snapshot in \
-milliseconds. The greater the value is, the more the amount of time that the snapshot \
-may fall behind, and the less computational resources are required.
+            snapshot_interval_ms: the desired freshness of the persisted snapshot in
+              milliseconds. The greater the value is, the more the amount of time that
+              the snapshot may fall behind, and the less computational resources are
+              required.
 
         Returns:
             Persistence config.
         """
+        warnings.warn(
+            "The `pw.persistence.Config.simple_config` method for persistence config "
+            "construction is deprecated. Please use the `pw.persistence.Config` "
+            "constructor instead.",
+            DeprecationWarning,
+        )
 
         return cls(
+            backend,
             snapshot_interval_ms=snapshot_interval_ms,
-            metadata_storage=backend,
-            snapshot_storage=backend,
             snapshot_access=snapshot_access,
             persistence_mode=persistence_mode,
             continue_after_replay=continue_after_replay,
@@ -146,18 +148,17 @@ may fall behind, and the less computational resources are required.
     def engine_config(self):
         return api.PersistenceConfig(
             snapshot_interval_ms=self.snapshot_interval_ms,
-            metadata_storage=self.metadata_storage.engine_data_storage,
-            stream_storage=self.snapshot_storage.engine_data_storage,
+            backend=self.backend.engine_data_storage,
             snapshot_access=self.snapshot_access,
             persistence_mode=self.persistence_mode,
             continue_after_replay=self.continue_after_replay,
         )
 
     def on_before_run(self):
-        self.snapshot_storage.store_path_in_env_variable()
+        self.backend.store_path_in_env_variable()
 
     def on_after_run(self):
-        self.snapshot_storage.remove_path_from_env_variable()
+        self.backend.remove_path_from_env_variable()
 
 
 @contextlib.contextmanager

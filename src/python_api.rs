@@ -75,7 +75,6 @@ use crate::connectors::data_storage::{
     PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
     ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader, Writer,
 };
-use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
 use crate::engine::error::{DataError, DynError, DynResult, Trace as EngineTrace};
@@ -100,8 +99,9 @@ use crate::engine::{Expression, IntExpression};
 use crate::engine::{FloatExpression, Graph};
 use crate::engine::{LegacyTable as EngineLegacyTable, StringExpression};
 use crate::persistence::config::{
-    ConnectorWorkerPair, MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
+    ConnectorWorkerPair, PersistenceManagerOuterConfig, PersistentStorageConfig,
 };
+use crate::persistence::input_snapshot::Event as SnapshotEvent;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId, PersistentId};
 use crate::pipe::{pipe, ReaderType, WriterType};
 use crate::python_api::external_index_wrappers::PyExternalIndexFactory;
@@ -3719,8 +3719,7 @@ impl IntoPy<PyObject> for SnapshotAccess {
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct PersistenceConfig {
     snapshot_interval: ::std::time::Duration,
-    metadata_storage: DataStorage,
-    stream_storage: DataStorage,
+    backend: DataStorage,
     snapshot_access: SnapshotAccess,
     persistence_mode: PersistenceMode,
     continue_after_replay: bool,
@@ -3732,24 +3731,21 @@ impl PersistenceConfig {
     #[pyo3(signature = (
         *,
         snapshot_interval_ms,
-        metadata_storage,
-        stream_storage,
+        backend,
         snapshot_access = SnapshotAccess::Full,
         persistence_mode = PersistenceMode::Batch,
         continue_after_replay = true,
     ))]
     fn new(
         snapshot_interval_ms: u64,
-        metadata_storage: DataStorage,
-        stream_storage: DataStorage,
+        backend: DataStorage,
         snapshot_access: SnapshotAccess,
         persistence_mode: PersistenceMode,
         continue_after_replay: bool,
     ) -> Self {
         Self {
             snapshot_interval: ::std::time::Duration::from_millis(snapshot_interval_ms),
-            metadata_storage,
-            stream_storage,
+            backend,
             snapshot_access,
             persistence_mode,
             continue_after_replay,
@@ -3761,9 +3757,7 @@ impl PersistenceConfig {
     fn prepare(self, py: pyo3::Python) -> PyResult<PersistenceManagerOuterConfig> {
         Ok(PersistenceManagerOuterConfig::new(
             self.snapshot_interval,
-            self.metadata_storage
-                .construct_metadata_storage_config(py)?,
-            self.stream_storage.construct_stream_storage_config(py)?,
+            self.backend.construct_persistent_storage_config(py)?,
             self.snapshot_access,
             self.persistence_mode,
             self.continue_after_replay,
@@ -4450,13 +4444,16 @@ impl DataStorage {
         }
     }
 
-    fn construct_stream_storage_config(&self, py: pyo3::Python) -> PyResult<StreamStorageConfig> {
+    fn construct_persistent_storage_config(
+        &self,
+        py: pyo3::Python,
+    ) -> PyResult<PersistentStorageConfig> {
         match self.storage_type.as_ref() {
-            "fs" => Ok(StreamStorageConfig::Filesystem(self.path()?.into())),
+            "fs" => Ok(PersistentStorageConfig::Filesystem(self.path()?.into())),
             "s3" => {
                 let bucket = self.s3_bucket(py)?;
                 let path = self.path()?;
-                Ok(StreamStorageConfig::S3 {
+                Ok(PersistentStorageConfig::S3 {
                     bucket,
                     root_path: path.into(),
                 })
@@ -4469,31 +4466,10 @@ impl DataStorage {
                         external_persistent_id.clone().into_persistent_id();
                     events.insert((internal_persistent_id, *worker_id), es.clone());
                 }
-                Ok(StreamStorageConfig::Mock(events))
+                Ok(PersistentStorageConfig::Mock(events))
             }
             other => Err(PyValueError::new_err(format!(
-                "Unsupported snapshot storage format: {other:?}"
-            ))),
-        }
-    }
-
-    fn construct_metadata_storage_config(
-        &self,
-        py: pyo3::Python,
-    ) -> PyResult<MetadataStorageConfig> {
-        match self.storage_type.as_ref() {
-            "fs" => Ok(MetadataStorageConfig::Filesystem(self.path()?.into())),
-            "s3" => {
-                let bucket = self.s3_bucket(py)?;
-                let path = self.path()?;
-                Ok(MetadataStorageConfig::S3 {
-                    bucket,
-                    root_path: path.into(),
-                })
-            }
-            "mock" => Ok(MetadataStorageConfig::Mock),
-            other => Err(PyValueError::new_err(format!(
-                "Unsupported metadata storage format: {other:?}"
+                "Unsupported persistent storage format: {other:?}"
             ))),
         }
     }

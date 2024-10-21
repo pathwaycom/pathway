@@ -8,9 +8,7 @@ use std::time::Duration;
 
 use pathway_engine::engine::error::DynError;
 use pathway_engine::engine::{report_error::ReportError, Error};
-use pathway_engine::persistence::config::{
-    MetadataStorageConfig, PersistenceManagerOuterConfig, StreamStorageConfig,
-};
+use pathway_engine::persistence::config::{PersistenceManagerOuterConfig, PersistentStorageConfig};
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 use pathway_engine::connectors::data_format::{
@@ -19,10 +17,10 @@ use pathway_engine::connectors::data_format::{
 use pathway_engine::connectors::data_storage::{
     DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
 };
-use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAccess};
 use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;
+use pathway_engine::persistence::input_snapshot::Event as SnapshotEvent;
 
 #[derive(Debug)]
 pub struct FullReadResult {
@@ -117,11 +115,7 @@ pub fn full_cycle_read(
                                 SnapshotEvent::AdvanceTime(Timestamp(1), frontier.clone())
                             }
                         };
-                        snapshot_writer
-                            .lock()
-                            .unwrap()
-                            .write(&snapshot_event)
-                            .unwrap();
+                        snapshot_writer.lock().unwrap().write(&snapshot_event);
                     }
                     new_parsed_entries.push(event);
                 }
@@ -142,11 +136,7 @@ pub fn full_cycle_read(
 
     if let Some(ref mut snapshot_writer) = snapshot_writer {
         let finished_event = SnapshotEvent::AdvanceTime(Timestamp(1), frontier.clone());
-        snapshot_writer
-            .lock()
-            .unwrap()
-            .write(&finished_event)
-            .unwrap();
+        snapshot_writer.lock().unwrap().write(&finished_event);
     }
 
     assert!(rewind_finish_sentinel_seen);
@@ -224,8 +214,7 @@ pub fn create_persistence_manager(
         WorkerPersistentStorage::new(
             PersistenceManagerOuterConfig::new(
                 Duration::ZERO,
-                MetadataStorageConfig::Filesystem(fs_path.to_path_buf()),
-                StreamStorageConfig::Filesystem(fs_path.to_path_buf()),
+                PersistentStorageConfig::Filesystem(fs_path.to_path_buf()),
                 SnapshotAccess::Full,
                 PersistenceMode::Batch,
                 true,

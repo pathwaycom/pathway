@@ -9,7 +9,7 @@ use futures::channel::oneshot;
 use futures::channel::oneshot::Receiver as OneShotReceiver;
 
 use crate::fs_helpers::ensure_directory;
-use crate::persistence::backends::MetadataBackend;
+use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
 
 const TEMPORARY_OBJECT_SUFFIX: &str = ".tmp";
@@ -38,7 +38,7 @@ impl FilesystemKVStorage {
     }
 }
 
-impl MetadataBackend for FilesystemKVStorage {
+impl PersistenceBackend for FilesystemKVStorage {
     fn list_keys(&self) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
 
@@ -77,14 +77,14 @@ impl MetadataBackend for FilesystemKVStorage {
         Ok(std::fs::read(self.root_path.join(key))?)
     }
 
-    fn put_value(&mut self, key: &str, value: &[u8]) -> OneShotReceiver<Result<(), Error>> {
+    fn put_value(&mut self, key: &str, value: Vec<u8>) -> OneShotReceiver<Result<(), Error>> {
         let (sender, receiver) = oneshot::channel();
 
         let tmp_path = self
             .root_path
             .join(key.to_owned() + TEMPORARY_OBJECT_SUFFIX);
         let final_path = self.root_path.join(key);
-        let put_value_result = Self::write_file(&tmp_path, &final_path, value);
+        let put_value_result = Self::write_file(&tmp_path, &final_path, &value);
         let send_result = sender.send(put_value_result);
         if let Err(unsent_flush_result) = send_result {
             error!(

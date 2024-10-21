@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connectors::data_storage::StorageType;
 use crate::engine::{Timestamp, TotalFrontier};
-use crate::persistence::backends::MetadataBackend;
+use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::{Error, PersistentId};
 
 const EXPECTED_KEY_PARTS: usize = 3;
@@ -24,7 +24,7 @@ pub struct StoredMetadata {
 
 #[derive(Debug)]
 pub struct MetadataAccessor {
-    backend: Box<dyn MetadataBackend>,
+    backend: Box<dyn PersistenceBackend>,
     internal_state: StoredMetadata,
     past_runs_threshold_times: HashMap<usize, TotalFrontier<Timestamp>>,
 
@@ -118,7 +118,7 @@ impl Display for MetadataKey {
 }
 
 impl MetadataAccessor {
-    pub fn new(backend: Box<dyn MetadataBackend>, worker_id: usize) -> Result<Self, Error> {
+    pub fn new(backend: Box<dyn PersistenceBackend>, worker_id: usize) -> Result<Self, Error> {
         let (internal_state, past_runs_threshold_times) = {
             let mut internal_state = StoredMetadata::new();
             let mut past_runs_threshold_times = HashMap::new();
@@ -225,7 +225,7 @@ impl MetadataAccessor {
         let serialized_state = self.internal_state.serialize();
         futures::executor::block_on(async {
             self.backend
-                .put_value(&self.current_key_to_use, serialized_state.as_bytes())
+                .put_value(&self.current_key_to_use, serialized_state.into())
                 .await
                 .expect("unexpected future cancelling")
         })?;

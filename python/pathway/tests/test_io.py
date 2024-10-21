@@ -1026,7 +1026,7 @@ def test_python_connector_persistence(tmp_path: pathlib.Path):
         )
         pw.io.csv.write(table_joined, output_path)
         run(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(persistent_storage_path),
             )
         )
@@ -1074,7 +1074,7 @@ def test_no_pstorage(tmp_path: pathlib.Path):
         match="persistence backend failed: target object should be a directory",
     ):
         run(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(path),
             )
         )
@@ -1090,7 +1090,7 @@ def test_persistent_id_not_assigned_autogenerate(tmp_path: pathlib.Path):
     table = pw.io.plaintext.read(input_path, mode="static")
     pw.io.csv.write(table, tmp_path / "output.txt")
     run(
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(pstorage_path)
         )
     )
@@ -1129,7 +1129,7 @@ def test_duplicated_persistent_id(tmp_path: pathlib.Path):
         match="Persistent ID 'one' used more than once",
     ):
         run(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(pstorage_path)
             )
         )
@@ -1591,7 +1591,7 @@ def test_persistent_subscribe(snapshot_access, tmp_path):
     root = mock.Mock()
     pw.io.subscribe(table, on_change=root.on_change, on_end=root.on_end)
     pw.run(
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(pstorage_dir),
             snapshot_access=snapshot_access,
         ),
@@ -1630,7 +1630,7 @@ def test_persistent_subscribe(snapshot_access, tmp_path):
     root = mock.Mock()
     pw.io.subscribe(table, on_change=root.on_change, on_end=root.on_end)
     run(
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(pstorage_dir),
             snapshot_access=snapshot_access,
         ),
@@ -1733,7 +1733,7 @@ def test_replay(tmp_path: pathlib.Path):
         pw.io.subscribe(t, callback, callback.on_end)
 
         run(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(replay_dir),
                 persistence_mode=persistence_mode,
                 continue_after_replay=continue_after_replay,
@@ -1831,7 +1831,7 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
         pw.io.subscribe(t, callback, callback.on_end)
 
         run(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(replay_dir),
                 persistence_mode=persistence_mode,
                 continue_after_replay=continue_after_replay,
@@ -1957,7 +1957,7 @@ def test_mock_snapshot_reader():
     pw.io.subscribe(t, on_change=on_change)
 
     run(
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.mock(events),
             persistence_mode=api.PersistenceMode.SPEEDRUN_REPLAY,
             snapshot_access=api.SnapshotAccess.REPLAY,
@@ -3207,7 +3207,7 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
         table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
         pw.io.csv.write(table, output_path)
 
-        persistence_config = pw.persistence.Config.simple_config(
+        persistence_config = pw.persistence.Config(
             pw.persistence.Backend.filesystem(tmp_path / "PStorage"),
             snapshot_access=snapshot_access,
         )
@@ -3300,7 +3300,7 @@ def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
         )
         pw.io.jsonlines.write(table, output_path)
         run_all(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 backend=pw.persistence.Backend.filesystem(pstorage_path),
                 snapshot_access=api.SnapshotAccess.OFFSETS_ONLY,
             )
@@ -3333,7 +3333,7 @@ def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
         "Please use several airbyte connectors with one stream per connector to persist the state.",
     ):
         run_all(
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 backend=pw.persistence.Backend.filesystem(pstorage_path),
                 snapshot_access=api.SnapshotAccess.OFFSETS_ONLY,
             )

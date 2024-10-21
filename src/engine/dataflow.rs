@@ -15,9 +15,8 @@ use crate::connectors::adaptors::{GenericValues, ValuesSessionAdaptor};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
-use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::connectors::{read_persisted_state, ARTIFICIAL_TIME_ON_REWIND_START};
-use crate::connectors::{Connector, PersistenceMode, SnapshotAccess, SnapshotMode};
+use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
@@ -27,6 +26,7 @@ use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
 use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
 use crate::persistence::frontier::OffsetAntichain;
+use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId};
 use crate::retry::{execute_with_retries, RetryConfig};
@@ -3120,11 +3120,7 @@ where
                             } else {
                                 SnapshotEvent::Delete(*key, values_vec)
                             };
-                            snapshot_writer
-                                .lock()
-                                .unwrap()
-                                .write(&event)
-                                .expect("Failed to save row in persistent buffer.");
+                            snapshot_writer.lock().unwrap().write(&event);
                         }
                     }
                     Err(frontier) => {
@@ -3133,8 +3129,7 @@ where
                             snapshot_writer
                                 .lock()
                                 .unwrap()
-                                .write(&SnapshotEvent::AdvanceTime(*time, OffsetAntichain::new()))
-                                .expect("Failed to save time advancement in persistent buffer.");
+                                .write(&SnapshotEvent::AdvanceTime(*time, OffsetAntichain::new()));
                         }
                     }
                 })

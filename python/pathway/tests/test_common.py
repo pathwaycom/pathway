@@ -1973,14 +1973,14 @@ def test_apply_async_disk_cache(tmp_path: pathlib.Path):
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(cache_dir),
         ),
     )

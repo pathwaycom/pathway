@@ -35,7 +35,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
     pw.run(
         monitoring_level=MonitoringLevel.NONE,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(pathway_persistent_storage),
             snapshot_access=snapshot_access,
         ),
@@ -55,7 +55,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
     pw.run(
         monitoring_level=MonitoringLevel.NONE,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(pathway_persistent_storage),
             snapshot_access=snapshot_access,
         ),
@@ -79,7 +79,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     pw.io.csv.write(table, str(output_path))
     pw.run(
         monitoring_level=MonitoringLevel.NONE,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(pathway_persistent_storage),
             snapshot_access=snapshot_access,
         ),
@@ -125,7 +125,7 @@ def test_s3_json_read_and_recovery(
         pw.io.jsonlines.write(table, str(output_path))
         pw.run(
             monitoring_level=MonitoringLevel.NONE,
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.s3(
                     root_path=pstorage_s3_path,
                     bucket_settings=get_aws_s3_settings(),

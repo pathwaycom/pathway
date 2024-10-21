@@ -22,7 +22,6 @@ pub mod data_storage;
 pub mod metadata;
 pub mod monitoring;
 pub mod offset;
-pub mod snapshot;
 
 use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::error::{DynError, Trace};
@@ -32,11 +31,11 @@ use crate::engine::report_error::{
 use crate::engine::{DataError, Key, Value};
 
 use crate::connectors::adaptors::InputAdaptor;
-use crate::connectors::snapshot::Event as SnapshotEvent;
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
 use crate::persistence::frontier::OffsetAntichain;
+use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
 use crate::timestamp::current_unix_timestamp_ms;
@@ -49,7 +48,6 @@ use data_storage::{
 pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
-pub use snapshot::SnapshotMode;
 
 pub const ARTIFICIAL_TIME_ON_REWIND_START: Timestamp = Timestamp(0); // XXX
 
@@ -528,9 +526,7 @@ impl Connector {
                                 self.current_frontier.clone(),
                             );
                             info!("Input source has ended. Terminating with snapshot event: {snapshot_event:?}");
-                            if let Err(e) = snapshot_writer.lock().unwrap().write(&snapshot_event) {
-                                error!("Failed to save finalization event in persistent buffer. Error: {e}");
-                            }
+                            snapshot_writer.lock().unwrap().write(&snapshot_event);
                         }
                         if backfilling_finished {
                             (*connector_monitor).borrow_mut().finish();
@@ -802,9 +798,7 @@ impl Connector {
                     let snapshot_event = entry
                         .snapshot_event(key)
                         .expect("Snapshot event not constructed");
-                    if let Err(e) = snapshot_writer.lock().unwrap().write(&snapshot_event) {
-                        error!("Failed to save row ({entry:?}) in persistent buffer. Error: {e}");
-                    }
+                    snapshot_writer.lock().unwrap().write(&snapshot_event);
                 }
             }
 
@@ -832,17 +826,13 @@ impl Connector {
                         connector_monitor.commit();
                     }
                     if let Some(snapshot_writer) = snapshot_writer {
-                        if let Err(e) =
-                            snapshot_writer
-                                .lock()
-                                .unwrap()
-                                .write(&SnapshotEvent::AdvanceTime(
-                                    time_advanced,
-                                    self.current_frontier.clone(),
-                                ))
-                        {
-                            error!("Failed to save time advancement ({time_advanced}) in persistent buffer. Error: {e}");
-                        }
+                        snapshot_writer
+                            .lock()
+                            .unwrap()
+                            .write(&SnapshotEvent::AdvanceTime(
+                                time_advanced,
+                                self.current_frontier.clone(),
+                            ));
                     }
                 }
             };

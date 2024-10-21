@@ -16,7 +16,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.pstorage_type == "fs":
-        pstorage_config = pw.persistence.Config.simple_config(
+        pstorage_config = pw.persistence.Config(
             pw.persistence.Backend.filesystem(path=args.pstorage),
             snapshot_interval_ms=5000,
         )
@@ -27,7 +27,7 @@ if __name__ == "__main__":
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         )
-        pstorage_config = pw.persistence.Config.simple_config(
+        pstorage_config = pw.persistence.Config(
             pw.persistence.Backend.s3(
                 root_path=args.pstorage,
                 bucket_settings=aws_s3_settings,

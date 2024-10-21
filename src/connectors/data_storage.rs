@@ -51,6 +51,7 @@ use crate::engine::Type;
 use crate::engine::Value;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
 use crate::fs_helpers::ensure_directory;
+use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::python_api::extract_value;
@@ -520,6 +521,9 @@ pub enum WriteError {
 
     #[error("elasticsearch client error: {0:?}")]
     Elasticsearch(elasticsearch::Error),
+
+    #[error(transparent)]
+    Persistence(#[from] PersistenceBackendError),
 }
 
 pub trait Writer: Send {

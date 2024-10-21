@@ -2,7 +2,7 @@
 
 use tempfile::tempdir;
 
-use pathway_engine::persistence::backends::{FilesystemKVStorage, MetadataBackend};
+use pathway_engine::persistence::backends::{FilesystemKVStorage, PersistenceBackend};
 
 #[test]
 fn test_simple_kv_operations() -> eyre::Result<()> {
@@ -12,18 +12,21 @@ fn test_simple_kv_operations() -> eyre::Result<()> {
     let mut storage = FilesystemKVStorage::new(test_storage_path)?;
     assert_eq!(storage.list_keys()?, Vec::<String>::new());
 
-    futures::executor::block_on(async { storage.put_value("1", b"one").await.unwrap() }).unwrap();
+    futures::executor::block_on(async { storage.put_value("1", b"one".to_vec()).await.unwrap() })
+        .unwrap();
     assert_eq!(storage.list_keys()?, vec!["1"]);
 
-    futures::executor::block_on(async { storage.put_value("2", b"two").await.unwrap() }).unwrap();
+    futures::executor::block_on(async { storage.put_value("2", b"two".to_vec()).await.unwrap() })
+        .unwrap();
     assert_eq!(storage.list_keys()?, vec!["1", "2"]);
 
-    assert_eq!(storage.get_value("1")?, b"one");
-    assert_eq!(storage.get_value("2")?, b"two");
+    assert_eq!(storage.get_value("1")?, b"one".to_vec());
+    assert_eq!(storage.get_value("2")?, b"two".to_vec());
 
-    futures::executor::block_on(async { storage.put_value("1", b"three").await.unwrap() }).unwrap();
+    futures::executor::block_on(async { storage.put_value("1", b"three".to_vec()).await.unwrap() })
+        .unwrap();
     assert_eq!(storage.list_keys()?, vec!["1", "2"]);
-    assert_eq!(storage.get_value("1")?, b"three");
+    assert_eq!(storage.get_value("1")?, b"three".to_vec());
 
     Ok(())
 }

@@ -538,7 +538,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
                     raise ValueError(
                         "Cache usage was requested but the backend is unspecified"
                     )
-                persistence_config = pw.persistence.Config.simple_config(
+                persistence_config = pw.persistence.Config(
                     cache_backend,
                     persistence_mode=pw.PersistenceMode.UDF_CACHING,
                 )

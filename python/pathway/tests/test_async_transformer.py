@@ -97,7 +97,7 @@ def test_file_io(monkeypatch, tmp_path: pathlib.Path):
     pw.io.csv.write(result, output_path)
 
     pstorage_dir = tmp_path / "PStorage"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(pstorage_dir),
         persistence_mode=api.PersistenceMode.UDF_CACHING,
     )
@@ -249,7 +249,7 @@ def test_disk_cache(tmp_path: pathlib.Path):
         assert_table_equality(
             result,
             expected,
-            persistence_config=pw.persistence.Config.simple_config(
+            persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(cache_dir),
             ),
         )

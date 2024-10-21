@@ -12,17 +12,27 @@ use std::sync::{mpsc, Arc};
 
 use tempfile::tempdir;
 
-use pathway_engine::connectors::snapshot::Event as SnapshotEvent;
-use pathway_engine::connectors::snapshot::{
-    LocalBinarySnapshotReader, LocalBinarySnapshotWriter, ReadSnapshotEvent, WriteSnapshotEvent,
-};
-use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotMode};
-use pathway_engine::engine::{Key, Value};
+use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
+use pathway_engine::engine::{Key, TotalFrontier, Value};
+use pathway_engine::persistence::backends::FilesystemKVStorage;
 use pathway_engine::persistence::frontier::OffsetAntichain;
+use pathway_engine::persistence::input_snapshot::{
+    Event as SnapshotEvent, InputSnapshotReader, InputSnapshotWriter, ReadInputSnapshot,
+    SnapshotMode,
+};
 use pathway_engine::persistence::PersistentId;
 
+fn flush_snapshot_writer_blocking(snapshot_writer: &mut InputSnapshotWriter) {
+    futures::executor::block_on(async {
+        let flush_futures = snapshot_writer.flush();
+        for flush_future in flush_futures {
+            flush_future.await.unwrap().unwrap();
+        }
+    });
+}
+
 fn get_snapshot_reader_entries(
-    mut snapshot_reader: Box<dyn ReadSnapshotEvent>,
+    mut snapshot_reader: Box<dyn ReadInputSnapshot>,
 ) -> Vec<SnapshotEvent> {
     let mut entries = Vec::new();
     loop {
@@ -39,8 +49,10 @@ fn get_snapshot_reader_entries(
 }
 
 fn read_persistent_buffer(chunks_root: &Path) -> Vec<SnapshotEvent> {
-    let snapshot_reader = LocalBinarySnapshotReader::new(chunks_root.to_path_buf())
-        .expect("Failed to create reader for test snapshot storage");
+    let backend = FilesystemKVStorage::new(chunks_root).expect("Failed to create FS backend");
+    let snapshot_reader =
+        InputSnapshotReader::new(Box::new(backend), TotalFrontier::At(Timestamp(999)), false)
+            .expect("Failed to create snapshot reader");
     get_snapshot_reader_entries(Box::new(snapshot_reader))
 }
 
@@ -87,15 +99,11 @@ fn test_stream_snapshot_io() -> eyre::Result<()> {
     let test_storage_path = test_storage.path();
 
     {
-        let mut snapshot_writer =
-            LocalBinarySnapshotWriter::new(test_storage_path, SnapshotMode::Full)
-                .expect("Failed to create test snapshot storage");
-        snapshot_writer
-            .write(&event1)
-            .expect("Failed to write event into snapshot file");
-        snapshot_writer
-            .write(&event2)
-            .expect("Failed to write event into snapshot file");
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
+        let mut snapshot_writer = InputSnapshotWriter::new(Box::new(backend), SnapshotMode::Full);
+        snapshot_writer.write(&event1);
+        snapshot_writer.write(&event2);
+        flush_snapshot_writer_blocking(&mut snapshot_writer);
     }
 
     assert_eq!(
@@ -119,8 +127,9 @@ fn test_stream_snapshot_io_broken_format() -> eyre::Result<()> {
             .expect("Failed to write");
     }
 
-    let mut snapshot_reader = LocalBinarySnapshotReader::new(test_storage_path.to_path_buf())
-        .expect("Failed to create reader for test snapshot storage");
+    let backend = FilesystemKVStorage::new(test_storage_path)?;
+    let mut snapshot_reader =
+        InputSnapshotReader::new(Box::new(backend), TotalFrontier::At(Timestamp(999)), false)?;
     let entry = snapshot_reader.read();
     assert_matches!(entry, Err(_));
 
@@ -132,8 +141,9 @@ fn test_stream_empty() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
 
-    let mut snapshot_reader = LocalBinarySnapshotReader::new(test_storage_path.to_path_buf())
-        .expect("Failed to create reader for test snapshot storage");
+    let backend = FilesystemKVStorage::new(test_storage_path)?;
+    let mut snapshot_reader =
+        InputSnapshotReader::new(Box::new(backend), TotalFrontier::At(Timestamp(999)), false)?;
     let entry = snapshot_reader.read();
     assert_matches!(entry, Ok(SnapshotEvent::Finished));
 
@@ -153,8 +163,8 @@ fn test_stream_not_from_dir() -> eyre::Result<()> {
             .expect("Failed to write");
     }
 
-    let snapshot_reader = LocalBinarySnapshotReader::new(test_storage_path.join("1"));
-    assert!(snapshot_reader.is_err());
+    let backend = FilesystemKVStorage::new(&test_storage_path.join("1"));
+    assert!(backend.is_err());
 
     Ok(())
 }
@@ -169,7 +179,7 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .create_snapshot_writer(42, SnapshotMode::Full)
-        .expect("Failed to create snapshot writer");
+        .unwrap();
 
     let mock_sink_id = tracker.lock().unwrap().register_sink();
 
@@ -189,16 +199,12 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
         Vec::new()
     );
-    buffer.lock().unwrap().write(&event1).unwrap();
-    buffer.lock().unwrap().write(&event2).unwrap();
-    buffer
-        .lock()
-        .unwrap()
-        .write(&SnapshotEvent::AdvanceTime(
-            Timestamp(2),
-            OffsetAntichain::new(),
-        ))
-        .unwrap();
+    buffer.lock().unwrap().write(&event1);
+    buffer.lock().unwrap().write(&event2);
+    buffer.lock().unwrap().write(&SnapshotEvent::AdvanceTime(
+        Timestamp(2),
+        OffsetAntichain::new(),
+    ));
 
     tracker
         .lock()
@@ -210,18 +216,14 @@ fn test_buffer_dont_read_beyond_threshold_time() -> eyre::Result<()> {
         vec![event1.clone(), event2.clone()]
     );
 
-    buffer
-        .lock()
-        .unwrap()
-        .write(&SnapshotEvent::AdvanceTime(
-            Timestamp(10),
-            OffsetAntichain::new(),
-        ))
-        .unwrap();
+    buffer.lock().unwrap().write(&SnapshotEvent::AdvanceTime(
+        Timestamp(10),
+        OffsetAntichain::new(),
+    ));
     let event3 = SnapshotEvent::Insert(Key::random(), vec![Value::Int(3), Value::Bool(true)]);
     let event4 = SnapshotEvent::Insert(Key::random(), vec![Value::Int(4), Value::Bool(false)]);
-    buffer.lock().unwrap().write(&event3).unwrap();
-    buffer.lock().unwrap().write(&event4).unwrap();
+    buffer.lock().unwrap().write(&event3);
+    buffer.lock().unwrap().write(&event4);
     assert_eq!(
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::Batch),
         vec![event1.clone(), event2.clone()]
@@ -250,17 +252,13 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
             .lock()
             .unwrap()
             .create_snapshot_writer(42, SnapshotMode::Full)
-            .expect("Failed to create snapshot writer");
-
-        buffer.lock().unwrap().write(&event1).unwrap();
-        buffer
-            .lock()
-            .unwrap()
-            .write(&SnapshotEvent::AdvanceTime(
-                Timestamp(1),
-                OffsetAntichain::new(),
-            ))
             .unwrap();
+
+        buffer.lock().unwrap().write(&event1);
+        buffer.lock().unwrap().write(&SnapshotEvent::AdvanceTime(
+            Timestamp(1),
+            OffsetAntichain::new(),
+        ));
 
         tracker
             .lock()
@@ -278,22 +276,14 @@ fn test_buffer_scenario_several_writes() -> eyre::Result<()> {
             .lock()
             .unwrap()
             .create_snapshot_writer(42, SnapshotMode::Full)
-            .expect("Failed to create snapshot writer");
-
-        buffer.lock().unwrap().write(&event2).unwrap();
-        buffer
-            .lock()
-            .unwrap()
-            .write(&SnapshotEvent::AdvanceTime(
-                Timestamp(2),
-                OffsetAntichain::new(),
-            ))
             .unwrap();
-        futures::executor::block_on(async {
-            let flush_future = buffer.lock().unwrap().flush();
-            flush_future.await.unwrap().unwrap();
-        });
 
+        buffer.lock().unwrap().write(&event2);
+        buffer.lock().unwrap().write(&SnapshotEvent::AdvanceTime(
+            Timestamp(2),
+            OffsetAntichain::new(),
+        ));
+        flush_snapshot_writer_blocking(&mut buffer.lock().unwrap());
         tracker
             .lock()
             .unwrap()
@@ -318,7 +308,7 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
         .lock()
         .unwrap()
         .create_snapshot_writer(42, SnapshotMode::Full)
-        .expect("Failed to create snapshot writer");
+        .unwrap();
 
     let mock_sink_id = tracker.lock().unwrap().register_sink();
 
@@ -340,10 +330,10 @@ fn test_stream_snapshot_speedrun() -> eyre::Result<()> {
         read_persistent_buffer_full(test_storage_path, 42, PersistenceMode::SpeedrunReplay),
         Vec::new()
     );
-    buffer.lock().unwrap().write(&event1).unwrap();
-    buffer.lock().unwrap().write(&event2).unwrap();
-    buffer.lock().unwrap().write(&event3).unwrap();
-    buffer.lock().unwrap().write(&event4).unwrap();
+    buffer.lock().unwrap().write(&event1);
+    buffer.lock().unwrap().write(&event2);
+    buffer.lock().unwrap().write(&event3);
+    buffer.lock().unwrap().write(&event4);
 
     tracker
         .lock()
@@ -389,14 +379,13 @@ fn test_stream_snapshot_stateless() -> eyre::Result<()> {
     let test_storage_path = test_storage.path();
 
     {
+        let backend = FilesystemKVStorage::new(test_storage_path)?;
         let mut snapshot_writer =
-            LocalBinarySnapshotWriter::new(test_storage_path, SnapshotMode::OffsetsOnly)
-                .expect("Failed to create test snapshot storage");
+            InputSnapshotWriter::new(Box::new(backend), SnapshotMode::OffsetsOnly);
         for event in events {
-            snapshot_writer
-                .write(event)
-                .expect("Failed to create test snapshot storage");
+            snapshot_writer.write(event);
         }
+        flush_snapshot_writer_blocking(&mut snapshot_writer);
     }
 
     assert_eq!(

@@ -86,7 +86,7 @@ class PathwayConfig:
                     + "needs to be set to either 'record' or 'replay'"
                 )
             data_storage = persistence.Backend.filesystem(self.replay_storage)
-            persistence_config = persistence.Config.simple_config(
+            persistence_config = persistence.Config(
                 data_storage,
                 persistence_mode=self.persistence_mode,
                 snapshot_access=self.snapshot_access,

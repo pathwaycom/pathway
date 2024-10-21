@@ -164,14 +164,14 @@ def test_udf_async_options_deprecated(tmp_path: pathlib.Path):
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
@@ -211,14 +211,14 @@ def test_udf_async_options(tmp_path: pathlib.Path):
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
     assert_table_equality(
         result,
         expected,
-        persistence_config=pw.persistence.Config.simple_config(
+        persistence_config=pw.persistence.Config(
             pw.persistence.Backend.filesystem(cache_dir),
         ),
     )
@@ -587,7 +587,7 @@ def test_udf_cache(monkeypatch, tmp_path: pathlib.Path):
     result = input.select(ret=inc(pw.this.a))
 
     pstorage_dir = tmp_path / "PStorage"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(pstorage_dir),
         persistence_mode=api.PersistenceMode.UDF_CACHING,
     )
@@ -669,7 +669,7 @@ def test_udf_deterministic_not_stored(monkeypatch, tmp_path: pathlib.Path, sync)
     result = input.select(ret=inc(pw.this.a))
 
     pstorage_dir = tmp_path / "PStorage"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         backend=pw.persistence.Backend.filesystem(pstorage_dir),
         persistence_mode=api.PersistenceMode.UDF_CACHING,
     )

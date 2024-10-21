@@ -12,7 +12,7 @@ from pathway.tests.utils import assert_stream_equality_wo_index, run
 
 def test_deduplicate_keeps_state(tmp_path: pathlib.Path):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path)
     )
     data_1 = """
@@ -101,7 +101,7 @@ def test_deduplicate_keeps_state(tmp_path: pathlib.Path):
 
 def test_deduplicate_keeps_state_after_two_restarts(tmp_path: pathlib.Path):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path)
     )
     data_1 = """
@@ -223,7 +223,7 @@ def test_deduplicate_keeps_state_after_two_restarts(tmp_path: pathlib.Path):
 
 def test_deduplicate_with_instance_keeps_state(tmp_path: pathlib.Path):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path)
     )
     data_1 = """
@@ -301,7 +301,7 @@ def test_deduplicate_with_instance_keeps_state(tmp_path: pathlib.Path):
 
 def test_deduplicate_keeps_state_after_code_change(tmp_path: pathlib.Path):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path)
     )
     data_1 = """
@@ -367,7 +367,7 @@ def test_deduplicate_keeps_state_after_code_change(tmp_path: pathlib.Path):
 @pytest.mark.flaky(reruns=2)
 def test_deduplicate_keeps_state_with_regular_persistence(tmp_path: pathlib.Path):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path)
     )
 
@@ -401,7 +401,7 @@ def test_selective_persistence_persistent_id_set(
     tmp_path: pathlib.Path,
 ):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path),
         persistence_mode=pw.PersistenceMode.SELECTIVE_PERSISTING,
     )
@@ -478,7 +478,7 @@ def test_selective_persistence_no_persistent_id_set_or_different_ids_set(
     second_id: str | None,
 ):
     persistence_path = tmp_path / "persistence"
-    persistence_config = pw.persistence.Config.simple_config(
+    persistence_config = pw.persistence.Config(
         pw.persistence.Backend.filesystem(persistence_path),
         persistence_mode=pw.PersistenceMode.SELECTIVE_PERSISTING,
     )

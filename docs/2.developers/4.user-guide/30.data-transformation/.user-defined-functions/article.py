@@ -350,7 +350,7 @@ def inc_disk_cache(x: int) -> int:
     return x + 1
 
 
-persistence_config = pw.persistence.Config.simple_config(
+persistence_config = pw.persistence.Config(
     pw.persistence.Backend.filesystem("./Cache"),
     persistence_mode=pw.PersistenceMode.UDF_CACHING,
 )

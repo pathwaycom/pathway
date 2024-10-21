@@ -2,7 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::connectors::snapshot::WriteSnapshotEvent;
+use crate::persistence::input_snapshot::InputSnapshotWriter;
+
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 pub mod backends;
@@ -14,7 +15,7 @@ pub mod tracker;
 
 pub type PersistentId = u128;
 pub type ExternalPersistentId = String;
-pub type SharedSnapshotWriter = Arc<Mutex<Box<dyn WriteSnapshotEvent>>>;
+pub type SharedSnapshotWriter = Arc<Mutex<InputSnapshotWriter>>;
 
 pub use backends::Error;
 

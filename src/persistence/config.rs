@@ -12,18 +12,17 @@ use std::time::Duration;
 
 use s3::bucket::Bucket as S3Bucket;
 
-use crate::connectors::data_storage::S3CommandName;
-use crate::connectors::data_storage::{ReadError, WriteError};
-use crate::connectors::snapshot::{
-    Event, LocalBinarySnapshotReader, LocalBinarySnapshotWriter, MockSnapshotReader,
-    ReadSnapshotEvent, S3SnapshotReader, S3SnapshotWriter, SnapshotMode, SnapshotReader,
+use crate::persistence::input_snapshot::{
+    Event, InputSnapshotReader, InputSnapshotWriter, MockSnapshotReader, ReadInputSnapshot,
+    SnapshotMode,
 };
+
 use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::{
-    FilesystemKVStorage, MetadataBackend, MockKVStorage, S3KVStorage,
+    FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
 };
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::Error as PersistenceBackendError;
@@ -33,23 +32,24 @@ const STREAMS_DIRECTORY_NAME: &str = "streams";
 
 pub type ConnectorWorkerPair = (PersistentId, usize);
 
-/// Metadata storage handles the frontier over all persisted data sources.
-/// When we restart the computation, it will start from the frontier stored
-/// in the metadata storage
+/// The configuration for the backend that stores persisted state.
 #[derive(Debug, Clone)]
-pub enum MetadataStorageConfig {
-    Filesystem(PathBuf),
-    S3 { bucket: S3Bucket, root_path: String },
-    Mock,
-}
-
-/// Stream storage handles the snapshot, which will be loaded when Pathway
-/// program restarts. It can also handle the cache for UDF calls
-#[derive(Debug, Clone)]
-pub enum StreamStorageConfig {
+pub enum PersistentStorageConfig {
     Filesystem(PathBuf),
     S3 { bucket: S3Bucket, root_path: String },
     Mock(HashMap<ConnectorWorkerPair, Vec<Event>>),
+}
+
+impl PersistentStorageConfig {
+    pub fn create(&self) -> Result<Box<dyn PersistenceBackend>, PersistenceBackendError> {
+        match &self {
+            Self::Filesystem(root_path) => Ok(Box::new(FilesystemKVStorage::new(root_path)?)),
+            Self::S3 { bucket, root_path } => {
+                Ok(Box::new(S3KVStorage::new(bucket.deep_copy(), root_path)))
+            }
+            Self::Mock(_) => Ok(Box::new(MockKVStorage {})),
+        }
+    }
 }
 
 /// Persistence in Pathway consists of two parts: actual frontier
@@ -60,8 +60,7 @@ pub enum StreamStorageConfig {
 #[derive(Debug, Clone)]
 pub struct PersistenceManagerOuterConfig {
     snapshot_interval: Duration,
-    metadata_storage: MetadataStorageConfig,
-    stream_storage: StreamStorageConfig,
+    backend: PersistentStorageConfig,
     snapshot_access: SnapshotAccess,
     persistence_mode: PersistenceMode,
     continue_after_replay: bool,
@@ -70,16 +69,14 @@ pub struct PersistenceManagerOuterConfig {
 impl PersistenceManagerOuterConfig {
     pub fn new(
         snapshot_interval: Duration,
-        metadata_storage: MetadataStorageConfig,
-        stream_storage: StreamStorageConfig,
+        backend: PersistentStorageConfig,
         snapshot_access: SnapshotAccess,
         persistence_mode: PersistenceMode,
         continue_after_replay: bool,
     ) -> Self {
         Self {
             snapshot_interval,
-            metadata_storage,
-            stream_storage,
+            backend,
             snapshot_access,
             persistence_mode,
             continue_after_replay,
@@ -95,8 +92,7 @@ impl PersistenceManagerOuterConfig {
 /// constructed from within the worker
 #[derive(Debug, Clone)]
 pub struct PersistenceManagerConfig {
-    metadata_storage: MetadataStorageConfig,
-    stream_storage: StreamStorageConfig,
+    backend: PersistentStorageConfig,
     pub snapshot_access: SnapshotAccess,
     pub persistence_mode: PersistenceMode,
     pub continue_after_replay: bool,
@@ -151,8 +147,7 @@ impl PersistenceManagerConfig {
         total_workers: usize,
     ) -> Self {
         Self {
-            stream_storage: outer_config.stream_storage,
-            metadata_storage: outer_config.metadata_storage,
+            backend: outer_config.backend,
             snapshot_access: outer_config.snapshot_access,
             persistence_mode: outer_config.persistence_mode,
             continue_after_replay: outer_config.continue_after_replay,
@@ -163,15 +158,7 @@ impl PersistenceManagerConfig {
     }
 
     pub fn create_metadata_storage(&self) -> Result<MetadataAccessor, PersistenceBackendError> {
-        let backend: Box<dyn MetadataBackend> = match &self.metadata_storage {
-            MetadataStorageConfig::Filesystem(root_path) => {
-                Box::new(FilesystemKVStorage::new(root_path)?)
-            }
-            MetadataStorageConfig::S3 { bucket, root_path } => {
-                Box::new(S3KVStorage::new(bucket.deep_copy(), root_path))
-            }
-            MetadataStorageConfig::Mock => Box::new(MockKVStorage {}),
-        };
+        let backend = self.backend.create()?;
         MetadataAccessor::new(backend, self.worker_id)
     }
 
@@ -180,85 +167,76 @@ impl PersistenceManagerConfig {
         persistent_id: PersistentId,
         threshold_times: &HashMap<usize, TotalFrontier<Timestamp>>,
         query_purpose: ReadersQueryPurpose,
-    ) -> Result<Vec<SnapshotReader>, ReadError> {
-        let mut result: Vec<SnapshotReader> = Vec::new();
-        let reader_impls = match &self.stream_storage {
-            StreamStorageConfig::Filesystem(root_path) => {
-                let mut reader_impls = HashMap::<usize, Box<dyn ReadSnapshotEvent>>::new();
+    ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
+        let min_threshold_time = *threshold_times
+            .values()
+            .min()
+            .unwrap_or(&TotalFrontier::At(Timestamp(0)));
+        let mut result: Vec<Box<dyn ReadInputSnapshot>> = Vec::new();
+        match &self.backend {
+            PersistentStorageConfig::Filesystem(root_path) => {
                 let assigned_snapshot_paths =
                     self.assigned_snapshot_paths(root_path, persistent_id, query_purpose)?;
-                for (worker_id, path) in assigned_snapshot_paths {
-                    reader_impls.insert(worker_id, Box::new(LocalBinarySnapshotReader::new(path)?));
+                for (_, path) in assigned_snapshot_paths {
+                    let backend = FilesystemKVStorage::new(&path)?;
+                    let reader = InputSnapshotReader::new(
+                        Box::new(backend),
+                        min_threshold_time,
+                        query_purpose.truncate_at_end(),
+                    )?;
+                    result.push(Box::new(reader));
                 }
-                reader_impls
+                Ok(result)
             }
-            StreamStorageConfig::S3 { bucket, root_path } => {
-                let mut reader_impls = HashMap::<usize, Box<dyn ReadSnapshotEvent>>::new();
+            PersistentStorageConfig::S3 { bucket, root_path } => {
                 let assigned_snapshot_paths = self.assigned_s3_snapshot_paths(
                     &bucket.deep_copy(),
                     root_path,
                     persistent_id,
                     query_purpose,
                 )?;
-                for (worker_id, path) in assigned_snapshot_paths {
-                    reader_impls.insert(
-                        worker_id,
-                        Box::new(S3SnapshotReader::new(bucket.deep_copy(), &path)?),
-                    );
+                for (_, path) in assigned_snapshot_paths {
+                    let backend = S3KVStorage::new(bucket.deep_copy(), &path);
+                    let reader = InputSnapshotReader::new(
+                        Box::new(backend),
+                        min_threshold_time,
+                        query_purpose.truncate_at_end(),
+                    )?;
+                    result.push(Box::new(reader));
                 }
-                reader_impls
+                Ok(result)
             }
-            StreamStorageConfig::Mock(event_map) => {
-                let mut reader_impls = HashMap::<usize, Box<dyn ReadSnapshotEvent>>::new();
+            PersistentStorageConfig::Mock(event_map) => {
                 let events = event_map
                     .get(&(persistent_id, self.worker_id))
                     .unwrap_or(&vec![])
                     .clone();
                 let reader = MockSnapshotReader::new(events);
-                reader_impls.insert(self.worker_id, Box::new(reader));
-                reader_impls
+                result.push(Box::new(reader));
+                Ok(result)
             }
-        };
-
-        let min_threshold_time = *threshold_times
-            .values()
-            .min()
-            .unwrap_or(&TotalFrontier::At(Timestamp(0)));
-        for (_, reader_impl) in reader_impls {
-            result.push(SnapshotReader::new(
-                reader_impl,
-                min_threshold_time,
-                query_purpose.truncate_at_end(),
-            )?);
         }
-
-        Ok(result)
     }
 
     pub fn create_snapshot_writer(
         &mut self,
         persistent_id: PersistentId,
         snapshot_mode: SnapshotMode,
-    ) -> Result<SharedSnapshotWriter, WriteError> {
-        match &self.stream_storage {
-            StreamStorageConfig::Filesystem(root_path) => Ok(Arc::new(Mutex::new(Box::new(
-                LocalBinarySnapshotWriter::new(
-                    &self.snapshot_writer_path(root_path, persistent_id)?,
-                    snapshot_mode,
-                )?,
-            )))),
-            StreamStorageConfig::S3 { bucket, root_path } => {
-                let snapshot_path = self.s3_snapshot_path(root_path, persistent_id);
-                Ok(Arc::new(Mutex::new(Box::new(S3SnapshotWriter::new(
-                    bucket.deep_copy(),
-                    &snapshot_path,
-                    snapshot_mode,
-                )))))
-            }
-            StreamStorageConfig::Mock(_) => {
+    ) -> Result<SharedSnapshotWriter, PersistenceBackendError> {
+        let backend: Box<dyn PersistenceBackend> = match &self.backend {
+            PersistentStorageConfig::Filesystem(root_path) => Box::new(FilesystemKVStorage::new(
+                &self.snapshot_writer_path(root_path, persistent_id)?,
+            )?),
+            PersistentStorageConfig::S3 { bucket, root_path } => Box::new(S3KVStorage::new(
+                bucket.deep_copy(),
+                &self.s3_snapshot_path(root_path, persistent_id),
+            )),
+            PersistentStorageConfig::Mock(_) => {
                 unreachable!()
             }
-        }
+        };
+        let snapshot_writer = InputSnapshotWriter::new(backend, snapshot_mode);
+        Ok(Arc::new(Mutex::new(snapshot_writer)))
     }
 
     fn snapshot_writer_path(
@@ -288,7 +266,7 @@ impl PersistenceManagerConfig {
         root_path: &Path,
         persistent_id: PersistentId,
         query_purpose: ReadersQueryPurpose,
-    ) -> Result<HashMap<usize, PathBuf>, ReadError> {
+    ) -> Result<HashMap<usize, PathBuf>, PersistenceBackendError> {
         ensure_directory(root_path)?;
 
         let streams_dir = root_path.join("streams");
@@ -338,7 +316,7 @@ impl PersistenceManagerConfig {
         root_path: &str,
         persistent_id: PersistentId,
         query_purpose: ReadersQueryPurpose,
-    ) -> Result<HashMap<usize, String>, ReadError> {
+    ) -> Result<HashMap<usize, String>, PersistenceBackendError> {
         let snapshots_root_path = format!(
             "{}/streams/",
             root_path.strip_suffix('/').unwrap_or(root_path)
@@ -346,7 +324,7 @@ impl PersistenceManagerConfig {
         let prefix_len = snapshots_root_path.len();
         let object_lists = bucket
             .list(snapshots_root_path.clone(), None)
-            .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+            .map_err(PersistenceBackendError::S3)?;
 
         let mut assigned_paths = HashMap::new();
 

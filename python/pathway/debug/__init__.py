@@ -703,7 +703,7 @@ class StreamGenerator:
 
         if len(self.events) == 0:
             return None
-        return persistence.Config.simple_config(
+        return persistence.Config(
             persistence.Backend.mock(self.events),
             snapshot_access=api.SnapshotAccess.REPLAY,
             persistence_mode=api.PersistenceMode.SPEEDRUN_REPLAY,

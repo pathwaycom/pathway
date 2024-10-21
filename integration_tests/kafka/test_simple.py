@@ -372,7 +372,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         ),
         10,
         kwargs={
-            "persistence_config": pw.persistence.Config.simple_config(
+            "persistence_config": pw.persistence.Config(
                 pw.persistence.Backend.filesystem(persistent_storage_path),
             ),
         },
@@ -414,7 +414,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         10,
         target=pw.run,
         kwargs={
-            "persistence_config": pw.persistence.Config.simple_config(
+            "persistence_config": pw.persistence.Config(
                 pw.persistence.Backend.filesystem(persistent_storage_path),
             ),
         },

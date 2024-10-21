@@ -12,7 +12,7 @@ use futures::channel::oneshot::Sender as OneShotSender;
 use s3::bucket::Bucket as S3Bucket;
 
 use crate::deepcopy::DeepCopy;
-use crate::persistence::backends::MetadataBackend;
+use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
 use crate::retry::{execute_with_retries, RetryConfig};
 
@@ -96,7 +96,7 @@ impl Drop for S3KVStorage {
     }
 }
 
-impl MetadataBackend for S3KVStorage {
+impl PersistenceBackend for S3KVStorage {
     fn list_keys(&self) -> Result<Vec<String>, Error> {
         let mut keys = Vec::new();
 
@@ -124,12 +124,12 @@ impl MetadataBackend for S3KVStorage {
         Ok(response_data.bytes().to_vec())
     }
 
-    fn put_value(&mut self, key: &str, value: &[u8]) -> OneShotReceiver<Result<(), Error>> {
+    fn put_value(&mut self, key: &str, value: Vec<u8>) -> OneShotReceiver<Result<(), Error>> {
         let (sender, receiver) = oneshot::channel();
         self.upload_event_sender
             .send(S3UploaderEvent::UploadObject {
                 key: self.full_key_path(key),
-                value: value.to_vec(),
+                value,
                 result_sender: sender,
             })
             .expect("chunk queue submission should not fail");

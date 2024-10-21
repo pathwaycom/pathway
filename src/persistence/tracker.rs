@@ -5,13 +5,15 @@ use std::collections::{HashMap, HashSet};
 use std::mem::take;
 use std::time::Instant;
 
-use crate::connectors::data_storage::{ReadError, StorageType, WriteError};
-use crate::connectors::snapshot::{SnapshotMode, SnapshotReader, SnapshotWriterFlushFuture};
+use crate::connectors::data_storage::StorageType;
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
+use crate::persistence::input_snapshot::{
+    ReadInputSnapshot, SnapshotMode, SnapshotWriterFlushFuture,
+};
 use crate::persistence::state::MetadataAccessor;
-use crate::persistence::Error as MetadataBackendError;
+use crate::persistence::Error as PersistenceBackendError;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
 
 /// The main coordinator for state persistence within a worker
@@ -67,7 +69,7 @@ impl LogicalTimeCommitData {
 }
 
 impl WorkerPersistentStorage {
-    pub fn new(config: PersistenceManagerConfig) -> Result<Self, MetadataBackendError> {
+    pub fn new(config: PersistenceManagerConfig) -> Result<Self, PersistenceBackendError> {
         Ok(Self {
             metadata_storage: config.create_metadata_storage()?,
             config,
@@ -161,8 +163,8 @@ impl WorkerPersistentStorage {
 
         let mut futures = Vec::new();
         for snapshot_writer in self.snapshot_writers.values() {
-            let flush_future = snapshot_writer.lock().unwrap().flush();
-            futures.push(flush_future);
+            let mut flush_futures = snapshot_writer.lock().unwrap().flush();
+            futures.append(&mut flush_futures);
         }
 
         LogicalTimeCommitData::new(futures, finalized_timestamp)
@@ -181,7 +183,7 @@ impl WorkerPersistentStorage {
         &self,
         persistent_id: PersistentId,
         query_purpose: ReadersQueryPurpose,
-    ) -> Result<Vec<SnapshotReader>, ReadError> {
+    ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
         self.config.create_snapshot_readers(
             persistent_id,
             self.metadata_storage.past_runs_threshold_times(),
@@ -193,7 +195,7 @@ impl WorkerPersistentStorage {
         &mut self,
         persistent_id: PersistentId,
         snapshot_mode: SnapshotMode,
-    ) -> Result<SharedSnapshotWriter, WriteError> {
+    ) -> Result<SharedSnapshotWriter, PersistenceBackendError> {
         if let Some(snapshot_writer) = self.snapshot_writers.get(&persistent_id) {
             Ok(snapshot_writer.clone())
         } else {
