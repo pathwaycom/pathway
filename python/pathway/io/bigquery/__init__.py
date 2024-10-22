@@ -6,6 +6,7 @@ from google.cloud import bigquery
 from google.oauth2.service_account import Credentials as ServiceCredentials
 
 from pathway.internals.api import Pointer, Table
+from pathway.internals.json import Json
 from pathway.io._subscribe import subscribe
 
 
@@ -24,13 +25,22 @@ class _OutputBuffer:
     ) -> None:
         row["time"] = time
         row["diff"] = 1 if is_addition else -1
-        self._buffer.append(row)
+        self._buffer.append(self._convert_to_compatible_format(row))
         if len(self._buffer) == self.MAX_BUFFER_SIZE:
             self._flush_buffer()
 
     def on_time_end(self, time: int) -> None:
         if self._buffer:
             self._flush_buffer()
+
+    def _convert_to_compatible_format(self, row: dict[str, Any]):
+        def maybe_dump_json_value(value: Any):
+            if isinstance(value, Json):
+                return Json.dumps(value)
+            else:
+                return value
+
+        return {key: maybe_dump_json_value(value) for key, value in row.items()}
 
     def _flush_buffer(self) -> None:
         errors = self._client.insert_rows_json(self._table_ref, self._buffer)

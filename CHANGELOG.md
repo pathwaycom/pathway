@@ -15,6 +15,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - It is now possible to set the size limit of cache in `pw.udfs.DiskCache`.
 - State persistence now uses a single backend for both metadata and stream storage. The `pw.persistence.Config.simple_config` method is therefore deprecated. Now you can use the `pw.persistence.Config` constructor with the same parameters that were previously used in `simple_config`.
 
+### Fixed
+- `pw.io.bigquery.write` connector now correctly handles `pw.Json` columns.
+
 ## [0.15.1] - 2024-10-04
 
 ### Fixed
