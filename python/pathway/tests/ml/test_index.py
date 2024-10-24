@@ -784,7 +784,7 @@ def test_no_match_is_empty_list():
 
 @pw.udf
 def fake_embedder(x: str) -> list[float]:
-    return [0.0, 1.0, float(ord(x[0]))]
+    return [0.0, 1.0, float(ord(x[0])) / 5.0]
 
 
 @pytest.mark.parametrize(
@@ -846,6 +846,51 @@ def test_index_factory(factory):
         pd.DataFrame({"query": ["a"], "doc": [("a",)]})
     )
     assert_table_equality_wo_index(res.update_types(doc=list[str]), expected)
+
+
+def test_usearch_distances():
+    @pw.udf
+    def fake_embedder(x: str) -> list[float]:
+        if x == "a":
+            return [1, 1, 1]
+        elif x == "b":
+            return [1, 1, 2]
+        elif x == "c":
+            return [1, 2, 2]
+        else:
+            return [1, 3, 1]
+
+    factory = UsearchKnnFactory(
+        embedder=fake_embedder,
+    )
+
+    query = pw.debug.table_from_rows(pw.schema_from_types(query=str), [("a",)])
+    docs = pw.debug.table_from_rows(
+        pw.schema_from_types(doc=str), [("b",), ("c",), ("d",)]
+    )
+
+    index = factory.build_index(docs.doc, docs)
+    res = (
+        index.query_as_of_now(query.query, collapse_rows=False, number_of_matches=3)
+        .select(pw.right.doc, distance=-pw.unwrap(pw.right._pw_index_reply_score))
+        .with_id_from(pw.this.doc)
+        .select(pw.this.distance)
+    )
+
+    df = pw.debug.table_to_pandas(res)
+    expected_df = pw.debug.table_to_pandas(
+        pw.debug.table_from_markdown(
+            """
+        doc | distance
+         b  | 0.05719095841793642
+         c  | 0.037749551350623634
+         d  | 0.12961172022151068
+    """
+        )
+        .with_id_from(pw.this.doc)
+        .select(pw.this.distance)
+    )
+    assert np.isclose(df.to_numpy(), expected_df.to_numpy(), rtol=1e-5, atol=0.0).all()
 
 
 @pytest.mark.parametrize(

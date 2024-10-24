@@ -78,7 +78,7 @@ thiserror = "1.0.63"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.40.0", features = ["rt-multi-thread"] }
 tonic = { version = "0.12.2", features = ["tls-native-roots"] }
-usearch = "~2.9.2" # 2.10 seems to have build problems (https://github.com/unum-cloud/usearch/issues/378)
+usearch = "2.15.3"
 uuid = { version = "1.10.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
