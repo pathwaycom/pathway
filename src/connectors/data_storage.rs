@@ -881,6 +881,7 @@ struct FilesystemScanner {
     cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
     next_file_for_insertion: Option<PathBuf>,
     cached_metadata: HashMap<PathBuf, Option<SourceMetadata>>,
+    scanner_actions_queue: VecDeque<PosixScannerAction>,
 
     // Storage is deleted on object destruction, so we need to store it
     // for the connector's life time
@@ -930,6 +931,7 @@ impl FilesystemScanner {
             cached_modify_times: HashMap::new(),
             next_file_for_insertion: None,
             cached_metadata: HashMap::new(),
+            scanner_actions_queue: VecDeque::new(),
             _connector_tmp_storage: connector_tmp_storage,
         })
     }
@@ -1061,20 +1063,40 @@ impl FilesystemScanner {
             }));
         }
 
-        // First check if we need to delete something
-        if self.streaming_mode.are_deletions_enabled() {
-            let next_for_deletion = self.next_deletion_entry();
-            if next_for_deletion.is_some() {
-                return Ok(next_for_deletion);
+        if self.scanner_actions_queue.is_empty() {
+            if self.streaming_mode.are_deletions_enabled() {
+                self.enqueue_deletion_entries();
             }
+            self.enqueue_insertion_entries()?;
         }
 
-        // If there is nothing to delete, ingest the new entries
-        self.next_insertion_entry()
+        // Find the next valid action to execute
+        loop {
+            match self.scanner_actions_queue.pop_front() {
+                Some(PosixScannerAction::Read(path)) => {
+                    let next_action = self.initiate_file_insertion(&path);
+                    match next_action {
+                        Ok(next_action) => return Ok(Some(next_action)),
+                        Err(e) => {
+                            // If there was a planned action to add a file, but
+                            // it no longer exists, proceed to the next planned action
+                            if e.kind() == std::io::ErrorKind::NotFound {
+                                continue;
+                            }
+                            return Err(ReadError::Io(e));
+                        }
+                    };
+                }
+                Some(PosixScannerAction::Delete(path)) => {
+                    return Ok(Some(self.initiate_file_deletion(&path)))
+                }
+                None => return Ok(None),
+            }
+        }
     }
 
-    fn next_deletion_entry(&mut self) -> Option<ReadResult> {
-        let mut path_for_deletion: Option<PathBuf> = None;
+    fn enqueue_deletion_entries(&mut self) {
+        let mut paths_for_deletion = Vec::new();
         for (path, modified_at) in &self.known_files {
             let metadata = std::fs::metadata(path);
             let needs_deletion = {
@@ -1094,35 +1116,13 @@ impl FilesystemScanner {
                 }
             };
             if needs_deletion {
-                match &path_for_deletion {
-                    None => path_for_deletion = Some(path.clone()),
-                    Some(other_path) => {
-                        if other_path > path {
-                            path_for_deletion = Some(path.clone());
-                        }
-                    }
-                }
+                paths_for_deletion.push(path.clone());
             }
         }
-
-        match path_for_deletion {
-            Some(path) => {
-                // Metadata of the deleted file must be the same as when it was added
-                // so that the deletion event is processed correctly by timely. To achieve
-                // this, we just take the cached metadata
-                let old_metadata = self
-                    .cached_metadata
-                    .remove(&path)
-                    .expect("inconsistency between known_files and cached_metadata");
-
-                self.known_files.remove(&path.clone().clone());
-                self.current_action = Some(PosixScannerAction::Delete(Arc::new(path.clone())));
-                if path.exists() {
-                    self.next_file_for_insertion = Some(path);
-                }
-                Some(ReadResult::NewSource(old_metadata))
-            }
-            None => None,
+        paths_for_deletion.sort_unstable();
+        for path in paths_for_deletion {
+            self.scanner_actions_queue
+                .push_back(PosixScannerAction::Delete(Arc::new(path.clone())));
         }
     }
 
@@ -1163,38 +1163,39 @@ impl FilesystemScanner {
         Ok(result)
     }
 
-    fn next_insertion_entry(&mut self) -> Result<Option<ReadResult>, ReadError> {
+    fn enqueue_insertion_entries(&mut self) -> Result<(), ReadError> {
         let matching_files: Vec<PathBuf> = self.get_matching_file_paths()?;
-        let mut selected_file: Option<(PathBuf, SystemTime)> = None;
+        let mut new_detected_files: Vec<(SystemTime, PathBuf)> = Vec::new();
         for entry in matching_files {
             if !entry.is_file() || self.known_files.contains_key(&(*entry)) {
                 continue;
             }
-
             let Some(modify_time) = self.modify_time(&entry) else {
                 continue;
             };
-
-            match &selected_file {
-                Some((currently_selected_name, selected_file_created_at)) => {
-                    if (selected_file_created_at, currently_selected_name) > (&modify_time, &entry)
-                    {
-                        selected_file = Some((entry, modify_time));
-                    }
-                }
-                None => selected_file = Some((entry, modify_time)),
-            }
+            new_detected_files.push((modify_time, entry));
         }
 
-        match selected_file {
-            Some((new_file_name, _)) => Ok(Some(self.initiate_file_insertion(&new_file_name)?)),
-            None => Ok(None),
+        new_detected_files.sort_unstable();
+        for (_, path) in new_detected_files {
+            self.scanner_actions_queue
+                .push_back(PosixScannerAction::Read(Arc::new(path.clone())));
         }
+
+        Ok(())
     }
 
     fn initiate_file_insertion(&mut self, new_file_name: &PathBuf) -> io::Result<ReadResult> {
         let new_file_meta =
             SourceMetadata::from_fs_meta(new_file_name, &std::fs::metadata(new_file_name)?);
+        let cached_path = self.cached_file_path(new_file_name);
+        if let Some(cached_path) = cached_path {
+            std::fs::copy(new_file_name, cached_path)?;
+        }
+
+        // The file has been successfully saved at this point.
+        // Now we can change the internal state.
+
         self.cached_metadata
             .insert(new_file_name.clone(), Some(new_file_meta.clone()));
         self.known_files.insert(
@@ -1204,13 +1205,28 @@ impl FilesystemScanner {
                 .unwrap_or(current_unix_timestamp_secs()),
         );
 
-        let cached_path = self.cached_file_path(new_file_name);
-        if let Some(cached_path) = cached_path {
-            std::fs::copy(new_file_name, cached_path)?;
-        }
-
         self.current_action = Some(PosixScannerAction::Read(Arc::new(new_file_name.clone())));
         Ok(ReadResult::NewSource(Some(new_file_meta)))
+    }
+
+    fn initiate_file_deletion(&mut self, path: &PathBuf) -> ReadResult {
+        // Metadata of the deleted file must be the same as when it was added
+        // so that the deletion event is processed correctly by timely. To achieve
+        // this, we just take the cached metadata
+        let old_metadata = self
+            .cached_metadata
+            .remove(path)
+            .expect("inconsistency between known_files and cached_metadata");
+
+        self.known_files.remove(&path.clone().clone());
+        self.current_action = Some(PosixScannerAction::Delete(Arc::new(path.clone())));
+        if path.exists() {
+            // If the path exists it means file modification. In this scenatio, the file
+            // needs first to be deleted and then to be inserted again.
+            self.next_file_for_insertion = Some(path.clone());
+        }
+
+        ReadResult::NewSource(old_metadata)
     }
 
     fn sleep_duration() -> Duration {

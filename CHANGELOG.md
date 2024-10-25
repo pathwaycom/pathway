@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.io.fs.read` performance has been improved for directories containing a large number of files.
+
 ## [0.15.2] - 2024-10-24
 
 ### Added
