@@ -13,7 +13,7 @@ fn test_null_formatter_ok() -> eyre::Result<()> {
         .format(&key, &Vec::new(), Timestamp(1), 1)
         .expect("Formatter failed");
 
-    assert_eq!(context.payloads, Vec::<Vec<u8>>::new());
+    assert!(context.payloads.is_empty());
     assert_eq!(context.key, key);
     assert_eq!(context.values, Vec::new());
 

@@ -3,6 +3,8 @@
 use pathway_engine::connectors::data_format::{Formatter, FormatterError, PsqlUpdatesFormatter};
 use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Duration, Key, Timestamp, Value};
 
+use super::helpers::assert_document_raw_byte_contents;
+
 #[test]
 fn test_psql_columns_mismatch() -> eyre::Result<()> {
     let mut formatter = PsqlUpdatesFormatter::new(
@@ -38,9 +40,9 @@ fn test_psql_format_strings() -> eyre::Result<()> {
         Timestamp(0),
         1,
     )?;
-    assert_eq!(
-        result.payloads,
-        vec![b"INSERT INTO table_name (b,c,time,diff) VALUES ($1,$2,0,1)\n"]
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        b"INSERT INTO table_name (b,c,time,diff) VALUES ($1,$2,0,1)\n",
     );
     assert_eq!(result.values.len(), 2);
 
@@ -59,9 +61,9 @@ fn test_psql_format_null() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -81,9 +83,9 @@ fn test_psql_format_bool() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -94,9 +96,9 @@ fn test_psql_format_bool() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -116,9 +118,9 @@ fn test_psql_format_int() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -129,9 +131,9 @@ fn test_psql_format_int() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -142,9 +144,9 @@ fn test_psql_format_int() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -164,9 +166,9 @@ fn test_psql_format_floats() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -188,9 +190,9 @@ fn test_psql_format_pointers() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -216,9 +218,9 @@ fn test_psql_format_tuple() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -240,9 +242,9 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -255,9 +257,9 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -268,9 +270,9 @@ fn test_psql_format_date_time_naive() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -290,9 +292,9 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -303,9 +305,9 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -316,9 +318,9 @@ fn test_psql_format_date_time_utc() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -338,9 +340,9 @@ fn test_psql_format_duration() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -351,9 +353,9 @@ fn test_psql_format_duration() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }
@@ -364,9 +366,9 @@ fn test_psql_format_duration() -> eyre::Result<()> {
             Timestamp(0),
             1,
         )?;
-        assert_eq!(
-            result.payloads,
-            vec![b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n"]
+        assert_document_raw_byte_contents(
+            &result.payloads[0],
+            b"INSERT INTO table_name (column,time,diff) VALUES ($1,0,1)\n",
         );
         assert_eq!(result.values.len(), 1);
     }

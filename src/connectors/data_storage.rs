@@ -38,7 +38,7 @@ use tempfile::{tempdir, tempfile, TempDir};
 use tokio::runtime::Runtime as TokioRuntime;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
-use crate::connectors::data_format::{FormatterContext, COMMIT_LITERAL};
+use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
@@ -95,6 +95,9 @@ use deltalake::{
 use elasticsearch::{BulkParts, Elasticsearch};
 use glob::Pattern as GlobPattern;
 use glob::PatternError as GlobPatternError;
+use mongodb::bson::Document as BsonDocument;
+use mongodb::error::Error as MongoError;
+use mongodb::sync::Collection as MongoCollection;
 use pipe::PipeReader;
 use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
@@ -524,6 +527,12 @@ pub enum WriteError {
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
+
+    #[error(transparent)]
+    Formatter(#[from] FormatterError),
+
+    #[error(transparent)]
+    MongoDB(#[from] MongoError),
 }
 
 pub trait Writer: Send {
@@ -734,8 +743,8 @@ impl Reader for FilesystemReader {
 
 impl Writer for FileWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for payload in &data.payloads {
-            self.writer.write_all(payload)?;
+        for payload in data.payloads {
+            self.writer.write_all(&payload.into_raw_bytes()?)?;
             self.writer.write_all(b"\n")?;
         }
         Ok(())
@@ -1845,8 +1854,9 @@ impl Writer for PsqlWriter {
                 .map(|v| v as &(dyn ToSql + Sync))
                 .collect();
 
-            for payload in &data.payloads {
-                let query = from_utf8(payload)?;
+            for payload in data.payloads {
+                let payload = payload.into_raw_bytes()?;
+                let query = from_utf8(&payload)?;
 
                 transaction
                     .execute(query, params.as_slice())
@@ -2319,9 +2329,10 @@ impl Writer for KafkaWriter {
             });
         }
 
-        for payload in &data.payloads {
+        for payload in data.payloads {
+            let payload = payload.into_raw_bytes()?;
             let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&self.topic)
-                .payload(payload)
+                .payload(&payload)
                 .headers(headers.clone())
                 .key(&key_as_bytes);
             loop {
@@ -2374,7 +2385,7 @@ impl Writer for ElasticSearchWriter {
     fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
         for payload in data.payloads {
             self.docs_buffer.push(b"{\"index\": {}}".to_vec());
-            self.docs_buffer.push(payload);
+            self.docs_buffer.push(payload.into_raw_bytes()?);
         }
 
         if let Some(max_batch_size) = self.max_batch_size {
@@ -3373,5 +3384,48 @@ impl Reader for DeltaTableReader {
 
     fn storage_type(&self) -> StorageType {
         StorageType::DeltaLake
+    }
+}
+
+pub struct MongoWriter {
+    collection: MongoCollection<BsonDocument>,
+    buffer: Vec<BsonDocument>,
+    max_batch_size: Option<usize>,
+}
+
+impl MongoWriter {
+    pub fn new(collection: MongoCollection<BsonDocument>, max_batch_size: Option<usize>) -> Self {
+        Self {
+            collection,
+            max_batch_size,
+            buffer: Vec::new(),
+        }
+    }
+}
+
+impl Writer for MongoWriter {
+    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        for payload in data.payloads {
+            self.buffer.push(payload.into_bson_document()?);
+        }
+        if let Some(max_batch_size) = self.max_batch_size {
+            if self.buffer.len() >= max_batch_size {
+                self.flush(true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let command = self.collection.insert_many(take(&mut self.buffer));
+        let _ = command.run()?;
+        Ok(())
+    }
+
+    fn single_threaded(&self) -> bool {
+        false
     }
 }

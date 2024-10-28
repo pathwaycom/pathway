@@ -14,6 +14,7 @@ from pathway.io import (
     kafka,
     logstash,
     minio,
+    mongodb,
     null,
     plaintext,
     postgres,
@@ -58,4 +59,5 @@ __all__ = [
     "sqlite",
     "pubsub",
     "deltalake",
+    "mongodb",
 ]

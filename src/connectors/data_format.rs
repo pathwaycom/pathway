@@ -14,10 +14,15 @@ use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::ReaderContext::{Diff, Empty, KeyValue, RawBytes, TokenizedEntries};
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
 use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LENGTH_LIMIT};
+use crate::engine::time::DateTime;
 use crate::engine::{Error, Key, Result, Timestamp, Type, Value};
 
 use itertools::{chain, Itertools};
 use log::error;
+use mongodb::bson::{
+    bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents,
+    Bson as BsonValue, DateTime as BsonDateTime, Document as BsonDocument,
+};
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
 use serde_json::Value as JsonValue;
@@ -264,9 +269,45 @@ pub trait Parser: Send {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum FormattedDocument {
+    RawBytes(Vec<u8>),
+    Bson(BsonDocument),
+}
+
+impl FormattedDocument {
+    pub fn into_raw_bytes(self) -> Result<Vec<u8>, FormatterError> {
+        if let Self::RawBytes(b) = self {
+            Ok(b)
+        } else {
+            Err(FormatterError::UnexpectedContextType)
+        }
+    }
+
+    pub fn into_bson_document(self) -> Result<BsonDocument, FormatterError> {
+        if let Self::Bson(b) = self {
+            Ok(b)
+        } else {
+            Err(FormatterError::UnexpectedContextType)
+        }
+    }
+}
+
+impl From<Vec<u8>> for FormattedDocument {
+    fn from(payload: Vec<u8>) -> FormattedDocument {
+        FormattedDocument::RawBytes(payload)
+    }
+}
+
+impl From<BsonDocument> for FormattedDocument {
+    fn from(payload: BsonDocument) -> FormattedDocument {
+        FormattedDocument::Bson(payload)
+    }
+}
+
 #[derive(Debug)]
 pub struct FormatterContext {
-    pub payloads: Vec<Vec<u8>>,
+    pub payloads: Vec<FormattedDocument>,
     pub key: Key,
     pub values: Vec<Value>,
     pub time: Timestamp,
@@ -275,14 +316,18 @@ pub struct FormatterContext {
 
 impl FormatterContext {
     pub fn new(
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<impl Into<FormattedDocument>>,
         key: Key,
         values: Vec<Value>,
         time: Timestamp,
         diff: isize,
     ) -> FormatterContext {
+        let mut prepared_payloads: Vec<FormattedDocument> = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            prepared_payloads.push(payload.into());
+        }
         FormatterContext {
-            payloads,
+            payloads: prepared_payloads,
             key,
             values,
             time,
@@ -291,14 +336,14 @@ impl FormatterContext {
     }
 
     pub fn new_single_payload(
-        payload: Vec<u8>,
+        payload: impl Into<FormattedDocument>,
         key: Key,
         values: Vec<Value>,
         time: Timestamp,
         diff: isize,
     ) -> FormatterContext {
         FormatterContext {
-            payloads: vec![payload],
+            payloads: vec![payload.into()],
             key,
             values,
             time,
@@ -319,11 +364,20 @@ pub enum FormatterError {
     #[error("type {type_:?} is not json-serializable")]
     TypeNonJsonSerializable { type_: Type },
 
+    #[error("type {type_:?} is not bson-serializable")]
+    TypeNonBsonSerializable { type_: Type },
+
     #[error("Error value is not json-serializable")]
     ErrorValueNonJsonSerializable,
 
+    #[error("Error value is not bson-serializable")]
+    ErrorValueNonBsonSerializable,
+
     #[error("this connector doesn't support this value type")]
     UnsupportedValueType,
+
+    #[error("unexpected formatter context type")]
+    UnexpectedContextType,
 }
 
 pub trait Formatter: Send {
@@ -1741,7 +1795,7 @@ impl Formatter for NullFormatter {
         diff: isize,
     ) -> Result<FormatterContext, FormatterError> {
         Ok(FormatterContext::new(
-            Vec::new(),
+            Vec::<FormattedDocument>::new(),
             *key,
             Vec::new(),
             time,
@@ -1771,6 +1825,104 @@ impl Formatter for IdentityFormatter {
             Vec::new(),
             *key,
             values.to_vec(),
+            time,
+            diff,
+        ))
+    }
+}
+
+fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
+    match value {
+        Value::None => Ok(BsonValue::Null),
+        Value::Int(i) => Ok(bson!(i)),
+        Value::Bool(b) => Ok(bson!(b)),
+        Value::Float(f) => Ok(BsonValue::Double((*f).into())),
+        Value::String(s) => Ok(BsonValue::String(s.to_string())),
+        Value::Pointer(p) => Ok(bson!(p.to_string())),
+        Value::Tuple(t) => {
+            let mut items = Vec::with_capacity(t.len());
+            for item in t.iter() {
+                items.push(serialize_value_to_bson(item)?);
+            }
+            Ok(BsonValue::Array(items))
+        }
+        Value::IntArray(a) => {
+            let mut items = Vec::with_capacity(a.len());
+            for item in a.iter() {
+                items.push(bson!(item));
+            }
+            Ok(BsonValue::Array(items))
+        }
+        Value::FloatArray(a) => {
+            let mut items = Vec::with_capacity(a.len());
+            for item in a.iter() {
+                items.push(bson!(item));
+            }
+            Ok(BsonValue::Array(items))
+        }
+        Value::Bytes(b) => Ok(BsonValue::Binary(BsonBinaryContents {
+            subtype: BsonBinarySubtype::Generic,
+            bytes: b.to_vec(),
+        })),
+
+        // We use milliseconds here because BSON DateTime type has millisecond precision
+        // See also: https://docs.rs/bson/2.11.0/bson/struct.DateTime.html
+        Value::DateTimeNaive(dt) => Ok(BsonValue::DateTime(BsonDateTime::from_millis(
+            dt.timestamp_milliseconds(),
+        ))),
+        Value::DateTimeUtc(dt) => Ok(BsonValue::DateTime(BsonDateTime::from_millis(
+            dt.timestamp_milliseconds(),
+        ))),
+
+        // We use milliseconds in durations to be consistent with the granularity
+        // of the BSON DateTime type
+        Value::Duration(d) => Ok(bson!(d.milliseconds())),
+        Value::Json(j) => Ok(bson!(j.to_string())),
+        Value::Error => Err(FormatterError::ErrorValueNonBsonSerializable),
+        Value::PyObjectWrapper(_) => Err(FormatterError::TypeNonBsonSerializable {
+            type_: Type::PyObjectWrapper,
+        }),
+    }
+}
+
+pub struct BsonFormatter {
+    value_field_names: Vec<String>,
+}
+
+impl BsonFormatter {
+    pub fn new(value_field_names: Vec<String>) -> Self {
+        Self { value_field_names }
+    }
+}
+
+impl Formatter for BsonFormatter {
+    fn format(
+        &mut self,
+        key: &Key,
+        values: &[Value],
+        time: Timestamp,
+        diff: isize,
+    ) -> Result<FormatterContext, FormatterError> {
+        let mut document = BsonDocument::new();
+        for (key, value) in zip(self.value_field_names.iter(), values) {
+            let _ = document.insert(key, serialize_value_to_bson(value)?);
+        }
+        let _ = document.insert(
+            "diff",
+            BsonValue::Int64(diff.try_into().expect("diff can only be +1 or -1")),
+        );
+        let _ = document.insert(
+            "time",
+            BsonValue::Int64(
+                time.0
+                    .try_into()
+                    .expect("timestamp is not expected to exceed int64 type"),
+            ),
+        );
+        Ok(FormatterContext::new_single_payload(
+            document,
+            *key,
+            Vec::new(),
             time,
             diff,
         ))

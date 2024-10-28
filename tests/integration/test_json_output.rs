@@ -1,12 +1,12 @@
 // Copyright © 2024 Pathway
 
-use std::str::from_utf8;
-
 use pathway_engine::connectors::data_format::{Formatter, JsonLinesFormatter};
 use pathway_engine::engine::DateTimeUtc;
 use pathway_engine::engine::Duration;
 use pathway_engine::engine::{DateTimeNaive, Timestamp};
 use pathway_engine::engine::{Key, Value};
+
+use super::helpers::assert_document_raw_byte_contents;
 
 #[test]
 fn test_json_format_ok() -> eyre::Result<()> {
@@ -19,9 +19,9 @@ fn test_json_format_ok() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":"b","diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":"b","diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -39,9 +39,9 @@ fn test_json_int_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":555,"diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":555,"diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -59,9 +59,9 @@ fn test_json_float_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":5.55,"diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":5.55,"diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -79,9 +79,9 @@ fn test_json_bool_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":true,"diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":true,"diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -99,9 +99,9 @@ fn test_json_null_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":null,"diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":null,"diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -120,9 +120,9 @@ fn test_json_pointer_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":"^04000000000000000000000000","diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":"^04000000000000000000000000","diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -145,9 +145,9 @@ fn test_json_tuple_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":[true,null],"diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":[true,null],"diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -167,9 +167,9 @@ fn test_json_date_time_naive_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":"2023-05-15T10:51:00.000000000","diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":"2023-05-15T10:51:00.000000000","diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -187,9 +187,9 @@ fn test_json_date_time_utc_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":"2023-05-15T10:51:00.000000000+0000","diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":"2023-05-15T10:51:00.000000000+0000","diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 
@@ -208,9 +208,9 @@ fn test_json_duration_serialization() -> eyre::Result<()> {
         1,
     )?;
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        from_utf8(&result.payloads[0])?,
-        r#"{"a":1197780000000000,"diff":1,"time":0}"#
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"a":1197780000000000,"diff":1,"time":0}"#.as_bytes(),
     );
     assert_eq!(result.values.len(), 0);
 

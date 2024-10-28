@@ -1,5 +1,7 @@
 // Copyright © 2024 Pathway
 
+use std::iter::zip;
+
 use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::{
@@ -7,6 +9,8 @@ use pathway_engine::connectors::data_format::{
 };
 use pathway_engine::engine::Value;
 use pathway_engine::engine::{Key, Timestamp};
+
+use super::helpers::assert_document_raw_byte_contents;
 
 #[test]
 fn test_dsv_format_ok() -> eyre::Result<()> {
@@ -25,8 +29,11 @@ fn test_dsv_format_ok() -> eyre::Result<()> {
 
     let target_payloads = vec![b"b;c;time;diff".to_vec(), b"\"x\";\"y\";0;1".to_vec()];
 
-    assert_eq!(result.payloads, target_payloads);
     assert_eq!(result.values.len(), 0);
+    assert_eq!(result.payloads.len(), target_payloads.len());
+    for (result_payload, target_payload) in zip(result.payloads, target_payloads) {
+        assert_document_raw_byte_contents(&result_payload, &target_payload);
+    }
 
     Ok(())
 }

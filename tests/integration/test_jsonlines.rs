@@ -378,7 +378,7 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
     assert_error_shown(
         Box::new(reader),
         Box::new(parser),
-        r#"field pet_height with path /pet/measurements/height is absent in {"name":"John","pet":{"animal":"dog","measurements":[200,400,600],"name":"Alice"}}"#,
+        r#"field pet_height with path /pet/measurements/height is absent in {"name":"John","pet":{"animal":"dog","name":"Alice","measurements":[200,400,600]}}"#,
         ErrorPlacement::Value(3),
     );
 
@@ -535,7 +535,7 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
     assert_error_shown(
         Box::new(reader),
         Box::new(parser),
-        r#"failed to create a field "pet" with type Any from json payload: {"animal":"dog","measurements":[200,400,600],"name":"Alice"}"#,
+        r#"failed to create a field "pet" with type Any from json payload: {"animal":"dog","name":"Alice","measurements":[200,400,600]}"#,
         ErrorPlacement::Value(0),
     );
 

@@ -12,7 +12,7 @@ use pathway_engine::persistence::config::{PersistenceManagerOuterConfig, Persist
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 use pathway_engine::connectors::data_format::{
-    ErrorRemovalLogic, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser,
+    ErrorRemovalLogic, FormattedDocument, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser,
 };
 use pathway_engine::connectors::data_storage::{
     DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
@@ -347,5 +347,13 @@ impl ReplaceErrors for ParsedEventWithErrors {
                 .collect()
         });
         self.remove_errors(&logic).expect("key shouldn't be error")
+    }
+}
+
+pub fn assert_document_raw_byte_contents(document: &FormattedDocument, target: &[u8]) {
+    if let FormattedDocument::RawBytes(b) = document {
+        assert_eq!(target, b.as_slice());
+    } else {
+        unreachable!("Unexpected comparison with raw bytes document: {document:?}");
     }
 }

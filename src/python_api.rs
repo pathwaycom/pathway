@@ -23,6 +23,7 @@ use elasticsearch::{
 };
 use itertools::Itertools;
 use log::warn;
+use mongodb::sync::Client as MongoClient;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
 use once_cell::sync::Lazy;
@@ -64,16 +65,16 @@ use self::external_index_wrappers::{
 use self::threads::PythonThreadState;
 
 use crate::connectors::data_format::{
-    DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter, IdentityFormatter,
-    IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser, KeyGenerationPolicy,
-    NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter, SingleColumnFormatter,
-    TransparentParser,
+    BsonFormatter, DebeziumDBType, DebeziumMessageParser, DsvSettings, Formatter,
+    IdentityFormatter, IdentityParser, InnerSchemaField, JsonLinesFormatter, JsonLinesParser,
+    KeyGenerationPolicy, NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter,
+    SingleColumnFormatter, TransparentParser,
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, DeltaTableReader, DeltaTableWriter, ElasticSearchWriter,
-    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, NullWriter, ObjectDownloader,
-    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
-    ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader, Writer,
+    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, MongoWriter, NullWriter,
+    ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError,
+    ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader, Writer,
 };
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
@@ -3655,6 +3656,7 @@ pub struct DataStorage {
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
     min_commit_frequency: Option<u64>,
+    database: Option<String>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -3964,6 +3966,7 @@ impl DataStorage {
         header_fields = Vec::new(),
         key_field_index = None,
         min_commit_frequency = None,
+        database = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3988,6 +3991,7 @@ impl DataStorage {
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
         min_commit_frequency: Option<u64>,
+        database: Option<String>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4011,6 +4015,7 @@ impl DataStorage {
             header_fields,
             key_field_index,
             min_commit_frequency,
+            database,
         }
     }
 }
@@ -4135,24 +4140,40 @@ impl CsvParserSettings {
 }
 
 impl DataStorage {
-    fn path(&self) -> PyResult<&str> {
-        let path = self
-            .path
+    fn extract_string_field<'a>(
+        field: &'a Option<String>,
+        error_message: &'static str,
+    ) -> PyResult<&'a str> {
+        let value = field
             .as_ref()
-            .ok_or_else(|| PyValueError::new_err("For fs/s3 storage, path must be specified"))?
+            .ok_or_else(|| PyValueError::new_err(error_message))?
             .as_str();
-        Ok(path)
+        Ok(value)
+    }
+
+    fn path(&self) -> PyResult<&str> {
+        Self::extract_string_field(&self.path, "For fs/s3 storage, path must be specified")
+    }
+
+    fn table_name(&self) -> PyResult<&str> {
+        Self::extract_string_field(
+            &self.table_name,
+            "For MongoDB, the 'table_name' field must be specified",
+        )
+    }
+
+    fn database(&self) -> PyResult<&str> {
+        Self::extract_string_field(
+            &self.database,
+            "For MongoDB, the 'database' field must be specified",
+        )
     }
 
     fn connection_string(&self) -> PyResult<&str> {
-        let connection_string = self
-            .connection_string
-            .as_ref()
-            .ok_or_else(|| {
-                PyValueError::new_err("For postgres storage, connection string must be specified")
-            })?
-            .as_str();
-        Ok(connection_string)
+        Self::extract_string_field(
+            &self.connection_string,
+            "For Postgres and MongoDB, the 'connection_string' field must be specified",
+        )
     }
 
     fn s3_bucket(&self, py: pyo3::Python) -> PyResult<S3Bucket> {
@@ -4572,6 +4593,16 @@ impl DataStorage {
                 })?;
                 Ok(Box::new(writer))
             }
+            "mongodb" => {
+                let uri = self.connection_string()?;
+                let client = MongoClient::with_uri_str(uri).map_err(|e| {
+                    PyIOError::new_err(format!("Failed to connect to MongoDB: {e}"))
+                })?;
+                let database = client.database(self.database()?);
+                let collection = database.collection(self.table_name()?);
+                let writer = MongoWriter::new(collection, self.max_batch_size);
+                Ok(Box::new(writer))
+            }
             "null" => Ok(Box::new(NullWriter::new())),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
@@ -4727,6 +4758,10 @@ impl DataFormat {
             }
             "identity" => {
                 let formatter = IdentityFormatter::new();
+                Ok(Box::new(formatter))
+            }
+            "bson" => {
+                let formatter = BsonFormatter::new(self.value_field_names(py));
                 Ok(Box::new(formatter))
             }
             _ => Err(PyValueError::new_err("Unknown data format")),

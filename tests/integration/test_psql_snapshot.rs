@@ -1,13 +1,13 @@
 // Copyright © 2024 Pathway
 
-use std::str::from_utf8;
-
 use assert_matches::assert_matches;
 
 use pathway_engine::connectors::data_format::{
     Formatter, PsqlSnapshotFormatter, PsqlSnapshotFormatterError,
 };
 use pathway_engine::engine::{Key, Timestamp, Value};
+
+use super::helpers::assert_document_raw_byte_contents;
 
 #[test]
 fn test_psql_format_snapshot_command() -> eyre::Result<()> {
@@ -35,9 +35,9 @@ fn test_psql_format_snapshot_command() -> eyre::Result<()> {
     )?;
 
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        "INSERT INTO table_name (key,value_string,value_bool,value_float,time,diff) VALUES ($1,$2,$3,$4,5,-1) ON CONFLICT (key) DO UPDATE SET value_string=$2,value_bool=$3,value_float=$4,time=5,diff=-1 WHERE table_name.key=$1 AND (table_name.time<5 OR (table_name.time=5 AND table_name.diff=-1))\n",
-        from_utf8(&result.payloads[0])?
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        b"INSERT INTO table_name (key,value_string,value_bool,value_float,time,diff) VALUES ($1,$2,$3,$4,5,-1) ON CONFLICT (key) DO UPDATE SET value_string=$2,value_bool=$3,value_float=$4,time=5,diff=-1 WHERE table_name.key=$1 AND (table_name.time<5 OR (table_name.time=5 AND table_name.diff=-1))\n"
     );
     assert_eq!(result.values.len(), 4);
 
@@ -85,9 +85,9 @@ fn test_psql_format_snapshot_composite() -> eyre::Result<()> {
     )?;
 
     assert_eq!(result.payloads.len(), 1);
-    assert_eq!(
-        "INSERT INTO table_name (key,value_string,value_bool,value_float,time,diff) VALUES ($1,$2,$3,$4,5,1) ON CONFLICT (key,value_float) DO UPDATE SET value_string=$2,value_bool=$3,time=5,diff=1 WHERE table_name.key=$1 AND table_name.value_float=$4 AND (table_name.time<5 OR (table_name.time=5 AND table_name.diff=-1))\n",
-        from_utf8(&result.payloads[0])?
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        b"INSERT INTO table_name (key,value_string,value_bool,value_float,time,diff) VALUES ($1,$2,$3,$4,5,1) ON CONFLICT (key,value_float) DO UPDATE SET value_string=$2,value_bool=$3,time=5,diff=1 WHERE table_name.key=$1 AND table_name.value_float=$4 AND (table_name.time<5 OR (table_name.time=5 AND table_name.diff=-1))\n"
     );
     assert_eq!(result.values.len(), 4);
 

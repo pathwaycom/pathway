@@ -3,6 +3,7 @@
 mod helpers;
 mod operator_test_utils;
 
+mod test_bson;
 mod test_bytes;
 mod test_connector_field_defaults;
 mod test_dd_distinct_total;
