@@ -46,11 +46,20 @@ class BaseRestServer:
         cache_backend: (
             pw.persistence.Backend | None
         ) = pw.persistence.Backend.filesystem("./Cache"),
-        *args,
         **kwargs,
     ):
-        """Start the app with cache configs. Enabling persistence will cache the embedding,
-        and LLM requests between the runs."""
+        """
+        Start the server. Enabling persistence will cache the UDFs
+        for which ``cache_strategy`` is set.
+
+        Args:
+            threaded: if True, the server will be run in a new thread.
+            with_cache: if True, caching will be enabled for the UDFs for which ``cache_strategy``
+                is set.
+            cache_backend: backend used for caching. Only relevant if ``with_cache`` is
+                set to True.
+            **kwargs: optional kwargs to be passed to ``pw.run``.
+        """
 
         def run():
             if with_cache:
@@ -68,7 +77,6 @@ class BaseRestServer:
             pw.run(
                 monitoring_level=pw.MonitoringLevel.NONE,
                 persistence_config=persistence_config,
-                *args,
                 **kwargs,
             )
 
