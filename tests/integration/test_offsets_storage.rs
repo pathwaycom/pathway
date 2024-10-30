@@ -9,13 +9,12 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 
-use pathway_engine::connectors::data_storage::StorageType;
 use pathway_engine::connectors::{Connector, Entry, PersistenceMode};
 use pathway_engine::connectors::{OffsetKey, OffsetValue};
 use pathway_engine::engine::{Timestamp, TotalFrontier};
 use pathway_engine::persistence::backends::FilesystemKVStorage;
 use pathway_engine::persistence::frontier::OffsetAntichain;
-use pathway_engine::persistence::state::MetadataAccessor;
+use pathway_engine::persistence::state::{MetadataAccessor, StoredMetadata};
 
 fn assert_frontiers_equal(
     mut lhs: Vec<(OffsetKey, OffsetValue)>,
@@ -212,8 +211,8 @@ fn test_unique_persistent_id() {
     let tracker = create_persistence_manager(test_storage_path, true);
     let mut tracker = tracker.lock().unwrap();
 
-    tracker.register_input_source(512, &StorageType::FileSystem);
-    tracker.register_input_source(512, &StorageType::FileSystem);
+    tracker.register_input_source(512);
+    tracker.register_input_source(512);
 }
 
 #[test]
@@ -223,10 +222,7 @@ fn test_several_sinks_finalized_timestamp_calculation() -> eyre::Result<()> {
 
     let tracker = create_persistence_manager(test_storage_path, true);
 
-    tracker
-        .lock()
-        .unwrap()
-        .register_input_source(512, &StorageType::FileSystem);
+    tracker.lock().unwrap().register_input_source(512);
 
     let sink_id_1 = tracker.lock().unwrap().register_sink();
     let sink_id_2 = tracker.lock().unwrap().register_sink();
@@ -297,10 +293,7 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
     // mock run is done
     {
         let tracker = create_persistence_manager(test_storage_path, true);
-        tracker
-            .lock()
-            .unwrap()
-            .register_input_source(512, &StorageType::FileSystem);
+        tracker.lock().unwrap().register_input_source(512);
         let sink_id = tracker.lock().unwrap().register_sink();
         tracker
             .lock()
@@ -309,10 +302,11 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
     }
 
     {
-        let ms = MetadataAccessor::new(Box::new(FilesystemKVStorage::new(test_storage_path)?), 0)?;
+        let ms =
+            MetadataAccessor::new(Box::new(FilesystemKVStorage::new(test_storage_path)?), 0, 1)?;
         assert_eq!(
-            ms.past_runs_threshold_times().values().min().unwrap(),
-            &TotalFrontier::At(Timestamp(100))
+            ms.past_runs_threshold_time(),
+            TotalFrontier::At(Timestamp(100))
         );
     }
 
@@ -328,11 +322,9 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
             .update_sink_finalized_time(sink_id, None);
     }
     {
-        let ms = MetadataAccessor::new(Box::new(FilesystemKVStorage::new(test_storage_path)?), 0)?;
-        assert_eq!(
-            ms.past_runs_threshold_times().values().min().unwrap(),
-            &TotalFrontier::Done
-        );
+        let ms =
+            MetadataAccessor::new(Box::new(FilesystemKVStorage::new(test_storage_path)?), 0, 1)?;
+        assert_eq!(ms.past_runs_threshold_time(), TotalFrontier::Done);
     }
 
     // simulating the third run
@@ -346,12 +338,25 @@ fn test_metadata_files_versioning() -> eyre::Result<()> {
             .update_sink_finalized_time(sink_id, Some(Timestamp(100)));
     }
     {
-        let ms = MetadataAccessor::new(Box::new(FilesystemKVStorage::new(test_storage_path)?), 0)?;
+        let ms =
+            MetadataAccessor::new(Box::new(FilesystemKVStorage::new(test_storage_path)?), 0, 1)?;
         assert_eq!(
-            ms.past_runs_threshold_times().values().min().unwrap(),
-            &TotalFrontier::At(Timestamp(100))
+            ms.past_runs_threshold_time(),
+            TotalFrontier::At(Timestamp(100))
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_legacy_state_parsing() -> eyre::Result<()> {
+    let bytes = std::fs::read("tests/data/legacy_persistence_state")?;
+    let state = StoredMetadata::parse(&bytes, 16)?;
+    assert_eq!(state.total_workers, 16);
+    assert_eq!(
+        state.last_advanced_timestamp,
+        TotalFrontier::At(Timestamp(1730285602306))
+    );
     Ok(())
 }

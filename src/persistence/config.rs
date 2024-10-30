@@ -159,19 +159,16 @@ impl PersistenceManagerConfig {
 
     pub fn create_metadata_storage(&self) -> Result<MetadataAccessor, PersistenceBackendError> {
         let backend = self.backend.create()?;
-        MetadataAccessor::new(backend, self.worker_id)
+        MetadataAccessor::new(backend, self.worker_id, self.total_workers)
     }
 
     pub fn create_snapshot_readers(
         &self,
         persistent_id: PersistentId,
-        threshold_times: &HashMap<usize, TotalFrontier<Timestamp>>,
+        threshold_time: TotalFrontier<Timestamp>,
         query_purpose: ReadersQueryPurpose,
     ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
-        let min_threshold_time = *threshold_times
-            .values()
-            .min()
-            .unwrap_or(&TotalFrontier::At(Timestamp(0)));
+        info!("Using threshold time: {threshold_time:?}");
         let mut result: Vec<Box<dyn ReadInputSnapshot>> = Vec::new();
         match &self.backend {
             PersistentStorageConfig::Filesystem(root_path) => {
@@ -181,7 +178,7 @@ impl PersistenceManagerConfig {
                     let backend = FilesystemKVStorage::new(&path)?;
                     let reader = InputSnapshotReader::new(
                         Box::new(backend),
-                        min_threshold_time,
+                        threshold_time,
                         query_purpose.truncate_at_end(),
                     )?;
                     result.push(Box::new(reader));
@@ -199,7 +196,7 @@ impl PersistenceManagerConfig {
                     let backend = S3KVStorage::new(bucket.deep_copy(), &path);
                     let reader = InputSnapshotReader::new(
                         Box::new(backend),
-                        min_threshold_time,
+                        threshold_time,
                         query_purpose.truncate_at_end(),
                     )?;
                     result.push(Box::new(reader));
@@ -236,7 +233,7 @@ impl PersistenceManagerConfig {
             }
         };
         let snapshot_writer = InputSnapshotWriter::new(backend, snapshot_mode);
-        Ok(Arc::new(Mutex::new(snapshot_writer)))
+        Ok(Arc::new(Mutex::new(snapshot_writer?)))
     }
 
     fn snapshot_writer_path(

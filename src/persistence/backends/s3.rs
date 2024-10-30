@@ -107,7 +107,12 @@ impl PersistenceBackend for S3KVStorage {
             for object in &list.contents {
                 let key: &str = &object.key;
                 assert!(key.len() > self.root_path.len());
-                keys.push(key[prefix_len..].to_string());
+                let prepared_key = key[prefix_len..].to_string();
+                if !prepared_key.contains('/') {
+                    // Similarly to the filesystem backend,
+                    // we take only files in the imaginary folder
+                    keys.push(prepared_key);
+                }
             }
         }
 

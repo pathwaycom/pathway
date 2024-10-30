@@ -38,7 +38,6 @@ use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
-use crate::timestamp::current_unix_timestamp_ms;
 
 use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
 use data_storage::{
@@ -118,9 +117,7 @@ impl PersistenceMode {
     fn on_before_reading_snapshot(self, sender: &Sender<Entry>) {
         // In case of Batch replay we need to start with AdvanceTime to set a new timestamp
         if matches!(self, PersistenceMode::Batch) {
-            let timestamp = u64::try_from(current_unix_timestamp_ms())
-                .expect("number of milliseconds should fit in 64 bits");
-            let timestamp = Timestamp(timestamp);
+            let timestamp = Timestamp::new_from_current_time();
             let send_res = sender.send(Entry::Snapshot(SnapshotEvent::AdvanceTime(
                 timestamp,
                 OffsetAntichain::new(),
@@ -205,11 +202,7 @@ impl Connector {
     }
 
     fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
-        let new_timestamp = u64::try_from(current_unix_timestamp_ms())
-            .expect("number of milliseconds should fit in 64 bits");
-        let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
-        let new_timestamp = Timestamp(new_timestamp);
-
+        let new_timestamp = Timestamp::new_from_current_time();
         let timestamp_updated = self.current_timestamp <= new_timestamp;
         if timestamp_updated {
             self.current_timestamp = new_timestamp;

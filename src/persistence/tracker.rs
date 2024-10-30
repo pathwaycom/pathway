@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::mem::take;
 use std::time::Instant;
 
-use crate::connectors::data_storage::StorageType;
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
@@ -96,18 +95,12 @@ impl WorkerPersistentStorage {
         self.metadata_storage.last_advanced_timestamp()
     }
 
-    pub fn register_input_source(
-        &mut self,
-        persistent_id: PersistentId,
-        storage_type: &StorageType,
-    ) {
+    pub fn register_input_source(&mut self, persistent_id: PersistentId) {
         assert!(
             !self.registered_persistent_ids.contains(&persistent_id),
             "Same persistent_id belongs to more than one data source: {persistent_id}"
         );
         self.registered_persistent_ids.insert(persistent_id);
-        self.metadata_storage
-            .register_input_source(persistent_id, storage_type);
     }
 
     pub fn register_sink(&mut self) -> usize {
@@ -186,7 +179,7 @@ impl WorkerPersistentStorage {
     ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
         self.config.create_snapshot_readers(
             persistent_id,
-            self.metadata_storage.past_runs_threshold_times(),
+            self.metadata_storage.past_runs_threshold_time(),
             query_purpose,
         )
     }

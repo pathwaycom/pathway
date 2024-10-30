@@ -3338,3 +3338,49 @@ def test_airbyte_persistence_error_message(tmp_path_with_airbyte_config):
                 snapshot_access=api.SnapshotAccess.OFFSETS_ONLY,
             )
         )
+
+
+@needs_multiprocessing_fork
+def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
+    # This test only makes sense when there are at least two Pathway workers
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.csv"
+    persistent_storage_path = tmp_path / "PStorage"
+    data = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    write_csv(input_path, data)
+
+    def run_identity_transformation():
+        G.clear()
+
+        class InputSchema(pw.Schema):
+            k: int = pw.column_definition(primary_key=True)
+            v: str
+
+        table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+        pw.io.csv.write(table, output_path)
+        persistence_config = pw.persistence.Config(
+            pw.persistence.Backend.filesystem(persistent_storage_path),
+        )
+        run_all(persistence_config=persistence_config)
+
+    run_identity_transformation()
+    result = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    expected = pd.read_csv(input_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    assert result.equals(expected)
+
+    # Remove metadata saved by the worker `0`
+    for file in persistent_storage_path.iterdir():
+        if file.is_file() and file.match("*-0-[01]"):
+            file.unlink()
+
+    # Even though there are other workers that still have the advanced time,
+    # we must run the whole process again
+    run_identity_transformation()
+    result = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    expected = pd.read_csv(input_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    assert result.equals(expected)

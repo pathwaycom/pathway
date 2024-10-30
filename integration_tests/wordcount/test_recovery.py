@@ -20,6 +20,10 @@ from .base import FS_STORAGE_NAME, S3_STORAGE_NAME, do_test_failure_recovery_sta
         (10, 5.0, 10.0),
         (3, 3.0, 6.0),
         (3, 6.0, 9.0),
+        (10, 8.0, 16.0),
+        (10, 5.0, 15.0),
+        (10, 10.0, 20.0),
+        (10, 9.0, 18.0),
     ],
 )
 def test_integration_failure_recovery(

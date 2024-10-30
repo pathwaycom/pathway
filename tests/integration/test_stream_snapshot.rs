@@ -100,7 +100,7 @@ fn test_stream_snapshot_io() -> eyre::Result<()> {
 
     {
         let backend = FilesystemKVStorage::new(test_storage_path)?;
-        let mut snapshot_writer = InputSnapshotWriter::new(Box::new(backend), SnapshotMode::Full);
+        let mut snapshot_writer = InputSnapshotWriter::new(Box::new(backend), SnapshotMode::Full)?;
         snapshot_writer.write(&event1);
         snapshot_writer.write(&event2);
         flush_snapshot_writer_blocking(&mut snapshot_writer);
@@ -381,7 +381,7 @@ fn test_stream_snapshot_stateless() -> eyre::Result<()> {
     {
         let backend = FilesystemKVStorage::new(test_storage_path)?;
         let mut snapshot_writer =
-            InputSnapshotWriter::new(Box::new(backend), SnapshotMode::OffsetsOnly);
+            InputSnapshotWriter::new(Box::new(backend), SnapshotMode::OffsetsOnly)?;
         for event in events {
             snapshot_writer.write(event);
         }

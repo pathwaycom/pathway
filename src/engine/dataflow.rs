@@ -30,7 +30,6 @@ use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
 use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId};
 use crate::retry::{execute_with_retries, RetryConfig};
-use crate::timestamp::current_unix_timestamp_ms;
 
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
@@ -538,10 +537,8 @@ impl ErrorLogInner {
         });
         if flush {
             self.last_flush = Some(now);
-            let new_timestamp = u64::try_from(current_unix_timestamp_ms())
-                .expect("number of milliseconds should fit in 64 bits");
-            let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
-            self.input_session.advance_to(Timestamp(new_timestamp));
+            let new_timestamp = Timestamp::new_from_current_time();
+            self.input_session.advance_to(new_timestamp);
             self.input_session.flush();
         }
         self.last_flush.expect("last_flush should be set") + ERROR_LOG_FLUSH_PERIOD
@@ -3263,7 +3260,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
         if realtime_reader_needed || persisted_table {
             let persistent_id = reader.persistent_id();
-            let reader_storage_type = reader.storage_type();
             let persistence_mode = self
                 .persistence_config
                 .as_ref()
@@ -3322,7 +3318,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     .unwrap()
                     .lock()
                     .unwrap()
-                    .register_input_source(persistent_id, &reader_storage_type);
+                    .register_input_source(persistent_id);
             }
             self.connector_monitors.push(state.connector_monitor);
         }

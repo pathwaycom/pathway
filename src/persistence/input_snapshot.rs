@@ -10,12 +10,25 @@ use crate::engine::{Key, Timestamp, TotalFrontier, Value};
 use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::Error;
-use crate::timestamp::current_unix_timestamp_ms;
 
 const MAX_ENTRIES_PER_CHUNK: usize = 100_000;
 const MAX_CHUNK_LENGTH: usize = 10_000_000;
 
 pub type SnapshotWriterFlushFuture = OneShotReceiver<Result<(), Error>>;
+type ChunkId = u64;
+
+fn get_chunk_ids_with_backend(backend: &dyn PersistenceBackend) -> Result<Vec<ChunkId>, Error> {
+    let mut chunk_ids = Vec::new();
+    let chunk_keys = backend.list_keys()?;
+    for chunk_key in chunk_keys {
+        if let Ok(chunk_id) = chunk_key.parse() {
+            chunk_ids.push(chunk_id);
+        } else {
+            error!("Unparsable chunk id: {chunk_key}");
+        }
+    }
+    Ok(chunk_ids)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Event {
@@ -60,7 +73,7 @@ pub struct InputSnapshotReader {
 
     reader: Option<BufReader<Cursor<Vec<u8>>>>,
     last_frontier: OffsetAntichain,
-    times_advanced: Vec<Timestamp>,
+    chunk_ids: Vec<ChunkId>,
     next_chunk_idx: usize,
     entries_read: usize,
 }
@@ -100,23 +113,15 @@ impl InputSnapshotReader {
         threshold_time: TotalFrontier<Timestamp>,
         truncate_at_end: bool,
     ) -> Result<Self, Error> {
-        let mut times_advanced = Vec::new();
-        let chunk_keys = backend.list_keys()?;
-        for chunk_key in chunk_keys {
-            if let Ok(parsed_time) = chunk_key.parse() {
-                times_advanced.push(parsed_time);
-            } else {
-                error!("Unparsable timestamp: {chunk_key}");
-            }
-        }
-        times_advanced.sort_unstable();
+        let mut chunk_ids = get_chunk_ids_with_backend(backend.as_ref())?;
+        chunk_ids.sort_unstable();
         Ok(Self {
             backend,
             threshold_time,
             truncate_at_end,
             reader: None,
             last_frontier: OffsetAntichain::new(),
-            times_advanced,
+            chunk_ids,
             next_chunk_idx: 0,
             entries_read: 0,
         })
@@ -124,7 +129,7 @@ impl InputSnapshotReader {
 
     fn truncate(&mut self) -> Result<(), Error> {
         if let Some(ref mut reader) = &mut self.reader {
-            let current_chunk_key = format!("{}", self.times_advanced[self.next_chunk_idx - 1]);
+            let current_chunk_key = format!("{}", self.chunk_ids[self.next_chunk_idx - 1]);
             let stable_position = reader.stream_position()?;
             info!("Truncate: Shrink {current_chunk_key:?} to {stable_position} bytes");
 
@@ -139,7 +144,7 @@ impl InputSnapshotReader {
             })?;
         }
 
-        for unreachable_part in &self.times_advanced[self.next_chunk_idx..] {
+        for unreachable_part in &self.chunk_ids[self.next_chunk_idx..] {
             info!("Truncate: Remove {unreachable_part:?}");
             self.backend.remove_key(&format!("{unreachable_part}"))?;
         }
@@ -163,10 +168,11 @@ impl InputSnapshotReader {
                     },
                 },
                 None => {
-                    if self.next_chunk_idx >= self.times_advanced.len() {
+                    if self.next_chunk_idx >= self.chunk_ids.len() {
                         break;
                     }
-                    let next_chunk_key = format!("{}", self.times_advanced[self.next_chunk_idx]);
+                    let next_chunk_key = format!("{}", self.chunk_ids[self.next_chunk_idx]);
+                    info!("Snapshot reader proceeds to the chunk {next_chunk_key} after {} snapshot entries", self.entries_read);
                     let contents = self.backend.get_value(&next_chunk_key)?;
                     let cursor = Cursor::new(contents);
                     self.reader = Some(BufReader::new(cursor));
@@ -216,17 +222,20 @@ pub struct InputSnapshotWriter {
     current_chunk: Vec<u8>,
     current_chunk_entries: usize,
     chunk_save_futures: Vec<SnapshotWriterFlushFuture>,
+    next_chunk_id: ChunkId,
 }
 
 impl InputSnapshotWriter {
-    pub fn new(backend: Box<dyn PersistenceBackend>, mode: SnapshotMode) -> Self {
-        Self {
+    pub fn new(backend: Box<dyn PersistenceBackend>, mode: SnapshotMode) -> Result<Self, Error> {
+        let chunk_keys = get_chunk_ids_with_backend(backend.as_ref())?;
+        Ok(Self {
             backend,
             mode,
             current_chunk: Vec::new(),
             current_chunk_entries: 0,
             chunk_save_futures: Vec::new(),
-        }
+            next_chunk_id: chunk_keys.iter().max().copied().unwrap_or_default() + 1,
+        })
     }
 
     /// A non-blocking call, pushing an entry in the buffer.
@@ -262,7 +271,13 @@ impl InputSnapshotWriter {
     }
 
     fn save_current_chunk(&mut self) -> SnapshotWriterFlushFuture {
-        let chunk_name = format!("{}", current_unix_timestamp_ms());
+        info!(
+            "Persisting a chunk of {} entries ({} bytes)",
+            self.current_chunk_entries,
+            self.current_chunk.len()
+        );
+        let chunk_name = format!("{}", self.next_chunk_id);
+        self.next_chunk_id += 1;
         self.current_chunk_entries = 0;
         self.backend
             .put_value(&chunk_name, take(&mut self.current_chunk))

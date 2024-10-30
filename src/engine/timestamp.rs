@@ -14,9 +14,19 @@ use super::dataflow::maybe_total::MaybeTotalTimestamp;
 use super::dataflow::maybe_total::Total;
 use super::dataflow::operators::time_column::Epsilon;
 use super::dataflow::operators::time_column::MaxTimestamp;
+use crate::timestamp::current_unix_timestamp_ms;
 
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Timestamp(pub u64);
+
+impl Timestamp {
+    pub fn new_from_current_time() -> Self {
+        let new_timestamp = u64::try_from(current_unix_timestamp_ms())
+            .expect("number of milliseconds should fit in 64 bits");
+        let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
+        Timestamp(new_timestamp)
+    }
+}
 
 impl PartialOrder for Timestamp {
     fn less_equal(&self, other: &Self) -> bool {

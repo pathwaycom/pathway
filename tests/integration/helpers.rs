@@ -54,7 +54,7 @@ pub fn full_cycle_read(
             persistent_storage
                 .lock()
                 .unwrap()
-                .register_input_source(persistent_id, &reader.storage_type());
+                .register_input_source(persistent_id);
         }
     }
 
