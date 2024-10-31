@@ -18,6 +18,7 @@ use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
+use std::io::Cursor;
 use std::io::Write;
 use std::io::{Seek, SeekFrom};
 use std::mem::take;
@@ -26,7 +27,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
-use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -34,6 +34,8 @@ use chrono::DateTime;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use tempfile::{tempdir, tempfile, TempDir};
 use tokio::runtime::Runtime as TokioRuntime;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
@@ -98,7 +100,6 @@ use glob::PatternError as GlobPatternError;
 use mongodb::bson::Document as BsonDocument;
 use mongodb::error::Error as MongoError;
 use mongodb::sync::Collection as MongoCollection;
-use pipe::PipeReader;
 use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
@@ -1877,19 +1878,10 @@ impl Writer for PsqlWriter {
     }
 }
 
-pub struct CurrentlyProcessedS3Object {
-    loader_thread: std::thread::JoinHandle<Result<(), ReadError>>,
-    path: Arc<String>,
-}
-
-impl CurrentlyProcessedS3Object {
-    pub fn finalize(self) -> Result<(), ReadError> {
-        self.loader_thread.join().expect("s3 thread join failed")
-    }
-}
-
 const MAX_S3_RETRIES: usize = 2;
 const S3_PATH_PREFIXES: [&str; 2] = ["s3://", "s3a://"];
+type S3DownloadedObject = (Arc<String>, Cursor<Vec<u8>>);
+type S3DownloadResult = Result<S3DownloadedObject, ReadError>;
 
 pub struct S3Scanner {
     /*
@@ -1899,13 +1891,22 @@ pub struct S3Scanner {
     */
     bucket: S3Bucket,
     objects_prefix: String,
-    current_object: Option<CurrentlyProcessedS3Object>,
+    streaming_mode: ConnectorMode,
+    current_object_path: Option<Arc<String>>,
     processed_objects: HashSet<String>,
     objects_for_processing: VecDeque<String>,
+    downloader_pool: ThreadPool,
+    predownloaded_objects: HashMap<String, Cursor<Vec<u8>>>,
+    is_queue_initialized: bool,
 }
 
 impl S3Scanner {
-    pub fn new(bucket: S3Bucket, objects_prefix: impl Into<String>) -> Result<Self, ReadError> {
+    pub fn new(
+        bucket: S3Bucket,
+        objects_prefix: impl Into<String>,
+        streaming_mode: ConnectorMode,
+        downloader_threads_count: usize,
+    ) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
 
         let object_lists = execute_with_retries(
@@ -1929,10 +1930,17 @@ impl S3Scanner {
         Ok(S3Scanner {
             bucket,
             objects_prefix,
+            streaming_mode,
 
-            current_object: None,
+            current_object_path: None,
             processed_objects: HashSet::new(),
             objects_for_processing: VecDeque::new(),
+            downloader_pool: ThreadPoolBuilder::new()
+                .num_threads(downloader_threads_count)
+                .build()
+                .expect("Failed to create downloader pool"), // TODO: configure number of threads
+            predownloaded_objects: HashMap::new(),
+            is_queue_initialized: false,
         })
     }
 
@@ -1965,34 +1973,22 @@ impl S3Scanner {
 
     pub fn stream_object_from_path_and_bucket(
         object_path_ref: &str,
-        bucket: S3Bucket,
-    ) -> (CurrentlyProcessedS3Object, PipeReader) {
+        bucket: &S3Bucket,
+    ) -> S3DownloadResult {
         let object_path = object_path_ref.to_string();
-
-        let (pipe_reader, mut pipe_writer) = pipe::pipe();
-        let loader_thread = thread::Builder::new()
-            .name(format!("pathway:s3_get-{object_path_ref}"))
-            .spawn(move || {
-                let response = Self::download_object_from_path_and_bucket(&object_path, &bucket)?;
-                pipe_writer.write_all(response.bytes()).unwrap();
-                Ok(())
-            })
-            .expect("s3 thread creation failed");
-
-        (
-            CurrentlyProcessedS3Object {
-                loader_thread,
-                path: Arc::new(object_path_ref.to_string()),
-            },
-            pipe_reader,
-        )
+        let response = Self::download_object_from_path_and_bucket(&object_path, bucket)?;
+        let readable_data = Cursor::new(response.bytes().to_vec());
+        Ok((Arc::new(object_path_ref.to_string()), readable_data))
     }
 
-    fn stream_object_from_path(&mut self, object_path_ref: &str) -> PipeReader {
-        let (current_object, pipe_reader) =
-            Self::stream_object_from_path_and_bucket(object_path_ref, self.bucket.deep_copy());
-        self.current_object = Some(current_object);
-        pipe_reader
+    fn stream_object_from_path(
+        &mut self,
+        object_path_ref: &str,
+    ) -> Result<Cursor<Vec<u8>>, ReadError> {
+        let (current_object_path, reader_impl) =
+            Self::stream_object_from_path_and_bucket(object_path_ref, &self.bucket.deep_copy())?;
+        self.current_object_path = Some(current_object_path);
+        Ok(reader_impl)
     }
 
     fn find_new_objects_for_processing(&mut self) -> Result<(), ReadError> {
@@ -2016,27 +2012,65 @@ impl S3Scanner {
             }
         }
         new_objects.sort_unstable();
+        info!("Found {} new objects to process", new_objects.len());
+        let downloading_started_at = SystemTime::now();
+        let new_objects_downloaded: Vec<S3DownloadResult> = self.downloader_pool.install(|| {
+            new_objects
+                .par_iter()
+                .map(|(_, path)| Self::stream_object_from_path_and_bucket(path, &self.bucket))
+                .collect()
+        });
+        info!("Downloading done in {:?}", downloading_started_at.elapsed());
+
+        for downloaded_object in new_objects_downloaded {
+            match downloaded_object {
+                Ok((path, prepared_reader)) => {
+                    self.predownloaded_objects
+                        .insert(path.to_string(), prepared_reader);
+                }
+                Err(e) => {
+                    error!("Error while downloading an object from S3: {e}");
+                }
+            }
+        }
         for (_, object_key) in new_objects {
             self.objects_for_processing.push_back(object_key);
         }
 
+        info!(
+            "The {} new objects have been enqueued for further processing",
+            self.objects_for_processing.len()
+        );
+        self.is_queue_initialized = true;
         Ok(())
     }
 
-    fn stream_next_object(&mut self) -> Result<Option<PipeReader>, ReadError> {
-        if let Some(state) = self.current_object.take() {
-            state.loader_thread.join().expect("s3 thread panic")?;
-        }
-        if self.objects_for_processing.is_empty() {
-            self.find_new_objects_for_processing()?;
-        }
-        match self.objects_for_processing.pop_front() {
-            Some(selected_object_name) => {
-                let pipe_reader = self.stream_object_from_path(&selected_object_name);
-                self.processed_objects.insert(selected_object_name);
-                Ok(Some(pipe_reader))
+    fn stream_next_object(&mut self) -> Result<Option<Cursor<Vec<u8>>>, ReadError> {
+        let is_polling_enabled = self.streaming_mode.is_polling_enabled();
+        loop {
+            if let Some(selected_object_path) = self.objects_for_processing.pop_front() {
+                let prepared_object = self.predownloaded_objects.remove(&selected_object_path);
+                if let Some(prepared_object) = prepared_object {
+                    self.processed_objects.insert(selected_object_path.clone());
+                    self.current_object_path = Some(selected_object_path.into());
+                    return Ok(Some(prepared_object));
+                }
+            } else {
+                let is_queue_refresh_needed = !self.is_queue_initialized
+                    || (self.objects_for_processing.is_empty() && is_polling_enabled);
+                if is_queue_refresh_needed {
+                    self.find_new_objects_for_processing()?;
+                    if self.objects_for_processing.is_empty() && is_polling_enabled {
+                        // Even after the queue refresh attempt, it's still empty
+                        // Sleep before the next poll
+                        sleep(Self::sleep_duration());
+                    }
+                } else {
+                    // No elements and no further queue refreshes,
+                    // the connector can stop at this point
+                    return Ok(None);
+                }
             }
-            None => Ok(None),
         }
     }
 
@@ -2088,20 +2122,21 @@ impl S3Scanner {
     }
 
     fn expect_current_object_path(&self) -> Arc<String> {
-        self.current_object
+        self.current_object_path
             .as_ref()
             .expect("current object should be present")
-            .path
             .clone()
+    }
+
+    fn sleep_duration() -> Duration {
+        Duration::from_millis(10000)
     }
 }
 
 pub struct S3CsvReader {
     s3_scanner: S3Scanner,
-    poll_new_objects: bool,
-
     parser_builder: csv::ReaderBuilder,
-    csv_reader: Option<csv::Reader<PipeReader>>,
+    csv_reader: Option<csv::Reader<Cursor<Vec<u8>>>>,
 
     persistent_id: Option<PersistentId>,
     deferred_read_result: Option<ReadResult>,
@@ -2113,13 +2148,17 @@ impl S3CsvReader {
         bucket: S3Bucket,
         objects_prefix: impl Into<String>,
         parser_builder: csv::ReaderBuilder,
-        poll_new_objects: bool,
+        streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
+        downloader_threads_count: usize,
     ) -> Result<S3CsvReader, ReadError> {
         Ok(S3CsvReader {
-            s3_scanner: S3Scanner::new(bucket, objects_prefix)?,
-            poll_new_objects,
-
+            s3_scanner: S3Scanner::new(
+                bucket,
+                objects_prefix,
+                streaming_mode,
+                downloader_threads_count,
+            )?,
             parser_builder,
             csv_reader: None,
 
@@ -2130,16 +2169,12 @@ impl S3CsvReader {
     }
 
     fn stream_next_object(&mut self) -> Result<bool, ReadError> {
-        if let Some(pipe_reader) = self.s3_scanner.stream_next_object()? {
-            self.csv_reader = Some(self.parser_builder.from_reader(pipe_reader));
+        if let Some(reader_impl) = self.s3_scanner.stream_next_object()? {
+            self.csv_reader = Some(self.parser_builder.from_reader(reader_impl));
             Ok(true)
         } else {
             Ok(false)
         }
-    }
-
-    fn sleep_duration() -> Duration {
-        Duration::from_millis(10000)
     }
 }
 
@@ -2161,8 +2196,8 @@ impl Reader for S3CsvReader {
         let path = (**path_arc).clone();
 
         self.s3_scanner.seek_to_object(&path)?;
-        let pipe_reader = self.s3_scanner.stream_object_from_path(&path);
-        let mut csv_reader = self.parser_builder.from_reader(pipe_reader);
+        let reader_impl = self.s3_scanner.stream_object_from_path(&path)?;
+        let mut csv_reader = self.parser_builder.from_reader(reader_impl);
 
         let mut current_offset = 0;
         if *bytes_offset > 0 {
@@ -2204,52 +2239,46 @@ impl Reader for S3CsvReader {
             return Ok(deferred_read_result);
         }
 
-        loop {
-            match &mut self.csv_reader {
-                Some(csv_reader) => {
-                    let mut current_record = csv::StringRecord::new();
-                    if csv_reader.read_record(&mut current_record)? {
-                        self.total_entries_read += 1;
+        match &mut self.csv_reader {
+            Some(csv_reader) => {
+                let mut current_record = csv::StringRecord::new();
+                if csv_reader.read_record(&mut current_record)? {
+                    self.total_entries_read += 1;
 
-                        let offset = (
-                            OffsetKey::Empty,
-                            OffsetValue::S3ObjectPosition {
-                                total_entries_read: self.total_entries_read,
-                                path: self.s3_scanner.expect_current_object_path(),
-                                bytes_offset: csv_reader.position().byte(),
-                            },
-                        );
+                    let offset = (
+                        OffsetKey::Empty,
+                        OffsetValue::S3ObjectPosition {
+                            total_entries_read: self.total_entries_read,
+                            path: self.s3_scanner.expect_current_object_path(),
+                            bytes_offset: csv_reader.position().byte(),
+                        },
+                    );
 
-                        return Ok(ReadResult::Data(
-                            ReaderContext::from_tokenized_entries(
-                                DataEventType::Insert,
-                                current_record
-                                    .iter()
-                                    .map(std::string::ToString::to_string)
-                                    .collect(),
-                            ),
-                            offset,
-                        ));
-                    }
-                    if self.stream_next_object()? {
-                        // No metadata is currently provided by S3 scanner
-                        return Ok(ReadResult::NewSource(None));
-                    }
+                    return Ok(ReadResult::Data(
+                        ReaderContext::from_tokenized_entries(
+                            DataEventType::Insert,
+                            current_record
+                                .iter()
+                                .map(std::string::ToString::to_string)
+                                .collect(),
+                        ),
+                        offset,
+                    ));
                 }
-                None => {
-                    if self.stream_next_object()? {
-                        // No metadata is currently provided by S3 scanner
-                        return Ok(ReadResult::NewSource(None));
-                    }
+                if self.stream_next_object()? {
+                    // No metadata is currently provided by S3 scanner
+                    return Ok(ReadResult::NewSource(None));
                 }
             }
-
-            if self.poll_new_objects {
-                sleep(Self::sleep_duration());
-            } else {
-                return Ok(ReadResult::Finished);
+            None => {
+                if self.stream_next_object()? {
+                    // No metadata is currently provided by S3 scanner
+                    return Ok(ReadResult::NewSource(None));
+                }
             }
         }
+
+        Ok(ReadResult::Finished)
     }
 
     fn storage_type(&self) -> StorageType {
@@ -2441,10 +2470,9 @@ impl Writer for NullWriter {
 
 pub struct S3GenericReader {
     s3_scanner: S3Scanner,
-    poll_new_objects: bool,
     read_method: ReadMethod,
 
-    reader: Option<BufReader<PipeReader>>,
+    reader: Option<BufReader<Cursor<Vec<u8>>>>,
     persistent_id: Option<PersistentId>,
     total_entries_read: u64,
     current_bytes_read: u64,
@@ -2455,13 +2483,18 @@ impl S3GenericReader {
     pub fn new(
         bucket: S3Bucket,
         objects_prefix: impl Into<String>,
-        poll_new_objects: bool,
+        streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
         read_method: ReadMethod,
+        downloader_threads_count: usize,
     ) -> Result<S3GenericReader, ReadError> {
         Ok(S3GenericReader {
-            s3_scanner: S3Scanner::new(bucket, objects_prefix)?,
-            poll_new_objects,
+            s3_scanner: S3Scanner::new(
+                bucket,
+                objects_prefix,
+                streaming_mode,
+                downloader_threads_count,
+            )?,
             read_method,
 
             reader: None,
@@ -2473,17 +2506,13 @@ impl S3GenericReader {
     }
 
     fn stream_next_object(&mut self) -> Result<bool, ReadError> {
-        if let Some(pipe_reader) = self.s3_scanner.stream_next_object()? {
+        if let Some(reader_impl) = self.s3_scanner.stream_next_object()? {
             self.current_bytes_read = 0;
-            self.reader = Some(BufReader::new(pipe_reader));
+            self.reader = Some(BufReader::new(reader_impl));
             Ok(true)
         } else {
             Ok(false)
         }
-    }
-
-    fn sleep_duration() -> Duration {
-        Duration::from_millis(10000)
     }
 }
 
@@ -2505,9 +2534,9 @@ impl Reader for S3GenericReader {
         let path = (**path_arc).clone();
 
         self.s3_scanner.seek_to_object(&path)?;
-        let pipe_reader = self.s3_scanner.stream_object_from_path(&path);
+        let reader_impl = self.s3_scanner.stream_object_from_path(&path)?;
 
-        let mut reader = BufReader::new(pipe_reader);
+        let mut reader = BufReader::new(reader_impl);
         let mut bytes_read = 0;
         while bytes_read < *bytes_offset {
             let mut current_line = Vec::new();
@@ -2540,56 +2569,50 @@ impl Reader for S3GenericReader {
             return Ok(deferred_read_result);
         }
 
-        loop {
-            match &mut self.reader {
-                Some(reader) => {
-                    let mut line = Vec::new();
-                    let len = self.read_method.read_next_bytes(reader, &mut line)?;
-                    if len > 0 || self.read_method == ReadMethod::Full {
-                        self.total_entries_read += 1;
-                        self.current_bytes_read += len as u64;
+        match &mut self.reader {
+            Some(reader) => {
+                let mut line = Vec::new();
+                let len = self.read_method.read_next_bytes(reader, &mut line)?;
+                if len > 0 || self.read_method == ReadMethod::Full {
+                    self.total_entries_read += 1;
+                    self.current_bytes_read += len as u64;
 
-                        let offset = (
-                            OffsetKey::Empty,
-                            OffsetValue::S3ObjectPosition {
-                                total_entries_read: self.total_entries_read,
-                                path: self.s3_scanner.expect_current_object_path(),
-                                bytes_offset: self.current_bytes_read,
-                            },
-                        );
+                    let offset = (
+                        OffsetKey::Empty,
+                        OffsetValue::S3ObjectPosition {
+                            total_entries_read: self.total_entries_read,
+                            path: self.s3_scanner.expect_current_object_path(),
+                            bytes_offset: self.current_bytes_read,
+                        },
+                    );
 
-                        if self.read_method == ReadMethod::Full {
-                            self.deferred_read_result = Some(ReadResult::FinishedSource {
-                                commit_allowed: true,
-                            });
-                            self.reader = None;
-                        }
-
-                        return Ok(ReadResult::Data(
-                            ReaderContext::from_raw_bytes(DataEventType::Insert, line), // Currently no deletions for S3
-                            offset,
-                        ));
+                    if self.read_method == ReadMethod::Full {
+                        self.deferred_read_result = Some(ReadResult::FinishedSource {
+                            commit_allowed: true,
+                        });
+                        self.reader = None;
                     }
 
-                    if self.stream_next_object()? {
-                        // No metadata is currently provided by S3 scanner
-                        return Ok(ReadResult::NewSource(None));
-                    }
+                    return Ok(ReadResult::Data(
+                        ReaderContext::from_raw_bytes(DataEventType::Insert, line), // Currently no deletions for S3
+                        offset,
+                    ));
                 }
-                None => {
-                    if self.stream_next_object()? {
-                        // No metadata is currently provided by S3 scanner
-                        return Ok(ReadResult::NewSource(None));
-                    }
+
+                if self.stream_next_object()? {
+                    // No metadata is currently provided by S3 scanner
+                    return Ok(ReadResult::NewSource(None));
                 }
             }
-
-            if self.poll_new_objects {
-                sleep(Self::sleep_duration());
-            } else {
-                return Ok(ReadResult::Finished);
+            None => {
+                if self.stream_next_object()? {
+                    // No metadata is currently provided by S3 scanner
+                    return Ok(ReadResult::NewSource(None));
+                }
             }
         }
+
+        Ok(ReadResult::Finished)
     }
 
     fn storage_type(&self) -> StorageType {

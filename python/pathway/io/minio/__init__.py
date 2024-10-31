@@ -65,6 +65,7 @@ def read(
     mode: str = "streaming",
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    downloader_threads_count: int | None = None,
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
@@ -98,6 +99,10 @@ def read(
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        downloader_threads_count: The number of threads created to download the contents
+            of the bucket under the given path. It defaults to the number of cores
+            available on the machine. It is recommended to increase the number of
+            threads if your bucket contains many small files.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -147,5 +152,6 @@ def read(
         autocommit_duration_ms=autocommit_duration_ms,
         persistent_id=persistent_id,
         json_field_paths=json_field_paths,
+        downloader_threads_count=downloader_threads_count,
         debug_data=debug_data,
     )

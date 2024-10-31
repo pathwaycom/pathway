@@ -3853,7 +3853,6 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "ordered-float 4.2.2",
- "pipe",
  "postgres",
  "prometheus-client",
  "pyo3",
@@ -3861,6 +3860,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-log",
  "rand",
+ "rayon",
  "rdkafka",
  "regex",
  "reqwest",
@@ -3979,15 +3979,6 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
-
-[[package]]
-name = "pipe"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c7b8f27da217eb966df4c58d4159ea939431950ca03cf782c22bd7c5c1d8d75"
-dependencies = [
- "crossbeam-channel",
-]
 
 [[package]]
 name = "pkg-config"

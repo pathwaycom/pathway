@@ -100,6 +100,7 @@ def read(
     mode: str = "streaming",
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    downloader_threads_count: int | None = None,
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
@@ -135,6 +136,10 @@ def read(
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        downloader_threads_count: The number of threads created to download the contents
+            of the bucket under the given path. It defaults to the number of cores
+            available on the machine. It is recommended to increase the number of
+            threads if your bucket contains many small files.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -261,6 +266,7 @@ def read(
         mode=internal_mode,
         csv_settings=csv_settings,
         persistent_id=persistent_id,
+        downloader_threads_count=downloader_threads_count,
     )
 
     schema, data_format = construct_schema_and_data_format(
@@ -296,6 +302,7 @@ def read_from_digital_ocean(
     mode: str = "streaming",
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    downloader_threads_count: int | None = None,
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
@@ -330,6 +337,10 @@ def read_from_digital_ocean(
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        downloader_threads_count: The number of threads created to download the contents
+            of the bucket under the given path. It defaults to the number of cores
+            available on the machine. It is recommended to increase the number of
+            threads if your bucket contains many small files.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -378,6 +389,7 @@ def read_from_digital_ocean(
         mode=internal_mode,
         csv_settings=csv_settings,
         persistent_id=persistent_id,
+        downloader_threads_count=downloader_threads_count,
     )
 
     schema, data_format = construct_schema_and_data_format(
@@ -413,6 +425,7 @@ def read_from_wasabi(
     mode: str = "streaming",
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
+    downloader_threads_count: int | None = None,
     persistent_id: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
@@ -446,6 +459,10 @@ def read_from_wasabi(
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
+        downloader_threads_count: The number of threads created to download the contents
+            of the bucket under the given path. It defaults to the number of cores
+            available on the machine. It is recommended to increase the number of
+            threads if your bucket contains many small files.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -492,6 +509,7 @@ def read_from_wasabi(
         rust_engine_s3_settings=prepared_s3_settings.settings,
         format=format,
         mode=internal_mode,
+        downloader_threads_count=downloader_threads_count,
         csv_settings=csv_settings,
         persistent_id=persistent_id,
     )

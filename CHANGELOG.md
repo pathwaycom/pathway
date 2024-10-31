@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.mongodb.write` connector for writing Pathway tables in MongoDB.
+- `pw.io.s3.read` now supports downloading objects from an S3 bucket in parallel.
 
 ### Changed
 - `pw.io.fs.read` performance has been improved for directories containing a large number of files.

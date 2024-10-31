@@ -22,7 +22,7 @@ use elasticsearch::{
     Elasticsearch,
 };
 use itertools::Itertools;
-use log::warn;
+use log::{info, warn};
 use mongodb::sync::Client as MongoClient;
 use ndarray;
 use numpy::{PyArray, PyReadonlyArrayDyn};
@@ -3656,6 +3656,7 @@ pub struct DataStorage {
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
     min_commit_frequency: Option<u64>,
+    downloader_threads_count: Option<usize>,
     database: Option<String>,
 }
 
@@ -3966,6 +3967,7 @@ impl DataStorage {
         header_fields = Vec::new(),
         key_field_index = None,
         min_commit_frequency = None,
+        downloader_threads_count = None,
         database = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -3991,6 +3993,7 @@ impl DataStorage {
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
         min_commit_frequency: Option<u64>,
+        downloader_threads_count: Option<usize>,
         database: Option<String>,
     ) -> Self {
         DataStorage {
@@ -4015,6 +4018,7 @@ impl DataStorage {
             header_fields,
             key_field_index,
             min_commit_frequency,
+            downloader_threads_count,
             database,
         }
     }
@@ -4189,6 +4193,21 @@ impl DataStorage {
         Ok(bucket)
     }
 
+    fn downloader_threads_count(&self) -> PyResult<usize> {
+        if let Some(count) = self.downloader_threads_count {
+            Ok(count)
+        } else {
+            let estimated = std::thread::available_parallelism().map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "Failed to estimate the number of parallel downloaders to use: {e}"
+                ))
+            })?;
+            let result: usize = std::convert::Into::<usize>::into(estimated);
+            info!("S3 downloader defaults to {estimated} threads");
+            Ok(result)
+        }
+    }
+
     fn delta_s3_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
         let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let s3_settings = self
@@ -4313,9 +4332,10 @@ impl DataStorage {
         let storage = S3GenericReader::new(
             self.s3_bucket(py)?,
             deduced_path,
-            self.mode.is_polling_enabled(),
+            self.mode,
             self.internal_persistent_id(),
             self.read_method,
+            self.downloader_threads_count()?,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
         Ok((Box::new(storage), 1))
@@ -4330,8 +4350,9 @@ impl DataStorage {
             self.s3_bucket(py)?,
             deduced_path,
             self.build_csv_parser_settings(py),
-            self.mode.is_polling_enabled(),
+            self.mode,
             self.internal_persistent_id(),
+            self.downloader_threads_count()?,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
         Ok((Box::new(storage), 1))

@@ -350,6 +350,7 @@ def construct_s3_data_storage(
     format: str,
     mode: str | api.ConnectorMode,
     *,
+    downloader_threads_count: int | None = None,
     csv_settings: CsvParserSettings | None = None,
     persistent_id: str | None = None,
 ):
@@ -359,6 +360,7 @@ def construct_s3_data_storage(
             path=path,
             aws_s3_settings=rust_engine_s3_settings,
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
+            downloader_threads_count=downloader_threads_count,
             mode=internal_connector_mode(mode),
             persistent_id=persistent_id,
         )
@@ -369,5 +371,6 @@ def construct_s3_data_storage(
             aws_s3_settings=rust_engine_s3_settings,
             mode=internal_connector_mode(mode),
             read_method=internal_read_method(format),
+            downloader_threads_count=downloader_threads_count,
             persistent_id=persistent_id,
         )

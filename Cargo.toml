@@ -53,13 +53,13 @@ opentelemetry-otlp = { version = "0.17.0", features = ["default", "tls", "tls-ro
 opentelemetry-semantic-conventions = "0.16.0"
 opentelemetry_sdk = { version = "0.24.1", features = ["rt-tokio", "rt-tokio-current-thread"] }
 ordered-float = { version = "4.2.2", features = ["serde"] }
-pipe = "0.4.0"
 postgres = { version = "0.19.8", features = ["with-chrono-0_4", "with-serde_json-1"] }
 prometheus-client = "0.22.3"
 pyo3 = { version = "0.21.2", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-asyncio = { version = "0.21.0", package = "pyo3-asyncio-0-21" }
 pyo3-log = "0.10.0"
 rand = "0.8.5"
+rayon = "1.10.0"
 rdkafka = { version = "0.36.2", features = ["ssl-vendored", "cmake-build", "zstd"] }
 regex = "1.10.6"
 reqwest = { version = "0.12.7", features = ["blocking", "json"] }
