@@ -1,0 +1,48 @@
+version: "3.7"
+services:
+  mongodb:
+    container_name: mongodb
+    image: mongo
+    command: ["--replSet", "rs0", "--port", "27017"]
+    healthcheck:
+      test: echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongodb:27017'}]}) }" | mongosh --port 27017 --quiet
+      interval: 5s
+      timeout: 120s
+  streamer:
+    container_name: mongodb-streamer
+    build:
+      context: .
+      dockerfile: ./data-streaming/Dockerfile
+    depends_on: [mongodb]
+  zookeeper:
+    container_name: db_tuto_zookeeper
+    image: confluentinc/cp-zookeeper:5.5.3
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+  kafka:
+    container_name: db_tuto_kafka
+    image: confluentinc/cp-enterprise-kafka:5.5.3
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9991
+  debezium:
+    container_name: db_tuto_debezium
+    image: debezium/connect:1.4
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+    volumes:
+      - ./debezium/connector.sh:/kafka/connector.sh
+    depends_on: [kafka]
+  pathway:
+    container_name: db_tuto_pathway
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on: [kafka, mongodb]
