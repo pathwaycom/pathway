@@ -25,8 +25,6 @@
         <img src="https://img.shields.io/badge/pathway-0077B5?style=social&logo=linkedin" alt="follow on LinkedIn"></a>
       <a href="https://github.com/dylanhogg/awesome-python/blob/main/README.md">
       <img src="https://awesome.re/badge.svg" alt="Awesome Python"></a>
-      <a href="https://gurubase.io/g/pathway">
-      <img src="https://img.shields.io/badge/Gurubase-Ask%20Pathway%20Guru-006BFF" alt="Pathway Guru"></a>
     <br>
     <a href="#getting-started">Getting Started</a> |
     <a href="#deployment">Deployment</a> |
