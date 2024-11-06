@@ -78,6 +78,7 @@ from .executable_runner import (
     get_configured_catalog,
 )
 from google.oauth2.service_account import Credentials as ServiceCredentials
+from google.protobuf.duration_pb2 import Duration
 
 
 # https://cloud.google.com/python/docs/reference/run/latest/google.cloud.run_v2.types.EnvVar
@@ -284,9 +285,11 @@ class RemoteAirbyteSource(AbstractAirbyteSource):
                 }
             },
         }
+        timeout = Duration()
+        timeout.seconds = 3600
         job_config = {
             "containers": [container],
-            "timeout": "3600s",
+            "timeout": timeout,
             "max_retries": 0,
         }
 
