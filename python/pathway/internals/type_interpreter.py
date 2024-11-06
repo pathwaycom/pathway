@@ -635,7 +635,7 @@ class JoinTypeInterpreter(TypeInterpreter):
 
 class JoinRowwiseTypeInterpreter(TypeInterpreter):
     """Type interpreter for evaluating expressions in join.
-    Colrefs are already properly optionalized (dependning on type of join and
+    Colrefs are already properly optionalized (depending on type of join and
     left/right table) and properly unrolled and stored in internal table."""
 
     temporary_column_to_original: dict[expr.InternalColRef, expr.InternalColRef]

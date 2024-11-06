@@ -162,7 +162,7 @@ mode.
         enforce_method: when set to ``"docker"``, Pathway will not try to locate and
             run the latest connector version from PyPI. On the other hand, when set to
             ``"pypi"``, Pathway will prefer the usage of the latest image available on
-            PyPI. Use this option when you need to ensure certain behaviour on the local
+            PyPI. Use this option when you need to ensure certain behavior on the local
             run.
 
     Returns:

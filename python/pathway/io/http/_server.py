@@ -171,7 +171,7 @@ way, one can exclude certain endpoints and methods from being documented.
             # is a bit different from the POST / PUT / PATCH
             endpoint_description = {
                 "parameters": self._construct_openapi_get_request_schema(schema),
-                # disable yaml optimisation to avoid
+                # disable yaml optimization to avoid
                 # "instance type (string) does not match any allowed primitive type"
                 # error from openapi validator
                 "responses": copy.deepcopy(self.DEFAULT_RESPONSES_DESCRIPTION),
@@ -193,7 +193,7 @@ way, one can exclude certain endpoints and methods from being documented.
                 "requestBody": {
                     "content": content_description,
                 },
-                # disable yaml optimisation to avoid
+                # disable yaml optimization to avoid
                 # "instance type (string) does not match any allowed primitive type"
                 # error from openapi validator
                 "responses": copy.deepcopy(self.DEFAULT_RESPONSES_DESCRIPTION),

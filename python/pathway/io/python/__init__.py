@@ -111,7 +111,7 @@ class ConnectorSubject(ABC):
         self._seek(state)
 
     def _seek(self, state: bytes) -> None:
-        """Connector-dependant logic to perform seek up to specific state."""
+        """Connector-dependent logic to perform seek up to specific state."""
         pass
 
     def on_persisted_run(self) -> None:
