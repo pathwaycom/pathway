@@ -12,6 +12,7 @@
 # run_template: "/developers/templates/template-multimodal-rag"
 # popular: true
 # author: 'pathway'
+# hide: true
 # jupyter:
 #   jupytext:
 #     text_representation:

@@ -12,6 +12,7 @@
 # author: 'berke'
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag', 'notebook', 'docker']
 # run_template: "/developers/templates/template-private-rag"
+# hide: true
 # ---
 
 # # Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway
