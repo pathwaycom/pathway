@@ -761,7 +761,7 @@ pub struct KafkaReader {
     consumer: BaseConsumer<DefaultConsumerContext>,
     persistent_id: Option<PersistentId>,
     topic: Arc<String>,
-    positions_for_seek: HashMap<i32, i64>,
+    positions_for_seek: HashMap<i32, KafkaOffset>,
 }
 
 impl Reader for KafkaReader {
@@ -774,25 +774,31 @@ impl Reader for KafkaReader {
             let message_key = kafka_message.key().map(<[u8]>::to_vec);
             let message_payload = kafka_message.payload().map(<[u8]>::to_vec);
 
-            if let Some(last_read_offset) = self.positions_for_seek.get(&kafka_message.partition())
+            if let Some(lazy_seek_offset) = self.positions_for_seek.get(&kafka_message.partition())
             {
-                if last_read_offset >= &kafka_message.offset() {
-                    if let Err(e) = self.consumer.seek(
+                info!(
+                    "Performing Kafka topic seek for ({}, {}) to {:?}",
+                    kafka_message.topic(),
+                    kafka_message.partition(),
+                    lazy_seek_offset
+                );
+                // If there is a need for seek, perform it and remove the seek requirement.
+                if let Err(e) = self.consumer.seek(
+                    kafka_message.topic(),
+                    kafka_message.partition(),
+                    *lazy_seek_offset,
+                    None,
+                ) {
+                    error!(
+                        "Failed to seek topic and partition ({}, {}) to offset {:?}: {e}",
                         kafka_message.topic(),
                         kafka_message.partition(),
-                        KafkaOffset::Offset(*last_read_offset + 1),
-                        None,
-                    ) {
-                        error!(
-                            "Failed to seek topic and partition ({}, {}) to offset {}: {e}",
-                            kafka_message.topic(),
-                            kafka_message.partition(),
-                            *last_read_offset + 1
-                        );
-                    }
-                    continue;
+                        lazy_seek_offset,
+                    );
+                } else {
+                    self.positions_for_seek.remove(&kafka_message.partition());
                 }
-                self.positions_for_seek.remove(&kafka_message.partition());
+                continue;
             }
 
             let offset = {
@@ -830,7 +836,8 @@ impl Reader for KafkaReader {
                     to be done on behalf of rdkafka client, taking account of other
                     members in its' consumer group.
                 */
-                self.positions_for_seek.insert(*partition, *position);
+                self.positions_for_seek
+                    .insert(*partition, KafkaOffset::Offset(*position + 1));
             } else {
                 error!("Unexpected offset in Kafka frontier: ({offset_key:?}, {offset_value:?})");
             }
@@ -861,12 +868,13 @@ impl KafkaReader {
         consumer: BaseConsumer<DefaultConsumerContext>,
         topic: String,
         persistent_id: Option<PersistentId>,
+        positions_for_seek: HashMap<i32, KafkaOffset>,
     ) -> KafkaReader {
         KafkaReader {
             consumer,
             persistent_id,
             topic: Arc::new(topic),
-            positions_for_seek: HashMap::new(),
+            positions_for_seek,
         }
     }
 }

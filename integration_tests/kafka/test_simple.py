@@ -2,6 +2,8 @@
 
 import json
 import pathlib
+import threading
+import time
 
 import pytest
 
@@ -418,4 +420,119 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
                 pw.persistence.Backend.filesystem(persistent_storage_path),
             ),
         },
+    )
+
+
+@pytest.mark.flaky(reruns=3)
+def test_start_from_timestamp_ms_seek_to_middle(
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    kafka_context.fill(["foo", "bar"])
+    time.sleep(10)
+    start_from_timestamp_ms = (int(time.time()) - 5) * 1000
+    kafka_context.fill(["qqq", "www"])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        start_from_timestamp_ms=start_from_timestamp_ms,
+    )
+
+    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+
+    wait_result_with_checker(
+        expect_csv_checker(
+            """
+            data
+            qqq
+            www
+            """,
+            tmp_path / "output.csv",
+            usecols=["data"],
+            index_col=["data"],
+        ),
+        10,
+    )
+
+
+@pytest.mark.flaky(reruns=3)
+def test_start_from_timestamp_ms_seek_to_beginning(
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    kafka_context.fill(["foo", "bar"])
+    start_from_timestamp_ms = (int(time.time()) - 3600) * 1000
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        start_from_timestamp_ms=start_from_timestamp_ms,
+    )
+
+    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+
+    wait_result_with_checker(
+        expect_csv_checker(
+            """
+            data
+            foo
+            bar
+            """,
+            tmp_path / "output.csv",
+            usecols=["data"],
+            index_col=["data"],
+        ),
+        10,
+    )
+
+
+@pytest.mark.flaky(reruns=3)
+def test_start_from_timestamp_ms_seek_to_end(
+    tmp_path: pathlib.Path, kafka_context: KafkaTestContext
+):
+    kafka_context.fill(["foo", "bar"])
+    time.sleep(10)
+    start_from_timestamp_ms = int(time.time() - 5) * 1000
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        start_from_timestamp_ms=start_from_timestamp_ms,
+    )
+
+    def stream_inputs():
+        for i in range(10):
+            kafka_context.fill([str(i)])
+            time.sleep(1)
+
+    t = threading.Thread(target=stream_inputs, daemon=True)
+    t.run()
+
+    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+
+    wait_result_with_checker(
+        expect_csv_checker(
+            """
+            data
+            0
+            1
+            2
+            3
+            4
+            5
+            6
+            7
+            8
+            9
+            """,
+            tmp_path / "output.csv",
+            usecols=["data"],
+            index_col=["data"],
+        ),
+        30,
     )

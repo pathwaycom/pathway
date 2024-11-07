@@ -40,7 +40,7 @@ use pyo3::{intern, AsPyPointer, PyTypeInfo};
 use pyo3_log::ResetHandle;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::producer::{DefaultProducerContext, ThreadedProducer};
-use rdkafka::ClientConfig;
+use rdkafka::{ClientConfig, Offset as KafkaOffset, TopicPartitionList};
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::OpenFlags as SqliteOpenFlags;
 use s3::bucket::Bucket as S3Bucket;
@@ -106,6 +106,7 @@ use crate::persistence::input_snapshot::Event as SnapshotEvent;
 use crate::persistence::{ExternalPersistentId, IntoPersistentId, PersistentId};
 use crate::pipe::{pipe, ReaderType, WriterType};
 use crate::python_api::external_index_wrappers::PyExternalIndexFactory;
+use crate::timestamp::current_unix_timestamp_ms;
 
 use s3::creds::Credentials as AwsCredentials;
 
@@ -3658,6 +3659,7 @@ pub struct DataStorage {
     min_commit_frequency: Option<u64>,
     downloader_threads_count: Option<usize>,
     database: Option<String>,
+    start_from_timestamp_ms: Option<i64>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -3969,6 +3971,7 @@ impl DataStorage {
         min_commit_frequency = None,
         downloader_threads_count = None,
         database = None,
+        start_from_timestamp_ms = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3995,6 +3998,7 @@ impl DataStorage {
         min_commit_frequency: Option<u64>,
         downloader_threads_count: Option<usize>,
         database: Option<String>,
+        start_from_timestamp_ms: Option<i64>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4020,6 +4024,7 @@ impl DataStorage {
             min_commit_frequency,
             downloader_threads_count,
             database,
+            start_from_timestamp_ms,
         }
     }
 }
@@ -4286,6 +4291,12 @@ impl DataStorage {
             client_config.set(key, value);
         }
 
+        // If the starting timestamp is given, the positions
+        // within the topic partitions will be reset lazily
+        if self.start_from_timestamp_ms.is_some() {
+            client_config.set("auto.offset.reset", "earliest");
+        }
+
         Ok(client_config)
     }
 
@@ -4372,6 +4383,17 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn total_partitions_for_topic(consumer: &BaseConsumer, topic: &str) -> PyResult<usize> {
+        let metadata = consumer
+            .fetch_metadata(Some(topic), std::time::Duration::from_secs(30))
+            .map_err(|e| PyIOError::new_err(format!("Failed to fetch topic metadata: {e}")))?;
+        if let Some(topic) = metadata.topics().iter().find(|t| t.name() == topic) {
+            Ok(topic.partitions().len())
+        } else {
+            Err(PyIOError::new_err(format!("Topic '{topic}' not found")))
+        }
+    }
+
     fn construct_kafka_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let client_config = self.kafka_client_config()?;
 
@@ -4384,7 +4406,80 @@ impl DataStorage {
             .subscribe(&[topic])
             .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
 
-        let reader = KafkaReader::new(consumer, topic.to_string(), self.internal_persistent_id());
+        let mut seek_positions = HashMap::new();
+        if let Some(start_from_timestamp_ms) = self.start_from_timestamp_ms {
+            let current_timestamp = current_unix_timestamp_ms();
+            if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
+                warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
+            }
+
+            let mut tpl = TopicPartitionList::new();
+            let total_partitions = Self::total_partitions_for_topic(&consumer, topic)?;
+            for partition_idx in 0..total_partitions {
+                tpl.add_partition_offset(
+                    topic,
+                    partition_idx.try_into().unwrap(),
+                    KafkaOffset::Offset(start_from_timestamp_ms),
+                )
+                .expect("Failed to add partition offset");
+            }
+
+            // First we find the next offset within partition to gracefully handle the case
+            // when the later call of `offsets_for_times` returns `KafkaOffset::End` for some
+            // of the partitions
+            let mut next_used_offset_per_partition = Vec::with_capacity(total_partitions);
+            for partition_idx in 0..total_partitions {
+                let (_, next_offset) = consumer
+                    .fetch_watermarks(
+                        topic,
+                        partition_idx.try_into().unwrap(),
+                        std::time::Duration::from_secs(30),
+                    )
+                    .map_err(|e| {
+                        PyIOError::new_err(format!(
+                            "Failed to fetch watermarks for ({topic}, {partition_idx}): {e}"
+                        ))
+                    })?;
+                next_used_offset_per_partition.push(KafkaOffset::Offset(next_offset));
+            }
+
+            let offsets = consumer
+                .offsets_for_times(tpl, std::time::Duration::from_secs(30))
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to fetch offsets for the timestamp: {e}"))
+                })?;
+
+            // We could have done a simple `consumer.assign` here, but it would damage the automatic consumer rebalance
+            // So we act differently: we pass the seek positions to consumer, and it seeks lazily
+            for element in offsets.elements() {
+                assert_eq!(element.topic(), topic);
+                let offset = match element.offset() {
+                    KafkaOffset::Invalid => {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "rdkafka returned invalid offset, details: {offsets:?}"
+                        )))
+                    }
+                    KafkaOffset::End => {
+                        let partition_idx: usize = element.partition().try_into().unwrap();
+                        info!("Partition {partition_idx} doesn't have messages with timestamp greater than {start_from_timestamp_ms}. All new messages will be read.");
+                        next_used_offset_per_partition[partition_idx]
+                    }
+                    offset => offset,
+                };
+                info!(
+                    "Adding a lazy seek position for ({topic}, {}) to ({:?})",
+                    element.partition(),
+                    offset
+                );
+                seek_positions.insert(element.partition(), offset);
+            }
+        }
+        let reader = KafkaReader::new(
+            consumer,
+            topic.to_string(),
+            self.internal_persistent_id(),
+            seek_positions,
+        );
         Ok((Box::new(reader), self.parallel_readers.unwrap_or(256)))
     }
 

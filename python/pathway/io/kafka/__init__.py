@@ -38,6 +38,7 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     autogenerate_key: bool = False,
+    start_from_timestamp_ms: int | None = None,
     parallel_readers: int | None = None,
     persistent_id: str | None = None,
     value_columns: list[str] | None = None,
@@ -78,6 +79,8 @@ def read(
         autogenerate_key: If ``True``, Pathway automatically generates unique primary key
             for the entries read. Otherwise it first tries to use the key from the message.
             This parameter is used only if the ``format`` is "raw" or "plaintext".
+        start_from_timestamp_ms: If defined, the read starts from entries with the given
+            timestamp in the past, specified in milliseconds.
         parallel_readers: number of copies of the reader to work in parallel. In case
             the number is not specified, min{pathway_threads, total number of partitions}
             will be taken. This number also can't be greater than the number of Pathway
@@ -257,6 +260,7 @@ def read(
         topic=topic,
         parallel_readers=parallel_readers,
         persistent_id=persistent_id,
+        start_from_timestamp_ms=start_from_timestamp_ms,
         mode=api.ConnectorMode.STREAMING,
     )
     schema, data_format = construct_schema_and_data_format(
