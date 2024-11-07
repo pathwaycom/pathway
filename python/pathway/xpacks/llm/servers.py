@@ -2,6 +2,7 @@ import threading
 from typing import Callable
 
 import pathway as pw
+from pathway.internals import udfs
 from pathway.internals.udfs.utils import coerce_async
 from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.question_answering import (
@@ -228,6 +229,8 @@ class QASummaryRestServer(QARestServer):
         route: str,
         schema: type[pw.Schema] | None,
         callable_func: Callable,
+        retry_strategy: udfs.AsyncRetryStrategy | None,
+        cache_strategy: udfs.CacheStrategy | None,
         **additional_endpoint_kwargs,
     ):
         if schema is None:
@@ -267,7 +270,14 @@ class QASummaryRestServer(QARestServer):
                     return {HTTP_CONN_RESPONSE_KEY: result}
 
             def table_transformer(table: pw.Table) -> pw.Table:
-                return FuncAsyncTransformer(input_table=table).successful
+                return (
+                    FuncAsyncTransformer(input_table=table)
+                    .with_options(
+                        cache_strategy=cache_strategy,
+                        retry_strategy=retry_strategy,
+                    )
+                    .successful
+                )
 
             return table_transformer
 

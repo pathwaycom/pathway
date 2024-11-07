@@ -8,7 +8,7 @@ from warnings import warn
 import requests
 
 import pathway as pw
-from pathway.internals import ColumnReference, Table
+from pathway.internals import ColumnReference, Table, udfs
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
 from pathway.xpacks.llm.document_store import DocumentStore
@@ -482,12 +482,16 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             route,
             schema,
             callable_func,
+            retry_strategy,
+            cache_strategy,
             additional_endpoint_kwargs,
         ) in self._pending_endpoints:
             self.server.serve_callable(
                 route=route,
                 schema=schema,
                 callable_func=callable_func,
+                retry_strategy=retry_strategy,
+                cache_strategy=cache_strategy,
                 **additional_endpoint_kwargs,
             )
         self._pending_endpoints.clear()
@@ -496,6 +500,8 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self,
         route: str,
         schema: type[pw.Schema] | None = None,
+        retry_strategy: udfs.AsyncRetryStrategy | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
         **additional_endpoint_kwargs,
     ):
         """Serve additional endpoints by wrapping callables.
@@ -518,7 +524,14 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
             if self.server is None:
                 self._pending_endpoints.append(
-                    (route, schema, callable_func, additional_endpoint_kwargs)
+                    (
+                        route,
+                        schema,
+                        callable_func,
+                        retry_strategy,
+                        cache_strategy,
+                        additional_endpoint_kwargs,
+                    )
                 )
                 warn(
                     "Adding an endpoint while webserver is not built, \
@@ -529,6 +542,8 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
                     route=route,
                     schema=schema,
                     callable_func=callable_func,
+                    retry_strategy=retry_strategy,
+                    cache_strategy=cache_strategy,
                     **additional_endpoint_kwargs,
                 )
             return callable_func

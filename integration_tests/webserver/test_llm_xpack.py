@@ -15,6 +15,7 @@ from llama_index.readers.pathway import PathwayReader
 from llama_index.retrievers.pathway import PathwayRetriever
 
 import pathway as pw
+from pathway.internals.udfs.caches import InMemoryCache
 from pathway.tests.utils import wait_result_with_checker
 from pathway.xpacks.llm import llms
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
@@ -383,6 +384,80 @@ def test_serve_callable(port: int, input: int, async_mode: bool):
             )
             result = response.json()
 
+            assert expected == result
+        except Exception:
+            return False
+
+        return True
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=rag_app.run_server,
+    )
+
+
+@pytest.mark.parametrize("input", [1, 2, 99])
+@pytest.mark.parametrize(
+    "async_mode",
+    [False, True],
+)
+def test_serve_callable_cache(port: int, input: int, async_mode: bool):
+    TEST_ENDPOINT = "test_add_1"
+    expected = input + 1
+
+    rag_app = build_rag_app(port)
+    setattr(rag_app, "num_calls", 0)
+
+    if async_mode:
+
+        @rag_app.serve_callable(
+            route=f"/{TEST_ENDPOINT}",
+            schema=pw.schema_from_types(input=int),
+            cache_strategy=InMemoryCache(),
+        )
+        async def increment(input: int) -> int:
+            rag_app.num_calls += 1  # type: ignore
+            return input + 1
+
+    else:
+
+        @rag_app.serve_callable(
+            route=f"/{TEST_ENDPOINT}",
+            schema=pw.schema_from_types(input=int),
+            cache_strategy=InMemoryCache(),
+        )
+        def increment(input: int) -> int:
+            rag_app.num_calls += 1  # type: ignore
+            return input + 1
+
+    @rag_app.serve_callable(route=f"/count_calls")
+    def get_endpoint_calls() -> int:
+        return rag_app.num_calls  # type: ignore
+
+    # nonlocal variable doesn't work since app is started as new thread
+
+    def checker() -> bool:
+        try:
+            response = requests.post(
+                f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
+                json={"input": input},
+                timeout=4,
+            )
+            result = response.json()
+
+            # should be cached
+            _ = requests.post(
+                f"http://{PATHWAY_HOST}:{port}/{TEST_ENDPOINT}",
+                json={"input": input},
+                timeout=4,
+            ).json()
+
+            num_calls = requests.post(
+                f"http://{PATHWAY_HOST}:{port}/count_calls", timeout=4
+            ).json()
+
+            assert num_calls == 1
             assert expected == result
         except Exception:
             return False
