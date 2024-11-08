@@ -35,6 +35,66 @@ class ReducerProtocol(Protocol):
 def stateful_many(
     combine_many: api.CombineMany[S],
 ) -> ReducerProtocol:
+    """Decorator used to create custom stateful reducers.
+
+    A function wrapped with it has to process the previous state and a list of updates
+    at a specific time. It has to return a new state. The updates are grouped in batches
+    (all updates in a batch have the same processing time, the function is called once
+    per batch) and the batches enter the function in order of increasing processing time.
+
+    Example:
+
+    Create a table where ``__time__`` column simulates processing time assigned
+    to entries when they enter pathway:
+
+    >>> import pathway as pw
+    >>> table = pw.debug.table_from_markdown(
+    ...     '''
+    ...      a | b | __time__
+    ...      3 | 1 |     2
+    ...      4 | 1 |     2
+    ...     13 | 2 |     2
+    ...     16 | 2 |     4
+    ...      2 | 2 |     6
+    ...      4 | 1 |     6
+    ... '''
+    ... )
+
+    Now create a custom stateful reducer. It is going to compute a weird sum.
+    It is a sum of even entries incremented by 1 and unchanged odd entries.
+
+    >>> @pw.reducers.stateful_many
+    ... def weird_sum(state: int | None, rows: list[tuple[list[int], int]]) -> int:
+    ...     if state is None:
+    ...         state = 0
+    ...     for row, cnt in rows:
+    ...         value = row[0]
+    ...         if value % 2 == 0:
+    ...             state += value + 1
+    ...         else:
+    ...             state += value
+    ...     return state
+
+    ``state`` is ``None`` when the function is called for the first time for a given group.
+    To compute a weird sum, you should set it to 0 then.
+
+    ``row`` is a list of values passed to the reducer. When the reducer is called as
+    ``weird_sum(pw.this.a)``, the list has only one element, i.e. value from the column a.
+    ``cnt`` tells whether the row is an insertion (``cnt == 1``) or deletion (``cnt == -1``).
+    You can learn more `here </developers/user-guide/introduction/concepts#the-output-is-a-data-stream>`_.
+
+    You can now use the reducer in ``reduce`` operator and compute the result:
+
+    >>> result = table.groupby(pw.this.b).reduce(pw.this.b, s=weird_sum(pw.this.a))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    b | s
+    1 | 13
+    2 | 33
+
+    ``weird_sum`` is called 2 times for group 1 (at processing times 2 and 6) and 3 times
+    for group 2 (at processing times 2, 4, 6).
+    """
+
     def wrapper(*args: expr.ColumnExpression | api.Value) -> expr.ColumnExpression:
         return expr.ReducerExpression(StatefulManyReducer(combine_many), *args)
 
@@ -46,6 +106,60 @@ class CombineSingle(Protocol[S, P]):
 
 
 def stateful_single(combine_single: CombineSingle[S, ...]) -> ReducerProtocol:
+    """Decorator used to create custom stateful reducers.
+
+    A function wrapped with it has to process the previous state and a single update.
+    It has to return a new state. The function is called with entries in order of
+    increasing processing time. If there are multiple entries with the same processing
+    time, their order is unspecified.
+
+    The function can only be used on tables with insertions only (no updates or deletions).
+    If you need to handle updates/deletions, see
+    `stateful_many </developers/api-docs/reducers#pathway.reducers.stateful_many>`_.
+
+    Example:
+
+    Create a table where ``__time__`` column simulates processing time assigned
+    to entries when they enter pathway:
+
+    >>> import pathway as pw
+    >>> table = pw.debug.table_from_markdown(
+    ...     '''
+    ...      a | b | __time__
+    ...      3 | 1 |     2
+    ...      4 | 1 |     2
+    ...     13 | 2 |     2
+    ...     16 | 2 |     4
+    ...      2 | 2 |     6
+    ...      4 | 1 |     6
+    ... '''
+    ... )
+
+    Create a custom stateful reducer. It is going to compute a weird sum.
+    It is a sum of even entries incremented by 1 and unchanged odd entries.
+
+    >>> @pw.reducers.stateful_single
+    ... def weird_sum(state: int | None, value) -> int:
+    ...     if state is None:
+    ...         state = 0
+    ...     if value % 2 == 0:
+    ...         state += value + 1
+    ...     else:
+    ...         state += value
+    ...     return state
+
+    ``state`` is ``None`` when the function is called for the first time for a given group.
+    To compute a weird sum, you should set it to 0 then.
+
+    You can now use the reducer in ``reduce`` operator and compute the result:
+
+    >>> result = table.groupby(pw.this.b).reduce(pw.this.b, s=weird_sum(pw.this.a))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    b | s
+    1 | 13
+    2 | 33
+    """
+
     def wrapper(state: S | None, rows: list[tuple[list[api.Value], int]]) -> S:
         for row, count in rows:
             assert count > 0
