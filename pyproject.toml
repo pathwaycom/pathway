@@ -44,7 +44,7 @@ dependencies = [
     "networkx >= 3.2.1",
     "google-cloud-pubsub >= 2.21.1",
     "google-cloud-bigquery",
-    "pydantic ~= 2.7.0",
+    "pydantic ~= 2.9.0",
     "gitpython >= 3.1.43",
 ]
 
@@ -62,21 +62,18 @@ xpack-llm = [
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
     "instructor == 1.2.6",
     "google-generativeai >= 0.7.0",
-    "nltk <= 3.8.1", # needed due to https://github.com/Unstructured-IO/unstructured/issues/3511, can be removed once unstructured fixes dependencies
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
-    "unstructured[all-docs] >= 0.10.28, < 0.15",
+    "unstructured[all-docs] >= 0.16",
     "surya-ocr == 0.4.14",
     "sentence_transformers", 
     "transformers",
-    "nltk <= 3.8.1", # needed due to https://github.com/Unstructured-IO/unstructured/issues/3511, can be removed once unstructured fixes dependencies
 ]
 xpack-llm-docs = [
-    "python-docx >= 1.1.0, < 1.1.1", # 1.1.1 seems to break lxml on macOS
+    "python-docx >= 1.1.2",
     "openparse == 0.5.6",
-    "unstructured >= 0.10.28, < 0.15",
+    "unstructured >= 0.16",
     "pdf2image",
-    "nltk <= 3.8.1", # needed due to https://github.com/Unstructured-IO/unstructured/issues/3511, can be removed once unstructured fixes dependencies
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
