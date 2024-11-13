@@ -208,8 +208,8 @@ class _PathwayAirbyteSubject(ConnectorSubject):
                 for key in absent_keys:
                     self._cache.pop(key)
                 self._present_keys.clear()
-                self._enable_commits()
-                self._disable_commits()
+            self._enable_commits()
+            self._disable_commits()
 
             time_elapsed = time.time() - time_before_start
             if time_elapsed < self.refresh_interval:

@@ -3445,6 +3445,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             stats.on_batch_entry_written();
         }
         stats.on_batch_finished();
+
+        // This line can be removed. In this case, flush will happen on the next time advancement.
         data_sink.flush(false).map_err(DynError::from)?;
 
         Ok(())
@@ -3530,8 +3532,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     sink_id,
                                     &worker_persistent_storage,
                                 );
+                                data_sink.flush(t.is_none()).map_err(DynError::from)?;
                                 if t.is_none() {
-                                    data_sink.flush(true).map_err(DynError::from)?;
                                     break Ok(());
                                 }
                             }
