@@ -73,3 +73,38 @@ def test_diff_multiple_columns():
     )
 
     assert_table_equality_wo_index(res, expected)
+
+
+def test_diff_instance():
+    t = T(
+        """
+            | t | i |  v
+        1   | 1 | 0 |  1
+        2   | 2 | 1 |  2
+        3   | 3 | 1 |  4
+        4   | 3 | 0 |  7
+        5   | 5 | 1 |  11
+        6   | 5 | 0 |  16
+        7   | 7 | 0 |  22
+        8   | 8 | 1 |  29
+        9   | 9 | 0 |  37
+    """
+    )
+    res = t.diff(t.t, t.v, instance=t.i)
+
+    expected = T(
+        """
+            | diff_v
+        1   |
+        2   |
+        3   |  2
+        4   |  6
+        5   |  7
+        6   |  9
+        7   |  6
+        8   | 18
+        9   | 15
+    """
+    )
+
+    assert_table_equality_wo_index(res, expected)

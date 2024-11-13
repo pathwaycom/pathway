@@ -11,6 +11,7 @@ def diff(
     self: pw.Table,
     timestamp: pw.ColumnReference,
     *values: pw.ColumnReference,
+    instance: pw.ColumnReference | None = None,
 ) -> pw.Table:
     """
     Compute the difference between the values in the ``values`` columns and the previous values
@@ -22,6 +23,9 @@ def diff(
             The column reference to the ``timestamp`` column on which the order is computed.
         - *values (pw.ColumnReference[int | float | datetime]):
             Variable-length argument representing the column references to the ``values`` columns.
+        - instance (pw.ColumnReference):
+            Can be used to group the values. The difference is only computed between rows with
+            the same ``instance`` value.
 
     Returns:
         ``Table``: A new table where each column is replaced with a new column containing
@@ -31,7 +35,7 @@ def diff(
         ValueError: If the columns are not ColumnReference.
 
     Note:
-        - The value of the "first" value (the row with the lower value \
+        - The value of the "first" value (the row with the lowest value \
         in the ``timestamp`` column) is ``None``.
 
     Example:
@@ -55,6 +59,27 @@ def diff(
     4         | 7      | 3
     5         | 11     | 4
     6         | 16     | 5
+
+    >>> table = pw.debug.table_from_markdown(
+    ...     '''
+    ... timestamp | instance | values
+    ... 1         | 0        | 1
+    ... 2         | 1        | 2
+    ... 3         | 1        | 4
+    ... 3         | 0        | 7
+    ... 6         | 1        | 11
+    ... 6         | 0        | 16
+    ... '''
+    ... )
+    >>> table += table.diff(pw.this.timestamp, pw.this.values, instance=pw.this.instance)
+    >>> pw.debug.compute_and_print(table, include_id=False)
+    timestamp | instance | values | diff_values
+    1         | 0        | 1      |
+    2         | 1        | 2      |
+    3         | 0        | 7      | 6
+    3         | 1        | 4      | 2
+    6         | 0        | 16     | 9
+    6         | 1        | 11     | 7
     """
 
     if isinstance(timestamp, pw.ColumnReference):
@@ -69,7 +94,7 @@ def diff(
             "statistical.diff(): Invalid column reference for the parameter timestamp."
         )
 
-    ordered_table = self.sort(key=timestamp)
+    ordered_table = self.sort(key=timestamp, instance=instance)
 
     for value in values:
         if isinstance(value, pw.ColumnReference):
