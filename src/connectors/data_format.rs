@@ -1681,53 +1681,78 @@ impl Formatter for PsqlSnapshotFormatter {
 
         let mut result = Vec::new();
 
-        let update_condition = self
-            .key_field_positions
-            .iter()
-            .map(|position| {
-                format!(
-                    "{}.{}=${}",
-                    self.table_name,
-                    self.value_field_names[*position],
-                    *position + 1
-                )
-            })
-            .join(" AND ");
+        if diff == 1 {
+            let update_condition = self
+                .key_field_positions
+                .iter()
+                .map(|position| {
+                    format!(
+                        "{}.{}=${}",
+                        self.table_name,
+                        self.value_field_names[*position],
+                        *position + 1
+                    )
+                })
+                .join(" AND ");
 
-        let update_pairs = self
-            .value_field_positions
-            .iter()
-            .map(|position| format!("{}=${}", self.value_field_names[*position], *position + 1))
-            .join(",");
+            let update_pairs = self
+                .value_field_positions
+                .iter()
+                .map(|position| format!("{}=${}", self.value_field_names[*position], *position + 1))
+                .join(",");
+            writeln!(
+                result,
+                "INSERT INTO {} ({},time,diff) VALUES ({},{},{}) ON CONFLICT ({}) DO UPDATE SET {},time={},diff={} WHERE {}",
+                self.table_name,  // INSERT INTO ...
+                self.value_field_names.iter().format(","),  // (...
+                (1..=values.len()).format_with(",", |x, f| f(&format_args!("${x}"))),  // VALUES(...
+                time,  // VALUES(..., time
+                diff,  // VALUES(..., time, diff
+                self.key_field_names.iter().join(","),  // ON CONFLICT(...
+                update_pairs,  // DO UPDATE SET ...
+                time,
+                diff,
+                update_condition,  // WHERE ...
+            )
+            .unwrap();
 
-        writeln!(
-            result,
-            "INSERT INTO {} ({},time,diff) VALUES ({},{},{}) ON CONFLICT ({}) DO UPDATE SET {},time={},diff={} WHERE {} AND ({}.time<{} OR ({}.time={} AND {}.diff=-1))",
-            self.table_name,  // INSERT INTO ...
-            self.value_field_names.iter().format(","),  // (...
-            (1..=values.len()).format_with(",", |x, f| f(&format_args!("${x}"))),  // VALUES(...
-            time,  // VALUES(..., time
-            diff,  // VALUES(..., time, diff
-            self.key_field_names.iter().join(","),  // ON CONFLICT(...
-            update_pairs,  // DO UPDATE SET ...
-            time,
-            diff,
-            update_condition,  // WHERE ...
-            self.table_name,  // AND ...time
-            time,  // .time < ...
-            self.table_name,  // OR (...time
-            time,  // .time=...
-            self.table_name,  // AND ...diff=-1))
-        )
-        .unwrap();
+            Ok(FormatterContext::new_single_payload(
+                result,
+                *key,
+                values.to_vec(),
+                time,
+                diff,
+            ))
+        } else {
+            let mut tokens = Vec::new();
+            let mut key_part_values = Vec::new();
+            for (name, position) in self
+                .key_field_names
+                .iter()
+                .zip(self.key_field_positions.iter())
+            {
+                key_part_values.push(values[*position].clone());
+                tokens.push(format!(
+                    "{name}={}",
+                    format_args!("${}", key_part_values.len())
+                ));
+            }
+            writeln!(
+                result,
+                "DELETE FROM {} WHERE {}",
+                self.table_name,
+                tokens.join(" AND "),
+            )
+            .unwrap();
 
-        Ok(FormatterContext::new_single_payload(
-            result,
-            *key,
-            values.to_vec(),
-            time,
-            diff,
-        ))
+            Ok(FormatterContext::new_single_payload(
+                result,
+                *key,
+                take(&mut key_part_values),
+                time,
+                diff,
+            ))
+        }
     }
 }
 
