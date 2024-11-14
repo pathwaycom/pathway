@@ -15,6 +15,7 @@ from pathway.io import (
     logstash,
     minio,
     mongodb,
+    nats,
     null,
     plaintext,
     postgres,
@@ -60,4 +61,5 @@ __all__ = [
     "pubsub",
     "deltalake",
     "mongodb",
+    "nats",
 ]

@@ -3,6 +3,7 @@
 // `PyRef`s need to be passed by value
 #![allow(clippy::needless_pass_by_value)]
 
+use crate::async_runtime::create_async_tokio_runtime;
 use crate::engine::graph::{
     ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacksBuilder,
 };
@@ -12,6 +13,10 @@ use crate::engine::{
     ShardPolicy, TotalFrontier,
 };
 use crate::persistence::frontier::OffsetAntichain;
+
+use async_nats::connect as nats_connect;
+use async_nats::Client as NatsClient;
+use async_nats::Subscriber as NatsSubscriber;
 use csv::ReaderBuilder as CsvReaderBuilder;
 use elasticsearch::{
     auth::Credentials as ESCredentials,
@@ -72,9 +77,10 @@ use crate::connectors::data_format::{
 };
 use crate::connectors::data_storage::{
     ConnectorMode, CsvFilesystemReader, DeltaTableReader, DeltaTableWriter, ElasticSearchWriter,
-    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, MongoWriter, NullWriter,
-    ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError,
-    ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader, Writer,
+    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, MongoWriter, NatsReader, NatsWriter,
+    NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
+    ReadError, ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader,
+    Writer,
 };
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
@@ -2215,6 +2221,7 @@ pub struct Scope {
     error_logs: RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>,
     persistent_ids: RefCell<HashSet<ExternalPersistentId>>,
     event_loop: PyObject,
+    total_connectors: RefCell<usize>,
 }
 
 impl Scope {
@@ -2229,6 +2236,7 @@ impl Scope {
             error_logs: RefCell::new(HashMap::new()),
             persistent_ids: RefCell::new(HashSet::new()),
             event_loop,
+            total_connectors: RefCell::new(0),
         }
     }
 
@@ -2332,9 +2340,14 @@ impl Scope {
             }
         }
 
-        let (reader_impl, parallel_readers) = data_source
-            .borrow()
-            .construct_reader(py, &data_format.borrow())?;
+        let connector_index = *self_.borrow().total_connectors.borrow();
+        *self_.borrow().total_connectors.borrow_mut() += 1;
+        let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
+            py,
+            &data_format.borrow(),
+            connector_index,
+            self_.borrow().worker_index(),
+        )?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
 
@@ -4300,11 +4313,10 @@ impl DataStorage {
         Ok(client_config)
     }
 
-    fn kafka_topic(&self) -> PyResult<&str> {
-        let topic = self
-            .topic
-            .as_ref()
-            .ok_or_else(|| PyValueError::new_err("For kafka input, topic must be specified"))?;
+    fn kafka_or_nats_topic(&self) -> PyResult<&str> {
+        let topic = self.topic.as_ref().ok_or_else(|| {
+            PyValueError::new_err("For Kafka or NATS input, topic must be specified")
+        })?;
 
         Ok(topic)
     }
@@ -4401,7 +4413,7 @@ impl DataStorage {
             .create()
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
 
-        let topic = self.kafka_topic()?;
+        let topic = self.kafka_or_nats_topic()?;
         consumer
             .subscribe(&[topic])
             .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
@@ -4561,10 +4573,42 @@ impl DataStorage {
         Ok((Box::new(reader), 1))
     }
 
+    fn construct_nats_reader(
+        &self,
+        connector_index: usize,
+        worker_index: usize,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        let uri = self.path()?;
+        let topic: String = self.kafka_or_nats_topic()?.to_string();
+        let runtime = create_async_tokio_runtime()?;
+        let subscriber = runtime.block_on(async {
+            let consumer_queue = format!("pathway-reader-{connector_index}");
+            let client = nats_connect(uri)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
+            let subscriber = client
+                .queue_subscribe(topic, consumer_queue) // Kafka "consumer group" equivalent to enable parallel reads
+                .await
+                .map_err(|e| {
+                    PyIOError::new_err(format!("Failed to subscribe to NATS topic: {e}"))
+                })?;
+            Ok::<NatsSubscriber, PyErr>(subscriber)
+        })?;
+        let reader = NatsReader::new(
+            runtime,
+            subscriber,
+            worker_index,
+            self.internal_persistent_id(),
+        );
+        Ok((Box::new(reader), 32))
+    }
+
     fn construct_reader(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
+        connector_index: usize,
+        worker_index: usize,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(),
@@ -4575,6 +4619,7 @@ impl DataStorage {
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
             "deltalake" => self.construct_deltalake_reader(py, data_format),
+            "nats" => self.construct_nats_reader(connector_index, worker_index),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),
@@ -4626,100 +4671,127 @@ impl DataStorage {
             .borrow(py))
     }
 
+    fn construct_fs_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let path = self.path()?;
+        let storage = {
+            let file = File::create(path);
+            match file {
+                Ok(f) => {
+                    let buf_writer = BufWriter::new(f);
+                    FileWriter::new(buf_writer)
+                }
+                Err(_) => return Err(PyIOError::new_err("Filesystem operation (create) failed")),
+            }
+        };
+        Ok(Box::new(storage))
+    }
+
+    fn construct_kafka_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let client_config = self.kafka_client_config()?;
+
+        let producer: ThreadedProducer<DefaultProducerContext> = match client_config.create() {
+            Ok(producer) => producer,
+            Err(_) => return Err(PyIOError::new_err("Producer creation failed")),
+        };
+
+        let topic = self.kafka_or_nats_topic()?;
+        let writer = KafkaWriter::new(
+            producer,
+            topic.to_string(),
+            self.header_fields.clone(),
+            self.key_field_index,
+        );
+
+        Ok(Box::new(writer))
+    }
+
+    fn construct_postgres_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let connection_string = self.connection_string()?;
+        let storage = match Client::connect(connection_string, NoTls) {
+            Ok(client) => PsqlWriter::new(
+                client,
+                self.max_batch_size,
+                self.snapshot_maintenance_on_output,
+            ),
+            Err(e) => {
+                return Err(PyIOError::new_err(format!(
+                    "Failed to establish PostgreSQL connection: {e:?}"
+                )))
+            }
+        };
+        Ok(Box::new(storage))
+    }
+
+    fn construct_elasticsearch_writer(&self, py: pyo3::Python) -> PyResult<Box<dyn Writer>> {
+        let elasticsearch_client_params = self.elasticsearch_client_params(py)?;
+        let client = elasticsearch_client_params.client(py)?;
+        let index_name = elasticsearch_client_params.index_name.clone();
+        let max_batch_size = self.max_batch_size;
+
+        let writer = ElasticSearchWriter::new(client, index_name, max_batch_size);
+        Ok(Box::new(writer))
+    }
+
+    fn construct_deltalake_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<Box<dyn Writer>> {
+        let path = self.path()?;
+        let mut value_fields = Vec::new();
+        for field in &data_format.value_fields {
+            value_fields.push(field.borrow(py).clone());
+        }
+        let writer = DeltaTableWriter::new(
+            path,
+            &value_fields,
+            self.delta_storage_options(py)?,
+            self.min_commit_frequency.map(time::Duration::from_millis),
+        )
+        .map_err(|e| {
+            PyIOError::new_err(format!("Unable to start DeltaTable output connector: {e}"))
+        })?;
+        Ok(Box::new(writer))
+    }
+
+    fn construct_nats_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let uri = self.path()?;
+        let topic: String = self.kafka_or_nats_topic()?.to_string();
+        let runtime = create_async_tokio_runtime()?;
+        let client = runtime.block_on(async {
+            let client = nats_connect(uri)
+                .await
+                .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
+            Ok::<NatsClient, PyErr>(client)
+        })?;
+        let writer = NatsWriter::new(runtime, client, topic, self.header_fields.clone());
+        Ok(Box::new(writer))
+    }
+
+    fn construct_mongodb_writer(&self) -> PyResult<Box<dyn Writer>> {
+        let uri = self.connection_string()?;
+        let client = MongoClient::with_uri_str(uri)
+            .map_err(|e| PyIOError::new_err(format!("Failed to connect to MongoDB: {e}")))?;
+        let database = client.database(self.database()?);
+        let collection = database.collection(self.table_name()?);
+        let writer = MongoWriter::new(collection, self.max_batch_size);
+        Ok(Box::new(writer))
+    }
+
     fn construct_writer(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
     ) -> PyResult<Box<dyn Writer>> {
         match self.storage_type.as_ref() {
-            "fs" => {
-                let path = self.path()?;
-                let storage = {
-                    let file = File::create(path);
-                    match file {
-                        Ok(f) => {
-                            let buf_writer = BufWriter::new(f);
-                            FileWriter::new(buf_writer)
-                        }
-                        Err(_) => {
-                            return Err(PyIOError::new_err("Filesystem operation (create) failed"))
-                        }
-                    }
-                };
-                Ok(Box::new(storage))
-            }
-            "kafka" => {
-                let client_config = self.kafka_client_config()?;
-
-                let producer: ThreadedProducer<DefaultProducerContext> =
-                    match client_config.create() {
-                        Ok(producer) => producer,
-                        Err(_) => return Err(PyIOError::new_err("Producer creation failed")),
-                    };
-
-                let topic = self.kafka_topic()?;
-                let writer = KafkaWriter::new(
-                    producer,
-                    topic.to_string(),
-                    self.header_fields.clone(),
-                    self.key_field_index,
-                );
-
-                Ok(Box::new(writer))
-            }
-            "postgres" => {
-                let connection_string = self.connection_string()?;
-                let storage = match Client::connect(connection_string, NoTls) {
-                    Ok(client) => PsqlWriter::new(
-                        client,
-                        self.max_batch_size,
-                        self.snapshot_maintenance_on_output,
-                    ),
-                    Err(e) => {
-                        return Err(PyIOError::new_err(format!(
-                            "Failed to establish PostgreSQL connection: {e:?}"
-                        )))
-                    }
-                };
-                Ok(Box::new(storage))
-            }
-            "elasticsearch" => {
-                let elasticsearch_client_params = self.elasticsearch_client_params(py)?;
-                let client = elasticsearch_client_params.client(py)?;
-                let index_name = elasticsearch_client_params.index_name.clone();
-                let max_batch_size = self.max_batch_size;
-
-                let writer = ElasticSearchWriter::new(client, index_name, max_batch_size);
-                Ok(Box::new(writer))
-            }
-            "deltalake" => {
-                let path = self.path()?;
-                let mut value_fields = Vec::new();
-                for field in &data_format.value_fields {
-                    value_fields.push(field.borrow(py).clone());
-                }
-                let writer = DeltaTableWriter::new(
-                    path,
-                    &value_fields,
-                    self.delta_storage_options(py)?,
-                    self.min_commit_frequency.map(time::Duration::from_millis),
-                )
-                .map_err(|e| {
-                    PyIOError::new_err(format!("Unable to start DeltaTable output connector: {e}"))
-                })?;
-                Ok(Box::new(writer))
-            }
-            "mongodb" => {
-                let uri = self.connection_string()?;
-                let client = MongoClient::with_uri_str(uri).map_err(|e| {
-                    PyIOError::new_err(format!("Failed to connect to MongoDB: {e}"))
-                })?;
-                let database = client.database(self.database()?);
-                let collection = database.collection(self.table_name()?);
-                let writer = MongoWriter::new(collection, self.max_batch_size);
-                Ok(Box::new(writer))
-            }
+            "fs" => self.construct_fs_writer(),
+            "kafka" => self.construct_kafka_writer(),
+            "postgres" => self.construct_postgres_writer(),
+            "elasticsearch" => self.construct_elasticsearch_writer(py),
+            "deltalake" => self.construct_deltalake_writer(py, data_format),
+            "mongodb" => self.construct_mongodb_writer(),
             "null" => Ok(Box::new(NullWriter::new())),
+            "nats" => self.construct_nats_writer(),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),

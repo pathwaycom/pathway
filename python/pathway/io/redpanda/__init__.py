@@ -20,7 +20,7 @@ def read(
     topic: str | list[str] | None = None,
     *,
     schema: type[Schema] | None = None,
-    format="raw",
+    format: str = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,

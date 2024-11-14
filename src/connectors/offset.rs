@@ -13,6 +13,7 @@ use crate::engine::value::HashInto;
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum OffsetKey {
     Kafka(Arc<String>, i32),
+    Nats(usize),
     Empty,
 }
 
@@ -23,6 +24,7 @@ impl HashInto for OffsetKey {
                 hasher.update(topic_name.as_bytes());
                 partition.hash_into(hasher);
             }
+            OffsetKey::Nats(worker_index) => worker_index.hash_into(hasher),
             OffsetKey::Empty => {}
         };
     }
@@ -51,6 +53,7 @@ pub enum OffsetValue {
         rows_read_within_version: i64,
         last_fully_read_version: Option<i64>,
     },
+    NatsReadEntriesCount(usize),
     Empty,
 }
 
@@ -89,6 +92,7 @@ impl HashInto for OffsetValue {
                     .unwrap_or_default()
                     .hash_into(hasher);
             }
+            OffsetValue::NatsReadEntriesCount(count) => count.hash_into(hasher),
             OffsetValue::Empty => {}
         };
     }

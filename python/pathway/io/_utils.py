@@ -1,14 +1,24 @@
 # Copyright © 2024 Pathway
 
+from __future__ import annotations
+
 import dataclasses
+import functools
 import warnings
-from typing import Any
+from dataclasses import KW_ONLY, dataclass
+from typing import Any, Iterable
 
 import pathway.internals as pw
-from pathway.internals import api, dtype as dt
-from pathway.internals._io_helpers import _form_value_fields
+import pathway.internals.dtype as dt
+from pathway.internals import api
+from pathway.internals._io_helpers import (
+    _form_value_fields,
+    _format_output_value_fields,
+)
 from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
+from pathway.internals.expression import ColumnReference
 from pathway.internals.schema import ColumnDefinition, Schema
+from pathway.internals.table import Table
 
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
@@ -374,3 +384,140 @@ def construct_s3_data_storage(
             downloader_threads_count=downloader_threads_count,
             persistent_id=persistent_id,
         )
+
+
+def check_raw_and_plaintext_only_kwargs_for_message_queues(f):
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if kwargs.get("format") not in ("raw", "plaintext"):
+            unexpected_params = [
+                "key",
+                "value",
+                "headers",
+            ]
+            for param in unexpected_params:
+                if param in kwargs and kwargs[param] is not None:
+                    raise ValueError(
+                        f"Unsupported argument for {format} format: {param}"
+                    )
+
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+@dataclass(frozen=True)
+class MessageQueueOutputFormat:
+    _: KW_ONLY
+    table: Table
+    key_field_index: int | None
+    header_fields: dict[str, int]
+    data_format: api.DataFormat
+
+    @classmethod
+    def construct(
+        cls,
+        table: Table,
+        *,
+        format: str = "json",
+        delimiter: str = ",",
+        key: ColumnReference | None = None,
+        value: ColumnReference | None = None,
+        headers: Iterable[ColumnReference] | None = None,
+    ) -> MessageQueueOutputFormat:
+        key_field_index = None
+        header_fields: dict[str, int] = {}
+        if format == "json":
+            data_format = api.DataFormat(
+                format_type="jsonlines",
+                key_field_names=[],
+                value_fields=_format_output_value_fields(table),
+            )
+        elif format == "dsv":
+            data_format = api.DataFormat(
+                format_type="dsv",
+                key_field_names=[],
+                value_fields=_format_output_value_fields(table),
+                delimiter=delimiter,
+            )
+        elif format == "raw" or format == "plaintext":
+            value_field_index = None
+            extracted_field_indices: dict[str, int] = {}
+            columns_to_extract: list[ColumnReference] = []
+            allowed_column_types = (dt.BYTES if format == "raw" else dt.STR, dt.ANY)
+
+            if key is not None:
+                if value is None:
+                    raise ValueError("'value' must be specified if 'key' is not None")
+                key_field_index = cls.add_column_reference_to_extract(
+                    key, columns_to_extract, extracted_field_indices
+                )
+            if value is not None:
+                value_field_index = cls.add_column_reference_to_extract(
+                    value, columns_to_extract, extracted_field_indices
+                )
+            else:
+                column_names = list(table._columns.keys())
+                if len(column_names) != 1:
+                    raise ValueError(
+                        f"'{format}' format without explicit 'value' specification "
+                        "can only be used with single-column tables"
+                    )
+                value = table[column_names[0]]
+                value_field_index = cls.add_column_reference_to_extract(
+                    value, columns_to_extract, extracted_field_indices
+                )
+
+            if headers is not None:
+                for header in headers:
+                    header_fields[header.name] = cls.add_column_reference_to_extract(
+                        header, columns_to_extract, extracted_field_indices
+                    )
+
+            table = table.select(*columns_to_extract)
+
+            if (
+                key is not None
+                and table[key._name]._column.dtype not in allowed_column_types
+            ):
+                raise ValueError(
+                    f"The key column should be of the type '{allowed_column_types[0]}'"
+                )
+            if table[value._name]._column.dtype not in allowed_column_types:
+                raise ValueError(
+                    f"The value column should be of the type '{allowed_column_types[0]}'"
+                )
+
+            data_format = api.DataFormat(
+                format_type="single_column",
+                key_field_names=[],
+                value_fields=_format_output_value_fields(table),
+                value_field_index=value_field_index,
+            )
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+
+        return cls(
+            table=table,
+            key_field_index=key_field_index,
+            header_fields=header_fields,
+            data_format=data_format,
+        )
+
+    @staticmethod
+    def add_column_reference_to_extract(
+        column_reference: ColumnReference,
+        selection_list: list[ColumnReference],
+        field_indices: dict[str, int],
+    ) -> int:
+        column_name = column_reference.name
+
+        index_in_new_table = field_indices.get(column_name)
+        if index_in_new_table is not None:
+            # This column will already be selected, no need to do anything
+            return index_in_new_table
+
+        index_in_new_table = len(selection_list)
+        field_indices[column_name] = index_in_new_table
+        selection_list.append(column_reference)
+        return index_in_new_table

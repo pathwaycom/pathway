@@ -31,6 +31,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::DateTime;
+use futures::StreamExt;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
@@ -40,6 +41,7 @@ use tempfile::{tempdir, tempfile, TempDir};
 use tokio::runtime::Runtime as TokioRuntime;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
+use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
@@ -63,6 +65,10 @@ use crate::python_api::ValueField;
 use crate::retry::{execute_with_retries, RetryConfig};
 use crate::timestamp::current_unix_timestamp_secs;
 
+use async_nats::client::FlushError as NatsFlushError;
+use async_nats::client::PublishError as NatsPublishError;
+use async_nats::Client as NatsClient;
+use async_nats::Subscriber as NatsSubscriber;
 use bincode::ErrorKind as BincodeError;
 use deltalake::arrow::array::Array as ArrowArray;
 use deltalake::arrow::array::RecordBatch as DTRecordBatch;
@@ -104,7 +110,6 @@ use postgres::Client as PsqlClient;
 use pyo3::prelude::*;
 use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
-use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
 use rdkafka::producer::{BaseRecord, DefaultProducerContext, Producer, ThreadedProducer};
 use rdkafka::topic_partition_list::Offset as KafkaOffset;
 use rdkafka::Message;
@@ -196,12 +201,6 @@ impl From<HashMap<String, Result<Value, Box<ConversionError>>>> for ValuesMap {
     fn from(value: HashMap<String, Result<Value, Box<ConversionError>>>) -> Self {
         ValuesMap { map: value }
     }
-}
-
-fn create_async_runtime() -> Result<TokioRuntime, io::Error> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
 }
 
 #[derive(Debug)]
@@ -313,6 +312,7 @@ pub enum StorageType {
     Python,
     Sqlite,
     DeltaLake,
+    Nats,
 }
 
 impl StorageType {
@@ -330,6 +330,7 @@ impl StorageType {
             StorageType::S3Lines => S3GenericReader::merge_two_frontiers(lhs, rhs),
             StorageType::Sqlite => SqliteReader::merge_two_frontiers(lhs, rhs),
             StorageType::DeltaLake => DeltaTableReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Nats => NatsReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -504,6 +505,12 @@ pub enum WriteError {
 
     #[error(transparent)]
     Arrow(#[from] ArrowError),
+
+    #[error(transparent)]
+    NatsPublish(#[from] NatsPublishError),
+
+    #[error(transparent)]
+    NatsFlush(#[from] NatsFlushError),
 
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),
@@ -2346,26 +2353,7 @@ impl Writer for KafkaWriter {
             None => data.key.0.to_le_bytes().to_vec(),
         };
 
-        let mut headers = KafkaHeaders::new_with_capacity(self.header_fields.len() + 2)
-            .insert(KafkaHeader {
-                key: "pathway_time",
-                value: Some(data.time.to_string().as_bytes()),
-            })
-            .insert(KafkaHeader {
-                key: "pathway_diff",
-                value: Some(data.diff.to_string().as_bytes()),
-            });
-        for (name, position) in &self.header_fields {
-            let value: Vec<u8> = match &data.values[*position] {
-                Value::Bytes(b) => (*b).to_vec(),
-                other => (*other.to_string().as_bytes()).to_vec(),
-            };
-            headers = headers.insert(KafkaHeader {
-                key: name,
-                value: Some(&value),
-            });
-        }
-
+        let headers = data.construct_kafka_headers(&self.header_fields);
         for payload in data.payloads {
             let payload = payload.into_raw_bytes()?;
             let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&self.topic)
@@ -2438,7 +2426,7 @@ impl Writer for ElasticSearchWriter {
         if self.docs_buffer.is_empty() {
             return Ok(());
         }
-        create_async_runtime()?.block_on(async {
+        create_async_tokio_runtime()?.block_on(async {
             self.client
                 .bulk(BulkParts::Index(&self.index_name))
                 .body(take(&mut self.docs_buffer))
@@ -3053,7 +3041,7 @@ impl DeltaTableWriter {
             ));
         }
 
-        let runtime = create_async_runtime()?;
+        let runtime = create_async_tokio_runtime()?;
         let table: DeltaTable = runtime
             .block_on(async {
                 let builder = DeltaTableCreateBuilder::new()
@@ -3098,7 +3086,7 @@ impl Writer for DeltaTableWriter {
                 || forced);
         if commit_needed {
             // Deadlocks if new_current_thread is used
-            create_async_runtime()?.block_on(async {
+            create_async_tokio_runtime()?.block_on(async {
                 self.writer.write(self.prepare_delta_batch()?).await?;
                 self.writer.flush_and_commit(&mut self.table).await?;
                 for column in &mut self.buffered_columns {
@@ -3161,7 +3149,7 @@ impl DeltaTableReader {
         streaming_mode: ConnectorMode,
         persistent_id: Option<PersistentId>,
     ) -> Result<Self, ReadError> {
-        let runtime = create_async_runtime()?;
+        let runtime = create_async_tokio_runtime()?;
         let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
         let current_version = table.version();
         let parquet_files_queue = Self::get_file_uris(&table)?;
@@ -3198,7 +3186,7 @@ impl DeltaTableReader {
     }
 
     fn upgrade_table_version(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
-        let runtime = create_async_runtime()?;
+        let runtime = create_async_tokio_runtime()?;
         runtime.block_on(async {
             self.parquet_files_queue.clear();
             let mut sleep_duration = DELTA_LAKE_INITIAL_POLL_DURATION;
@@ -3370,7 +3358,7 @@ impl Reader for DeltaTableReader {
         };
 
         self.reader = None;
-        let runtime = create_async_runtime()?;
+        let runtime = create_async_tokio_runtime()?;
         if let Some(last_fully_read_version) = last_fully_read_version {
             // The offset is based on the diff between `last_fully_read_version` and `version`
             self.current_version = *last_fully_read_version;
@@ -3455,8 +3443,146 @@ impl Writer for MongoWriter {
         let _ = command.run()?;
         Ok(())
     }
+}
+
+pub struct NatsReader {
+    runtime: TokioRuntime,
+    subscriber: NatsSubscriber,
+    worker_index: usize,
+    persistent_id: Option<PersistentId>,
+    total_entries_read: usize,
+}
+
+impl Reader for NatsReader {
+    fn read(&mut self) -> Result<ReadResult, ReadError> {
+        if let Some(message) = self.runtime.block_on(async {
+            self.subscriber
+                .next()
+                .await
+                .map(|message| message.payload.to_vec())
+        }) {
+            let payload = ReaderContext::from_raw_bytes(DataEventType::Insert, message);
+            self.total_entries_read += 1;
+            let offset = (
+                OffsetKey::Nats(self.worker_index),
+                OffsetValue::NatsReadEntriesCount(self.total_entries_read),
+            );
+            Ok(ReadResult::Data(payload, offset))
+        } else {
+            Ok(ReadResult::Finished)
+        }
+    }
+
+    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
+        let offset_value = frontier.get_offset(&OffsetKey::Nats(self.worker_index));
+        if let Some(offset) = offset_value {
+            if let OffsetValue::NatsReadEntriesCount(last_run_entries_read) = offset {
+                self.total_entries_read = *last_run_entries_read;
+            } else {
+                error!("Unexpected offset type for NATS reader: {offset:?}");
+            }
+        }
+        Ok(())
+    }
+
+    fn persistent_id(&self) -> Option<PersistentId> {
+        self.persistent_id
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
+    }
+
+    fn storage_type(&self) -> StorageType {
+        StorageType::Nats
+    }
+
+    fn max_allowed_consecutive_errors(&self) -> usize {
+        32
+    }
+}
+
+impl NatsReader {
+    pub fn new(
+        runtime: TokioRuntime,
+        subscriber: NatsSubscriber,
+        worker_index: usize,
+        persistent_id: Option<PersistentId>,
+    ) -> NatsReader {
+        NatsReader {
+            runtime,
+            subscriber,
+            worker_index,
+            persistent_id,
+            total_entries_read: 0,
+        }
+    }
+}
+
+pub struct NatsWriter {
+    runtime: TokioRuntime,
+    client: NatsClient,
+    topic: String,
+    header_fields: Vec<(String, usize)>,
+}
+
+impl Writer for NatsWriter {
+    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
+        self.runtime.block_on(async {
+            let last_payload_index = data.payloads.len() - 1;
+            let mut common_headers = data.construct_nats_headers(&self.header_fields);
+            for (index, payload) in data.payloads.into_iter().enumerate() {
+                // Avoid copying data on the last iteration, reuse the existing headers
+                let headers = {
+                    if index == last_payload_index {
+                        take(&mut common_headers)
+                    } else {
+                        common_headers.clone()
+                    }
+                };
+                let payload = payload.into_raw_bytes()?;
+                self.client
+                    .publish_with_headers(self.topic.clone(), headers, payload.into())
+                    .await
+                    .map_err(WriteError::NatsPublish)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn flush(&mut self, _forced: bool) -> Result<(), WriteError> {
+        self.runtime
+            .block_on(async { self.client.flush().await })
+            .map_err(WriteError::NatsFlush)
+    }
+
+    fn retriable(&self) -> bool {
+        true
+    }
 
     fn single_threaded(&self) -> bool {
         false
+    }
+}
+
+impl Drop for NatsWriter {
+    fn drop(&mut self) {
+        self.flush(true).expect("failed to send the final messages");
+    }
+}
+
+impl NatsWriter {
+    pub fn new(
+        runtime: TokioRuntime,
+        client: NatsClient,
+        topic: String,
+        header_fields: Vec<(String, usize)>,
+    ) -> Self {
+        NatsWriter {
+            runtime,
+            client,
+            topic,
+            header_fields,
+        }
     }
 }

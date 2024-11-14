@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.kafka.read` now supports reading entries starting from a specified timestamp.
+- `pw.io.nats.read` and `pw.io.nats.write` methods for reading from and writing Pathway tables to NATS.
 
 ### Changed
 - `pw.Table.diff` now supports setting `instance` parameter that allows computing differences for multiple groups.

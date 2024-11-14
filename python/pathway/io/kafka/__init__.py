@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import functools
 import uuid
 import warnings
 from typing import Any, Iterable
 
-import pathway.internals.dtype as dt
 from pathway.internals import api, datasink, datasource
-from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.api import PathwayType
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
@@ -17,13 +14,12 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import check_deprecated_kwargs, construct_schema_and_data_format
-
-SUPPORTED_INPUT_FORMATS: set[str] = {
-    "json",
-    "raw",
-    "plaintext",
-}
+from pathway.io._utils import (
+    MessageQueueOutputFormat,
+    check_deprecated_kwargs,
+    check_raw_and_plaintext_only_kwargs_for_message_queues,
+    construct_schema_and_data_format,
+)
 
 
 @check_arg_types
@@ -33,7 +29,7 @@ def read(
     topic: str | list[str] | None = None,
     *,
     schema: type[Schema] | None = None,
-    format="raw",
+    format: str = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
@@ -298,7 +294,7 @@ def simple_read(
     *,
     read_only_new: bool = False,
     schema: type[Schema] | None = None,
-    format="raw",
+    format: str = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
@@ -397,7 +393,7 @@ def read_from_upstash(
     *,
     read_only_new: bool = False,
     schema: type[Schema] | None = None,
-    format="raw",
+    format: str = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
@@ -500,27 +496,7 @@ topic.
     )
 
 
-def check_raw_and_plaintext_only_kwargs(f):
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if kwargs.get("format") not in ("raw", "plaintext"):
-            unexpected_params = [
-                "key",
-                "value",
-                "headers",
-            ]
-            for param in unexpected_params:
-                if param in kwargs and kwargs[param] is not None:
-                    raise ValueError(
-                        f"Unsupported argument for {format} format: {param}"
-                    )
-
-        return f(*args, **kwargs)
-
-    return wrapper
-
-
-@check_raw_and_plaintext_only_kwargs
+@check_raw_and_plaintext_only_kwargs_for_message_queues
 @check_arg_types
 @trace_user_frame
 def write(
@@ -677,103 +653,26 @@ def write(
     ...    headers=[t2.baz],
     ... )
     """
-
-    key_field_index = None
-    header_fields: dict[str, int] = {}
-    if format == "json":
-        data_format = api.DataFormat(
-            format_type="jsonlines",
-            key_field_names=[],
-            value_fields=_format_output_value_fields(table),
-        )
-    elif format == "dsv":
-        data_format = api.DataFormat(
-            format_type="dsv",
-            key_field_names=[],
-            value_fields=_format_output_value_fields(table),
-            delimiter=delimiter,
-        )
-    elif format == "raw" or format == "plaintext":
-        value_field_index = None
-        extracted_field_indices: dict[str, int] = {}
-        columns_to_extract: list[ColumnReference] = []
-        allowed_column_types = (dt.BYTES if format == "raw" else dt.STR, dt.ANY)
-
-        if key is not None:
-            if value is None:
-                raise ValueError("'value' must be specified if 'key' is not None")
-            key_field_index = _add_column_reference_to_extract(
-                key, columns_to_extract, extracted_field_indices
-            )
-        if value is not None:
-            value_field_index = _add_column_reference_to_extract(
-                value, columns_to_extract, extracted_field_indices
-            )
-        else:
-            column_names = list(table._columns.keys())
-            if len(column_names) != 1:
-                raise ValueError(
-                    f"'{format}' format without explicit 'value' specification "
-                    "can only be used with single-column tables"
-                )
-            value = table[column_names[0]]
-            value_field_index = _add_column_reference_to_extract(
-                value, columns_to_extract, extracted_field_indices
-            )
-
-        if headers is not None:
-            for header in headers:
-                header_fields[header.name] = _add_column_reference_to_extract(
-                    header, columns_to_extract, extracted_field_indices
-                )
-
-        table = table.select(*columns_to_extract)
-
-        if (
-            key is not None
-            and table[key._name]._column.dtype not in allowed_column_types
-        ):
-            raise ValueError(
-                f"The key column should be of the type '{allowed_column_types[0]}'"
-            )
-        if table[value._name]._column.dtype not in allowed_column_types:
-            raise ValueError(
-                f"The value column should be of the type '{allowed_column_types[0]}'"
-            )
-
-        data_format = api.DataFormat(
-            format_type="single_column",
-            key_field_names=[],
-            value_fields=_format_output_value_fields(table),
-            value_field_index=value_field_index,
-        )
-    else:
-        raise ValueError(f"Unsupported format: {format}")
+    output_format = MessageQueueOutputFormat.construct(
+        table,
+        format=format,
+        delimiter=delimiter,
+        key=key,
+        value=value,
+        headers=headers,
+    )
+    table = output_format.table
 
     data_storage = api.DataStorage(
         storage_type="kafka",
         rdkafka_settings=rdkafka_settings,
         topic=topic_name,
-        key_field_index=key_field_index,
-        header_fields=[item for item in header_fields.items()],
+        key_field_index=output_format.key_field_index,
+        header_fields=[item for item in output_format.header_fields.items()],
     )
 
-    table.to(datasink.GenericDataSink(data_storage, data_format, datasink_name="kafka"))
-
-
-def _add_column_reference_to_extract(
-    column_reference: ColumnReference,
-    selection_list: list[ColumnReference],
-    field_indices: dict[str, int],
-):
-    column_name = column_reference.name
-
-    index_in_new_table = field_indices.get(column_name)
-    if index_in_new_table is not None:
-        # This column will already be selected, no need to do anything
-        return index_in_new_table
-
-    index_in_new_table = len(selection_list)
-    field_indices[column_name] = index_in_new_table
-    selection_list.append(column_reference)
-    return index_in_new_table
+    table.to(
+        datasink.GenericDataSink(
+            data_storage, output_format.data_format, datasink_name="kafka"
+        )
+    )

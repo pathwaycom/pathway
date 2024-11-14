@@ -17,12 +17,16 @@ use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LE
 use crate::engine::time::DateTime;
 use crate::engine::{Error, Key, Result, Timestamp, Type, Value};
 
+use async_nats::header::HeaderMap as NatsHeaders;
+use base64::engine::general_purpose::STANDARD as base64encoder;
+use base64::Engine;
 use itertools::{chain, Itertools};
 use log::error;
 use mongodb::bson::{
     bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents,
     Bson as BsonValue, DateTime as BsonDateTime, Document as BsonDocument,
 };
+use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
 use serde_json::Value as JsonValue;
@@ -269,6 +273,21 @@ pub trait Parser: Send {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedMessageHeader {
+    key: String,
+    value: Vec<u8>,
+}
+
+impl PreparedMessageHeader {
+    pub fn new(key: impl Into<String>, value: Vec<u8>) -> Self {
+        Self {
+            key: key.into(),
+            value,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum FormattedDocument {
     RawBytes(Vec<u8>),
@@ -349,6 +368,56 @@ impl FormatterContext {
             time,
             diff,
         }
+    }
+
+    fn construct_message_headers(
+        &self,
+        header_fields: &Vec<(String, usize)>,
+        encode_bytes: bool,
+    ) -> Vec<PreparedMessageHeader> {
+        let mut headers = Vec::with_capacity(header_fields.len() + 2);
+        headers.push(PreparedMessageHeader::new(
+            "pathway_time",
+            self.time.to_string().as_bytes().to_vec(),
+        ));
+        headers.push(PreparedMessageHeader::new(
+            "pathway_diff",
+            self.diff.to_string().as_bytes().to_vec(),
+        ));
+        for (name, position) in header_fields {
+            let value: Vec<u8> = match (&self.values[*position], encode_bytes) {
+                (Value::Bytes(b), false) => (*b).to_vec(),
+                (Value::Bytes(b), true) => base64encoder.encode(b).into(),
+                (other, _) => (*other.to_string().as_bytes()).to_vec(),
+            };
+            headers.push(PreparedMessageHeader::new(name, value));
+        }
+        headers
+    }
+
+    pub fn construct_kafka_headers(&self, header_fields: &Vec<(String, usize)>) -> KafkaHeaders {
+        let raw_headers = self.construct_message_headers(header_fields, false);
+        let mut kafka_headers = KafkaHeaders::new_with_capacity(raw_headers.len());
+        for header in raw_headers {
+            kafka_headers = kafka_headers.insert(KafkaHeader {
+                key: &header.key,
+                value: Some(&header.value),
+            });
+        }
+        kafka_headers
+    }
+
+    pub fn construct_nats_headers(&self, header_fields: &Vec<(String, usize)>) -> NatsHeaders {
+        let raw_headers = self.construct_message_headers(header_fields, true);
+        let mut nats_headers = NatsHeaders::new();
+        for header in raw_headers {
+            nats_headers.insert(
+                header.key,
+                String::from_utf8(header.value)
+                    .expect("all prepared headers must be UTF-8 serializable"),
+            );
+        }
+        nats_headers
     }
 }
 
