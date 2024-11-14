@@ -1,1 +1,0 @@
-.gemini-multimodal-rag/article.md

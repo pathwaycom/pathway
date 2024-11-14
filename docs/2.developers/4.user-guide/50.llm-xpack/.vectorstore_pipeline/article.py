@@ -175,7 +175,7 @@ query = "What is Pathway?"
 # ### Langchain
 #
 # You can use a Pathway Vector Store in LangChain pipelines with `PathwayVectorClient`
-# and configure a `VectorStoreServer` using LangChain components. For more information see [our article](/developers/templates/langchain-integration) or [LangChain documentation](https://python.langchain.com/v0.1/docs/integrations/vectorstores/pathway/).
+# and configure a `VectorStoreServer` using LangChain components. For more information see [our article](/blog/langchain-integration) or [LangChain documentation](https://python.langchain.com/v0.1/docs/integrations/vectorstores/pathway/).
 #
 
 # %%

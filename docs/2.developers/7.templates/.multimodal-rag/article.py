@@ -103,7 +103,7 @@
 # + [markdown] id="DBo5YKJzKpdR"
 # ## **What's the main difference between LlamaIndex and Pathway?**
 #
-# Pathway offers an indexing solution that always provides the latest information to your LLM application:  Pathway Vector Store preprocesses and indexes your data in real time, always giving up-to-date answers. LlamaIndex is a framework for writing LLM-enabled applications. Pathway and LlamaIndex are best [used together](/developers/templates/llamaindex-pathway). Pathway vector store is natively available in LlamaIndex.
+# Pathway offers an indexing solution that always provides the latest information to your LLM application:  Pathway Vector Store preprocesses and indexes your data in real time, always giving up-to-date answers. LlamaIndex is a framework for writing LLM-enabled applications. Pathway and LlamaIndex are best [used together](/blog/llamaindex-pathway). Pathway vector store is natively available in LlamaIndex.
 
 # + [markdown] id="CzxFvo4S_RIj"
 # ## **Architecture Used for Multimodal RAG for Production Use Cases**

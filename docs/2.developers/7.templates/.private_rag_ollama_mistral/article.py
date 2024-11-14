@@ -7,7 +7,7 @@
 #     thumbnailFit: 'contain'
 #     tags: ['showcase', 'llm']
 #     date: '2024-04-23'
-#     related: ['/developers/templates/adaptive-rag', '/developers/templates/llamaindex-pathway']
+#     related: ['/developers/templates/adaptive-rag', '/developers/templates/demo-question-answering']
 # notebook_export_path: notebooks/showcases/mistral_adaptive_rag_question_answering.ipynb
 # author: 'berke'
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag', 'notebook', 'docker']
