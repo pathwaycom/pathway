@@ -91,14 +91,15 @@ class ParseUnstructured(pw.UDF):
 
     def __init__(
         self,
-        mode: str = "single",
+        mode: Literal["single", "elements", "paged"] = "single",
         post_processors: list[Callable] | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
         **unstructured_kwargs: Any,
     ):
         with optional_imports("xpack-llm-docs"):
             import unstructured.partition.auto  # noqa:F401
 
-        super().__init__()
+        super().__init__(cache_strategy=cache_strategy)
         _valid_modes = {"single", "elements", "paged"}
         if mode not in _valid_modes:
             raise ValueError(
