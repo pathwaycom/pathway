@@ -13,6 +13,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.Table.diff` now supports setting `instance` parameter that allows computing differences for multiple groups.
 - `pw.io.postgres.write_snapshot` now keeps the Postgres table fully in sync with the current state of the table in Pathway. This means that if an entry is deleted in Pathway, the same entry will also be deleted from the Postgres table managed by the output connector.
 
+### Fixed
+- `pw.PyObjectWrapper` is now picklable.
+
 ## [0.15.3] - 2024-11-07
 
 ### Added

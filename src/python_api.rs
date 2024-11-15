@@ -814,6 +814,10 @@ impl PyObjectWrapper {
     ) -> PyResult<Bound<'py, PyAny>> {
         generic_alias_class_getitem(cls, item)
     }
+
+    fn __getnewargs__(&self) -> (PyObject,) {
+        (self.value.clone(),)
+    }
 }
 
 impl PyObjectWrapper {

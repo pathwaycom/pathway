@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import copy
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
@@ -309,3 +310,48 @@ def test_serialization_simple(serialization: str) -> None:
     des = pickle.loads(ser_bytes)
     ob = des.loads(b)
     assert ob == SimpleStr("def")
+
+
+def test_copy():
+    s = [1, 2, 3]
+    p = pw.PyObjectWrapper(s)
+    q = copy.copy(p)
+    q.value.append(4)
+    assert s == [1, 2, 3, 4]
+    assert q.value == [1, 2, 3, 4]
+
+
+def test_deepcopy():
+    s = [1, 2, 3]
+    p = pw.PyObjectWrapper(s)
+    q = copy.deepcopy(p)
+    q.value.append(4)
+    assert s == [1, 2, 3]
+    assert q.value == [1, 2, 3, 4]
+
+
+def test_cache(tmp_path):
+    t = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        2
+    """
+    )
+
+    @pw.udf(cache_strategy=pw.udfs.DiskCache())
+    def f(a: int) -> pw.PyObjectWrapper:
+        return pw.PyObjectWrapper(a)
+
+    @pw.udf
+    def g(a: pw.PyObjectWrapper) -> int:
+        return a.value
+
+    res = t.select(a=g(f(pw.this.a)))
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(tmp_path),
+        persistence_mode=pw.PersistenceMode.UDF_CACHING,
+    )
+    assert_table_equality(t, res, persistence_config=persistence_config)
