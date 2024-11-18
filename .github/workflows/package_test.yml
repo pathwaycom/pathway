@@ -127,9 +127,8 @@ jobs:
     steps:
       - name: Post to a Slack channel
         id: slack
-        uses: slackapi/slack-github-action@v1.24.0
+        uses: slackapi/slack-github-action@v2.0.0
         with:
-          channel-id: "{{ secrets. SLACK_CI_ALERT }}" ## #ci-alerts channel
           # For posting a simple plain text message
           payload: |
             {
@@ -137,6 +136,7 @@ jobs:
               "blocks": [
                 {
                   "type": "section",
+                  "channel": ${{ secrets.SLACK_CI_ALERT }},
                   "text": {
                     "type": "mrkdwn",
                     "text": "Repository: ${{ github.repository }}\nAction name: ${{ github.workflow }}\nGitHub Action test: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.actor }}"
