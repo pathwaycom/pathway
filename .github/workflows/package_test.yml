@@ -129,14 +129,14 @@ jobs:
         id: slack
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          # For posting a simple plain text message
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
           payload: |
             {
               "text": "Repository: ${{ github.repository }}\nAction name: ${{ github.workflow }}\nGitHub Action test: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.actor }}",
               "blocks": [
                 {
                   "type": "section",
-                  "channel": ${{ secrets.SLACK_CI_ALERT }},
                   "text": {
                     "type": "mrkdwn",
                     "text": "Repository: ${{ github.repository }}\nAction name: ${{ github.workflow }}\nGitHub Action test: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.actor }}"
@@ -144,5 +144,3 @@ jobs:
                 }
               ]
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
