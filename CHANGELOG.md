@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.15.4] - 2024-11-18
+
 ### Added
 - `pw.io.kafka.read` now supports reading entries starting from a specified timestamp.
 - `pw.io.nats.read` and `pw.io.nats.write` methods for reading from and writing Pathway tables to NATS.
