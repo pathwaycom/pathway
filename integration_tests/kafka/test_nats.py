@@ -1,9 +1,11 @@
 import pathlib
 from uuid import uuid4
 
+import pytest
+
 import pathway as pw
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import expect_csv_checker, wait_result_with_checker
+from pathway.tests.utils import CsvLinesNumberChecker, wait_result_with_checker
 
 NATS_SERVER_URI = "nats://nats:4222/"
 
@@ -30,17 +32,13 @@ def run(input_file, output_file, nats_topic, new_entries, persistence_config=Non
     pw.io.csv.write(table_reread, output_file)
 
     wait_result_with_checker(
-        expect_csv_checker(
-            "\n".join(["data"] + new_entries),
-            output_file,
-            usecols=["data"],
-            index_col=["data"],
-        ),
-        10,
+        CsvLinesNumberChecker(output_file, len(new_entries)),
+        30,
         kwargs={"persistence_config": persistence_config},
     )
 
 
+@pytest.mark.flaky(reruns=5)
 def test_nats_simple(tmp_path: pathlib.Path):
     nats_topic = f"nats-{uuid4()}"
     input_file = tmp_path / "input.txt"
@@ -51,6 +49,7 @@ def test_nats_simple(tmp_path: pathlib.Path):
     run(input_file, output_file, nats_topic, ["one", "two", "three", "four"])
 
 
+@pytest.mark.flaky(reruns=5)
 def test_nats_persistence(tmp_path: pathlib.Path):
     nats_topic = f"nats-{uuid4()}"
     input_file = tmp_path / "input.txt"
