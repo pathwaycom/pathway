@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
 import logging
+import re
 from pathlib import Path
 from unittest import mock
 
@@ -463,26 +464,20 @@ def test_concat():
     )
     expected = pw.debug.table_from_markdown(
         """
-         a | b
-        -1 | -1
-         2 | 5
-         3 | 1
-         4 | 3
-         5 | 1
+         a | b  | e
+        -1 | -1 | 0
+         2 | 5  | 1
+         3 | 1  | 1
+         4 | 3  | 1
+         5 | 1  | 1
     """
-    )
-    expected_errors = T(
-        """
-        message
-        duplicate key: ^YYY4HABTRW7T8VX2Q429ZYV70W
-        """,
-        split_on_whitespace=False,
-    )
-    assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
-        (expected, expected_errors),
-        terminate_on_error=False,
-    )
+    ).select(a=pw.this.a // pw.this.e, b=pw.this.b // pw.this.e)
+    # column e used to produce ERROR in the first row
+    with pytest.warns(
+        UserWarning,
+        match=re.escape("duplicated entries for key ^YYY4HABTRW7T8VX2Q429ZYV70W"),
+    ):
+        assert_table_equality_wo_index(res, expected, terminate_on_error=False)
 
 
 def test_left_join_preserving_id():
@@ -702,27 +697,21 @@ def test_reindex_with_duplicate_key():
     expected = (
         pw.debug.table_from_markdown(
             """
-        a | b
-        1 | 3
-        2 | 4
-        3 | -1
+        a | b  | e
+        1 | 3  | 1
+        2 | 4  | 1
+        3 | -1 | 0
     """
         )
         .with_id_from(pw.this.a)
-        .with_columns(a=pw.if_else(pw.this.a == 3, -1, pw.this.a))
+        .select(a=pw.this.a // pw.this.e, b=pw.this.b // pw.this.e)
     )
-    expected_errors = T(
-        """
-        message
-        duplicate key: ^3CZ78B48PASGNT231ZECWPER90
-    """,
-        split_on_whitespace=False,
-    )
-    assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
-        (expected, expected_errors),
-        terminate_on_error=False,
-    )
+    # column e used to produce ERROR in the first row
+    with pytest.warns(
+        UserWarning,
+        match=re.escape("duplicated entries for key ^3CZ78B48PASGNT231ZECWPER90"),
+    ):
+        assert_table_equality_wo_index(res, expected, terminate_on_error=False)
 
 
 def test_groupby_with_error_in_grouping_column():

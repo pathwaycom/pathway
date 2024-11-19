@@ -318,6 +318,9 @@ pub enum DataError {
     #[error("mixing types in npsum is not allowed")]
     MixingTypesInNpSum,
 
+    #[error("updating a row that does not exist, key: {0}")]
+    UpdatingNonExistingRow(Key),
+
     #[error(transparent)]
     Other(DynError),
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import warnings
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar, Union
 
 import numpy as np
@@ -32,6 +33,7 @@ Value: TypeAlias = Union[
     json.Json,
     dict[str, _Value],
     tuple[_Value, ...],
+    Error,
 ]
 CapturedTable = dict[Pointer, tuple[Value, ...]]
 CapturedStream = list[DataRow]
@@ -191,20 +193,34 @@ def static_table_from_pandas(
     return scope.static_table(input_data, connector_properties)
 
 
-def squash_updates(updates: CapturedStream) -> CapturedTable:
+def squash_updates(
+    updates: CapturedStream, *, terminate_on_error: bool = True
+) -> CapturedTable:
     state: CapturedTable = {}
     updates.sort(key=lambda row: (row.time, row.diff))
+
+    def handle_error(row: DataRow, msg: str):
+        if terminate_on_error:
+            raise KeyError(msg)
+        else:
+            warnings.warn(msg)
+            t: tuple[Value, ...] = (ERROR,) * len(row.values)
+            state[row.key] = t
+
     for row in updates:
         if row.diff == 1:
-            assert row.key not in state, f"duplicated entries for key {row.key}"
+            if row.key in state:
+                handle_error(row, f"duplicated entries for key {row.key}")
+                continue
             state[row.key] = tuple(row.values)
         elif row.diff == -1:
-            assert state[row.key] == tuple(
-                row.values
-            ), f"deleting non-existing entry {row.values}"
+            if state[row.key] != tuple(row.values):
+                handle_error(row, f"deleting non-existing entry {row.values}")
+                continue
             del state[row.key]
         else:
-            raise AssertionError(f"Invalid diff value: {row.diff}")
+            handle_error(row, f"invalid diff value: {row.diff}")
+            continue
 
     return state
 

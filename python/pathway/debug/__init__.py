@@ -63,7 +63,9 @@ def table_to_dicts(
     **kwargs,
 ) -> tuple[list[api.Pointer], dict[str, dict[api.Pointer, api.Value]]]:
     captured = _compute_tables(table, **kwargs)[0]
-    output_data = api.squash_updates(captured)
+    output_data = api.squash_updates(
+        captured, terminate_on_error=kwargs.get("terminate_on_error", True)
+    )
     keys = list(output_data.keys())
     columns = {
         name: {key: output_data[key][index] for key in keys}
@@ -115,6 +117,7 @@ def _compute_and_print_internal(
             include_id=include_id,
             short_pointers=short_pointers,
             n_rows=n_rows,
+            terminate_on_error=kwargs.get("terminate_on_error", True),
         )
 
 
@@ -126,10 +129,13 @@ def _compute_and_print_single(
     include_id: bool,
     short_pointers: bool,
     n_rows: int | None,
+    terminate_on_error: bool,
 ) -> None:
     columns = list(table._columns.keys())
     if squash_updates:
-        output_data = list(api.squash_updates(captured).items())
+        output_data = list(
+            api.squash_updates(captured, terminate_on_error=terminate_on_error).items()
+        )
     else:
         columns.extend([api.TIME_PSEUDOCOLUMN, api.DIFF_PSEUDOCOLUMN])
         output_data = []

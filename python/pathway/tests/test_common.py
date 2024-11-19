@@ -988,9 +988,12 @@ def test_concat_errors_on_intersecting_universes():
     )
 
     pw.universes.promise_are_pairwise_disjoint(t1, t2)
-    pw.Table.concat(t1, t2)
-    with pytest.raises(KeyError, match="duplicate key"):
-        run_all()
+    result = pw.Table.concat(t1, t2)
+    with pytest.raises(
+        KeyError,
+        match=re.escape("duplicated entries for key ^YYY4HABTRW7T8VX2Q429ZYV70W"),
+    ):
+        pw.debug.compute_and_print(result)
 
 
 @pytest.mark.parametrize("dtype", [np.int64, np.float64])

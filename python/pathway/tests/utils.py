@@ -225,8 +225,10 @@ def assert_stream_equal(expected: list[DiffEntry], table: pw.Table):
     pw.io.subscribe(table, callback, callback.on_end)
 
 
-def assert_equal_tables(t0: api.CapturedStream, t1: api.CapturedStream) -> None:
-    assert api.squash_updates(t0) == api.squash_updates(t1)
+def assert_equal_tables(
+    t0: api.CapturedStream, t1: api.CapturedStream, **kwargs
+) -> None:
+    assert api.squash_updates(t0, **kwargs) == api.squash_updates(t1, **kwargs)
 
 
 def make_value_hashable(val: api.Value):
@@ -243,16 +245,18 @@ def make_row_hashable(row: tuple[api.Value, ...]):
 
 
 def assert_equal_tables_wo_index(
-    s0: api.CapturedStream, s1: api.CapturedStream
+    s0: api.CapturedStream, s1: api.CapturedStream, **kwargs
 ) -> None:
-    t0 = api.squash_updates(s0)
-    t1 = api.squash_updates(s1)
+    t0 = api.squash_updates(s0, **kwargs)
+    t1 = api.squash_updates(s1, **kwargs)
     assert collections.Counter(
         make_row_hashable(row) for row in t0.values()
     ) == collections.Counter(make_row_hashable(row) for row in t1.values())
 
 
-def assert_equal_streams(t0: api.CapturedStream, t1: api.CapturedStream) -> None:
+def assert_equal_streams(
+    t0: api.CapturedStream, t1: api.CapturedStream, **kwargs
+) -> None:
     def transform(row: api.DataRow) -> Hashable:
         t = (row.key,) + tuple(row.values) + (row.time, row.diff)
         return make_row_hashable(t)
@@ -263,7 +267,7 @@ def assert_equal_streams(t0: api.CapturedStream, t1: api.CapturedStream) -> None
 
 
 def assert_equal_streams_wo_index(
-    t0: api.CapturedStream, t1: api.CapturedStream
+    t0: api.CapturedStream, t1: api.CapturedStream, **kwargs
 ) -> None:
     def transform(row: api.DataRow) -> Hashable:
         t = tuple(row.values) + (row.time, row.diff)
@@ -304,7 +308,7 @@ def assert_split_into_time_groups(
 
 
 def assert_streams_in_time_groups(
-    t0: api.CapturedStream, t1: api.CapturedStream
+    t0: api.CapturedStream, t1: api.CapturedStream, **kwargs
 ) -> None:
     def transform(row: api.DataRow) -> tuple[Hashable, int]:
         t = (row.key, *row.values, row.diff)
@@ -314,7 +318,7 @@ def assert_streams_in_time_groups(
 
 
 def assert_streams_in_time_groups_wo_index(
-    t0: api.CapturedStream, t1: api.CapturedStream
+    t0: api.CapturedStream, t1: api.CapturedStream, **kwargs
 ) -> None:
     def transform(row: api.DataRow) -> tuple[Hashable, int]:
         t = (*row.values, row.diff)
@@ -460,7 +464,11 @@ def run_graph_and_validate_result(verifier: Callable, assert_schemas=True):
         n = len(expected)
         captured_tables, captured_expected = captured[:n], captured[n:]
         for captured_t, captured_ex in zip(captured_tables, captured_expected):
-            verifier(captured_t, captured_ex)
+            verifier(
+                captured_t,
+                captured_ex,
+                terminate_on_error=kwargs.get("terminate_on_error", True),
+            )
 
     return inner
 

@@ -3220,7 +3220,6 @@ fn capture_table_data(
         let table_data = table_data.clone();
         let callbacks = SubscribeCallbacksBuilder::new()
             .on_data(Box::new(move |key, values, time, diff| {
-                assert!(diff == 1 || diff == -1);
                 table_data.lock().unwrap().push(DataRow::from_engine(
                     key,
                     Vec::from(values),

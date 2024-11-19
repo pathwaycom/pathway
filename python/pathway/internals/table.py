@@ -1644,6 +1644,8 @@ id_type=<class 'pathway.engine.Pointer'>>
         To generate ids based on arbitrary valued columns, use `with_id_from`.
 
         Values assigned must be row-wise unique.
+        The uniqueness is not checked by pathway. Failing to provide unique ids can
+        cause unexpected errors downstream.
 
         Args:
             new_id: column to be used as the new index.
@@ -1686,6 +1688,8 @@ id_type=<class 'pathway.engine.Pointer'>>
     ) -> Table:
         """Compute new ids based on values in columns.
         Ids computed from `columns` must be row-wise unique.
+        The uniqueness is not checked by pathway. Failing to provide unique ids can
+        cause unexpected errors downstream.
 
         Args:
             columns:  columns to be used as primary keys.

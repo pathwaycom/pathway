@@ -1767,13 +1767,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
         });
 
-        let new_values = if self.ignore_asserts {
-            new_values
-        } else {
-            let error_logger = self.create_error_logger()?;
-            new_values.replace_duplicates_with_error(|_| Value::Error, error_logger)
-        };
-
         Ok(self
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
@@ -1823,12 +1816,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             })
             .collect::<Result<_>>()?;
         let result = concatenate(&mut self.scope, table_collections);
-        let result = if self.ignore_asserts {
-            result
-        } else {
-            let error_logger = self.create_error_logger()?;
-            result.replace_duplicates_with_error(|_| Value::Error, error_logger)
-        };
         let table = Table::from_collection(result).with_properties(table_properties);
         let table_handle = self.tables.alloc(table);
         Ok(table_handle)
@@ -2006,11 +1993,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         update_handle: TableHandle,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
+        let error_logger = self.create_error_logger()?;
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
         let updated_values = both_arranged.reduce_abelian(
             "update_rows_table::updated",
-            move |_key, input, output| {
+            move |key, input, output| {
                 let values = match input {
                     [(MaybeUpdate::Original(original_values), 1)] => original_values,
                     [(MaybeUpdate::Update(new_values), 1)] => new_values,
@@ -2018,7 +2006,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         new_values
                     }
                     _ => {
-                        panic!("unexpected counts in input");
+                        error_logger.log_error(DataError::DuplicateKey(*key));
+                        return;
                     }
                 };
                 output.push((values.clone(), 1));
@@ -2038,6 +2027,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         update_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
+        let error_logger = self.create_error_logger()?;
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
         let error_reporter = self.error_reporter.clone();
@@ -2055,11 +2045,21 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     ] => {
                         (original_values, new_values, &update_paths)
                     }
+                    [
+                        (MaybeUpdate::Original(original_values), 1),
+                        (MaybeUpdate::Update(_), _),
+                        ..
+                    ] => { // if there's exactly one original entry, keep it to preserve the universe keys
+                        error_logger.log_error(DataError::DuplicateKey(*key));
+                        (original_values, &Value::Error, &update_paths)
+                    },
                     [(MaybeUpdate::Update(_), 1)] => {
-                        panic!("updating a row that does not exist");
+                        error_logger.log_error(DataError::UpdatingNonExistingRow(*key));
+                        return;
                     }
                     _ => {
-                        panic!("unexpected counts in input");
+                        error_logger.log_error(DataError::DuplicateKey(*key));
+                        return;
                     }
                 };
                 let updates: Vec<_> = selected_paths
@@ -3092,6 +3092,7 @@ where
 
         let new_values_persisted = if let Some(persistent_id) = persistent_id {
             let error_reporter = self.error_reporter.clone();
+            let error_logger = self.create_error_logger()?;
             let snapshot_writer = self
                 .worker_persistent_storage
                 .as_ref()
@@ -3109,7 +3110,9 @@ where
                             if *time == ARTIFICIAL_TIME_ON_REWIND_START {
                                 continue;
                             }
-                            assert!(*diff == 1 || *diff == -1);
+                            if *diff != 1 && *diff != -1 {
+                                error_logger.log_error(DataError::DuplicateKey(*key));
+                            }
                             let values_vec: Vec<Value> =
                                 (**values.as_tuple().unwrap_with_reporter(&error_reporter)).into();
                             let event = if *diff == 1 {

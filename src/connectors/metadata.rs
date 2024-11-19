@@ -59,7 +59,7 @@ mod file_owner {
 
 #[cfg(not(target_os = "linux"))]
 mod file_owner {
-    pub fn get_owner(metadata: &std::fs::Metadata) -> Option<String> {
+    pub fn get_owner(_metadata: &std::fs::Metadata) -> Option<String> {
         None
     }
 }
