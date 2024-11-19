@@ -275,8 +275,15 @@ def test_update_old():
         number_of_matches=queries.k,
     ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
 
+    index3 = DataIndex(points, HybridIndex([knn_lsh_index, knn_lsh_index]))
+    result3 = index3.query(
+        queries.coords,
+        number_of_matches=queries.k,
+    ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
+
     assert_table_equality_wo_index(result, expected)
     assert_table_equality_wo_index(result2, expected)
+    assert_table_equality_wo_index(result3, expected)
 
 
 def test_asof_now():

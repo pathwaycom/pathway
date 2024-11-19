@@ -165,7 +165,7 @@ class AsofNowJoinResult(DesugaringContext):
                 # FIXME if original_left is append-only (should be) then result is
                 # also append-only (promise that). Then with_universe_of should be able
                 # to operate in const memory.
-                result = result.with_universe_of(self._original_left)
+                result = result._unsafe_with_universe_of_as_of_now(self._original_left)
         return result
 
 

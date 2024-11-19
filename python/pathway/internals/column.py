@@ -886,6 +886,20 @@ class PromiseSameUniverseContext(
         return self._id_column.dtype
 
 
+@dataclass(eq=False, frozen=True)
+class PromiseSameUniverseAsOfNowContext(
+    PromiseSameUniverseContext,
+    column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator,
+):
+    """Context that does to the data stream the underlying data stream the same thing as combined
+    ``_forget_immediately()``, ``with_universe_of()``, ``_filter_out_results_of_forgetting()``.
+    Applying them explicitly would destroy the effect of ``with_universe_of`` as both
+    ``_forget_immediately`` and `_filter_out_results_of_forgetting`` change table universe.
+    """
+
+    pass
+
+
 @dataclass(eq=True, frozen=True)
 class JoinContext(Context):
     """Context for building inner table of a join, where all columns from left and right

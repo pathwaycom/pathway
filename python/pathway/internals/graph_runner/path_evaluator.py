@@ -371,11 +371,17 @@ class PromiseSameUniversePathEvaluator(
     PathEvaluator,
     context_types=[
         clmn.PromiseSameUniverseContext,
+        clmn.PromiseSameUniverseAsOfNowContext,
         clmn.RestrictContext,
         clmn.IxContext,
     ],
 ):
-    context: clmn.PromiseSameUniverseContext | clmn.RestrictContext | clmn.IxContext
+    context: (
+        clmn.PromiseSameUniverseContext
+        | clmn.PromiseSameUniverseAsOfNowContext
+        | clmn.RestrictContext
+        | clmn.IxContext
+    )
 
     def compute(
         self,

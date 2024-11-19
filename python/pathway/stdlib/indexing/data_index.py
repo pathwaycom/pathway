@@ -132,9 +132,6 @@ def _extract_data_collapsed_rows(
         _pw_groupby_sort_key=-pw.this[_SCORE],
     )
 
-    if as_of_now:
-        joined = joined._forget_immediately()
-    pw.universes.promise_are_pairwise_disjoint(joined, query_table)
     artificial_result = query_table.select(  # create artificial_result to have responses for all queries
         **{
             _QUERY_ID: query_table.id,
@@ -143,9 +140,13 @@ def _extract_data_collapsed_rows(
             "_pw_groupby_sort_key": 0,
         }
     )
+    if as_of_now:
+        joined = joined._forget_immediately()
+        artificial_result = artificial_result._forget_immediately()
+    pw.universes.promise_are_pairwise_disjoint(joined, query_table)
     joined = pw.Table.concat(joined, artificial_result)
 
-    @pw.udf
+    @pw.udf(deterministic=True)
     def remove_artificial_entries(array: tuple, indicator: tuple) -> tuple:
         return tuple(x for x, i in zip(array, indicator) if i is not None)
 
@@ -168,7 +169,7 @@ def _extract_data_collapsed_rows(
         )
     )
 
-    @pw.udf
+    @pw.udf(deterministic=True)
     def transpose(x: tuple) -> tuple:
         if x:
             return tuple(zip(*x))

@@ -7,9 +7,8 @@ from pathway.stdlib.indexing.colnames import (
     _QUERY_ID,
     _SCORE,
 )
-from pathway.stdlib.indexing.data_index import IdScoreSchema, InnerIndex
+from pathway.stdlib.indexing.data_index import InnerIndex
 from pathway.stdlib.indexing.retrievers import InnerIndexFactory
-from pathway.stdlib.utils.col import unpack_col
 
 
 class HybridIndex(InnerIndex):
@@ -38,30 +37,42 @@ class HybridIndex(InnerIndex):
         query_retriever: Callable[[InnerIndex], pw.Table],
         query_table: pw.Table,
         number_of_matches: pw.ColumnExpression | int,
+        *,
+        as_of_now: bool,
     ) -> pw.Table:
-        @pw.udf
-        def change_score_to_rrf(
+        @pw.udf(deterministic=True)
+        def enumerate_results(
             results: list[tuple[pw.Pointer, float]]
-        ) -> list[tuple[pw.Pointer, float]]:
-            return [(x[0], 1 / (self.k + i)) for i, x in enumerate(results, start=1)]
+        ) -> list[tuple[int, pw.Pointer]]:
+            return [(i, x[0]) for i, x in enumerate(results, start=1)]
 
         def query_single_retriever(retriever) -> pw.Table:
             results = (
                 query_retriever(retriever)
                 .select(
                     **{
-                        _INDEX_REPLY: change_score_to_rrf(pw.this[_INDEX_REPLY]),
+                        _INDEX_REPLY: enumerate_results(pw.this[_INDEX_REPLY]),
                         _QUERY_ID: pw.this.id,
                     },
                 )
                 .flatten(pw.this[_INDEX_REPLY])
+                .select(
+                    **{
+                        _MATCHED_ID: pw.this[_INDEX_REPLY].get(1),
+                        _SCORE: 1 / (self.k + pw.this[_INDEX_REPLY].get(0)),
+                        _QUERY_ID: pw.this[_QUERY_ID],
+                    }
+                )
             )
-            return results + unpack_col(results[_INDEX_REPLY], schema=IdScoreSchema)
+            if as_of_now:
+                results = results._forget_immediately()
+
+            return results
 
         results_list = [
             query_single_retriever(retriever) for retriever in self.retrievers
         ]
-        results = results_list[0].concat_reindex(*results_list[1:])
+        results = pw.Table.concat_reindex(*results_list)
         removed_duplicates = results.groupby(
             results[_QUERY_ID], results[_MATCHED_ID]
         ).reduce(
@@ -71,7 +82,7 @@ class HybridIndex(InnerIndex):
             **{_SCORE: pw.reducers.sum(pw.this[_SCORE])},
         )
 
-        @pw.udf
+        @pw.udf(deterministic=True)
         def limit_results(results: tuple, count: int) -> tuple:
             return results[:count]
 
@@ -91,6 +102,8 @@ class HybridIndex(InnerIndex):
             number_of_matches_table = query_table.select(
                 _pw_number_of_matches=number_of_matches
             )
+            if as_of_now:
+                number_of_matches_table = number_of_matches_table._forget_immediately()
             grouped_by_query.promise_universe_is_subset_of(number_of_matches_table)
             number_of_matches_table_restricted = number_of_matches_table.restrict(
                 grouped_by_query
@@ -100,6 +113,9 @@ class HybridIndex(InnerIndex):
         limited_results = grouped_by_query.select(
             **{_INDEX_REPLY: limit_results(pw.this[_INDEX_REPLY], number_of_matches)}
         )
+
+        if as_of_now:
+            limited_results = limited_results._filter_out_results_of_forgetting()
 
         return limited_results
 
@@ -118,7 +134,7 @@ class HybridIndex(InnerIndex):
             )
 
         return self._combine_results(
-            query_retriever, query_column.table, number_of_matches
+            query_retriever, query_column.table, number_of_matches, as_of_now=False
         )
 
     def query_as_of_now(
@@ -136,7 +152,7 @@ class HybridIndex(InnerIndex):
             )
 
         return self._combine_results(
-            query_retriever, query_column.table, number_of_matches
+            query_retriever, query_column.table, number_of_matches, as_of_now=True
         )
 
 

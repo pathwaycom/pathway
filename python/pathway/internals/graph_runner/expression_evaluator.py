@@ -997,6 +997,35 @@ class PromiseSameUniverseEvaluator(
         )
 
 
+class PromiseSameUniverseAsOfNowEvaluator(
+    ExpressionEvaluator, context_type=clmn.PromiseSameUniverseAsOfNowContext
+):
+    context: clmn.PromiseSameUniverseContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        orig_universe = self.context.orig_id_column.universe
+        original_table_with_forgetting = self.scope.forget_immediately(
+            self.state.get_table(orig_universe),
+            self._table_properties(self.state.get_storage(orig_universe)),
+        )
+        destination_universe = self.context.universe
+        destination_universe_table_with_forgetting = self.scope.forget_immediately(
+            self.state.get_table(destination_universe),
+            self._table_properties(self.state.get_storage(destination_universe)),
+        )
+
+        properties = self._table_properties(output_storage)
+        table_with_merged_universes = self.scope.override_table_universe(
+            original_table_with_forgetting,
+            destination_universe_table_with_forgetting,
+            properties,
+        )
+
+        return self.scope.filter_out_results_of_forgetting(
+            table_with_merged_universes, properties
+        )
+
+
 class HavingEvaluator(ExpressionEvaluator, context_type=clmn.HavingContext):
     context: clmn.HavingContext
 

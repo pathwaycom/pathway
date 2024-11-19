@@ -2056,6 +2056,22 @@ id_type=<class 'pathway.engine.Pointer'>>
         return self._unsafe_promise_universe(other)
 
     @trace_user_frame
+    @check_arg_types
+    def _unsafe_with_universe_of_as_of_now(self, other: TableLike) -> Table:
+        """Returns a copy of self with exactly the same universe as other.
+
+        Semantics: Required precondition self.universe == other.universe
+        Used in situations where Pathway cannot deduce equality of universes, but
+        those are equal as verified during runtime. Stricter than ``with_universe_of``.
+        Both universes have to have updates to the same keys at the same processing time.
+
+        """
+        if self._universe == other._universe:
+            return self.copy()
+        universes.promise_are_equal(self, other)
+        return self._unsafe_promise_universe_as_of_now(other)
+
+    @trace_user_frame
     @desugar
     @check_arg_types
     def flatten(
@@ -2209,6 +2225,17 @@ id_type=<class 'pathway.engine.Pointer'>>
     @contextualized_operator
     def _unsafe_promise_universe(self, other: TableLike) -> Table:
         context = clmn.PromiseSameUniverseContext(self._id_column, other._id_column)
+        return self._table_with_context(context)
+
+    @contextualized_operator
+    def _unsafe_promise_universe_as_of_now(self, other: TableLike) -> Table:
+        """Updates the universe of ``self`` to the universe of ``other``.
+        Stricter than _unsafe_promise_universe. Both universes have
+        to have updates to the same keys at the same processing time."""
+
+        context = clmn.PromiseSameUniverseAsOfNowContext(
+            self._id_column, other._id_column
+        )
         return self._table_with_context(context)
 
     def _validate_expression(self, expression: expr.ColumnExpression):
