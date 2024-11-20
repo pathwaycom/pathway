@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import datetime
 import functools
+import math
 import typing
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -55,6 +56,11 @@ class DType(ABC):
     @abstractmethod
     def typehint(self) -> typing.Any: ...
 
+    @abstractmethod
+    def max_size(self) -> float:
+        """The maximal size of a DType measured in the number of Value enums"""
+        ...
+
 
 class _SimpleDType(DType):
     wrapped: type
@@ -101,6 +107,12 @@ class _SimpleDType(DType):
     def typehint(self) -> type:
         return self.wrapped
 
+    def max_size(self) -> float:
+        if self.wrapped in {str, bytes}:
+            return math.inf
+        else:
+            return 1
+
 
 INT: DType = _SimpleDType(int)
 BOOL: DType = _SimpleDType(bool)
@@ -129,6 +141,9 @@ class _NoneDType(DType):
     def typehint(self) -> None:
         return None
 
+    def max_size(self) -> float:
+        return 1
+
 
 NONE: DType = _NoneDType()
 
@@ -152,6 +167,9 @@ class _AnyDType(DType):
     @property
     def typehint(self) -> typing.Any:
         return typing.Any
+
+    def max_size(self) -> float:
+        return math.inf
 
 
 ANY: DType = _AnyDType()
@@ -196,6 +214,9 @@ class Callable(DType):
                 [dtype.typehint for dtype in self.arg_types],
                 self.return_type.typehint,
             ]
+
+    def max_size(self) -> float:
+        return math.inf
 
 
 class Array(DType):
@@ -254,6 +275,9 @@ class Array(DType):
         else:
             return self.wrapped
 
+    def max_size(self) -> float:
+        return math.inf
+
 
 T = typing.TypeVar("T")
 
@@ -294,6 +318,9 @@ class Pointer(DType):
         else:
             return api.Pointer[tuple(arg.typehint for arg in self.args)]  # type: ignore[misc]
 
+    def max_size(self) -> float:
+        return 1
+
 
 ANY_POINTER: DType = Pointer(...)
 
@@ -327,6 +354,9 @@ class Optional(DType):
     @cached_property
     def typehint(self) -> type[UnionType]:
         return self.wrapped.typehint | None
+
+    def max_size(self) -> float:
+        return self.wrapped.max_size()
 
 
 class Tuple(DType):
@@ -368,6 +398,9 @@ class Tuple(DType):
     def typehint(self) -> type[tuple]:
         return tuple[tuple(arg.typehint for arg in self.args)]  # type: ignore[misc]
 
+    def max_size(self) -> float:
+        return sum(arg.max_size() for arg in self.args) + 1
+
 
 class Json(DType):
     def __new__(cls) -> Json:
@@ -388,6 +421,9 @@ class Json(DType):
     @property
     def typehint(self) -> type[js.Json]:
         return js.Json
+
+    def max_size(self) -> float:
+        return math.inf
 
 
 JSON: DType = Json()
@@ -417,6 +453,9 @@ class List(DType):
     def typehint(self) -> type[list]:
         return list[self.wrapped.typehint]  # type: ignore[name-defined]
 
+    def max_size(self) -> float:
+        return math.inf
+
 
 class _DateTimeNaive(DType):
     def __repr__(self):
@@ -437,6 +476,9 @@ class _DateTimeNaive(DType):
     @property
     def typehint(self) -> type[datetime_types.DateTimeNaive]:
         return datetime_types.DateTimeNaive
+
+    def max_size(self) -> float:
+        return 1
 
 
 DATE_TIME_NAIVE = _DateTimeNaive()
@@ -462,6 +504,9 @@ class _DateTimeUtc(DType):
     def typehint(self) -> type[datetime_types.DateTimeUtc]:
         return datetime_types.DateTimeUtc
 
+    def max_size(self) -> float:
+        return 1
+
 
 DATE_TIME_UTC = _DateTimeUtc()
 
@@ -485,6 +530,9 @@ class _Duration(DType):
     @property
     def typehint(self) -> type[datetime_types.Duration]:
         return datetime_types.Duration
+
+    def max_size(self) -> float:
+        return 1
 
 
 DURATION = _Duration()
@@ -513,6 +561,9 @@ class PyObjectWrapper(DType):
     @property
     def typehint(self) -> type[api.PyObjectWrapper]:
         return api.PyObjectWrapper[self.wrapped]  # type: ignore[name-defined]
+
+    def max_size(self) -> float:
+        return math.inf
 
 
 ANY_PY_OBJECT_WRAPPER: DType = PyObjectWrapper(object)

@@ -2169,7 +2169,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 });
 
         let error_reporter = self.error_reporter.clone();
-        let values_to_keys_arranged: ArrangedByKey<S, Key, (Key, Value)> = match ix_key_policy {
+        let values_to_keys = match ix_key_policy {
             IxKeyPolicy::FailMissing => key_table_extracted.map_named(
                 "ix_table unwrapping pointers",
                 move |(key, (values, value))| {
@@ -2185,16 +2185,22 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     Some((pointer, (key, values)))
                 }
             }),
-        }
-        .arrange();
-        let new_table = match ix_key_policy {
-            IxKeyPolicy::SkipMissing => values_to_keys_arranged.join_core(
+        };
+        let new_table = if ix_key_policy == IxKeyPolicy::SkipMissing {
+            let valued_to_keys_arranged: ArrangedByKey<S, Key, Key> = values_to_keys
+                .map_named(
+                    "ix_skip_missing_arrange_keys",
+                    |(source_key, (result_key, _result_value))| (source_key, result_key),
+                )
+                .arrange();
+            valued_to_keys_arranged.join_core(
                 to_ix_table.values_arranged(),
-                |_source_key, (result_key, _result_row), to_ix_row| {
-                    once((*result_key, to_ix_row.clone()))
-                },
-            ),
-            _ => values_to_keys_arranged.join_core(
+                |_source_key, result_key, to_ix_row| once((*result_key, to_ix_row.clone())),
+            )
+        } else {
+            let values_to_keys_arranged: ArrangedByKey<S, Key, (Key, Value)> =
+                values_to_keys.arrange();
+            values_to_keys_arranged.join_core(
                 to_ix_table.values_arranged(),
                 |_source_key, (result_key, result_row), to_ix_row| {
                     once((
@@ -2202,7 +2208,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         Value::from([result_row.clone(), to_ix_row.clone()].as_slice()),
                     ))
                 },
-            ),
+            )
         };
         let new_table = match ix_key_policy {
             IxKeyPolicy::ForwardNone => {

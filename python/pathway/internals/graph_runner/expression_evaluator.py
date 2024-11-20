@@ -84,44 +84,33 @@ class ExpressionEvaluator(ABC):
     def run(self, output_storage: Storage) -> api.Table:
         raise NotImplementedError()
 
-    def _flatten_table_storage(
+    def maybe_flatten_table(
         self,
         output_storage: Storage,
-        input_storage: Storage,
     ) -> api.Table:
-        paths = [
-            input_storage.get_path(column) for column in output_storage.get_columns()
-        ]
-
-        engine_flattened_table = self.scope.flatten_table_storage(
-            self.state.get_table(input_storage._universe), paths
-        )
-        return engine_flattened_table
+        input_storage = self.state.get_storage(output_storage._universe)
+        table = self.state.get_table(output_storage._universe)
+        if output_storage is input_storage:
+            return table
+        assert output_storage.is_flat
+        paths = []
+        for i, column in enumerate(output_storage.get_columns()):
+            assert output_storage.get_path(column) == ColumnPath((i,))
+            paths.append(input_storage.get_path(column))
+        return self.scope.flatten_table_storage(table, paths)
 
     def flatten_table_storage_if_needed(self, output_storage: Storage):
         if output_storage.flattened_output is not None:
-            flattened_storage = self._flatten_table_storage(
-                output_storage.flattened_output, output_storage
+            flattened_storage = self.maybe_flatten_table(
+                output_storage.flattened_output
             )
             self.state.set_table(output_storage.flattened_output, flattened_storage)
 
-    def flatten_tables(
-        self, output_storage: Storage, *input_storages: Storage
-    ) -> tuple[api.Table, ...]:
-        if output_storage.flattened_inputs is not None:
-            assert len(input_storages) == len(output_storage.flattened_inputs)
-            engine_input_tables = []
-            for input_storage, flattened_storage in zip(
-                input_storages, output_storage.flattened_inputs
-            ):
-                flattened_engine_storage = self._flatten_table_storage(
-                    flattened_storage, input_storage
-                )
-                engine_input_tables.append(flattened_engine_storage)
-        else:
-            engine_input_tables = [
-                self.state.get_table(storage._universe) for storage in input_storages
-            ]
+    def maybe_flatten_tables(self, output_storage: Storage) -> tuple[api.Table, ...]:
+        engine_input_tables = []
+        for flattened_storage in output_storage.maybe_flattened_inputs.values():
+            flattened_engine_storage = self.maybe_flatten_table(flattened_storage)
+            engine_input_tables.append(flattened_engine_storage)
         return tuple(engine_input_tables)
 
     def _table_properties(self, storage: Storage) -> api.TableProperties:
@@ -924,7 +913,11 @@ class IntersectEvaluator(ExpressionEvaluator, context_type=clmn.IntersectContext
         engine_tables = self.state.get_tables(self.context.universe_dependencies())
         properties = self._table_properties(output_storage)
         return self.scope.intersect_tables(
-            engine_tables[0], engine_tables[1:], properties
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["input_storage"]
+            ),
+            engine_tables[1:],
+            properties,
         )
 
 
@@ -934,8 +927,12 @@ class RestrictEvaluator(ExpressionEvaluator, context_type=clmn.RestrictContext):
     def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
         return self.scope.restrict_table(
-            self.state.get_table(self.context.orig_id_column.universe),
-            self.state.get_table(self.context.universe),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["orig_storage"]
+            ),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["new_storage"]
+            ),
             properties,
         )
 
@@ -946,7 +943,9 @@ class DifferenceEvaluator(ExpressionEvaluator, context_type=clmn.DifferenceConte
     def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
         return self.scope.subtract_table(
-            self.state.get_table(self.context.left.universe),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["input_storage"]
+            ),
             self.state.get_table(self.context.right.universe),
             properties,
         )
@@ -970,12 +969,14 @@ class IxEvaluator(ExpressionEvaluator, context_type=clmn.IxContext):
     context: clmn.IxContext
 
     def run(self, output_storage: Storage) -> api.Table:
-        key_storage = self.state.get_storage(self.context.universe)
+        key_storage = output_storage.maybe_flattened_inputs["new_storage"]
         key_column_path = key_storage.get_path(self.context.key_column)
         properties = self._table_properties(output_storage)
         return self.scope.ix_table(
-            self.state.get_table(self.context.orig_id_column.universe),
-            self.state.get_table(self.context.universe),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["orig_storage"]
+            ),
+            self.maybe_flatten_table(key_storage),
             key_column_path,
             optional=self.context.optional,
             strict=True,
@@ -991,8 +992,12 @@ class PromiseSameUniverseEvaluator(
     def run(self, output_storage: Storage) -> api.Table:
         properties = self._table_properties(output_storage)
         return self.scope.override_table_universe(
-            self.state.get_table(self.context.orig_id_column.universe),
-            self.state.get_table(self.context.universe),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["orig_storage"]
+            ),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["new_storage"]
+            ),
             properties,
         )
 
@@ -1003,15 +1008,15 @@ class PromiseSameUniverseAsOfNowEvaluator(
     context: clmn.PromiseSameUniverseContext
 
     def run(self, output_storage: Storage) -> api.Table:
-        orig_universe = self.context.orig_id_column.universe
+        orig_storage = output_storage.maybe_flattened_inputs["orig_storage"]
         original_table_with_forgetting = self.scope.forget_immediately(
-            self.state.get_table(orig_universe),
-            self._table_properties(self.state.get_storage(orig_universe)),
+            self.maybe_flatten_table(orig_storage),
+            self._table_properties(orig_storage),
         )
-        destination_universe = self.context.universe
+        new_universe_storage = output_storage.maybe_flattened_inputs["new_storage"]
         destination_universe_table_with_forgetting = self.scope.forget_immediately(
-            self.state.get_table(destination_universe),
-            self._table_properties(self.state.get_storage(destination_universe)),
+            self.maybe_flatten_table(new_universe_storage),
+            self._table_properties(new_universe_storage),
         )
 
         properties = self._table_properties(output_storage)
@@ -1034,7 +1039,9 @@ class HavingEvaluator(ExpressionEvaluator, context_type=clmn.HavingContext):
         key_column_path = key_storage.get_path(self.context.key_column)
         properties = self._table_properties(output_storage)
         return self.scope.ix_table(
-            self.state.get_table(self.context.orig_id_column.universe),
+            self.maybe_flatten_table(
+                output_storage.maybe_flattened_inputs["input_storage"]
+            ),
             self.state.get_table(key_storage._universe),
             key_column_path,
             optional=False,
@@ -1046,38 +1053,10 @@ class HavingEvaluator(ExpressionEvaluator, context_type=clmn.HavingContext):
 class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
     context: clmn.JoinContext
 
-    def get_join_storage(
-        self,
-        universe: univ.Universe,
-        left_input_storage: Storage,
-        right_input_storage: Storage,
-    ) -> Storage:
-        left_id_storage = Storage(
-            self.context.left_table._universe,
-            {
-                self.context.left_table._id_column: ColumnPath.EMPTY,
-            },
-        )
-        right_id_storage = Storage(
-            self.context.right_table._universe,
-            {
-                self.context.right_table._id_column: ColumnPath.EMPTY,
-            },
-        )
-        return Storage.merge_storages(
-            universe,
-            left_id_storage,
-            left_input_storage.remove_columns_from_table(self.context.right_table),
-            right_id_storage,
-            right_input_storage.restrict_to_table(self.context.right_table),
-        )
-
-    def run_join(self, universe: univ.Universe) -> None:
-        left_input_storage = self.state.get_storage(self.context.left_table._universe)
-        right_input_storage = self.state.get_storage(self.context.right_table._universe)
-        output_storage = self.get_join_storage(
-            universe, left_input_storage, right_input_storage
-        )
+    def run_join(self, universe: univ.Universe, output_storage: Storage) -> None:
+        left_input_storage = output_storage.maybe_flattened_inputs["left_storage"]
+        right_input_storage = output_storage.maybe_flattened_inputs["right_storage"]
+        join_storage = output_storage.maybe_flattened_inputs["join_storage"]
         left_paths = [
             left_input_storage.get_path(column)
             for column in self.context.on_left.columns
@@ -1086,10 +1065,10 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             right_input_storage.get_path(column)
             for column in self.context.on_right.columns
         ]
-        properties = self._table_properties(output_storage)
+        properties = self._table_properties(join_storage)
         output_engine_table = self.scope.join_tables(
-            self.state.get_table(left_input_storage._universe),
-            self.state.get_table(right_input_storage._universe),
+            self.maybe_flatten_table(left_input_storage),
+            self.maybe_flatten_table(right_input_storage),
             left_paths,
             right_paths,
             last_column_is_instance=self.context.last_column_is_instance,
@@ -1098,10 +1077,10 @@ class JoinEvaluator(ExpressionEvaluator, context_type=clmn.JoinContext):
             left_ear=self.context.left_ear,
             right_ear=self.context.right_ear,
         )
-        self.state.set_table(output_storage, output_engine_table)
+        self.state.set_table(join_storage, output_engine_table)
 
     def run(self, output_storage: Storage) -> api.Table:
-        self.run_join(self.context.universe)
+        self.run_join(self.context.universe, output_storage)
         rowwise_evaluator = RowwiseEvaluator(
             clmn.RowwiseContext(self.context.id_column),
             self.scope,
@@ -1258,8 +1237,7 @@ class UpdateRowsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateRowsConte
     context: clmn.UpdateRowsContext
 
     def run(self, output_storage: Storage) -> api.Table:
-        input_storages = self.state.get_storages(self.context.universe_dependencies())
-        engine_input_tables = self.flatten_tables(output_storage, *input_storages)
+        engine_input_tables = self.maybe_flatten_tables(output_storage)
         [input_table, update_input_table] = engine_input_tables
         properties = self._table_properties(output_storage)
         return self.scope.update_rows_table(input_table, update_input_table, properties)
@@ -1269,28 +1247,26 @@ class UpdateCellsEvaluator(ExpressionEvaluator, context_type=clmn.UpdateCellsCon
     context: clmn.UpdateCellsContext
 
     def run(self, output_storage: Storage) -> api.Table:
-        input_storage = self.state.get_storage(self.context.left.universe)
-        update_input_storage = self.state.get_storage(self.context.right.universe)
+        left_storage = output_storage.maybe_flattened_inputs["left_storage"]
+        right_storage = output_storage.maybe_flattened_inputs["right_storage"]
         paths = []
         update_paths = []
 
         for column in output_storage.get_columns():
-            if column in input_storage.get_columns():
+            if column in left_storage.get_columns():
                 continue
             assert isinstance(column, clmn.ColumnWithReference)
             if column.expression.name in self.context.updates:
-                paths.append(input_storage.get_path(column.expression._column))
+                paths.append(left_storage.get_path(column.expression._column))
                 update_paths.append(
-                    update_input_storage.get_path(
-                        self.context.updates[column.expression.name]
-                    )
+                    right_storage.get_path(self.context.updates[column.expression.name])
                 )
 
         properties = self._table_properties(output_storage)
 
         return self.scope.update_cells_table(
-            self.state.get_table(input_storage._universe),
-            self.state.get_table(update_input_storage._universe),
+            self.maybe_flatten_table(left_storage),
+            self.maybe_flatten_table(right_storage),
             paths,
             update_paths,
             properties,
@@ -1301,8 +1277,7 @@ class ConcatUnsafeEvaluator(ExpressionEvaluator, context_type=clmn.ConcatUnsafeC
     context: clmn.ConcatUnsafeContext
 
     def run(self, output_storage: Storage) -> api.Table:
-        input_storages = self.state.get_storages(self.context.universe_dependencies())
-        engine_input_tables = self.flatten_tables(output_storage, *input_storages)
+        engine_input_tables = self.maybe_flatten_tables(output_storage)
         properties = self._table_properties(output_storage)
         engine_table = self.scope.concat_tables(engine_input_tables, properties)
         return engine_table

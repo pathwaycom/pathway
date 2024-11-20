@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import ClassVar
@@ -12,6 +13,7 @@ import pathway.internals.expression as expr
 import pathway.internals.operator as op
 from pathway.internals.column_path import ColumnPath
 from pathway.internals.graph_runner.path_storage import Storage
+from pathway.internals.helpers import StableSet
 from pathway.internals.universe import Universe
 
 
@@ -33,7 +35,34 @@ def compute_paths(
             raise ValueError(
                 f"Operator {operator} in update_storage() but it shouldn't produce tables."
             )
-    return evaluator.compute(output_columns, input_storages)
+    output_columns = list(output_columns)
+    return evaluator.compute(output_columns, input_storages).restrict_to(
+        output_columns, require_all=True
+    )
+
+
+def maybe_flatten_input_storage(
+    storage: Storage, columns: Iterable[clmn.Column]
+) -> Storage:
+    columns = StableSet(columns)
+    paths = set()
+    for column in columns:
+        paths.add(storage.get_path(column))
+
+    removable_size = 0.0
+    for path, column in storage.get_all_columns():
+        # Using get_all_columns (instead of get_columns) is needed to keep track of columns
+        # that are not in use but still present in the tuple. Only if we are aware of all
+        # fields in a tuple, we can make a conscious decision whether we want to flatten
+        # a tuple (and remove columns) or not.
+        if path not in paths:
+            removable_size += column.dtype.max_size()
+    if math.isinf(removable_size) or removable_size > len(columns):
+        # if we can remove potentially large column or removable_size is greater than
+        # the number of columns we keep (equal to the flattening cost), then flatten the storage
+        return Storage.flat(storage._universe, columns)
+    else:
+        return storage
 
 
 class PathEvaluator(ABC):
@@ -100,7 +129,7 @@ class AddNewColumnsPathEvaluator(
 ):
     def compute_if_all_new_are_references(
         self,
-        output_columns: Iterable[clmn.Column],
+        output_columns: list[clmn.Column],
         input_storage: Storage,
     ) -> Storage | None:
         paths = {}
@@ -115,27 +144,27 @@ class AddNewColumnsPathEvaluator(
                 paths[column] = input_storage.get_path(column.expression._column)
             else:
                 return None
-        return Storage(self.context.universe, paths, has_only_references=True)
+        return input_storage.with_updated_paths(paths).with_only_references()
 
     def compute_if_old_are_not_required(
         self,
-        output_columns: Iterable[clmn.Column],
+        output_columns: list[clmn.Column],
         input_storage: Storage,
     ) -> Storage | None:
-        paths = {}
-        for i, column in enumerate(output_columns):
+        for column in output_columns:
             if input_storage.has_column(column):
                 return None
-            else:
-                paths[column] = ColumnPath((i,))
-        return Storage(self.context.universe, paths, has_only_new_columns=True)
+        return Storage.flat(
+            self.context.universe, output_columns
+        ).with_only_new_columns()
 
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
-        input_storage = input_storages.get(self.context.universe)
+        input_storage = input_storages[self.context.universe]
+        output_columns = list(output_columns)
         if input_storage is not None and isinstance(self.context, clmn.RowwiseContext):
             maybe_storage = self.compute_if_all_new_are_references(
                 output_columns, input_storage
@@ -146,14 +175,14 @@ class AddNewColumnsPathEvaluator(
                 )
             if maybe_storage is not None:
                 return maybe_storage
-        paths = {}
+        paths: dict[clmn.Column, ColumnPath] = {}
         counter = itertools.count(start=1)
         for column in output_columns:
-            if input_storage is not None and input_storage.has_column(column):
-                paths[column] = (0,) + input_storage.get_path(column)
-            else:
+            if not input_storage.has_column(column):
                 paths[column] = ColumnPath((next(counter),))
-        return Storage(self.context.universe, paths)
+        return input_storage.with_prefix((0,)).with_updated_paths(
+            paths, universe=self.context.universe
+        )
 
 
 class SortingPathEvaluator(PathEvaluator, context_types=[clmn.SortingContext]):
@@ -165,15 +194,12 @@ class SortingPathEvaluator(PathEvaluator, context_types=[clmn.SortingContext]):
         input_storages: dict[Universe, Storage],
     ) -> Storage:
         input_storage = input_storages[self.context.universe]
-        paths = {}
-        for column in output_columns:
-            if column == self.context.prev_column:
-                paths[column] = ColumnPath((1,))
-            elif column == self.context.next_column:
-                paths[column] = ColumnPath((2,))
-            else:
-                paths[column] = (0,) + input_storage.get_path(column)
-        return Storage(self.context.universe, paths)
+        return Storage.merge_storages(
+            self.context.universe,
+            input_storage,
+            Storage.one_column_storage(self.context.prev_column),
+            Storage.one_column_storage(self.context.next_column),
+        )
 
 
 class NoNewColumnsMultipleSourcesPathEvaluator(
@@ -209,28 +235,36 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
         else:
             updates = (context.updates,)
 
-        if not keep_structure:
-            names = []
-            source_columns: list[list[clmn.Column]] = [[]]
-            for column in output_columns_list:
-                assert isinstance(column, clmn.ColumnWithExpression)
-                assert isinstance(column.expression, expr.ColumnReference)
-                names.append(column.expression.name)
-                source_columns[0].append(column.dereference())
-            for columns in updates:
-                source_columns.append([columns[name] for name in names])
+        names = []
+        source_columns: list[list[clmn.Column]] = [[]]
+        for column in output_columns_list:
+            assert isinstance(column, clmn.ColumnWithExpression)
+            assert isinstance(column.expression, expr.ColumnReference)
+            names.append(column.expression.name)
+            source_columns[0].append(column.dereference())
+        for columns in updates:
+            source_columns.append([columns[name] for name in names])
 
-            flattened_inputs = []
-            assert len(list(self.context.universe_dependencies())) == len(
-                source_columns
-            )
+        if keep_structure and isinstance(context, clmn.UpdateRowsContext):
             for universe, cols in zip(
-                self.context.universe_dependencies(), source_columns
+                self.context.universe_dependencies(), source_columns, strict=True
             ):
+                input_storage = input_storages[universe]
+                maybe_flat_storage = maybe_flatten_input_storage(input_storage, cols)
+                if maybe_flat_storage is not input_storage:
+                    keep_structure = False
+                    break
+
+        flattened_inputs = {}
+        for i, (universe, cols) in enumerate(
+            zip(self.context.universe_dependencies(), source_columns, strict=True)
+        ):
+            if keep_structure:
+                flattened_storage = input_storages[universe]
+            else:
                 flattened_storage = Storage.flat(universe, cols)
-                flattened_inputs.append(flattened_storage)
-        else:
-            flattened_inputs = None
+
+            flattened_inputs[f"{i}"] = flattened_storage
 
         evaluator: PathEvaluator
         if keep_structure:
@@ -243,15 +277,12 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
             {source_universe: input_storages[source_universe]},
         )
 
-        return storage.with_flattened_inputs(flattened_inputs)
+        return storage.with_maybe_flattened_inputs(flattened_inputs)
 
 
 NoNewColumnsContext = (
     clmn.FilterContext
     | clmn.ReindexContext
-    | clmn.IntersectContext
-    | clmn.DifferenceContext
-    | clmn.HavingContext
     | clmn.ForgetContext
     | clmn.ForgetImmediatelyContext
     | clmn.FilterOutForgettingContext
@@ -269,9 +300,6 @@ class NoNewColumnsPathEvaluator(
     context_types=[
         clmn.FilterContext,
         clmn.ReindexContext,
-        clmn.IntersectContext,
-        clmn.DifferenceContext,
-        clmn.HavingContext,
         clmn.ForgetContext,
         clmn.ForgetImmediatelyContext,
         clmn.FilterOutForgettingContext,
@@ -297,54 +325,190 @@ class NoNewColumnsPathEvaluator(
             ):
                 source_column = column.expression._column
                 paths[column] = input_storage.get_path(source_column)
+        return input_storage.with_updated_paths(paths, universe=self.context.universe)
+
+
+class NoNewColumnsWithDataStoredPathEvaluator(
+    PathEvaluator,
+    context_types=[
+        clmn.IntersectContext,
+        clmn.DifferenceContext,
+        clmn.HavingContext,
+    ],
+):
+    context: clmn.IntersectContext | clmn.DifferenceContext | clmn.HavingContext
+
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> Storage:
+        input_storage = input_storages[self.context.input_universe()]
+        required_columns: StableSet[clmn.Column] = StableSet()
+        for column in output_columns:
+            if (
+                isinstance(column, clmn.ColumnWithReference)
+                and column.context == self.context
+            ):
+                required_columns.add(column.expression._column)
             else:  # column from the same universe, but not the current table
-                paths[column] = input_storage.get_path(column)
-        return Storage(self.context.universe, paths)
+                required_columns.add(column)
+        input_storage = maybe_flatten_input_storage(input_storage, required_columns)
+        paths: dict[clmn.Column, ColumnPath] = {}
+        for column in output_columns:
+            if (
+                isinstance(column, clmn.ColumnWithReference)
+                and column.context == self.context
+            ):
+                source_column = column.expression._column
+                paths[column] = input_storage.get_path(source_column)
+        return input_storage.with_updated_paths(
+            paths, universe=self.context.universe
+        ).with_maybe_flattened_inputs({"input_storage": input_storage})
 
 
 class UpdateCellsPathEvaluator(PathEvaluator, context_types=[clmn.UpdateCellsContext]):
     context: clmn.UpdateCellsContext
 
+    def maybe_flatten_input_storages(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> tuple[Storage, Storage]:
+        input_storage = input_storages[self.context.universe]
+        left_columns: StableSet[clmn.Column] = StableSet()
+        right_columns: StableSet[clmn.Column] = StableSet()
+        for column in output_columns:
+            if input_storage.has_column(column):
+                left_columns.add(column)
+            else:
+                assert isinstance(column, clmn.ColumnWithReference)
+                left_columns.add(column.expression._column)
+                if column.expression.name in self.context.updates:
+                    right_columns.add(self.context.updates[column.expression.name])
+        left_storage = maybe_flatten_input_storage(input_storage, left_columns)
+        right_storage = maybe_flatten_input_storage(
+            input_storages[self.context.right.universe], right_columns
+        )
+
+        return (left_storage, right_storage)
+
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
-        input_storage = input_storages[self.context.universe]
+        left_storage, right_storage = self.maybe_flatten_input_storages(
+            output_columns, input_storages
+        )
+        prefixed_left_storage = left_storage.with_prefix((0,))
         counter = itertools.count(start=1)
-        paths = {}
+        paths: dict[clmn.Column, ColumnPath] = {}
         for column in output_columns:
-            if column in input_storage.get_columns():
-                paths[column] = (0,) + input_storage.get_path(column)
-            elif (
+            if (
                 isinstance(column, clmn.ColumnWithReference)
-                and column.expression.name not in self.context.updates
+                and column.context == self.context
             ):
-                source_column = column.expression._column
-                paths[column] = (0,) + input_storage.get_path(source_column)
-            else:
-                paths[column] = ColumnPath((next(counter),))
-        return Storage(self.context.universe, paths)
+                if column.expression.name in self.context.updates:
+                    paths[column] = ColumnPath((next(counter),))
+                else:
+                    source_column = column.expression._column
+                    paths[column] = prefixed_left_storage.get_path(source_column)
+        return prefixed_left_storage.with_updated_paths(
+            paths
+        ).with_maybe_flattened_inputs(
+            {"left_storage": left_storage, "right_storage": right_storage}
+        )
 
 
 class JoinPathEvaluator(PathEvaluator, context_types=[clmn.JoinContext]):
     context: clmn.JoinContext
 
+    def maybe_flatten_input_storages(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+    ) -> tuple[Storage, Storage]:
+        exclusive_right_columns = list(
+            itertools.chain(
+                self.context.right_table._columns.values(),
+                self.context.on_right.columns,
+            )
+        )
+        left_input_storage = input_storages[self.context.left_table._universe].remove(
+            exclusive_right_columns
+        )
+        right_input_storage = input_storages[
+            self.context.right_table._universe
+        ].restrict_to(exclusive_right_columns)
+
+        required_input_columns: list[clmn.Column] = []
+        for column in itertools.chain(
+            output_columns, self.context.column_dependencies()
+        ):
+            if (
+                isinstance(column, clmn.ColumnWithExpression)
+                and column.context == self.context
+            ):
+                required_input_columns.extend(column.column_dependencies())
+            else:
+                required_input_columns.append(column)
+
+        left_columns: StableSet[clmn.Column] = StableSet()
+        right_columns: StableSet[clmn.Column] = StableSet()
+        for column in required_input_columns:
+            if left_input_storage.has_column(column):
+                left_columns.add(column)
+            else:
+                assert right_input_storage.has_column(column)
+                right_columns.add(column)
+        left_input_storage = maybe_flatten_input_storage(
+            input_storages[self.context.left_table._universe], left_columns
+        )
+        right_input_storage = maybe_flatten_input_storage(
+            input_storages[self.context.right_table._universe], right_columns
+        )
+        return (left_input_storage, right_input_storage)
+
+    def merge_storages(self, left_storage: Storage, right_storage: Storage) -> Storage:
+        left_id_storage = Storage.one_column_storage(self.context.left_table._id_column)
+        right_id_storage = Storage.one_column_storage(
+            self.context.right_table._id_column
+        )
+        right_columns = list(self.context.right_table._columns.values())
+        return Storage.merge_storages(
+            self.context.universe,
+            left_id_storage,
+            left_storage.remove(right_columns),
+            right_id_storage,
+            right_storage.restrict_to(right_columns),
+        )
+
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
+        output_columns = list(output_columns)
+        left_input_storage, right_input_storage = self.maybe_flatten_input_storages(
+            output_columns, input_storages
+        )
+        join_storage = self.merge_storages(left_input_storage, right_input_storage)
         if self.context.assign_id:
-            left_universe = self.context.left_table._universe
-            input_storage = input_storages[left_universe]
-            return AddNewColumnsPathEvaluator(self.context).compute(
-                output_columns, {left_universe: input_storage}
+            output_storage = AddNewColumnsPathEvaluator(self.context).compute(
+                output_columns, {self.context.universe: left_input_storage}
             )
         else:
-            return FlatStoragePathEvaluator(self.context).compute(
-                output_columns, input_storages
+            output_storage = FlatStoragePathEvaluator(self.context).compute(
+                output_columns, {}
             )
+        return output_storage.with_maybe_flattened_inputs(
+            {
+                "left_storage": left_input_storage,
+                "right_storage": right_input_storage,
+                "join_storage": join_storage,
+            }
+        )
 
 
 class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
@@ -355,7 +519,9 @@ class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
-        input_storage = input_storages[self.context.orig_universe]
+        prefixed_input_storage = input_storages[self.context.orig_universe].with_prefix(
+            (0,)
+        )
         paths = {}
         for column in output_columns:
             if column == self.context.flatten_result_column:
@@ -363,8 +529,10 @@ class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
             else:
                 assert isinstance(column, clmn.ColumnWithReference)
                 original_column = column.expression._column
-                paths[column] = (0,) + input_storage.get_path(original_column)
-        return Storage(self.context.universe, paths)
+                paths[column] = prefixed_input_storage.get_path(original_column)
+        return prefixed_input_storage.with_updated_paths(
+            paths, universe=self.context.universe
+        )
 
 
 class PromiseSameUniversePathEvaluator(
@@ -388,15 +556,36 @@ class PromiseSameUniversePathEvaluator(
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
     ) -> Storage:
-        paths: dict[clmn.Column, ColumnPath] = {}
-        orig_storage = input_storages[self.context.orig_id_column.universe]
-        new_storage = input_storages[self.context.universe]
+        orig_storage_columns: StableSet[clmn.Column] = StableSet()
+        newly_created_columns: StableSet[clmn.ColumnWithReference] = StableSet()
+        new_storage_columns: StableSet[clmn.Column] = StableSet()
         for column in output_columns:
             if (
                 isinstance(column, clmn.ColumnWithReference)
                 and column.context == self.context
             ):
-                paths[column] = (1,) + orig_storage.get_path(column.expression._column)
+                newly_created_columns.add(column)
+                orig_storage_columns.add(column.expression._column)
             else:
-                paths[column] = (0,) + new_storage.get_path(column)
-        return Storage(self.context.universe, paths)
+                new_storage_columns.add(column)
+
+        if isinstance(self.context, clmn.IxContext):
+            new_storage_columns.add(self.context.key_column)
+
+        orig_storage = input_storages[self.context.orig_id_column.universe]
+        orig_storage = maybe_flatten_input_storage(orig_storage, orig_storage_columns)
+        new_storage = input_storages[self.context.universe]
+        new_storage = maybe_flatten_input_storage(new_storage, new_storage_columns)
+
+        paths: dict[clmn.Column, ColumnPath] = {}
+        for column in newly_created_columns:
+            paths[column] = (1,) + orig_storage.get_path(column.expression._column)
+        for column in new_storage_columns:
+            paths[column] = (0,) + new_storage.get_path(column)
+        return (
+            Storage.merge_storages(self.context.universe, new_storage, orig_storage)
+            .with_updated_paths(paths)
+            .with_maybe_flattened_inputs(
+                {"orig_storage": orig_storage, "new_storage": new_storage}
+            )
+        )
