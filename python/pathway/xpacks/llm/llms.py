@@ -13,7 +13,7 @@ import logging
 import uuid
 from abc import abstractmethod
 from collections.abc import Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pathway as pw
 from pathway.internals import udfs
@@ -249,10 +249,13 @@ class OpenAIChat(BaseChat):
     async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
         import openai
 
+        if TYPE_CHECKING:
+            from openai.types.chat import ChatCompletionMessageParam
+
         if isinstance(messages, pw.Json):
-            messages_decoded: list[openai.ChatCompletionMessageParam] = messages.value  # type: ignore
+            messages_decoded: list[ChatCompletionMessageParam] = messages.as_list()
         else:
-            messages_decoded = messages
+            messages_decoded = messages  # type: ignore
 
         kwargs = {**self.kwargs, **kwargs}
 
@@ -266,9 +269,9 @@ class OpenAIChat(BaseChat):
             "_type": "openai_chat_request",
             "kwargs": copy.deepcopy(kwargs),
             "id": msg_id,
-            "messages": _prep_message_log(messages_decoded, verbose),
+            "messages": _prep_message_log(messages_decoded, verbose),  # type: ignore
         }
-        logger.info(json.dumps(event))
+        logger.info(json.dumps(event, ensure_ascii=False))
 
         client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
@@ -281,7 +284,7 @@ class OpenAIChat(BaseChat):
             ),
             "id": msg_id,
         }
-        logger.info(json.dumps(event))
+        logger.info(json.dumps(event, ensure_ascii=False))
         return response
 
     def __call__(self, messages: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
@@ -392,7 +395,7 @@ class LiteLLMChat(BaseChat):
             "kwargs": copy.deepcopy(kwargs),
             "messages": messages_decoded,
         }
-        logger.info(json.dumps(event))
+        logger.info(json.dumps(event, ensure_ascii=False))
 
         ret = litellm.completion(
             messages=messages_decoded, **kwargs
@@ -403,7 +406,7 @@ class LiteLLMChat(BaseChat):
             "_type": "litellm_chat_response",
             "response": response,
         }
-        logger.info(json.dumps(event))
+        logger.info(json.dumps(event, ensure_ascii=False))
 
         return response
 
@@ -644,7 +647,7 @@ class CohereChat(BaseChat):
             "_type": "cohere_chat_response",
             "response": response,
         }
-        logger.info(json.dumps(event))
+        logger.info(json.dumps(event, ensure_ascii=False))
 
         return (response, cited_documents)
 
