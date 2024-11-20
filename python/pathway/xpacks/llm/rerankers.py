@@ -21,26 +21,30 @@ def rerank_topk_filter(
         - docs: A column with lists of  documents or chunks to rank. Each row in this column
             is filtered separately.
         - scores: A column with lists of re-ranking scores for chunks.
-        - k: Number of documents to keep after filtering.
+        - k: The number of documents to keep after filtering.
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import rerankers
     >>> import pandas as pd
-    >>> retrieved_docs = [{"text": "Something"}, {"text": "Something else"}, {"text": "Pathway"}]
+    >>> retrieved_docs = [
+    ...     {"text": "Something"},
+    ...     {"text": "Something else"},
+    ...     {"text": "Pathway"},
+    ... ]
     >>> df = pd.DataFrame({"docs": retrieved_docs, "reranker_scores": [1.0, 3.0, 2.0]})
     >>> table = pw.debug.table_from_pandas(df)
     >>> docs_table = table.reduce(
-    ... doc_list=pw.reducers.tuple(pw.this.docs),
-    ... score_list=pw.reducers.tuple(pw.this.reranker_scores),
+    ...     doc_list=pw.reducers.tuple(pw.this.docs),
+    ...     score_list=pw.reducers.tuple(pw.this.reranker_scores),
     ... )
     >>> docs_table = docs_table.select(
-    ... docs_scores_tuple=rerankers.rerank_topk_filter(
-    ... pw.this.doc_list, pw.this.score_list, 2
-    ... )
+    ...     docs_scores_tuple=rerankers.rerank_topk_filter(
+    ...         pw.this.doc_list, pw.this.score_list, 2
+    ...     )
     ... )
     >>> docs_table = docs_table.select(
-    ... doc_list=pw.this.docs_scores_tuple[0],
-    ... score_list=pw.this.docs_scores_tuple[1],
+    ...     doc_list=pw.this.docs_scores_tuple[0],
+    ...     score_list=pw.this.docs_scores_tuple[1],
     ... )
     >>> pw.debug.compute_and_print(docs_table, include_id=False)
     doc_list                                                            | score_list
@@ -79,7 +83,7 @@ class LLMReranker(pw.UDF):
     >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})
     >>> table = pw.debug.table_from_pandas(df)
     >>> table += table.select(
-    ... reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
+    ...     reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
     ... )
     >>> table
     <pathway.Table schema={'docs': <class 'pathway.internals.json.Json'>, 'prompt': <class 'str'>, 'reranker_scores': <class 'float'>}>
@@ -204,7 +208,7 @@ class CrossEncoderReranker(pw.UDF):
     >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})
     >>> table = pw.debug.table_from_pandas(df)
     >>> table += table.select(
-    ... reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
+    ...     reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
     ... )
     >>> table
     <pathway.Table schema={'docs': <class 'pathway.internals.json.Json'>, 'prompt': <class 'str'>, 'reranker_scores': <class 'float'>}>
@@ -269,7 +273,7 @@ class EncoderReranker(pw.UDF):
     >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})
     >>> table = pw.debug.table_from_pandas(df)
     >>> table += table.select(
-    ... reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
+    ...     reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
     ... )
     >>> table
     <pathway.Table schema={'docs': <class 'pathway.internals.json.Json'>, 'prompt': <class 'str'>, 'reranker_scores': <class 'float'>}>

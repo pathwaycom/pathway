@@ -37,7 +37,7 @@
 # ---
 # ::
 #
-# Pathway Vectorstore enables building a document index on top of you documents without the
+# Pathway Vectorstore enables building a document index on top of your documents without the
 # complexity of ETL pipelines, managing different containers for storing, embedding, and serving.
 # It allows for easy to manage, always up-to-date, LLM pipelines accesible using a RESTful API
 # and with integrations to popular LLM toolkits such as Langchain and LlamaIndex.
@@ -62,7 +62,7 @@
 
 # %%
 # _MD_SHOW_!pip install pathway litellm
-# # !pip install unstructured[all-docs]
+# _MD_SHOW_ !pip install unstructured[all-docs]
 # _MD_SHOW_!mkdir -p sample_documents
 # _MD_SHOW_![ -f sample_documents/repo_readme.md ] || wget 'https://gist.githubusercontent.com/janchorowski/dd22a293f3d99d1b726eedc7d46d2fc0/raw/pathway_readme.md' -O 'sample_documents/repo_readme.md'
 
@@ -320,9 +320,6 @@ query = "What is Pathway?"
 #
 # The vectorization pipeline supports pluggable parsers. If not provided, defaults to `UTF-8` parser. You can find available parsers [here](https://github.com/pathwaycom/pathway/blob/main/python/pathway/xpacks/llm/parsers.py).
 # An example parser that can read PDFs, Word documents and other formats is provided with `parsers.ParseUnstructured`:
-
-# %%
-# # !pip install unstructured[all-docs]  # if you will need to parse complex documents
 
 # %% [markdown]
 # ```python
