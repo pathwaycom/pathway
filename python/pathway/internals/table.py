@@ -343,7 +343,11 @@ id_type=<class 'pathway.engine.Pointer'>>
             table.with_id_from(table.id, i) for i, table in enumerate(all_tables)
         ]
         universes.promise_are_pairwise_disjoint(*reindexed)
-        return Table.concat(*reindexed).update_id_type(dt.ANY_POINTER)
+        concatenated = Table.concat(*reindexed)
+        return concatenated.update_id_type(
+            dt.ANY_POINTER,
+            id_append_only=concatenated._id_column.properties.append_only,
+        )
 
     @trace_user_frame
     @staticmethod
@@ -705,6 +709,8 @@ id_type=<class 'pathway.engine.Pointer'>>
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
     ) -> Table:
+        # FIXME: freeze can be incorrect if the input is not append-only
+        # we may produce insertion but never produce deletion
         context = clmn.FreezeContext(
             self._id_column,
             self._eval(threshold_column),
@@ -881,7 +887,7 @@ id_type=<class 'pathway.engine.Pointer'>>
 
     @contextualized_operator
     def _restrict(self, other: TableLike) -> Table[TSchema]:
-        context = clmn.RestrictContext(self._id_column, other._universe)
+        context = clmn.RestrictContext(self._id_column, other._id_column)
 
         columns = {
             name: self._wrap_column_in_context(context, column, name)
@@ -1994,10 +2000,12 @@ id_type=<class 'pathway.engine.Pointer'>>
 
     @trace_user_frame
     @check_arg_types
-    def update_id_type(self, id_type) -> Table:
+    def update_id_type(self, id_type, *, id_append_only: bool | None = None) -> Table:
         id_type = dt.wrap(id_type)
         assert isinstance(id_type, dt.Pointer)
-        return self._with_schema(self.schema.with_id_type(id_type))
+        return self._with_schema(
+            self.schema.with_id_type(id_type, append_only=id_append_only)
+        )
 
     @check_arg_types
     def cast_to_types(self, **kwargs: Any) -> Table:

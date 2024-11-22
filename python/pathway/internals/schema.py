@@ -245,13 +245,17 @@ def _create_column_definitions(
 
 
 def _universe_properties(
-    columns: list[ColumnSchema], schema_properties: SchemaProperties, dtype: dt.DType
+    columns: list[ColumnSchema],
+    schema_properties: SchemaProperties,
+    dtype: dt.DType,
+    append_only: bool | None = None,
 ) -> ColumnProperties:
-    append_only: bool = False
-    if len(columns) > 0:
-        append_only = any(c.append_only for c in columns)
-    elif schema_properties.append_only is not None:
-        append_only = schema_properties.append_only
+    if append_only is None:
+        append_only = False
+        if len(columns) > 0:
+            append_only = any(c.append_only for c in columns)
+        elif schema_properties.append_only is not None:
+            append_only = schema_properties.append_only
     return ColumnProperties(dtype=dtype, append_only=append_only)
 
 
@@ -272,6 +276,7 @@ class SchemaMetaclass(type):
         *args,
         append_only: bool | None = None,
         id_dtype: dt.DType = dt.ANY_POINTER,
+        id_append_only: bool | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -283,7 +288,10 @@ class SchemaMetaclass(type):
             assert id_dtype in [derived_type, dt.ANY_POINTER]
             id_dtype = derived_type
         self.__universe_properties__ = _universe_properties(
-            list(self.__columns__.values()), schema_properties, dtype=id_dtype
+            list(self.__columns__.values()),
+            schema_properties,
+            dtype=id_dtype,
+            append_only=id_append_only,
         )
         self.__dtypes__ = {
             name: column.dtype for name, column in self.__columns__.items()
@@ -376,13 +384,15 @@ class SchemaMetaclass(type):
                 )
         return schema_builder(columns=columns, id_dtype=self.id.dtype)
 
-    def with_id_type(self, type):
+    def with_id_type(self, type, *, append_only: bool | None = None):
         type = dt.wrap(type)
         assert isinstance(type, dt.Pointer)
         columns: dict[str, ColumnDefinition] = {
             col.name: col.to_definition() for col in self.__columns__.values()
         }
-        return schema_builder(columns=columns, id_dtype=type)
+        return schema_builder(
+            columns=columns, id_dtype=type, id_append_only=append_only
+        )
 
     def update_properties(self, **kwargs) -> type[Schema]:
         columns: dict[str, ColumnDefinition] = {
@@ -595,9 +605,15 @@ def _schema_builder(
     *,
     properties: SchemaProperties = SchemaProperties(),
     id_dtype: dt.DType = dt.ANY_POINTER,
+    id_append_only: bool | None = None,
 ) -> type[Schema]:
     schema = SchemaMetaclass(
-        _name, (Schema,), _dict, append_only=properties.append_only, id_dtype=id_dtype
+        _name,
+        (Schema,),
+        _dict,
+        append_only=properties.append_only,
+        id_dtype=id_dtype,
+        id_append_only=id_append_only,
     )
     assert issubclass(schema, Schema)
     return schema
@@ -724,6 +740,7 @@ def schema_builder(
     name: str | None = None,
     properties: SchemaProperties = SchemaProperties(),
     id_dtype: dt.DType = dt.ANY_POINTER,
+    id_append_only: bool | None = None,
 ) -> type[Schema]:
     if name is None:
         name = "custom_schema(" + str(list(columns.keys())) + ")"
@@ -736,7 +753,13 @@ def schema_builder(
         **columns,
     }
 
-    return _schema_builder(name, __dict, properties=properties, id_dtype=id_dtype)
+    return _schema_builder(
+        name,
+        __dict,
+        properties=properties,
+        id_dtype=id_dtype,
+        id_append_only=id_append_only,
+    )
 
 
 def schema_from_dict(
@@ -918,6 +941,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         /,
         append_only: bool | None = None,
         id_dtype: dt.DType = dt.ANY_POINTER,  # FIXME, pw.Pointer
+        id_append_only: bool | None = None,
         **kwargs,
     ) -> None:
         super().__init_subclass__(**kwargs)

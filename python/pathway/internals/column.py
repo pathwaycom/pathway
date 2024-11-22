@@ -305,7 +305,7 @@ class Context(ABC):
         return [_create_internal_table(columns, context)]
 
     def column_properties(self, column: ColumnWithContext) -> cp.ColumnProperties:
-        return self._column_properties_evaluator().eval(column)
+        return self._column_properties_evaluator(self).eval(column)
 
     def __init_subclass__(
         cls,
@@ -415,9 +415,7 @@ class GradualBroadcastContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class ExternalIndexAsOfNowContext(
-    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
-):
+class ExternalIndexAsOfNowContext(Context):
     _index_id_column: IdColumn
     _query_id_column: IdColumn
     index_table: pw.Table
@@ -480,7 +478,10 @@ class ExternalIndexAsOfNowContext(
     def index_reply(self):
         return MaterializedColumn(
             self.query_table._universe,
-            cp.ColumnProperties(dtype=self.res_type),
+            cp.ColumnProperties(
+                dtype=self.res_type,
+                append_only=self.query_column.properties.append_only,
+            ),
         )
 
 
@@ -661,17 +662,23 @@ class FilterOutForgettingContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class FreezeContext(TimeColumnContext):
+class FreezeContext(
+    TimeColumnContext, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table._freeze() operation."""
 
 
 @dataclass(eq=False, frozen=True)
-class BufferContext(TimeColumnContext):
+class BufferContext(
+    TimeColumnContext, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table._buffer() operation."""
 
 
 @dataclass(eq=False, frozen=True)
-class ReindexContext(Context):
+class ReindexContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.with_id() operation."""
 
     reindex_column: ColumnWithExpression
@@ -694,7 +701,9 @@ class ReindexContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class IxContext(Context):
+class IxContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.ix() operation."""
 
     key_column: Column
@@ -714,7 +723,9 @@ class IxContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class IntersectContext(Context):
+class IntersectContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.intersect() operation."""
 
     intersecting_ids: tuple[IdColumn, ...]
@@ -724,6 +735,9 @@ class IntersectContext(Context):
 
     def input_universe(self) -> Universe:
         return self.intersecting_ids[0].universe
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return self.intersecting_ids
 
     def id_column_type(self) -> dt.DType:
         return self.intersecting_ids[0].dtype
@@ -739,21 +753,23 @@ class IntersectContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class RestrictContext(Context):
+class RestrictContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.restrict() operation."""
 
     orig_id_column: IdColumn
-    _universe: Universe
+    new_id_column: IdColumn
 
     def column_dependencies_external(self) -> Iterable[Column]:
-        return [self.orig_id_column]
+        return [self.orig_id_column, self.new_id_column]
 
     def id_column_type(self) -> dt.DType:
         return self.orig_id_column.dtype
 
     @cached_property
     def universe(self) -> Universe:
-        return self._universe
+        return self.new_id_column.universe
 
 
 @dataclass(eq=False, frozen=True)
@@ -775,13 +791,15 @@ class DifferenceContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class HavingContext(Context):
+class HavingContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     orig_id_column: IdColumn
     key_column: Column
     key_id_column: IdColumn
 
     def column_dependencies_external(self) -> Iterable[Column]:
-        return [self.key_column]
+        return [self.key_column, self.orig_id_column]
 
     def input_universe(self) -> Universe:
         return self.orig_id_column.universe
@@ -795,7 +813,9 @@ class HavingContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class UpdateRowsContext(Context):
+class UpdateRowsContext(
+    Context, column_properties_evaluator=cp.UpdateRowsPropsEvaluator
+):
     """Context of `table.update_rows()` and related operations."""
 
     updates: dict[str, Column]
@@ -823,7 +843,9 @@ class UpdateRowsContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class UpdateCellsContext(Context):
+class UpdateCellsContext(
+    Context, column_properties_evaluator=cp.UpdateCellsPropsEvaluator
+):
     left: IdColumn
     right: IdColumn
     updates: dict[str, Column]
@@ -842,7 +864,9 @@ class UpdateCellsContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class ConcatUnsafeContext(Context):
+class ConcatUnsafeContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.concat_unsafe()`."""
 
     updates: tuple[dict[str, Column], ...]
@@ -851,6 +875,9 @@ class ConcatUnsafeContext(Context):
     def __post_init__(self):
         assert len(self.union_ids) > 0
         assert all(arg.dtype == self.union_ids[0].dtype for arg in self.union_ids)
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return self.union_ids
 
     def reference_column_dependencies(self, ref: ColumnReference) -> StableSet[Column]:
         return StableSet([update[ref.name] for update in self.updates])
@@ -871,7 +898,7 @@ class ConcatUnsafeContext(Context):
 
 @dataclass(eq=False, frozen=True)
 class PromiseSameUniverseContext(
-    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+    Context, column_properties_evaluator=cp.PromiseSameUniversePropsEvaluator
 ):
     """Context of table.unsafe_promise_same_universe_as() operation."""
 
@@ -901,7 +928,7 @@ class PromiseSameUniverseAsOfNowContext(
 
 
 @dataclass(eq=True, frozen=True)
-class JoinContext(Context):
+class JoinContext(Context, column_properties_evaluator=cp.JoinPropsEvaluator):
     """Context for building inner table of a join, where all columns from left and right
     are properly unrolled. Uses JoinTypeInterpreter to properly evaluate which columns
     should be optionalized."""
@@ -916,6 +943,9 @@ class JoinContext(Context):
     left_ear: bool
     right_ear: bool
     exact_match: bool
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return (self.left_table._id_column, self.right_table._id_column)
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return chain(self.on_left.columns, self.on_right.columns)
@@ -984,7 +1014,9 @@ class JoinRowwiseContext(
 
 
 @dataclass(eq=False, frozen=True)
-class FlattenContext(Context):
+class FlattenContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
     """Context of `table.flatten() operation."""
 
     orig_universe: Universe
@@ -1029,6 +1061,7 @@ class FlattenContext(Context):
             self.universe,
             cp.ColumnProperties(
                 dtype=self._get_flatten_column_dtype(),
+                append_only=self.flatten_column.properties.append_only,
             ),
         )
 
@@ -1093,7 +1126,7 @@ class RemoveErrorsContext(
 
 @dataclass(eq=False, frozen=True)
 class RemoveRetractionsContext(
-    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+    Context, column_properties_evaluator=cp.AppendOnlyPropsEvaluator
 ):
     """Context of `table._remove_retractions() operation."""
 
