@@ -3,6 +3,7 @@ import json
 import pytest
 
 import pathway as pw
+from pathway.tests.utils import FileLinesNumberChecker, wait_result_with_checker
 
 from .base import create_table_for_storage, put_object_into_storage
 
@@ -37,6 +38,27 @@ def test_formats_without_parsing(storage_type, format, tmp_path, s3_path):
         target = input_full_contents.split("\n")
         target.sort()
         assert lines == target
+
+
+@pytest.mark.parametrize("storage_type", ["s3", "minio"])
+@pytest.mark.parametrize("format", ["plaintext", "plaintext_by_object"])
+def test_streaming_mode(storage_type, format, tmp_path, s3_path):
+    input_path_1 = f"{s3_path}/input_1.txt"
+    input_path_2 = f"{s3_path}/input_2.txt"
+    input_1_full_contents = "abc\n\ndef\nghi\njkl"
+    input_2_full_contents = "mno\npqr"
+    output_path = tmp_path / "output.json"
+
+    put_object_into_storage(storage_type, input_path_1, input_1_full_contents)
+    put_object_into_storage(storage_type, input_path_2, input_2_full_contents)
+
+    table = create_table_for_storage(storage_type, s3_path, format, mode="streaming")
+    pw.io.jsonlines.write(table, output_path)
+
+    expected_lines_count = 7 if format == "plaintext" else 2
+    wait_result_with_checker(
+        FileLinesNumberChecker(output_path, expected_lines_count), 30, step=1.0
+    )
 
 
 @pytest.mark.parametrize("format", ["csv", "json"])
