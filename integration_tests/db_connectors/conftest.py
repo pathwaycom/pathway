@@ -1,5 +1,5 @@
 import pytest
-from utils import MongoDBContext, PostgresContext
+from utils import DebeziumContext, MongoDBContext, PostgresContext
 
 
 @pytest.fixture
@@ -10,3 +10,8 @@ def postgres():
 @pytest.fixture
 def mongodb():
     return MongoDBContext()
+
+
+@pytest.fixture
+def debezium():
+    return DebeziumContext()

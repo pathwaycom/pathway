@@ -1,6 +1,8 @@
+import time
 import uuid
 
 import psycopg2
+import requests
 from pymongo import MongoClient
 
 import pathway as pw
@@ -19,8 +21,20 @@ POSTGRES_SETTINGS = {
     "password": POSTGRES_DB_PASSWORD,
 }
 
-MONGODB_CONNECTION_STRING = "mongodb://mongodb:27017/?replicaSet=rs0"
+MONGODB_HOST_WITH_PORT = "mongodb:27017"
+MONGODB_CONNECTION_STRING = f"mongodb://{MONGODB_HOST_WITH_PORT}/?replicaSet=rs0"
 MONGODB_BASE_NAME = "tests"
+
+KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
+KAFKA_SETTINGS = {
+    "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+    "security.protocol": "plaintext",
+    "group.id": "0",
+    "session.timeout.ms": "6000",
+    "auto.offset.reset": "earliest",
+}
+
+DEBEZIUM_CONNECTOR_URL = "http://debezium:8083/connectors"
 
 
 class PostgresContext:
@@ -35,6 +49,25 @@ class PostgresContext:
         )
         self.connection.autocommit = True
         self.cursor = self.connection.cursor()
+
+    def insert_row(
+        self, table_name: str, values: dict[str, int | bool | str | float]
+    ) -> None:
+        field_names = []
+        field_values = []
+        for key, value in values.items():
+            field_names.append(key)
+            if isinstance(value, str):
+                field_values.append(f"'{value}'")
+            elif value is True:
+                field_values.append("'t'")
+            elif value is False:
+                field_values.append("'f'")
+            else:
+                field_values.append(str(value))
+        condition = f'INSERT INTO {table_name} ({",".join(field_names)}) VALUES ({",".join(field_values)})'
+        print(f"Inserting a row: {condition}")
+        self.cursor.execute(condition)
 
     def create_table(self, schema: type[pw.Schema], *, used_for_output: bool) -> str:
         table_name = f'postgres_{str(uuid.uuid4()).replace("-", "")}'
@@ -110,3 +143,65 @@ class MongoDBContext:
                 entry[field_name] = document[field_name]
             result.append(entry)
         return result
+
+    def insert_document(
+        self, collection_name: str, document: dict[str, int | bool | str | float]
+    ) -> None:
+        db = self.client[MONGODB_BASE_NAME]
+        collection = db[collection_name]
+        collection.insert_one(document)
+
+
+class DebeziumContext:
+
+    def _register_connector(self, payload: dict, result_on_ok: str) -> str:
+        for _ in range(300):
+            try:
+                r = requests.post(DEBEZIUM_CONNECTOR_URL, timeout=1, json=payload)
+                is_ok = r.status_code // 100 == 2
+            except Exception as e:
+                print(f"Debezium is not ready to register connector yet: {e}")
+                time.sleep(1.0)
+                continue
+            if is_ok:
+                return result_on_ok
+            else:
+                print(
+                    f"Debezium is not ready to register connector yet. Code: {r.status_code}. Text: {r.text}"
+                )
+                time.sleep(1.0)
+        raise RuntimeError("Failed to register Debezium connector")
+
+    def register_mongodb(self) -> str:
+        connector_id = str(uuid.uuid4()).replace("-", "")
+        payload = {
+            "name": f"values-connector-{connector_id}",
+            "config": {
+                "connector.class": "io.debezium.connector.mongodb.MongoDbConnector",
+                "mongodb.hosts": f"rs0/{MONGODB_HOST_WITH_PORT}",
+                "mongodb.name": f"{connector_id}",
+                "database.include.list": MONGODB_BASE_NAME,
+                "database.history.kafka.bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+                "database.history.kafka.topic": "dbhistory.mongo",
+            },
+        }
+        return self._register_connector(payload, f"{connector_id}.{MONGODB_BASE_NAME}.")
+
+    def register_postgres(self, table_name: str) -> str:
+        payload = {
+            "name": "values-connector",
+            "config": {
+                "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+                "plugin.name": "pgoutput",
+                "database.hostname": POSTGRES_DB_HOST,
+                "database.port": str(POSTGRES_DB_PORT),
+                "database.user": str(POSTGRES_DB_USER),
+                "database.password": str(POSTGRES_DB_PASSWORD),
+                "database.dbname": str(POSTGRES_DB_NAME),
+                "database.server.name": POSTGRES_DB_HOST,
+                "table.include.list": f"public.{table_name}",
+                "database.history.kafka.bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+                "database.history.kafka.topic": "schema-changes.inventory",
+            },
+        }
+        return self._register_connector(payload, f"postgres.public.{table_name}")
