@@ -2594,11 +2594,11 @@ impl Reader for S3GenericReader {
                         offset,
                     ));
                 }
+                self.reader = None;
 
-                if self.stream_next_object()? {
-                    // No metadata is currently provided by S3 scanner
-                    return Ok(ReadResult::NewSource(None));
-                }
+                return Ok(ReadResult::FinishedSource {
+                    commit_allowed: true,
+                });
             }
             None => {
                 if self.stream_next_object()? {
