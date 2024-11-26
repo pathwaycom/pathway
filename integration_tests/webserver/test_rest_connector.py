@@ -236,8 +236,13 @@ def test_server_fail_on_duplicate_port(tmp_path: pathlib.Path, port: int) -> Non
     pw.io.csv.write(sum, output_path)
     pw.io.csv.write(sum_dup, output_path)
 
-    with pytest.raises(OSError, match="error while attempting to bind on address"):
+    with pytest.raises(OSError) as exc_info:
         pw.run()
+    error_message = str(exc_info.value)
+    assert (
+        "error while attempting to bind on address" in error_message
+        or "Address already in use" in error_message
+    )
 
 
 def _test_server_two_endpoints(
