@@ -4,7 +4,7 @@ use super::helpers::read_data_from_reader;
 
 use pathway_engine::connectors::data_format::{DsvParser, DsvSettings};
 use pathway_engine::connectors::data_format::{InnerSchemaField, ParsedEvent};
-use pathway_engine::connectors::data_storage::{ConnectorMode, CsvFilesystemReader};
+use pathway_engine::connectors::data_storage::{new_csv_filesystem_reader, ConnectorMode};
 use pathway_engine::engine::{Type, Value};
 
 #[test]
@@ -17,7 +17,7 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
         ("foo".to_string(), InnerSchemaField::new(Type::String, None)),
     ];
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/csvdir",
         builder,
         ConnectorMode::Static,
@@ -55,7 +55,7 @@ fn test_single_file_ok() -> eyre::Result<()> {
         ("b".to_string(), InnerSchemaField::new(Type::String, None)),
     ];
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/sample.txt",
         builder,
         ConnectorMode::Static,
@@ -89,7 +89,7 @@ fn test_custom_delimiter() -> eyre::Result<()> {
         ),
     ];
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/sql_injection.txt",
         builder,
         ConnectorMode::Static,
@@ -128,7 +128,7 @@ fn test_escape_fields() -> eyre::Result<()> {
         ),
     ];
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/csv_fields_escaped.txt",
         builder,
         ConnectorMode::Static,
@@ -182,7 +182,7 @@ fn test_escape_newlines() -> eyre::Result<()> {
         ),
     ];
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/csv_escaped_newlines.txt",
         builder,
         ConnectorMode::Static,
@@ -218,7 +218,7 @@ fn test_nonexistent_file() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/nonexistent_file.txt",
         builder,
         ConnectorMode::Static,
@@ -251,7 +251,7 @@ fn test_special_fields() -> eyre::Result<()> {
         ),
     ];
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/csv_special_fields.txt",
         builder,
         ConnectorMode::Static,

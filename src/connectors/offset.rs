@@ -42,7 +42,12 @@ pub enum OffsetValue {
     },
     S3ObjectPosition {
         total_entries_read: u64,
-        path: Arc<String>,
+        path: ArcStr,
+        bytes_offset: u64,
+    },
+    PosixLikeOffset {
+        total_entries_read: u64,
+        path: Arc<[u8]>,
         bytes_offset: u64,
     },
     PythonCursor {
@@ -56,6 +61,33 @@ pub enum OffsetValue {
     },
     NatsReadEntriesCount(usize),
     Empty,
+}
+
+impl OffsetValue {
+    pub fn as_posix_like_offset(&self) -> Option<OffsetValue> {
+        match self {
+            Self::PosixLikeOffset { .. } => Some(self.clone()),
+            Self::FilePosition {
+                total_entries_read,
+                path,
+                bytes_offset,
+            } => Some(Self::PosixLikeOffset {
+                total_entries_read: *total_entries_read,
+                path: path.as_os_str().as_bytes().into(),
+                bytes_offset: *bytes_offset,
+            }),
+            Self::S3ObjectPosition {
+                total_entries_read,
+                path,
+                bytes_offset,
+            } => Some(Self::PosixLikeOffset {
+                total_entries_read: *total_entries_read,
+                path: path.as_bytes().into(),
+                bytes_offset: *bytes_offset,
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl HashInto for OffsetValue {
@@ -72,6 +104,12 @@ impl HashInto for OffsetValue {
                 path, bytes_offset, ..
             } => {
                 hasher.update(path.as_bytes());
+                bytes_offset.hash_into(hasher);
+            }
+            OffsetValue::PosixLikeOffset {
+                path, bytes_offset, ..
+            } => {
+                hasher.update(path);
                 bytes_offset.hash_into(hasher);
             }
             OffsetValue::PythonCursor {

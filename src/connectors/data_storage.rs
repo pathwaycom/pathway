@@ -2,7 +2,6 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyBytes;
-use rand::Rng;
 use rdkafka::util::Timeout;
 use s3::error::S3Error;
 use std::any::type_name;
@@ -11,43 +10,37 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::env;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::io::BufRead;
-use std::io::BufReader;
 use std::io::BufWriter;
-use std::io::Cursor;
 use std::io::Write;
 use std::io::{Seek, SeekFrom};
 use std::mem::take;
-use std::ops::ControlFlow;
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use arcstr::ArcStr;
-use chrono::DateTime;
 use futures::StreamExt;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rayon::{ThreadPool, ThreadPoolBuilder};
-use tempfile::{tempdir, tempfile, TempDir};
+use tempfile::tempfile;
 use tokio::runtime::Runtime as TokioRuntime;
-use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
+use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
 use crate::connectors::metadata::SourceMetadata;
 use crate::connectors::offset::EMPTY_OFFSET;
+use crate::connectors::posix_like::PosixLikeReader;
+use crate::connectors::scanner::s3::S3CommandName;
+use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
 use crate::connectors::{Offset, OffsetKey, OffsetValue};
-use crate::deepcopy::DeepCopy;
 use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
@@ -55,7 +48,6 @@ use crate::engine::time::DateTime as EngineDateTime;
 use crate::engine::Type;
 use crate::engine::Value;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
-use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::{ExternalPersistentId, PersistentId};
@@ -63,8 +55,6 @@ use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::PythonSubject;
 use crate::python_api::ValueField;
-use crate::retry::{execute_with_retries, RetryConfig};
-use crate::timestamp::current_unix_timestamp_secs;
 
 use async_nats::client::FlushError as NatsFlushError;
 use async_nats::client::PublishError as NatsPublishError;
@@ -102,7 +92,6 @@ use deltalake::{
     DeltaTableError,
 };
 use elasticsearch::{BulkParts, Elasticsearch};
-use glob::Pattern as GlobPattern;
 use glob::PatternError as GlobPatternError;
 use mongodb::bson::Document as BsonDocument;
 use mongodb::error::Error as MongoError;
@@ -118,18 +107,7 @@ use rusqlite::types::ValueRef as SqliteValue;
 use rusqlite::Connection as SqliteConnection;
 use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
-use s3::request::request_trait::ResponseData as S3ResponseData;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug)]
-pub enum S3CommandName {
-    ListObjectsV2,
-    GetObject,
-    DeleteObject,
-    InitiateMultipartUpload,
-    PutMultipartChunk,
-    CompleteMultipartUpload,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -305,6 +283,7 @@ pub struct ConversionError {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum StorageType {
+    // Filesystem, S3Csv, S3Lines and S3Lines are left for compatibility with old versions
     FileSystem,
     S3Csv,
     S3Lines,
@@ -314,6 +293,7 @@ pub enum StorageType {
     Sqlite,
     DeltaLake,
     Nats,
+    PosixLike,
 }
 
 impl StorageType {
@@ -323,17 +303,94 @@ impl StorageType {
         rhs: &OffsetAntichain,
     ) -> OffsetAntichain {
         match self {
-            StorageType::FileSystem => FilesystemReader::merge_two_frontiers(lhs, rhs),
-            StorageType::S3Csv => S3CsvReader::merge_two_frontiers(lhs, rhs),
-            StorageType::CsvFilesystem => CsvFilesystemReader::merge_two_frontiers(lhs, rhs),
+            StorageType::CsvFilesystem
+            | StorageType::FileSystem
+            | StorageType::S3Csv
+            | StorageType::S3Lines
+            | StorageType::PosixLike => PosixLikeReader::merge_two_frontiers(lhs, rhs),
             StorageType::Kafka => KafkaReader::merge_two_frontiers(lhs, rhs),
             StorageType::Python => PythonReader::merge_two_frontiers(lhs, rhs),
-            StorageType::S3Lines => S3GenericReader::merge_two_frontiers(lhs, rhs),
             StorageType::Sqlite => SqliteReader::merge_two_frontiers(lhs, rhs),
             StorageType::DeltaLake => DeltaTableReader::merge_two_frontiers(lhs, rhs),
             StorageType::Nats => NatsReader::merge_two_frontiers(lhs, rhs),
         }
     }
+}
+
+pub fn new_filesystem_reader(
+    path: &str,
+    streaming_mode: ConnectorMode,
+    persistent_id: Option<PersistentId>,
+    read_method: ReadMethod,
+    object_pattern: &str,
+) -> Result<PosixLikeReader, ReadError> {
+    let scanner = FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
+    let tokenizer = BufReaderTokenizer::new(read_method);
+    Ok(PosixLikeReader::new(
+        Box::new(scanner),
+        Box::new(tokenizer),
+        persistent_id,
+    ))
+}
+
+pub fn new_csv_filesystem_reader(
+    path: &str,
+    parser_builder: csv::ReaderBuilder,
+    streaming_mode: ConnectorMode,
+    persistent_id: Option<PersistentId>,
+    object_pattern: &str,
+) -> Result<PosixLikeReader, ReadError> {
+    let scanner = FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
+    let tokenizer = CsvTokenizer::new(parser_builder);
+    Ok(PosixLikeReader::new(
+        Box::new(scanner),
+        Box::new(tokenizer),
+        persistent_id,
+    ))
+}
+
+pub fn new_s3_generic_reader(
+    bucket: S3Bucket,
+    objects_prefix: impl Into<String>,
+    streaming_mode: ConnectorMode,
+    persistent_id: Option<PersistentId>,
+    read_method: ReadMethod,
+    downloader_threads_count: usize,
+) -> Result<PosixLikeReader, ReadError> {
+    let scanner = S3Scanner::new(
+        bucket,
+        objects_prefix,
+        streaming_mode,
+        downloader_threads_count,
+    )?;
+    let tokenizer = BufReaderTokenizer::new(read_method);
+    Ok(PosixLikeReader::new(
+        Box::new(scanner),
+        Box::new(tokenizer),
+        persistent_id,
+    ))
+}
+
+pub fn new_s3_csv_reader(
+    bucket: S3Bucket,
+    objects_prefix: impl Into<String>,
+    parser_builder: csv::ReaderBuilder,
+    streaming_mode: ConnectorMode,
+    persistent_id: Option<PersistentId>,
+    downloader_threads_count: usize,
+) -> Result<PosixLikeReader, ReadError> {
+    let scanner = S3Scanner::new(
+        bucket,
+        objects_prefix,
+        streaming_mode,
+        downloader_threads_count,
+    )?;
+    let tokenizer = CsvTokenizer::new(parser_builder);
+    Ok(PosixLikeReader::new(
+        Box::new(scanner),
+        Box::new(tokenizer),
+        persistent_id,
+    ))
 }
 
 pub trait Reader {
@@ -391,6 +448,16 @@ pub trait Reader {
                             ..
                         },
                         OffsetValue::S3ObjectPosition {
+                            total_entries_read: other_line_idx,
+                            ..
+                        },
+                    )
+                    | (
+                        OffsetValue::PosixLikeOffset {
+                            total_entries_read: offset_line_idx,
+                            ..
+                        },
+                        OffsetValue::PosixLikeOffset {
                             total_entries_read: other_line_idx,
                             ..
                         },
@@ -591,7 +658,7 @@ pub enum ReadMethod {
 }
 
 impl ReadMethod {
-    fn read_next_bytes<R>(self, reader: &mut R, buf: &mut Vec<u8>) -> Result<usize, ReadError>
+    pub fn read_next_bytes<R>(self, reader: &mut R, buf: &mut Vec<u8>) -> Result<usize, ReadError>
     where
         R: BufRead,
     {
@@ -599,154 +666,6 @@ impl ReadMethod {
             ReadMethod::ByLine => Ok(reader.read_until(b'\n', buf)?),
             ReadMethod::Full => Ok(reader.read_to_end(buf)?),
         }
-    }
-}
-
-pub struct FilesystemReader {
-    persistent_id: Option<PersistentId>,
-    read_method: ReadMethod,
-
-    reader: Option<BufReader<std::fs::File>>,
-    filesystem_scanner: FilesystemScanner,
-    total_entries_read: u64,
-    deferred_read_result: Option<ReadResult>,
-}
-
-impl FilesystemReader {
-    pub fn new(
-        path: &str,
-        streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
-        read_method: ReadMethod,
-        object_pattern: &str,
-    ) -> Result<FilesystemReader, ReadError> {
-        let filesystem_scanner =
-            FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
-
-        Ok(Self {
-            persistent_id,
-
-            reader: None,
-            filesystem_scanner,
-            total_entries_read: 0,
-            read_method,
-            deferred_read_result: None,
-        })
-    }
-}
-
-impl Reader for FilesystemReader {
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::FilePosition {
-            total_entries_read,
-            path: file_path_arc,
-            bytes_offset,
-        }) = offset_value
-        else {
-            if offset_value.is_some() {
-                warn!("Incorrect type of offset value in Filesystem frontier: {offset_value:?}");
-            }
-            return Ok(());
-        };
-        // Filesystem scanner part: detect already processed file
-        self.filesystem_scanner
-            .seek_to_file(file_path_arc.as_path())?;
-
-        // If the last file read is missing from the offset, the program will read all files in the directory.
-        // We could consider alternative strategies:
-        //  1. Return an error and stop the program;
-        //  2. Track all files that have been read in the offset (though this would greatly increase the offset size);
-        //  3. Only use the file's last modification time.
-        if !file_path_arc.exists() {
-            return Ok(());
-        }
-
-        // Seek within a particular file
-        self.reader = {
-            let file = File::open(file_path_arc.as_path())?;
-            let mut reader = BufReader::new(file);
-            reader.seek(SeekFrom::Start(*bytes_offset))?;
-            Some(reader)
-        };
-        self.total_entries_read = *total_entries_read;
-
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(deferred_read_result) = self.deferred_read_result.take() {
-            return Ok(deferred_read_result);
-        }
-
-        loop {
-            if let Some(reader) = &mut self.reader {
-                let mut line = Vec::new();
-                let len = self.read_method.read_next_bytes(reader, &mut line)?;
-                if len > 0 || self.read_method == ReadMethod::Full {
-                    self.total_entries_read += 1;
-
-                    let offset = (
-                        OffsetKey::Empty,
-                        OffsetValue::FilePosition {
-                            total_entries_read: self.total_entries_read,
-                            path: self
-                                .filesystem_scanner
-                                .current_offset_file()
-                                .clone()
-                                .unwrap(),
-                            bytes_offset: reader.stream_position().unwrap(),
-                        },
-                    );
-                    let data_event_type = self
-                        .filesystem_scanner
-                        .data_event_type()
-                        .expect("scanner action can't be empty");
-
-                    if self.read_method == ReadMethod::Full {
-                        self.deferred_read_result = Some(ReadResult::FinishedSource {
-                            commit_allowed: !self.filesystem_scanner.has_planned_insertion(),
-                        });
-                        self.reader = None;
-                    }
-
-                    return Ok(ReadResult::Data(
-                        ReaderContext::from_raw_bytes(data_event_type, line),
-                        offset,
-                    ));
-                }
-
-                self.reader = None;
-                return Ok(ReadResult::FinishedSource {
-                    commit_allowed: !self.filesystem_scanner.has_planned_insertion(),
-                });
-            }
-
-            let next_read_result = self.filesystem_scanner.next_action_determined()?;
-            if let Some(next_read_result) = next_read_result {
-                if let Some(selected_file) = self.filesystem_scanner.current_file() {
-                    let file = File::open(&*selected_file)?;
-                    self.reader = Some(BufReader::new(file));
-                }
-                return Ok(next_read_result);
-            }
-
-            if self.filesystem_scanner.wait_for_new_files().is_break() {
-                return Ok(ReadResult::Finished);
-            }
-        }
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::FileSystem
     }
 }
 
@@ -887,388 +806,6 @@ impl KafkaReader {
     }
 }
 
-#[derive(Debug)]
-enum PosixScannerAction {
-    Read(Arc<PathBuf>),
-    Delete(Arc<PathBuf>),
-}
-
-#[derive(Debug)]
-struct FilesystemScanner {
-    path: GlobPattern,
-    cache_directory_path: Option<PathBuf>,
-    streaming_mode: ConnectorMode,
-    object_pattern: String,
-
-    // Mapping from the path of the loaded file to its modification timestamp
-    known_files: HashMap<PathBuf, u64>,
-
-    current_action: Option<PosixScannerAction>,
-    cached_modify_times: HashMap<PathBuf, Option<SystemTime>>,
-    next_file_for_insertion: Option<PathBuf>,
-    cached_metadata: HashMap<PathBuf, Option<SourceMetadata>>,
-    scanner_actions_queue: VecDeque<PosixScannerAction>,
-
-    // Storage is deleted on object destruction, so we need to store it
-    // for the connector's life time
-    _connector_tmp_storage: Option<TempDir>,
-}
-
-impl FilesystemScanner {
-    fn new(
-        path: &str,
-        persistent_id: Option<PersistentId>,
-        streaming_mode: ConnectorMode,
-        object_pattern: &str,
-    ) -> Result<FilesystemScanner, ReadError> {
-        let path_glob = GlobPattern::new(path)?;
-
-        let (cache_directory_path, connector_tmp_storage) = {
-            if streaming_mode.are_deletions_enabled() {
-                if let Ok(root_dir_str_path) = env::var("PATHWAY_PERSISTENT_STORAGE") {
-                    let root_dir_path = Path::new(&root_dir_str_path);
-                    ensure_directory(root_dir_path)?;
-                    let unique_id =
-                        persistent_id.unwrap_or_else(|| rand::thread_rng().gen::<u128>());
-                    let connector_tmp_directory = root_dir_path.join(format!("cache-{unique_id}"));
-                    ensure_directory(&connector_tmp_directory)?;
-                    (Some(connector_tmp_directory), None)
-                } else {
-                    let cache_tmp_storage = tempdir()?;
-                    let connector_tmp_directory = cache_tmp_storage.path();
-                    (
-                        Some(connector_tmp_directory.to_path_buf()),
-                        Some(cache_tmp_storage),
-                    )
-                }
-            } else {
-                (None, None)
-            }
-        };
-
-        Ok(Self {
-            path: path_glob,
-            streaming_mode,
-            cache_directory_path,
-
-            object_pattern: object_pattern.to_string(),
-            known_files: HashMap::new(),
-            current_action: None,
-            cached_modify_times: HashMap::new(),
-            next_file_for_insertion: None,
-            cached_metadata: HashMap::new(),
-            scanner_actions_queue: VecDeque::new(),
-            _connector_tmp_storage: connector_tmp_storage,
-        })
-    }
-
-    fn has_planned_insertion(&self) -> bool {
-        self.next_file_for_insertion.is_some()
-    }
-
-    fn is_polling_enabled(&self) -> bool {
-        self.streaming_mode.is_polling_enabled()
-    }
-
-    fn data_event_type(&self) -> Option<DataEventType> {
-        self.current_action
-            .as_ref()
-            .map(|current_action| match current_action {
-                PosixScannerAction::Read(_) => DataEventType::Insert,
-                PosixScannerAction::Delete(_) => DataEventType::Delete,
-            })
-    }
-
-    /// Returns the actual file path, which needs to be read
-    /// It is either a path to the file in the input directory, or a path to the file
-    /// which is saved in cache
-    fn current_file(&self) -> Option<Arc<PathBuf>> {
-        match &self.current_action {
-            Some(PosixScannerAction::Read(path)) => Some(path.clone()),
-            Some(PosixScannerAction::Delete(path)) => self.cached_file_path(path).map(Arc::new),
-            None => None,
-        }
-    }
-
-    /// Returns the name of the currently processed file in the input directory
-    fn current_offset_file(&self) -> Option<Arc<PathBuf>> {
-        match &self.current_action {
-            Some(PosixScannerAction::Read(path) | PosixScannerAction::Delete(path)) => {
-                Some(path.clone())
-            }
-            None => None,
-        }
-    }
-
-    fn seek_to_file(&mut self, seek_file_path: &Path) -> Result<(), ReadError> {
-        if self.streaming_mode.are_deletions_enabled() {
-            warn!("seek for snapshot mode may not work correctly in case deletions take place");
-        }
-
-        self.known_files.clear();
-        let target_modify_time = match std::fs::metadata(seek_file_path) {
-            Ok(metadata) => metadata.modified()?,
-            Err(e) => {
-                if !matches!(e.kind(), std::io::ErrorKind::NotFound) {
-                    return Err(ReadError::Io(e));
-                }
-                warn!(
-                    "Unable to restore state: last persisted file {seek_file_path:?} not found in directory. Processing all files in directory."
-                );
-                return Ok(());
-            }
-        };
-        let matching_files: Vec<PathBuf> = self.get_matching_file_paths()?;
-        for entry in matching_files {
-            if !entry.is_file() {
-                continue;
-            }
-            let Some(modify_time) = self.modify_time(&entry) else {
-                continue;
-            };
-            if (modify_time, entry.as_path()) <= (target_modify_time, seek_file_path) {
-                let modify_timestamp = modify_time
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("System time should be after the Unix epoch")
-                    .as_secs();
-                self.known_files.insert(entry, modify_timestamp);
-            }
-        }
-        self.current_action = Some(PosixScannerAction::Read(Arc::new(
-            seek_file_path.to_path_buf(),
-        )));
-
-        Ok(())
-    }
-
-    fn modify_time(&mut self, entry: &Path) -> Option<SystemTime> {
-        if self.streaming_mode.are_deletions_enabled() {
-            // If deletions are enabled, we also need to handle the case when the modification
-            // time of an entry changes. Hence, we can't just memorize it once.
-            entry.metadata().ok()?.modified().ok()
-        } else {
-            *self
-                .cached_modify_times
-                .entry(entry.to_path_buf())
-                .or_insert_with(|| entry.metadata().ok()?.modified().ok())
-        }
-    }
-
-    /// Finish reading the current file and find the next one to read from.
-    /// If there is a file to read from, the method returns a `ReadResult`
-    /// specifying the action to be provided downstream.
-    ///
-    /// It can either be a `NewSource` event when the new action is found or
-    /// a `FinishedSource` event when we've had a scheduled action but the
-    /// corresponding file was deleted before we were able to execute this scheduled action.
-    /// scheduled action.
-    fn next_action_determined(&mut self) -> Result<Option<ReadResult>, ReadError> {
-        // Finalize the current processing action
-        if let Some(PosixScannerAction::Delete(path)) = take(&mut self.current_action) {
-            let cached_path = self
-                .cached_file_path(&path)
-                .expect("in case of enabled deletions cache should exist");
-            std::fs::remove_file(cached_path)?;
-        }
-
-        // File modification is handled as combination of its deletion and insertion
-        // If a file was deleted in the last action, now we must add it, and after that
-        // we may allow commit
-        if let Some(next_file_for_insertion) = take(&mut self.next_file_for_insertion) {
-            if next_file_for_insertion.exists() {
-                return Ok(Some(
-                    self.initiate_file_insertion(&next_file_for_insertion)?,
-                ));
-            }
-
-            // The scheduled insertion after deletion is impossible because
-            // the file has already been deleted.
-            // The action was done in full now, and we can allow commits.
-            return Ok(Some(ReadResult::FinishedSource {
-                commit_allowed: true,
-            }));
-        }
-
-        if self.scanner_actions_queue.is_empty() {
-            if self.streaming_mode.are_deletions_enabled() {
-                self.enqueue_deletion_entries();
-            }
-            self.enqueue_insertion_entries()?;
-        }
-
-        // Find the next valid action to execute
-        loop {
-            match self.scanner_actions_queue.pop_front() {
-                Some(PosixScannerAction::Read(path)) => {
-                    let next_action = self.initiate_file_insertion(&path);
-                    match next_action {
-                        Ok(next_action) => return Ok(Some(next_action)),
-                        Err(e) => {
-                            // If there was a planned action to add a file, but
-                            // it no longer exists, proceed to the next planned action
-                            if e.kind() == std::io::ErrorKind::NotFound {
-                                continue;
-                            }
-                            return Err(ReadError::Io(e));
-                        }
-                    };
-                }
-                Some(PosixScannerAction::Delete(path)) => {
-                    return Ok(Some(self.initiate_file_deletion(&path)))
-                }
-                None => return Ok(None),
-            }
-        }
-    }
-
-    fn enqueue_deletion_entries(&mut self) {
-        let mut paths_for_deletion = Vec::new();
-        for (path, modified_at) in &self.known_files {
-            let metadata = std::fs::metadata(path);
-            let needs_deletion = {
-                match metadata {
-                    Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-                    Ok(metadata) => {
-                        if let Ok(new_modification_time) = metadata.modified() {
-                            let modified_at_new = new_modification_time
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .expect("System time should be after the Unix epoch")
-                                .as_secs();
-                            modified_at_new != *modified_at
-                        } else {
-                            false
-                        }
-                    }
-                }
-            };
-            if needs_deletion {
-                paths_for_deletion.push(path.clone());
-            }
-        }
-        paths_for_deletion.sort_unstable();
-        for path in paths_for_deletion {
-            self.scanner_actions_queue
-                .push_back(PosixScannerAction::Delete(Arc::new(path.clone())));
-        }
-    }
-
-    fn cached_file_path(&self, path: &Path) -> Option<PathBuf> {
-        self.cache_directory_path.as_ref().map(|root_path| {
-            let mut hasher = Hasher::default();
-            hasher.update(path.as_os_str().as_bytes());
-            root_path.join(format!("{}", hasher.digest128()))
-        })
-    }
-
-    fn get_matching_file_paths(&self) -> Result<Vec<PathBuf>, ReadError> {
-        let mut result = Vec::new();
-
-        let file_and_folder_paths = glob::glob(self.path.as_str())?.flatten();
-        for entry in file_and_folder_paths {
-            // If an entry is a file, it should just be added to result
-            if entry.is_file() {
-                result.push(entry);
-                continue;
-            }
-
-            // Otherwise scan all files in all subdirectories and add them
-            let Some(path) = entry.to_str() else {
-                error!("Non-unicode paths are not supported. Ignoring: {entry:?}");
-                continue;
-            };
-
-            let folder_scan_pattern = format!("{path}/**/{}", self.object_pattern);
-            let folder_contents = glob::glob(&folder_scan_pattern)?.flatten();
-            for nested_entry in folder_contents {
-                if nested_entry.is_file() {
-                    result.push(nested_entry);
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    fn enqueue_insertion_entries(&mut self) -> Result<(), ReadError> {
-        let matching_files: Vec<PathBuf> = self.get_matching_file_paths()?;
-        let mut new_detected_files: Vec<(SystemTime, PathBuf)> = Vec::new();
-        for entry in matching_files {
-            if !entry.is_file() || self.known_files.contains_key(&(*entry)) {
-                continue;
-            }
-            let Some(modify_time) = self.modify_time(&entry) else {
-                continue;
-            };
-            new_detected_files.push((modify_time, entry));
-        }
-
-        new_detected_files.sort_unstable();
-        for (_, path) in new_detected_files {
-            self.scanner_actions_queue
-                .push_back(PosixScannerAction::Read(Arc::new(path.clone())));
-        }
-
-        Ok(())
-    }
-
-    fn initiate_file_insertion(&mut self, new_file_name: &PathBuf) -> io::Result<ReadResult> {
-        let new_file_meta =
-            SourceMetadata::from_fs_meta(new_file_name, &std::fs::metadata(new_file_name)?);
-        let cached_path = self.cached_file_path(new_file_name);
-        if let Some(cached_path) = cached_path {
-            std::fs::copy(new_file_name, cached_path)?;
-        }
-
-        // The file has been successfully saved at this point.
-        // Now we can change the internal state.
-
-        self.cached_metadata
-            .insert(new_file_name.clone(), Some(new_file_meta.clone()));
-        self.known_files.insert(
-            new_file_name.clone(),
-            new_file_meta
-                .modified_at
-                .unwrap_or(current_unix_timestamp_secs()),
-        );
-
-        self.current_action = Some(PosixScannerAction::Read(Arc::new(new_file_name.clone())));
-        Ok(ReadResult::NewSource(Some(new_file_meta)))
-    }
-
-    fn initiate_file_deletion(&mut self, path: &PathBuf) -> ReadResult {
-        // Metadata of the deleted file must be the same as when it was added
-        // so that the deletion event is processed correctly by timely. To achieve
-        // this, we just take the cached metadata
-        let old_metadata = self
-            .cached_metadata
-            .remove(path)
-            .expect("inconsistency between known_files and cached_metadata");
-
-        self.known_files.remove(&path.clone().clone());
-        self.current_action = Some(PosixScannerAction::Delete(Arc::new(path.clone())));
-        if path.exists() {
-            // If the path exists it means file modification. In this scenatio, the file
-            // needs first to be deleted and then to be inserted again.
-            self.next_file_for_insertion = Some(path.clone());
-        }
-
-        ReadResult::NewSource(old_metadata)
-    }
-
-    fn sleep_duration() -> Duration {
-        Duration::from_millis(500)
-    }
-
-    fn wait_for_new_files(&self) -> ControlFlow<()> {
-        if self.is_polling_enabled() {
-            sleep(Self::sleep_duration());
-            ControlFlow::Continue(())
-        } else {
-            ControlFlow::Break(())
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectorMode {
     Static,
@@ -1288,188 +825,6 @@ impl ConnectorMode {
             ConnectorMode::Static => false,
             ConnectorMode::Streaming => true,
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct CsvFilesystemReader {
-    parser_builder: csv::ReaderBuilder,
-    persistent_id: Option<PersistentId>,
-
-    reader: Option<csv::Reader<std::fs::File>>,
-    filesystem_scanner: FilesystemScanner,
-    total_entries_read: u64,
-    deferred_read_result: Option<ReadResult>,
-}
-
-impl CsvFilesystemReader {
-    pub fn new(
-        path: &str,
-        parser_builder: csv::ReaderBuilder,
-        streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
-        object_pattern: &str,
-    ) -> Result<CsvFilesystemReader, ReadError> {
-        let filesystem_scanner =
-            FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
-        Ok(CsvFilesystemReader {
-            parser_builder,
-            persistent_id,
-
-            reader: None,
-            filesystem_scanner,
-            total_entries_read: 0,
-            deferred_read_result: None,
-        })
-    }
-}
-
-impl Reader for CsvFilesystemReader {
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::FilePosition {
-            total_entries_read,
-            path: file_path_arc,
-            bytes_offset,
-        }) = offset_value
-        else {
-            if offset_value.is_some() {
-                warn!("Incorrect type of offset value in CsvFilesystem frontier: {offset_value:?}");
-            }
-            return Ok(());
-        };
-
-        // Filesystem scanner part: detect already processed file
-        self.filesystem_scanner
-            .seek_to_file(file_path_arc.as_path())?;
-
-        // If the last file read is missing from the offset, the program will read all files in the directory.
-        // We could consider alternative strategies:
-        //  1. Return an error and stop the program;
-        //  2. Track all files that have been read in the offset (though this would greatly increase the offset size);
-        //  3. Only use the file's last modification time.
-        if !file_path_arc.exists() {
-            return Ok(());
-        }
-
-        // Seek within a particular file
-        self.total_entries_read = *total_entries_read;
-        self.reader = {
-            // Since it's a CSV reader, we will need to fit the header in the parser first
-            let mut reader = self.parser_builder.from_path(file_path_arc.as_path())?;
-            if *bytes_offset > 0 {
-                let mut header_record = csv::StringRecord::new();
-                if reader.read_record(&mut header_record)? {
-                    let header_reader_context = ReaderContext::from_tokenized_entries(
-                        self.filesystem_scanner
-                            .data_event_type()
-                            .expect("scanner action can't be empty"),
-                        header_record
-                            .iter()
-                            .map(std::string::ToString::to_string)
-                            .collect(),
-                    );
-
-                    let offset = (OffsetKey::Empty, offset_value.unwrap().clone());
-
-                    let header_read_result = ReadResult::Data(header_reader_context, offset);
-                    self.deferred_read_result = Some(header_read_result);
-                }
-            }
-
-            let mut seek_position = csv::Position::new();
-            seek_position.set_byte(*bytes_offset);
-            reader.seek(seek_position)?;
-
-            Some(reader)
-        };
-
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(deferred_read_result) = self.deferred_read_result.take() {
-            return Ok(deferred_read_result);
-        }
-
-        loop {
-            match &mut self.reader {
-                Some(reader) => {
-                    let mut current_record = csv::StringRecord::new();
-                    if reader.read_record(&mut current_record)? {
-                        self.total_entries_read += 1;
-
-                        let offset = (
-                            OffsetKey::Empty,
-                            OffsetValue::FilePosition {
-                                total_entries_read: self.total_entries_read,
-                                path: self
-                                    .filesystem_scanner
-                                    .current_offset_file()
-                                    .clone()
-                                    .unwrap(),
-                                bytes_offset: reader.position().byte(),
-                            },
-                        );
-
-                        return Ok(ReadResult::Data(
-                            ReaderContext::from_tokenized_entries(
-                                self.filesystem_scanner
-                                    .data_event_type()
-                                    .expect("scanner action can't be empty"),
-                                current_record
-                                    .iter()
-                                    .map(std::string::ToString::to_string)
-                                    .collect(),
-                            ),
-                            offset,
-                        ));
-                    }
-
-                    let next_read_result = self.filesystem_scanner.next_action_determined()?;
-                    if let Some(next_read_result) = next_read_result {
-                        if let Some(selected_file) = self.filesystem_scanner.current_file() {
-                            self.reader = Some(self.parser_builder.from_path(&*selected_file)?);
-                        }
-                        return Ok(next_read_result);
-                    }
-                    // The file came to its end, so we should drop the reader
-                    self.reader = None;
-                    return Ok(ReadResult::FinishedSource {
-                        commit_allowed: !self.filesystem_scanner.has_planned_insertion(),
-                    });
-                }
-                None => {
-                    let next_read_result = self.filesystem_scanner.next_action_determined()?;
-                    if let Some(next_read_result) = next_read_result {
-                        if let Some(selected_file) = self.filesystem_scanner.current_file() {
-                            self.reader = Some(
-                                self.parser_builder
-                                    .flexible(true)
-                                    .from_path(&*selected_file)?,
-                            );
-                        }
-                        return Ok(next_read_result);
-                    }
-                }
-            }
-
-            if self.filesystem_scanner.wait_for_new_files().is_break() {
-                return Ok(ReadResult::Finished);
-            }
-        }
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::CsvFilesystem
     }
 }
 
@@ -1894,422 +1249,6 @@ impl Writer for PsqlWriter {
     }
 }
 
-const MAX_S3_RETRIES: usize = 2;
-const S3_PATH_PREFIXES: [&str; 2] = ["s3://", "s3a://"];
-type S3DownloadedObject = (Arc<String>, Cursor<Vec<u8>>);
-type S3DownloadResult = Result<S3DownloadedObject, ReadError>;
-
-pub struct S3Scanner {
-    /*
-        This class takes responsibility over S3 object selection and streaming.
-        In encapsulates the selection of the next object to stream and streaming
-        the object and provides reader end of the pipe to the outside user.
-    */
-    bucket: S3Bucket,
-    objects_prefix: String,
-    streaming_mode: ConnectorMode,
-    current_object_path: Option<Arc<String>>,
-    processed_objects: HashSet<String>,
-    objects_for_processing: VecDeque<String>,
-    downloader_pool: ThreadPool,
-    predownloaded_objects: HashMap<String, Cursor<Vec<u8>>>,
-    is_queue_initialized: bool,
-}
-
-impl S3Scanner {
-    pub fn new(
-        bucket: S3Bucket,
-        objects_prefix: impl Into<String>,
-        streaming_mode: ConnectorMode,
-        downloader_threads_count: usize,
-    ) -> Result<Self, ReadError> {
-        let objects_prefix = objects_prefix.into();
-
-        let object_lists = execute_with_retries(
-            || bucket.list(objects_prefix.clone(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
-
-        let mut has_nonempty_list = false;
-        for list in object_lists {
-            if !list.contents.is_empty() {
-                has_nonempty_list = true;
-                break;
-            }
-        }
-        if !has_nonempty_list {
-            return Err(ReadError::NoObjectsToRead);
-        }
-
-        Ok(S3Scanner {
-            bucket,
-            objects_prefix,
-            streaming_mode,
-
-            current_object_path: None,
-            processed_objects: HashSet::new(),
-            objects_for_processing: VecDeque::new(),
-            downloader_pool: ThreadPoolBuilder::new()
-                .num_threads(downloader_threads_count)
-                .build()
-                .expect("Failed to create downloader pool"), // TODO: configure number of threads
-            predownloaded_objects: HashMap::new(),
-            is_queue_initialized: false,
-        })
-    }
-
-    pub fn deduce_bucket_and_path(s3_path: &str) -> (Option<String>, String) {
-        for prefix in S3_PATH_PREFIXES {
-            let Some(bucket_and_path) = s3_path.strip_prefix(prefix) else {
-                continue;
-            };
-            let (bucket, path) = bucket_and_path
-                .split_once('/')
-                .unwrap_or((bucket_and_path, ""));
-            return (Some(bucket.to_string()), path.to_string());
-        }
-
-        (None, s3_path.to_string())
-    }
-
-    pub fn download_object_from_path_and_bucket(
-        object_path_ref: &str,
-        bucket: &S3Bucket,
-    ) -> Result<S3ResponseData, ReadError> {
-        let (_, deduced_path) = Self::deduce_bucket_and_path(object_path_ref);
-        execute_with_retries(
-            || bucket.get_object(&deduced_path), // returns Err on incorrect status code because fail-on-err feature is enabled
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))
-    }
-
-    pub fn stream_object_from_path_and_bucket(
-        object_path_ref: &str,
-        bucket: &S3Bucket,
-    ) -> S3DownloadResult {
-        let object_path = object_path_ref.to_string();
-        let response = Self::download_object_from_path_and_bucket(&object_path, bucket)?;
-        let readable_data = Cursor::new(response.bytes().to_vec());
-        Ok((Arc::new(object_path_ref.to_string()), readable_data))
-    }
-
-    fn stream_object_from_path(
-        &mut self,
-        object_path_ref: &str,
-    ) -> Result<Cursor<Vec<u8>>, ReadError> {
-        let (current_object_path, reader_impl) =
-            Self::stream_object_from_path_and_bucket(object_path_ref, &self.bucket.deep_copy())?;
-        self.current_object_path = Some(current_object_path);
-        Ok(reader_impl)
-    }
-
-    fn find_new_objects_for_processing(&mut self) -> Result<(), ReadError> {
-        let object_lists = execute_with_retries(
-            || self.bucket.list(self.objects_prefix.to_string(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
-
-        let mut new_objects = Vec::new();
-        for list in &object_lists {
-            for object in &list.contents {
-                if self.processed_objects.contains(&object.key) {
-                    continue;
-                }
-                let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified) else {
-                    continue;
-                };
-                new_objects.push((last_modified, object.key.clone()));
-            }
-        }
-        new_objects.sort_unstable();
-        info!("Found {} new objects to process", new_objects.len());
-        let downloading_started_at = SystemTime::now();
-        let new_objects_downloaded: Vec<S3DownloadResult> = self.downloader_pool.install(|| {
-            new_objects
-                .par_iter()
-                .map(|(_, path)| Self::stream_object_from_path_and_bucket(path, &self.bucket))
-                .collect()
-        });
-        info!("Downloading done in {:?}", downloading_started_at.elapsed());
-
-        for downloaded_object in new_objects_downloaded {
-            match downloaded_object {
-                Ok((path, prepared_reader)) => {
-                    self.predownloaded_objects
-                        .insert(path.to_string(), prepared_reader);
-                }
-                Err(e) => {
-                    error!("Error while downloading an object from S3: {e}");
-                }
-            }
-        }
-        for (_, object_key) in new_objects {
-            self.objects_for_processing.push_back(object_key);
-        }
-
-        info!(
-            "The {} new objects have been enqueued for further processing",
-            self.objects_for_processing.len()
-        );
-        self.is_queue_initialized = true;
-        Ok(())
-    }
-
-    fn stream_next_object(&mut self) -> Result<Option<Cursor<Vec<u8>>>, ReadError> {
-        let is_polling_enabled = self.streaming_mode.is_polling_enabled();
-        loop {
-            if let Some(selected_object_path) = self.objects_for_processing.pop_front() {
-                let prepared_object = self.predownloaded_objects.remove(&selected_object_path);
-                if let Some(prepared_object) = prepared_object {
-                    self.processed_objects.insert(selected_object_path.clone());
-                    self.current_object_path = Some(selected_object_path.into());
-                    return Ok(Some(prepared_object));
-                }
-            } else {
-                let is_queue_refresh_needed = !self.is_queue_initialized
-                    || (self.objects_for_processing.is_empty() && is_polling_enabled);
-                if is_queue_refresh_needed {
-                    self.find_new_objects_for_processing()?;
-                    if self.objects_for_processing.is_empty() && is_polling_enabled {
-                        // Even after the queue refresh attempt, it's still empty
-                        // Sleep before the next poll
-                        sleep(Self::sleep_duration());
-                    }
-                } else {
-                    // No elements and no further queue refreshes,
-                    // the connector can stop at this point
-                    return Ok(None);
-                }
-            }
-        }
-    }
-
-    fn seek_to_object(&mut self, path: &str) -> Result<(), ReadError> {
-        self.processed_objects.clear();
-
-        /*
-            S3 bucket-list calls are considered expensive, because of that we do one.
-            Then, two linear passes detect the files which should be marked.
-        */
-        let object_lists = execute_with_retries(
-            || self.bucket.list(self.objects_prefix.to_string(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
-
-        let mut threshold_modification_time = None;
-        for list in &object_lists {
-            for object in &list.contents {
-                if object.key == path {
-                    let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified)
-                    else {
-                        continue;
-                    };
-                    threshold_modification_time = Some(last_modified);
-                }
-            }
-        }
-        if let Some(threshold_modification_time) = threshold_modification_time {
-            let path = path.to_string();
-            for list in object_lists {
-                for object in list.contents {
-                    let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified)
-                    else {
-                        continue;
-                    };
-                    if (last_modified, &object.key) < (threshold_modification_time, &path) {
-                        self.processed_objects.insert(object.key);
-                    }
-                }
-            }
-            self.processed_objects.insert(path);
-        } else {
-            self.processed_objects.clear();
-        }
-
-        Ok(())
-    }
-
-    fn expect_current_object_path(&self) -> Arc<String> {
-        self.current_object_path
-            .as_ref()
-            .expect("current object should be present")
-            .clone()
-    }
-
-    fn sleep_duration() -> Duration {
-        Duration::from_millis(10000)
-    }
-}
-
-pub struct S3CsvReader {
-    s3_scanner: S3Scanner,
-    parser_builder: csv::ReaderBuilder,
-    csv_reader: Option<csv::Reader<Cursor<Vec<u8>>>>,
-
-    persistent_id: Option<PersistentId>,
-    deferred_read_result: Option<ReadResult>,
-    total_entries_read: u64,
-}
-
-impl S3CsvReader {
-    pub fn new(
-        bucket: S3Bucket,
-        objects_prefix: impl Into<String>,
-        parser_builder: csv::ReaderBuilder,
-        streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
-        downloader_threads_count: usize,
-    ) -> Result<S3CsvReader, ReadError> {
-        Ok(S3CsvReader {
-            s3_scanner: S3Scanner::new(
-                bucket,
-                objects_prefix,
-                streaming_mode,
-                downloader_threads_count,
-            )?,
-            parser_builder,
-            csv_reader: None,
-
-            persistent_id,
-            deferred_read_result: None,
-            total_entries_read: 0,
-        })
-    }
-
-    fn stream_next_object(&mut self) -> Result<bool, ReadError> {
-        if let Some(reader_impl) = self.s3_scanner.stream_next_object()? {
-            self.csv_reader = Some(self.parser_builder.from_reader(reader_impl));
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-}
-
-impl Reader for S3CsvReader {
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::S3ObjectPosition {
-            total_entries_read,
-            path: path_arc,
-            bytes_offset,
-        }) = offset_value
-        else {
-            if offset_value.is_some() {
-                warn!("Incorrect type of offset value in S3Csv frontier: {offset_value:?}");
-            }
-            return Ok(());
-        };
-
-        let path = (**path_arc).clone();
-
-        self.s3_scanner.seek_to_object(&path)?;
-        let reader_impl = self.s3_scanner.stream_object_from_path(&path)?;
-        let mut csv_reader = self.parser_builder.from_reader(reader_impl);
-
-        let mut current_offset = 0;
-        if *bytes_offset > 0 {
-            let mut header_record = csv::StringRecord::new();
-            if csv_reader.read_record(&mut header_record)? {
-                let header_reader_context = ReaderContext::from_tokenized_entries(
-                    DataEventType::Insert, // Currently no deletions for S3
-                    header_record
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect(),
-                );
-                let offset = (OffsetKey::Empty, offset_value.unwrap().clone());
-                let header_read_result = ReadResult::Data(header_reader_context, offset);
-                self.deferred_read_result = Some(header_read_result);
-                current_offset = csv_reader.position().byte();
-            } else {
-                error!("Empty S3 object, nothing to rewind");
-                return Ok(());
-            }
-        }
-
-        let mut byte_record = csv::ByteRecord::new();
-        while current_offset < *bytes_offset && csv_reader.read_byte_record(&mut byte_record)? {
-            current_offset = csv_reader.position().byte();
-        }
-        if current_offset != *bytes_offset {
-            error!("Inconsistent bytes position in rewinded CSV object: expected {current_offset}, got {}", *bytes_offset);
-        }
-
-        self.total_entries_read = *total_entries_read;
-        self.csv_reader = Some(csv_reader);
-
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(deferred_read_result) = self.deferred_read_result.take() {
-            return Ok(deferred_read_result);
-        }
-
-        match &mut self.csv_reader {
-            Some(csv_reader) => {
-                let mut current_record = csv::StringRecord::new();
-                if csv_reader.read_record(&mut current_record)? {
-                    self.total_entries_read += 1;
-
-                    let offset = (
-                        OffsetKey::Empty,
-                        OffsetValue::S3ObjectPosition {
-                            total_entries_read: self.total_entries_read,
-                            path: self.s3_scanner.expect_current_object_path(),
-                            bytes_offset: csv_reader.position().byte(),
-                        },
-                    );
-
-                    return Ok(ReadResult::Data(
-                        ReaderContext::from_tokenized_entries(
-                            DataEventType::Insert,
-                            current_record
-                                .iter()
-                                .map(std::string::ToString::to_string)
-                                .collect(),
-                        ),
-                        offset,
-                    ));
-                }
-                if self.stream_next_object()? {
-                    // No metadata is currently provided by S3 scanner
-                    return Ok(ReadResult::NewSource(None));
-                }
-            }
-            None => {
-                if self.stream_next_object()? {
-                    // No metadata is currently provided by S3 scanner
-                    return Ok(ReadResult::NewSource(None));
-                }
-            }
-        }
-
-        Ok(ReadResult::Finished)
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::S3Csv
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-}
-
 pub struct KafkaWriter {
     producer: ThreadedProducer<DefaultProducerContext>,
     topic: String,
@@ -2462,166 +1401,6 @@ impl Writer for NullWriter {
 
     fn single_threaded(&self) -> bool {
         false
-    }
-}
-
-pub struct S3GenericReader {
-    s3_scanner: S3Scanner,
-    read_method: ReadMethod,
-
-    reader: Option<BufReader<Cursor<Vec<u8>>>>,
-    persistent_id: Option<PersistentId>,
-    total_entries_read: u64,
-    current_bytes_read: u64,
-    deferred_read_result: Option<ReadResult>,
-}
-
-impl S3GenericReader {
-    pub fn new(
-        bucket: S3Bucket,
-        objects_prefix: impl Into<String>,
-        streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
-        read_method: ReadMethod,
-        downloader_threads_count: usize,
-    ) -> Result<S3GenericReader, ReadError> {
-        Ok(S3GenericReader {
-            s3_scanner: S3Scanner::new(
-                bucket,
-                objects_prefix,
-                streaming_mode,
-                downloader_threads_count,
-            )?,
-            read_method,
-
-            reader: None,
-            persistent_id,
-            total_entries_read: 0,
-            current_bytes_read: 0,
-            deferred_read_result: None,
-        })
-    }
-
-    fn stream_next_object(&mut self) -> Result<bool, ReadError> {
-        if let Some(reader_impl) = self.s3_scanner.stream_next_object()? {
-            self.current_bytes_read = 0;
-            self.reader = Some(BufReader::new(reader_impl));
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-}
-
-impl Reader for S3GenericReader {
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::S3ObjectPosition {
-            total_entries_read,
-            path: path_arc,
-            bytes_offset,
-        }) = offset_value
-        else {
-            if offset_value.is_some() {
-                warn!("Incorrect type of offset value in S3Lines frontier: {offset_value:?}");
-            }
-            return Ok(());
-        };
-
-        let path = (**path_arc).clone();
-
-        self.s3_scanner.seek_to_object(&path)?;
-        let reader_impl = self.s3_scanner.stream_object_from_path(&path)?;
-
-        let mut reader = BufReader::new(reader_impl);
-        let mut bytes_read = 0;
-        while bytes_read < *bytes_offset {
-            let mut current_line = Vec::new();
-            let len = self
-                .read_method
-                .read_next_bytes(&mut reader, &mut current_line)?;
-            if len == 0 {
-                break;
-            }
-            bytes_read += len as u64;
-        }
-
-        if bytes_read != *bytes_offset {
-            if bytes_read == *bytes_offset + 1 || bytes_read == *bytes_offset + 2 {
-                error!("Read {} bytes instead of expected {bytes_read}. If the file did not have newline at the end, you can ignore this message", *bytes_offset);
-            } else {
-                error!("Inconsistent bytes position in rewinded plaintext object: expected {bytes_read}, got {}", *bytes_offset);
-            }
-        }
-
-        self.total_entries_read = *total_entries_read;
-        self.current_bytes_read = bytes_read;
-        self.reader = Some(reader);
-
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        if let Some(deferred_read_result) = self.deferred_read_result.take() {
-            return Ok(deferred_read_result);
-        }
-
-        match &mut self.reader {
-            Some(reader) => {
-                let mut line = Vec::new();
-                let len = self.read_method.read_next_bytes(reader, &mut line)?;
-                if len > 0 || self.read_method == ReadMethod::Full {
-                    self.total_entries_read += 1;
-                    self.current_bytes_read += len as u64;
-
-                    let offset = (
-                        OffsetKey::Empty,
-                        OffsetValue::S3ObjectPosition {
-                            total_entries_read: self.total_entries_read,
-                            path: self.s3_scanner.expect_current_object_path(),
-                            bytes_offset: self.current_bytes_read,
-                        },
-                    );
-
-                    if self.read_method == ReadMethod::Full {
-                        self.deferred_read_result = Some(ReadResult::FinishedSource {
-                            commit_allowed: true,
-                        });
-                        self.reader = None;
-                    }
-
-                    return Ok(ReadResult::Data(
-                        ReaderContext::from_raw_bytes(DataEventType::Insert, line), // Currently no deletions for S3
-                        offset,
-                    ));
-                }
-                self.reader = None;
-
-                return Ok(ReadResult::FinishedSource {
-                    commit_allowed: true,
-                });
-            }
-            None => {
-                if self.stream_next_object()? {
-                    // No metadata is currently provided by S3 scanner
-                    return Ok(ReadResult::NewSource(None));
-                }
-            }
-        }
-
-        Ok(ReadResult::Finished)
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::S3Lines
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
     }
 }
 

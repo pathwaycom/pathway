@@ -76,12 +76,13 @@ use crate::connectors::data_format::{
     SingleColumnFormatter, TransparentParser,
 };
 use crate::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, DeltaTableReader, DeltaTableWriter, ElasticSearchWriter,
-    FileWriter, FilesystemReader, KafkaReader, KafkaWriter, MongoWriter, NatsReader, NatsWriter,
-    NullWriter, ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder,
-    ReadError, ReadMethod, ReaderBuilder, S3CsvReader, S3GenericReader, S3Scanner, SqliteReader,
-    Writer,
+    new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
+    ConnectorMode, DeltaTableReader, DeltaTableWriter, ElasticSearchWriter, FileWriter,
+    KafkaReader, KafkaWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
+    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
+    ReaderBuilder, SqliteReader, Writer,
 };
+use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
 use crate::engine::error::{DataError, DynError, DynResult, Trace as EngineTrace};
@@ -4159,6 +4160,7 @@ impl CsvParserSettings {
             .double_quote(self.enable_double_quote_escapes)
             .quoting(self.enable_quoting)
             .comment(self.comment_character)
+            .flexible(true)
             .has_headers(false);
         builder
     }
@@ -4342,7 +4344,7 @@ impl DataStorage {
     }
 
     fn construct_fs_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let storage = FilesystemReader::new(
+        let storage = new_filesystem_reader(
             self.path()?,
             self.mode,
             self.internal_persistent_id(),
@@ -4355,7 +4357,7 @@ impl DataStorage {
 
     fn construct_s3_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let storage = S3GenericReader::new(
+        let storage = new_s3_generic_reader(
             self.s3_bucket(py)?,
             deduced_path,
             self.mode,
@@ -4372,7 +4374,7 @@ impl DataStorage {
         py: pyo3::Python,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let storage = S3CsvReader::new(
+        let storage = new_s3_csv_reader(
             self.s3_bucket(py)?,
             deduced_path,
             self.build_csv_parser_settings(py),
@@ -4385,7 +4387,7 @@ impl DataStorage {
     }
 
     fn construct_csv_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        let reader = CsvFilesystemReader::new(
+        let reader = new_csv_filesystem_reader(
             self.path()?,
             self.build_csv_parser_settings(py),
             self.mode,

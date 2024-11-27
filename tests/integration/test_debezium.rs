@@ -13,14 +13,14 @@ use pathway_engine::connectors::data_format::{
     DebeziumDBType, DebeziumMessageParser, ParseError, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, FilesystemReader, ReadMethod, ReaderContext,
+    new_filesystem_reader, ConnectorMode, ReadMethod, ReaderContext,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
 
 #[test]
 fn test_debezium_reads_ok() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/sample_debezium.txt",
         ConnectorMode::Static,
         None,
@@ -170,7 +170,7 @@ fn test_debezium_tokens_amt_mismatch() -> eyre::Result<()> {
 
 #[test]
 fn test_debezium_mongodb_format() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/sample_debezium_mongodb.txt",
         ConnectorMode::Static,
         None,

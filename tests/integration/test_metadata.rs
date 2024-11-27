@@ -9,7 +9,7 @@ use pathway_engine::connectors::data_format::{
     ParsedEvent,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
+    new_csv_filesystem_reader, new_filesystem_reader, ConnectorMode, ReadMethod,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{Type, Value};
@@ -30,7 +30,7 @@ fn check_file_name_in_metadata(data_read: &ParsedEvent, name: &str) {
 
 #[test]
 fn test_metadata_fs_dir() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/csvdir/",
         ConnectorMode::Static,
         None,
@@ -68,7 +68,7 @@ fn test_metadata_fs_dir() -> eyre::Result<()> {
 
 #[test]
 fn test_metadata_fs_file() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/minimal.txt",
         ConnectorMode::Static,
         None,
@@ -107,7 +107,7 @@ fn test_metadata_csv_dir() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/csvdir/",
         builder,
         ConnectorMode::Static,
@@ -148,7 +148,7 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/minimal.txt",
         builder,
         ConnectorMode::Static,
@@ -184,7 +184,7 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
 
 #[test]
 fn test_metadata_json_file() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
@@ -215,7 +215,7 @@ fn test_metadata_json_file() -> eyre::Result<()> {
 
 #[test]
 fn test_metadata_json_dir() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines/",
         ConnectorMode::Static,
         None,
@@ -247,7 +247,7 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
 
 #[test]
 fn test_metadata_identity_file() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
@@ -269,7 +269,7 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
 
 #[test]
 fn test_metadata_identity_dir() -> eyre::Result<()> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines/",
         ConnectorMode::Static,
         None,

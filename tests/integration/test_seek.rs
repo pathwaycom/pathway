@@ -13,7 +13,7 @@ use pathway_engine::connectors::data_format::{
 };
 use pathway_engine::connectors::data_storage::ReaderBuilder;
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
+    new_csv_filesystem_reader, new_filesystem_reader, ConnectorMode, ReadMethod,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{Result, Type, Value};
@@ -28,7 +28,8 @@ fn csv_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, B
     let mut builder = csv::ReaderBuilder::new();
     builder.has_headers(false);
     let reader =
-        CsvFilesystemReader::new(input_path, builder, ConnectorMode::Static, Some(1), "*").unwrap();
+        new_csv_filesystem_reader(input_path, builder, ConnectorMode::Static, Some(1), "*")
+            .unwrap();
     let schema = [
         ("key".to_string(), InnerSchemaField::new(Type::String, None)),
         (
@@ -48,7 +49,7 @@ fn csv_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, B
 }
 
 fn json_reader_parser_pair(input_path: &str) -> Result<(Box<dyn ReaderBuilder>, Box<dyn Parser>)> {
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         input_path,
         ConnectorMode::Static,
         Some(1),

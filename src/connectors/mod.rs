@@ -19,9 +19,12 @@ use timely::dataflow::operators::probe::Handle;
 pub mod adaptors;
 pub mod data_format;
 pub mod data_storage;
+pub mod data_tokenize;
 pub mod metadata;
 pub mod monitoring;
 pub mod offset;
+pub mod posix_like;
+pub mod scanner;
 
 use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::error::{DynError, Trace};

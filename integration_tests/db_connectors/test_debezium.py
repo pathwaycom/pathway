@@ -41,6 +41,7 @@ def test_debezium_mongodb(tmp_path, mongodb, debezium):
     expected_sum = sum([x for x in range(INPUT_COLLECTION_SIZE)])
 
     def stream_data():
+        time.sleep(10)  # Allow Kafka to start in full
         for value in range(INPUT_COLLECTION_SIZE):
             mongodb.insert_document(collection, {"value": value})
             time.sleep(0.5)
@@ -73,6 +74,7 @@ def test_debezium_postgres(tmp_path, postgres, debezium):
     expected_sum = sum([x for x in range(INPUT_COLLECTION_SIZE)])
 
     def stream_data():
+        time.sleep(10)  # Allow Kafka to start in full
         for value in range(INPUT_COLLECTION_SIZE):
             postgres.insert_row(table_name, {"value": value})
             time.sleep(0.5)

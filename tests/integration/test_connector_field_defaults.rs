@@ -8,7 +8,7 @@ use pathway_engine::connectors::data_format::{
     DsvParser, DsvSettings, InnerSchemaField, JsonLinesParser, ParsedEvent,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, CsvFilesystemReader, FilesystemReader, ReadMethod,
+    new_csv_filesystem_reader, new_filesystem_reader, ConnectorMode, ReadMethod,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{Type, Value};
@@ -40,7 +40,7 @@ fn test_dsv_with_default_end_of_line() -> eyre::Result<()> {
         InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
     );
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/dsv_with_skips.txt",
         builder,
         ConnectorMode::Static,
@@ -94,7 +94,7 @@ fn test_dsv_with_default_middle_of_line() -> eyre::Result<()> {
         InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
     );
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/dsv_with_skips2.txt",
         builder,
         ConnectorMode::Static,
@@ -145,7 +145,7 @@ fn test_dsv_fails_without_default() -> eyre::Result<()> {
 
     schema.insert("number".to_string(), InnerSchemaField::new(Type::Int, None));
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/dsv_with_skips.txt",
         builder,
         ConnectorMode::Static,
@@ -199,7 +199,7 @@ fn test_dsv_with_default_nullable() -> eyre::Result<()> {
         InnerSchemaField::new(Type::Optional(Type::Int.into()), Some(Value::None)),
     );
 
-    let reader = CsvFilesystemReader::new(
+    let reader = new_csv_filesystem_reader(
         "tests/data/dsv_with_skips.txt",
         builder,
         ConnectorMode::Static,
@@ -254,7 +254,7 @@ fn get_schema_abc() -> HashMap<String, InnerSchemaField> {
 fn test_jsonlines_fails_without_default() -> eyre::Result<()> {
     let mut schema = get_schema_abc();
     schema.insert("d".to_string(), InnerSchemaField::new(Type::Int, None));
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
         None,
@@ -301,7 +301,7 @@ fn test_jsonlines_with_default() -> eyre::Result<()> {
         InnerSchemaField::new(Type::Int, Some(Value::Int(42))),
     );
 
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines_with_skips.txt",
         ConnectorMode::Static,
         None,
@@ -354,7 +354,7 @@ fn test_jsonlines_with_default_at_jsonpath() -> eyre::Result<()> {
         "/some/path/to/a/field/that/does/not/exist".to_string(),
     );
 
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines_with_skips.txt",
         ConnectorMode::Static,
         None,
@@ -401,7 +401,7 @@ fn test_jsonlines_explicit_null_not_overridden() -> eyre::Result<()> {
         InnerSchemaField::new(Type::Optional(Type::Int.into()), Some(Value::Int(42))),
     );
 
-    let reader = FilesystemReader::new(
+    let reader = new_filesystem_reader(
         "tests/data/jsonlines_with_skips_and_nulls.txt",
         ConnectorMode::Static,
         None,

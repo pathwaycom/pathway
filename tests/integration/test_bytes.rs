@@ -4,7 +4,7 @@ use pathway_engine::connectors::data_format::{
     IdentityParser, KeyGenerationPolicy, ParseResult, ParsedEvent, Parser,
 };
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, FilesystemReader, ReadMethod, ReadResult, Reader,
+    new_filesystem_reader, ConnectorMode, ReadMethod, ReadResult, Reader,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::Value;
@@ -13,7 +13,7 @@ use crate::helpers::ReplaceErrors;
 
 fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
     let mut reader =
-        FilesystemReader::new(path, ConnectorMode::Static, None, ReadMethod::Full, "*")?;
+        new_filesystem_reader(path, ConnectorMode::Static, None, ReadMethod::Full, "*")?;
     let mut parser = IdentityParser::new(
         vec!["data".to_string()],
         false,

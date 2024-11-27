@@ -157,7 +157,7 @@ class DebeziumContext:
     def _register_connector(self, payload: dict, result_on_ok: str) -> str:
         for _ in range(300):
             try:
-                r = requests.post(DEBEZIUM_CONNECTOR_URL, timeout=1, json=payload)
+                r = requests.post(DEBEZIUM_CONNECTOR_URL, timeout=60, json=payload)
                 is_ok = r.status_code // 100 == 2
             except Exception as e:
                 print(f"Debezium is not ready to register connector yet: {e}")
@@ -188,8 +188,9 @@ class DebeziumContext:
         return self._register_connector(payload, f"{connector_id}.{MONGODB_BASE_NAME}.")
 
     def register_postgres(self, table_name: str) -> str:
+        connector_id = str(uuid.uuid4()).replace("-", "")
         payload = {
-            "name": "values-connector",
+            "name": f"values-connector-{connector_id}",
             "config": {
                 "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
                 "plugin.name": "pgoutput",
@@ -198,10 +199,10 @@ class DebeziumContext:
                 "database.user": str(POSTGRES_DB_USER),
                 "database.password": str(POSTGRES_DB_PASSWORD),
                 "database.dbname": str(POSTGRES_DB_NAME),
-                "database.server.name": POSTGRES_DB_HOST,
+                "database.server.name": connector_id,
                 "table.include.list": f"public.{table_name}",
                 "database.history.kafka.bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
                 "database.history.kafka.topic": "schema-changes.inventory",
             },
         }
-        return self._register_connector(payload, f"postgres.public.{table_name}")
+        return self._register_connector(payload, f"{connector_id}.public.{table_name}")
