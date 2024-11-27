@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
+use arcstr::ArcStr;
 use chrono::DateTime;
 use futures::StreamExt;
 use itertools::Itertools;
@@ -767,7 +768,7 @@ impl Writer for FileWriter {
 pub struct KafkaReader {
     consumer: BaseConsumer<DefaultConsumerContext>,
     persistent_id: Option<PersistentId>,
-    topic: Arc<String>,
+    topic: ArcStr,
     positions_for_seek: HashMap<i32, KafkaOffset>,
 }
 
@@ -830,7 +831,7 @@ impl Reader for KafkaReader {
                 if self.topic != *topic {
                     warn!(
                         "Unexpected topic name. Expected: {}, Got: {topic}",
-                        *self.topic
+                        self.topic
                     );
                     continue;
                 }
@@ -880,7 +881,7 @@ impl KafkaReader {
         KafkaReader {
             consumer,
             persistent_id,
-            topic: Arc::new(topic),
+            topic: topic.into(),
             positions_for_seek,
         }
     }

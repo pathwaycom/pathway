@@ -4,6 +4,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
@@ -12,7 +13,7 @@ use crate::engine::value::HashInto;
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum OffsetKey {
-    Kafka(Arc<String>, i32),
+    Kafka(ArcStr, i32),
     Nats(usize),
     Empty,
 }
