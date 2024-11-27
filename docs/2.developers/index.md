@@ -12,9 +12,13 @@ aside: false
 
 Welcome to the Pathway Developer Documentation.
 
-Pathway offers two core products: the **Live Data Framework** for processing and analyzing real-time data streams, and the **AI Pipelines** for building intelligent, AI-powered workflows.
-Click on the product of your choice below to access its dedicated documentation.
+Pathway's offering includes infrastructure components that fuel live AI systems from dynamic sources of structured and unstructured data, enabling decision-making based on always up-to-date knowledge.
 
+Pathway offers two core products:
+- **Pathway Live Data Framework** for processing and analyzing real-time data streams,
+- and **AI Pipelines** for building intelligent, AI-powered workflows.
+
+Click on the product of your choice below to access its dedicated documentation.
 
 ::card-grid{columns="2"}
 #default
