@@ -119,9 +119,9 @@ def read(
     persistent_id: int | None = None,
 ):
     """
-    Reads a table with an Airbyte connector that supports the \
+    Reads a table with a free tier Airbyte connector that supports the \
 `incremental <https://docs.airbyte.com/using-airbyte/core-concepts/sync-modes/incremental-append>`_ \
-mode.
+mode. Please note that reusage Airbyte license is not supported at the moment.
 
     If the local execution type is selected, Pathway initially attempts to find the
     specified connector on PyPI and install its latest version in a separate virtual
