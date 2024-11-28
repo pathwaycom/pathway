@@ -5,7 +5,7 @@
 # article:
 #     thumbnail: '/assets/content/blog/adaptive-rag-plots/visual-abstract.png'
 #     thumbnailFit: 'contain'
-#     tags: ['showcase', 'llm']
+#     tags: ['showcase', 'ai-pipelines']
 #     date: '2024-03-28'
 #     related: false
 # notebook_export_path: notebooks/showcases/adaptive_rag_question_answering.ipynb
