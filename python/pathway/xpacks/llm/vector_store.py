@@ -13,7 +13,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import jmespath
 import requests
@@ -330,7 +330,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             default_value=None, description="An optional Glob pattern for the file path"
         )
 
-    InputsQuerySchema = FilterSchema
+    InputsQuerySchema: TypeAlias = FilterSchema
 
     @staticmethod
     def merge_filters(queries: pw.Table):
@@ -363,7 +363,7 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
     @pw.table_transformer
     def inputs_query(
-        self, input_queries: pw.Table[InputsQuerySchema]  # type:ignore
+        self, input_queries: pw.Table[InputsQuerySchema]
     ) -> pw.Table[InputResultSchema]:
         docs = self._graph["docs"]
         # TODO: compare this approach to first joining queries to dicuments, then filtering,
@@ -576,7 +576,7 @@ class SlidesVectorStoreServer(VectorStoreServer):
     @pw.table_transformer
     def inputs_query(
         self,
-        input_queries: pw.Table[VectorStoreServer.InputsQuerySchema],  # type:ignore
+        input_queries: pw.Table[VectorStoreServer.InputsQuerySchema],
     ) -> pw.Table:
         docs = self._graph["parsed_docs"]
 
@@ -616,6 +616,13 @@ class SlidesVectorStoreServer(VectorStoreServer):
             result=format_inputs(pw.this.metadatas, pw.this.metadata_filter)
         )
         return input_results
+
+    @pw.table_transformer
+    def parsed_documents_query(
+        self,
+        parse_docs_queries: pw.Table[VectorStoreServer.InputsQuerySchema],
+    ) -> pw.Table:
+        return self.inputs_query(parse_docs_queries)
 
 
 class VectorStoreClient:

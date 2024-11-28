@@ -11,13 +11,17 @@ import pathway as pw
 from pathway.internals import ColumnReference, Table, udfs
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
-from pathway.xpacks.llm.document_store import DocumentStore
+from pathway.xpacks.llm.document_store import DocumentStore, SlidesDocumentStore
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
 from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
-from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
+from pathway.xpacks.llm.vector_store import (
+    SlidesVectorStoreServer,
+    VectorStoreClient,
+    VectorStoreServer,
+)
 
 if TYPE_CHECKING:
-    from pathway.xpacks.llm.servers import QASummaryRestServer
+    from pathway.xpacks.llm.servers import QARestServer, QASummaryRestServer
 
 
 @pw.udf
@@ -455,14 +459,23 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
     @pw.table_transformer
     def retrieve(self, retrieve_queries: pw.Table) -> pw.Table:
+        """
+        Retrieve documents from the index.
+        """
         return self.indexer.retrieve_query(retrieve_queries)
 
     @pw.table_transformer
     def statistics(self, statistics_queries: pw.Table) -> pw.Table:
+        """
+        Get statistics about indexed files.
+        """
         return self.indexer.statistics_query(statistics_queries)
 
     @pw.table_transformer
     def list_documents(self, list_documents_queries: pw.Table) -> pw.Table:
+        """
+        Get list of documents from the retriever.
+        """
         return self.indexer.inputs_query(list_documents_queries)
 
     def build_server(
@@ -682,14 +695,45 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         return result
 
 
-class DeckRetriever(BaseRAGQuestionAnswerer):
-    """Class for slides search."""
+class DeckRetriever(BaseQuestionAnswerer):
+    """
+    Builds the logic for the Retriever of slides.
+
+    Args:
+        indexer: document store for parsing and indexing slides.
+        search_topk: Number of slides to be returned by the `answer_query` method.
+    """
 
     excluded_response_metadata = ["b64_image"]
 
+    def __init__(
+        self,
+        indexer: SlidesDocumentStore | SlidesVectorStoreServer,
+        *,
+        search_topk: int = 6,
+    ) -> None:
+        self.indexer = indexer
+        self._init_schemas()
+        self.search_topk = search_topk
+
+        self.server: None | QARestServer = None
+        self._pending_endpoints: list[tuple] = []
+
+    def _init_schemas(
+        self,
+    ) -> None:
+        class PWAIQuerySchema(pw.Schema):
+            prompt: str
+            filters: str | None = pw.column_definition(default_value=None)
+
+        self.AnswerQuerySchema = PWAIQuerySchema
+        self.RetrieveQuerySchema = self.indexer.RetrieveQuerySchema
+        self.StatisticsQuerySchema = self.indexer.StatisticsQuerySchema
+        self.InputsQuerySchema = self.indexer.InputsQuerySchema
+
     @pw.table_transformer
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
-        """Return similar docs from the index."""
+        """Return slides similar to the given query."""
 
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
@@ -719,6 +763,46 @@ class DeckRetriever(BaseRAGQuestionAnswerer):
         pw_ai_results += pw_ai_results.select(result=_format_results(pw.this.docs))
 
         return pw_ai_results
+
+    @pw.table_transformer
+    def retrieve(self, retrieve_queries: pw.Table) -> pw.Table:
+        return self.indexer.retrieve_query(retrieve_queries)
+
+    @pw.table_transformer
+    def statistics(self, statistics_queries: pw.Table) -> pw.Table:
+        return self.indexer.statistics_query(statistics_queries)
+
+    @pw.table_transformer
+    def list_documents(self, list_documents_queries: pw.Table) -> pw.Table:
+        return self.indexer.parsed_documents_query(list_documents_queries)
+
+    def build_server(
+        self,
+        host: str,
+        port: int,
+        **rest_kwargs,
+    ):
+        warn(
+            "build_server method is deprecated. Instead, use explicitly a server from pw.xpacks.llm.servers.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # circular import
+        from pathway.xpacks.llm.servers import QARestServer
+
+        self.server = QARestServer(host, port, self, **rest_kwargs)
+
+    def run_server(self, *args, **kwargs):
+        warn(
+            "run_server method is deprecated. Instead, use explicitly a server from pw.xpacks.llm.servers.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self.server is None:
+            raise ValueError(
+                "HTTP server is not built, initialize it with `build_server`"
+            )
+        self.server.run(*args, **kwargs)
 
 
 def send_post_request(
