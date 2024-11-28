@@ -37,7 +37,7 @@
   
 </p>
 
-# Pathway<a id="pathway"></a>
+# Pathway<a id="pathway"> Live Data Framework</a>
 
 [Pathway](https://pathway.com) is a Python ETL framework for stream processing, real-time analytics, LLM pipelines, and RAG.
 
@@ -74,9 +74,9 @@ With its unified engine for batch and streaming and its full Python compatibilit
 
 
 
-### Live LLM and RAG pipelines
+### AI Pipelines
 
-Pathway provides dedicated LLM tooling to build LLM and RAG pipelines. Wrappers for most common LLM services and utilities are included, making working with LLMs and RAGs pipelines incredibly easy. Check out our [LLM xpack documentation](https://pathway.com/developers/user-guide/llm-xpack/overview).
+Pathway provides dedicated LLM tooling to build live LLM and RAG pipelines. Wrappers for most common LLM services and utilities are included, making working with LLMs and RAGs pipelines incredibly easy. Check out our [LLM xpack documentation](https://pathway.com/developers/user-guide/llm-xpack/overview).
 
 Don't hesitate to try one of our runnable examples featuring LLM tooling.
 You can find such examples [here](https://pathway.com/developers/user-guide/llm-xpack/llm-examples).
