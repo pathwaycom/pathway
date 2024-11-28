@@ -5,7 +5,7 @@ navigation: false
 heading: false
 toc: false
 single: true
-aside: false
+aside: true
 ---
 
 # Pathway Developer Documentation
