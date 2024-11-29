@@ -5,7 +5,7 @@
 # article:
 #     thumbnail: '/assets/content/blog/local-adaptive-rag/local_adaptive.png'
 #     thumbnailFit: 'contain'
-#     tags: ['showcase', 'llm']
+#     tags: ['showcase', 'ai-pipelines']
 #     date: '2024-04-23'
 #     related: ['/developers/templates/adaptive-rag', '/developers/templates/demo-question-answering']
 # notebook_export_path: notebooks/showcases/mistral_adaptive_rag_question_answering.ipynb

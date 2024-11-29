@@ -6,7 +6,7 @@
 #   thumbnail: '/assets/content/showcases/multimodal-RAG/multimodalRAG-blog-banner.png'
 #   thumbnailFit: 'contain'
 #   date: '2024-06-20'
-#   tags: ['showcase', 'llm']
+#   tags: ['showcase', 'ai-pipelines']
 # keywords: ['LLM', 'RAG', 'GPT', 'OpenAI', 'GPT-4o', 'multimodal RAG', 'unstructured', 'notebook', 'docker']
 # notebook_export_path: notebooks/showcases/multimodal-rag.ipynb
 # run_template: "/developers/templates/template-multimodal-rag"
