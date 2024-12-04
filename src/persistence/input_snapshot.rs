@@ -3,18 +3,16 @@ use std::io::{BufReader, Cursor, ErrorKind as IoErrorKind, Read, Seek, SeekFrom}
 use std::mem::take;
 
 use bincode::{deserialize_from, serialize, ErrorKind as BincodeError};
-use futures::channel::oneshot::Receiver as OneShotReceiver;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Key, Timestamp, TotalFrontier, Value};
-use crate::persistence::backends::PersistenceBackend;
+use crate::persistence::backends::{BackendPutFuture, PersistenceBackend};
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::Error;
 
 const MAX_ENTRIES_PER_CHUNK: usize = 100_000;
 const MAX_CHUNK_LENGTH: usize = 10_000_000;
 
-pub type SnapshotWriterFlushFuture = OneShotReceiver<Result<(), Error>>;
 type ChunkId = u64;
 
 fn get_chunk_ids_with_backend(backend: &dyn PersistenceBackend) -> Result<Vec<ChunkId>, Error> {
@@ -221,7 +219,7 @@ pub struct InputSnapshotWriter {
     mode: SnapshotMode,
     current_chunk: Vec<u8>,
     current_chunk_entries: usize,
-    chunk_save_futures: Vec<SnapshotWriterFlushFuture>,
+    chunk_save_futures: Vec<BackendPutFuture>,
     next_chunk_id: ChunkId,
 }
 
@@ -262,7 +260,7 @@ impl InputSnapshotWriter {
     ///
     /// We use `futures::channel::oneshot::channel` here instead of Future/Promise
     /// because it uses modern Rust Futures that are also used by `async`.
-    pub fn flush(&mut self) -> Vec<SnapshotWriterFlushFuture> {
+    pub fn flush(&mut self) -> Vec<BackendPutFuture> {
         if !self.current_chunk.is_empty() {
             let chunk_save_future = self.save_current_chunk();
             self.chunk_save_futures.push(chunk_save_future);
@@ -270,7 +268,7 @@ impl InputSnapshotWriter {
         take(&mut self.chunk_save_futures)
     }
 
-    fn save_current_chunk(&mut self) -> SnapshotWriterFlushFuture {
+    fn save_current_chunk(&mut self) -> BackendPutFuture {
         info!(
             "Persisting a chunk of {} entries ({} bytes)",
             self.current_chunk_entries,

@@ -36,6 +36,7 @@ pub enum Error {
     IncorrectMetadataFormat(String, #[source] JsonParseError),
 }
 
+pub type BackendPutFuture = OneShotReceiver<Result<(), Error>>;
 /// The persistence backend can be implemented over a Key-Value
 /// storage that implements the following interface.
 pub trait PersistenceBackend: Send + Debug {
@@ -46,7 +47,7 @@ pub trait PersistenceBackend: Send + Debug {
     fn get_value(&self, key: &str) -> Result<Vec<u8>, Error>;
 
     /// Set the value corresponding to the `key` to `value`.
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> OneShotReceiver<Result<(), Error>>;
+    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture;
 
     /// Remove the value corresponding to the `key`.
     fn remove_key(&self, key: &str) -> Result<(), Error>;

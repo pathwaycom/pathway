@@ -3696,6 +3696,8 @@ impl PyPersistenceMode {
     pub const SELECTIVE_PERSISTING: PersistenceMode = PersistenceMode::SelectivePersisting;
     #[classattr]
     pub const UDF_CACHING: PersistenceMode = PersistenceMode::UdfCaching;
+    #[classattr]
+    pub const OPERATOR_PERSISTING: PersistenceMode = PersistenceMode::OperatorPersisting;
 }
 
 impl<'py> FromPyObject<'py> for PersistenceMode {

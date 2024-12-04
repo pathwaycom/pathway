@@ -10,6 +10,7 @@ import pathway as pw
 from pathway import demo
 from pathway.internals import Schema, api
 from pathway.tests.utils import (
+    CsvPathwayChecker,
     DiffEntry,
     T,
     assert_key_entries_in_stream_consistent,
@@ -566,3 +567,97 @@ def test_assert_stream_split_into_groups_wo_index_raises():
         match=re.escape("Expected (2, 1) to have time 12 but it has time 14."),
     ):
         assert_stream_split_into_groups_wo_index(table, expected)
+
+
+def test_csv_pathway_checker_1(tmp_path):
+    path = tmp_path / "output.csv"
+    with open(path, "w") as f:
+        f.write("a,time,diff\n1,10,1\n2,12,1\n")
+    expected_1 = """
+    a
+    1
+    2
+    """
+    assert CsvPathwayChecker(expected_1, tmp_path)()
+    assert CsvPathwayChecker(expected_1, tmp_path)()
+    expected_2 = """
+    a
+    1
+    """
+    assert not CsvPathwayChecker(expected_2, tmp_path)()
+    expected_3 = """
+    a
+    1
+    3
+    """
+    assert not CsvPathwayChecker(expected_3, tmp_path)()
+
+
+def test_csv_pathway_checker_2(tmp_path):
+    path = tmp_path / "output.csv"
+    with open(path, "w") as f:
+        f.write("a,b,time,diff\n1,2,10,1\n2,3,12,1\n1,2,12,-1\n1,4,12,1\n")
+    expected_1 = """
+    a | b
+    1 | 4
+    2 | 3
+    """
+    assert CsvPathwayChecker(expected_1, tmp_path, id_from=["a"])()
+    assert CsvPathwayChecker(expected_1, tmp_path, id_from=["a"])()
+    expected_2 = """
+    a | b
+    1 | 2
+    2 | 3
+    """
+    assert not CsvPathwayChecker(expected_2, tmp_path, id_from=["a"])()
+    expected_3 = """
+    a | b
+    1 | 2
+    1 | 4
+    2 | 3
+    """
+    assert not CsvPathwayChecker(expected_3, tmp_path, id_from=["a"])()
+
+
+def test_csv_pathway_checker_3(tmp_path):
+    path = tmp_path / "output.csv"
+    with open(path, "w") as f:
+        f.write("a,b,time,diff\n1,2,10,1\n2,3,12,1\n1,2,12,-1\n")
+    expected_1 = """
+    a | b
+    2 | 3
+    """
+    assert CsvPathwayChecker(expected_1, tmp_path, id_from=["a"])()
+    assert CsvPathwayChecker(expected_1, tmp_path, id_from=["a"])()
+    expected_2 = """
+    a | b
+    1 | 2
+    2 | 3
+    """
+    assert not CsvPathwayChecker(expected_2, tmp_path, id_from=["a"])()
+
+
+def test_csv_pathway_checker_4(tmp_path):
+    path = tmp_path / "output.csv"
+    with open(path, "w") as f:
+        f.write(
+            "a,b,time,diff\n1,2,10,1\n2,3,12,1\n2,2,12,-1\n"
+        )  # deleting non-existing row
+    expected_1 = """
+    a | b
+    2 | 3
+    """
+    assert not CsvPathwayChecker(expected_1, tmp_path, id_from=["a"])()
+    expected_2 = """
+    a | b
+    1 | 2
+    2 | 3
+    """
+    assert not CsvPathwayChecker(expected_2, tmp_path, id_from=["a"])()
+    expected_3 = """
+    a | b
+    1 | 2
+    2 | 3
+    2 | 2
+    """
+    assert not CsvPathwayChecker(expected_3, tmp_path, id_from=["a"])()

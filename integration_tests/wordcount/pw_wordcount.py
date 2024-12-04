@@ -13,12 +13,21 @@ if __name__ == "__main__":
     parser.add_argument("--pstorage", type=str)
     parser.add_argument("--mode", type=str)
     parser.add_argument("--pstorage-type", type=str)
+    parser.add_argument("--persistence_mode", type=str)
     args = parser.parse_args()
+
+    if args.persistence_mode == "PERSISTING":
+        persistence_mode = pw.PersistenceMode.PERSISTING
+    elif args.persistence_mode == "OPERATOR_PERSISTING":
+        persistence_mode = pw.PersistenceMode.OPERATOR_PERSISTING
+    else:
+        ValueError(f"Unsupported persistence mode: {args.persistence_mode}")
 
     if args.pstorage_type == "fs":
         pstorage_config = pw.persistence.Config(
             pw.persistence.Backend.filesystem(path=args.pstorage),
             snapshot_interval_ms=5000,
+            persistence_mode=persistence_mode,
         )
     elif args.pstorage_type == "s3":
         aws_s3_settings = pw.io.s3.AwsS3Settings(
@@ -33,6 +42,7 @@ if __name__ == "__main__":
                 bucket_settings=aws_s3_settings,
             ),
             snapshot_interval_ms=5000,
+            persistence_mode=persistence_mode,
         )
     else:
         raise ValueError(f"Unknown persistent storage type: {args.pstorage_type}")

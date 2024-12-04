@@ -7,7 +7,6 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use futures::channel::oneshot;
-use futures::channel::oneshot::Receiver as OneShotReceiver;
 use futures::channel::oneshot::Sender as OneShotSender;
 use s3::bucket::Bucket as S3Bucket;
 
@@ -15,6 +14,8 @@ use crate::deepcopy::DeepCopy;
 use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
 use crate::retry::{execute_with_retries, RetryConfig};
+
+use super::BackendPutFuture;
 
 const MAX_S3_RETRIES: usize = 2;
 
@@ -129,7 +130,7 @@ impl PersistenceBackend for S3KVStorage {
         Ok(response_data.bytes().to_vec())
     }
 
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> OneShotReceiver<Result<(), Error>> {
+    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
         self.upload_event_sender
             .send(S3UploaderEvent::UploadObject {

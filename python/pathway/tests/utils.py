@@ -397,6 +397,38 @@ def expect_csv_checker(expected, output_path, usecols=("k", "v"), index_col=("k"
     return checker
 
 
+class CsvPathwayChecker:
+    def __init__(
+        self,
+        expected: str,
+        output_path: pathlib.Path,
+        *,
+        id_from: list[str] | None = None,
+    ) -> None:
+        self.expected = expected
+        self.output_path = output_path
+        self.id_from = id_from
+
+    def __call__(self):
+        try:
+            ex = pw.debug.table_from_markdown(self.expected)
+            dfs = []
+            for entry in os.listdir(self.output_path):
+                dfs.append(pd.read_csv(self.output_path / entry))
+            df = pd.concat(dfs, ignore_index=True).rename(
+                columns={"time": "__time__", "diff": "__diff__"}
+            )
+            res = pw.debug.table_from_pandas(df, id_from=self.id_from)
+            assert_table_equality_wo_index(res, ex)
+        except Exception as exception:
+            self.exception = exception
+            return False
+        return True
+
+    def provide_information_on_failure(self):
+        return self.exception
+
+
 @dataclass(frozen=True)
 class TestDataSource(datasource.DataSource):
     __test__ = False

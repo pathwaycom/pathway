@@ -3,10 +3,11 @@
 use log::error;
 
 use futures::channel::oneshot;
-use futures::channel::oneshot::Receiver as OneShotReceiver;
 
 use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
+
+use super::BackendPutFuture;
 
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
@@ -21,7 +22,7 @@ impl PersistenceBackend for MockKVStorage {
         unreachable!()
     }
 
-    fn put_value(&mut self, _key: &str, _value: Vec<u8>) -> OneShotReceiver<Result<(), Error>> {
+    fn put_value(&mut self, _key: &str, _value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
         let send_result = sender.send(Ok(()));
         if let Err(unsent_flush_result) = send_result {

@@ -2,6 +2,8 @@
 
 #![allow(clippy::module_name_repetitions)]
 
+use differential_dataflow::difference::Semigroup;
+use differential_dataflow::ExchangeData;
 use log::{error, info, warn};
 use std::collections::HashMap;
 use std::fs;
@@ -24,9 +26,12 @@ use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::{
     FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
 };
+use crate::persistence::operator_snapshot::{ConcreteSnapshotReader, MultiConcreteSnapshotReader};
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::Error as PersistenceBackendError;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
+
+use super::operator_snapshot::ConcreteSnapshotWriter;
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
 
@@ -162,26 +167,19 @@ impl PersistenceManagerConfig {
         MetadataAccessor::new(backend, self.worker_id, self.total_workers)
     }
 
-    pub fn create_snapshot_readers(
+    fn get_readers_backends(
         &self,
         persistent_id: PersistentId,
-        threshold_time: TotalFrontier<Timestamp>,
         query_purpose: ReadersQueryPurpose,
-    ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
-        info!("Using threshold time: {threshold_time:?}");
-        let mut result: Vec<Box<dyn ReadInputSnapshot>> = Vec::new();
+    ) -> Result<Vec<Box<dyn PersistenceBackend>>, PersistenceBackendError> {
+        let mut result: Vec<Box<dyn PersistenceBackend>> = Vec::new();
         match &self.backend {
             PersistentStorageConfig::Filesystem(root_path) => {
                 let assigned_snapshot_paths =
                     self.assigned_snapshot_paths(root_path, persistent_id, query_purpose)?;
                 for (_, path) in assigned_snapshot_paths {
                     let backend = FilesystemKVStorage::new(&path)?;
-                    let reader = InputSnapshotReader::new(
-                        Box::new(backend),
-                        threshold_time,
-                        query_purpose.truncate_at_end(),
-                    )?;
-                    result.push(Box::new(reader));
+                    result.push(Box::new(backend));
                 }
                 Ok(result)
             }
@@ -194,23 +192,58 @@ impl PersistenceManagerConfig {
                 )?;
                 for (_, path) in assigned_snapshot_paths {
                     let backend = S3KVStorage::new(bucket.deep_copy(), &path);
-                    let reader = InputSnapshotReader::new(
-                        Box::new(backend),
-                        threshold_time,
-                        query_purpose.truncate_at_end(),
-                    )?;
-                    result.push(Box::new(reader));
+                    result.push(Box::new(backend));
                 }
                 Ok(result)
             }
-            PersistentStorageConfig::Mock(event_map) => {
-                let events = event_map
-                    .get(&(persistent_id, self.worker_id))
-                    .unwrap_or(&vec![])
-                    .clone();
-                let reader = MockSnapshotReader::new(events);
+            PersistentStorageConfig::Mock(_) => Ok(Vec::new()),
+        }
+    }
+
+    pub fn create_snapshot_readers(
+        &self,
+        persistent_id: PersistentId,
+        threshold_time: TotalFrontier<Timestamp>,
+        query_purpose: ReadersQueryPurpose,
+    ) -> Result<Vec<Box<dyn ReadInputSnapshot>>, PersistenceBackendError> {
+        info!("Using threshold time: {threshold_time:?}");
+        let mut result: Vec<Box<dyn ReadInputSnapshot>> = Vec::new();
+        if let PersistentStorageConfig::Mock(event_map) = &self.backend {
+            let events = event_map
+                .get(&(persistent_id, self.worker_id))
+                .unwrap_or(&vec![])
+                .clone();
+            let reader = MockSnapshotReader::new(events);
+            result.push(Box::new(reader));
+            Ok(result)
+        } else {
+            let backends = self.get_readers_backends(persistent_id, query_purpose)?;
+            for backend in backends {
+                let reader = InputSnapshotReader::new(
+                    backend,
+                    threshold_time,
+                    query_purpose.truncate_at_end(),
+                )?;
                 result.push(Box::new(reader));
-                Ok(result)
+            }
+            Ok(result)
+        }
+    }
+
+    fn get_writer_backend(
+        &mut self,
+        persistent_id: PersistentId,
+    ) -> Result<Box<dyn PersistenceBackend>, PersistenceBackendError> {
+        match &self.backend {
+            PersistentStorageConfig::Filesystem(root_path) => Ok(Box::new(
+                FilesystemKVStorage::new(&self.snapshot_writer_path(root_path, persistent_id)?)?,
+            )),
+            PersistentStorageConfig::S3 { bucket, root_path } => Ok(Box::new(S3KVStorage::new(
+                bucket.deep_copy(),
+                &self.s3_snapshot_path(root_path, persistent_id),
+            ))),
+            PersistentStorageConfig::Mock(_) => {
+                unreachable!()
             }
         }
     }
@@ -220,17 +253,12 @@ impl PersistenceManagerConfig {
         persistent_id: PersistentId,
         snapshot_mode: SnapshotMode,
     ) -> Result<SharedSnapshotWriter, PersistenceBackendError> {
-        let backend: Box<dyn PersistenceBackend> = match &self.backend {
-            PersistentStorageConfig::Filesystem(root_path) => Box::new(FilesystemKVStorage::new(
-                &self.snapshot_writer_path(root_path, persistent_id)?,
-            )?),
-            PersistentStorageConfig::S3 { bucket, root_path } => Box::new(S3KVStorage::new(
-                bucket.deep_copy(),
-                &self.s3_snapshot_path(root_path, persistent_id),
-            )),
-            PersistentStorageConfig::Mock(_) => {
-                unreachable!()
-            }
+        let backend = self.get_writer_backend(persistent_id)?;
+        let snapshot_mode = if matches!(self.persistence_mode, PersistenceMode::OperatorPersisting)
+        {
+            SnapshotMode::OffsetsOnly
+        } else {
+            snapshot_mode
         };
         let snapshot_writer = InputSnapshotWriter::new(backend, snapshot_mode);
         Ok(Arc::new(Mutex::new(snapshot_writer?)))
@@ -360,5 +388,33 @@ impl PersistenceManagerConfig {
         }
 
         Ok(assigned_paths)
+    }
+
+    pub fn create_operator_snapshot_readers(
+        &self,
+        persistent_id: PersistentId,
+        threshold_time: TotalFrontier<Timestamp>,
+    ) -> Result<MultiConcreteSnapshotReader, PersistenceBackendError> {
+        info!("Using threshold time: {threshold_time:?}");
+        let mut readers: Vec<ConcreteSnapshotReader> = Vec::new();
+        let backends =
+            self.get_readers_backends(persistent_id, ReadersQueryPurpose::ReadSnapshot)?;
+        for backend in backends {
+            let reader = ConcreteSnapshotReader::new(backend, threshold_time);
+            readers.push(reader);
+        }
+        Ok(MultiConcreteSnapshotReader::new(readers))
+    }
+
+    pub fn create_operator_snapshot_writer<D, R>(
+        &mut self,
+        persistent_id: PersistentId,
+    ) -> Result<ConcreteSnapshotWriter<D, R>, PersistenceBackendError>
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let backend = self.get_writer_backend(persistent_id)?;
+        Ok(ConcreteSnapshotWriter::new(backend, self.snapshot_interval))
     }
 }

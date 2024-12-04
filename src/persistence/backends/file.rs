@@ -6,11 +6,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use futures::channel::oneshot;
-use futures::channel::oneshot::Receiver as OneShotReceiver;
 
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::PersistenceBackend;
 use crate::persistence::Error;
+
+use super::BackendPutFuture;
 
 const TEMPORARY_OBJECT_SUFFIX: &str = ".tmp";
 
@@ -77,7 +78,7 @@ impl PersistenceBackend for FilesystemKVStorage {
         Ok(std::fs::read(self.root_path.join(key))?)
     }
 
-    fn put_value(&mut self, key: &str, value: Vec<u8>) -> OneShotReceiver<Result<(), Error>> {
+    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
 
         let tmp_path = self

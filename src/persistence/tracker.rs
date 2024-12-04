@@ -1,19 +1,44 @@
 // Copyright © 2024 Pathway
 
+use differential_dataflow::difference::Semigroup;
+use differential_dataflow::ExchangeData;
 use log::{error, warn};
 use std::collections::{HashMap, HashSet};
 use std::mem::take;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
 
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
+use crate::persistence::backends::BackendPutFuture as PersistenceBackendFlushFuture;
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
-use crate::persistence::input_snapshot::{
-    ReadInputSnapshot, SnapshotMode, SnapshotWriterFlushFuture,
-};
+use crate::persistence::input_snapshot::{ReadInputSnapshot, SnapshotMode};
+use crate::persistence::operator_snapshot::{Flushable, OperatorSnapshotReader};
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::Error as PersistenceBackendError;
-use crate::persistence::{PersistentId, SharedSnapshotWriter};
+use crate::persistence::{
+    PersistenceTime, PersistentId, SharedOperatorSnapshotWriter, SharedSnapshotWriter,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub enum RequiredPersistenceMode {
+    OperatorPersistence,
+    InputOrOperatorPersistence,
+}
+
+impl RequiredPersistenceMode {
+    fn matches(self, persistence_mode: PersistenceMode) -> bool {
+        matches!(
+            (self, persistence_mode),
+            (
+                Self::OperatorPersistence,
+                PersistenceMode::OperatorPersisting
+            ) | (
+                Self::InputOrOperatorPersistence,
+                PersistenceMode::Persisting | PersistenceMode::OperatorPersisting
+            )
+        )
+    }
+}
 
 /// The main coordinator for state persistence within a worker
 /// It tracks logical time and snapshots and commits them when
@@ -23,15 +48,17 @@ pub struct WorkerPersistentStorage {
     config: PersistenceManagerConfig,
 
     snapshot_writers: HashMap<PersistentId, SharedSnapshotWriter>,
+    operator_snapshot_writers: HashMap<PersistentId, Arc<Mutex<dyn Flushable + Send>>>,
     sink_threshold_times: Vec<TotalFrontier<Timestamp>>,
     registered_persistent_ids: HashSet<PersistentId>,
-    last_commit_at: Instant,
 }
+
+pub type SharedWorkerPersistentStorage = Arc<Mutex<WorkerPersistentStorage>>;
 
 /// The information from the first phase of time finalization commit.
 pub struct LogicalTimeCommitData {
     // Futures, all of which should be waited before the metadata commit.
-    snapshot_futures: Vec<SnapshotWriterFlushFuture>,
+    snapshot_futures: Vec<PersistenceBackendFlushFuture>,
 
     // The timestamp which needs to be committed when saving is successful
     timestamp: TotalFrontier<Timestamp>,
@@ -39,7 +66,7 @@ pub struct LogicalTimeCommitData {
 
 impl LogicalTimeCommitData {
     pub fn new(
-        snapshot_futures: Vec<SnapshotWriterFlushFuture>,
+        snapshot_futures: Vec<PersistenceBackendFlushFuture>,
         timestamp: TotalFrontier<Timestamp>,
     ) -> Self {
         Self {
@@ -74,21 +101,34 @@ impl WorkerPersistentStorage {
             config,
 
             snapshot_writers: HashMap::new(),
+            operator_snapshot_writers: HashMap::new(),
             sink_threshold_times: Vec::new(),
             registered_persistent_ids: HashSet::new(),
-            last_commit_at: Instant::now(),
         })
     }
 
     pub fn table_persistence_enabled(&self) -> bool {
         matches!(
             self.config.persistence_mode,
-            PersistenceMode::Persisting | PersistenceMode::SelectivePersisting
+            PersistenceMode::Persisting
+                | PersistenceMode::SelectivePersisting
+                | PersistenceMode::OperatorPersisting
         )
     }
 
-    pub fn persistent_id_generation_enabled(&self) -> bool {
-        matches!(self.config.persistence_mode, PersistenceMode::Persisting)
+    pub fn input_persistence_enabled(&self) -> bool {
+        // FIXME make sure the condition is correct
+        !matches!(
+            self.config.persistence_mode,
+            PersistenceMode::OperatorPersisting | PersistenceMode::UdfCaching
+        )
+    }
+
+    pub fn persistent_id_generation_enabled(
+        &self,
+        required_persistence_mode: RequiredPersistenceMode,
+    ) -> bool {
+        required_persistence_mode.matches(self.config.persistence_mode)
     }
 
     pub fn last_finalized_timestamp(&self) -> TotalFrontier<Timestamp> {
@@ -122,18 +162,21 @@ impl WorkerPersistentStorage {
             .min()
             .expect("no known sinks");
 
-        let timestamp_updated = worker_finalized_timestamp != self.last_finalized_timestamp();
-        let commit_interval_passed = matches!(worker_finalized_timestamp, TotalFrontier::Done)
-            || self.last_commit_at.elapsed() >= self.config.snapshot_interval;
-
-        if timestamp_updated && commit_interval_passed {
-            let mut commit_data = self.accept_finalized_timestamp(worker_finalized_timestamp);
+        let normalized_finalized_timestamp = match worker_finalized_timestamp {
+            TotalFrontier::At(worker_finalized_timestamp) => TotalFrontier::At(
+                worker_finalized_timestamp
+                    .most_recent_possible_snapshot_time(self.config.snapshot_interval),
+            ),
+            TotalFrontier::Done => TotalFrontier::Done,
+        };
+        let timestamp_updated = normalized_finalized_timestamp != self.last_finalized_timestamp();
+        if timestamp_updated {
+            let mut commit_data = self.accept_finalized_timestamp(normalized_finalized_timestamp);
             if !commit_data.prepare() {
-                warn!("Failed to prepare commit data, logical time {worker_finalized_timestamp:?} won't be committed");
+                warn!("Failed to prepare commit data, logical time {normalized_finalized_timestamp:?} won't be committed");
                 return;
             }
             self.commit_finalized_timestamp(&commit_data);
-            self.last_commit_at = Instant::now();
         }
     }
 
@@ -157,6 +200,13 @@ impl WorkerPersistentStorage {
         let mut futures = Vec::new();
         for snapshot_writer in self.snapshot_writers.values() {
             let mut flush_futures = snapshot_writer.lock().unwrap().flush();
+            futures.append(&mut flush_futures);
+        }
+        for operator_snapshot_writer in self.operator_snapshot_writers.values() {
+            let mut flush_futures = operator_snapshot_writer
+                .lock()
+                .unwrap()
+                .flush(finalized_timestamp);
             futures.append(&mut flush_futures);
         }
 
@@ -198,5 +248,36 @@ impl WorkerPersistentStorage {
             self.snapshot_writers.insert(persistent_id, writer.clone());
             Ok(writer)
         }
+    }
+
+    pub fn create_operator_snapshot_reader<D, R>(
+        &self,
+        persistent_id: PersistentId,
+    ) -> Result<Box<dyn OperatorSnapshotReader<D, R> + Send>, PersistenceBackendError>
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        Ok(Box::new(self.config.create_operator_snapshot_readers(
+            persistent_id,
+            self.metadata_storage.past_runs_threshold_time(),
+        )?))
+    }
+
+    pub fn create_operator_snapshot_writer<D, R>(
+        &mut self,
+        persistent_id: PersistentId,
+    ) -> Result<SharedOperatorSnapshotWriter<D, R>, PersistenceBackendError>
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let writer = Arc::new(Mutex::new(
+            self.config.create_operator_snapshot_writer(persistent_id)?,
+        ));
+        let writer_flushable: Arc<Mutex<dyn Flushable + Send>> = writer.clone();
+        self.operator_snapshot_writers
+            .insert(persistent_id, writer_flushable);
+        Ok(writer)
     }
 }

@@ -4,13 +4,22 @@ import pathlib
 
 import pytest
 
-from .base import FS_STORAGE_NAME, S3_STORAGE_NAME, do_test_failure_recovery_static
+from .base import (
+    FS_STORAGE_NAME,
+    INPUT_PERSISTENCE_MODE_NAME,
+    OPERATOR_PERSISTENCE_MODE_NAME,
+    S3_STORAGE_NAME,
+    do_test_failure_recovery_static,
+)
 
 
 @pytest.mark.parametrize(
     "n_threads,n_processes", [(1, 1), (2, 1), (4, 1), (1, 4), (1, 2), (2, 2)]
 )
 @pytest.mark.parametrize("pstorage_type", [S3_STORAGE_NAME, FS_STORAGE_NAME])
+@pytest.mark.parametrize(
+    "persistence_mode", [INPUT_PERSISTENCE_MODE_NAME, OPERATOR_PERSISTENCE_MODE_NAME]
+)
 @pytest.mark.parametrize(
     "n_backfilling_runs,min_work_time,max_work_time",
     [
@@ -33,6 +42,7 @@ def test_integration_failure_recovery(
     min_work_time,
     max_work_time,
     pstorage_type,
+    persistence_mode,
     tmp_path: pathlib.Path,
     port: int,
 ):
@@ -44,5 +54,6 @@ def test_integration_failure_recovery(
         min_work_time=min_work_time,
         max_work_time=max_work_time,
         pstorage_type=pstorage_type,
+        persistence_mode=persistence_mode,
         first_port=port,
     )

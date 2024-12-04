@@ -780,6 +780,7 @@ class PersistenceMode(Enum):
     PERSISTING: PersistenceMode
     SELECTIVE_PERSISTING: PersistenceMode
     UDF_CACHING: PersistenceMode
+    OPERATOR_PERSISTING: PersistenceMode
 
 class SnapshotAccess(Enum):
     RECORD: SnapshotAccess

@@ -20,6 +20,8 @@ STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
 FS_STORAGE_NAME = "fs"
 S3_STORAGE_NAME = "s3"
+INPUT_PERSISTENCE_MODE_NAME = "PERSISTING"
+OPERATOR_PERSISTENCE_MODE_NAME = "OPERATOR_PERSISTING"
 
 
 class PStoragePath:
@@ -76,6 +78,7 @@ def check_output_correctness(
     latest_input_file, input_path, output_path, interrupted_run=False
 ):
     input_word_counts = {}
+    old_input_word_counts = {}
     new_file_lines = set()
     distinct_new_words = set()
 
@@ -99,7 +102,11 @@ def check_output_correctness(
                         input_word_counts[word] = 0
                     input_word_counts[word] += 1
 
-                    if not on_old_file:
+                    if on_old_file:
+                        if word not in old_input_word_counts:
+                            old_input_word_counts[word] = 0
+                        old_input_word_counts[word] += 1
+                    else:
                         new_file_lines.add((word, input_word_counts[word]))
                         distinct_new_words.add(word)
 
@@ -113,6 +120,7 @@ def check_output_correctness(
             is_first_row = True
             word_column_index = None
             count_column_index = None
+            diff_column_index = None
             for row in f:
                 n_rows += 1
                 if is_first_row:
@@ -122,6 +130,8 @@ def check_output_correctness(
                             word_column_index = col_idx
                         elif col_name == "count":
                             count_column_index = col_idx
+                        elif col_name == "diff":
+                            diff_column_index = col_idx
                     is_first_row = False
                     assert (
                         word_column_index is not None
@@ -129,22 +139,35 @@ def check_output_correctness(
                     assert (
                         count_column_index is not None
                     ), "'count' is absent in CSV header"
+                    assert (
+                        diff_column_index is not None
+                    ), "'diff' is absent in CSV header"
                     continue
 
                 assert word_column_index is not None
                 assert count_column_index is not None
+                assert diff_column_index is not None
                 tokens = row.strip().split(",")
                 try:
                     word = tokens[word_column_index].strip('"')
-                    count = tokens[count_column_index]
+                    count = int(tokens[count_column_index])
+                    diff = int(tokens[diff_column_index])
                     output_word_counts[word] = int(count)
                 except IndexError:
                     # line split in two chunks, one fsynced, another did not
                     if not interrupted_run:
                         raise
 
-                if (word, int(count)) not in new_file_lines:
-                    n_old_lines += 1
+                if diff == 1:
+                    if (word, count) not in new_file_lines:
+                        n_old_lines += 1
+                elif diff == -1:
+                    new_line_update = (word, count) in new_file_lines
+                    old_line_update = old_input_word_counts.get(word) == count
+                    if not (new_line_update or old_line_update):
+                        n_old_lines += 1
+                else:
+                    raise ValueError("Incorrect diff value: {diff}")
     except FileNotFoundError:
         if interrupted_run:
             return False
@@ -187,12 +210,13 @@ def start_pw_computation(
     pstorage_path,
     mode,
     pstorage_type,
+    persistence_mode,
     first_port,
 ):
     pw_wordcount_path = (
         "/".join(os.path.abspath(__file__).split("/")[:-1])
         + f"/pw_wordcount.py --input {input_path} --output {output_path} --pstorage {pstorage_path} "
-        + f"--mode {mode} --pstorage-type {pstorage_type}"
+        + f"--mode {mode} --pstorage-type {pstorage_type} --persistence_mode {persistence_mode}"
     )
     n_cpus = n_threads * n_processes
     cpu_list = ",".join([str(x) for x in range(n_cpus)])
@@ -223,6 +247,7 @@ def get_pw_program_run_time(
     pstorage_path,
     mode,
     pstorage_type,
+    persistence_mode,
     first_port,
 ):
     needs_pw_program_launch = True
@@ -238,6 +263,7 @@ def get_pw_program_run_time(
             pstorage_path=pstorage_path,
             mode=mode,
             pstorage_type=pstorage_type,
+            persistence_mode=persistence_mode,
             first_port=first_port,
         )
         try:
@@ -300,6 +326,7 @@ def run_pw_program_suddenly_terminate(
     min_work_time,
     max_work_time,
     pstorage_type,
+    persistence_mode,
     first_port,
 ):
     process_handles = start_pw_computation(
@@ -310,6 +337,7 @@ def run_pw_program_suddenly_terminate(
         pstorage_path=pstorage_path,
         mode=STATIC_MODE_NAME,
         pstorage_type=pstorage_type,
+        persistence_mode=persistence_mode,
         first_port=first_port,
     )
     try:
@@ -394,6 +422,7 @@ def do_test_persistent_wordcount(
     tmp_path,
     mode,
     pstorage_type,
+    persistence_mode,
     first_port,
 ):
     inputs_path = tmp_path / "inputs"
@@ -414,6 +443,7 @@ def do_test_persistent_wordcount(
                 pstorage_path=pstorage_path,
                 mode=mode,
                 pstorage_type=pstorage_type,
+                persistence_mode=persistence_mode,
                 first_port=first_port,
             )
             print(f"Run {n_run}: pathway time elapsed {elapsed}")
@@ -432,6 +462,7 @@ def do_test_failure_recovery_static(
     min_work_time,
     max_work_time,
     pstorage_type,
+    persistence_mode,
     first_port,
 ):
     inputs_path = tmp_path / "inputs"
@@ -454,6 +485,7 @@ def do_test_failure_recovery_static(
                 min_work_time=min_work_time,
                 max_work_time=max_work_time,
                 pstorage_type=pstorage_type,
+                persistence_mode=persistence_mode,
                 first_port=first_port,
             )
 
@@ -474,6 +506,7 @@ def do_test_failure_recovery_static(
                 pstorage_path=pstorage_path,
                 mode=STATIC_MODE_NAME,
                 pstorage_type=pstorage_type,
+                persistence_mode=persistence_mode,
                 first_port=first_port,
             )
             print("Time elapsed for non-interrupted run:", elapsed)

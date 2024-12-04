@@ -39,7 +39,7 @@ use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
-use crate::persistence::tracker::WorkerPersistentStorage;
+use crate::persistence::tracker::{RequiredPersistenceMode, WorkerPersistentStorage};
 use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
 
 use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
@@ -50,8 +50,6 @@ use data_storage::{
 pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
-
-pub const ARTIFICIAL_TIME_ON_REWIND_START: Timestamp = Timestamp(0); // XXX
 
 /*
     Below is the custom reader stuff.
@@ -114,6 +112,7 @@ pub enum PersistenceMode {
     Persisting,
     SelectivePersisting,
     UdfCaching,
+    OperatorPersisting,
 }
 
 impl PersistenceMode {
@@ -136,7 +135,8 @@ impl PersistenceMode {
             PersistenceMode::Batch
             | PersistenceMode::Persisting
             | PersistenceMode::SelectivePersisting
-            | PersistenceMode::UdfCaching => {}
+            | PersistenceMode::UdfCaching
+            | PersistenceMode::OperatorPersisting => {}
             PersistenceMode::SpeedrunReplay => {
                 let send_res = sender.send(Entry::Snapshot(entry_read));
                 if let Err(e) = send_res {
@@ -352,12 +352,18 @@ impl Connector {
             // Rewind the data source
             if let Some(persistent_storage) = persistent_storage {
                 if let Some(persistent_id) = reader.persistent_id() {
-                    Self::rewind_from_disk_snapshot(
-                        persistent_id,
-                        persistent_storage,
-                        sender,
-                        persistence_mode,
-                    );
+                    if persistent_storage
+                        .lock()
+                        .unwrap()
+                        .input_persistence_enabled()
+                    {
+                        Self::rewind_from_disk_snapshot(
+                            persistent_id,
+                            persistent_storage,
+                            sender,
+                            persistence_mode,
+                        );
+                    }
 
                     if realtime_reader_needed {
                         frontier = Self::frontier_for(reader, persistent_id, persistent_storage);
@@ -395,7 +401,9 @@ impl Connector {
                 let persistent_ids_enforced = persistent_storage
                     .lock()
                     .unwrap()
-                    .persistent_id_generation_enabled();
+                    .persistent_id_generation_enabled(
+                        RequiredPersistenceMode::InputOrOperatorPersistence,
+                    );
                 assert!(!persistent_ids_enforced || reader.is_internal());
                 Ok(None)
             }

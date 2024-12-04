@@ -8,6 +8,7 @@ pub mod config;
 mod export;
 pub mod maybe_total;
 pub mod operators;
+pub mod persist;
 pub mod shard;
 mod variable;
 
@@ -15,8 +16,7 @@ use crate::connectors::adaptors::{GenericValues, ValuesSessionAdaptor};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
-use crate::connectors::{read_persisted_state, ARTIFICIAL_TIME_ON_REWIND_START};
-use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
+use crate::connectors::{read_persisted_state, Connector, PersistenceMode, SnapshotAccess};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
@@ -24,11 +24,11 @@ use crate::engine::dataflow::operators::time_column::{
 };
 use crate::engine::telemetry::Config as TelemetryConfig;
 use crate::engine::value::HashInto;
-use crate::persistence::config::{PersistenceManagerConfig, PersistenceManagerOuterConfig};
+use crate::persistence::config::PersistenceManagerOuterConfig;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
-use crate::persistence::tracker::WorkerPersistentStorage;
-use crate::persistence::{ExternalPersistentId, IntoPersistentId};
+use crate::persistence::tracker::{RequiredPersistenceMode, SharedWorkerPersistentStorage};
+use crate::persistence::{ExternalPersistentId, IntoPersistentId, PersistenceTime};
 use crate::retry::{execute_with_retries, RetryConfig};
 
 use std::borrow::{Borrow, Cow};
@@ -42,7 +42,6 @@ use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::sync::{mpsc, Arc};
 use std::thread::{Builder, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -53,20 +52,25 @@ use arcstr::ArcStr;
 use crossbeam_channel::{bounded, never, select, Receiver, RecvError, Sender};
 use derivative::Derivative;
 use differential_dataflow::collection::concatenate;
+use differential_dataflow::difference::Semigroup;
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::operators::reduce::{Reduce, ReduceCore};
 use differential_dataflow::operators::JoinCore;
 use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpine};
-use differential_dataflow::Collection;
 use differential_dataflow::{AsCollection as _, Data};
+use differential_dataflow::{Collection, ExchangeData};
 use futures::future::BoxFuture;
 use id_arena::Arena;
 use itertools::{chain, process_results, Itertools};
 use log::{error, info};
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
+use persist::{
+    EmptyPersistenceWrapper, PersistableCollection, PersistenceWrapper,
+    TimestampBasedPersistenceWrapper,
+};
 use pyo3::PyObject;
 use serde::{Deserialize, Serialize};
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
@@ -238,8 +242,6 @@ impl<S: MaybeTotalScope> From<Collection<S, (Key, Value)>> for Values<S> {
         Values::Generic { generic_collection }
     }
 }
-
-type SharedWorkerPersistentStorage = Option<Arc<Mutex<WorkerPersistentStorage>>>;
 
 enum UniverseData<S: MaybeTotalScope> {
     FromCollection {
@@ -750,6 +752,8 @@ impl Shard for SortingCell {
     }
 }
 
+pub type Poller = Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>;
+
 struct DataflowGraphInner<S: MaybeTotalScope> {
     scope: S,
     universes: Arena<Universe<S>, UniverseHandle>,
@@ -757,7 +761,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     tables: Arena<Table<S>, TableHandle>,
     error_logs: Arena<ErrorLog, ErrorLogHandle>,
     flushers: Vec<Box<dyn FnMut() -> SystemTime>>,
-    pollers: Vec<Box<dyn FnMut() -> ControlFlow<(), Option<SystemTime>>>>,
+    pollers: Vec<Poller>,
     connector_threads: Vec<JoinHandle<()>>,
     connector_monitors: Vec<Rc<RefCell<ConnectorMonitor>>>,
     error_reporter: ErrorReporter,
@@ -766,8 +770,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     probers: Vec<Prober>,
     probes: HashMap<usize, ProbeHandle<S::Timestamp>>,
     ignore_asserts: bool,
-    persistence_config: Option<PersistenceManagerConfig>,
-    worker_persistent_storage: SharedWorkerPersistentStorage,
+    persistence_wrapper: Box<dyn PersistenceWrapper<S>>,
     persisted_states_count: u64,
     config: Arc<Config>,
     terminate_on_error: bool,
@@ -959,22 +962,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         scope: S,
         error_reporter: ErrorReporter,
         ignore_asserts: bool,
-        persistence_config: Option<PersistenceManagerConfig>,
+        persistence_wrapper: Box<dyn PersistenceWrapper<S>>,
         config: Arc<Config>,
         terminate_on_error: bool,
         default_error_log: Option<ErrorLog>,
     ) -> Result<Self> {
-        let worker_persistent_storage = {
-            if let Some(persistence_config) = &persistence_config {
-                let worker_storage = Arc::new(Mutex::new(WorkerPersistentStorage::new(
-                    persistence_config.clone(),
-                )?));
-                Some(worker_storage)
-            } else {
-                None
-            }
-        };
-
         Ok(Self {
             scope,
             universes: Arena::new(),
@@ -991,8 +983,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             probers: Vec::new(),
             probes: HashMap::new(),
             ignore_asserts,
-            persistence_config,
-            worker_persistent_storage,
+            persistence_wrapper,
             persisted_states_count: 0,
             config,
             terminate_on_error,
@@ -2640,6 +2631,85 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
+
+    fn effective_persistent_id(
+        &self,
+        reader_is_internal: bool,
+        external_persistent_id: Option<&ExternalPersistentId>,
+        required_persistence_mode: RequiredPersistenceMode,
+        logic: impl FnOnce() -> String,
+    ) -> Result<Option<ExternalPersistentId>> {
+        let has_persistent_storage = self
+            .persistence_wrapper
+            .get_worker_persistent_storage()
+            .is_some();
+        if let Some(external_persistent_id) = external_persistent_id {
+            if !has_persistent_storage {
+                return Err(Error::NoPersistentStorage(external_persistent_id.clone()));
+            }
+        }
+        if external_persistent_id.is_some() {
+            Ok(external_persistent_id.cloned())
+        } else if has_persistent_storage && !reader_is_internal {
+            let worker_persistent_storage = self
+                .persistence_wrapper
+                .get_worker_persistent_storage()
+                .unwrap()
+                .lock()
+                .unwrap();
+            if worker_persistent_storage.persistent_id_generation_enabled(required_persistence_mode)
+                && worker_persistent_storage.table_persistence_enabled()
+            {
+                Ok(Some(logic()))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn maybe_persist<D, R>(
+        &mut self,
+        collection: Collection<S, D, R>,
+        name: &str,
+    ) -> Result<Collection<S, D, R>>
+    where
+        D: ExchangeData + Shard,
+        R: ExchangeData + Semigroup,
+        Collection<S, D, R>: Into<PersistableCollection<S>> + From<PersistableCollection<S>>,
+    {
+        self.persisted_states_count += 1;
+        // TODO: generate better persistent ids that can be used even if graph changes
+        let effective_persistent_id = self.effective_persistent_id(
+            false,
+            None,
+            RequiredPersistenceMode::OperatorPersistence,
+            || {
+                let generated_external_id = format!("{name}-{}", self.persisted_states_count);
+                info!("Persistent ID autogenerated for {name}: {generated_external_id}");
+                generated_external_id
+            },
+        )?;
+        let persistent_id = effective_persistent_id
+            .clone()
+            .map(IntoPersistentId::into_persistent_id);
+
+        if let Some(persistent_id) = persistent_id {
+            let (persisted_collection, poller, thread_handle) = self
+                .persistence_wrapper
+                .maybe_persist_named(collection.into(), name, persistent_id)?;
+            if let Some(poller) = poller {
+                self.pollers.push(poller);
+            }
+            if let Some(thread_handle) = thread_handle {
+                self.connector_threads.push(thread_handle);
+            }
+            Ok(persisted_collection.into())
+        } else {
+            Ok(collection)
+        }
+    }
 }
 
 trait DataflowReducer<S: MaybeTotalScope> {
@@ -2648,16 +2718,22 @@ trait DataflowReducer<S: MaybeTotalScope> {
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
         trace: Trace,
-    ) -> Values<S>;
+        graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>>;
 }
 
-impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
+impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R
+where
+    Collection<S, (Key, Option<<R as ReducerImpl>::State>)>:
+        Into<PersistableCollection<S>> + From<PersistableCollection<S>>,
+{
     fn reduce(
         self: Rc<Self>,
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
         _trace: Trace,
-    ) -> Values<S> {
+        graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
         let initialized = values.map_named("DataFlowReducer::reduce::init", {
             let self_ = self.clone();
             let error_logger = error_logger.clone();
@@ -2672,8 +2748,8 @@ impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
                 (result_key, state)
             }
         });
-
-        initialized
+        Ok(graph
+            .maybe_persist(initialized, "DataFlowReducer::reduce")?
             .reduce({
                 let self_ = self.clone();
                 move |_key, input, output| {
@@ -2700,7 +2776,7 @@ impl<S: MaybeTotalScope, R: ReducerImpl> DataflowReducer<S> for R {
                 };
                 (key, result)
             })
-            .into()
+            .into())
     }
 }
 
@@ -2710,8 +2786,9 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
         _trace: Trace,
-    ) -> Values<S> {
-        values
+        graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        let initialized = values
             .map_named("IntSumReducer::reduce::init", {
                 let self_ = self.clone();
                 move |(source_key, result_key, values)| {
@@ -2725,12 +2802,14 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
                     (result_key, state)
                 }
             })
-            .explode(|(key, state)| once((key, state)))
+            .explode(|(key, state)| once((key, state)));
+        Ok(graph
+            .maybe_persist(initialized, "IntSumReducer::reduce")?
             .count()
             .map_named("IntSumReducer::reduce", move |(key, state)| {
                 (key, self.finish(state))
             })
-            .into()
+            .into())
     }
 }
 
@@ -2740,17 +2819,19 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
         _trace: Trace,
-    ) -> Values<S> {
-        values
-            .map_named(
-                "CountReducer::reduce::init",
-                |(_source_key, result_key, _values)| (result_key),
-            )
+        graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        let initialized = values.map_named(
+            "CountReducer::reduce::init",
+            |(_source_key, result_key, _values)| (result_key),
+        );
+        Ok(graph
+            .maybe_persist(initialized, "CountReducer::reduce")?
             .count()
             .map_named("CountReducer::reduce", |(key, count)| {
                 (key, Value::from(count as i64))
             })
-            .into()
+            .into())
     }
 }
 
@@ -2763,8 +2844,9 @@ where
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         error_logger: Rc<dyn LogError>,
         trace: Trace,
-    ) -> Values<S> {
-        values
+        _graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        Ok(values
             .map_named(
                 "StatefulReducer::reduce::init",
                 |(_source_key, result_key, values)| (result_key, values),
@@ -2782,7 +2864,7 @@ where
                     )
                 }
             })
-            .into()
+            .into())
     }
 }
 
@@ -2796,8 +2878,9 @@ where
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
         _trace: Trace,
-    ) -> Values<S> {
-        values
+        _graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        Ok(values
             .map_named(
                 "LatestReducer::reduce::init",
                 |(source_key, result_key, values)| (result_key, (source_key, values)),
@@ -2813,7 +2896,7 @@ where
                     .expect("input values shouldn't be empty");
                 Some(result_value)
             })
-            .into()
+            .into())
     }
 }
 
@@ -2827,8 +2910,9 @@ where
         values: &Collection<S, (Key, Key, Vec<Value>)>,
         _error_logger: Rc<dyn LogError>,
         _trace: Trace,
-    ) -> Values<S> {
-        values
+        _graph: &mut DataflowGraphInner<S>,
+    ) -> Result<Values<S>> {
+        Ok(values
             .map_named(
                 "EarliestReducer::reduce::init",
                 |(source_key, result_key, values)| (result_key, (source_key, values)),
@@ -2847,7 +2931,7 @@ where
                     .expect("input values shouldn't be empty");
                 Some(result_value)
             })
-            .into()
+            .into())
     }
 }
 
@@ -2972,11 +3056,12 @@ where
                         Some((key, new_key, new_values))
                     }
                 });
-                Ok(reducer_impl.clone().reduce(
+                reducer_impl.clone().reduce(
                     &with_extracted_value,
                     self.create_error_logger()?.into(),
                     data.trace,
-                ))
+                    self,
+                )
             })
             .collect::<Result<_>>()?;
         let new_values = if let Some(first) = reduced_columns.first() {
@@ -3029,12 +3114,16 @@ where
 
         let error_reporter = self.error_reporter.clone();
         self.persisted_states_count += 1;
-        let effective_persistent_id =
-            self.effective_persistent_id(false, external_persistent_id, || {
+        let effective_persistent_id = self.effective_persistent_id(
+            false,
+            external_persistent_id,
+            RequiredPersistenceMode::InputOrOperatorPersistence,
+            || {
                 let generated_external_id = format!("deduplicate-{}", self.persisted_states_count);
                 info!("Persistent ID autogenerated for deduplicate: {generated_external_id}");
                 generated_external_id
-            })?;
+            },
+        )?;
         let persistent_id = effective_persistent_id
             .clone()
             .map(IntoPersistentId::into_persistent_id);
@@ -3064,7 +3153,7 @@ where
                 }
             })
             .inner // skip artificial time created by a normal persistence
-            .filter(|((_key, _values), time, _diff)| *time != ARTIFICIAL_TIME_ON_REWIND_START)
+            .filter(|((_key, _values), time, _diff)| *time != Timestamp::persistence_time())
             .as_collection();
 
         let with_persisted_state = if let Some(persistent_id) = persistent_id {
@@ -3072,7 +3161,10 @@ where
             let state = input_session.to_collection(&mut self.scope);
             let snapshot_reader_state = read_persisted_state(
                 input_session,
-                self.worker_persistent_storage.as_ref().unwrap().clone(),
+                self.persistence_wrapper
+                    .get_worker_persistent_storage()
+                    .unwrap()
+                    .clone(),
                 &effective_persistent_id
                     .expect("persistent_id exists so effective_persistent_id also exists"),
                 persistent_id,
@@ -3100,8 +3192,8 @@ where
             let error_reporter = self.error_reporter.clone();
             let error_logger = self.create_error_logger()?;
             let snapshot_writer = self
-                .worker_persistent_storage
-                .as_ref()
+                .persistence_wrapper
+                .get_worker_persistent_storage()
                 .unwrap()
                 .lock()
                 .unwrap()
@@ -3113,7 +3205,7 @@ where
                 .inspect_core(move |event| match event {
                     Ok((_time, data)) => {
                         for ((key, values), time, diff) in data {
-                            if *time == ARTIFICIAL_TIME_ON_REWIND_START {
+                            if *time == Timestamp::persistence_time() {
                                 continue;
                             }
                             if *diff != 1 && *diff != -1 {
@@ -3191,47 +3283,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .alloc(Table::from_collection(values).with_properties(table_properties)))
     }
 
-    fn effective_persistent_id(
-        &self,
-        reader_is_internal: bool,
-        external_persistent_id: Option<&ExternalPersistentId>,
-        logic: impl FnOnce() -> String,
-    ) -> Result<Option<ExternalPersistentId>> {
-        let has_persistent_storage = self.worker_persistent_storage.is_some();
-        if let Some(external_persistent_id) = external_persistent_id {
-            if !has_persistent_storage {
-                return Err(Error::NoPersistentStorage(external_persistent_id.clone()));
-            }
-        }
-        if external_persistent_id.is_some() {
-            Ok(external_persistent_id.cloned())
-        } else if has_persistent_storage
-            && !reader_is_internal
-            && self
-                .worker_persistent_storage
-                .as_ref()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .persistent_id_generation_enabled()
-        {
-            let table_persistence_enabled = self
-                .worker_persistent_storage
-                .as_ref()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .table_persistence_enabled();
-            if table_persistence_enabled {
-                Ok(Some(logic()))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
     fn connector_table(
         &mut self,
         mut reader: Box<dyn ReaderBuilder>,
@@ -3241,8 +3292,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         table_properties: Arc<TableProperties>,
         external_persistent_id: Option<&ExternalPersistentId>,
     ) -> Result<TableHandle> {
-        let effective_persistent_id =
-            self.effective_persistent_id(reader.is_internal(), external_persistent_id, || {
+        let effective_persistent_id = self.effective_persistent_id(
+            reader.is_internal(),
+            external_persistent_id,
+            RequiredPersistenceMode::InputOrOperatorPersistence,
+            || {
                 let generated_external_id = reader.name(None, self.connector_monitors.len());
                 reader
                     .update_persistent_id(Some(generated_external_id.clone().into_persistent_id()));
@@ -3251,7 +3305,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     reader.storage_type()
                 );
                 generated_external_id
-            })?;
+            },
+        )?;
 
         let (input_session, table_values): (ValuesSessionAdaptor<S::Timestamp>, GenericValues<S>) =
             parser.session_type().new_collection(&mut self.scope);
@@ -3261,21 +3316,24 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
         let realtime_reader_needed = self.scope.index() < parallel_readers
             && self
-                .persistence_config
-                .as_ref()
+                .persistence_wrapper
+                .get_persistence_config()
                 .map_or(true, |config| config.continue_after_replay);
-        let persisted_table =
-            reader.persistent_id().is_some() && self.worker_persistent_storage.is_some();
+        let persisted_table = reader.persistent_id().is_some()
+            && self
+                .persistence_wrapper
+                .get_worker_persistent_storage()
+                .is_some();
 
         if realtime_reader_needed || persisted_table {
             let persistent_id = reader.persistent_id();
             let persistence_mode = self
-                .persistence_config
-                .as_ref()
+                .persistence_wrapper
+                .get_persistence_config()
                 .map_or(PersistenceMode::Batch, |config| config.persistence_mode);
             let snapshot_access = self
-                .persistence_config
-                .as_ref()
+                .persistence_wrapper
+                .get_persistence_config()
                 .map_or(SnapshotAccess::Full, |config| config.snapshot_access);
 
             let connector = Connector::new(
@@ -3308,7 +3366,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     }
                 },
                 self.output_probe.clone(),
-                self.worker_persistent_storage.clone(),
+                self.persistence_wrapper
+                    .get_worker_persistent_storage()
+                    .cloned(),
                 self.connector_monitors.len(),
                 realtime_reader_needed,
                 effective_persistent_id.as_ref(),
@@ -3322,8 +3382,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             if let Some(persistent_id) = persistent_id {
                 // If there is a persistent id, there's also a persistent storage
                 // It is checked in the beginning of the method
-                self.worker_persistent_storage
-                    .as_ref()
+                self.persistence_wrapper
+                    .get_worker_persistent_storage()
                     .unwrap()
                     .lock()
                     .unwrap()
@@ -3424,12 +3484,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         batch: OutputBatch<Timestamp, (Key, Tuple), isize>,
         data_sink: &mut Box<dyn Writer>,
         data_formatter: &mut Box<dyn Formatter>,
-        worker_persistent_storage: &SharedWorkerPersistentStorage,
+        worker_persistent_storage: Option<&SharedWorkerPersistentStorage>,
     ) -> Result<(), DynError> {
         stats.on_batch_started();
         let time = batch.time;
         for ((key, values), diff) in batch.data {
-            if time == ARTIFICIAL_TIME_ON_REWIND_START && worker_persistent_storage.is_some() {
+            if time == Timestamp::persistence_time() && worker_persistent_storage.is_some() {
                 // Ignore entries, which had been written before
                 continue;
             }
@@ -3465,9 +3525,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         stats: &mut OutputConnectorStats,
         t: Option<Timestamp>,
         sink_id: Option<usize>,
-        worker_persistent_storage: &SharedWorkerPersistentStorage,
+        worker_persistent_storage: Option<&SharedWorkerPersistentStorage>,
     ) {
-        if let Some(worker_persistent_storage) = &worker_persistent_storage {
+        if let Some(worker_persistent_storage) = worker_persistent_storage {
             worker_persistent_storage
                 .lock()
                 .unwrap()
@@ -3498,8 +3558,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         let output = output_columns.consolidate_for_output(single_threaded);
 
         let sink_id = self
-            .worker_persistent_storage
-            .as_ref()
+            .persistence_wrapper
+            .get_worker_persistent_storage()
             .map(|storage| storage.lock().unwrap().register_sink());
 
         let sender = {
@@ -3511,7 +3571,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 data_formatter.short_description()
             );
 
-            let worker_persistent_storage = self.worker_persistent_storage.clone();
+            let worker_persistent_storage = self
+                .persistence_wrapper
+                .get_worker_persistent_storage()
+                .cloned();
 
             // connector_threads vector contains both, input and output connector threads
             // connector_monitors vector contains monitors only for input connectors
@@ -3531,7 +3594,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     batch,
                                     &mut data_sink,
                                     &mut data_formatter,
-                                    &worker_persistent_storage,
+                                    worker_persistent_storage.as_ref(),
                                 )?;
                             }
                             Ok(OutputEvent::Commit(t)) => {
@@ -3539,7 +3602,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     &mut stats,
                                     t,
                                     sink_id,
-                                    &worker_persistent_storage,
+                                    worker_persistent_storage.as_ref(),
                                 );
                                 data_sink.flush(t.is_none()).map_err(DynError::from)?;
                                 if t.is_none() {
@@ -3564,7 +3627,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                             sender
                                 .send(OutputEvent::Batch(batch.clone()))
                                 .expect("sending output batch should not fail");
-                        }
+                        } // TODO commit all timestamps
                     }
                     Err(frontier) => {
                         assert!(frontier.len() <= 1);
@@ -3590,10 +3653,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         let worker_index = self.scope.index();
 
         let sink_id = self
-            .worker_persistent_storage
+            .persistence_wrapper
+            .get_worker_persistent_storage()
             .as_ref()
             .map(|m| m.lock().unwrap().register_sink());
-        let worker_persistent_storage = self.worker_persistent_storage.clone();
+        let worker_persistent_storage = self
+            .persistence_wrapper
+            .get_worker_persistent_storage()
+            .cloned();
         let skip_initial_time = skip_persisted_batch && worker_persistent_storage.is_some();
 
         let error_reporter = self.error_reporter.clone();
@@ -3619,7 +3686,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         output_columns
             .consolidate_for_output(true)
             .inspect(move |batch| {
-                if batch.time == ARTIFICIAL_TIME_ON_REWIND_START && skip_initial_time {
+                if batch.time == Timestamp::persistence_time() && skip_initial_time {
                     return;
                 }
                 wrapper
@@ -4222,7 +4289,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             scope,
             error_reporter,
             ignore_asserts,
-            None,
+            Box::new(EmptyPersistenceWrapper),
             config,
             terminate_on_error,
             default_error_log,
@@ -4807,11 +4874,18 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
+
+        let persistence_wrapper: Box<dyn PersistenceWrapper<S>> = match persistence_config {
+            Some(cfg) => Box::new(TimestampBasedPersistenceWrapper::new(
+                cfg.into_inner(worker_idx, total_workers),
+            )?),
+            None => Box::new(EmptyPersistenceWrapper),
+        };
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
             error_reporter,
             ignore_asserts,
-            persistence_config.map(|cfg| cfg.into_inner(worker_idx, total_workers)),
+            persistence_wrapper,
             config,
             terminate_on_error,
             None,
