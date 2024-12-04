@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import warnings
 from collections.abc import Callable
 from functools import partial
 from io import BytesIO
@@ -53,7 +54,7 @@ class ParseUtf8(pw.UDF):
     Decode text encoded as UTF-8.
     """
 
-    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         docs: list[tuple[str, dict]] = [(contents.decode("utf-8"), {})]
         return docs
 
@@ -128,7 +129,7 @@ class ParseUnstructured(pw.UDF):
         result.pop("category_depth", None)
         return result
 
-    def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
+    async def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
         """
         Parse the given document:
 
@@ -256,12 +257,16 @@ class OpenParse(pw.UDF):
         - parse_images: whether to parse the images from the PDF. Detected images will be
             indexed by their description from the parsing algorithm.
             Note that images are parsed with separate OCR model, parsing may take a while.
-        - processing_pipeline: ``openparse.processing.IngestionPipeline`` that will post process
-            the extracted elements. Can be set to Pathway defined ``CustomIngestionPipeline``
-            by setting to ``"pathway_pdf_default"``,
-            ``SamePageIngestionPipeline`` by setting to ``"merge_same_page"``,
-            or any of the pipelines under the ``openparse.processing``.
-            Defaults to ``CustomIngestionPipeline``.
+        - processing_pipeline: str or IngestionPipeline.
+            Specifies the pipeline used for post-processing extracted elements.
+            - ``"pathway_pdf_default"``: Uses ``SimpleIngestionPipeline`` from Pathway.
+            This is a simple processor that combines close elements, combines the headers
+            with the text body, and removes weirdly formatted/small elements.
+            Can be set with: ``"pathway_pdf_default"`` or using the class,
+            ``from pathway.xpacks.llm.openparse_utils import SimpleIngestionPipeline``.
+            - ``"merge_same_page"``: Uses ``SamePageIngestionPipeline`` to chunk based on pages.
+            - Any other pipeline from the ``openparse.processing`` can also be used.
+            Defaults to ``SimpleIngestionPipeline``.
         - cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
@@ -296,10 +301,10 @@ class OpenParse(pw.UDF):
             import openparse  # noqa:F401
             from pypdf import PdfReader  # noqa:F401
 
-            from ._openparse_utils import (
-                CustomDocumentParser,
-                CustomIngestionPipeline,
+            from .openparse_utils import (
+                PyMuDocumentParser,
                 SamePageIngestionPipeline,
+                SimpleIngestionPipeline,
             )
 
         super().__init__(cache_strategy=cache_strategy)
@@ -313,7 +318,7 @@ class OpenParse(pw.UDF):
 
         if parse_images:
             if image_args is None:
-                logger.warn(
+                warnings.warn(
                     "`parse_images` is set to `True`, but `image_args` is not specified, defaulting to `gpt-4o`."
                 )
                 image_args = {
@@ -329,26 +334,32 @@ class OpenParse(pw.UDF):
                         f"Given args: {image_args}",
                     )
         else:
-            logger.warn(
-                "`parse_images` is set to `False`, but `image_args` is specified, skipping image parsing."
-            )
-            image_args = None
+            if image_args:
+                warnings.warn(
+                    "`parse_images` is set to `False`, but `image_args` is specified, skipping image parsing."
+                )
+                image_args = None
 
         if processing_pipeline is None:
-            processing_pipeline = CustomIngestionPipeline()
+            processing_pipeline = SimpleIngestionPipeline()
         elif isinstance(processing_pipeline, str):
             if processing_pipeline == "pathway_pdf_default":
-                processing_pipeline = CustomIngestionPipeline()
+                processing_pipeline = SimpleIngestionPipeline()
             elif processing_pipeline == "merge_same_page":
                 processing_pipeline = SamePageIngestionPipeline()
+            else:
+                raise ValueError(
+                    "Invalid `processing_pipeline` set. It must be either one of \
+                                 `'pathway_pdf_default'` or `'merge_same_page'`."
+                )
 
-        self.doc_parser = CustomDocumentParser(
+        self.doc_parser = PyMuDocumentParser(
             table_args=table_args,
             image_args=image_args,
             processing_pipeline=processing_pipeline,
         )
 
-    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         import openparse
         from pypdf import PdfReader
 
@@ -477,7 +488,7 @@ class ImageParser(pw.UDF):
                 parse_image_details_fn
             )
 
-    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse image bytes with GPT-v model."""
 
         images: list[Image.Image] = [Image.open(BytesIO(contents))]
@@ -489,7 +500,7 @@ class ImageParser(pw.UDF):
             for img in images
         ]
 
-        parsed_content, parsed_details = parse_images(
+        parsed_content, parsed_details = await parse_images(
             images,
             self.llm,
             self.parse_prompt,
@@ -664,7 +675,7 @@ class SlideParser(pw.UDF):
                 parse_image_details_fn
             )
 
-    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+    async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse slides with GPT-v model by converting to images."""
 
         from pdf2image import convert_from_bytes
@@ -694,17 +705,15 @@ class SlideParser(pw.UDF):
 
         b64_images = [img_to_b64(image) for image in images]
 
-        parsed_content, parsed_details = asyncio.run(
-            _parse_b64_images(
-                b64_images,
-                self.llm,
-                self.parse_prompt,
-                run_mode=self.run_mode,
-                parse_details=self.parse_details,
-                detail_parse_schema=self.detail_parse_schema,
-                parse_fn=self.parse_fn,
-                parse_image_details_fn=self.parse_image_details_fn,
-            )
+        parsed_content, parsed_details = await _parse_b64_images(
+            b64_images,
+            self.llm,
+            self.parse_prompt,
+            run_mode=self.run_mode,
+            parse_details=self.parse_details,
+            detail_parse_schema=self.detail_parse_schema,
+            parse_fn=self.parse_fn,
+            parse_image_details_fn=self.parse_image_details_fn,
         )
 
         logger.info(
@@ -733,7 +742,7 @@ class SlideParser(pw.UDF):
         return docs
 
 
-def parse_images(
+async def parse_images(
     images: list[Image.Image],
     llm: pw.UDF,
     parse_prompt: str,
@@ -767,17 +776,15 @@ def parse_images(
 
     b64_images = [img_to_b64(image) for image in images]
 
-    return asyncio.run(
-        _parse_b64_images(
-            b64_images,
-            llm,
-            parse_prompt,
-            run_mode=run_mode,
-            parse_details=parse_details,
-            detail_parse_schema=detail_parse_schema,
-            parse_fn=parse_fn,
-            parse_image_details_fn=parse_image_details_fn,
-        )
+    return await _parse_b64_images(
+        b64_images,
+        llm,
+        parse_prompt,
+        run_mode=run_mode,
+        parse_details=parse_details,
+        detail_parse_schema=detail_parse_schema,
+        parse_fn=parse_fn,
+        parse_image_details_fn=parse_image_details_fn,
     )
 
 

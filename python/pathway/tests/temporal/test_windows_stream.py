@@ -279,7 +279,7 @@ def generate_expected(duration, hop, delay, cutoff, keep_results, result_table):
     return expected_entries
 
 
-def parametrized_test(duration, hop, delay, cutoff, keep_results):
+def parameterized_test(duration, hop, delay, cutoff, keep_results):
     result_table = create_windowby_scenario(duration, hop, delay, cutoff, keep_results)
     expected = generate_expected(
         duration, hop, delay, cutoff, keep_results, result_table
@@ -289,39 +289,39 @@ def parametrized_test(duration, hop, delay, cutoff, keep_results):
 
 
 def test_keep_results():
-    parametrized_test(5, 3, 0, 0, True)
+    parameterized_test(5, 3, 0, 0, True)
 
 
 def test_remove_results():
-    parametrized_test(5, 3, 0, 0, False)
+    parameterized_test(5, 3, 0, 0, False)
 
 
 def test_non_zero_delay_keep_results():
-    parametrized_test(5, 3, 1, 0, True)
+    parameterized_test(5, 3, 1, 0, True)
 
 
 def test_non_zero_delay_remove_results():
-    parametrized_test(5, 3, 1, 0, False)
+    parameterized_test(5, 3, 1, 0, False)
 
 
 def test_non_zero_buffer_keep_results():
-    parametrized_test(5, 3, 0, 1, True)
+    parameterized_test(5, 3, 0, 1, True)
 
 
 def test_non_zero_buffer_remove_results():
-    parametrized_test(5, 3, 0, 1, False)
+    parameterized_test(5, 3, 0, 1, False)
 
 
 def test_non_zero_delay_non_zero_buffer_keep_results():
-    parametrized_test(5, 3, 1, 1, True)
+    parameterized_test(5, 3, 1, 1, True)
 
 
 def test_high_delay_high_buffer_keep_results():
-    parametrized_test(5, 3, 5, 6, True)
+    parameterized_test(5, 3, 5, 6, True)
 
 
 def test_non_zero_delay_non_zero_buffer_remove_results():
-    parametrized_test(5, 3, 1, 1, False)
+    parameterized_test(5, 3, 1, 1, False)
 
 
 # method below creates expected output for exactly once tests(also below)

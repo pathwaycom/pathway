@@ -97,6 +97,7 @@ tests = [
     "dill >= 0.3.8",
     "cloudpickle >= 3.0.0",
     "deltalake >= 0.17.0, < 0.18.0",
+    "fpdf",
 ]
 airbyte = [
     "google-cloud-run",

@@ -72,7 +72,7 @@ def _table_args_dict_to_model(args_dict: dict) -> BaseModel:
         )
 
 
-class CustomIngestionPipeline(IngestionPipeline):
+class SimpleIngestionPipeline(IngestionPipeline):
     """
     A simple PDF processing pipeline that combines close elements, combines the headers
     with the text body, and removes weirdly formatted/small elements.
@@ -340,7 +340,7 @@ def ingest(
 
 
 # modified from https://github.com/Filimoa/open-parse/blob/main/src/openparse/doc_parser.py
-class CustomDocumentParser(DocumentParser):
+class PyMuDocumentParser(DocumentParser):
     def __init__(
         self,
         *,

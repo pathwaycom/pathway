@@ -15,6 +15,7 @@ import jmespath
 import pathway as pw
 import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
+from pathway.internals.udfs.utils import coerce_async
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.retrievers import AbstractRetrieverFactory
 from pathway.stdlib.ml.classifiers import _knn_lsh
@@ -227,11 +228,12 @@ class DocumentStore:
         self, input_docs: pw.Table[_RawDocumentSchema]
     ) -> pw.Table[_DocumentSchema]:
         @pw.udf
-        def parse_doc(data: bytes, metadata: pw.Json) -> list[dict]:
-            rets = self.parser(data)
+        async def parse_doc(data: bytes, metadata: pw.Json) -> list[pw.Json]:
+            rets = await coerce_async(self.parser)(data)
             metadata_dict = metadata.as_dict()
             return [
-                dict(text=ret[0], metadata={**metadata_dict, **ret[1]}) for ret in rets
+                pw.Json(dict(text=ret[0], metadata={**metadata_dict, **ret[1]}))
+                for ret in rets
             ]
 
         return self._apply_processor(input_docs, parse_doc)

@@ -83,10 +83,10 @@ def default_lsh_knn_document_index(
 
     Remark: the arbitrarily chosen configuration of the index may change (whenever tests
     suggest some better default values). To have fixed configuration, you can use
-    :py:class:`~pathway.stdlib.indexing.DataIndex` with a parametrized instance of
+    :py:class:`~pathway.stdlib.indexing.DataIndex` with a parameterized instance of
     :py:class:`~pathway.stdlib.indexing.LshKnn`.
     Look up :py:class:`~pathway.stdlib.indexing.DataIndex` constructor to see
-    how to make data index parametrized by custom data structure, and the constructor
+    how to make data index parameterized by custom data structure, and the constructor
     of :py:class:`~pathway.stdlib.indexing.LshKnn` to see
     the parameters that can be adjusted.
     """
@@ -126,10 +126,10 @@ def default_usearch_knn_document_index(
 
     Remark: the arbitrarily chosen configuration of the index may change (whenever tests
     suggest some better default values). To have fixed configuration, you can use
-    :py:class:`~pathway.stdlib.indexing.DataIndex` with a parametrized instance of
+    :py:class:`~pathway.stdlib.indexing.DataIndex` with a parameterized instance of
     :py:class:`~pathway.stdlib.indexing.USearchKnn`.
     Look up :py:class:`~pathway.stdlib.indexing.DataIndex` constructor to see how
-    to make data index parametrized by custom data structure, and the constructor
+    to make data index parameterized by custom data structure, and the constructor
     of :py:class:`~pathway.stdlib.indexing.USearchKnn` to see the
     parameters that can be adjusted.
 
@@ -172,10 +172,10 @@ def default_brute_force_knn_document_index(
 
     Remark: the arbitrarily chosen configuration of the index may change (whenever tests
     suggest some better default values). To have fixed configuration, you can use
-    :py:class:`~pathway.stdlib.indexing.DataIndex` with a parametrized instance of
+    :py:class:`~pathway.stdlib.indexing.DataIndex` with a parameterized instance of
     :py:class:`~pathway.stdlib.indexing.BruteForceKnn`.
     Look up :py:class:`~pathway.stdlib.indexing.DataIndex` constructor to see how
-    to make data index parametrized by custom data structure, and the constructor
+    to make data index parameterized by custom data structure, and the constructor
     of :py:class:`~pathway.stdlib.indexing.BruteForceKnn` to see the
     parameters that can be adjusted.
 

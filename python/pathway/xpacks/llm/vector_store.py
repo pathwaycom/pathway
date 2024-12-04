@@ -21,6 +21,7 @@ import requests
 import pathway as pw
 import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
+from pathway.internals.udfs.utils import coerce_async
 from pathway.stdlib.indexing import default_usearch_knn_document_index
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.ml.classifiers import _knn_lsh
@@ -223,8 +224,8 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             docs: pw.Table = docs_s[0].concat_reindex(*docs_s[1:])  # type: ignore
 
         @pw.udf
-        def parse_doc(data: bytes, metadata) -> list[pw.Json]:
-            rets = self.parser(data)
+        async def parse_doc(data: bytes, metadata) -> list[pw.Json]:
+            rets = await coerce_async(self.parser)(data)
             metadata = metadata.value
             return [dict(text=ret[0], metadata={**metadata, **ret[1]}) for ret in rets]  # type: ignore
 
