@@ -3289,7 +3289,7 @@ pub fn run_with_new_graph(
             None
         }
     };
-    let license = License::new(license_key);
+    let license = License::new(license_key)?;
     let telemetry_config =
         EngineTelemetryConfig::create(&license, run_id, monitoring_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
@@ -3817,7 +3817,7 @@ impl TelemetryConfig {
         license_key: Option<String>,
         monitoring_server: Option<String>,
     ) -> PyResult<TelemetryConfig> {
-        let license = License::new(license_key);
+        let license = License::new(license_key)?;
         let config = EngineTelemetryConfig::create(&license, run_id, monitoring_server, None)?;
         Ok(config.into())
     }
@@ -5339,7 +5339,7 @@ impl From<LicenseError> for PyErr {
     entitlements,
 ))]
 fn check_entitlements(license_key: Option<String>, entitlements: Vec<String>) -> PyResult<()> {
-    License::new(license_key).check_entitlements(entitlements)?;
+    License::new(license_key)?.check_entitlements(entitlements)?;
     Ok(())
 }
 

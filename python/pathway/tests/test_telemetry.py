@@ -35,7 +35,7 @@ def test_monitoring_insufficient_license():
     with pytest.raises(
         api.EngineError,
         match=re.escape(
-            'one of the features you used ["monitoring"] requires upgrading your Pathway license'
+            'one of the features you used ["MONITORING"] requires upgrading your Pathway license'
         ),
     ):
         run_all()

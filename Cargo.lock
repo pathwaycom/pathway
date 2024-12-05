@@ -1399,6 +1399,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2144,6 +2145,8 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
+ "serde",
  "signature",
 ]
 
@@ -2155,9 +2158,11 @@ checksum = "4a3daa8e81a3963a60642bcc1f90a670680bd4a77535faa384e9d1c79d620871"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "serde",
  "sha2",
  "signature",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -4015,10 +4020,12 @@ dependencies = [
  "deltalake",
  "derivative",
  "differential-dataflow",
+ "ed25519-dalek",
  "elasticsearch",
  "eyre",
  "futures",
  "glob",
+ "hex",
  "hyper 0.14.30",
  "id-arena",
  "itertools 0.13.0",

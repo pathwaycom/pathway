@@ -177,6 +177,8 @@ fn deduplicate(input: Vec<Option<String>>) -> Vec<String> {
 #[derive(Clone, Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TelemetryEnabled {
+    pub telemetry_server: Option<String>,
+    pub monitoring_server: Option<String>,
     pub logging_servers: Vec<String>,
     pub tracing_servers: Vec<String>,
     pub metrics_servers: Vec<String>,
@@ -206,7 +208,7 @@ impl Config {
 
         if monitoring_server.is_some() {
             license
-                .check_entitlements(vec!["monitoring".to_string()])
+                .check_entitlements(["monitoring"])
                 .map_err(DynError::from)?;
         }
 
@@ -221,14 +223,14 @@ impl Config {
         }
 
         match license {
-            License::LicenseKey(_) => Config::create_enabled(
+            License::NoLicenseKey => Ok(Config::Disabled),
+            _ => Config::create_enabled(
                 run_id,
                 telemetry_server,
                 monitoring_server,
                 trace_parent,
                 license,
             ),
-            License::NoLicenseKey => Ok(Config::Disabled),
         }
     }
 
@@ -252,6 +254,8 @@ impl Config {
                 }
             });
         Ok(Config::Enabled(Box::new(TelemetryEnabled {
+            telemetry_server: telemetry_server.clone(),
+            monitoring_server: monitoring_server.clone(),
             logging_servers: deduplicate(vec![monitoring_server.clone()]),
             tracing_servers: deduplicate(vec![telemetry_server.clone(), monitoring_server.clone()]),
             metrics_servers: deduplicate(vec![telemetry_server, monitoring_server]),
@@ -403,13 +407,14 @@ impl Drop for Runner {
 pub fn maybe_run_telemetry_thread(graph: &dyn Graph, config: Config) -> Option<Runner> {
     match config {
         Config::Enabled(config) => {
-            if config.tracing_servers.is_empty() {
-                debug!("Telemetry disabled");
-            } else {
+            if config.telemetry_server.is_some() {
                 info!("Telemetry enabled");
             }
-            debug!("OTEL config: {config:?}");
-            let telemetry = Telemetry::new(config);
+            if let Some(monitoring_server) = config.monitoring_server.clone() {
+                info!("Monitoring server: {monitoring_server}");
+            }
+
+            let telemetry = Telemetry::new(config.clone());
             let stats_shared = Arc::new(ArcSwapOption::from(None));
             let runner = Runner::run(telemetry, stats_shared.clone());
 
