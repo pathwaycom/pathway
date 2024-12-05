@@ -36,14 +36,20 @@ pub enum License {
 
 impl License {
     pub fn new(license_key: Option<String>) -> Result<Self, Error> {
-        match read_license_to_string(license_key)? {
+        let license: Self = match read_license_to_string(license_key)? {
             key if key.is_empty() => Ok(Self::NoLicenseKey),
             key if key.starts_with("-----BEGIN LICENSE FILE-----") => {
                 let license = read_license_content(key)?;
                 Ok(Self::OfflineLicense(license))
             }
             key => Ok(Self::LicenseKey(key)),
+        }?;
+        if cfg!(feature = "enterprise") {
+            license.check_required_policy("enterprise")?;
+        } else if let Self::OfflineLicense(_) = license {
+            return Err(Error::OfflineLicenseNotAllowed);
         }
+        Ok(license)
     }
 
     pub fn check_entitlements(
@@ -55,7 +61,7 @@ impl License {
             .map(|s| s.borrow().to_uppercase())
             .collect();
         match self {
-            License::NoLicenseKey => Err(Error::InsufficientLicense(entitlements)),
+            License::NoLicenseKey => Err(Error::InsufficientLicenseEntitlements(entitlements)),
             License::OfflineLicense(license) => {
                 let valid = entitlements
                     .iter()
@@ -63,7 +69,7 @@ impl License {
                 if valid {
                     Ok(())
                 } else {
-                    Err(Error::InsufficientLicense(entitlements))
+                    Err(Error::InsufficientLicenseEntitlements(entitlements))
                 }
             }
             License::LicenseKey(key) => {
@@ -98,20 +104,33 @@ impl License {
             _ => String::new(),
         }
     }
+
+    fn check_required_policy(&self, policy: &str) -> Result<(), Error> {
+        match self {
+            License::OfflineLicense(license) => {
+                if license.policy == policy {
+                    Ok(())
+                } else {
+                    Err(Error::InsufficientLicense)
+                }
+            }
+            _ => Err(Error::InsufficientLicense),
+        }
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     #[error("one of the features you used {0:?} requires upgrading your Pathway license.\nFor more information and to obtain your license key, visit: https://pathway.com/get-license/")]
-    InsufficientLicense(Vec<String>),
+    InsufficientLicenseEntitlements(Vec<String>),
+    #[error("insufficient license.\nFor more information and to obtain your license key, visit: https://pathway.com/get-license/")]
+    InsufficientLicense,
+    #[error("offline license not allowed")]
+    OfflineLicenseNotAllowed,
     #[error("unable to validate license: {0}")]
     LicenseValidationError(String),
-}
-
-impl From<&str> for Error {
-    fn from(msg: &str) -> Self {
-        Self::LicenseValidationError(msg.to_string())
-    }
+    #[error("unable to validate license: malformed license")]
+    MalformedLicense,
 }
 
 #[derive(Deserialize, Clone)]
@@ -179,7 +198,7 @@ impl KeygenLicenseChecker {
             if result.valid {
                 Ok(result)
             } else {
-                Err(Error::InsufficientLicense(entitlements))
+                Err(Error::InsufficientLicenseEntitlements(entitlements))
             }
         } else {
             let status = response.status();
@@ -202,6 +221,7 @@ struct LicenseFile<'a> {
 pub struct LicenseDetails {
     telemetry_required: bool,
     entitlements: Vec<String>,
+    policy: String,
     expiration_date: Option<DateTime<Utc>>,
 }
 
@@ -246,27 +266,27 @@ fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
     let lic = deserialize_signed_license(PUBLIC_KEY, &license.clone())
         .map_err(|e| Error::LicenseValidationError(e.to_string()))?;
 
-    let included = lic["included"]
-        .as_array()
-        .ok_or(Error::LicenseValidationError(
-            "malformed license".to_string(),
-        ))?;
+    let included = lic["included"].as_array().ok_or(Error::MalformedLicense)?;
 
     let mut entitlements: Vec<String> = vec![];
+    let mut policy: Option<String> = None;
     let mut telemetry_required: bool = false;
 
     for item in included {
         match item["type"].as_str() {
             Some("entitlements") => {
-                let item_code =
-                    item["attributes"]["code"]
-                        .as_str()
-                        .ok_or(Error::LicenseValidationError(
-                            "malformed license".to_string(),
-                        ))?;
+                let item_code = item["attributes"]["code"]
+                    .as_str()
+                    .ok_or(Error::MalformedLicense)?;
                 entitlements.push(item_code.to_string());
             }
             Some("policies") => {
+                policy = Some(
+                    item["attributes"]["name"]
+                        .as_str()
+                        .ok_or(Error::MalformedLicense)?
+                        .to_string(),
+                );
                 telemetry_required = item["attributes"]["metadata"]["telemetryRequired"]
                     .as_bool()
                     .unwrap_or(false);
@@ -275,12 +295,14 @@ fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
         }
     }
 
+    let policy = policy.ok_or(Error::MalformedLicense)?;
+
     let parse_datetime = |value: &serde_json::Value| -> Result<Option<DateTime<Utc>>, Error> {
         match value.as_str() {
             Some(d) => d
                 .parse::<DateTime<Utc>>()
                 .map(Some)
-                .map_err(|_| Error::LicenseValidationError("malformed license".to_string())),
+                .map_err(|_| Error::MalformedLicense),
             None => Ok(None),
         }
     };
@@ -299,6 +321,7 @@ fn read_license_content(license: String) -> Result<LicenseDetails, Error> {
     let result = LicenseDetails {
         telemetry_required,
         entitlements,
+        policy,
         expiration_date,
     };
 

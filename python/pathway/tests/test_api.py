@@ -8,8 +8,11 @@ import pytest
 
 from pathway.debug import _markdown_to_pandas, schema_from_pandas
 from pathway.internals import api, column_path, dtype as dt
+from pathway.tests.utils import only_standard_build
 
 from .utils import assert_equal_tables, assert_equal_tables_wo_index
+
+pytestmark = only_standard_build
 
 
 @pytest.fixture

@@ -37,6 +37,11 @@ xfail_on_multiple_threads = pytest.mark.xfail(
     os.getenv("PATHWAY_THREADS", "1") != "1", reason="multiple threads"
 )
 
+only_standard_build = pytest.mark.xfail(
+    pw.__version__.endswith("+enterprise"),
+    reason="only works on standard build",
+)
+
 AIRBYTE_FAKER_CONNECTION_REL_PATH = "connections/faker.yaml"
 
 

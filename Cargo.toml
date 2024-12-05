@@ -98,6 +98,9 @@ standard-allocator = []
 yolo-id64 = []
 yolo-id32 = []
 
+# Licensing
+enterprise = ["unlimited-workers"]
+
 [profile.dev]
 opt-level = 3
 debug = "line-tables-only"
