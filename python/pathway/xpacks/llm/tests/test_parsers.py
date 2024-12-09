@@ -12,7 +12,12 @@ from fpdf import FPDF
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.parsers import OpenParse, ParseUnstructured, ParseUtf8
+from pathway.xpacks.llm.parsers import (
+    OpenParse,
+    ParseUnstructured,
+    ParseUtf8,
+    PypdfParser,
+)
 
 for _ in range(10):
     try:
@@ -126,3 +131,30 @@ def test_parse_openparse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     expected_table = pw.debug.table_from_pandas(expected_df)
 
     assert_table_equality(result, expected_table)
+
+
+def test_parse_pypdf(tmp_path: Path):
+    parser = PypdfParser()
+
+    txt = (
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod"
+        "tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam,"
+        "quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat."
+    )
+
+    pdf_path = _create_temp_pdf_with_text(txt, tmp_path)
+
+    with open(pdf_path, "rb") as pdf_file:
+        raw_pdf_data = pdf_file.read()
+
+    input_df = pd.DataFrame([dict(raw=raw_pdf_data)])
+
+    class Schema(pw.Schema):
+        raw: bytes
+
+    input_table = pw.debug.table_from_pandas(input_df, schema=Schema)
+    result = input_table.select(ret=parser(pw.this.raw)[0][0])
+
+    assert_table_equality(
+        result, pw.debug.table_from_pandas(pd.DataFrame([dict(ret=txt)]))
+    )

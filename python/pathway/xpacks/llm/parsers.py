@@ -11,6 +11,7 @@ import inspect
 import io
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import warnings
@@ -740,6 +741,83 @@ class SlideParser(pw.UDF):
         ]
 
         return docs
+
+
+class PypdfParser(pw.UDF):
+    """
+    Parse PDF document using ``pypdf`` library.
+    Optionally, applies additional text cleanups for readability.
+
+    Args:
+        - apply_text_cleanup: Apply text cleanup for line breaks and repeated spaces.
+        - cache_strategy: Defines the caching mechanism. To enable caching,
+            a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
+            Defaults to None.
+    """
+
+    def __init__(
+        self,
+        apply_text_cleanup: bool = True,
+        cache_strategy: udfs.CacheStrategy | None = None,
+    ):
+        with optional_imports("xpack-llm-docs"):
+            from pypdf import PdfReader  # noqa:F401
+
+        super().__init__(cache_strategy=cache_strategy)
+        self.apply_text_cleanup = apply_text_cleanup
+
+    def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
+        from pypdf import PdfReader
+
+        pdf = PdfReader(stream=BytesIO(contents))
+
+        docs: list[tuple[str, dict]] = []
+        file_metadata: dict = {}
+
+        logger.info(
+            f"PypdfParser starting to parse a document of length: {len(pdf.pages)}"
+        )
+
+        for page in pdf.pages:
+            text: str = page.extract_text()
+
+            if self.apply_text_cleanup:
+                text = self._clean_text(text)
+
+            page_metadata: dict = file_metadata | {"page_number": page.page_number}
+
+            docs.append((text, page_metadata))
+
+        logger.info(
+            f"PypdfParser completed parsing, total number of pages: {len(pdf.pages)}"
+        )
+
+        return docs
+
+    def _clean_text(self, text: str):
+        text_wo_lines = self._clean_text_lines(text)
+        simplified_text = self._remove_empty_space(text_wo_lines)
+        formatted_text = self._replace_newline_with_space_if_lower(simplified_text)
+        return formatted_text
+
+    def _clean_text_lines(self, text: str) -> str:
+        return re.sub(
+            r"(?<=\n)\s*([A-Z][^ ]*|[\d][^ ]*)", lambda m: m.group(1), text
+        ).replace("\n ", "\n")
+
+    def _remove_empty_space(self, text: str) -> str:
+        return text.replace("   ", " ")
+
+    def _replace_newline_with_space_if_lower(self, text: str) -> str:
+        """Remove unnecessary line breaks."""
+
+        def replace_newline(match: re.Match):
+            if match.group(1).islower():
+                return " " + match.group(1)
+            return "\n" + match.group(1)
+
+        modified_text = re.sub(r"\n(\w)", replace_newline, text)
+        return modified_text
 
 
 async def parse_images(

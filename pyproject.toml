@@ -74,6 +74,7 @@ xpack-llm-docs = [
     "openparse == 0.5.6",
     "unstructured >= 0.16",
     "pdf2image",
+    "pypdf",
 ]
 xpack-sharepoint = [
     "Office365-REST-Python-Client >= 2.5.3",
