@@ -12,27 +12,10 @@ import pathway as pw
 from pathway.internals.udfs.caches import InMemoryCache
 from pathway.tests.utils import (
     CsvLinesNumberChecker,
+    ExceptionAwareThread,
     expect_csv_checker,
     wait_result_with_checker,
 )
-
-
-class ExceptionAwareThread(threading.Thread):
-    def run(self):
-        self._exception = None
-        try:
-            if self._target is not None:  # type: ignore
-                self._result = self._target(*self._args, **self._kwargs)  # type: ignore
-        except Exception as e:
-            self._exception = e
-        finally:
-            del self._target, self._args, self._kwargs  # type: ignore
-
-    def join(self, timeout=None):
-        super().join(timeout)
-        if self._exception:
-            raise self._exception
-        return self._result
 
 
 def _test_server_basic(tmp_path: pathlib.Path, port: int | str) -> None:

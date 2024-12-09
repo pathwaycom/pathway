@@ -16,7 +16,7 @@ use crate::persistence::PersistenceTime;
 
 #[allow(clippy::module_name_repetitions)]
 pub trait OperatorSnapshotReader<D, R> {
-    fn load_persisted(&self) -> Result<Vec<(D, R)>, BackendError>;
+    fn load_persisted(&mut self) -> Result<Vec<(D, R)>, BackendError>;
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -149,7 +149,7 @@ where
     D: ExchangeData,
     R: ExchangeData,
 {
-    fn load_persisted(&self) -> Result<Vec<(D, R)>, BackendError> {
+    fn load_persisted(&mut self) -> Result<Vec<(D, R)>, BackendError> {
         let keys = self.backend.list_keys()?;
         let chunks = get_chunks(keys, self.threshold_time);
         for chunk in itertools::chain(chunks.too_old.iter(), chunks.too_new.iter()) {
@@ -185,9 +185,9 @@ where
     D: ExchangeData,
     R: ExchangeData + Semigroup,
 {
-    fn load_persisted(&self) -> Result<Vec<(D, R)>, BackendError> {
+    fn load_persisted(&mut self) -> Result<Vec<(D, R)>, BackendError> {
         let mut result = Vec::new();
-        for snapshot_reader in &self.snapshot_readers {
+        for snapshot_reader in &mut self.snapshot_readers {
             let mut v = snapshot_reader.load_persisted()?;
             if v.len() > result.len() {
                 swap(&mut result, &mut v);

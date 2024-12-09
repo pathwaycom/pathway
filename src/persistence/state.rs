@@ -159,7 +159,7 @@ impl VersionInformation {
 
 impl MetadataAccessor {
     pub fn new(
-        backend: Box<dyn PersistenceBackend>,
+        mut backend: Box<dyn PersistenceBackend>,
         worker_id: usize,
         total_workers: usize,
     ) -> Result<Self, Error> {

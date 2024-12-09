@@ -265,6 +265,8 @@ def test_serialization(tmp_path: Path, serialization: str, port: int) -> None:
         error: AssertionError | None = None
 
         def __call__(self) -> bool:
+            if not output_path.exists():
+                return False
             try:
                 G.clear()
                 result = pw.io.csv.read(output_path, schema=OutputSchema, mode="static")

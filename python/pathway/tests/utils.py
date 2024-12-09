@@ -50,6 +50,24 @@ def skip_on_multiple_workers() -> None:
         pytest.skip()
 
 
+class ExceptionAwareThread(threading.Thread):
+    def run(self):
+        self._exception = None
+        try:
+            if self._target is not None:  # type: ignore
+                self._result = self._target(*self._args, **self._kwargs)  # type: ignore
+        except Exception as e:
+            self._exception = e
+        finally:
+            del self._target, self._args, self._kwargs  # type: ignore
+
+    def join(self, timeout=None):
+        super().join(timeout)
+        if self._exception:
+            raise self._exception
+        return self._result
+
+
 class UniquePortDispenser:
     """
     Tests are run simultaneously by several workers.

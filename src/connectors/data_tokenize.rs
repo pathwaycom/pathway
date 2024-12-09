@@ -1,6 +1,5 @@
 // Copyright © 2024 Pathway
 
-use log::error;
 use std::io::BufReader;
 use std::io::Read;
 use std::mem::take;
@@ -20,7 +19,6 @@ pub trait Tokenize: Send + 'static {
         data_event_type: DataEventType,
     ) -> Result<(), ReadError>;
     fn next_entry(&mut self) -> Result<Option<TokenizedEntry>, ReadError>;
-    fn seek(&mut self, bytes_offset: u64) -> Result<(), ReadError>;
 }
 
 pub struct CsvTokenizer {
@@ -77,38 +75,6 @@ impl Tokenize for CsvTokenizer {
             Ok(None)
         }
     }
-
-    fn seek(&mut self, bytes_offset: u64) -> Result<(), ReadError> {
-        if bytes_offset == 0 {
-            return Ok(());
-        }
-        let csv_reader = self
-            .csv_reader
-            .as_mut()
-            .expect("seek for an uninitialized tokenizer");
-
-        let mut header_record = csv::StringRecord::new();
-        if csv_reader.read_record(&mut header_record)? {
-            let header_reader_context = ReaderContext::from_tokenized_entries(
-                self.current_event_type,
-                header_record
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-            );
-            self.deferred_next_entry = Some((header_reader_context, bytes_offset));
-        }
-
-        let mut current_offset = csv_reader.position().byte();
-        let mut current_record = csv::StringRecord::new();
-        while current_offset < bytes_offset && csv_reader.read_record(&mut current_record)? {
-            current_offset = csv_reader.position().byte();
-        }
-        if current_offset != bytes_offset {
-            error!("Inconsistent bytes position in rewinded CSV object: expected {bytes_offset}, got {current_offset}");
-        }
-        Ok(())
-    }
 }
 
 pub struct BufReaderTokenizer {
@@ -161,39 +127,5 @@ impl Tokenize for BufReaderTokenizer {
         } else {
             Ok(None)
         }
-    }
-
-    fn seek(&mut self, bytes_offset: u64) -> Result<(), ReadError> {
-        if bytes_offset == 0 {
-            return Ok(());
-        }
-
-        let reader = self
-            .reader
-            .as_mut()
-            .expect("seek for an uninitialized tokenizer");
-
-        let mut bytes_read = 0;
-        while bytes_read < bytes_offset {
-            let mut current_line = Vec::new();
-            let len = self
-                .read_method
-                .read_next_bytes(reader, &mut current_line)?;
-            if len == 0 {
-                break;
-            }
-            bytes_read += len as u64;
-        }
-
-        if bytes_read != bytes_offset {
-            if bytes_read == bytes_offset + 1 || bytes_read == bytes_offset + 2 {
-                error!("Read {} bytes instead of expected {bytes_read}. If the file did not have newline at the end, you can ignore this message", bytes_offset);
-            } else {
-                error!("Inconsistent bytes position in rewinded plaintext object: expected {bytes_read}, got {bytes_offset}");
-            }
-        }
-
-        self.current_bytes_read = bytes_read;
-        Ok(())
     }
 }

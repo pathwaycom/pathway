@@ -1,33 +1,48 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::io::Cursor;
-use std::io::Read;
-use std::mem::take;
 use std::str::from_utf8;
-use std::sync::Arc;
-use std::thread::sleep;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use arcstr::ArcStr;
-use chrono::DateTime;
-use log::{error, info};
+use log::{info, warn};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-use crate::connectors::data_storage::ConnectorMode;
-use crate::connectors::scanner::PosixLikeScanner;
-use crate::connectors::{DataEventType, ReadError, ReadResult};
-use crate::deepcopy::DeepCopy;
+use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
+use crate::connectors::ReadError;
+use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::retry::{execute_with_retries, RetryConfig};
 
 use s3::bucket::Bucket as S3Bucket;
 use s3::request::request_trait::ResponseData as S3ResponseData;
+use s3::serde_types::ListBucketResult as S3ListBucketResult;
 
 const MAX_S3_RETRIES: usize = 2;
 const S3_PATH_PREFIXES: [&str; 2] = ["s3://", "s3a://"];
-type S3DownloadedObject = (ArcStr, Cursor<Vec<u8>>);
+
+struct S3DownloadedObject {
+    path: ArcStr,
+    contents: Vec<u8>,
+    metadata: Option<SourceMetadata>,
+}
+
+impl S3DownloadedObject {
+    fn new(path: ArcStr, contents: Vec<u8>, metadata: Option<SourceMetadata>) -> Self {
+        Self {
+            path,
+            contents,
+            metadata,
+        }
+    }
+
+    fn set_metadata(mut self, metadata: SourceMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+}
+
 type S3DownloadResult = Result<S3DownloadedObject, ReadError>;
 
 #[derive(Debug)]
@@ -50,137 +65,106 @@ pub struct S3Scanner {
     */
     bucket: S3Bucket,
     objects_prefix: String,
-    streaming_mode: ConnectorMode,
-    current_object_path: Option<ArcStr>,
-    processed_objects: HashSet<String>,
-    objects_for_processing: VecDeque<String>,
+    pending_modifications: HashMap<String, Vec<u8>>,
     downloader_pool: ThreadPool,
-    predownloaded_objects: HashMap<String, Cursor<Vec<u8>>>,
-    is_queue_initialized: bool,
 }
 
 impl PosixLikeScanner for S3Scanner {
-    fn data_event_type(&self) -> Option<DataEventType> {
-        if self.current_object_path.is_some() {
-            Some(DataEventType::Insert)
-        } else {
-            None
-        }
-    }
-
-    fn current_object_reader(
-        &mut self,
-    ) -> Result<Option<Box<dyn Read + Send + 'static>>, ReadError> {
-        let Some(path) = self.current_object_path.clone() else {
-            return Ok(None);
-        };
-        let selected_object_path = from_utf8(path.as_bytes())
-            .unwrap_or_else(|_| panic!("s3 path is not UTF-8 serializable: {path:?}"))
-            .to_string();
-        if let Some(prepared_object) = self.predownloaded_objects.remove(&selected_object_path) {
-            let reader = Box::new(prepared_object);
-            Ok(Some(reader))
-        } else {
-            // Expected to happen once for each case of persistent recovery.
-            // If repeats multiple times, something is wrong.
-            info!("No prepared object for {selected_object_path}. Downloading directly from S3.");
-            let (_, object_contents) =
-                Self::stream_object_from_path_and_bucket(&selected_object_path, &self.bucket)?;
-            let reader = Box::new(object_contents);
-            Ok(Some(reader))
-        }
-    }
-
-    fn current_offset_object(&self) -> Option<Arc<[u8]>> {
-        self.current_object_path
-            .clone()
-            .map(|x| x.as_bytes().into())
-    }
-
-    fn seek_to_object(&mut self, path: &[u8]) -> Result<(), ReadError> {
-        let path: String = from_utf8(path)
-            .unwrap_or_else(|_| panic!("s3 path is not UTF-8 serializable: {path:?}"))
-            .to_string();
-        self.processed_objects.clear();
-
-        /*
-            S3 bucket-list calls are considered expensive, because of that we do one.
-            Then, two linear passes detect the objects which should be marked.
-        */
+    fn object_metadata(&mut self, object_path: &[u8]) -> Result<Option<SourceMetadata>, ReadError> {
+        let path = from_utf8(object_path).expect("S3 path are expected to be UTF-8 strings");
         let object_lists = execute_with_retries(
+            || self.bucket.list(path.to_string(), None),
+            RetryConfig::default(),
+            MAX_S3_RETRIES,
+        )
+        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
+        for list in object_lists {
+            for object in &list.contents {
+                if object.key != path {
+                    continue;
+                }
+                let metadata = SourceMetadata::from_s3_object(object);
+                if metadata.modified_at.is_some() {
+                    return Ok(Some(metadata));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn read_object(&mut self, object_path: &[u8]) -> Result<Vec<u8>, ReadError> {
+        let path = from_utf8(object_path).expect("S3 path are expected to be UTF-8 strings");
+        if let Some(prepared_object) = self.pending_modifications.remove(path) {
+            Ok(prepared_object)
+        } else {
+            let downloaded_object = Self::stream_object_from_path_and_bucket(path, &self.bucket)?;
+            Ok(downloaded_object.contents)
+        }
+    }
+
+    fn next_scanner_actions(
+        &mut self,
+        are_deletions_enabled: bool,
+        cached_object_storage: &CachedObjectStorage,
+    ) -> Result<Vec<QueuedAction>, ReadError> {
+        let object_lists: Vec<S3ListBucketResult> = execute_with_retries(
             || self.bucket.list(self.objects_prefix.to_string(), None),
             RetryConfig::default(),
             MAX_S3_RETRIES,
         )
         .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
-
-        let mut threshold_modification_time = None;
-        for list in &object_lists {
+        let mut result = Vec::new();
+        let mut seen_object_keys = HashSet::new();
+        let mut pending_modification_download_tasks = Vec::new();
+        for list in object_lists {
             for object in &list.contents {
-                if object.key == path {
-                    let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified)
-                    else {
-                        continue;
-                    };
-                    threshold_modification_time = Some(last_modified);
-                }
-            }
-        }
-        if let Some(threshold_modification_time) = threshold_modification_time {
-            let path = path.to_string();
-            for list in object_lists {
-                for object in list.contents {
-                    let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified)
-                    else {
-                        continue;
-                    };
-                    if (last_modified, &object.key) < (threshold_modification_time, &path) {
-                        self.processed_objects.insert(object.key);
-                    }
-                }
-            }
-            self.processed_objects.insert(path.clone());
-            self.current_object_path = Some(path.into());
-        }
-
-        Ok(())
-    }
-
-    fn next_scanner_action(&mut self) -> Result<Option<ReadResult>, ReadError> {
-        if take(&mut self.current_object_path).is_some() {
-            return Ok(Some(ReadResult::FinishedSource {
-                commit_allowed: true,
-            }));
-        }
-
-        let is_polling_enabled = self.streaming_mode.is_polling_enabled();
-        loop {
-            if let Some(selected_object_path) = self.objects_for_processing.pop_front() {
-                if self
-                    .predownloaded_objects
-                    .contains_key(&selected_object_path)
-                {
-                    self.processed_objects.insert(selected_object_path.clone());
-                    self.current_object_path = Some(selected_object_path.into());
-                    return Ok(Some(ReadResult::NewSource(None)));
-                }
-            } else {
-                let is_queue_refresh_needed = !self.is_queue_initialized
-                    || (self.objects_for_processing.is_empty() && is_polling_enabled);
-                if is_queue_refresh_needed {
-                    self.find_new_objects_for_processing()?;
-                    if self.objects_for_processing.is_empty() && is_polling_enabled {
-                        // Even after the queue refresh attempt, it's still empty
-                        // Sleep before the next poll
-                        sleep(Self::sleep_duration());
+                seen_object_keys.insert(object.key.clone());
+                let actual_metadata = SourceMetadata::from_s3_object(object);
+                let object_key = object.key.as_bytes();
+                if let Some(stored_metadata) = cached_object_storage.stored_metadata(object_key) {
+                    let is_updated = stored_metadata.is_changed(&actual_metadata);
+                    if is_updated && are_deletions_enabled {
+                        pending_modification_download_tasks.push(actual_metadata);
                     }
                 } else {
-                    // No elements and no further queue refreshes,
-                    // the connector can stop at this point
-                    return Ok(None);
+                    pending_modification_download_tasks.push(actual_metadata);
                 }
             }
         }
+        let pending_modification_objects = self.download_bulk(&pending_modification_download_tasks);
+        for object in pending_modification_objects {
+            match object {
+                Ok(object) => {
+                    let object_path = object.path.to_string();
+                    let is_update = cached_object_storage.contains_object(object_path.as_bytes());
+                    if is_update {
+                        result.push(QueuedAction::Update(
+                            object_path.as_bytes().into(),
+                            object.metadata.as_ref().unwrap().clone(),
+                        ));
+                    } else {
+                        result.push(QueuedAction::Read(
+                            object_path.as_bytes().into(),
+                            object.metadata.as_ref().unwrap().clone(),
+                        ));
+                    }
+                    self.pending_modifications
+                        .insert(object_path.clone(), object.contents);
+                }
+                Err(e) => {
+                    warn!("Failed to fetch the modified version of the object: {e}. It will be retried with the next bulk of updates.");
+                }
+            }
+        }
+        if are_deletions_enabled {
+            for (object_path, _) in cached_object_storage.get_iter() {
+                let object_path = from_utf8(object_path).expect("S3 paths must be UTF8-compatible");
+                if !seen_object_keys.contains(object_path) {
+                    result.push(QueuedAction::Delete(object_path.as_bytes().into()));
+                }
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -189,7 +173,6 @@ impl S3Scanner {
     pub fn new(
         bucket: S3Bucket,
         objects_prefix: impl Into<String>,
-        streaming_mode: ConnectorMode,
         downloader_threads_count: usize,
     ) -> Result<Self, ReadError> {
         let objects_prefix = objects_prefix.into();
@@ -215,17 +198,11 @@ impl S3Scanner {
         Ok(S3Scanner {
             bucket,
             objects_prefix,
-            streaming_mode,
-
-            current_object_path: None,
-            processed_objects: HashSet::new(),
-            objects_for_processing: VecDeque::new(),
             downloader_pool: ThreadPoolBuilder::new()
                 .num_threads(downloader_threads_count)
                 .build()
-                .expect("Failed to create downloader pool"), // TODO: configure number of threads
-            predownloaded_objects: HashMap::new(),
-            is_queue_initialized: false,
+                .expect("Failed to create downloader pool"),
+            pending_modifications: HashMap::new(),
         })
     }
 
@@ -256,88 +233,36 @@ impl S3Scanner {
         .map_err(|e| ReadError::S3(S3CommandName::GetObject, e))
     }
 
-    pub fn stream_object_from_path_and_bucket(
+    fn stream_object_from_path_and_bucket(
         object_path_ref: &str,
         bucket: &S3Bucket,
     ) -> S3DownloadResult {
         let object_path = object_path_ref.to_string();
         let response = Self::download_object_from_path_and_bucket(&object_path, bucket)?;
-        let readable_data = Cursor::new(response.bytes().to_vec());
-        Ok((object_path_ref.to_string().into(), readable_data))
+
+        Ok(S3DownloadedObject::new(
+            object_path_ref.to_string().into(),
+            response.bytes().to_vec(),
+            None,
+        ))
     }
 
-    pub fn stream_object_from_path(
-        &mut self,
-        object_path_ref: &str,
-    ) -> Result<Cursor<Vec<u8>>, ReadError> {
-        let (current_object_path, reader_impl) =
-            Self::stream_object_from_path_and_bucket(object_path_ref, &self.bucket.deep_copy())?;
-        self.current_object_path = Some(current_object_path);
-        Ok(reader_impl)
-    }
-
-    fn find_new_objects_for_processing(&mut self) -> Result<(), ReadError> {
-        let object_lists = execute_with_retries(
-            || self.bucket.list(self.objects_prefix.to_string(), None),
-            RetryConfig::default(),
-            MAX_S3_RETRIES,
-        )
-        .map_err(|e| ReadError::S3(S3CommandName::ListObjectsV2, e))?;
-
-        let mut new_objects = Vec::new();
-        for list in &object_lists {
-            for object in &list.contents {
-                if self.processed_objects.contains(&object.key) {
-                    continue;
-                }
-                let Ok(last_modified) = DateTime::parse_from_rfc3339(&object.last_modified) else {
-                    continue;
-                };
-                new_objects.push((last_modified, object.key.clone()));
-            }
+    fn download_bulk(&mut self, new_objects: &[SourceMetadata]) -> Vec<S3DownloadResult> {
+        if new_objects.is_empty() {
+            return Vec::with_capacity(0);
         }
-        new_objects.sort_unstable();
-        info!("Found {} new objects to process", new_objects.len());
+        info!("Downloading a bulk of {} objects", new_objects.len());
         let downloading_started_at = SystemTime::now();
         let new_objects_downloaded: Vec<S3DownloadResult> = self.downloader_pool.install(|| {
             new_objects
                 .par_iter()
-                .map(|(_, path)| Self::stream_object_from_path_and_bucket(path, &self.bucket))
+                .map(|task| {
+                    Self::stream_object_from_path_and_bucket(&task.path, &self.bucket)
+                        .map(|result| result.set_metadata(task.clone()))
+                })
                 .collect()
         });
         info!("Downloading done in {:?}", downloading_started_at.elapsed());
-
-        for downloaded_object in new_objects_downloaded {
-            match downloaded_object {
-                Ok((path, prepared_reader)) => {
-                    self.predownloaded_objects
-                        .insert(path.to_string(), prepared_reader);
-                }
-                Err(e) => {
-                    error!("Error while downloading an object from S3: {e}");
-                }
-            }
-        }
-        for (_, object_key) in new_objects {
-            self.objects_for_processing.push_back(object_key);
-        }
-
-        info!(
-            "The {} new objects have been enqueued for further processing",
-            self.objects_for_processing.len()
-        );
-        self.is_queue_initialized = true;
-        Ok(())
-    }
-
-    pub fn expect_current_object_path(&self) -> ArcStr {
-        self.current_object_path
-            .as_ref()
-            .expect("current object should be present")
-            .clone()
-    }
-
-    fn sleep_duration() -> Duration {
-        Duration::from_millis(10000)
+        new_objects_downloaded
     }
 }

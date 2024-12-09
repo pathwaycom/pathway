@@ -47,7 +47,7 @@ where
     D: Clone,
     R: Clone,
 {
-    fn load_persisted(&self) -> Result<Vec<(D, R)>, BackendError> {
+    fn load_persisted(&mut self) -> Result<Vec<(D, R)>, BackendError> {
         Ok(self.data.clone())
     }
 }
@@ -377,7 +377,7 @@ mock! {
         fn list_keys(&self) -> Result<Vec<String>, BackendError>;
         fn get_value(&self, key: &str) -> Result<Vec<u8>, BackendError>;
         fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture;
-        fn remove_key(&self, key: &str) -> Result<(), BackendError>;
+        fn remove_key(&mut self, key: &str) -> Result<(), BackendError>;
     }
 }
 
@@ -417,7 +417,7 @@ fn test_operator_snapshot_reader_reads_correct_files_1() {
             .times(1)
             .returning(|_key| Ok(()));
     }
-    let reader = MultiConcreteSnapshotReader::new(vec![ConcreteSnapshotReader::new(
+    let mut reader = MultiConcreteSnapshotReader::new(vec![ConcreteSnapshotReader::new(
         Box::new(backend),
         TotalFrontier::At(Timestamp(34)),
     )]);
@@ -477,7 +477,7 @@ fn test_operator_snapshot_reader_consolidates() {
             .times(1)
             .returning(|_key| Ok(()));
     }
-    let reader = MultiConcreteSnapshotReader::new(vec![ConcreteSnapshotReader::new(
+    let mut reader = MultiConcreteSnapshotReader::new(vec![ConcreteSnapshotReader::new(
         Box::new(backend),
         TotalFrontier::At(Timestamp(22)),
     )]);

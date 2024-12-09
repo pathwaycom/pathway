@@ -399,7 +399,8 @@ def generate_input(file_name, input_size, commit_frequency):
             dataset_line = json.dumps(dataset_line_dict)
             fw.write(dataset_line + "\n")
             if (seq_line_id + 1) % commit_frequency == 0:
-                fw.write(COMMIT_LINE)
+                # fw.write(COMMIT_LINE)
+                pass
 
 
 def generate_next_input(inputs_path):

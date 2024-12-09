@@ -10,10 +10,12 @@ use futures::channel::oneshot::Receiver as OneShotReceiver;
 use serde_json::Error as JsonParseError;
 
 pub use file::FilesystemKVStorage;
+pub use memory::{MemoryKVStorage, MemoryKVStorageError};
 pub use mock::MockKVStorage;
 pub use s3::S3KVStorage;
 
 pub mod file;
+pub mod memory;
 pub mod mock;
 pub mod s3;
 
@@ -25,6 +27,9 @@ pub enum Error {
 
     #[error(transparent)]
     S3(#[from] S3Error),
+
+    #[error(transparent)]
+    Memory(#[from] MemoryKVStorageError),
 
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
@@ -50,5 +55,5 @@ pub trait PersistenceBackend: Send + Debug {
     fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture;
 
     /// Remove the value corresponding to the `key`.
-    fn remove_key(&self, key: &str) -> Result<(), Error>;
+    fn remove_key(&mut self, key: &str) -> Result<(), Error>;
 }

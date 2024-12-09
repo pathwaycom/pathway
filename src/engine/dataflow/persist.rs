@@ -315,7 +315,7 @@ where
 fn read_persisted_state<S, D, R>(
     name: &str,
     mut scope: S,
-    reader: Box<dyn OperatorSnapshotReader<D, R> + Send>,
+    mut reader: Box<dyn OperatorSnapshotReader<D, R> + Send>,
 ) -> (Collection<S, D, R>, Poller, thread::JoinHandle<()>)
 where
     S: Scope,

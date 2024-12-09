@@ -1,28 +1,34 @@
 // Copyright © 2024 Pathway
 
+use log::error;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use chrono::DateTime;
+use s3::serde_types::Object as S3Object;
+use serde::{Deserialize, Serialize};
 
 use crate::timestamp::current_unix_timestamp_secs;
 
 /// Basic metadata for a file-like object
 #[allow(clippy::module_name_repetitions)]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Ord, PartialOrd)]
 pub struct SourceMetadata {
     // Creation and modification time may not be available at some platforms
     // Stored in u64 for easy serialization
     created_at: Option<u64>,
     pub modified_at: Option<u64>,
 
-    // Owner may be unavailable at some platforms and on S3
+    // Owner may be unavailable at some platforms
     owner: Option<String>,
 
     // Path should always be available. We make it String for two reasons:
     // * S3 path is denoted as a String
     // * This object is directly serialized and passed into a connector row
-    path: String,
+    pub path: String,
+
+    // Size (in bytes) should be always available.
+    pub size: u64,
 
     // Record acquisition time. Required for the real-time indexer processes
     // to determine the gap between finding file and indexing it.
@@ -40,8 +46,45 @@ impl SourceMetadata {
             modified_at,
             owner,
             path: path.to_string_lossy().to_string(),
+            size: meta.len(),
             seen_at: current_unix_timestamp_secs(),
         }
+    }
+
+    pub fn from_s3_object(object: &S3Object) -> Self {
+        let modified_at: Option<u64> = match DateTime::parse_from_rfc3339(&object.last_modified) {
+            Ok(last_modified) => {
+                if let Ok(last_modified) = last_modified.timestamp().try_into() {
+                    Some(last_modified)
+                } else {
+                    error!("S3 modification time is not a UNIX timestamp: {last_modified}");
+                    None
+                }
+            }
+            Err(e) => {
+                error!(
+                    "Failed to parse RFC 3339 timestamp '{}' from S3 metadata: {e}",
+                    object.last_modified
+                );
+                None
+            }
+        };
+
+        Self {
+            created_at: None,
+            modified_at,
+            owner: object.owner.as_ref().map(|owner| owner.id.clone()),
+            path: object.key.clone(),
+            size: object.size,
+            seen_at: current_unix_timestamp_secs(),
+        }
+    }
+
+    /// Checks if file contents could have been changed.
+    pub fn is_changed(&self, other: &SourceMetadata) -> bool {
+        self.modified_at != other.modified_at
+            || self.size != other.size
+            || self.owner != other.owner
     }
 }
 

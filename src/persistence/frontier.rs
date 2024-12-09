@@ -40,6 +40,10 @@ impl OffsetAntichain {
     pub fn iter(&self) -> hash_map::Iter<'_, OffsetKey, OffsetValue> {
         self.antichain.iter()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.antichain.is_empty()
+    }
 }
 
 impl<'a> IntoIterator for &'a OffsetAntichain {

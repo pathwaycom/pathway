@@ -42,7 +42,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     )
     G.clear()
 
-    input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde"
+    input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde\n"
     put_aws_object(s3_input_path, input_contents)
     table = pw.io.s3_csv.read(
         s3_path,
@@ -62,7 +62,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     )
     G.clear()
 
-    input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde\n5,Hola"
+    input_contents = "key,value\n1,Hello\n2,World\n3,Bonjour\n4,Monde\n5,Hola\n"
     s3_input_path_2 = f"{s3_path}/input_2.csv"
     input_contents_2 = "key,value\n6,Mundo"
     output_path = tmp_path / "output_final.csv"

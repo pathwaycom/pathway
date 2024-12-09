@@ -98,6 +98,7 @@ def read(
     aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
     mode: str = "streaming",
+    with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
@@ -129,6 +130,12 @@ def read(
         mode: If set to ``streaming``, the engine waits for the new objects under the
             given path prefix. Set it to ``static``, it only considers the available
             data and ingest all of it. Default value is ``streaming``.
+        with_metadata: When set to true, the connector will add an additional column
+            named ``_metadata`` to the table. This column will be a JSON field that will
+            contain an optional field ``modified_at``. Additionally, the column will also
+            have an optional field named ``owner`` containing an ID of the object owner.
+            Finally, the column will also contain a field named ``path`` that will show
+            the full path to the object within a bucket from where a row was filled.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is ``csv``.
         json_field_paths: If the format is ``json``, this field allows to map field names
@@ -274,6 +281,7 @@ def read(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
+        with_metadata=with_metadata,
         _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(
@@ -300,6 +308,7 @@ def read_from_digital_ocean(
     *,
     schema: type[Schema] | None = None,
     mode: str = "streaming",
+    with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
@@ -330,6 +339,12 @@ def read_from_digital_ocean(
         mode: If set to ``streaming``, the engine waits for the new objects under the
             given path prefix. Set it to ``static``, it only considers the available
             data and ingest all of it. Default value is ``streaming``.
+        with_metadata: When set to true, the connector will add an additional column
+            named ``_metadata`` to the table. This column will be a JSON field that will
+            contain an optional field ``modified_at``. Additionally, the column will also
+            have an optional field named ``owner`` containing an ID of the object owner.
+            Finally, the column will also contain a field named ``path`` that will show
+            the full path to the object within a bucket from where a row was filled.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -397,6 +412,7 @@ def read_from_digital_ocean(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
+        with_metadata=with_metadata,
         _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
@@ -423,6 +439,7 @@ def read_from_wasabi(
     *,
     schema: type[Schema] | None = None,
     mode: str = "streaming",
+    with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
@@ -452,6 +469,12 @@ def read_from_wasabi(
         mode: If set to ``streaming``, the engine waits for the new objects under the
             given path prefix. Set it to ``static``, it only considers the available
             data and ingest all of it. Default value is ``streaming``.
+        with_metadata: When set to true, the connector will add an additional column
+            named ``_metadata`` to the table. This column will be a JSON field that will
+            contain an optional field ``modified_at``. Additionally, the column will also
+            have an optional field named ``owner`` containing an ID of the object owner.
+            Finally, the column will also contain a field named ``path`` that will show
+            the full path to the object within a bucket from where a row was filled.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -518,6 +541,7 @@ def read_from_wasabi(
         schema=schema,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
+        with_metadata=with_metadata,
         _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(

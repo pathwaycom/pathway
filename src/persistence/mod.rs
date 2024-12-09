@@ -11,6 +11,7 @@ use xxhash_rust::xxh3::Xxh3 as Hasher;
 use crate::engine::Timestamp;
 
 pub mod backends;
+pub mod cached_object_storage;
 pub mod config;
 pub mod frontier;
 pub mod input_snapshot;

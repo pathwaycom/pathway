@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 
@@ -10,15 +11,26 @@ from .base import create_table_for_storage, put_object_into_storage
 
 @pytest.mark.parametrize("storage_type", ["s3", "minio"])
 @pytest.mark.parametrize("format", ["binary", "plaintext", "plaintext_by_object"])
-def test_formats_without_parsing(storage_type, format, tmp_path, s3_path):
+@pytest.mark.parametrize("with_metadata", [True, False])
+def test_formats_without_parsing(
+    storage_type, format, with_metadata, tmp_path, s3_path
+):
     input_path = f"{s3_path}/input.txt"
     input_full_contents = "abc\n\ndef\nghi\njkl"
     output_path = tmp_path / "output.json"
+    uploaded_at = int(time.time())
 
     put_object_into_storage(storage_type, input_path, input_full_contents)
-    table = create_table_for_storage(storage_type, input_path, format)
+    table = create_table_for_storage(
+        storage_type, input_path, format, with_metadata=with_metadata
+    )
     pw.io.jsonlines.write(table, output_path)
     pw.run()
+
+    def check_metadata(metadata):
+        assert uploaded_at <= metadata["modified_at"] <= uploaded_at + 10
+        assert metadata["path"] == input_path
+        assert metadata["size"] == len(input_full_contents)
 
     if format in ("binary", "plaintext_by_object"):
         expected_output = (
@@ -29,11 +41,16 @@ def test_formats_without_parsing(storage_type, format, tmp_path, s3_path):
         with open(output_path) as f:
             result = json.load(f)
             assert result["data"] == expected_output
+            if with_metadata:
+                check_metadata(result["_metadata"])
     else:
         lines = []
         with open(output_path, "r") as f:
             for row in f:
-                lines.append(json.loads(row)["data"])
+                result = json.loads(row)
+                lines.append(result["data"])
+                if with_metadata:
+                    check_metadata(result["_metadata"])
         lines.sort()
         target = input_full_contents.split("\n")
         target.sort()

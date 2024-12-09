@@ -48,7 +48,7 @@ pub enum OffsetValue {
     PosixLikeOffset {
         total_entries_read: u64,
         path: Arc<[u8]>,
-        bytes_offset: u64,
+        bytes_offset: u64, // No longer needed
     },
     PythonCursor {
         raw_external_offset: Arc<[u8]>,

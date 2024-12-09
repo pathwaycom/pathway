@@ -104,12 +104,18 @@ pub fn full_cycle_read(
                     let event = event.replace_errors();
                     if let Some(ref mut snapshot_writer) = snapshot_writer {
                         let snapshot_event = match event {
+                            // Random key generation is used only for testing purposes and
+                            // doesn't reflect the logic used in pathway applications.
                             ParsedEvent::Insert((_, ref values)) => {
                                 let key = Key::random();
                                 SnapshotEvent::Insert(key, values.clone())
                             }
-                            ParsedEvent::Delete((_, _)) | ParsedEvent::Upsert((_, _)) => {
-                                todo!("delete and upsert aren't supported in this test")
+                            ParsedEvent::Delete((_, ref values)) => {
+                                let key = Key::random();
+                                SnapshotEvent::Delete(key, values.clone())
+                            }
+                            ParsedEvent::Upsert((_, _)) => {
+                                todo!("upsert aren't supported in this test")
                             }
                             ParsedEvent::AdvanceTime => {
                                 SnapshotEvent::AdvanceTime(Timestamp(1), frontier.clone())

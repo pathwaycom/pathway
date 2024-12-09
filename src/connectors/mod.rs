@@ -346,12 +346,21 @@ impl Connector {
         snapshot_access: SnapshotAccess,
         realtime_reader_needed: bool,
     ) -> Result<(), ReadError> {
+        info!(
+            "Enter read_snapshot method with reader {:?}",
+            reader.storage_type()
+        );
         let mut frontier = OffsetAntichain::new();
         if snapshot_access.is_replay_allowed() {
             persistence_mode.on_before_reading_snapshot(sender);
-            // Rewind the data source
-            if let Some(persistent_storage) = persistent_storage {
-                if let Some(persistent_id) = reader.persistent_id() {
+        }
+        if let Some(persistent_storage) = persistent_storage {
+            if let Some(persistent_id) = reader.persistent_id() {
+                reader.initialize_cached_objects_storage(
+                    &persistent_storage.lock().unwrap(),
+                    persistent_id,
+                )?;
+                if snapshot_access.is_replay_allowed() {
                     if persistent_storage
                         .lock()
                         .unwrap()

@@ -63,6 +63,7 @@ def read(
     *,
     schema: type[Schema] | None = None,
     mode: str = "streaming",
+    with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
@@ -92,6 +93,12 @@ def read(
         mode: If set to ``streaming``, the engine waits for the new objects under the
             given path prefix. Set it to ``static``, it only considers the available
             data and ingest all of it. Default value is ``streaming``.
+        with_metadata: When set to true, the connector will add an additional column
+            named ``_metadata`` to the table. This column will be a JSON field that will
+            contain an optional field ``modified_at``. Additionally, the column will also
+            have an optional field named ``owner`` containing an ID of the object owner.
+            Finally, the column will also contain a field named ``path`` that will show
+            the full path to the object within a bucket from where a row was filled.
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -149,6 +156,7 @@ def read(
         schema=schema,
         csv_settings=csv_settings,
         mode=mode,
+        with_metadata=with_metadata,
         autocommit_duration_ms=autocommit_duration_ms,
         persistent_id=persistent_id,
         json_field_paths=json_field_paths,

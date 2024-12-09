@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use crate::connectors::PersistenceMode;
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::backends::BackendPutFuture as PersistenceBackendFlushFuture;
+use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
 use crate::persistence::input_snapshot::{ReadInputSnapshot, SnapshotMode};
 use crate::persistence::operator_snapshot::{Flushable, OperatorSnapshotReader};
@@ -105,6 +106,13 @@ impl WorkerPersistentStorage {
             sink_threshold_times: Vec::new(),
             registered_persistent_ids: HashSet::new(),
         })
+    }
+
+    pub fn create_cached_object_storage(
+        &self,
+        persistent_id: PersistentId,
+    ) -> Result<CachedObjectStorage, PersistenceBackendError> {
+        self.config.create_cached_object_storage(persistent_id)
     }
 
     pub fn table_persistence_enabled(&self) -> bool {

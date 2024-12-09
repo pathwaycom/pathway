@@ -50,6 +50,7 @@ use crate::engine::Value;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
+use crate::persistence::tracker::WorkerPersistentStorage;
 use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
@@ -257,6 +258,9 @@ pub enum ReadError {
     #[error(transparent)]
     Bincode(#[from] BincodeError),
 
+    #[error(transparent)]
+    Persistence(#[from] PersistenceBackendError),
+
     #[error("malformed data")]
     MalformedData,
 
@@ -324,13 +328,14 @@ pub fn new_filesystem_reader(
     read_method: ReadMethod,
     object_pattern: &str,
 ) -> Result<PosixLikeReader, ReadError> {
-    let scanner = FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
+    let scanner = FilesystemScanner::new(path, object_pattern)?;
     let tokenizer = BufReaderTokenizer::new(read_method);
-    Ok(PosixLikeReader::new(
+    PosixLikeReader::new(
         Box::new(scanner),
         Box::new(tokenizer),
+        streaming_mode,
         persistent_id,
-    ))
+    )
 }
 
 pub fn new_csv_filesystem_reader(
@@ -340,13 +345,14 @@ pub fn new_csv_filesystem_reader(
     persistent_id: Option<PersistentId>,
     object_pattern: &str,
 ) -> Result<PosixLikeReader, ReadError> {
-    let scanner = FilesystemScanner::new(path, persistent_id, streaming_mode, object_pattern)?;
+    let scanner = FilesystemScanner::new(path, object_pattern)?;
     let tokenizer = CsvTokenizer::new(parser_builder);
-    Ok(PosixLikeReader::new(
+    PosixLikeReader::new(
         Box::new(scanner),
         Box::new(tokenizer),
+        streaming_mode,
         persistent_id,
-    ))
+    )
 }
 
 pub fn new_s3_generic_reader(
@@ -357,18 +363,14 @@ pub fn new_s3_generic_reader(
     read_method: ReadMethod,
     downloader_threads_count: usize,
 ) -> Result<PosixLikeReader, ReadError> {
-    let scanner = S3Scanner::new(
-        bucket,
-        objects_prefix,
-        streaming_mode,
-        downloader_threads_count,
-    )?;
+    let scanner = S3Scanner::new(bucket, objects_prefix, downloader_threads_count)?;
     let tokenizer = BufReaderTokenizer::new(read_method);
-    Ok(PosixLikeReader::new(
+    PosixLikeReader::new(
         Box::new(scanner),
         Box::new(tokenizer),
+        streaming_mode,
         persistent_id,
-    ))
+    )
 }
 
 pub fn new_s3_csv_reader(
@@ -379,18 +381,14 @@ pub fn new_s3_csv_reader(
     persistent_id: Option<PersistentId>,
     downloader_threads_count: usize,
 ) -> Result<PosixLikeReader, ReadError> {
-    let scanner = S3Scanner::new(
-        bucket,
-        objects_prefix,
-        streaming_mode,
-        downloader_threads_count,
-    )?;
+    let scanner = S3Scanner::new(bucket, objects_prefix, downloader_threads_count)?;
     let tokenizer = CsvTokenizer::new(parser_builder);
-    Ok(PosixLikeReader::new(
+    PosixLikeReader::new(
         Box::new(scanner),
         Box::new(tokenizer),
+        streaming_mode,
         persistent_id,
-    ))
+    )
 }
 
 pub trait Reader {
@@ -401,6 +399,13 @@ pub trait Reader {
 
     fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>);
     fn persistent_id(&self) -> Option<PersistentId>;
+    fn initialize_cached_objects_storage(
+        &mut self,
+        _: &WorkerPersistentStorage,
+        _: PersistentId,
+    ) -> Result<(), ReadError> {
+        Ok(())
+    }
 
     fn merge_two_frontiers(lhs: &OffsetAntichain, rhs: &OffsetAntichain) -> OffsetAntichain
     where
@@ -814,13 +819,6 @@ pub enum ConnectorMode {
 
 impl ConnectorMode {
     pub fn is_polling_enabled(&self) -> bool {
-        match self {
-            ConnectorMode::Static => false,
-            ConnectorMode::Streaming => true,
-        }
-    }
-
-    pub fn are_deletions_enabled(&self) -> bool {
         match self {
             ConnectorMode::Static => false,
             ConnectorMode::Streaming => true,

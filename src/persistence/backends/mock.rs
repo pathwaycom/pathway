@@ -1,7 +1,5 @@
 // Copyright © 2024 Pathway
 
-use log::error;
-
 use futures::channel::oneshot;
 
 use crate::persistence::backends::PersistenceBackend;
@@ -24,16 +22,13 @@ impl PersistenceBackend for MockKVStorage {
 
     fn put_value(&mut self, _key: &str, _value: Vec<u8>) -> BackendPutFuture {
         let (sender, receiver) = oneshot::channel();
-        let send_result = sender.send(Ok(()));
-        if let Err(unsent_flush_result) = send_result {
-            error!(
-                "The receiver no longer waits for the result of this save: {unsent_flush_result:?}"
-            );
-        }
+        sender
+            .send(Ok(()))
+            .expect("The receiver must still be listening for the result of the put_value");
         receiver
     }
 
-    fn remove_key(&self, _key: &str) -> Result<(), Error> {
+    fn remove_key(&mut self, _key: &str) -> Result<(), Error> {
         Ok(())
     }
 }

@@ -26,6 +26,7 @@ use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::{
     FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
 };
+use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::persistence::operator_snapshot::{ConcreteSnapshotReader, MultiConcreteSnapshotReader};
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::Error as PersistenceBackendError;
@@ -162,6 +163,29 @@ impl PersistenceManagerConfig {
         }
     }
 
+    pub fn create_cached_object_storage(
+        &self,
+        persistent_id: PersistentId,
+    ) -> Result<CachedObjectStorage, PersistenceBackendError> {
+        let backend: Box<dyn PersistenceBackend> = match &self.backend {
+            PersistentStorageConfig::Filesystem(root_path) => {
+                let storage_root_path =
+                    root_path.join(format!("cached-objects-storage/{persistent_id}"));
+                ensure_directory(&storage_root_path)?;
+                Box::new(FilesystemKVStorage::new(&storage_root_path)?)
+            }
+            PersistentStorageConfig::S3 { bucket, root_path } => {
+                let storage_root_path = format!(
+                    "{}/cached-objects-storage/{persistent_id}",
+                    root_path.strip_suffix('/').unwrap_or(root_path),
+                );
+                Box::new(S3KVStorage::new(bucket.deep_copy(), &storage_root_path))
+            }
+            PersistentStorageConfig::Mock(_) => Box::new(MockKVStorage {}),
+        };
+        CachedObjectStorage::new(backend)
+    }
+
     pub fn create_metadata_storage(&self) -> Result<MetadataAccessor, PersistenceBackendError> {
         let backend = self.backend.create()?;
         MetadataAccessor::new(backend, self.worker_id, self.total_workers)
@@ -269,9 +293,7 @@ impl PersistenceManagerConfig {
         root_path: &Path,
         persistent_id: PersistentId,
     ) -> Result<PathBuf, IoError> {
-        ensure_directory(root_path)?;
         let streams_path = root_path.join(STREAMS_DIRECTORY_NAME);
-        ensure_directory(&streams_path)?;
         let worker_path = streams_path.join(self.worker_id.to_string());
         ensure_directory(&worker_path)?;
         Ok(worker_path.join(persistent_id.to_string()))
@@ -292,8 +314,6 @@ impl PersistenceManagerConfig {
         persistent_id: PersistentId,
         query_purpose: ReadersQueryPurpose,
     ) -> Result<HashMap<usize, PathBuf>, PersistenceBackendError> {
-        ensure_directory(root_path)?;
-
         let streams_dir = root_path.join("streams");
         ensure_directory(&streams_dir)?;
 

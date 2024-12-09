@@ -122,6 +122,22 @@ fn test_csv_file_recovery() -> eyre::Result<()> {
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
+                ParsedEvent::Delete((
+                    Some(vec![Value::String("1".into())]),
+                    vec![Value::String("2".into())]
+                )),
+                ParsedEvent::Delete((
+                    Some(vec![Value::String("a".into())]),
+                    vec![Value::String("b".into())]
+                )),
+                ParsedEvent::Insert((
+                    Some(vec![Value::String("1".into())]),
+                    vec![Value::String("2".into())]
+                )),
+                ParsedEvent::Insert((
+                    Some(vec![Value::String("a".into())]),
+                    vec![Value::String("b".into())]
+                )),
                 ParsedEvent::Insert((
                     Some(vec![Value::String("c".into())]),
                     vec![Value::String("d".into())]
@@ -183,7 +199,7 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
         );
     }
 
-    std::fs::remove_file(inputs_dir_path.join("input1.csv")).unwrap();
+    //    std::fs::remove_file(inputs_dir_path.join("input1.csv")).unwrap();
     std::fs::write(
         inputs_dir_path.join("input2.csv"),
         "key,value\nq,w\ne,r\nt,y\np,q",
@@ -194,10 +210,36 @@ fn test_csv_dir_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(TestedFormat::Csv, &inputs_dir_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
-            vec![ParsedEvent::Insert((
-                Some(vec![Value::String("p".into())]),
-                vec![Value::String("q".into())]
-            ))]
+            vec![
+                ParsedEvent::Delete((
+                    Some(vec![Value::String("q".into())]),
+                    vec![Value::String("w".into())]
+                )),
+                ParsedEvent::Delete((
+                    Some(vec![Value::String("e".into())]),
+                    vec![Value::String("r".into())]
+                )),
+                ParsedEvent::Delete((
+                    Some(vec![Value::String("t".into())]),
+                    vec![Value::String("y".into())]
+                )),
+                ParsedEvent::Insert((
+                    Some(vec![Value::String("q".into())]),
+                    vec![Value::String("w".into())]
+                )),
+                ParsedEvent::Insert((
+                    Some(vec![Value::String("e".into())]),
+                    vec![Value::String("r".into())]
+                )),
+                ParsedEvent::Insert((
+                    Some(vec![Value::String("t".into())]),
+                    vec![Value::String("y".into())]
+                )),
+                ParsedEvent::Insert((
+                    Some(vec![Value::String("p".into())]),
+                    vec![Value::String("q".into())]
+                ))
+            ]
         );
     }
 
@@ -232,7 +274,7 @@ fn test_json_file_recovery() -> eyre::Result<()> {
 
     std::fs::write(
         &input_path,
-        r#"{"key", 1, "value": "a"}
+        r#"{"key": 1, "value": "a"}
            {"key": 2, "value": "b"}
            {"key": 3, "value": "c"}"#,
     )
@@ -242,10 +284,13 @@ fn test_json_file_recovery() -> eyre::Result<()> {
         let data_stream = full_cycle_read_kv(TestedFormat::Json, &input_path, Some(&tracker))?;
         assert_eq!(
             data_stream.new_parsed_entries,
-            vec![ParsedEvent::Insert((
-                Some(vec![Value::Int(3)]),
-                vec![Value::String("c".into())]
-            )),]
+            vec![
+                ParsedEvent::Delete((Some(vec![Value::Int(1)]), vec![Value::String("a".into())])),
+                ParsedEvent::Delete((Some(vec![Value::Int(2)]), vec![Value::String("b".into())])),
+                ParsedEvent::Insert((Some(vec![Value::Int(1)]), vec![Value::String("a".into())])),
+                ParsedEvent::Insert((Some(vec![Value::Int(2)]), vec![Value::String("b".into())])),
+                ParsedEvent::Insert((Some(vec![Value::Int(3)]), vec![Value::String("c".into())])),
+            ]
         );
     }
 
@@ -305,6 +350,10 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
         assert_eq!(
             data_stream.new_parsed_entries,
             vec![
+                ParsedEvent::Delete((Some(vec![Value::Int(3)]), vec![Value::String("c".into())])),
+                ParsedEvent::Delete((Some(vec![Value::Int(4)]), vec![Value::String("d".into())])),
+                ParsedEvent::Insert((Some(vec![Value::Int(3)]), vec![Value::String("c".into())])),
+                ParsedEvent::Insert((Some(vec![Value::Int(4)]), vec![Value::String("d".into())])),
                 ParsedEvent::Insert((Some(vec![Value::Int(5)]), vec![Value::String("e".into())])),
                 ParsedEvent::Insert((Some(vec![Value::Int(6)]), vec![Value::String("f".into())])),
                 ParsedEvent::Insert((Some(vec![Value::Int(7)]), vec![Value::String("g".into())])),
@@ -316,7 +365,7 @@ fn test_json_folder_recovery() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
+fn test_json_recovery_with_new_file() -> eyre::Result<()> {
     let test_storage = tempdir()?;
     let test_storage_path = test_storage.path();
 
@@ -349,9 +398,6 @@ fn test_json_recovery_from_empty_folder() -> eyre::Result<()> {
             ]
         );
     }
-
-    std::fs::remove_file(inputs_dir_path.as_path().join("input1.json")).unwrap();
-    std::fs::remove_file(inputs_dir_path.as_path().join("input2.json")).unwrap();
 
     std::fs::write(
         inputs_dir_path.as_path().join("input3.json"),

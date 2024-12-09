@@ -86,16 +86,13 @@ impl PersistenceBackend for FilesystemKVStorage {
             .join(key.to_owned() + TEMPORARY_OBJECT_SUFFIX);
         let final_path = self.root_path.join(key);
         let put_value_result = Self::write_file(&tmp_path, &final_path, &value);
-        let send_result = sender.send(put_value_result);
-        if let Err(unsent_flush_result) = send_result {
-            error!(
-                "The receiver no longer waits for the result of this save: {unsent_flush_result:?}"
-            );
-        }
+        sender
+            .send(put_value_result)
+            .expect("The receiver must still be listening for the result of the put_value");
         receiver
     }
 
-    fn remove_key(&self, key: &str) -> Result<(), Error> {
+    fn remove_key(&mut self, key: &str) -> Result<(), Error> {
         std::fs::remove_file(self.root_path.join(key))?;
         Ok(())
     }
