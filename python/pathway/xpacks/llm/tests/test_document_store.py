@@ -594,3 +594,72 @@ def test_docstore_server_hybridindex_builds(cache_strategy_cls, tmp_path: pathli
     (query_result,) = val.as_list()  # extract the single match
     assert isinstance(query_result, dict)
     assert query_result["text"]  # just check if some text was returned
+
+
+def test_docstore_on_table_without_metadata():
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes),
+        rows=[("test".encode("utf-8"),)],
+    )
+
+    index_factory = BruteForceKnnFactory(
+        dimensions=3,
+        reserved_space=10,
+        embedder=fake_embeddings_model,
+        metric=BruteForceKnnMetricKind.COS,
+    )
+
+    document_store = DocumentStore(docs, retriever_factory=index_factory)
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=DocumentStore.RetrieveQuerySchema,
+        rows=[("Foo", 1, None, None)],
+    )
+
+    retrieve_outputs = document_store.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["text"] == "test"  # just check if some text was returned
+
+
+def test_docstore_on_tables_with_different_schemas():
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs1 = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes),
+        rows=[("test".encode("utf-8"),)],
+    )
+
+    docs2 = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict, val=int),
+        rows=[("test2".encode("utf-8"), {}, 1)],
+    )
+
+    index_factory = BruteForceKnnFactory(
+        dimensions=3,
+        reserved_space=10,
+        embedder=fake_embeddings_model,
+        metric=BruteForceKnnMetricKind.COS,
+    )
+
+    document_store = DocumentStore([docs1, docs2], retriever_factory=index_factory)
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=DocumentStore.RetrieveQuerySchema,
+        rows=[("Foo", 2, None, None)],
+    )
+
+    retrieve_outputs = document_store.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    assert len(val.as_list()) == 2

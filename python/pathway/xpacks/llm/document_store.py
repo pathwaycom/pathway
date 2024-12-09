@@ -7,6 +7,7 @@ The document store reads source documents and build a vector index over them, an
 multiple methods for querying.
 """
 
+import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Iterable, TypeAlias
 
@@ -35,6 +36,11 @@ class DocumentStore:
 
     Args:
         - docs: pathway tables typically coming out of connectors which contain source documents.
+            The table needs to contain a ``data`` column of type bytes - usually by setting
+            format of the connector to be ``"raw""``. Optionally, it can contain
+            a ``_metadata`` column containing a dictionary with metadata which is then
+            used for filters. Some connectors offer ``with_metadata`` argument for returning
+            ``_metadata`` column.
         - retriever_factory: factory for building an index, which will be provided
             texts by the ``DocumentStore``.
         - parser: callable that parses file contents into a list of documents.
@@ -262,22 +268,32 @@ class DocumentStore:
 
         return self._apply_processor(post_processed_docs, split_doc)
 
+    def _clean_tables(self, docs: pw.Table | Iterable[pw.Table]) -> list[pw.Table]:
+        if isinstance(docs, pw.Table):
+            docs = [docs]
+
+        def _clean_table(doc: pw.Table) -> pw.Table:
+            if "_metadata" not in doc.column_names():
+                warnings.warn(
+                    f"`_metadata` column is not present in Table {doc}. Filtering will not work for this Table"
+                )
+                doc = doc.with_columns(_metadata=dict())
+
+            return doc.select(pw.this.data, pw.this._metadata)
+
+        return [_clean_table(doc) for doc in docs]
+
     def build_pipeline(self):
 
-        if isinstance(self.docs, pw.Table):
-            docs = self.docs
-        else:
-            docs_list = list(self.docs)
-            if len(docs_list) == 0:
-                raise ValueError(
-                    """Please provide at least one data source, e.g. read files from disk:
+        cleaned_tables = self._clean_tables(self.docs)
+        if len(cleaned_tables) == 0:
+            raise ValueError(
+                """Please provide at least one data source, e.g. read files from disk:
 pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=True)
 """
-                )
-            elif len(docs_list) == 1:
-                (docs,) = self.docs
-            else:
-                docs = docs_list[0].concat_reindex(*docs_list[1:])
+            )
+
+        docs = pw.Table.concat_reindex(*cleaned_tables)
 
         self.input_docs = docs.select(text=pw.this.data, metadata=pw.this._metadata)
         self.parsed_docs = self.parse_documents(self.input_docs)
