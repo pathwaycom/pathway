@@ -307,6 +307,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
+        query_rewrite_method: Method for query transformation. Accepts values: 'hyde', 'default', or None. Defaults to None.
 
 
     Example:
@@ -357,6 +358,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         long_prompt_template: pw.UDF = prompts.prompt_qa,
         summarize_template: pw.UDF = prompts.prompt_summarize,
         search_topk: int = 6,
+        query_rewrite_method: str | None = None,
     ) -> None:
 
         self.llm = llm
@@ -372,6 +374,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self.summarize_template = summarize_template
 
         self.search_topk = search_topk
+        self.query_rewrite_method = query_rewrite_method
 
         self.server: None | QASummaryRestServer = None
         self._pending_endpoints: list[tuple] = []
@@ -401,6 +404,15 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
         """Main function for RAG applications that answer questions
         based on available information."""
+
+        if self.query_rewrite_method == "hyde":
+            pw_ai_queries += pw_ai_queries.select(
+                prompt=prompts.prompt_query_rewrite_hyde(pw.this.prompt)
+            )
+        elif self.query_rewrite_method == "default":
+            pw_ai_queries += pw_ai_queries.select(
+                prompt=prompts.prompt_query_rewrite(pw.this.prompt)
+            )
 
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
@@ -653,6 +665,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         factor: int = 2,
         max_iterations: int = 4,
         strict_prompt: bool = False,
+        query_rewrite_method: str | None = None,
     ) -> None:
         super().__init__(
             llm,
@@ -661,6 +674,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             short_prompt_template=short_prompt_template,
             long_prompt_template=long_prompt_template,
             summarize_template=summarize_template,
+            query_rewrite_method=query_rewrite_method,
         )
         self.n_starting_documents = n_starting_documents
         self.factor = factor
@@ -676,6 +690,15 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             data_column_name = "data"
         else:
             data_column_name = "text"
+
+        if self.query_rewrite_method == "hyde":
+            pw_ai_queries += pw_ai_queries.select(
+                prompt=prompts.prompt_query_rewrite_hyde(pw.this.prompt)
+            )
+        elif self.query_rewrite_method == "default":
+            pw_ai_queries += pw_ai_queries.select(
+                prompt=prompts.prompt_query_rewrite(pw.this.prompt)
+            )
 
         result = pw_ai_queries.select(
             *pw.this,
