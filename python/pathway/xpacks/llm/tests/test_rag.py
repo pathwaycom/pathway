@@ -95,3 +95,121 @@ def test_base_rag():
             """
         ),
     )
+
+
+def test_base_rag_with_query_rewrite():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQuestionAnswerer(
+        IdentityMockChat(),
+        vector_server,
+        short_prompt_template=_short_template,
+        long_prompt_template=_long_template,
+        summarize_template=_summarize_template,
+        search_topk=2,
+        query_rewrite_method="default",
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", "short"),
+            ("baz", None, "gpt4", "long"),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+    assert_table_equality(
+        answer_output.select(result=pw.this.result),
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt3.5,short,foo,foo,bar
+            gpt4,long,baz,baz,bar
+            """
+        ),
+    )
+
+    summarize_query = pw.debug.table_from_rows(
+        schema=rag.SummarizeQuerySchema,
+        rows=[(["foo", "bar"], "gpt2")],
+    )
+
+    summarize_outputs = rag.summarize_query(summarize_query)
+
+    assert_table_equality(
+        summarize_outputs.select(result=pw.this.result),
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt2,summarize,foo,bar
+            """
+        ),
+    )
+
+
+def test_base_rag_with_hyde_query_rewrite():
+    schema = pw.schema_from_types(data=bytes, _metadata=dict)
+    input = pw.debug.table_from_rows(
+        schema=schema, rows=[("foo", {}), ("bar", {}), ("baz", {})]
+    )
+
+    vector_server = VectorStoreServer(
+        input,
+        embedder=fake_embeddings_model,
+    )
+
+    rag = BaseRAGQuestionAnswerer(
+        IdentityMockChat(),
+        vector_server,
+        short_prompt_template=_short_template,
+        long_prompt_template=_long_template,
+        summarize_template=_summarize_template,
+        search_topk=2,
+        query_rewrite_method="hyde",
+    )
+
+    answer_queries = pw.debug.table_from_rows(
+        schema=rag.AnswerQuerySchema,
+        rows=[
+            ("foo", None, "gpt3.5", "short"),
+            ("baz", None, "gpt4", "long"),
+        ],
+    )
+
+    answer_output = rag.answer_query(answer_queries)
+    assert_table_equality(
+        answer_output.select(result=pw.this.result),
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt3.5,short,foo,foo,bar
+            gpt4,long,baz,baz,bar
+            """
+        ),
+    )
+
+    summarize_query = pw.debug.table_from_rows(
+        schema=rag.SummarizeQuerySchema,
+        rows=[(["foo", "bar"], "gpt2")],
+    )
+
+    summarize_outputs = rag.summarize_query(summarize_query)
+
+    assert_table_equality(
+        summarize_outputs.select(result=pw.this.result),
+        pw.debug.table_from_markdown(
+            """
+            result
+            gpt2,summarize,foo,bar
+            """
+        ),
+    )
