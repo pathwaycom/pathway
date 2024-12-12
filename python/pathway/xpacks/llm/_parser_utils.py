@@ -28,9 +28,9 @@ def maybe_downscale(
     """Downscale an image if it exceeds `max_image_size` limit, while maintaining the aspect ratio.
 
     Args:
-        - img: The image to be downscaled.
-        - max_image_size: The maximum allowable size of the image in bytes.
-        - downsize_horizontal_width: The target width for the downscaled image if resizing is needed.
+        img: The image to be downscaled.
+        max_image_size: The maximum allowable size of the image in bytes.
+        downsize_horizontal_width: The target width for the downscaled image if resizing is needed.
     """
     img_size = img.size[0] * img.size[1] * 3
 
@@ -58,12 +58,12 @@ async def parse(
     If llm's `model` is also not set, ``OpenAI`` ``gpt-4o`` will be used.
 
     Args:
-        - b_64_img: Image in base64 format to be parsed. See `img_to_b64` for the conversion utility.
-        - llm: LLM instance to be called with image.
-        - prompt: Instructions for image parsing.
-        - model: Optional LLM model name. Defaults to ``OpenAI`` ``gpt-4o``,
+        b_64_img: Image in base64 format to be parsed. See `img_to_b64` for the conversion utility.
+        llm: LLM instance to be called with image.
+        prompt: Instructions for image parsing.
+        model: Optional LLM model name. Defaults to ``OpenAI`` ``gpt-4o``,
             if neither `model` nor `llm.model` is set.
-        - kwargs: Additional arguments to be sent to the LLM inference.
+        kwargs: Additional arguments to be sent to the LLM inference.
             Refer to the specific provider's API for available options.
             Examples include `temperature`, `max_tokens`, etc.
     """

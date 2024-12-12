@@ -88,24 +88,24 @@ class OpenAIChat(BaseChat):
     construction. All other arguments can be overridden during application.
 
     Args:
-        - capacity: Maximum number of concurrent operations allowed.
+        capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - model: ID of the model to use. See the
+        model: ID of the model to use. See the
             `model endpoint compatibility <https://platform.openai.com/docs/models/model-endpoint-compatibility>`_
             table for details on which models work with the Chat API.
-        - frequency_penalty: Number between -2.0 and 2.0. Positive values penalize new tokens based on their
+        frequency_penalty: Number between -2.0 and 2.0. Positive values penalize new tokens based on their
             existing frequency in the text so far, decreasing the model's likelihood to
             repeat the same line verbatim.
 
             `See more information about frequency and presence penalties.
             <https://platform.openai.com/docs/guides/text-generation/parameter-details>`_
-        - function_call: Deprecated in favor of `tool_choice`.
+        function_call: Deprecated in favor of `tool_choice`.
 
             Controls which (if any) function is called by the model. `none` means the model
             will not call a function and instead generates a message. `auto` means the model
@@ -115,10 +115,10 @@ class OpenAIChat(BaseChat):
 
             `none` is the default when no functions are present. `auto` is the default if
             functions are present.
-        - functions: Deprecated in favor of `tools`.
+        functions: Deprecated in favor of `tools`.
 
             A list of functions the model may generate JSON inputs for.
-        - logit_bias: Modify the likelihood of specified tokens appearing in the completion.
+        logit_bias: Modify the likelihood of specified tokens appearing in the completion.
 
             Accepts a JSON object that maps tokens (specified by their token ID in the
             tokenizer) to an associated bias value from -100 to 100. Mathematically, the
@@ -126,27 +126,27 @@ class OpenAIChat(BaseChat):
             effect will vary per model, but values between -1 and 1 should decrease or
             increase likelihood of selection; values like -100 or 100 should result in a ban
             or exclusive selection of the relevant token.
-        - logprobs: Whether to return log probabilities of the output tokens or not. If true,
+        logprobs: Whether to return log probabilities of the output tokens or not. If true,
             returns the log probabilities of each output token returned in the `content` of
             `message`. This option is currently not available on the `gpt-4-vision-preview`
             model.
-        - max_tokens: The maximum number of [tokens](/tokenizer) that can be generated in the chat
+        max_tokens: The maximum number of [tokens](/tokenizer) that can be generated in the chat
             completion.
 
             The total length of input tokens and generated tokens is limited by the model's
             context length.
             `Example Python code <https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken>`_
             for counting tokens.
-        - n: How many chat completion choices to generate for each input message. Note that
+        n: How many chat completion choices to generate for each input message. Note that
             you will be charged based on the number of generated tokens across all of the
             choices. Keep `n` as `1` to minimize costs.
-        - presence_penalty: Number between -2.0 and 2.0. Positive values penalize new tokens based on
+        presence_penalty: Number between -2.0 and 2.0. Positive values penalize new tokens based on
             whether they appear in the text so far, increasing the model's likelihood to
             talk about new topics.
 
             `See more information about frequency and presence penalties.
             <https://platform.openai.com/docs/guides/text-generation/parameter-details>`_
-        - response_format: An object specifying the format that the model must output. Compatible with
+        response_format: An object specifying the format that the model must output. Compatible with
             `gpt-4-1106-preview` and `gpt-3.5-turbo-1106`.
 
             Setting to `{ "type": "json_object" }` enables JSON mode, which guarantees the
@@ -159,25 +159,25 @@ class OpenAIChat(BaseChat):
             the message content may be partially cut off if `finish_reason="length"`, which
             indicates the generation exceeded `max_tokens` or the conversation exceeded the
             max context length.
-        - seed: This feature is in Beta. If specified, our system will make a best effort to
+        seed: This feature is in Beta. If specified, our system will make a best effort to
             sample deterministically, such that repeated requests with the same `seed` and
             parameters should return the same result. Determinism is not guaranteed, and you
             should refer to the `system_fingerprint` response parameter to monitor changes
             in the backend.
-        - stop: Up to 4 sequences where the API will stop generating further tokens.
-        - stream: If set, partial message deltas will be sent, like in ChatGPT. Tokens will be
+        stop: Up to 4 sequences where the API will stop generating further tokens.
+        stream: If set, partial message deltas will be sent, like in ChatGPT. Tokens will be
             sent as data-only
             `server-sent events
             <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events#Event_stream_format>`_
             as they become available, with the stream terminated by a `data: [DONE]`
             message.
             `Example Python code <https://cookbook.openai.com/examples/how_to_stream_completions>`_.
-        - temperature: What sampling temperature to use, between 0 and 2. Higher values like 0.8 will
+        temperature: What sampling temperature to use, between 0 and 2. Higher values like 0.8 will
             make the output more random, while lower values like 0.2 will make it more
             focused and deterministic.
 
             We generally recommend altering this or `top_p` but not both.
-        - tool_choice: Controls which (if any) function is called by the model. `none` means the model
+        tool_choice: Controls which (if any) function is called by the model. `none` means the model
             will not call a function and instead generates a message. `auto` means the model
             can pick between generating a message or calling a function. Specifying a
             particular function via
@@ -186,24 +186,24 @@ class OpenAIChat(BaseChat):
 
             `none` is the default when no functions are present. `auto` is the default if
             functions are present.
-        - tools: A list of tools the model may call. Currently, only functions are supported as a
+        tools: A list of tools the model may call. Currently, only functions are supported as a
             tool. Use this to provide a list of functions the model may generate JSON inputs
             for.
-        - top_logprobs: An integer between 0 and 5 specifying the number of most likely tokens to return
+        top_logprobs: An integer between 0 and 5 specifying the number of most likely tokens to return
             at each token position, each with an associated log probability. `logprobs` must
             be set to `true` if this parameter is used.
-        - top_p: An alternative to sampling with temperature, called nucleus sampling, where the
+        top_p: An alternative to sampling with temperature, called nucleus sampling, where the
             model considers the results of the tokens with top_p probability mass. So 0.1
             means only the tokens comprising the top 10% probability mass are considered.
 
             We generally recommend altering this or `temperature` but not both.
-        - user: A unique identifier representing your end-user, which can help OpenAI to monitor
+        user: A unique identifier representing your end-user, which can help OpenAI to monitor
             and detect abuse.
             `Learn more <https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids>`_.
-        - extra_headers: Send extra headers
-        - extra_query: Add additional query parameters to the request
-        - extra_body: Add additional JSON properties to the request
-        - timeout: Override the client-level default timeout for this request, in seconds
+        extra_headers: Send extra headers
+        extra_query: Add additional query parameters to the request
+        extra_body: Add additional JSON properties to the request
+        timeout: Override the client-level default timeout for this request, in seconds
 
 
     Any arguments can be provided either to the constructor or in the UDF call.
@@ -291,9 +291,9 @@ class OpenAIChat(BaseChat):
         """Sends messages to OpenAI Chat and returns response.
 
         Args:
-            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+            messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
                 to OpenAIChat
-            - **kwargs: override for defaults set in the constructor
+            **kwargs: override for defaults set in the constructor
         """
         return super().__call__(messages, **kwargs)
 
@@ -302,7 +302,7 @@ class OpenAIChat(BaseChat):
         If ``model`` is not set, return ``False``.
 
         Args:
-            - arg_name: Argument name to be checked.
+            arg_name: Argument name to be checked.
         """
 
         if self.model is None:
@@ -318,23 +318,23 @@ class LiteLLMChat(BaseChat):
     construction. All other arguments can be overridden during application.
 
     Args:
-        - capacity: Maximum number of concurrent operations allowed.
+        capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - model: ID of the model to use. Check the
+        model: ID of the model to use. Check the
             `providers supported by LiteLLM <https://docs.litellm.ai/docs/providers>`_
             for details on which models work with the LiteLLM API.
-        - api_base: API endpoint to be used for the call.
-        - api_version: API version to be used for the call. Only for Azure models.
-        - num_retries: The number of retries if the API call fails.
-        - context_window_fallback_dict: Mapping of fallback models to be used in case of context window error
-        - fallbacks: List of fallback models to be used if the initial call fails
-        - metadata: Additional data to be logged when the call is made.
+        api_base: API endpoint to be used for the call.
+        api_version: API version to be used for the call. Only for Azure models.
+        num_retries: The number of retries if the API call fails.
+        context_window_fallback_dict: Mapping of fallback models to be used in case of context window error
+        fallbacks: List of fallback models to be used if the initial call fails
+        metadata: Additional data to be logged when the call is made.
 
     For more information on provider specific arguments check the
     `LiteLLM documentation <https://docs.litellm.ai/docs/completion/input>`_.
@@ -414,9 +414,9 @@ class LiteLLMChat(BaseChat):
         """Sends messages to the LLM and returns response.
 
         Args:
-            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+            messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
                 to the LLM
-            - **kwargs: override for defaults set in the constructor
+            **kwargs: override for defaults set in the constructor
         """
         return super().__call__(messages, **kwargs)
 
@@ -425,7 +425,7 @@ class LiteLLMChat(BaseChat):
         If ``model`` is not set, return ``False``.
 
         Args:
-            - arg_name: Argument name to be checked.
+            arg_name: Argument name to be checked.
         """
 
         if self.model is None:
@@ -518,9 +518,9 @@ class HFPipelineChat(BaseChat):
         """Sends messages to the LLM and returns response.
 
         Args:
-            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
+            messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send
                 to the LLM
-            - **kwargs: override for defaults set in the constructor
+            **kwargs: override for defaults set in the constructor
         """
         return super().__call__(messages, **kwargs)
 
@@ -532,7 +532,7 @@ class HFPipelineChat(BaseChat):
         for example, ``logit_bias`` can be set with ``sequence_bias``.
 
         Args:
-            - arg_name: Argument name to be checked.
+            arg_name: Argument name to be checked.
         """
 
         if self.model is None:
@@ -552,15 +552,15 @@ class CohereChat(BaseChat):
     construction. All other arguments can be overridden during application.
 
     Args:
-        - capacity: Maximum number of concurrent operations allowed.
+        capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - model: name of the model to use. Check the
+        model: name of the model to use. Check the
             `available models <https://docs.cohere.com/docs/command-beta>`_
             for details.
 
@@ -660,11 +660,11 @@ class CohereChat(BaseChat):
         """Sends messages to Cohere Chat and returns response.
 
         Args:
-            - messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send.
+            messages (ColumnExpression[list[dict] | pw.Json]): Column with messages to send.
                 to the LLM
-            - documents (ColumnExpression[list[dict] | pw.Json | tuple] | None): Column with context
+            documents (ColumnExpression[list[dict] | pw.Json | tuple] | None): Column with context
                 documents to be sent to Cohere Chat. This argument is optional.
-            - **kwargs: override for defaults set in the constructor.
+            **kwargs: override for defaults set in the constructor.
         """
         return super().__call__(messages, documents, **kwargs)
 
@@ -673,7 +673,7 @@ class CohereChat(BaseChat):
         If ``model`` is not set, return ``False``.
 
         Args:
-            - arg_name: Argument name to be checked.
+            arg_name: Argument name to be checked.
         """
 
         if self.model is None:

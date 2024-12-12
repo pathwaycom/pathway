@@ -66,7 +66,7 @@ class BaseEmbedder(pw.UDF):
         """Computes number of embedder's dimensions by asking the embedder to embed ``"."``.
 
         Args:
-            - **kwargs: parameters of the embedder, if unset defaults from the constructor
+            **kwargs: parameters of the embedder, if unset defaults from the constructor
               will be taken.
         """
         return len(_coerce_sync(self.__wrapped__)(".", **kwargs))
@@ -77,7 +77,7 @@ class BaseEmbedder(pw.UDF):
         """Embeds texts in a Column.
 
         Args:
-            - input (ColumnExpression[str]): Column with texts to embed
+            input (ColumnExpression[str]): Column with texts to embed
         """
         return super().__call__(input, *args, **kwargs)
 
@@ -89,28 +89,28 @@ class OpenAIEmbedder(BaseEmbedder):
     construction. All other arguments can be overridden during application.
 
     Args:
-        - capacity: Maximum number of concurrent operations allowed.
+        capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - model: ID of the model to use. You can use the
+        model: ID of the model to use. You can use the
             `List models <https://platform.openai.com/docs/api-reference/models/list>`_ API to
             see all of your available models, or see
             `Model overview <https://platform.openai.com/docs/models/overview>`_ for
             descriptions of them.
-        - encoding_format: The format to return the embeddings in. Can be either `float` or
+        encoding_format: The format to return the embeddings in. Can be either `float` or
             `base64 <https://pypi.org/project/pybase64/>`_.
-        - user: A unique identifier representing your end-user, which can help OpenAI to monitor
+        user: A unique identifier representing your end-user, which can help OpenAI to monitor
             and detect abuse.
             `Learn more <https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids>`_.
-        - extra_headers: Send extra headers
-        - extra_query: Add additional query parameters to the request
-        - extra_body: Add additional JSON properties to the request
-        - timeout: Timeout for requests, in seconds
+        extra_headers: Send extra headers
+        extra_query: Add additional query parameters to the request
+        extra_body: Add additional JSON properties to the request
+        timeout: Timeout for requests, in seconds
 
     Any arguments can be provided either to the constructor or in the UDF call.
     To specify the `model` in the UDF call, set it to None.
@@ -164,8 +164,8 @@ class OpenAIEmbedder(BaseEmbedder):
         """Embed the documents
 
         Args:
-            - input: mandatory, the string to embed.
-            - **kwargs: optional parameters, if unset defaults from the constructor
+            input: mandatory, the string to embed.
+            **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
         import openai
@@ -185,24 +185,24 @@ class LiteLLMEmbedder(BaseEmbedder):
     during object construction. All other arguments can be overridden during application.
 
     Args:
-        - capacity: Maximum number of concurrent operations allowed.
+        capacity: Maximum number of concurrent operations allowed.
             Defaults to None, indicating no specific limit.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - model: The embedding model to use.
-        - timeout: The timeout value for the API call, default 10 mins
-        - litellm_call_id: The call ID for litellm logging.
-        - litellm_logging_obj: The litellm logging object.
-        - logger_fn: The logger function.
-        - api_base: Optional. The base URL for the API.
-        - api_version: Optional. The version of the API.
-        - api_key: Optional. The API key to use.
-        - api_type: Optional. The type of the API.
-        - custom_llm_provider: The custom llm provider.
+        model: The embedding model to use.
+        timeout: The timeout value for the API call, default 10 mins
+        litellm_call_id: The call ID for litellm logging.
+        litellm_logging_obj: The litellm logging object.
+        logger_fn: The logger function.
+        api_base: Optional. The base URL for the API.
+        api_version: Optional. The version of the API.
+        api_key: Optional. The API key to use.
+        api_type: Optional. The type of the API.
+        custom_llm_provider: The custom llm provider.
 
     Any arguments can be provided either to the constructor or in the UDF call.
     To specify the `model` in the UDF call, set it to None.
@@ -256,8 +256,8 @@ class LiteLLMEmbedder(BaseEmbedder):
         """Embed the documents
 
         Args:
-            - input: mandatory, the string to embed.
-            - **kwargs: optional parameters, if unset defaults from the constructor
+            input: mandatory, the string to embed.
+            **kwargs: optional parameters, if unset defaults from the constructor
               will be taken.
         """
         import litellm
@@ -317,8 +317,8 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         Embed the text
 
         Args:
-            - input: mandatory, the string to embed.
-            - **kwargs: optional parameters for `encode` method. If unset defaults from the constructor
+            input: mandatory, the string to embed.
+            **kwargs: optional parameters for `encode` method. If unset defaults from the constructor
               will be taken. For possible arguments check
               `the Sentence-Transformers documentation
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
@@ -334,20 +334,20 @@ class GeminiEmbedder(BaseEmbedder):
     construction. All other arguments can be overridden during application.
 
     Args:
-        - capacity: Maximum number of concurrent operations allowed.
+        capacity: Maximum number of concurrent operations allowed.
             Defaults to ``None``, indicating no specific limit.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to ``None``, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid ``CacheStrategy`` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - model: ID of the model to use. Check the
+        model: ID of the model to use. Check the
             `Gemini documentation <https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding>`_
             for list of available models. To specify the `model` in the UDF call, set it to None in the constructor.
-        - api_key: API key for Gemini API services. Can be provided in the constructor,
+        api_key: API key for Gemini API services. Can be provided in the constructor,
             in ``__call__`` or by setting ``GOOGLE_API_KEY`` environment variable
-        - gemini_kwargs: any other arguments accepted by gemini embedding service. Check
+        gemini_kwargs: any other arguments accepted by gemini embedding service. Check
             the `Gemini documentation <https://ai.google.dev/api/embeddings#method:-models.embedcontent>`_
             for list of accepted arguments.
 

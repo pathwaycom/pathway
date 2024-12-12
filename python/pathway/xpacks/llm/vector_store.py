@@ -40,11 +40,11 @@ class VectorStoreServer:
     Builds a document indexing pipeline and starts an HTTP REST server for nearest neighbors queries.
 
     Args:
-        - docs: pathway tables typically coming out of connectors which contain source documents.
-        - embedder: callable that embeds a single document
-        - parser: callable that parses file contents into a list of documents
-        - splitter: callable that splits long documents
-        - doc_post_processors: optional list of callables that modify parsed files and metadata.
+        docs: pathway tables typically coming out of connectors which contain source documents.
+        embedder: callable that embeds a single document
+        parser: callable that parses file contents into a list of documents
+        splitter: callable that splits long documents
+        doc_post_processors: optional list of callables that modify parsed files and metadata.
             any callable takes two arguments (text: str, metadata: dict) and returns them as a tuple.
     """
 
@@ -101,10 +101,10 @@ class VectorStoreServer:
         Initializes VectorStoreServer by using LangChain components.
 
         Args:
-            - docs: pathway tables typically coming out of connectors which contain source documents
-            - embedder: Langchain component for embedding documents
-            - parser: callable that parses file contents into a list of documents
-            - splitter: Langchaing component for splitting documents into parts
+            docs: pathway tables typically coming out of connectors which contain source documents
+            embedder: Langchain component for embedding documents
+            parser: callable that parses file contents into a list of documents
+            splitter: Langchaing component for splitting documents into parts
         """
         try:
             from langchain_core.documents import Document
@@ -144,10 +144,10 @@ class VectorStoreServer:
         Initializes VectorStoreServer by using LlamaIndex TransformComponents.
 
         Args:
-            - docs: pathway tables typically coming out of connectors which contain source documents
-            - transformations: list of LlamaIndex components. The last component in this list
+            docs: pathway tables typically coming out of connectors which contain source documents
+            transformations: list of LlamaIndex components. The last component in this list
                 is required to inherit from LlamaIndex `BaseEmbedding`
-            - parser: callable that parses file contents into a list of documents
+            parser: callable that parses file contents into a list of documents
         """
         try:
             from llama_index.core.base.embeddings.base import BaseEmbedding
@@ -468,16 +468,16 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         Builds the document processing pipeline and runs it.
 
         Args:
-            - host: host to bind the HTTP listener
-            - port: to bind the HTTP listener
-            - threaded: if True, run in a thread. Else block computation
-            - with_cache: if True, embedding requests for the same contents are cached
-            - cache_backend: the backend to use for caching if it is enabled. The
+            host: host to bind the HTTP listener
+            port: to bind the HTTP listener
+            threaded: if True, run in a thread. Else block computation
+            with_cache: if True, embedding requests for the same contents are cached
+            cache_backend: the backend to use for caching if it is enabled. The
               default is the disk cache, hosted locally in the folder ``./Cache``. You
               can use ``Backend`` class of the
               [`persistence API`](/developers/api-docs/persistence-api/#pathway.persistence.Backend)
               to override it.
-            - kwargs: optional parameters to be passed to :py:func:`~pathway.run`.
+            kwargs: optional parameters to be passed to :py:func:`~pathway.run`.
 
         Returns:
             If threaded, return the Thread object. Else, does not return.

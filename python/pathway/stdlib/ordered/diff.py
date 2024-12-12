@@ -19,11 +19,11 @@ def diff(
 
     Args:
 
-        - timestamp (pw.ColumnReference[int | float | datetime | str | bytes]):
+        timestamp (pw.ColumnReference[int | float | datetime | str | bytes]):
             The column reference to the ``timestamp`` column on which the order is computed.
-        - *values (pw.ColumnReference[int | float | datetime]):
+        *values (pw.ColumnReference[int | float | datetime]):
             Variable-length argument representing the column references to the ``values`` columns.
-        - instance (pw.ColumnReference):
+        instance (pw.ColumnReference):
             Can be used to group the values. The difference is only computed between rows with
             the same ``instance`` value.
 

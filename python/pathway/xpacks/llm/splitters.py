@@ -115,7 +115,7 @@ class TokenCountSplitter(pw.UDF):
         """Split given strings into smaller chunks.
 
         Args:
-            - messages (ColumnExpression[str]): Column with texts to be split
-            - **kwargs: override for defaults set in the constructor
+            messages (ColumnExpression[str]): Column with texts to be split
+            **kwargs: override for defaults set in the constructor
         """
         return super().__call__(text, **kwargs)

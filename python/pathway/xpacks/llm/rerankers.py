@@ -18,10 +18,10 @@ def rerank_topk_filter(
     """Apply top-k filtering to docs using the relevance scores.
 
     Args:
-        - docs: A column with lists of  documents or chunks to rank. Each row in this column
+        docs: A column with lists of  documents or chunks to rank. Each row in this column
             is filtered separately.
-        - scores: A column with lists of re-ranking scores for chunks.
-        - k: The number of documents to keep after filtering.
+        scores: A column with lists of re-ranking scores for chunks.
+        k: The number of documents to keep after filtering.
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import rerankers
@@ -61,14 +61,14 @@ class LLMReranker(pw.UDF):
     Asks LLM to evaluate a given doc against a query between 1 and 5.
 
     Args:
-        - llm: Chat instance to be called during reranking.
-        - retry_strategy: Strategy for handling retries in case of failures.
+        llm: Chat instance to be called during reranking.
+        retry_strategy: Strategy for handling retries in case of failures.
             Defaults to None, meaning no retries.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
-        - use_logit_bias: bool or None. Setting it as `None` checks if the LLM provider supports
+        use_logit_bias: bool or None. Setting it as `None` checks if the LLM provider supports
             `logit_bias` argument, it can be overridden by setting it as `True` or `False`.
             Defaults to `None`.
 
@@ -175,10 +175,10 @@ class LLMReranker(pw.UDF):
         """Evaluates the doc against the query.
 
         Args:
-            - doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
-            - query (pw.ColumnExpression[str]): User query or prompt that will be used
+            doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
+            query (pw.ColumnExpression[str]): User query or prompt that will be used
                 to evaluate relevance of the doc.
-            - **kwargs: override for defaults set in the constructor
+            **kwargs: override for defaults set in the constructor
         """
         return super().__call__(doc, query, **kwargs)
 
@@ -190,8 +190,8 @@ class CrossEncoderReranker(pw.UDF):
     For reference, check out `Cross encoders documentation <https://www.sbert.net/docs/pretrained_cross-encoders.html>`_
 
     Args:
-        - model_name: Embedding model to be used.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        model_name: Embedding model to be used.
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
@@ -240,10 +240,10 @@ class CrossEncoderReranker(pw.UDF):
         """Evaluates the doc against the query.
 
         Args:
-            - doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
-            - query (pw.ColumnExpression[str]): User query or prompt that will be used
+            doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
+            query (pw.ColumnExpression[str]): User query or prompt that will be used
                 to evaluate relevance of the doc.
-            - **kwargs: override for defaults set in the constructor.
+            **kwargs: override for defaults set in the constructor.
         """
         return super().__call__(doc, query, **kwargs)
 
@@ -255,8 +255,8 @@ class EncoderReranker(pw.UDF):
     For reference, check out `Pretrained models documentation <https://www.sbert.net/docs/pretrained_models.html>`_
 
     Args:
-        - model_name: Embedding model to be used.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        model_name: Embedding model to be used.
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid `CacheStrategy` should be provided.
             See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
             for more information. Defaults to None.
@@ -308,10 +308,10 @@ class EncoderReranker(pw.UDF):
         """Evaluates the doc against the query.
 
         Args:
-            - doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
-            - query (pw.ColumnExpression[str]): User query or prompt that will be used
+            doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
+            query (pw.ColumnExpression[str]): User query or prompt that will be used
                 to evaluate relevance of the doc.
-            - **kwargs: override for defaults set in the constructor.
+            **kwargs: override for defaults set in the constructor.
         """
         return super().__call__(doc, query, **kwargs)
 

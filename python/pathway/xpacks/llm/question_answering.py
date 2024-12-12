@@ -819,11 +819,11 @@ class RAGClient:
     Either (`host` and `port`) or `url` must be set.
 
     Args:
-        - host: The host of the RAG service.
-        - port: The port of the RAG service.
-        - url: The URL of the RAG service.
-        - timeout: Timeout for requests in seconds. Defaults to 90.
-        - additional_headers: Additional headers for the requests.
+        host: The host of the RAG service.
+        port: The port of the RAG service.
+        url: The URL of the RAG service.
+        timeout: Timeout for requests in seconds. Defaults to 90.
+        additional_headers: Additional headers for the requests.
     """
 
     def __init__(
@@ -867,11 +867,11 @@ class RAGClient:
         Retrieve closest documents from the vector store based on a query.
 
         Args:
-            - query: The query string.
-            - k: The number of results to retrieve.
-            - metadata_filter: Optional metadata filter for the documents. Defaults to `None`, which
+            query: The query string.
+            k: The number of results to retrieve.
+            metadata_filter: Optional metadata filter for the documents. Defaults to `None`, which
                 means there will be no filter.
-            - filepath_globpattern: Glob pattern for file paths.
+            filepath_globpattern: Glob pattern for file paths.
         """
         return self.index_client.query(
             query=query,
@@ -898,10 +898,10 @@ class RAGClient:
         Return RAG answer based on a given prompt and optional filter.
 
         Args:
-            - prompt: Question to be asked.
-            - filters: Optional metadata filter for the documents. Defaults to ``None``, which
+            prompt: Question to be asked.
+            filters: Optional metadata filter for the documents. Defaults to ``None``, which
                 means there will be no filter.
-            - model: Optional LLM model. If ``None``, app default will be used by the server.
+            model: Optional LLM model. If ``None``, app default will be used by the server.
         """
         api_url = f"{self.url}/v1/pw_ai_answer"
         payload = {
@@ -926,8 +926,8 @@ class RAGClient:
         Summarize a list of texts.
 
         Args:
-            - text_list: List of texts to summarize.
-            - model: Optional LLM model. If ``None``, app default will be used by the server.
+            text_list: List of texts to summarize.
+            model: Optional LLM model. If ``None``, app default will be used by the server.
         """
         api_url = f"{self.url}/v1/pw_ai_summary"
         payload: dict = {
@@ -945,8 +945,8 @@ class RAGClient:
         List indexed documents from the vector store with optional filtering.
 
         Args:
-            - filters: Optional metadata filter for the documents.
-            - keys: List of metadata keys to be included in the response.
+            filters: Optional metadata filter for the documents.
+            keys: List of metadata keys to be included in the response.
                 Defaults to ``["path"]``. Setting to ``None`` will retrieve all available metadata.
         """
         api_url = f"{self.url}/v1/pw_list_documents"

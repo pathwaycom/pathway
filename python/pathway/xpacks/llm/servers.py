@@ -98,11 +98,11 @@ class DocumentStoreServer(BaseRestServer):
     - ``/v1/inputs`` which is answered using ``list_documents`` method,
 
     Args:
-        - host: host on which server will run
-        - port: port on which server will run
-        - document_store: instance of ``DocumentStore`` which is used
+        host: host on which server will run
+        port: port on which server will run
+        document_store: instance of ``DocumentStore`` which is used
             to answer queries received in the endpoints.
-        - rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
+        rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
     """
 
     def __init__(
@@ -147,11 +147,11 @@ class QARestServer(BaseRestServer):
     - ``/v1/pw_ai_answer`` which is answered using ``answer_query`` method,
 
     Args:
-        - host: host on which server will run
-        - port: port on which server will run
-        - rag_question_answerer: instance of ``BaseQuestionAnswerer`` which is used
+        host: host on which server will run
+        port: port on which server will run
+        rag_question_answerer: instance of ``BaseQuestionAnswerer`` which is used
             to answer queries received in the endpoints.
-        - rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
+        rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
     """
 
     def __init__(
@@ -201,11 +201,11 @@ class QASummaryRestServer(QARestServer):
     - ``/v1/pw_ai_summary`` which is answered using ``summarize_query`` method.
 
     Args:
-        - host: host on which server will run
-        - port: port on which server will run
-        - rag_question_answerer: instance of ``SummaryQuestionAnswerer`` which is used
+        host: host on which server will run
+        port: port on which server will run
+        rag_question_answerer: instance of ``SummaryQuestionAnswerer`` which is used
             to answer queries received in the endpoints.
-        - rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
+        rest_kwargs: optional kwargs to be passed to ``pw.io.http.rest_connector``
     """
 
     def __init__(

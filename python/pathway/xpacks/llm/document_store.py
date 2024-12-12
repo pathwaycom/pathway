@@ -35,17 +35,17 @@ class DocumentStore:
     to a query according to a specified index.
 
     Args:
-        - docs: pathway tables typically coming out of connectors which contain source documents.
+        docs: pathway tables typically coming out of connectors which contain source documents.
             The table needs to contain a ``data`` column of type bytes - usually by setting
             format of the connector to be ``"raw""``. Optionally, it can contain
             a ``_metadata`` column containing a dictionary with metadata which is then
             used for filters. Some connectors offer ``with_metadata`` argument for returning
             ``_metadata`` column.
-        - retriever_factory: factory for building an index, which will be provided
+        retriever_factory: factory for building an index, which will be provided
             texts by the ``DocumentStore``.
-        - parser: callable that parses file contents into a list of documents.
-        - splitter: callable that splits long documents.
-        - doc_post_processors: optional list of callables that modify parsed files and metadata.
+        parser: callable that parses file contents into a list of documents.
+        splitter: callable that splits long documents.
+        doc_post_processors: optional list of callables that modify parsed files and metadata.
             any callable takes two arguments (text: str, metadata: dict) and returns them as a tuple.
     """
 
@@ -96,11 +96,11 @@ class DocumentStore:
         Initializes DocumentStore by using LangChain components.
 
         Args:
-            - docs: pathway tables typically coming out of connectors which contain source documents
-            - retriever_factory: factory for building an index, which will be provided
+            docs: pathway tables typically coming out of connectors which contain source documents
+            retriever_factory: factory for building an index, which will be provided
                 texts by the ``DocumentStore``.
-            - parser: callable that parses file contents into a list of documents
-            - splitter: Langchaing component for splitting documents into parts
+            parser: callable that parses file contents into a list of documents
+            splitter: Langchain component for splitting documents into parts
         """
         try:
             from langchain_core.documents import Document
@@ -137,11 +137,11 @@ class DocumentStore:
         Initializes DocumentStore by using LlamaIndex TransformComponents.
 
         Args:
-            - docs: pathway tables typically coming out of connectors which contain source documents
-            - retriever_factory: factory for building an index, which will be provided
+            docs: pathway tables typically coming out of connectors which contain source documents
+            retriever_factory: factory for building an index, which will be provided
                 texts by the ``DocumentStore``.
-            - transformations: list of LlamaIndex components.
-            - parser: callable that parses file contents into a list of documents
+            transformations: list of LlamaIndex components.
+            parser: callable that parses file contents into a list of documents
         """
         try:
             from llama_index.core.ingestion.pipeline import run_transformations

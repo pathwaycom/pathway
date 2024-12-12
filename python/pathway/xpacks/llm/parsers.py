@@ -64,7 +64,7 @@ class ParseUtf8(pw.UDF):
         Parse the given document.
 
         Args:
-            - contents: document contents
+            contents: document contents
 
         Returns:
             A column with a list of pairs for each query. Each pair is a text chunk and
@@ -83,12 +83,12 @@ class ParseUnstructured(pw.UDF):
     All arguments can be overridden during UDF application.
 
     Args:
-        - mode: single, elements or paged.
+        mode: single, elements or paged.
           When single, each document is parsed as one long text string.
           When elements, each document is split into unstructured's elements.
           When paged, each pages's text is separately extracted.
-        - post_processors: list of callables that will be applied to all extracted texts.
-        - **unstructured_kwargs: extra kwargs to be passed to unstructured.io's `partition` function
+        post_processors: list of callables that will be applied to all extracted texts.
+        **unstructured_kwargs: extra kwargs to be passed to unstructured.io's `partition` function
     """
 
     def __init__(
@@ -135,8 +135,8 @@ class ParseUnstructured(pw.UDF):
         Parse the given document:
 
         Args:
-            - contents: document contents
-            - **kwargs: override for defaults set in the constructor
+            contents: document contents
+            **kwargs: override for defaults set in the constructor
 
         Returns:
             a list of pairs: text chunk and metadata
@@ -218,8 +218,8 @@ class ParseUnstructured(pw.UDF):
         Parse the given document.
 
         Args:
-            - contents: document contents
-            - **kwargs: override for defaults set in the constructor
+            contents: document contents
+            **kwargs: override for defaults set in the constructor
 
         Returns:
             A column with a list of pairs for each query. Each pair is a text chunk and
@@ -242,23 +242,23 @@ class OpenParse(pw.UDF):
     splitter can be set to ``None`` as OpenParse already chunks the documents.
 
     Args:
-        - table_args: dictionary containing the table parser arguments. Needs to have key ``parsing_algorithm``,
+        table_args: dictionary containing the table parser arguments. Needs to have key ``parsing_algorithm``,
             with the value being one of ``"llm"``, ``"unitable"``, ``"pymupdf"``, ``"table-transformers"``.
             ``"llm"`` parameter can be specified to modify the vision LLM used for parsing.
             Will default to ``OpenAI`` ``gpt-4o``, with markdown table parsing prompt.
             Default config requires ``OPENAI_API_KEY`` environment variable to be set.
             For information on other parsing algorithms and supported arguments check
             `the OpenParse documentation <https://filimoa.github.io/open-parse/processing/parsing-tables/overview/>`_.
-        - image_args: dictionary containing the image parser arguments.
+        image_args: dictionary containing the image parser arguments.
             Needs to have the following keys ``parsing_algorithm``, ``llm``, ``prompt``.
             Currently, only supported ``parsing_algorithm`` is ``"llm"``.
             ``"llm"`` parameter can be specified to modify the vision LLM used for parsing.
             Will default to ``OpenAI`` ``gpt-4o``, with markdown image parsing prompt.
             Default config requires ``OPENAI_API_KEY`` environment variable to be set.
-        - parse_images: whether to parse the images from the PDF. Detected images will be
+        parse_images: whether to parse the images from the PDF. Detected images will be
             indexed by their description from the parsing algorithm.
             Note that images are parsed with separate OCR model, parsing may take a while.
-        - processing_pipeline: str or IngestionPipeline.
+        processing_pipeline: str or IngestionPipeline.
             Specifies the pipeline used for post-processing extracted elements.
             - ``"pathway_pdf_default"``: Uses ``SimpleIngestionPipeline`` from Pathway.
             This is a simple processor that combines close elements, combines the headers
@@ -268,7 +268,7 @@ class OpenParse(pw.UDF):
             - ``"merge_same_page"``: Uses ``SamePageIngestionPipeline`` to chunk based on pages.
             - Any other pipeline from the ``openparse.processing`` can also be used.
             Defaults to ``SimpleIngestionPipeline``.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
 
@@ -384,7 +384,7 @@ class OpenParse(pw.UDF):
         Parse the given PDFs.
 
         Args:
-            - contents (ColumnExpression[bytes]): A column with PDFs to be parsed, passed as bytes.
+            contents (ColumnExpression[bytes]): A column with PDFs to be parsed, passed as bytes.
 
         Returns:
             A column with a list of pairs for each query. Each pair is a text chunk and
@@ -398,24 +398,24 @@ class ImageParser(pw.UDF):
     A class to parse images using vision LLMs.
 
     Args:
-        - llm (pw.UDF): LLM for parsing the image. Provided LLM should support image inputs.
-        - parse_prompt: The prompt used by the language model for parsing.
-        - detail_parse_schema: A schema for detailed parsing, if applicable.
+        llm (pw.UDF): LLM for parsing the image. Provided LLM should support image inputs.
+        parse_prompt: The prompt used by the language model for parsing.
+        detail_parse_schema: A schema for detailed parsing, if applicable.
             Providing a Pydantic schema will call the LLM second time to parse necessary information,
             leaving it as None will skip this step.
-        - downsize_horizontal_width: Width to which images are downsized if necessary.
+        downsize_horizontal_width: Width to which images are downsized if necessary.
             Default is 1920.
-        - include_schema_in_text: If the parsed schema should be included in the ``text`` description.
+        include_schema_in_text: If the parsed schema should be included in the ``text`` description.
             May help with search and retrieval. Defaults to ``False``. Only usable if ``detail_parse_schema``
             is provided.
-        - max_image_size: Maximum allowed size of the images in bytes. Default is 15 MB.
-        - run_mode: Mode of execution,
+        max_image_size: Maximum allowed size of the images in bytes. Default is 15 MB.
+        run_mode: Mode of execution,
             either ``"sequential"`` or ``"parallel"``. Default is ``"parallel"``.
             ``"parallel"`` mode is suggested for speed, but if timeouts or memory usage in local LLMs are concern,
             ``"sequential"`` may be better.
-        - retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
+        retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
             propriety LLMs is strongly suggested.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
     """
@@ -574,27 +574,27 @@ class SlideParser(pw.UDF):
     Get your license `here <https://pathway.com/get-license>`_ to gain access.
 
     Args:
-        - llm: LLM for parsing the image. Provided LLM should support image inputs.
-        - parse_prompt: The prompt used by the language model for parsing.
-        - detail_parse_schema: A schema for detailed parsing, if applicable.
+        llm: LLM for parsing the image. Provided LLM should support image inputs.
+        parse_prompt: The prompt used by the language model for parsing.
+        detail_parse_schema: A schema for detailed parsing, if applicable.
             Providing a Pydantic schema will call the LLM second time to parse necessary information,
             leaving it as None will skip this step.
-        - include_schema_in_text: If the parsed schema should be included in the ``text`` description.
+        include_schema_in_text: If the parsed schema should be included in the ``text`` description.
             May help with search and retrieval. Defaults to ``False``.
             Only usable if ``detail_parse_schema`` is provided.
-        - intermediate_image_format: Intermediate image format used when converting PDFs to images.
+        intermediate_image_format: Intermediate image format used when converting PDFs to images.
             Defaults to ``"jpg"`` for speed and memory use.
-        - image_size (tuple[int, int], optional): The target size of the images. Default is (1280, 720).
+        image_size (tuple[int, int], optional): The target size of the images. Default is (1280, 720).
             Note that setting higher resolution will increase the cost and latency.
             Since vision LLMs will resize the given image into certain resolution, setting high resolutions
             may not help with the accuracy.
-        - run_mode: Mode of execution,
+        run_mode: Mode of execution,
             either ``"sequential"`` or ``"parallel"``. Default is ``"parallel"``.
             ``"parallel"`` mode is suggested for speed, but if timeouts or memory usage in local LLMs are concern,
             ``"sequential"`` may be better.
-        - retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
+        retry_strategy: Retrying strategy for the LLM calls. Defining a retrying strategy with
             propriety LLMs is strongly suggested.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
     """
@@ -749,8 +749,8 @@ class PypdfParser(pw.UDF):
     Optionally, applies additional text cleanups for readability.
 
     Args:
-        - apply_text_cleanup: Apply text cleanup for line breaks and repeated spaces.
-        - cache_strategy: Defines the caching mechanism. To enable caching,
+        apply_text_cleanup: Apply text cleanup for line breaks and repeated spaces.
+        cache_strategy: Defines the caching mechanism. To enable caching,
             a valid :py:class:``~pathway.udfs.CacheStrategy`` should be provided.
             Defaults to None.
     """
@@ -836,18 +836,18 @@ async def parse_images(
     `parse_prompt` will be only used for the regular parsing.
 
     Args:
-        - images: Image list to be parsed. Images are expected to be `PIL.Image.Image`.
-        - llm: LLM model to be used for parsing. Needs to support image input.
-        - parse_details: Whether to make second LLM call to parse specific Pydantic
+        images: Image list to be parsed. Images are expected to be `PIL.Image.Image`.
+        llm: LLM model to be used for parsing. Needs to support image input.
+        parse_details: Whether to make second LLM call to parse specific Pydantic
             model from the image.
-        - run_mode: Mode of execution,
+        run_mode: Mode of execution,
             either ``"sequential"`` or ``"parallel"``. Default is ``"parallel"``.
             ``"parallel"`` mode is suggested for speed, but if timeouts or memory usage in local LLMs are concern,
             ``"sequential"`` may be better.
-        - parse_details: Whether a schema should be parsed.
-        - detail_parse_schema: Pydantic model for schema to be parsed.
-        - parse_fn: Awaitable image parsing function.
-        - parse_image_details_fn: Awaitable image schema parsing function.
+        parse_details: Whether a schema should be parsed.
+        detail_parse_schema: Pydantic model for schema to be parsed.
+        parse_fn: Awaitable image parsing function.
+        parse_image_details_fn: Awaitable image schema parsing function.
 
     """
     logger.info("`parse_images` converting images to base64.")
