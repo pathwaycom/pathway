@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import time
 
 import pathway as pw
@@ -154,6 +153,7 @@ class _SharePointSubject(ConnectorSubject):
         with_metadata,
         recursive,
         object_size_limit,
+        max_failed_attempts_in_row,
     ):
         _check_entitlements("xpack-sharepoint")
         super().__init__()
@@ -165,6 +165,7 @@ class _SharePointSubject(ConnectorSubject):
         self._recursive = recursive
         self._object_size_limit = object_size_limit
         self._stored_metadata = {}
+        self._max_failed_attempts_in_row = max_failed_attempts_in_row
 
     @property
     def _session_type(self) -> api.SessionType:
@@ -183,6 +184,7 @@ class _SharePointSubject(ConnectorSubject):
         return self._context_wrapper.context
 
     def run(self) -> None:
+        n_failed_attempts_in_row = 0
         while True:
             try:
                 _url = urlparse(self._context_wrapper._url)
@@ -195,11 +197,15 @@ class _SharePointSubject(ConnectorSubject):
                     common_metadata={"base_url": f"{_url.scheme}://{_url.netloc}"},
                 )
                 diff = scanner.get_snapshot_diff()
+                n_failed_attempts_in_row = 0
             except Exception as e:
-                print(
-                    f"Failed to get snapshot diff: {e}. Retrying in {self._refresh_interval} seconds...",
-                    file=sys.stderr,
+                n_failed_attempts_in_row += 1
+                if n_failed_attempts_in_row == self._max_failed_attempts_in_row:
+                    raise
+                logging.error(
+                    f"Failed to get snapshot diff: {e}. Retrying in {self._refresh_interval} seconds..."
                 )
+                time.sleep(self._refresh_interval)
                 continue
 
             for deleted_path in diff.deleted_entries:
@@ -259,6 +265,7 @@ def read(
     object_size_limit: int | None = None,
     with_metadata: bool = False,
     refresh_interval: int = 30,
+    max_failed_attempts_in_row: int | None = 8,
 ) -> Table:
     """Reads a table from a directory or a file in Microsoft SharePoint site.
     Requires a valid Pathway Scale license key.
@@ -291,6 +298,9 @@ named `_metadata` to the table. This column will contain file metadata, such as:
 as UNIX timestamps;
         refresh_interval: Time in seconds between scans. Applicable if mode is set to\
 'streaming'.
+        max_failed_attempts_in_row: The maximum number of consecutive read errors before\
+the connector terminates with an error. If set to ``None``, the connector tries to read\
+data indefinitely, regardless of possible errors in the provided credentials.
 
     Returns:
         The table read.
@@ -360,6 +370,7 @@ you can configure the connector this way:
         with_metadata=with_metadata,
         recursive=recursive,
         object_size_limit=object_size_limit,
+        max_failed_attempts_in_row=max_failed_attempts_in_row,
     )
 
     return pw.io.python.read(subject, format="binary", name="sharepoint")
