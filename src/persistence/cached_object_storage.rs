@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::metadata::FileLikeMetadata;
 use crate::persistence::backends::{Error as PersistenceError, PersistenceBackend};
 
 pub type CachedObjectVersion = u64;
@@ -17,7 +17,7 @@ const EMPTY_STORAGE_VERSION: CachedObjectVersion = 0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum EventType {
-    Update(SourceMetadata),
+    Update(FileLikeMetadata),
     Delete,
 }
 
@@ -87,7 +87,7 @@ pub struct CachedObjectStorage {
     backend: Box<dyn PersistenceBackend>,
     event_by_version: HashMap<CachedObjectVersion, MetadataEvent>,
     versions_by_uri: HashMap<Uri, Vec<CachedObjectVersion>>,
-    snapshot: HashMap<Uri, SourceMetadata>,
+    snapshot: HashMap<Uri, FileLikeMetadata>,
     current_version: CachedObjectVersion,
 }
 
@@ -237,7 +237,7 @@ impl CachedObjectStorage {
         &mut self,
         uri: &[u8],
         contents: Vec<u8>,
-        metadata: SourceMetadata,
+        metadata: FileLikeMetadata,
     ) -> Result<(), PersistenceError> {
         let version = self.next_available_version();
         let object_key = Self::cached_object_path(version);
@@ -270,11 +270,11 @@ impl CachedObjectStorage {
         self.snapshot.contains_key(uri)
     }
 
-    pub fn get_iter(&self) -> Iter<Uri, SourceMetadata> {
+    pub fn get_iter(&self) -> Iter<Uri, FileLikeMetadata> {
         self.snapshot.iter()
     }
 
-    pub fn stored_metadata(&self, uri: &[u8]) -> Option<&SourceMetadata> {
+    pub fn stored_metadata(&self, uri: &[u8]) -> Option<&FileLikeMetadata> {
         self.snapshot.get(uri)
     }
 
@@ -297,7 +297,7 @@ impl CachedObjectStorage {
     fn construct_snapshot(
         event_by_version: &HashMap<CachedObjectVersion, MetadataEvent>,
         versions_by_uri: &HashMap<Uri, Vec<CachedObjectVersion>>,
-    ) -> HashMap<Uri, SourceMetadata> {
+    ) -> HashMap<Uri, FileLikeMetadata> {
         let mut snapshot = HashMap::new();
         for versions in versions_by_uri.values() {
             let last_version = versions[versions.len() - 1];

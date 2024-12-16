@@ -13,7 +13,7 @@ use crate::timestamp::current_unix_timestamp_secs;
 /// Basic metadata for a file-like object
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Ord, PartialOrd)]
-pub struct SourceMetadata {
+pub struct FileLikeMetadata {
     // Creation and modification time may not be available at some platforms
     // Stored in u64 for easy serialization
     created_at: Option<u64>,
@@ -35,7 +35,7 @@ pub struct SourceMetadata {
     seen_at: u64,
 }
 
-impl SourceMetadata {
+impl FileLikeMetadata {
     pub fn from_fs_meta(path: &Path, meta: &std::fs::Metadata) -> Self {
         let created_at = metadata_time_to_unix_timestamp(meta.created().ok());
         let modified_at = metadata_time_to_unix_timestamp(meta.modified().ok());
@@ -81,7 +81,7 @@ impl SourceMetadata {
     }
 
     /// Checks if file contents could have been changed.
-    pub fn is_changed(&self, other: &SourceMetadata) -> bool {
+    pub fn is_changed(&self, other: &FileLikeMetadata) -> bool {
         self.modified_at != other.modified_at
             || self.size != other.size
             || self.owner != other.owner

@@ -9,7 +9,7 @@ use log::{info, warn};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::metadata::FileLikeMetadata;
 use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::ReadError;
 use crate::persistence::cached_object_storage::CachedObjectStorage;
@@ -25,11 +25,11 @@ const S3_PATH_PREFIXES: [&str; 2] = ["s3://", "s3a://"];
 struct S3DownloadedObject {
     path: ArcStr,
     contents: Vec<u8>,
-    metadata: Option<SourceMetadata>,
+    metadata: Option<FileLikeMetadata>,
 }
 
 impl S3DownloadedObject {
-    fn new(path: ArcStr, contents: Vec<u8>, metadata: Option<SourceMetadata>) -> Self {
+    fn new(path: ArcStr, contents: Vec<u8>, metadata: Option<FileLikeMetadata>) -> Self {
         Self {
             path,
             contents,
@@ -37,7 +37,7 @@ impl S3DownloadedObject {
         }
     }
 
-    fn set_metadata(mut self, metadata: SourceMetadata) -> Self {
+    fn set_metadata(mut self, metadata: FileLikeMetadata) -> Self {
         self.metadata = Some(metadata);
         self
     }
@@ -70,7 +70,10 @@ pub struct S3Scanner {
 }
 
 impl PosixLikeScanner for S3Scanner {
-    fn object_metadata(&mut self, object_path: &[u8]) -> Result<Option<SourceMetadata>, ReadError> {
+    fn object_metadata(
+        &mut self,
+        object_path: &[u8],
+    ) -> Result<Option<FileLikeMetadata>, ReadError> {
         let path = from_utf8(object_path).expect("S3 path are expected to be UTF-8 strings");
         let object_lists = execute_with_retries(
             || self.bucket.list(path.to_string(), None),
@@ -83,7 +86,7 @@ impl PosixLikeScanner for S3Scanner {
                 if object.key != path {
                     continue;
                 }
-                let metadata = SourceMetadata::from_s3_object(object);
+                let metadata = FileLikeMetadata::from_s3_object(object);
                 if metadata.modified_at.is_some() {
                     return Ok(Some(metadata));
                 }
@@ -119,7 +122,7 @@ impl PosixLikeScanner for S3Scanner {
         for list in object_lists {
             for object in &list.contents {
                 seen_object_keys.insert(object.key.clone());
-                let actual_metadata = SourceMetadata::from_s3_object(object);
+                let actual_metadata = FileLikeMetadata::from_s3_object(object);
                 let object_key = object.key.as_bytes();
                 if let Some(stored_metadata) = cached_object_storage.stored_metadata(object_key) {
                     let is_updated = stored_metadata.is_changed(&actual_metadata);
@@ -247,7 +250,7 @@ impl S3Scanner {
         ))
     }
 
-    fn download_bulk(&mut self, new_objects: &[SourceMetadata]) -> Vec<S3DownloadResult> {
+    fn download_bulk(&mut self, new_objects: &[FileLikeMetadata]) -> Vec<S3DownloadResult> {
         if new_objects.is_empty() {
             return Vec::with_capacity(0);
         }

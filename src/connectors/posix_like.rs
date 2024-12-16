@@ -223,7 +223,7 @@ impl PosixLikeReader {
                     let reader = Box::new(Cursor::new(cached_object_contents));
                     self.tokenizer
                         .set_new_reader(reader, DataEventType::Insert)?;
-                    let result = ReadResult::NewSource(Some(metadata.clone()));
+                    let result = ReadResult::NewSource(metadata.clone().into());
                     self.current_action = Some(action.unwrap().into());
                     return Ok(Some(result));
                 }
@@ -243,7 +243,7 @@ impl PosixLikeReader {
                     let reader = Box::new(Cursor::new(cached_object_contents));
                     self.tokenizer
                         .set_new_reader(reader, DataEventType::Delete)?;
-                    let result = ReadResult::NewSource(Some(old_metadata));
+                    let result = ReadResult::NewSource(old_metadata.clone().into());
                     self.current_action = Some(action.unwrap().into());
                     return Ok(Some(result));
                 }

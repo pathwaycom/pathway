@@ -50,7 +50,7 @@ fn test_sqlite_read_table() -> eyre::Result<()> {
     assert_matches!(
         read_results.as_slice(),
         [
-            ReadResult::NewSource(None),
+            ReadResult::NewSource(_),
             ReadResult::Data(
                 ReaderContext::Diff((DataEventType::Insert, Some(_), _)),
                 EMPTY_OFFSET

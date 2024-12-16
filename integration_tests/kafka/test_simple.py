@@ -18,8 +18,9 @@ from pathway.tests.utils import (
 from .utils import KafkaTestContext
 
 
+@pytest.mark.parametrize("with_metadata", [False, True])
 @pytest.mark.flaky(reruns=3)
-def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
+def test_kafka_raw(with_metadata, tmp_path, kafka_context):
     kafka_context.fill(["foo", "bar"])
 
     table = pw.io.kafka.read(
@@ -27,9 +28,10 @@ def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
         topic=kafka_context.input_topic,
         format="plaintext",
         autocommit_duration_ms=100,
+        with_metadata=with_metadata,
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(
@@ -47,7 +49,37 @@ def test_kafka_raw(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
 
 
 @pytest.mark.flaky(reruns=3)
-def test_kafka_json(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
+def test_kafka_message_metadata(tmp_path, kafka_context):
+    kafka_context.fill(["foo", "bar"])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        with_metadata=True,
+    )
+    output_path = tmp_path / "output.jsonl"
+
+    pw.io.jsonlines.write(table, output_path)
+    wait_result_with_checker(FileLinesNumberChecker(output_path, 2), 10)
+
+    offsets = set()
+    with open(output_path, "r") as f:
+        for row in f:
+            data = json.loads(row)
+            metadata = data["_metadata"]
+            assert metadata["topic"] == kafka_context.input_topic
+            assert "partition" in metadata
+            assert "offset" in metadata
+            offsets.add(metadata["offset"])
+
+    assert len(offsets) == 2
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+@pytest.mark.flaky(reruns=3)
+def test_kafka_json(tmp_path, kafka_context, with_metadata):
     kafka_context.fill(
         [
             json.dumps({"k": 0, "v": "foo"}),
@@ -56,16 +88,20 @@ def test_kafka_json(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
         ]
     )
 
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
     table = pw.io.kafka.read(
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
         topic=kafka_context.input_topic,
         format="json",
-        value_columns=["v"],
-        primary_key=["k"],
+        schema=InputSchema,
+        with_metadata=with_metadata,
         autocommit_duration_ms=100,
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(
@@ -83,8 +119,9 @@ def test_kafka_json(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
     )
 
 
+@pytest.mark.parametrize("with_metadata", [False, True])
 @pytest.mark.flaky(reruns=3)
-def test_kafka_csv(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
+def test_kafka_csv(tmp_path, kafka_context, with_metadata):
     kafka_context.fill(
         [
             "k,v",
@@ -94,16 +131,20 @@ def test_kafka_csv(tmp_path: pathlib.Path, kafka_context: KafkaTestContext):
         ]
     )
 
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
     table = pw.io.kafka.read(
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
         topic=kafka_context.input_topic,
         format="csv",
-        value_columns=["v"],
-        primary_key=["k"],
+        schema=InputSchema,
+        with_metadata=with_metadata,
         autocommit_duration_ms=100,
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(
@@ -131,7 +172,7 @@ def test_kafka_simple_wrapper_bytes_io(
         "kafka:9092",
         kafka_context.input_topic,
     )
-    pw.io.jsonlines.write(table, str(tmp_path / "output.jsonl"))
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
     # check that reread will have all these messages again
@@ -140,7 +181,7 @@ def test_kafka_simple_wrapper_bytes_io(
         "kafka:9092",
         kafka_context.input_topic,
     )
-    pw.io.jsonlines.write(table, str(tmp_path / "output.jsonl"))
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
     # Check output type, bytes should be rendered as an array
@@ -164,7 +205,7 @@ def test_kafka_simple_wrapper_plaintext_io(
         kafka_context.input_topic,
         format="plaintext",
     )
-    pw.io.jsonlines.write(table, str(tmp_path / "output.jsonl"))
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
     # check that reread will have all these messages again
@@ -174,7 +215,7 @@ def test_kafka_simple_wrapper_plaintext_io(
         kafka_context.input_topic,
         format="plaintext",
     )
-    pw.io.jsonlines.write(table, str(tmp_path / "output.jsonl"))
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
     wait_result_with_checker(FileLinesNumberChecker(tmp_path / "output.jsonl", 2), 10)
 
     # Check output type, parsed plaintext should be a string
@@ -358,7 +399,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         persistent_id="1",
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(
@@ -400,7 +441,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         persistent_id="1",
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
+    pw.io.csv.write(table, tmp_path / "output_backfilled.csv")
     wait_result_with_checker(
         expect_csv_checker(
             """
@@ -440,7 +481,7 @@ def test_start_from_timestamp_ms_seek_to_middle(
         start_from_timestamp_ms=start_from_timestamp_ms,
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(
@@ -472,7 +513,7 @@ def test_start_from_timestamp_ms_seek_to_beginning(
         start_from_timestamp_ms=start_from_timestamp_ms,
     )
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(
@@ -513,7 +554,7 @@ def test_start_from_timestamp_ms_seek_to_end(
     t = threading.Thread(target=stream_inputs, daemon=True)
     t.run()
 
-    pw.io.csv.write(table, str(tmp_path / "output.csv"))
+    pw.io.csv.write(table, tmp_path / "output.csv")
 
     wait_result_with_checker(
         expect_csv_checker(

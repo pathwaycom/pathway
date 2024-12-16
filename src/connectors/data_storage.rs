@@ -35,7 +35,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::{FormatterContext, FormatterError, COMMIT_LITERAL};
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer};
-use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::metadata::{KafkaMetadata, SQLiteMetadata, SourceMetadata};
 use crate::connectors::offset::EMPTY_OFFSET;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::s3::S3CommandName;
@@ -220,7 +220,7 @@ impl ReaderContext {
 #[derive(Debug)]
 pub enum ReadResult {
     Finished,
-    NewSource(Option<SourceMetadata>),
+    NewSource(SourceMetadata),
     FinishedSource { commit_allowed: bool },
     Data(ReaderContext, Offset),
 }
@@ -694,10 +694,15 @@ pub struct KafkaReader {
     persistent_id: Option<PersistentId>,
     topic: ArcStr,
     positions_for_seek: HashMap<i32, KafkaOffset>,
+    deferred_read_result: Option<ReadResult>,
 }
 
 impl Reader for KafkaReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
+        if let Some(deferred_read_result) = take(&mut self.deferred_read_result) {
+            return Ok(deferred_read_result);
+        }
+
         loop {
             let kafka_message = self
                 .consumer
@@ -739,8 +744,10 @@ impl Reader for KafkaReader {
                 (offset_key, offset_value)
             };
             let message = ReaderContext::from_key_value(message_key, message_payload);
+            self.deferred_read_result = Some(ReadResult::Data(message, offset));
 
-            return Ok(ReadResult::Data(message, offset));
+            let metadata = KafkaMetadata::from_rdkafka_message(&kafka_message);
+            return Ok(ReadResult::NewSource(metadata.into()));
         }
     }
 
@@ -807,6 +814,7 @@ impl KafkaReader {
             persistent_id,
             topic: topic.into(),
             positions_for_seek,
+            deferred_read_result: None,
         }
     }
 }
@@ -1583,7 +1591,9 @@ impl Reader for SqliteReader {
             if self.last_saved_data_version != Some(current_data_version) {
                 self.load_table()?;
                 self.last_saved_data_version = Some(current_data_version);
-                return Ok(ReadResult::NewSource(None));
+                return Ok(ReadResult::NewSource(
+                    SQLiteMetadata::new(current_data_version).into(),
+                ));
             }
             // Sleep to avoid non-stop pragma requests of a table
             // that did not change

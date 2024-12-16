@@ -5,7 +5,7 @@ use std::path::Path;
 use rand::Rng;
 use tempfile::tempfile;
 
-use pathway_engine::connectors::metadata::SourceMetadata;
+use pathway_engine::connectors::metadata::FileLikeMetadata;
 use pathway_engine::persistence::backends::MemoryKVStorage;
 use pathway_engine::persistence::cached_object_storage::CachedObjectStorage;
 
@@ -14,11 +14,11 @@ fn create_mock_document() -> Vec<u8> {
     id.to_le_bytes().to_vec()
 }
 
-fn create_mock_storage_metadata() -> SourceMetadata {
+fn create_mock_storage_metadata() -> FileLikeMetadata {
     let random_file_id: u128 = rand::thread_rng().gen();
     let tempfile = tempfile().unwrap();
     let metadata = tempfile.metadata().unwrap();
-    SourceMetadata::from_fs_meta(
+    FileLikeMetadata::from_fs_meta(
         Path::new(&format!("/tmp/tempfile/{random_file_id}")),
         &metadata,
     )
@@ -28,7 +28,7 @@ fn check_storage_has_object(
     storage: &CachedObjectStorage,
     uri: &[u8],
     contents: &[u8],
-    metadata: &SourceMetadata,
+    metadata: &FileLikeMetadata,
 ) -> eyre::Result<()> {
     assert!(storage.contains_object(uri));
     assert_eq!(storage.get_object(uri)?, contents);

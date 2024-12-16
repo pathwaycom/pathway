@@ -615,14 +615,8 @@ impl Connector {
                     }
                 }
                 ReadResult::NewSource(metadata) => {
-                    // If a connector produces events of this kind, we consider the
-                    // objects atomic. That means that we won't do commits in between
-                    // of data source processing.
-                    //
-                    // So, we will block the ability to commit until an event allowing
-                    // the commits is received again.
-                    *commit_allowed = false;
-                    parser.on_new_source_started(metadata.as_ref());
+                    *commit_allowed &= metadata.commits_allowed_in_between();
+                    parser.on_new_source_started(&metadata);
                 }
                 ReadResult::Data(reader_context, offset) => {
                     let mut parsed_entries = match parser.parse(&reader_context) {

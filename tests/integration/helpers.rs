@@ -128,7 +128,7 @@ pub fn full_cycle_read(
             }
             Entry::Realtime(ReadResult::FinishedSource { .. }) => continue,
             Entry::Realtime(ReadResult::NewSource(metadata)) => {
-                parser.on_new_source_started(metadata.as_ref());
+                parser.on_new_source_started(metadata);
             }
             Entry::Snapshot(snapshot_entry) => {
                 snapshot_entries.push(snapshot_entry.clone());
@@ -201,7 +201,7 @@ pub fn read_data_from_reader(
                 }
             }
             ReadResult::FinishedSource { .. } => continue,
-            ReadResult::NewSource(metadata) => parser.on_new_source_started(metadata.as_ref()),
+            ReadResult::NewSource(metadata) => parser.on_new_source_started(&metadata),
             ReadResult::Finished => break,
         }
     }

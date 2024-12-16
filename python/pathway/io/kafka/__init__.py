@@ -34,6 +34,7 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     autogenerate_key: bool = False,
+    with_metadata: bool = False,
     start_from_timestamp_ms: int | None = None,
     parallel_readers: int | None = None,
     persistent_id: str | None = None,
@@ -75,6 +76,12 @@ def read(
         autogenerate_key: If ``True``, Pathway automatically generates unique primary key
             for the entries read. Otherwise it first tries to use the key from the message.
             This parameter is used only if the ``format`` is "raw" or "plaintext".
+        with_metadata: When set to ``True``, the connector will add an additional column
+            named ``_metadata`` to the table. This column will be a JSON field. It'll contain
+            an optional field ``timestamp_millis`` denoting the UNIX timestamp of a record
+            in milliseconds, if available. It will also contain fields ``topic``, ``partition``
+            and ``offset`` denoting the topic, partition and offset respectively, that
+            correspond to the Kafka message that produced this row.
         start_from_timestamp_ms: If defined, the read starts from entries with the given
             timestamp in the past, specified in milliseconds.
         parallel_readers: number of copies of the reader to work in parallel. In case
@@ -261,6 +268,7 @@ def read(
     )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,
+        with_metadata=with_metadata,
         autogenerate_key=autogenerate_key,
         schema=schema,
         csv_settings=None,

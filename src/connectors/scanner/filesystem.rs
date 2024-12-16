@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use log::error;
 
-use crate::connectors::metadata::SourceMetadata;
+use crate::connectors::metadata::FileLikeMetadata;
 use crate::connectors::scanner::{PosixLikeScanner, QueuedAction};
 use crate::connectors::ReadError;
 use crate::persistence::cached_object_storage::CachedObjectStorage;
@@ -20,10 +20,13 @@ pub struct FilesystemScanner {
 }
 
 impl PosixLikeScanner for FilesystemScanner {
-    fn object_metadata(&mut self, object_path: &[u8]) -> Result<Option<SourceMetadata>, ReadError> {
+    fn object_metadata(
+        &mut self,
+        object_path: &[u8],
+    ) -> Result<Option<FileLikeMetadata>, ReadError> {
         let path: PathBuf = OsStr::from_bytes(object_path).into();
         match std::fs::metadata(&path) {
-            Ok(metadata) => Ok(Some(SourceMetadata::from_fs_meta(&path, &metadata))),
+            Ok(metadata) => Ok(Some(FileLikeMetadata::from_fs_meta(&path, &metadata))),
             Err(e) => {
                 if matches!(e.kind(), std::io::ErrorKind::NotFound) {
                     Ok(None)
@@ -78,7 +81,7 @@ impl FilesystemScanner {
                     }
                 }
                 Ok(metadata) => {
-                    let actual_metadata = SourceMetadata::from_fs_meta(&path, &metadata);
+                    let actual_metadata = FileLikeMetadata::from_fs_meta(&path, &metadata);
                     let is_updated = stored_metadata.is_changed(&actual_metadata);
                     if is_updated {
                         result.push(QueuedAction::Update(encoded_path.clone(), actual_metadata));
@@ -101,7 +104,7 @@ impl FilesystemScanner {
             }
             let metadata = match std::fs::metadata(&entry) {
                 Err(_) => continue,
-                Ok(metadata) => SourceMetadata::from_fs_meta(&entry, &metadata),
+                Ok(metadata) => FileLikeMetadata::from_fs_meta(&entry, &metadata),
             };
             result.push(QueuedAction::Read(object_key.into(), metadata));
         }

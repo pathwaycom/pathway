@@ -261,7 +261,7 @@ fn prepare_plaintext_string(bytes: &[u8]) -> PrepareStringResult {
 
 pub trait Parser: Send {
     fn parse(&mut self, data: &ReaderContext) -> ParseResult;
-    fn on_new_source_started(&mut self, metadata: Option<&SourceMetadata>);
+    fn on_new_source_started(&mut self, metadata: &SourceMetadata);
     fn column_count(&self) -> usize;
 
     fn short_description(&self) -> Cow<'static, str> {
@@ -789,13 +789,13 @@ impl Parser for DsvParser {
         }
     }
 
-    fn on_new_source_started(&mut self, metadata: Option<&SourceMetadata>) {
-        self.dsv_header_read = false;
-        if let Some(metadata) = metadata {
-            let metadata_serialized: JsonValue =
-                serde_json::to_value(metadata).expect("internal serialization error");
-            self.metadata_column_value = metadata_serialized.into();
+    fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
+        if !metadata.commits_allowed_in_between() {
+            // TODO: find a better solution
+            self.dsv_header_read = false;
         }
+        let metadata_serialized: JsonValue = metadata.serialize();
+        self.metadata_column_value = metadata_serialized.into();
     }
 
     fn column_count(&self) -> usize {
@@ -921,12 +921,9 @@ impl Parser for IdentityParser {
         Ok(vec![event])
     }
 
-    fn on_new_source_started(&mut self, metadata: Option<&SourceMetadata>) {
-        if let Some(metadata) = metadata {
-            let metadata_serialized: JsonValue =
-                serde_json::to_value(metadata).expect("internal serialization error");
-            self.metadata_column_value = metadata_serialized.into();
-        }
+    fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
+        let metadata_serialized: JsonValue = metadata.serialize();
+        self.metadata_column_value = metadata_serialized.into();
     }
 
     fn column_count(&self) -> usize {
@@ -1422,7 +1419,7 @@ impl Parser for DebeziumMessageParser {
         }
     }
 
-    fn on_new_source_started(&mut self, _metadata: Option<&SourceMetadata>) {}
+    fn on_new_source_started(&mut self, _metadata: &SourceMetadata) {}
 
     fn column_count(&self) -> usize {
         self.value_field_names.len()
@@ -1536,12 +1533,9 @@ impl Parser for JsonLinesParser {
         Ok(vec![event])
     }
 
-    fn on_new_source_started(&mut self, metadata: Option<&SourceMetadata>) {
-        if let Some(metadata) = metadata {
-            let metadata_serialized: JsonValue =
-                serde_json::to_value(metadata).expect("internal serialization error");
-            self.metadata_column_value = metadata_serialized.into();
-        }
+    fn on_new_source_started(&mut self, metadata: &SourceMetadata) {
+        let metadata_serialized: JsonValue = metadata.serialize();
+        self.metadata_column_value = metadata_serialized.into();
     }
 
     fn column_count(&self) -> usize {
@@ -1617,7 +1611,7 @@ impl Parser for TransparentParser {
         Ok(vec![event])
     }
 
-    fn on_new_source_started(&mut self, _metadata: Option<&SourceMetadata>) {}
+    fn on_new_source_started(&mut self, _metadata: &SourceMetadata) {}
 
     fn column_count(&self) -> usize {
         self.value_field_names.len()
