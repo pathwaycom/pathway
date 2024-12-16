@@ -37,6 +37,9 @@ pub enum Error {
     #[error(transparent)]
     Bincode(#[from] BincodeError),
 
+    #[error("no available cached object versions")]
+    NoAvailableVersions,
+
     #[error("metadata entry {0:?} incorrectly formatted: {1}")]
     IncorrectMetadataFormat(String, #[source] JsonParseError),
 }

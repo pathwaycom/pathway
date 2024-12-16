@@ -169,8 +169,10 @@ impl PersistenceManagerConfig {
     ) -> Result<CachedObjectStorage, PersistenceBackendError> {
         let backend: Box<dyn PersistenceBackend> = match &self.backend {
             PersistentStorageConfig::Filesystem(root_path) => {
-                let storage_root_path =
-                    root_path.join(format!("cached-objects-storage/{persistent_id}"));
+                let storage_root_path = root_path.join(format!(
+                    "cached-objects-storage/{}/{persistent_id}",
+                    self.worker_id
+                ));
                 ensure_directory(&storage_root_path)?;
                 Box::new(FilesystemKVStorage::new(&storage_root_path)?)
             }

@@ -202,7 +202,6 @@ class DebeziumContext:
                 "database.server.name": connector_id,
                 "table.include.list": f"public.{table_name}",
                 "database.history.kafka.bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
-                "database.history.kafka.topic": "schema-changes.inventory",
             },
         }
         return self._register_connector(payload, f"{connector_id}.public.{table_name}")

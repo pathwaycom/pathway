@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.io.sharepoint.read` now explicitly terminates with an error if it fails to read the data the specified number of times per row (the default is `8`).
 
+### Fixed
+- The input of `pw.io.fs.read` and `pw.io.s3.read` is now correctly persisted in case deletions or modifications of already processed objects take place.
+
 ## [0.16.1] - 2024-12-12
 
 ### Changed

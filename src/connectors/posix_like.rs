@@ -72,30 +72,6 @@ impl PosixLikeReader {
 
 impl Reader for PosixLikeReader {
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        // FIXME: having only a path in the offset is not enough.
-        // Suppose there were several modifications of a file, at 12:01, 12:02, 12:03.
-        // All of them have been processed by the scanner and sent on the outside. This way,
-        // the latest known version of this file corresponds to 12:03.
-        //
-        // Now suppose that the threshold time on the recovery corresponds to 12:02. Then
-        // the version that corresponds to 12:02 must be loaded to the CachedObjectStorage.
-        //
-        // Moreover, all further read object modifications must be omitted and treated as
-        // something that the scanner has never met.
-        //
-        // It can be done if:
-        // 1. We use metadata as an offset, not just an object name. The metadata has the `seen_at`
-        // field that can work as a version already.
-        // 2. We store all versions in the CachedObjectStorage.
-        // 3. On recovery, we remove use the version that corresponds to the provided metadata.
-        // 4. After the recovery is done, we delete everything that has `seen_at` greater than
-        // `seen_at` of the target object as well as objects with the same `seen_at` and greater
-        // `path` lexicographically.
-        //
-        // Also to be noted that `seen_at` must be handled correctly in case the objects are
-        // downloaded via thread pool. If the metadata is formed not while downloading, it
-        // will be OK. Anyway, an assert in `CachedObjectStorage` that checks that the pairs
-        // of (`seen_at`, `path`) form an increasing sequence, would help.
         let offset_value = frontier.get_offset(&OffsetKey::Empty);
         let Some(offset_value) = offset_value else {
             self.cached_object_storage.clear()?;
@@ -105,36 +81,38 @@ impl Reader for PosixLikeReader {
             total_entries_read,
             path: object_path_arc,
             bytes_offset: _,
+            cached_object_version,
         }) = offset_value.as_posix_like_offset()
         else {
             warn!("Incorrect type of offset value in PosixLike frontier: {offset_value:?}");
             return Ok(());
         };
+        if let Some(cached_object_version) = cached_object_version {
+            self.cached_object_storage.rewind(cached_object_version)?;
+        }
 
+        self.current_action = None;
+        self.scanner_actions_queue.clear();
+        let are_deletions_enabled = self.are_deletions_enabled();
         let stored_metadata = self
             .cached_object_storage
-            .stored_metadata(object_path_arc.as_ref())
-            .expect("Cached object storage must contain metadata for a cached object");
-        self.scanner_actions_queue.clear();
-        self.current_action =
-            Some(QueuedAction::Read(object_path_arc.to_vec(), stored_metadata.clone()).into());
-        let are_deletions_enabled = self.are_deletions_enabled();
-        let actual_metadata = self.scanner.object_metadata(object_path_arc.as_ref())?;
-        if let Some(metadata) = actual_metadata {
-            let reread_needed = stored_metadata.is_changed(&metadata);
-            if reread_needed && are_deletions_enabled {
-                info!(
-                    "The last read object has changed since it was last read. It will be reread."
-                );
+            .stored_metadata(object_path_arc.as_ref());
+        if let Some(stored_metadata) = stored_metadata {
+            let actual_metadata = self.scanner.object_metadata(object_path_arc.as_ref())?;
+            if let Some(metadata) = actual_metadata {
+                let reread_needed = stored_metadata.is_changed(&metadata);
+                if reread_needed && are_deletions_enabled {
+                    info!(
+                        "The last read object has changed since it was last read. It will be reread."
+                    );
+                    self.scanner_actions_queue
+                        .push_back(QueuedAction::Update(object_path_arc.to_vec(), metadata));
+                }
+            } else if are_deletions_enabled {
+                info!("The last read object is no longer present in the source. It will be removed from the engine.");
                 self.scanner_actions_queue
-                    .push_back(QueuedAction::Update(object_path_arc.to_vec(), metadata));
-                self.current_action = None;
+                    .push_back(QueuedAction::Delete(object_path_arc.to_vec()));
             }
-        } else if are_deletions_enabled {
-            info!("The last read object is no longer present in the source. It will be removed from the engine.");
-            self.scanner_actions_queue
-                .push_back(QueuedAction::Delete(object_path_arc.to_vec()));
-            self.current_action = None;
         }
 
         // No need to set up a tokenizer here: `current_action` is set only
@@ -165,6 +143,7 @@ impl Reader for PosixLikeReader {
                     total_entries_read: self.total_entries_read,
                     path: self.current_action.as_ref().unwrap().offset_path.clone(),
                     bytes_offset,
+                    cached_object_version: Some(self.cached_object_storage.actual_version()),
                 },
             );
             return Ok(ReadResult::Data(entry, offset));
@@ -199,12 +178,7 @@ impl PosixLikeReader {
         // and emit the corresponding event.
         if let Some(current_action) = take(&mut self.current_action) {
             let commit_allowed = match current_action.action {
-                QueuedAction::Delete(path) => {
-                    self.cached_object_storage
-                        .remove_object(path.as_ref())
-                        .expect("Cached object storage doesn't contain an indexed object");
-                    true
-                }
+                QueuedAction::Delete(_) => true,
                 QueuedAction::Update(path, metadata) => {
                     self.scanner_actions_queue
                         .push_front(QueuedAction::Read(path, metadata));
@@ -257,15 +231,19 @@ impl PosixLikeReader {
                     let old_metadata = self
                         .cached_object_storage
                         .stored_metadata(path.as_ref())
-                        .expect("Metadata for all indexed objects must be stored in the engine");
+                        .expect("Metadata for all indexed objects must be stored in the engine")
+                        .clone();
                     let cached_object_contents = self
                         .cached_object_storage
                         .get_object(path.as_ref())
                         .expect("Copy of a cached object must be present to perform deletion");
+                    self.cached_object_storage
+                        .remove_object(path.as_ref())
+                        .expect("Cached object storage doesn't contain an indexed object");
                     let reader = Box::new(Cursor::new(cached_object_contents));
                     self.tokenizer
                         .set_new_reader(reader, DataEventType::Delete)?;
-                    let result = ReadResult::NewSource(Some(old_metadata.clone()));
+                    let result = ReadResult::NewSource(Some(old_metadata));
                     self.current_action = Some(action.unwrap().into());
                     return Ok(Some(result));
                 }

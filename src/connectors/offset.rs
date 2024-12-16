@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
 use crate::engine::value::HashInto;
+use crate::persistence::cached_object_storage::CachedObjectVersion;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, Ord, PartialOrd)]
@@ -48,7 +49,8 @@ pub enum OffsetValue {
     PosixLikeOffset {
         total_entries_read: u64,
         path: Arc<[u8]>,
-        bytes_offset: u64, // No longer needed
+        bytes_offset: u64, // Not used by persistence, but used to autogenerate primary key
+        cached_object_version: Option<CachedObjectVersion>,
     },
     PythonCursor {
         raw_external_offset: Arc<[u8]>,
@@ -75,6 +77,7 @@ impl OffsetValue {
                 total_entries_read: *total_entries_read,
                 path: path.as_os_str().as_bytes().into(),
                 bytes_offset: *bytes_offset,
+                cached_object_version: None,
             }),
             Self::S3ObjectPosition {
                 total_entries_read,
@@ -84,12 +87,14 @@ impl OffsetValue {
                 total_entries_read: *total_entries_read,
                 path: path.as_bytes().into(),
                 bytes_offset: *bytes_offset,
+                cached_object_version: None,
             }),
             _ => None,
         }
     }
 }
 
+/// Used to autogenerate row primary key
 impl HashInto for OffsetValue {
     fn hash_into(&self, hasher: &mut Hasher) {
         match self {
