@@ -13,7 +13,9 @@ use crate::persistence::backends::BackendPutFuture as PersistenceBackendFlushFut
 use crate::persistence::cached_object_storage::CachedObjectStorage;
 use crate::persistence::config::{PersistenceManagerConfig, ReadersQueryPurpose};
 use crate::persistence::input_snapshot::{ReadInputSnapshot, SnapshotMode};
-use crate::persistence::operator_snapshot::{Flushable, OperatorSnapshotReader};
+use crate::persistence::operator_snapshot::{
+    ConcreteSnapshotMerger, Flushable, OperatorSnapshotReader,
+};
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::Error as PersistenceBackendError;
 use crate::persistence::{
@@ -50,6 +52,7 @@ pub struct WorkerPersistentStorage {
 
     snapshot_writers: HashMap<PersistentId, SharedSnapshotWriter>,
     operator_snapshot_writers: HashMap<PersistentId, Arc<Mutex<dyn Flushable + Send>>>,
+    operator_snapshot_mergers: Vec<ConcreteSnapshotMerger>,
     sink_threshold_times: Vec<TotalFrontier<Timestamp>>,
     registered_persistent_ids: HashSet<PersistentId>,
 }
@@ -103,6 +106,7 @@ impl WorkerPersistentStorage {
 
             snapshot_writers: HashMap::new(),
             operator_snapshot_writers: HashMap::new(),
+            operator_snapshot_mergers: Vec::new(),
             sink_threshold_times: Vec::new(),
             registered_persistent_ids: HashSet::new(),
         })
@@ -280,12 +284,12 @@ impl WorkerPersistentStorage {
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
-        let writer = Arc::new(Mutex::new(
-            self.config.create_operator_snapshot_writer(persistent_id)?,
-        ));
+        let (writer, merger) = self.config.create_operator_snapshot_writer(persistent_id)?;
+        let writer = Arc::new(Mutex::new(writer));
         let writer_flushable: Arc<Mutex<dyn Flushable + Send>> = writer.clone();
         self.operator_snapshot_writers
             .insert(persistent_id, writer_flushable);
+        self.operator_snapshot_mergers.push(merger);
         Ok(writer)
     }
 }

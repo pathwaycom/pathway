@@ -157,6 +157,88 @@ impl VersionInformation {
     }
 }
 
+fn compute_threshold_time_and_versions(
+    backend: &mut dyn PersistenceBackend,
+    should_remove: bool,
+    total_workers: usize,
+) -> Result<(TotalFrontier<Timestamp>, u128, Option<u128>), Error> {
+    // We want to start from the latest version that has metadata for all its workers
+    // In the code, we call it the latest stable version
+    let keys = backend.list_keys()?;
+    let mut version_information = HashMap::new();
+    for key in &keys {
+        let metadata_key = MetadataKey::from_str(key);
+        let Some(metadata_key) = metadata_key else {
+            continue;
+        };
+
+        let Ok(raw_block) = backend.get_value(key) else {
+            // In any case, don't fail here, just use the earlier version
+            warn!("Failed to retrieve the value for the metadata block {key}. Most likely it was removed as obsolete.");
+            continue;
+        };
+        let block_result = StoredMetadata::parse(&raw_block, total_workers);
+        match block_result {
+            Ok(block) => {
+                version_information
+                    .entry(metadata_key.version)
+                    .or_insert(VersionInformation::new(block.total_workers))
+                    .update_worker_time(metadata_key.worker_id, block.last_advanced_timestamp);
+            }
+            Err(e) => {
+                warn!("Broken metadata block for key {key}. Error: {e}");
+                if should_remove {
+                    // Avoid removing the same object from multiple workers
+                    if let Err(e) = backend.remove_key(key) {
+                        error!("Failed to remove the broken metadata block {key}: {e}");
+                    }
+                }
+            }
+        };
+    }
+
+    let mut past_runs_threshold_time = TotalFrontier::At(Timestamp(0));
+    let mut latest_stable_version = None;
+    for (version_number, version_data) in &version_information {
+        let threshold_time = version_data.threshold_time();
+        let Some(threshold_time) = threshold_time else {
+            continue;
+        };
+        if latest_stable_version.map_or(true, |current_version| current_version < *version_number) {
+            latest_stable_version = Some(*version_number);
+            past_runs_threshold_time = threshold_time;
+        }
+    }
+
+    let current_version = version_information
+        .keys()
+        .max()
+        .copied()
+        .unwrap_or_default()
+        + 1;
+    if let Some(latest_stable_version) = latest_stable_version {
+        for key in keys {
+            let metadata_key = MetadataKey::from_str(&key);
+            let Some(metadata_key) = metadata_key else {
+                continue;
+            };
+            if metadata_key.version < latest_stable_version && should_remove {
+                info!("Removing obsolete metadata entry: {key}");
+                // Avoid removing the same object from multiple workers
+                if let Err(e) = backend.remove_key(&key) {
+                    error!("Failed to remove the obsolete metadata block {key}: {e}");
+                }
+            }
+        }
+    }
+
+    Ok((
+        past_runs_threshold_time,
+        current_version,
+        latest_stable_version,
+    ))
+}
+
 impl MetadataAccessor {
     pub fn new(
         mut backend: Box<dyn PersistenceBackend>,
@@ -164,86 +246,9 @@ impl MetadataAccessor {
         total_workers: usize,
     ) -> Result<Self, Error> {
         let internal_state = StoredMetadata::new(total_workers);
-        let (past_runs_threshold_time, current_version) = {
-            // We want to start from the latest version that has metadata for all its workers
-            // In the code, we call it the latest stable version
-            let keys = backend.list_keys()?;
-            let mut version_information = HashMap::new();
-            for key in &keys {
-                let metadata_key = MetadataKey::from_str(key);
-                let Some(metadata_key) = metadata_key else {
-                    continue;
-                };
-
-                let Ok(raw_block) = backend.get_value(key) else {
-                    // In any case, don't fail here, just use the earlier version
-                    warn!("Failed to retrieve the value for the metadata block {key}. Most likely it was removed as obsolete.");
-                    continue;
-                };
-                let block_result = StoredMetadata::parse(&raw_block, total_workers);
-                match block_result {
-                    Ok(block) => {
-                        version_information
-                            .entry(metadata_key.version)
-                            .or_insert(VersionInformation::new(block.total_workers))
-                            .update_worker_time(
-                                metadata_key.worker_id,
-                                block.last_advanced_timestamp,
-                            );
-                    }
-                    Err(e) => {
-                        warn!("Broken metadata block for key {key}. Error: {e}");
-                        if worker_id == 0 {
-                            // Avoid removing the same object from multiple workers
-                            if let Err(e) = backend.remove_key(key) {
-                                error!("Failed to remove the broken metadata block {key}: {e}");
-                            }
-                        }
-                    }
-                };
-            }
-
-            let mut past_runs_threshold_time = TotalFrontier::At(Timestamp(0));
-            let mut latest_stable_version = None;
-            for (version_number, version_data) in &version_information {
-                let threshold_time = version_data.threshold_time();
-                let Some(threshold_time) = threshold_time else {
-                    continue;
-                };
-                if latest_stable_version
-                    .map_or(true, |current_version| current_version < *version_number)
-                {
-                    latest_stable_version = Some(*version_number);
-                    past_runs_threshold_time = threshold_time;
-                }
-            }
-
-            let current_version = version_information
-                .keys()
-                .max()
-                .copied()
-                .unwrap_or_default()
-                + 1;
-            info!("Worker {worker_id} is on the version {current_version}. The latest stable metadata version is {latest_stable_version:?}");
-            if let Some(latest_stable_version) = latest_stable_version {
-                for key in keys {
-                    let metadata_key = MetadataKey::from_str(&key);
-                    let Some(metadata_key) = metadata_key else {
-                        continue;
-                    };
-                    if metadata_key.version < latest_stable_version && worker_id == 0 {
-                        info!("Removing obsolete metadata entry: {key}");
-                        // Avoid removing the same object from multiple workers
-                        if let Err(e) = backend.remove_key(&key) {
-                            error!("Failed to remove the obsolete metadata block {key}: {e}");
-                        }
-                    }
-                }
-            }
-
-            (past_runs_threshold_time, current_version)
-        };
-
+        let (past_runs_threshold_time, current_version, latest_stable_version) =
+            compute_threshold_time_and_versions(backend.as_mut(), worker_id == 0, total_workers)?;
+        info!("Worker {worker_id} is on the version {current_version}. The latest stable metadata version is {latest_stable_version:?}");
         let current_key_to_use =
             MetadataKey::from_components(current_version, worker_id, 0).to_string();
         let next_key_to_use =
@@ -280,5 +285,26 @@ impl MetadataAccessor {
         })?;
         swap(&mut self.current_key_to_use, &mut self.next_key_to_use);
         Ok(())
+    }
+}
+
+pub struct FinalizedTimeQuerier {
+    backend: Box<dyn PersistenceBackend>,
+    total_workers: usize,
+}
+
+impl FinalizedTimeQuerier {
+    pub fn new(backend: Box<dyn PersistenceBackend>, total_workers: usize) -> Self {
+        Self {
+            backend,
+            total_workers,
+        }
+    }
+
+    pub fn last_finalized_timestamp(&mut self) -> Result<TotalFrontier<Timestamp>, Error> {
+        Ok(
+            compute_threshold_time_and_versions(self.backend.as_mut(), false, self.total_workers)?
+                .0,
+        )
     }
 }

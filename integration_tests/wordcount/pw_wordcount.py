@@ -56,7 +56,7 @@ if __name__ == "__main__":
         format="json",
         mode=args.mode,
         persistent_id="1",
-        autocommit_duration_ms=10,
+        autocommit_duration_ms=100,
     )
     result = words.groupby(words.word).reduce(
         words.word,

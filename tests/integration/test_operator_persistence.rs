@@ -12,17 +12,20 @@ use pathway_engine::engine::dataflow::persist::Persist;
 use pathway_engine::engine::dataflow::shard::Shard;
 use pathway_engine::engine::{Timestamp, TotalFrontier};
 use pathway_engine::persistence::backends::{
-    BackendPutFuture, Error as BackendError, PersistenceBackend,
+    BackendPutFuture, Error as BackendError, MemoryKVStorage, PersistenceBackend,
 };
 use pathway_engine::persistence::operator_snapshot::{
-    ConcreteSnapshotReader, ConcreteSnapshotWriter, MultiConcreteSnapshotReader,
-    OperatorSnapshotReader, OperatorSnapshotWriter,
+    ConcreteSnapshotMerger, ConcreteSnapshotReader, ConcreteSnapshotWriter,
+    MultiConcreteSnapshotReader, OperatorSnapshotReader, OperatorSnapshotWriter,
 };
+use pathway_engine::persistence::state::{FinalizedTimeQuerier, StoredMetadata};
 use pathway_engine::persistence::PersistenceTime;
+use serde::Deserialize;
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use timely::communication::allocator::Generic;
@@ -497,6 +500,15 @@ fn test_operator_snapshot_reader_consolidates() {
     );
 }
 
+fn assert_deserializes_to<T>(data: &[u8], expected: Vec<T>)
+where
+    for<'a> T: Deserialize<'a> + Ord + PartialEq + Debug,
+{
+    let mut v: Vec<T> = deserialize(data).unwrap();
+    v.sort();
+    assert_eq!(v, expected);
+}
+
 #[test]
 fn test_operator_snapshot_writer() {
     let mut backend = MockBackend::new();
@@ -504,17 +516,14 @@ fn test_operator_snapshot_writer() {
         .expect_put_value()
         .times(2)
         .withf(|key, data| {
-            let mut v: Vec<(i64, isize)> = deserialize(data).unwrap();
-            v.sort();
             if key == "0-1700-3" {
-                assert_eq!(v, vec![(2, 1), (3, 3), (4, 1)]);
-                true
+                assert_deserializes_to::<(i64, isize)>(data, vec![(2, 1), (3, 3), (4, 1)]);
             } else if key == "0-2900-2" {
-                assert_eq!(v, vec![(1, 1), (2, 3)]);
-                true
+                assert_deserializes_to::<(i64, isize)>(data, vec![(1, 1), (2, 3)]);
             } else {
                 panic!("key {key} shouldn't get created")
             }
+            true
         })
         .returning(|_key, _data| {
             let (sender, receiver) = oneshot::channel();
@@ -531,4 +540,284 @@ fn test_operator_snapshot_writer() {
     writer.persist(Timestamp(3200), vec![(1, 1)]);
     let futures = writer.flush(TotalFrontier::At(Timestamp(3200)));
     futures::executor::block_on(futures::future::try_join_all(futures)).unwrap();
+}
+
+fn metadata_from_timestamp(timestamp: Timestamp) -> Vec<u8> {
+    StoredMetadata {
+        last_advanced_timestamp: TotalFrontier::At(timestamp),
+        total_workers: 1,
+    }
+    .serialize()
+    .into()
+}
+
+#[test]
+fn test_snapshot_merging_1() {
+    let mut metadata_backend = MemoryKVStorage::new();
+    let future = metadata_backend.put_value("1-0-0", metadata_from_timestamp(Timestamp(11)));
+    futures::executor::block_on(future).unwrap().unwrap();
+    let mut time_querier = FinalizedTimeQuerier::new(Box::new(metadata_backend), 1);
+    let mut backend = MockBackend::new();
+
+    backend.expect_list_keys().returning(|| {
+        Ok(vec![
+            "0-11-2".to_string(),
+            "0-10-1".to_string(),
+            "0-9-2".to_string(),
+            "0-8-3".to_string(),
+            "1-5-2".to_string(),
+            "2-8-4".to_string(),
+        ])
+    });
+    backend.expect_get_value().returning(|key| match key {
+        "0-10-1" => serialize(&vec![((2, 4), 1)]).map_err(|e| BackendError::Bincode(*e)),
+        "0-9-2" => {
+            serialize(&vec![((1, 3), -1), ((1, 4), 1)]).map_err(|e| BackendError::Bincode(*e))
+        }
+        "2-8-4" => serialize(&vec![((1, 3), 1), ((3, 2), 1), ((5, 6), 1), ((4, 3), 1)])
+            .map_err(|e| BackendError::Bincode(*e)),
+        _ => panic!("unexpected key {key}"),
+    });
+    backend
+        .expect_put_value()
+        .times(1)
+        .withf(|key, data| {
+            assert_eq!(key, "3-10-5");
+            let expected = vec![
+                ((1, 4), 1),
+                ((2, 4), 1),
+                ((3, 2), 1),
+                ((4, 3), 1),
+                ((5, 6), 1),
+            ];
+            assert_deserializes_to::<((i32, i32), i32)>(data, expected);
+            true
+        })
+        .returning(|_key, _data| {
+            let (sender, receiver) = oneshot::channel();
+            sender.send(Ok(())).unwrap();
+            receiver
+        });
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("0-8-3"))
+        .returning(|_| Ok(()));
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("1-5-2"))
+        .returning(|_| Ok(()));
+
+    ConcreteSnapshotMerger::maybe_merge::<(i32, i32), i32>(&mut backend, &mut time_querier)
+        .unwrap();
+    backend.checkpoint();
+
+    backend.expect_list_keys().returning(|| {
+        Ok(vec![
+            "0-11-2".to_string(),
+            "0-10-1".to_string(),
+            "0-9-2".to_string(),
+            "2-8-4".to_string(),
+            "3-10-5".to_string(),
+        ])
+    });
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("0-10-1"))
+        .returning(|_| Ok(()));
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("0-9-2"))
+        .returning(|_| Ok(()));
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("2-8-4"))
+        .returning(|_| Ok(()));
+    ConcreteSnapshotMerger::maybe_merge::<(i32, i32), i32>(&mut backend, &mut time_querier)
+        .unwrap();
+}
+
+#[test]
+fn test_snapshot_merging_2() {
+    let mut metadata_backend = MemoryKVStorage::new();
+    let future = metadata_backend.put_value("1-0-0", metadata_from_timestamp(Timestamp(10)));
+    futures::executor::block_on(future).unwrap().unwrap();
+    let mut time_querier = FinalizedTimeQuerier::new(Box::new(metadata_backend), 1);
+    let mut backend = MockBackend::new();
+
+    backend.expect_list_keys().returning(|| {
+        Ok(vec![
+            "0-11-2".to_string(),
+            "0-10-1".to_string(),
+            "0-9-2".to_string(),
+            "0-8-2".to_string(),
+            "1-8-2".to_string(),
+            "2-6-4".to_string(),
+            "4-5-9".to_string(),
+        ])
+    });
+    backend.expect_get_value().returning(|key| match key {
+        "0-9-2" => {
+            serialize(&vec![((3, 2), -1), ((3, 3), 1)]).map_err(|e| BackendError::Bincode(*e))
+        }
+        "1-8-2" => {
+            serialize(&vec![((1, 3), -1), ((1, 4), 1)]).map_err(|e| BackendError::Bincode(*e))
+        }
+        "2-6-4" => serialize(&vec![((1, 3), 1), ((3, 2), 1), ((5, 6), 1), ((4, 3), 1)])
+            .map_err(|e| BackendError::Bincode(*e)),
+        _ => panic!("unexpected key {key}"),
+    });
+
+    backend
+        .expect_put_value()
+        .times(1)
+        .withf(|key, data| {
+            assert_eq!(key, "3-9-4");
+            let expected = vec![((1, 4), 1), ((3, 3), 1), ((4, 3), 1), ((5, 6), 1)];
+            assert_deserializes_to::<((i32, i32), i32)>(data, expected);
+            true
+        })
+        .returning(|_key, _data| {
+            let (sender, receiver) = oneshot::channel();
+            sender.send(Ok(())).unwrap();
+            receiver
+        });
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("0-8-2"))
+        .returning(|_| Ok(()));
+    ConcreteSnapshotMerger::maybe_merge::<(i32, i32), i32>(&mut backend, &mut time_querier)
+        .unwrap();
+    backend.checkpoint();
+
+    backend.expect_list_keys().returning(|| {
+        Ok(vec![
+            "0-11-2".to_string(),
+            "0-10-1".to_string(),
+            "0-9-2".to_string(),
+            "1-8-2".to_string(),
+            "2-6-4".to_string(),
+            "3-9-4".to_string(),
+            "4-5-9".to_string(),
+        ])
+    });
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("0-9-2"))
+        .returning(|_| Ok(()));
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("1-8-2"))
+        .returning(|_| Ok(()));
+    backend
+        .expect_remove_key()
+        .times(1)
+        .with(eq("2-6-4"))
+        .returning(|_| Ok(()));
+    ConcreteSnapshotMerger::maybe_merge::<(i32, i32), i32>(&mut backend, &mut time_querier)
+        .unwrap();
+}
+
+#[derive(Debug, Clone)]
+struct KVBackend {
+    storage: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+}
+
+impl KVBackend {
+    fn new() -> Self {
+        Self {
+            storage: Arc::new(Mutex::new([].into())),
+        }
+    }
+
+    fn get_storage(&self) -> MutexGuard<'_, HashMap<String, Vec<u8>>> {
+        self.storage.lock().unwrap()
+    }
+}
+
+impl PersistenceBackend for KVBackend {
+    fn list_keys(&self) -> Result<Vec<String>, BackendError> {
+        Ok(self.get_storage().keys().map(Clone::clone).collect())
+    }
+
+    fn get_value(&self, key: &str) -> Result<Vec<u8>, BackendError> {
+        Ok(self.get_storage()[key].clone())
+    }
+
+    fn put_value(&mut self, key: &str, value: Vec<u8>) -> BackendPutFuture {
+        self.get_storage().insert(key.to_string(), value);
+        let (sender, receiver) = oneshot::channel();
+        sender.send(Ok(())).unwrap();
+        receiver
+    }
+
+    fn remove_key(&mut self, key: &str) -> Result<(), BackendError> {
+        self.get_storage().remove(key);
+        Ok(())
+    }
+}
+
+#[test]
+fn test_snapshot_writer_with_merger() {
+    let mut metadata_backend = KVBackend::new(); // can't use MemoryKVStorage as the entries have to be available in multiple threads
+    let mut time_querier = FinalizedTimeQuerier::new(Box::new(metadata_backend.clone()), 1);
+    let mut backend = KVBackend::new();
+    let mut writer: ConcreteSnapshotWriter<i64, isize> =
+        ConcreteSnapshotWriter::new(Box::new(backend.clone()), Duration::from_millis(1000));
+
+    writer.persist(Timestamp(1200), vec![(2, 1), (3, 1)]);
+    writer.persist(Timestamp(1700), vec![(4, 1), (3, 2)]);
+    let futures = writer.flush(TotalFrontier::At(Timestamp(2100)));
+    futures::executor::block_on(futures::future::try_join_all(futures)).unwrap();
+    let future = metadata_backend.put_value("1-0-0", metadata_from_timestamp(Timestamp(2100)));
+    futures::executor::block_on(future).unwrap().unwrap();
+    ConcreteSnapshotMerger::maybe_merge::<i64, isize>(&mut backend, &mut time_querier).unwrap();
+    let mut keys = backend.list_keys().unwrap();
+    keys.sort();
+    assert_eq!(keys, vec!["0-1700-3", "2-1700-3"]);
+    let data = backend.get_value("2-1700-3").unwrap();
+    assert_deserializes_to::<(i64, isize)>(&data, vec![(2, 1), (3, 3), (4, 1)]);
+
+    writer.persist(Timestamp(2100), vec![(1, 1), (2, 2)]);
+    writer.persist(Timestamp(2900), vec![(2, 1), (3, 1)]);
+    let futures = writer.flush(TotalFrontier::At(Timestamp(3000)));
+    futures::executor::block_on(futures::future::try_join_all(futures)).unwrap();
+    let future = metadata_backend.put_value("1-0-1", metadata_from_timestamp(Timestamp(3000)));
+    futures::executor::block_on(future).unwrap().unwrap();
+    ConcreteSnapshotMerger::maybe_merge::<i64, isize>(&mut backend, &mut time_querier).unwrap();
+    let mut keys = backend.list_keys().unwrap();
+    keys.sort();
+    assert_eq!(keys, vec!["0-2900-3", "2-1700-3", "3-2900-4"]);
+    let data = backend.get_value("3-2900-4").unwrap();
+    assert_deserializes_to::<(i64, isize)>(&data, vec![(1, 1), (2, 4), (3, 4), (4, 1)]);
+
+    writer.persist(Timestamp(3000), vec![(5, 1), (4, 2)]);
+    writer.persist(Timestamp(3200), vec![(1, 1)]);
+    let futures = writer.flush(TotalFrontier::At(Timestamp(4000)));
+    futures::executor::block_on(futures::future::try_join_all(futures)).unwrap();
+    let future = metadata_backend.put_value("1-0-0", metadata_from_timestamp(Timestamp(4000)));
+    futures::executor::block_on(future).unwrap().unwrap();
+    let mut keys = backend.list_keys().unwrap();
+    keys.sort();
+    assert_eq!(keys, vec!["0-2900-3", "0-3200-3", "2-1700-3", "3-2900-4"]);
+
+    ConcreteSnapshotMerger::maybe_merge::<i64, isize>(&mut backend, &mut time_querier).unwrap();
+    let mut keys = backend.list_keys().unwrap();
+    keys.sort();
+    assert_eq!(keys, vec!["0-3200-3", "2-3200-3", "3-2900-4"]);
+    let data = backend.get_value("2-3200-3").unwrap();
+    assert_deserializes_to::<(i64, isize)>(&data, vec![(1, 1), (4, 2), (5, 1)]);
+
+    // last maybe_merge should only delete not needed keys
+    ConcreteSnapshotMerger::maybe_merge::<i64, isize>(&mut backend, &mut time_querier).unwrap();
+    let mut keys = backend.list_keys().unwrap();
+    keys.sort();
+    assert_eq!(keys, vec!["2-3200-3", "3-2900-4"]);
 }

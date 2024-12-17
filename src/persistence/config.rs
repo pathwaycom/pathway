@@ -27,12 +27,14 @@ use crate::persistence::backends::{
     FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
 };
 use crate::persistence::cached_object_storage::CachedObjectStorage;
-use crate::persistence::operator_snapshot::{ConcreteSnapshotReader, MultiConcreteSnapshotReader};
+use crate::persistence::operator_snapshot::{
+    ConcreteSnapshotMerger, ConcreteSnapshotReader, ConcreteSnapshotWriter,
+    MultiConcreteSnapshotReader,
+};
+use crate::persistence::state::FinalizedTimeQuerier;
 use crate::persistence::state::MetadataAccessor;
 use crate::persistence::Error as PersistenceBackendError;
 use crate::persistence::{PersistentId, SharedSnapshotWriter};
-
-use super::operator_snapshot::ConcreteSnapshotWriter;
 
 const STREAMS_DIRECTORY_NAME: &str = "streams";
 
@@ -431,12 +433,21 @@ impl PersistenceManagerConfig {
     pub fn create_operator_snapshot_writer<D, R>(
         &mut self,
         persistent_id: PersistentId,
-    ) -> Result<ConcreteSnapshotWriter<D, R>, PersistenceBackendError>
+    ) -> Result<(ConcreteSnapshotWriter<D, R>, ConcreteSnapshotMerger), PersistenceBackendError>
     where
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
         let backend = self.get_writer_backend(persistent_id)?;
-        Ok(ConcreteSnapshotWriter::new(backend, self.snapshot_interval))
+        let merger_backend = self.get_writer_backend(persistent_id)?;
+        let writer = ConcreteSnapshotWriter::new(backend, self.snapshot_interval);
+        let metadata_backend = self.backend.create()?;
+        let time_querier = FinalizedTimeQuerier::new(metadata_backend, self.total_workers);
+        let merger = ConcreteSnapshotMerger::new::<D, R>(
+            merger_backend,
+            self.snapshot_interval,
+            time_querier,
+        );
+        Ok((writer, merger))
     }
 }

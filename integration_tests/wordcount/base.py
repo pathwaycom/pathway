@@ -8,6 +8,7 @@ import pathlib
 import random
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 import warnings
@@ -187,7 +188,7 @@ def check_output_correctness(
             ), f"Word: {word} Output count: {output_count} Input count: {input_word_counts.get(word)}"
 
     if not interrupted_run:
-        assert n_old_lines < DEFAULT_INPUT_SIZE / 10, (
+        assert latest_input_file is None or n_old_lines < DEFAULT_INPUT_SIZE / 10, (
             f"Output contains too many old lines: {n_old_lines} while 1/10 of the input size "
             + f"is {DEFAULT_INPUT_SIZE / 10}"
         )
@@ -335,7 +336,7 @@ def run_pw_program_suddenly_terminate(
         input_path=input_path,
         output_path=output_path,
         pstorage_path=pstorage_path,
-        mode=STATIC_MODE_NAME,
+        mode=STREAMING_MODE_NAME,
         pstorage_type=pstorage_type,
         persistence_mode=persistence_mode,
         first_port=first_port,
@@ -391,10 +392,15 @@ def generate_dictionary(dict_size: int) -> list[str]:
 DICTIONARY: list[str] = generate_dictionary(10000)
 
 
-def generate_input(file_name, input_size, commit_frequency):
+def generate_input(
+    file_name: pathlib.Path | str,
+    input_size: int,
+    commit_frequency: int,
+    dictionary: list[str],
+) -> None:
     with open(file_name, "w") as fw:
         for seq_line_id in range(input_size):
-            word = random.choice(DICTIONARY)
+            word = random.choice(dictionary)
             dataset_line_dict = {"word": word}
             dataset_line = json.dumps(dataset_line_dict)
             fw.write(dataset_line + "\n")
@@ -403,13 +409,20 @@ def generate_input(file_name, input_size, commit_frequency):
                 pass
 
 
-def generate_next_input(inputs_path):
+def generate_next_input(
+    inputs_path: pathlib.Path,
+    *,
+    input_size: int | None = None,
+    dictionary: list[str] | None = None,
+    commit_frequency: int | None = None,
+) -> str:
     file_name = os.path.join(inputs_path, str(time.time()))
 
     generate_input(
         file_name=file_name,
-        input_size=DEFAULT_INPUT_SIZE,
-        commit_frequency=100000,
+        input_size=input_size or DEFAULT_INPUT_SIZE,
+        commit_frequency=commit_frequency or 100000,
+        dictionary=dictionary or DICTIONARY,
     )
 
     return file_name
@@ -454,7 +467,47 @@ def do_test_persistent_wordcount(
             print(f"Run {n_run}: finished")
 
 
-def do_test_failure_recovery_static(
+class InputGenerator:
+    def __init__(
+        self,
+        inputs_path: pathlib.Path,
+        input_size: int,
+        max_files: int,
+        waiting_time: float,
+        dictionary_size: int,
+        commit_frequency: int,
+    ) -> None:
+        self.inputs_path = inputs_path
+        self.input_size = input_size
+        self.max_files = max_files
+        self.waiting_time = waiting_time
+        self.should_stop = False
+        self.dictionary = generate_dictionary(dictionary_size)
+        self.commit_frequency = commit_frequency
+
+    def start(self) -> None:
+        def run() -> None:
+            for _ in range(self.max_files):
+                print(f"generating input of size {self.input_size}")
+                generate_next_input(
+                    self.inputs_path,
+                    input_size=self.input_size,
+                    dictionary=self.dictionary,
+                    commit_frequency=self.commit_frequency,
+                )
+                time.sleep(self.waiting_time)
+                if self.should_stop:
+                    break
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.should_stop = True
+        self.thread.join()
+
+
+def do_test_failure_recovery(
     *,
     n_backfilling_runs,
     n_threads,
@@ -471,11 +524,17 @@ def do_test_failure_recovery_static(
 
     with PStoragePath(pstorage_type, tmp_path) as pstorage_path:
         reset_runtime(inputs_path, output_path, pstorage_path, pstorage_type)
-        finished = False
-        input_file_name = generate_next_input(inputs_path)
-        for n_run in range(n_backfilling_runs):
-            print(f"Run {n_run}: generating input")
 
+        input_generator = InputGenerator(
+            inputs_path,
+            input_size=100_000,
+            max_files=n_backfilling_runs * 5,
+            waiting_time=min_work_time / 5,
+            dictionary_size=100_000,
+            commit_frequency=1_000_000,  # don't do manual commits
+        )
+        input_generator.start()
+        for n_run in range(n_backfilling_runs):
             print(f"Run {n_run}: running pathway program")
             run_pw_program_suddenly_terminate(
                 n_threads=n_threads,
@@ -490,26 +549,22 @@ def do_test_failure_recovery_static(
                 first_port=first_port,
             )
 
-            finished_in_this_run = check_output_correctness(
-                input_file_name, inputs_path, output_path, interrupted_run=True
+            check_output_correctness(
+                None, inputs_path, output_path, interrupted_run=True
             )
-            if finished_in_this_run:
-                finished = True
 
-        if finished:
-            print("The program finished during one of interrupted runs")
-        else:
-            elapsed = get_pw_program_run_time(
-                n_threads=n_threads,
-                n_processes=n_processes,
-                input_path=inputs_path,
-                output_path=output_path,
-                pstorage_path=pstorage_path,
-                mode=STATIC_MODE_NAME,
-                pstorage_type=pstorage_type,
-                persistence_mode=persistence_mode,
-                first_port=first_port,
-            )
-            print("Time elapsed for non-interrupted run:", elapsed)
-            print("Checking correctness at the end")
-            check_output_correctness(input_file_name, inputs_path, output_path)
+        input_generator.stop()
+        elapsed = get_pw_program_run_time(
+            n_threads=n_threads,
+            n_processes=n_processes,
+            input_path=inputs_path,
+            output_path=output_path,
+            pstorage_path=pstorage_path,
+            mode=STATIC_MODE_NAME,
+            pstorage_type=pstorage_type,
+            persistence_mode=persistence_mode,
+            first_port=first_port,
+        )
+        print("Time elapsed for non-interrupted run:", elapsed)
+        print("Checking correctness at the end")
+        check_output_correctness(None, inputs_path, output_path)

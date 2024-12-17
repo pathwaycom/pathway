@@ -3,7 +3,9 @@
 use std::fmt::Display;
 use std::mem::{swap, take};
 use std::str::FromStr;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use bincode::{deserialize, serialize};
 use differential_dataflow::ExchangeData;
@@ -12,6 +14,7 @@ use log::error;
 
 use crate::engine::{Timestamp, TotalFrontier};
 use crate::persistence::backends::{BackendPutFuture, Error as BackendError, PersistenceBackend};
+use crate::persistence::state::FinalizedTimeQuerier;
 use crate::persistence::PersistenceTime;
 
 #[allow(clippy::module_name_repetitions)]
@@ -27,6 +30,7 @@ pub trait OperatorSnapshotWriter<T, D, R> {
     fn flush(&mut self, time: TotalFrontier<T>) -> Vec<BackendPutFuture>;
 }
 
+#[derive(Debug, Clone, Copy)]
 struct ChunkName {
     level: usize,
     time: Timestamp,
@@ -71,18 +75,18 @@ fn process_chunk_names(keys: Vec<String>) -> Vec<ChunkName> {
 }
 
 struct Chunks {
-    current: Vec<String>,
-    too_old: Vec<String>,
-    too_new: Vec<String>,
+    current: Vec<ChunkName>,
+    too_old: Vec<ChunkName>,
+    too_new: Vec<ChunkName>,
 }
 
 #[allow(clippy::collapsible_else_if)] // it separates two cases better (0-level and other files)
 fn get_chunks(keys: Vec<String>, threshold_time: TotalFrontier<Timestamp>) -> Chunks {
     let chunks = process_chunk_names(keys);
     let mut max_time_per_level = Vec::new();
-    let mut current: Vec<String> = Vec::new();
-    let mut too_old: Vec<String> = Vec::new();
-    let mut too_new: Vec<String> = Vec::new();
+    let mut current: Vec<ChunkName> = Vec::new();
+    let mut too_old: Vec<ChunkName> = Vec::new();
+    let mut too_new: Vec<ChunkName> = Vec::new();
     for chunk in &chunks {
         if max_time_per_level.len() <= chunk.level {
             max_time_per_level.resize(chunk.level + 1, Timestamp(0));
@@ -99,23 +103,23 @@ fn get_chunks(keys: Vec<String>, threshold_time: TotalFrontier<Timestamp>) -> Ch
         // special handling of level 0 as these are unmerged chunks
         if chunk.level == 0 {
             if TotalFrontier::At(chunk.time) >= threshold_time {
-                too_new.push(chunk.to_string());
+                too_new.push(chunk);
             } else if max_time_per_level
                 .get(1)
                 .map_or(true, |max_time| chunk.time > *max_time)
             {
                 // If max_time_per_level[1] exists it means there are merged chunks.
                 // Unmerged chunks are valid if their time > last merged chunk time
-                current.push(chunk.to_string());
+                current.push(chunk);
             } else {
-                too_old.push(chunk.to_string());
+                too_old.push(chunk);
             }
         } else {
             if chunk.time < max_time_per_level[chunk.level] {
-                too_old.push(chunk.to_string());
+                too_old.push(chunk);
             } else {
                 assert!(chunk.time == max_time_per_level[chunk.level]);
-                current.push(chunk.to_string());
+                current.push(chunk);
             }
         }
     }
@@ -125,6 +129,38 @@ fn get_chunks(keys: Vec<String>, threshold_time: TotalFrontier<Timestamp>) -> Ch
         too_old,
         too_new,
     }
+}
+
+fn read_single_chunk<D, R>(
+    chunk: ChunkName,
+    backend: &dyn PersistenceBackend,
+) -> Result<Vec<(D, R)>, BackendError>
+where
+    D: ExchangeData,
+    R: ExchangeData,
+{
+    let serialized_data = backend.get_value(&chunk.to_string())?;
+    deserialize(&serialized_data).map_err(|err| BackendError::Bincode(*err))
+}
+
+fn read_chunks<D, R>(
+    chunks: &[ChunkName],
+    backend: &dyn PersistenceBackend,
+) -> Result<Vec<(D, R)>, BackendError>
+where
+    D: ExchangeData,
+    R: ExchangeData,
+{
+    let mut result = Vec::new();
+    for chunk in chunks {
+        let mut v = read_single_chunk(*chunk, backend)?;
+        if v.len() > result.len() {
+            swap(&mut result, &mut v);
+        }
+        result.append(&mut v);
+    }
+    //TODO: maybe consolidate here as well - needs benchmarking
+    Ok(result)
 }
 
 pub struct ConcreteSnapshotReader {
@@ -153,20 +189,9 @@ where
         let keys = self.backend.list_keys()?;
         let chunks = get_chunks(keys, self.threshold_time);
         for chunk in itertools::chain(chunks.too_old.iter(), chunks.too_new.iter()) {
-            self.backend.remove_key(chunk)?;
+            self.backend.remove_key(&chunk.to_string())?;
         }
-        let mut result = Vec::new();
-        for chunk in &chunks.current {
-            let serialized_data = self.backend.get_value(chunk)?;
-            let mut v: Vec<(D, R)> =
-                deserialize(&serialized_data).map_err(|err| BackendError::Bincode(*err))?;
-            if v.len() > result.len() {
-                swap(&mut result, &mut v);
-            }
-            result.append(&mut v);
-        }
-        //TODO: maybe consolidate here as well - needs benchmarking
-        Ok(result)
+        read_chunks(&chunks.current, self.backend.as_ref())
     }
 }
 
@@ -240,6 +265,9 @@ where
     fn save(&mut self, time: Timestamp) {
         let mut data = take(&mut self.buffer);
         consolidate(&mut data);
+        if data.is_empty() {
+            return;
+        }
         let chunk_name = ChunkName {
             level: 0,
             time,
@@ -301,5 +329,163 @@ where
 {
     fn flush(&mut self, time: TotalFrontier<Timestamp>) -> Vec<BackendPutFuture> {
         OperatorSnapshotWriter::<Timestamp, D, R>::flush(self, time)
+    }
+}
+
+const MINIMAL_MERGE_WAIT_TIME: core::time::Duration = core::time::Duration::from_secs(1);
+
+pub struct ConcreteSnapshotMerger {
+    finish_sender: mpsc::Sender<()>,
+    thread_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ConcreteSnapshotMerger {
+    pub fn new<D, R>(
+        backend: Box<dyn PersistenceBackend>,
+        snapshot_interval: core::time::Duration,
+        time_querier: FinalizedTimeQuerier,
+    ) -> Self
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let (finish_sender, thread_handle) =
+            Self::start::<D, R>(backend, snapshot_interval, time_querier);
+        Self {
+            finish_sender,
+            thread_handle: Some(thread_handle),
+        }
+    }
+
+    /// It finds chunks that are fully committed - their timestamp
+    /// is already saved in persistence metadata for all workers.
+    /// If among these chunks are chunks at level 0 (`unmerged_chunks`), it starts merging.
+    /// It continues merging with snapshots at increasing levels (there can be at most one snapshot at each level).
+    /// Merging stops when 2^level >= total length of merged snapshots.
+    /// Then merged snapshots are consolidated and saved as {level}-{max_timestamp_in_data}-{length_of_data}.
+    pub fn maybe_merge<D, R>(
+        backend: &mut dyn PersistenceBackend,
+        time_querier: &mut FinalizedTimeQuerier,
+    ) -> Result<(), BackendError>
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let keys = backend.list_keys()?;
+        let threshold_time = time_querier.last_finalized_timestamp()?;
+        let chunks = get_chunks(keys, threshold_time);
+        // We're still working - only too old chunks can be removed.
+        // Too new chunks can't be merged yet and can't be removed.
+        for chunk in chunks.too_old {
+            backend.remove_key(&chunk.to_string())?;
+        }
+        let mut chunk_at_level = Vec::new();
+        let mut unmerged_chunks = Vec::new();
+        let mut max_unmerged_time = Timestamp(0);
+        for chunk in chunks.current {
+            if chunk.level == 0 {
+                unmerged_chunks.push(chunk);
+                max_unmerged_time = std::cmp::max(max_unmerged_time, chunk.time);
+            } else {
+                if chunk.level >= chunk_at_level.len() {
+                    chunk_at_level.resize(chunk.level + 1, None);
+                }
+                assert!(chunk_at_level[chunk.level].is_none()); // can't have more than one chunk at a given level
+                chunk_at_level[chunk.level] = Some(chunk);
+            }
+        }
+        if unmerged_chunks.is_empty() {
+            return Ok(());
+        }
+        let mut buffer = read_chunks::<D, R>(&unmerged_chunks, backend)?;
+        let mut max_allowed_size = 2;
+        let mut level = 1;
+        while level < chunk_at_level.len() {
+            if let Some(chunk) = chunk_at_level[level] {
+                let mut v = read_single_chunk::<D, R>(chunk, backend)?;
+                if v.len() > buffer.len() {
+                    swap(&mut buffer, &mut v);
+                }
+                buffer.append(&mut v);
+            }
+            if buffer.len() <= max_allowed_size {
+                break;
+            }
+            max_allowed_size *= 2;
+            level += 1;
+        }
+        consolidate(&mut buffer);
+        // loop in case we have no bigger chunks yet
+        while buffer.len() > max_allowed_size {
+            max_allowed_size *= 2;
+            level += 1;
+        }
+        let chunk = ChunkName {
+            level,
+            time: max_unmerged_time,
+            len: buffer.len(),
+        };
+        let serialized_data = serialize(&buffer).expect("entry should be serializable");
+        let future = backend.put_value(&chunk.to_string(), serialized_data);
+        // Can't start new round if future not finished.
+        futures::executor::block_on(future).expect("unexpected future cancelling")
+    }
+
+    fn run<D, R>(
+        mut backend: Box<dyn PersistenceBackend>,
+        receiver: &mpsc::Receiver<()>,
+        timeout: core::time::Duration,
+        time_querier: &mut FinalizedTimeQuerier,
+    ) where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let mut next_try_at = Instant::now();
+        loop {
+            let now = Instant::now();
+            let duration = next_try_at
+                .checked_duration_since(now)
+                .unwrap_or(Duration::ZERO);
+            next_try_at = now
+                .checked_add(timeout)
+                .expect("now with added timeout should fit into Instant");
+            match receiver.recv_timeout(duration) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Err(e) = Self::maybe_merge::<D, R>(backend.as_mut(), time_querier) {
+                        error!("Error while trying to merge persisted data: {e}");
+                    }
+                }
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+
+    fn start<D, R>(
+        backend: Box<dyn PersistenceBackend>,
+        timeout: core::time::Duration,
+        mut time_querier: FinalizedTimeQuerier,
+    ) -> (mpsc::Sender<()>, thread::JoinHandle<()>)
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let timeout = std::cmp::max(timeout, MINIMAL_MERGE_WAIT_TIME);
+        let (sender, receiver) = mpsc::channel();
+        let thread_handle = thread::Builder::new()
+            .name("SnapshotMerger".to_string()) // TODO maybe better name
+            .spawn(move || Self::run::<D, R>(backend, &receiver, timeout, &mut time_querier))
+            .expect("persistence read thread creation should succeed");
+        (sender, thread_handle)
+    }
+}
+
+impl Drop for ConcreteSnapshotMerger {
+    fn drop(&mut self) {
+        self.finish_sender.send(()).unwrap();
+        if let Some(thread_handle) = take(&mut self.thread_handle) {
+            if let Err(e) = thread_handle.join() {
+                error!("Failed to join snapshot merger thread: {e:?}");
+            }
+        }
     }
 }
