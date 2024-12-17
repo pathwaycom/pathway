@@ -1,12 +1,104 @@
+import functools
 import re
+from abc import ABC, abstractmethod
+from typing import Any, Callable
+
+from pydantic import BaseModel, field_validator
 
 import pathway as pw
 
 
+class BasePromptTemplate(BaseModel, ABC):
+    class Config:
+        arbitrary_types_allowed = True
+
+    @abstractmethod
+    def as_udf(self, **kwargs: Any) -> pw.UDF: ...
+
+
+class FunctionPromptTemplate(BasePromptTemplate):
+    """
+    Utility class to create prompt templates from callables or UDF.
+
+    ``as_udf`` may take kwargs to partially pre-fill the prompt template.
+    """
+
+    function_template: Callable[[str, str], str] | pw.UDF
+
+    def as_udf(self, **kwargs: Any) -> pw.UDF:
+        if isinstance(self.function_template, pw.UDF):
+            return self.function_template
+        return pw.udf(functools.partial(self.function_template, **kwargs))
+
+
+class StringPromptTemplate(BasePromptTemplate):
+    """
+    Utility class to create prompt templates that can be applied to tables.
+
+    >>> import pandas as pd
+    >>> import pathway as pw
+    >>> prompt_template = "Answer the following question. Context: {context}. Question: {query}"
+    >>> t = pw.debug.table_from_pandas(pd.DataFrame([{"context": "Here are some facts...",
+    ...     "query": "How much do penguins weigh in average?"}]))
+    >>> template = StringPromptTemplate(template=prompt_template)
+    >>> template_udf = template.as_udf()
+    >>> t = t.select(prompt=template_udf(context=pw.this.context, query=pw.this.query))
+    """
+
+    template: str
+
+    def format(self, **kwargs: Any) -> str:
+        return self.template.format(**kwargs)
+
+    def as_udf(self, **kwargs: Any) -> pw.UDF:
+        @pw.udf
+        def udf_formatter(context: str, query: str) -> str:
+            return self.format(query=query, context=context, **kwargs)
+
+        return udf_formatter
+
+
+class RAGPromptTemplate(StringPromptTemplate):
+    @field_validator("template")
+    @classmethod
+    def is_valid_rag_template(cls, template: str) -> str:
+        if "{context}" not in template or "{query}" not in template:
+            raise ValueError(
+                "Template must contain `{context}` and `{query}` placeholders."
+            )
+
+        try:
+            template.format(context=" ", query=" ")
+        except KeyError:
+            raise ValueError(
+                "RAG prompt template expects `context` and `query` placeholders only."
+            )
+        return template
+
+
+class RAGFunctionPromptTemplate(FunctionPromptTemplate):
+
+    @field_validator("function_template")
+    @classmethod
+    def is_valid_rag_template(cls, template: Callable | pw.UDF) -> pw.UDF:
+        if isinstance(template, pw.UDF):
+            fn: Callable = template.__wrapped__
+        else:
+            fn = template
+            template = pw.udf(template)
+
+        try:
+            fn(query=" ", context=" ")
+        except TypeError as e:
+            raise ValueError(
+                "RAG prompt template expects `context` and `query` placeholders only.\n"
+                + str(e)
+            )
+        return template
+
+
 @pw.udf
-def prompt_short_qa(
-    query: str, docs: list[pw.Json] | list[str], additional_rules: str = ""
-) -> str:
+def prompt_short_qa(context: str, query: str, additional_rules: str = "") -> str:
     """
     Generate a RAG prompt with given context.
 
@@ -15,22 +107,15 @@ def prompt_short_qa(
     Suggests specific formatting for yes/no questions and dates.
 
     Args:
+        context: Information sources or the documents to be passed to the LLM as context.
         query: Question or prompt to be answered.
-        docs: List of documents to be passed to the LLM as context. pw.Json can be wrapped around
-            dict, string or any other type as document.
         additional_rules: Optional parameter for rest of the string args that may include
             additional instructions or information.
 
     Returns:
-        Prompt containing question and relevant docs.
+        Prompt containing question and the relevant docs.
     """
-    context_pieces = []
 
-    for i, doc in enumerate(docs, 1):
-        context_pieces.append(str(doc))
-        context_pieces.append("")
-
-    context_str = "\n".join(context_pieces)
     prompt = (
         "Please provide an answer based solely on the provided sources. "
         "Keep your answer concise and accurate. Make sure that it starts with an expression in standardized format. "
@@ -44,7 +129,7 @@ def prompt_short_qa(
     prompt += (
         "Now it's your turn. Below are several sources of information:"
         "\n------\n"
-        f"{context_str}"
+        f"{context}"
         "\n------\n"
         f"Query: {query}\n"
         "Answer:"
@@ -54,8 +139,8 @@ def prompt_short_qa(
 
 @pw.udf
 def prompt_qa(
+    context: str,
     query: str,
-    docs: list[pw.Json] | list[str],
     information_not_found_response="No information found.",
     additional_rules: str = "",
 ) -> str:
@@ -65,9 +150,8 @@ def prompt_qa(
     Given a question and list of context documents, generates prompt to be sent to the LLM.
 
     Args:
+        context: Information sources or the documents to be passed to the LLM as context.
         query: Question or prompt to be answered.
-        docs: List of documents to be passed to the LLM as context. pw.Json can be wrapped around
-            dict, string or any other type as document.
         information_not_found_response: Response LLM should generate in case answer cannot
             be inferred from the given documents.
         additional_rules: Optional parameter for rest of the string args that may include
@@ -79,18 +163,10 @@ def prompt_qa(
     >>> import pandas as pd
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import prompts
-    >>> t = pw.debug.table_from_pandas(pd.DataFrame([{"question": "What is rag?"}]))
-    >>> docs = [{"text": "Pathway is a high-throughput, low-latency data processing framework that handles live data & streaming for you."},
-    ... {"text": "RAG stands for Retrieval Augmented Generation."}]
-    >>> t_with_docs = t.select(*pw.this, docs=docs)
-    >>> r = t_with_docs.select(prompt=prompts.prompt_qa(pw.this.question, pw.this.docs))
+    >>> t = pw.debug.table_from_pandas(pd.DataFrame([{"context": "Here are some facts...",
+    ...     "query": "How much do penguins weigh in average?"}]))
+    >>> r = t.select(prompt=prompts.prompt_qa(pw.this.context, pw.this.query))
     """  # noqa: E501
-    context_pieces = []
-
-    for i, doc in enumerate(docs, 1):
-        context_pieces.append(str(doc))
-
-    context_str = "\n\n".join(context_pieces)
 
     prompt = (
         "Please provide an answer based solely on the provided sources. "
@@ -103,7 +179,7 @@ def prompt_qa(
         f"If question cannot be inferred from documents SAY `{information_not_found_response}`. "
         "Now it's your turn. Below are several sources of information:"
         "\n------\n"
-        f"{context_str}"
+        f"{context}"
         "\n------\n"
         f"Query: {query}\n"
         "Answer:"
@@ -112,6 +188,8 @@ def prompt_qa(
 
 
 # prompt for `answer_with_geometric_rag_strategy`, it is the same as in the research project
+# docs` argument will be deprecated in favor of `context: str` argument
+# this will require the use of `BaseContextProcessor`
 @pw.udf
 def prompt_qa_geometric_rag(
     query: str,
@@ -183,6 +261,100 @@ def prompt_qa_geometric_rag(
     return prompt
 
 
+# citations
+
+
+@pw.udf
+def prompt_citing_qa(context: str, query: str, additional_rules: str = "") -> str:
+    """
+    Generate RAG prompt that instructs the LLM to give citations with the answer.
+
+    Given a question and list of context documents, generates prompt to be sent to the LLM.
+
+    Args:
+        context: Information sources or the documents to be passed to the LLM as context.
+        query: Question or prompt to be answered.
+        additional_rules: Optional parameter for rest of the string args that may include
+            additional instructions or information.
+
+    Returns:
+        Prompt containing question and the relevant docs.
+
+    >>> import pandas as pd
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import prompts
+    >>> t = pw.debug.table_from_pandas(pd.DataFrame([{"context": "Here are some facts...",
+    ...     "query": "How much do penguins weigh in average?"}]))
+    >>> r = t.select(prompt=prompts.prompt_citing_qa(pw.this.context, pw.this.query))
+    """  # noqa: E501
+
+    prompt = (
+        "Please provide an answer based solely on the provided sources. "
+        "When referencing information from a source, "
+        "cite the appropriate source(s) using their corresponding numbers. "
+        "Every answer should include at least one source citation. "
+        "Only cite a source when you are explicitly referencing it. "
+        "If exists, mention specific article/section header you use at the beginning of answer, such as '4.a Client has rights to...'. "  # noqa: E501
+        "Article headers may or may not be in docs, dont mention it if there is none. "
+        "If question cannot be inferred from documents SAY `No information found`. "
+    )
+
+    prompt += additional_rules + " "
+
+    prompt += (
+        "Now it's your turn. Below are several numbered sources of information:"
+        "\n------\n"
+        f"{context}"
+        "\n------\n"
+        f"Query: {query}\n"
+        "Answer:"
+    )
+    return prompt
+
+
+@pw.udf
+def parse_cited_response(response_text, docs):
+    cited_docs = [
+        int(cite[1:-1]) - 1
+        for cite in set(re.findall("\[\d+\]", response_text))  # noqa: W605
+    ]
+    start_index = response_text.find("*") + 1
+    end_index = response_text.find("*", start_index)
+
+    citations = [docs[i] for i in cited_docs if i in cited_docs]
+    cleaned_citations = []
+
+    if (
+        start_index != -1 and end_index != -1
+    ):  # doing this for the GIF, we need a better way to do this, TODO: redo
+        cited = response_text[start_index:end_index]
+        response_text = response_text[end_index:].strip()
+        cited = (
+            cited.replace(" ", "")
+            .replace(",,", ",")
+            .replace(",", ",\n")
+            .replace(" ", "\n")
+        )
+
+        text_body = citations[0]["text"]
+        new_text = f"<b>{cited}</b>\n\n".replace("\n\n\n", "\n") + text_body
+
+        citations[0]["text"] = new_text
+
+        cleaned_citations.append(citations[0])
+
+    if len(citations) > 1:
+        for doc in citations[1:]:
+            text_body = doc["text"]  # TODO: unformat and clean the text
+            doc["text"] = text_body
+            cleaned_citations.append(doc)
+
+    return response_text, cleaned_citations
+
+
+# summarization
+
+
 @pw.udf
 def prompt_summarize(text_list: list[str]) -> str:
     """
@@ -201,6 +373,9 @@ def prompt_summarize(text_list: list[str]) -> str:
     Summary:"""
 
     return prompt
+
+
+# query re-writing
 
 
 @pw.udf
@@ -255,90 +430,7 @@ def prompt_query_rewrite(query: str, *additional_args: str) -> str:
     return prompt
 
 
-@pw.udf
-def prompt_citing_qa(
-    query: str, docs: list[pw.Json], additional_rules: str = ""
-) -> str:
-    context_pieces = []
-
-    for i, doc in enumerate(docs, 1):
-        context_pieces.append(f"# Source {i}")
-        context_pieces.append(doc["text"])  # type: ignore
-        context_pieces.append("")
-    context_str = "\n".join(context_pieces)
-    prompt = (
-        "Please provide an answer based solely on the provided sources. "
-        "When referencing information from a source, "
-        "cite the appropriate source(s) using their corresponding numbers. "
-        "Every answer should include at least one source citation. "
-        "Only cite a source when you are explicitly referencing it. "
-        "If exists, mention specific article/section header you use at the beginning of answer, such as '4.a Client has rights to...'. "  # noqa: E501
-        "Article headers may or may not be in docs, dont mention it if there is none. "
-        # "If none of the sources are helpful, you should indicate that. "
-        # "For example:\n"
-        # "# Source 1:\n"
-        # "4.a The sky is red in the evening and blue in the morning.\n"
-        # "# Source 2:\n"
-        # "5.c Water is wet when the sky is red.\n"
-        # "Query: When is water wet?\n"
-        # "Answer: *5.c* Water will be wet when the sky is red [2], "
-        # "which occurs in the evening [1].\n"
-        # "If several citations are used, separate them with comma such as, '*5.c,4.a*'\n"
-        "If question cannot be inferred from documents SAY `No information found`. "
-    )
-
-    prompt += additional_rules + " "
-
-    prompt += (
-        "Now it's your turn. Below are several numbered sources of information:"
-        "\n------\n"
-        f"{context_str}"
-        "\n------\n"
-        f"Query: {query}\n"
-        "Answer:"
-    )
-    return prompt
-
-
-@pw.udf
-def parse_cited_response(response_text, docs):
-    cited_docs = [
-        int(cite[1:-1]) - 1
-        for cite in set(re.findall("\[\d+\]", response_text))  # noqa: W605
-    ]
-    start_index = response_text.find("*") + 1
-    end_index = response_text.find("*", start_index)
-
-    citations = [docs[i] for i in cited_docs if i in cited_docs]
-    cleaned_citations = []
-
-    if (
-        start_index != -1 and end_index != -1
-    ):  # doing this for the GIF, we need a better way to do this, TODO: redo
-        cited = response_text[start_index:end_index]
-        response_text = response_text[end_index:].strip()
-        cited = (
-            cited.replace(" ", "")
-            .replace(",,", ",")
-            .replace(",", ",\n")
-            .replace(" ", "\n")
-        )
-
-        text_body = citations[0]["text"]
-        new_text = f"<b>{cited}</b>\n\n".replace("\n\n\n", "\n") + text_body
-
-        citations[0]["text"] = new_text
-
-        cleaned_citations.append(citations[0])
-
-    if len(citations) > 1:
-        for doc in citations[1:]:
-            text_body = doc["text"]  # TODO: unformat and clean the text
-            doc["text"] = text_body
-            cleaned_citations.append(doc)
-
-    return response_text, cleaned_citations
-
+# default system prompts
 
 DEFAULT_JSON_TABLE_PARSE_PROMPT = """Explain the given table in JSON format in detail.
 Do not skip over details or units/metrics.

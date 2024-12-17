@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import pytest
+
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
+from pathway.xpacks.llm import llms
+from pathway.xpacks.llm._utils import _unwrap_udf
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 from .mocks import IdentityMockChat
+from .utils import build_vector_store, create_rag_app
 
 
 @pw.udf
@@ -25,13 +30,8 @@ def identity_chat_model(x: list[dict[str, pw.Json]], model: str) -> str:
 
 
 @pw.udf
-def _short_template(query: str, docs: list[pw.Json]) -> str:
-    return f"short,{query},{','.join(doc.as_dict()['text'] for doc in docs)}"
-
-
-@pw.udf
-def _long_template(query: str, docs: list[pw.Json]) -> str:
-    return f"long,{query},{','.join(doc.as_dict()['text'] for doc in docs)}"
+def _prompt_template(query: str, context: str) -> str:
+    return context
 
 
 @pw.udf
@@ -53,17 +53,15 @@ def test_base_rag():
     rag = BaseRAGQuestionAnswerer(
         IdentityMockChat(),
         vector_server,
-        short_prompt_template=_short_template,
-        long_prompt_template=_long_template,
+        prompt_template=_prompt_template,
         summarize_template=_summarize_template,
-        search_topk=2,
+        search_topk=1,
     )
 
     answer_queries = pw.debug.table_from_rows(
         schema=rag.AnswerQuerySchema,
         rows=[
-            ("foo", None, "gpt3.5", "short"),
-            ("baz", None, "gpt4", "long"),
+            ("foo", None, "gpt3.5"),
         ],
     )
 
@@ -73,8 +71,7 @@ def test_base_rag():
         pw.debug.table_from_markdown(
             """
             result
-            gpt3.5,short,foo,foo,bar
-            gpt4,long,baz,baz,bar
+            gpt3.5,foo
             """
         ),
     )
@@ -95,3 +92,74 @@ def test_base_rag():
             """
         ),
     )
+
+
+def test_rag_app_set_prompt():
+    prompt_template = "Answer the question. Context: {context}\nQuestion: {query}"
+
+    rag_app = create_rag_app(prompt_template=prompt_template)
+
+    assert isinstance(rag_app.prompt_udf, pw.UDF)
+
+    assert _unwrap_udf(rag_app.prompt_udf)(query=" ", context=" ")
+
+
+def test_rag_app_set_callable_prompt():
+    def prompt_template(query: str, context: str) -> str:
+        return f"Q: {query}, C: {context}"
+
+    rag_app = create_rag_app(prompt_template=prompt_template)
+
+    assert isinstance(rag_app.prompt_udf, pw.UDF)
+
+    assert _unwrap_udf(rag_app.prompt_udf)(query=" ", context=" ")
+
+
+def test_rag_app_set_udf_prompt():
+    @pw.udf
+    def prompt_template(query: str, context: str) -> str:
+        return f"Q: {query}, C: {context}"
+
+    rag_app = create_rag_app(prompt_template=prompt_template)
+
+    assert isinstance(rag_app.prompt_udf, pw.UDF)
+
+    assert _unwrap_udf(rag_app.prompt_udf)(query=" ", context=" ")
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Context: {context}, query: {query}, abc: {abc}",
+        "Context: {something}, query: {else}",
+        "Context: {context}",
+        "No placeholder template.",
+    ],
+)
+def test_invalid_prompt_template_raises_error(prompt: str):
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    class FakeChatModel(llms.BaseChat):
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return "Text"
+
+        def _accepts_call_arg(self, arg_name: str) -> bool:
+            return True
+
+    chat = FakeChatModel()
+
+    vector_server = build_vector_store(fake_embeddings_model)
+
+    with pytest.raises(ValueError) as exc_info:
+        BaseRAGQuestionAnswerer(
+            llm=chat,
+            indexer=vector_server,
+            prompt_template=prompt,
+        )
+
+    err_msg = str(exc_info.value)
+
+    assert "context" in err_msg
+    assert "query" in err_msg

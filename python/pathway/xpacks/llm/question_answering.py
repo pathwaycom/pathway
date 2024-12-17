@@ -1,8 +1,8 @@
 # Copyright © 2024 Pathway
 import json
-from abc import abstractmethod
-from enum import Enum
-from typing import TYPE_CHECKING
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable
 from warnings import warn
 
 import requests
@@ -218,46 +218,71 @@ def answer_with_geometric_rag_strategy_from_index(
     )
 
 
-class AIResponseType(Enum):
-    SHORT = "short"
-    LONG = "long"
+class BaseContextProcessor(ABC):
+    """Base class for formatting documents to LLM context.
+
+    Abstract method ``docs_to_context`` defines the behavior for converting documents to context.
+    """
+
+    def maybe_unwrap_docs(self, docs: pw.Json | list[pw.Json] | list[Doc]):
+        if isinstance(docs, pw.Json):
+            doc_ls: list[Doc] = docs.as_list()
+        elif isinstance(docs, list) and all([isinstance(dc, dict) for dc in docs]):
+            doc_ls = docs  # type: ignore
+        elif all([isinstance(doc, pw.Json) for doc in docs]):
+            doc_ls = [doc.as_dict() for doc in docs]  # type: ignore
+        else:
+            raise ValueError(
+                """`docs` argument is not instance of (pw.Json | list[pw.Json] | list[Doc]).
+                            Please check your pipeline. Using `pw.reducers.tuple` may help."""
+            )
+
+        if len(doc_ls) == 1 and isinstance(doc_ls[0], list | tuple):  # unpack if needed
+            doc_ls = doc_ls[0]
+
+        return doc_ls
+
+    def apply(self, docs: pw.Json | list[pw.Json] | list[Doc]) -> str:
+        unwrapped_docs = self.maybe_unwrap_docs(docs)
+        return self.docs_to_context(unwrapped_docs)
+
+    @abstractmethod
+    def docs_to_context(self, docs: list[dict] | list[Doc]) -> str: ...
+
+    def as_udf(self) -> pw.UDF:
+        return pw.udf(self.apply)
 
 
-@pw.udf
-def _filter_document_metadata(
-    docs: pw.Json | list[pw.Json] | list[Doc], metadata_keys: list[str] = ["path"]
-) -> list[Doc]:
-    """Filter context document metadata to keep the keys in the
-    provided `metadata_keys` list.
+@dataclass
+class SimpleContextProcessor(BaseContextProcessor):
+    """Context processor that filters metadata fields and joins the documents."""
 
-    Works on both ColumnReference and list of pw.Json."""
-    if isinstance(docs, pw.Json):
-        doc_ls: list[Doc] = docs.as_list()
-    elif isinstance(docs, list) and all([isinstance(dc, dict) for dc in docs]):
-        doc_ls = docs  # type: ignore
-    elif all([isinstance(dc, pw.Json) for dc in docs]):
-        doc_ls = [dc.as_dict() for dc in docs]  # type: ignore
-    else:
-        raise ValueError(
-            """`docs` argument is not instance of (pw.Json | list[pw.Json] | list[Doc]).
-                         Please check your pipeline. Using `pw.reducers.tuple` may help."""
+    context_metadata_keys: list[str] = field(default_factory=lambda: ["path"])
+    context_joiner: str = "\n\n"
+
+    def simplify_context_metadata(self, docs: list[Doc]) -> list[Doc]:
+        filtered_docs = []
+        for doc in docs:
+            filtered_doc = {"text": doc["text"]}
+            doc_metadata: dict = doc.get("metadata", {})  # type: ignore
+
+            for key in self.context_metadata_keys:
+
+                if key in doc_metadata:
+                    filtered_doc[key] = doc_metadata[key]
+
+            filtered_docs.append(filtered_doc)
+
+        return filtered_docs
+
+    def docs_to_context(self, docs: list[dict] | list[Doc]) -> str:
+        docs = self.simplify_context_metadata(docs)
+
+        context = self.context_joiner.join(
+            [json.dumps(doc, ensure_ascii=False) for doc in docs]
         )
 
-    if len(doc_ls) == 1 and isinstance(doc_ls[0], list | tuple):  # unpack if needed
-        doc_ls = doc_ls[0]
-
-    filtered_docs = []
-    for doc in doc_ls:
-        filtered_doc = {"text": doc["text"]}
-        for key in metadata_keys:
-            if key in doc.get("metadata", {}):
-                assert isinstance(doc["metadata"], dict)
-                metadata_dict: dict = doc["metadata"]
-                filtered_doc[key] = metadata_dict[key]
-
-        filtered_docs.append(filtered_doc)
-
-    return filtered_docs
+        return context
 
 
 class BaseQuestionAnswerer:
@@ -300,11 +325,12 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         indexer: Indexing object for search & retrieval to be used for context augmentation.
         default_llm_name: Default LLM model to be used in queries, only used if ``model`` parameter in post request is not specified.
             Omitting or setting this to ``None`` will default to the model name set during LLM's initialization.
-
-        short_prompt_template: Template for document question answering with short response.
-            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_short_qa``.
-        long_prompt_template: Template for document question answering with long response.
-            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+        prompt_template: Template for document question answering with short response.
+            Either string template, callable or a pw.udf function is expected.
+            Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+            String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
+        context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
+            Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         search_topk: Top k parameter for the retrieval. Adjusts number of chunks in the context.
 
@@ -339,9 +365,11 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     ...     cache_strategy=DiskCache(),
     ...     temperature=0.05,
     ... )
+    >>> prompt_template = "Answer the question. Context: {context}. Question: {query}"  # doctest: +SKIP
     >>> rag = BaseRAGQuestionAnswerer(  # doctest: +SKIP
     ...     llm=chat,
     ...     indexer=vector_server,
+    ...     prompt_template=prompt_template,
     ... )
     >>> app = QASummaryRestServer(app_host, app_port, rag)  # doctest: +SKIP
     >>> app.run_server()  # doctest: +SKIP
@@ -353,8 +381,10 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         indexer: VectorStoreServer | DocumentStore,
         *,
         default_llm_name: str | None = None,
-        short_prompt_template: pw.UDF = prompts.prompt_short_qa,
-        long_prompt_template: pw.UDF = prompts.prompt_qa,
+        prompt_template: str | Callable[[str, str], str] | pw.UDF = prompts.prompt_qa,
+        context_processor: (
+            BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
+        ) = SimpleContextProcessor(),
         summarize_template: pw.UDF = prompts.prompt_summarize,
         search_topk: int = 6,
     ) -> None:
@@ -367,14 +397,39 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         self._init_schemas(default_llm_name)
 
-        self.short_prompt_template = short_prompt_template
-        self.long_prompt_template = long_prompt_template
-        self.summarize_template = summarize_template
+        self.prompt_udf = self._get_prompt_udf(prompt_template)
 
-        self.search_topk = search_topk
+        if isinstance(context_processor, BaseContextProcessor):
+            self.docs_to_context_transformer = context_processor.as_udf()
+        elif isinstance(context_processor, pw.UDF):
+            self.docs_to_context_transformer = context_processor
+        elif callable(context_processor):
+            self.docs_to_context_transformer = pw.udf(context_processor)
+        else:
+            raise ValueError(
+                "Context processor must be type of one of the following: \
+                             ~BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | ~pw.UDF"
+            )
 
-        self.server: None | QASummaryRestServer = None
         self._pending_endpoints: list[tuple] = []
+
+        self.summarize_template = summarize_template
+        self.search_topk = search_topk
+        self.server: None | QASummaryRestServer = None
+
+    def _get_prompt_udf(self, prompt_template):
+        if isinstance(prompt_template, pw.UDF) or callable(prompt_template):
+            verified_template: prompts.BasePromptTemplate = (
+                prompts.RAGFunctionPromptTemplate(function_template=prompt_template)
+            )
+        elif isinstance(prompt_template, str):
+            verified_template = prompts.RAGPromptTemplate(template=prompt_template)
+        else:
+            raise ValueError(
+                f"Template is not of expected type. Got: {type(prompt_template)}."
+            )
+
+        return verified_template.as_udf()
 
     def _init_schemas(self, default_llm_name: str | None = None) -> None:
         """Initialize API schemas with optional and non-optional arguments."""
@@ -383,9 +438,6 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             prompt: str
             filters: str | None = pw.column_definition(default_value=None)
             model: str | None = pw.column_definition(default_value=default_llm_name)
-            response_type: str = pw.column_definition(
-                default_value=AIResponseType.SHORT.value
-            )
 
         class SummarizeQuerySchema(pw.Schema):
             text_list: list[str]
@@ -413,16 +465,12 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             docs=pw.this.result,
         )
 
-        pw_ai_results = pw_ai_results.select(
-            *pw.this, filtered_docs=_filter_document_metadata(pw.this.docs)
+        pw_ai_results += pw_ai_results.select(
+            context=self.docs_to_context_transformer(pw.this.docs)
         )
 
         pw_ai_results += pw_ai_results.select(
-            rag_prompt=pw.if_else(
-                pw.this.response_type == AIResponseType.SHORT.value,
-                self.short_prompt_template(pw.this.prompt, pw.this.filtered_docs),
-                self.long_prompt_template(pw.this.prompt, pw.this.filtered_docs),
-            )
+            rag_prompt=self.prompt_udf(pw.this.context, pw.this.prompt)
         )
 
         pw_ai_results += pw_ai_results.select(
@@ -590,10 +638,6 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         indexer: Indexing object for search & retrieval to be used for context augmentation.
         default_llm_name: Default LLM model to be used in queries, only used if ``model`` parameter in post request is not specified.
             Omitting or setting this to ``None`` will default to the model name set during LLM's initialization.
-        short_prompt_template: Template for document question answering with short response.
-            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_short_qa``.
-        long_prompt_template: Template for document question answering with long response.
-            A pw.udf function is expected. Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         n_starting_documents: Number of documents embedded in the first query.
         factor: Factor by which a number of documents increases in each next query, if
@@ -646,8 +690,6 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         indexer: VectorStoreServer | DocumentStore,
         *,
         default_llm_name: str | None = None,
-        short_prompt_template: pw.UDF = prompts.prompt_short_qa,
-        long_prompt_template: pw.UDF = prompts.prompt_qa,
         summarize_template: pw.UDF = prompts.prompt_summarize,
         n_starting_documents: int = 2,
         factor: int = 2,
@@ -658,8 +700,6 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             llm,
             indexer,
             default_llm_name=default_llm_name,
-            short_prompt_template=short_prompt_template,
-            long_prompt_template=long_prompt_template,
             summarize_template=summarize_template,
         )
         self.n_starting_documents = n_starting_documents

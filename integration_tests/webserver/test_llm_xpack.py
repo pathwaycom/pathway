@@ -17,8 +17,7 @@ from llama_index.retrievers.pathway import PathwayRetriever
 import pathway as pw
 from pathway.internals.udfs.caches import InMemoryCache
 from pathway.tests.utils import wait_result_with_checker
-from pathway.xpacks.llm import llms
-from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
+from pathway.xpacks.llm.tests.utils import build_vector_store, create_build_rag_app
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
 
 PATHWAY_HOST = "127.0.0.1"
@@ -258,26 +257,6 @@ def test_llama_reader(port: int):
     )
 
 
-def build_vector_store(embedder) -> VectorStoreServer:
-    """From a given embedder, with a single doc."""
-    docs = pw.debug.table_from_rows(
-        schema=pw.schema_from_types(data=bytes, _metadata=dict),
-        rows=[
-            (
-                "test".encode("utf-8"),
-                {"path": "test_module.py"},
-            )
-        ],
-    )
-
-    vector_server = VectorStoreServer(
-        docs,
-        embedder=embedder,
-    )
-
-    return vector_server
-
-
 @pytest.mark.parametrize(
     "cache_strategy_cls",
     [
@@ -321,33 +300,6 @@ def test_vectorstore_builds(port: int, cache_strategy_cls):
     )
 
 
-def build_rag_app(port: int) -> BaseRAGQuestionAnswerer:
-    @pw.udf
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
-
-    class FakeChatModel(llms.BaseChat):
-        async def __wrapped__(self, *args, **kwargs) -> str:
-            return "Text"
-
-        def _accepts_call_arg(self, arg_name: str) -> bool:
-            return True
-
-    chat = FakeChatModel()
-
-    vector_server = build_vector_store(fake_embeddings_model)
-
-    rag_app = BaseRAGQuestionAnswerer(
-        llm=chat,
-        indexer=vector_server,
-        default_llm_name="gpt-4o-mini",
-    )
-
-    rag_app.build_server(host=PATHWAY_HOST, port=port)
-
-    return rag_app
-
-
 @pytest.mark.parametrize("input", [1, 2, 3, 99])
 @pytest.mark.parametrize(
     "async_mode",
@@ -357,7 +309,7 @@ def test_serve_callable(port: int, input: int, async_mode: bool):
     TEST_ENDPOINT = "test_add_1"
     expected = input + 1
 
-    rag_app = build_rag_app(port)
+    rag_app = create_build_rag_app(port)
 
     if async_mode:
 
@@ -406,7 +358,7 @@ def test_serve_callable_cache(port: int, input: int, async_mode: bool):
     TEST_ENDPOINT = "test_add_1"
     expected = input + 1
 
-    rag_app = build_rag_app(port)
+    rag_app = create_build_rag_app(port)
     setattr(rag_app, "num_calls", 0)
 
     if async_mode:
@@ -478,7 +430,7 @@ def test_serve_callable_symmetric(port: int, input: Any):
     TEST_ENDPOINT = "symmetric"
     expected = input
 
-    rag_app = build_rag_app(port)
+    rag_app = create_build_rag_app(port)
 
     UType: TypeAlias = int | dict | str | list | None
 
@@ -526,7 +478,7 @@ def test_serve_callable_nested_async_typing(
     TEST_ENDPOINT = "nested"
     expected = [{"name": name, "value": dc}]
 
-    rag_app = build_rag_app(port)
+    rag_app = create_build_rag_app(port)
 
     if typed:
 
@@ -569,9 +521,9 @@ def test_serve_callable_nested_async_typing(
 
 def test_serve_callable_with_search(port: int):
     TEST_ENDPOINT = "custom_search"
-    expected = "test"  # set in the docs part of `build_rag_app`
+    expected = "test"  # set in the docs part of `build_vector_store`
 
-    rag_app = build_rag_app(port)
+    rag_app = create_build_rag_app(port)
 
     @rag_app.serve_callable(route=f"/{TEST_ENDPOINT}")
     async def return_top_doc_text(query):

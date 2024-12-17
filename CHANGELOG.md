@@ -6,10 +6,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [Unreleased]
 
 ### Added
+- `pw.xpacks.llm.prompts.RAGPromptTemplate`, set of prompt utilities that enable verifying templates and creating UDFs from prompt strings or callables.
+- `pw.xpacks.llm.question_answering.BaseContextProcessor` streamlines development and tuning of representing retrieved context documents to the LLM.
 - `pw.io.kafka.read` now supports `with_metadata` flag, which makes it possible to attach the metadata of the Kafka messages to the table entries.
 
 ### Changed
 - `pw.io.sharepoint.read` now explicitly terminates with an error if it fails to read the data the specified number of times per row (the default is `8`).
+- `pw.xpacks.llm.prompts.prompt_qa`, and other prompts expect 'context' and 'query' fields instead of 'docs'. 
+- Removed support for `short_prompt_template` and `long_prompt_template` in `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer`. These prompt variants are no longer accepted during construction or in requests.
+- `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` allows setting user created prompts. Templates are verified to include 'context' and 'query' placeholders.
+- `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` can take a `BaseContextProcessor` that represents context documents to the LLM. Defaults to `pw.xpacks.llm.question_answering.SimpleContextProcessor` which filters metadata fields and joins the documents with new lines.
 
 ### Fixed
 - The input of `pw.io.fs.read` and `pw.io.s3.read` is now correctly persisted in case deletions or modifications of already processed objects take place.
