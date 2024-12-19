@@ -151,8 +151,8 @@ impl InputSnapshotReader {
 
     fn next_event(&mut self) -> Result<Event, Error> {
         loop {
-            match &mut self.reader {
-                Some(reader) => match deserialize_from(reader) {
+            if let Some(reader) = &mut self.reader {
+                match deserialize_from(reader) {
                     Ok(entry) => return Ok(entry),
                     Err(e) => match *e {
                         BincodeError::Io(e) => {
@@ -164,19 +164,20 @@ impl InputSnapshotReader {
                         }
                         _ => return Err(Error::Bincode(*e)),
                     },
-                },
-                None => {
-                    if self.next_chunk_idx >= self.chunk_ids.len() {
-                        break;
-                    }
-                    let next_chunk_key = format!("{}", self.chunk_ids[self.next_chunk_idx]);
-                    info!("Snapshot reader proceeds to the chunk {next_chunk_key} after {} snapshot entries", self.entries_read);
-                    let contents = self.backend.get_value(&next_chunk_key)?;
-                    let cursor = Cursor::new(contents);
-                    self.reader = Some(BufReader::new(cursor));
-                    self.next_chunk_idx += 1;
                 }
             }
+            if self.next_chunk_idx >= self.chunk_ids.len() {
+                break;
+            }
+            let next_chunk_key = format!("{}", self.chunk_ids[self.next_chunk_idx]);
+            info!(
+                "Snapshot reader proceeds to the chunk {next_chunk_key} after {} snapshot entries",
+                self.entries_read
+            );
+            let contents = self.backend.get_value(&next_chunk_key)?;
+            let cursor = Cursor::new(contents);
+            self.reader = Some(BufReader::new(cursor));
+            self.next_chunk_idx += 1;
         }
         Ok(Event::Finished)
     }

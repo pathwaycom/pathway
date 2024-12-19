@@ -1357,14 +1357,13 @@ impl Parser for DebeziumMessageParser {
                 (key_and_value[0].to_string(), key_and_value[1].to_string())
             }
             KeyValue((k, v)) => {
-                let key = match k {
-                    Some(bytes) => prepare_plaintext_string(bytes)?,
-                    None => {
-                        if self.key_field_names.is_some() {
-                            return Err(ParseError::EmptyKafkaPayload.into());
-                        }
-                        DEBEZIUM_EMPTY_KEY_PAYLOAD.to_string()
+                let key = if let Some(bytes) = k {
+                    prepare_plaintext_string(bytes)?
+                } else {
+                    if self.key_field_names.is_some() {
+                        return Err(ParseError::EmptyKafkaPayload.into());
                     }
+                    DEBEZIUM_EMPTY_KEY_PAYLOAD.to_string()
                 };
                 let value = match v {
                     Some(bytes) => prepare_plaintext_string(bytes)?,

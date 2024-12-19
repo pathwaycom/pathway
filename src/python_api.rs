@@ -4329,13 +4329,12 @@ impl DataStorage {
     }
 
     fn build_csv_parser_settings(&self, py: pyo3::Python) -> CsvReaderBuilder {
-        match &self.csv_parser_settings {
-            Some(parser_settings) => parser_settings.borrow(py).build_csv_reader_builder(),
-            None => {
-                let mut builder = CsvReaderBuilder::new();
-                builder.has_headers(false);
-                builder
-            }
+        if let Some(parser_settings) = &self.csv_parser_settings {
+            parser_settings.borrow(py).build_csv_reader_builder()
+        } else {
+            let mut builder = CsvReaderBuilder::new();
+            builder.has_headers(false);
+            builder
         }
     }
 
@@ -4549,7 +4548,7 @@ impl DataStorage {
 
     fn object_downloader(&self, py: pyo3::Python) -> PyResult<ObjectDownloader> {
         if self.aws_s3_settings.is_some() {
-            Ok(ObjectDownloader::S3(self.s3_bucket(py)?))
+            Ok(ObjectDownloader::S3(Box::new(self.s3_bucket(py)?)))
         } else {
             Ok(ObjectDownloader::Local)
         }
@@ -4643,7 +4642,7 @@ impl DataStorage {
                 let bucket = self.s3_bucket(py)?;
                 let path = self.path()?;
                 Ok(PersistentStorageConfig::S3 {
-                    bucket,
+                    bucket: Box::new(bucket),
                     root_path: path.into(),
                 })
             }

@@ -52,36 +52,36 @@ impl MetadataEvent {
 /// The `CachedObjectStorage` is a data structure that provides
 /// the following interface:
 /// 1. Upsert an object denoted by its URI, value, and metadata. Each upsert
-/// creates a new version of the data structure.
+///    creates a new version of the data structure.
 /// 2. Remove an object by its URI. Each removal creates a new version of the
-/// data structure.
+///    data structure.
 /// 3. Lookup: find an object by its URI, check if an object with the given
-/// URI is present, get the metadata of the object, etc. The lookups are
-/// performed on the latest state of the data structure.
+///    URI is present, get the metadata of the object, etc. The lookups are
+///    performed on the latest state of the data structure.
 /// 4. Rewind to the given version of the data structure in part. The rewind
-/// alters the state of the data structure: all versions that follow
-/// the given one are removed and are no longer accessible. All versions that are
-/// obsolete after the rewind, e.g., those that don't correspond to the latest state of
-/// any URI, are also removed.
+///    alters the state of the data structure: all versions that follow
+///    the given one are removed and are no longer accessible. All versions that are
+///    obsolete after the rewind, e.g., those that don't correspond to the latest state of
+///    any URI, are also removed.
 ///
 /// The versions are numbered with consecutive integers from 1 onwards. Rewind to
 /// version 0 corresponds to the cleanup of the storage.
 ///
 /// The implementation is as follows:
-/// - There are two types of events: object addition and object removal.
-/// These events are stored both in the selected durable storage and in several
-/// in-memory indexes, denoting events by version; sorted event sequences by the
-/// object URI and the snapshot - the actual, version-unaware state of the data
-/// structure.
-/// - When the data structure starts, it reads the sequence of events and
-/// constructs the mappings described above.
-/// - When a rewind takes place, the versions that need to be deleted are detected
-/// and undone one by one, starting from the latest. Note that these events are
-/// also removed from the durable storage.
-/// - When a lookup takes place, the snapshot is used.
-/// - When an upsert or removal takes place, a new version is created. An event
-/// corresponding to this version is added to the durable storage and to the local
-/// event indexes. It is also reflected in a locally stored snapshot.
+/// * There are two types of events: object addition and object removal.
+///    These events are stored both in the selected durable storage and in several
+///    in-memory indexes, denoting events by version; sorted event sequences by the
+///    object URI and the snapshot - the actual, version-unaware state of the data
+///    structure.
+/// * When the data structure starts, it reads the sequence of events and
+///    constructs the mappings described above.
+/// * When a rewind takes place, the versions that need to be deleted are detected
+///    and undone one by one, starting from the latest. Note that these events are
+///    also removed from the durable storage.
+/// * When a lookup takes place, the snapshot is used.
+/// * When an upsert or removal takes place, a new version is created. An event
+///    corresponding to this version is added to the durable storage and to the local
+///    event indexes. It is also reflected in a locally stored snapshot.
 #[derive(Debug)]
 pub struct CachedObjectStorage {
     backend: Box<dyn PersistenceBackend>,

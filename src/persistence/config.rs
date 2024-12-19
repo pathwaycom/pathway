@@ -44,7 +44,10 @@ pub type ConnectorWorkerPair = (PersistentId, usize);
 #[derive(Debug, Clone)]
 pub enum PersistentStorageConfig {
     Filesystem(PathBuf),
-    S3 { bucket: S3Bucket, root_path: String },
+    S3 {
+        bucket: Box<S3Bucket>,
+        root_path: String,
+    },
     Mock(HashMap<ConnectorWorkerPair, Vec<Event>>),
 }
 

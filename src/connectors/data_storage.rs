@@ -1889,7 +1889,7 @@ impl Writer for DeltaTableWriter {
 
 pub enum ObjectDownloader {
     Local,
-    S3(S3Bucket),
+    S3(Box<S3Bucket>),
 }
 
 impl ObjectDownloader {
@@ -2061,26 +2061,23 @@ impl DeltaTableReader {
 
     fn read_next_row_native(&mut self, is_polling_enabled: bool) -> Result<ParquetRow, ReadError> {
         loop {
-            match &mut self.reader {
-                Some(ref mut reader) => {
-                    match reader.next() {
-                        Some(Ok(row)) => return Ok(row),
-                        Some(Err(parquet_err)) => return Err(ReadError::Parquet(parquet_err)),
-                        None => self.reader = None,
-                    };
-                }
-                None => {
+            if let Some(ref mut reader) = &mut self.reader {
+                match reader.next() {
+                    Some(Ok(row)) => return Ok(row),
+                    Some(Err(parquet_err)) => return Err(ReadError::Parquet(parquet_err)),
+                    None => self.reader = None,
+                };
+            } else {
+                if self.parquet_files_queue.is_empty() {
+                    self.upgrade_table_version(is_polling_enabled)?;
                     if self.parquet_files_queue.is_empty() {
-                        self.upgrade_table_version(is_polling_enabled)?;
-                        if self.parquet_files_queue.is_empty() {
-                            return Err(ReadError::NoObjectsToRead);
-                        }
+                        return Err(ReadError::NoObjectsToRead);
                     }
-                    let next_action = self.parquet_files_queue.pop_front().unwrap();
-                    let local_object = self.object_downloader.download_object(&next_action.path)?;
-                    self.current_event_type = next_action.action_type;
-                    self.reader = Some(DeltaLakeParquetReader::try_from(local_object)?.into_iter());
                 }
+                let next_action = self.parquet_files_queue.pop_front().unwrap();
+                let local_object = self.object_downloader.download_object(&next_action.path)?;
+                self.current_event_type = next_action.action_type;
+                self.reader = Some(DeltaLakeParquetReader::try_from(local_object)?.into_iter());
             }
         }
     }
