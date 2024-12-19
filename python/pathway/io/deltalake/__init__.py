@@ -48,8 +48,8 @@ def read(
     debug_data: Any = None,
 ) -> Table:
     """
-    Reads an **append-only** table from Delta Lake. Currently, local and S3 lakes are
-    supported.
+    Reads a table from Delta Lake. Currently, local and S3 lakes are supported. The table
+    doesn't have to be append only, however, the deletion vectors are not supported yet.
 
     Args:
         uri: URI of the Delta Lake source that must be read.

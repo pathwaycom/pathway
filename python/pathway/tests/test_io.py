@@ -3203,7 +3203,7 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
         k: int = pw.column_definition(primary_key=True)
         v: str
 
-    def run_pathway_program(expected_key_set):
+    def run_pathway_program(expected_key_set, expected_diff=1):
         table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
         pw.io.csv.write(table, output_path)
 
@@ -3215,6 +3215,7 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
         try:
             result = pd.read_csv(output_path)
             assert set(result["k"]) == expected_key_set
+            assert set(result["diff"]) == {expected_diff}
         except pd.errors.EmptyDataError:
             assert expected_key_set == {}
         G.clear()
@@ -3253,6 +3254,42 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
     df = pd.DataFrame(additional_data).set_index("k")
     write_deltalake(lake_path, df, mode="append")
     run_pathway_program({10})
+
+    # The seventh run: remove some data from the table
+    condition = "k > 4 and k < 8"
+    table = DeltaTable(lake_path)
+    table.delete(condition)
+    run_pathway_program({5, 6, 7}, -1)
+
+
+def test_deltalake_read_after_modification(tmp_path):
+    data = [
+        {"k": 1, "v": "one"},
+        {"k": 2, "v": "two"},
+        {"k": 3, "v": "three"},
+        {"k": 4, "v": "four"},
+        {"k": 5, "v": "five"},
+        {"k": 6, "v": "six"},
+    ]
+    df = pd.DataFrame(data).set_index("k")
+    lake_path = str(tmp_path / "lake")
+    output_path = str(tmp_path / "output.csv")
+    write_deltalake(lake_path, df)
+
+    condition = "k > 1 and k < 5"
+    table = DeltaTable(lake_path)
+    table.delete(condition)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
+    pw.io.csv.write(table, output_path)
+    pw.run()
+
+    result = pd.read_csv(output_path)
+    assert set(result["k"]) == {1, 5, 6}
 
 
 @needs_multiprocessing_fork

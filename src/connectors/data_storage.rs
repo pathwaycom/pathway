@@ -273,8 +273,8 @@ pub enum ReadError {
     #[error("parquet value type mismatch: got {0:?} expected {1:?}")]
     WrongParquetType(ParquetValue, Type),
 
-    #[error("only append-only delta tables are supported")]
-    DeltaLakeForbiddenRemoval,
+    #[error("deletion vectors in delta tables are not supported")]
+    DeltaDeletionVectorsNotSupported,
 }
 
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
@@ -1909,6 +1909,18 @@ impl ObjectDownloader {
     }
 }
 
+#[derive(Debug)]
+pub struct DeltaReaderAction {
+    action_type: DataEventType,
+    path: String,
+}
+
+impl DeltaReaderAction {
+    pub fn new(action_type: DataEventType, path: String) -> Self {
+        Self { action_type, path }
+    }
+}
+
 pub struct DeltaTableReader {
     table: DeltaTable,
     streaming_mode: ConnectorMode,
@@ -1921,7 +1933,8 @@ pub struct DeltaTableReader {
     current_version: i64,
     last_fully_read_version: Option<i64>,
     rows_read_within_version: i64,
-    parquet_files_queue: VecDeque<String>,
+    parquet_files_queue: VecDeque<DeltaReaderAction>,
+    current_event_type: DataEventType,
 }
 
 const DELTA_LAKE_INITIAL_POLL_DURATION: Duration = Duration::from_millis(5);
@@ -1940,7 +1953,7 @@ impl DeltaTableReader {
         let runtime = create_async_tokio_runtime()?;
         let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
         let current_version = table.version();
-        let parquet_files_queue = Self::get_file_uris(&table)?;
+        let parquet_files_queue = Self::get_reader_actions(&table, path)?;
 
         Ok(Self {
             table,
@@ -1955,21 +1968,39 @@ impl DeltaTableReader {
             reader: None,
             parquet_files_queue,
             rows_read_within_version: 0,
+            current_event_type: DataEventType::Insert,
         })
     }
 
-    fn get_file_uris(table: &DeltaTable) -> Result<VecDeque<String>, ReadError> {
-        Ok(table.get_file_uris()?.collect())
+    fn get_reader_actions(
+        table: &DeltaTable,
+        base_path: &str,
+    ) -> Result<VecDeque<DeltaReaderAction>, ReadError> {
+        Ok(table
+            .snapshot()?
+            .file_actions()?
+            .into_iter()
+            .map(|action| {
+                DeltaReaderAction::new(
+                    DataEventType::Insert,
+                    Self::ensure_absolute_path_with_base(&action.path, base_path),
+                )
+            })
+            .collect())
     }
 
     fn ensure_absolute_path(&self, path: &str) -> String {
-        if path.starts_with(&self.base_path) {
+        Self::ensure_absolute_path_with_base(path, &self.base_path)
+    }
+
+    fn ensure_absolute_path_with_base(path: &str, base_path: &str) -> String {
+        if path.starts_with(base_path) {
             return path.to_string();
         }
-        if self.base_path.ends_with('/') {
-            format!("{}{path}", self.base_path)
+        if base_path.ends_with('/') {
+            format!("{base_path}{path}")
         } else {
-            format!("{}/{path}", self.base_path)
+            format!("{base_path}/{path}")
         }
     }
 
@@ -1998,18 +2029,23 @@ impl DeltaTableReader {
                 for action in txn_actions {
                     // Protocol description for Delta Lake actions:
                     // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#actions
-                    match action {
+                    let action = match action {
                         DeltaLakeAction::Remove(action) => {
-                            if action.data_change {
-                                return Err(ReadError::DeltaLakeForbiddenRemoval);
+                            if action.deletion_vector.is_some() {
+                                return Err(ReadError::DeltaDeletionVectorsNotSupported);
                             }
+                            data_changed |= action.data_change;
+                            let action_path = self.ensure_absolute_path(&action.path);
+                            DeltaReaderAction::new(DataEventType::Delete, action_path)
                         }
                         DeltaLakeAction::Add(action) => {
                             data_changed |= action.data_change;
-                            added_blocks.push_back(self.ensure_absolute_path(&action.path));
+                            let action_path = self.ensure_absolute_path(&action.path);
+                            DeltaReaderAction::new(DataEventType::Insert, action_path)
                         }
                         _ => continue,
                     };
+                    added_blocks.push_back(action);
                 }
 
                 self.last_fully_read_version = Some(self.current_version);
@@ -2040,9 +2076,9 @@ impl DeltaTableReader {
                             return Err(ReadError::NoObjectsToRead);
                         }
                     }
-                    let next_parquet_file = self.parquet_files_queue.pop_front().unwrap();
-                    let local_object =
-                        self.object_downloader.download_object(&next_parquet_file)?;
+                    let next_action = self.parquet_files_queue.pop_front().unwrap();
+                    let local_object = self.object_downloader.download_object(&next_action.path)?;
+                    self.current_event_type = next_action.action_type;
                     self.reader = Some(DeltaLakeParquetReader::try_from(local_object)?.into_iter());
                 }
             }
@@ -2116,7 +2152,7 @@ impl Reader for DeltaTableReader {
 
         self.rows_read_within_version += 1;
         Ok(ReadResult::Data(
-            ReaderContext::from_diff(DataEventType::Insert, None, row_map.into()),
+            ReaderContext::from_diff(self.current_event_type, None, row_map.into()),
             (
                 OffsetKey::Empty,
                 OffsetValue::DeltaTablePosition {
@@ -2156,15 +2192,17 @@ impl Reader for DeltaTableReader {
             // The offset is based on the full set of files present for `version`
             self.current_version = *version;
             runtime.block_on(async { self.table.load_version(self.current_version).await })?;
-            self.parquet_files_queue = Self::get_file_uris(&self.table)?;
+            self.parquet_files_queue = Self::get_reader_actions(&self.table, &self.base_path)?;
         }
 
         self.rows_read_within_version = 0;
         while !self.parquet_files_queue.is_empty() {
             let next_block = self.parquet_files_queue.front().unwrap();
-            let block_size = Self::rows_in_file_count(next_block)?;
+            let block_size = Self::rows_in_file_count(&next_block.path)?;
             if self.rows_read_within_version + block_size <= *n_rows_to_rewind {
-                info!("Skipping parquet block with the size of {block_size} entries: {next_block}");
+                info!(
+                    "Skipping parquet block with the size of {block_size} entries: {next_block:?}"
+                );
                 self.rows_read_within_version += block_size;
                 self.parquet_files_queue.pop_front();
             } else {
