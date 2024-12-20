@@ -50,7 +50,7 @@ dependencies = [
 
 [project.optional-dependencies]
 xpack-llm = [
-    "openai >= 1.6",
+    "openai >= 1.58.1",
     "litellm ~= 1.44.8",
     "cohere ~= 5.1.0",
     "tiktoken >= 0.5",
