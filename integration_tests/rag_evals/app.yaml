@@ -1,0 +1,73 @@
+$sources:
+  - !pw.io.gdrive.read
+    object_id: "1ErwN5WajWsEdIRMBIjyBfncNUmkxRfRy" # large: "1ErwN5WajWsEdIRMBIjyBfncNUmkxRfRy" # small: "1f73nnDnZ0j3URkYEG5VoLhFs_ThI2hve"
+    service_user_credentials_file: /integration_tests/rag_evals/gdrive_indexer.json  # ./gdrive_indexer.json  # ./public/pathway/integration_tests/rag_evals/gdrive_indexer.json
+    file_name_pattern:
+      - "*.pdf"
+      - "*.docx"
+    object_size_limit: null
+    with_metadata: true
+    refresh_interval: 30
+
+$llm: !pw.xpacks.llm.llms.OpenAIChat
+  model: "gpt-4o-mini"
+  retry_strategy: !pw.udfs.ExponentialBackoffRetryStrategy
+    max_retries: 6
+  cache_strategy: !pw.udfs.DefaultCache
+  temperature: 0
+  capacity: 8
+
+$embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
+  model: "text-embedding-ada-002"
+  cache_strategy: !pw.udfs.DefaultCache
+
+$splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
+  min_tokens: 150
+  max_tokens: 400
+
+$parser: !pw.xpacks.llm.parsers.ParseUnstructured
+  cache_strategy: !pw.udfs.DefaultCache
+
+# $retriever_factory: !pw.stdlib.indexing.BruteForceKnnFactory
+#   reserved_space: 1000
+#   embedder: $embedder
+#   metric: !pw.stdlib.indexing.BruteForceKnnMetricKind.COS
+#   dimensions: 1536
+
+$knn_index: !pw.stdlib.indexing.BruteForceKnnFactory
+  reserved_space: 1000
+  embedder: $embedder
+  metric: !pw.engine.BruteForceKnnMetricKind.COS
+
+$bm25_index: !pw.stdlib.indexing.TantivyBM25Factory
+
+$retriever_factory: !pw.stdlib.indexing.HybridIndexFactory
+  retriever_factories:
+    - $knn_index
+    - $bm25_index
+  
+$document_store: !pw.xpacks.llm.document_store.DocumentStore
+  docs: $sources
+  parser: $parser
+  splitter: $splitter
+  retriever_factory: $retriever_factory
+
+# https://smith.langchain.com/hub/rlm/rag-prompt
+$prompt_template: |
+  You are an assistant for question-answering tasks. Use the following pieces of retrieved context to answer the question. If you don't know the answer, just say that you don't know.
+  Question: {query} 
+
+  Context: {context}
+
+  Answer:
+
+question_answerer: !pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer
+  llm: $llm
+  indexer: $document_store
+  prompt_template: $prompt_template
+  
+  # You can set the number of documents to be included as the context of the query
+  # search_topk: 6
+
+# Cache configuration
+with_cache: true
