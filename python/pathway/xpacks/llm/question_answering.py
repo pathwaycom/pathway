@@ -316,8 +316,6 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     Builds the logic and the API for basic RAG application.
 
     Base class to build RAG app with Pathway vector store and Pathway components.
-    Gives the freedom to choose between two question answering strategies,
-    short (concise), and long (detailed) response, that can be set during the post request.
     Allows for LLM agnosticity with freedom to choose from proprietary or open-source LLMs.
 
     Args:
