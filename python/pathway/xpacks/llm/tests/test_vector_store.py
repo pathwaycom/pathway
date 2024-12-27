@@ -406,3 +406,32 @@ def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
     (query_result,) = val.as_list()  # extract the single match
     assert isinstance(query_result, dict)
     assert query_result["text"]  # just check if some text was returned
+
+
+def test_docstore_on_table_without_metadata():
+    @pw.udf
+    def fake_embeddings_model(x: str) -> list[float]:
+        return [1.0, 1.0, 0.0]
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes),
+        rows=[("test".encode("utf-8"),)],
+    )
+
+    vector_server = VectorStoreServer(
+        docs,
+        embedder=fake_embeddings_model,
+    )
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=vector_server.RetrieveQuerySchema,
+        rows=[("Foo", 1, None, None)],
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["text"] == "test"  # just check if some text was returned

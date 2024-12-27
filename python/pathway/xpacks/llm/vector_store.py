@@ -12,8 +12,9 @@ The client queries the server and returns matching documents.
 import json
 import logging
 import threading
+import warnings
 from collections.abc import Callable, Coroutine
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, Iterable, TypeAlias, cast
 
 import jmespath
 import requests
@@ -206,11 +207,29 @@ class VectorStoreServer:
             **kwargs,
         )
 
+    def _clean_tables(
+        self, docs: pw.Table | Iterable[pw.Table]
+    ) -> tuple[pw.Table, ...]:
+        if isinstance(docs, pw.Table):
+            docs = [docs]
+
+        def _clean_table(doc: pw.Table) -> pw.Table:
+            if "_metadata" not in doc.column_names():
+                warnings.warn(
+                    f"`_metadata` column is not present in Table {doc}. Filtering will not work for this Table"
+                )
+                doc = doc.with_columns(_metadata=dict())
+
+            return doc.select(pw.this.data, pw.this._metadata)
+
+        return tuple([_clean_table(doc) for doc in docs])
+
     def _build_graph(self) -> dict:
         """
         Builds the pathway computation graph for indexing documents and serving queries.
         """
         docs_s = self.docs
+
         if not docs_s:
             raise ValueError(
                 """Please provide at least one data source, e.g. read files from disk:
@@ -218,6 +237,9 @@ class VectorStoreServer:
 pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=True)
 """
             )
+
+        docs_s = self._clean_tables(docs_s)
+
         if len(docs_s) == 1:
             (docs,) = docs_s
         else:
