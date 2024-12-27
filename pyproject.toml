@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pathway"
+dynamic = ["version"]
 requires-python = ">=3.10"
 description = "Pathway is a data processing framework which takes care of streaming data updates for you."
 readme = "README.md"
