@@ -294,9 +294,7 @@ class _SlidingWindow(Window):
 
             return (start, end)
 
-        def assign_windows(
-            instance: Any, key: TimeEventType
-        ) -> list[tuple[Any, TimeEventType, TimeEventType]]:
+        def assign_windows(instance: Any, key: TimeEventType):
             """Returns the list of all the windows the given key belongs to.
 
             Each window is a tuple (window_start, window_end) describing the range
