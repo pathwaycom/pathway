@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.iceberg.write` method for writing Pathway tables into Apache Iceberg.
+
 ### Changed
 - values of non-deterministic UDFs are not stored in tables that are `append_only`.
 - `pw.Table.ix` has better runtime error message that includes id of the missing row.
