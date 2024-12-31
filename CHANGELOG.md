@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- values of non-deterministic UDFs are not stored in tables that are `append_only`.
+
 ### Fixed
 - temporal behaviors in temporal operators (`windowby`, `interval_join`) now consume no CPU when no data passes through them.
 

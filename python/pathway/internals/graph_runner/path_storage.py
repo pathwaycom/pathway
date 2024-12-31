@@ -71,6 +71,12 @@ class Storage:
     def max_depth(self) -> int:
         return max((len(path) for path in self._column_paths.values()), default=0)
 
+    @cached_property
+    def append_only(self) -> bool:
+        return all(
+            column.properties.append_only for column in self._all_columns.values()
+        )
+
     def with_updated_paths(
         self, paths: dict[Column, ColumnPath], *, universe: Universe | None = None
     ) -> Storage:

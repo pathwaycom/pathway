@@ -923,6 +923,34 @@ impl<'py> FromPyObject<'py> for ReducerData {
     }
 }
 
+#[pyclass(module = "pathway.engine", frozen, name = "ExpressionData")]
+struct PyExpressionData(ExpressionData);
+
+#[pymethods]
+impl PyExpressionData {
+    #[new]
+    fn new(
+        expression: &PyExpression,
+        properties: TableProperties,
+        append_only: bool,
+        deterministic: bool,
+    ) -> Self {
+        Self(ExpressionData {
+            expression: expression.inner.clone(),
+            properties: properties.0,
+            append_only,
+            deterministic,
+            gil: expression.gil,
+        })
+    }
+}
+
+impl<'py> FromPyObject<'py> for ExpressionData {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyExpressionData>>()?.0.clone())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum UnaryOperator {
     Inv,
@@ -2479,7 +2507,7 @@ impl Scope {
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         function: Py<PyAny>,
         propagate_none: bool,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
         properties: TableProperties,
         dtype: Type,
     ) -> PyResult<Py<Table>> {
@@ -2512,7 +2540,7 @@ impl Scope {
             column_paths,
             properties.0,
             EngineTrace::Empty,
-            deterministic,
+            append_only_or_deterministic,
         )?;
         Table::new(self_, table_handle)
     }
@@ -2521,32 +2549,23 @@ impl Scope {
         self_: &Bound<Self>,
         table: &Table,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
-        #[pyo3(from_py_with = "from_py_iterable")] expressions: Vec<(
-            PyRef<PyExpression>,
-            TableProperties,
-        )>,
-        deterministic: bool,
+        #[pyo3(from_py_with = "from_py_iterable")] expressions: Vec<ExpressionData>,
+        append_only_or_deterministic: bool,
     ) -> PyResult<Py<Table>> {
         let gil = expressions
             .iter()
-            .any(|(expression, _properties)| expression.gil);
+            .any(|expression_data| expression_data.gil);
         let wrapper = if gil {
             BatchWrapper::WithGil
         } else {
             BatchWrapper::None
         };
-        let expressions: Vec<ExpressionData> = expressions
-            .into_iter()
-            .map(|(expression, properties)| {
-                ExpressionData::new(expression.inner.clone(), properties.0)
-            })
-            .collect();
         let table_handle = self_.borrow().graph.expression_table(
             table.handle,
             column_paths,
             expressions,
             wrapper,
-            deterministic,
+            append_only_or_deterministic,
         )?;
         Table::new(self_, table_handle)
     }
@@ -5358,6 +5377,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyUnaryOperator>()?;
     m.add_class::<PyBinaryOperator>()?;
     m.add_class::<PyExpression>()?;
+    m.add_class::<PyExpressionData>()?;
     m.add_class::<PathwayType>()?;
     m.add_class::<PyConnectorMode>()?;
     m.add_class::<PySessionType>()?;

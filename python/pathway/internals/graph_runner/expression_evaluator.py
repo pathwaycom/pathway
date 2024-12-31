@@ -127,11 +127,13 @@ class RowwiseEvalState:
     _dependencies: dict[clmn.Column, int]
     _storages: dict[Storage, api.Table]
     _deterministic: bool
+    _locally_deterministic: bool
 
     def __init__(self) -> None:
         self._dependencies = {}
         self._storages = {}
         self._deterministic = True
+        self._locally_deterministic = True
 
     def dependency(self, column: clmn.Column) -> int:
         return self._dependencies.setdefault(column, len(self._dependencies))
@@ -151,11 +153,19 @@ class RowwiseEvalState:
         return list(self._storages.keys())
 
     def set_non_deterministic(self) -> None:
+        self._locally_deterministic = False
         self._deterministic = False
 
     @property
     def deterministic(self) -> bool:
         return self._deterministic
+
+    @property
+    def locally_deterministic(self) -> bool:
+        return self._locally_deterministic
+
+    def reset_locally_deterministic(self) -> None:
+        self._locally_deterministic = True
 
 
 class DependencyReference:
@@ -219,12 +229,15 @@ class RowwiseEvaluator(
             old_path is not None and not output_storage.has_only_new_columns
         ):  # keep old columns if they are needed
             placeholder_column = clmn.MaterializedColumn(
-                self.context.universe, ColumnProperties(dtype=dt.ANY)
+                self.context.universe,
+                ColumnProperties(dtype=dt.ANY, append_only=input_storage.append_only),
             )
             expressions.append(
-                (
+                api.ExpressionData(
                     self.eval_dependency(placeholder_column, eval_state=eval_state),
                     self.scope.table_properties(engine_input_table, old_path),
+                    append_only=input_storage.append_only,
+                    deterministic=True,
                 )
             )
             input_storage = input_storage.with_updated_paths(
@@ -244,9 +257,16 @@ class RowwiseEvaluator(
                 expression = TypeVerifier().eval_expression(expression)
             properties = api.TableProperties.column(self.column_properties(column))
 
+            eval_state.reset_locally_deterministic()
             engine_expression = self.eval_expression(expression, eval_state=eval_state)
+            append_only = column.properties.append_only
+            deterministic = eval_state.locally_deterministic
             assert ColumnPath((len(expressions),)) == output_storage.get_path(column)
-            expressions.append((engine_expression, properties))
+            expressions.append(
+                api.ExpressionData(
+                    engine_expression, properties, append_only, deterministic
+                )
+            )
 
         # START temporary solution for eval_async_apply
         for intermediate_storage in eval_state.storages:
@@ -265,7 +285,10 @@ class RowwiseEvaluator(
         paths = [input_storage.get_path(dep) for dep in eval_state.columns]
 
         return self.scope.expression_table(
-            engine_input_table, paths, expressions, eval_state.deterministic
+            engine_input_table,
+            paths,
+            expressions,
+            eval_state.deterministic or input_storage.append_only,
         )
 
     def run_subexpressions(
@@ -441,7 +464,7 @@ class RowwiseEvaluator(
             paths,
             fun,
             expression._propagate_none,
-            expression._deterministic,
+            expression._deterministic or input_storage.append_only,
             self._table_properties(output_storage),
             expression._dtype.to_engine(),
         )

@@ -310,7 +310,7 @@ where
     S: MaybeTotalScope,
     R: Monoid + ExchangeData,
 {
-    fn map_named_with_consistent_deletions<V2: Data>(
+    fn map_named_with_deletions_first<V2: Data>(
         &self,
         name: &str,
         wrapper: BatchWrapper,
@@ -335,7 +335,7 @@ where
     R: Monoid + ExchangeData,
 {
     #[track_caller]
-    fn map_named_with_consistent_deletions<V2: Data>(
+    fn map_named_with_deletions_first<V2: Data>(
         &self,
         name: &str,
         wrapper: BatchWrapper,
@@ -343,7 +343,6 @@ where
     ) -> Collection<S, (K, V2), R> {
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
-        let mut cache: HashMap<K, V2> = HashMap::new();
         self.consolidate_for_output_named(&format!("ConsolidateForOutput: {name}"), false)
             .unary(Pipeline, &name, move |_, _| {
                 let mut vector = Vec::new();
@@ -355,17 +354,7 @@ where
                                 let OutputBatch { time, mut data } = batch;
                                 output.session(&cap.delayed(&time)).give_iterator(
                                     data.drain(..).map(|((key, value), diff)| {
-                                        let result = if diff < Monoid::zero() {
-                                            cache
-                                                .remove(&key)
-                                                .expect("result for negative diff should be stored")
-                                                .clone()
-                                        } else {
-                                            let (_, result_value) = logic((key.clone(), value));
-                                            cache.insert(key.clone(), result_value.clone());
-                                            result_value
-                                        };
-                                        ((key, result), time.clone(), diff)
+                                        (logic((key.clone(), value)), time.clone(), diff)
                                     }),
                                 );
                             }

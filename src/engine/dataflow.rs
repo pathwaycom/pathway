@@ -1249,7 +1249,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -1265,40 +1265,77 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
 
-        let closure = move |(key, values)| {
-            let args: Vec<Value> = column_paths
-                .iter()
-                .map(|path| path.extract(&key, &values))
-                .collect::<Result<_>>()
-                .unwrap_with_reporter(&error_reporter);
-            let new_values = expressions.iter().map(|expression_data| {
-                let result = expression_data
-                    .expression
-                    .eval(&args)
-                    .unwrap_or_log_with_trace(
-                        error_logger.as_ref(),
-                        expression_data.properties.trace(),
-                        Value::Error,
-                    );
-                result
-            });
-            (key, Value::Tuple(new_values.collect()))
-        };
-
-        let new_values = if deterministic {
+        let new_values = if append_only_or_deterministic {
+            // If the whole stream stream is append_only or all expressions are deterministic
             table.values_consolidated().map_wrapped_named(
                 "expression_table::evaluate_expression",
                 wrapper,
-                closure,
+                move |(key, values)| {
+                    let args: Vec<Value> = column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter);
+                    // if a better behavior for append only is needed (then only output has to be append only, not input):
+                    // split this closure here into two - first part (extraction from paths) before consolidation
+                    // and second part (evals) after consolidation
+                    let new_values = expressions.iter().map(|expression_data| {
+                        let result = expression_data
+                            .expression
+                            .eval(&args)
+                            .unwrap_or_log_with_trace(
+                                error_logger.as_ref(),
+                                expression_data.properties.trace(),
+                                Value::Error,
+                            );
+                        result
+                    });
+                    (key, Value::Tuple(new_values.collect()))
+                },
             )
         } else {
-            table.values().map_named_with_consistent_deletions(
+            let mut caches: Vec<HashMap<Key, Value>> = Vec::with_capacity(expressions.len());
+            caches.resize_with(expressions.len(), HashMap::new);
+            table.values().map_named_with_deletions_first(
                 "expression_table::evaluate_expression",
                 wrapper,
-                closure,
+                move |(key, values)| {
+                    let args: Vec<Value> = column_paths
+                        .iter()
+                        .map(|path| path.extract(&key, &values))
+                        .collect::<Result<_>>()
+                        .unwrap_with_reporter(&error_reporter);
+
+                    let new_values = expressions.iter().enumerate().map(|(i, expression_data)| {
+                        if expression_data.deterministic {
+                            // If the expression is deterministic, do nothing.
+                        } else if expression_data.append_only {
+                            // If the expression is append_only but the stream is not, don't remove key from cache.
+                            if let Some(result) = caches[i].get(&key) {
+                                return result.clone();
+                            }
+                        } else if let Some(result) = caches[i].remove(&key) {
+                            // If expression is not append_only, remove key from cache as a new result can be different.
+                            // Maybe assert that diff == -1, but that requires passing diff to the closure.
+                            return result;
+                        }
+                        let result = expression_data
+                            .expression
+                            .eval(&args)
+                            .unwrap_or_log_with_trace(
+                                error_logger.as_ref(),
+                                expression_data.properties.trace(),
+                                Value::Error,
+                            );
+                        if !expression_data.deterministic {
+                            caches[i].insert(key, result.clone());
+                        }
+                        result
+                    });
+                    (key, Value::Tuple(new_values.collect()))
+                },
             )
         };
-        // TODO: move determinization to apply (create a list of caches for each expression_table)
 
         Ok(self
             .tables
@@ -1446,7 +1483,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         let table = self
             .tables
@@ -1477,9 +1514,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             };
             Box::pin(future)
         };
-        let new_values = if deterministic {
+        let new_values = if append_only_or_deterministic {
             table
-                .values()
+                .values_consolidated()
                 .map_named_async("expression_column::apply_async", closure)
         } else {
             table.values().map_named_async_with_consistent_deletions(
@@ -4383,15 +4420,15 @@ where
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
-        if deterministic {
+        if append_only_or_deterministic {
             self.0.borrow_mut().expression_table(
                 table_handle,
                 column_paths,
                 expressions,
                 wrapper,
-                deterministic,
+                append_only_or_deterministic,
             )
         } else {
             Err(Error::NotSupportedInIteration)
@@ -4448,7 +4485,7 @@ where
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().async_apply_table(
             function,
@@ -4456,7 +4493,7 @@ where
             column_paths,
             table_properties,
             trace,
-            deterministic,
+            append_only_or_deterministic,
         )
     }
 
@@ -4976,14 +5013,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().expression_table(
             table_handle,
             column_paths,
             expressions,
             wrapper,
-            deterministic,
+            append_only_or_deterministic,
         )
     }
 
@@ -5037,7 +5074,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().async_apply_table(
             function,
@@ -5045,7 +5082,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             column_paths,
             table_properties,
             trace,
-            deterministic,
+            append_only_or_deterministic,
         )
     }
 

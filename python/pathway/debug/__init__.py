@@ -346,6 +346,7 @@ def table_from_pandas(
     unsafe_trusted_ids: bool = False,
     schema: type[Schema] | None = None,
     _stacklevel: int = 1,
+    _new_universe: bool = False,
 ) -> Table:
     """A function for creating a table from a pandas DataFrame. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
@@ -394,10 +395,11 @@ def table_from_pandas(
     )
     from pathway.internals.parse_graph import G
 
-    if key in G.static_tables_cache:
-        ret = ret.with_universe_of(G.static_tables_cache[key])
-    else:
-        G.static_tables_cache[key] = ret
+    if not _new_universe:
+        if key in G.static_tables_cache:
+            ret = ret.with_universe_of(G.static_tables_cache[key])
+        else:
+            G.static_tables_cache[key] = ret
 
     return ret
 
@@ -434,6 +436,7 @@ def table_from_markdown(
     *,
     _stacklevel: int = 1,
     split_on_whitespace: bool = True,
+    _new_universe: bool = False,
 ) -> Table:
     """A function for creating a table from its definition in markdown. If it contains a special
     column ``__time__``, rows will be split into batches with timestamps from the column.
@@ -447,6 +450,7 @@ def table_from_markdown(
         unsafe_trusted_ids=unsafe_trusted_ids,
         schema=schema,
         _stacklevel=_stacklevel + 1,
+        _new_universe=_new_universe,
     )
 
 

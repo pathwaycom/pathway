@@ -1045,3 +1045,130 @@ def test_cast_on_return() -> None:
     """
     )
     assert_table_equality(res, expected)
+
+
+@xfail_on_multiple_threads
+def test_append_only_non_deterministic_not_storing_results():
+    class Schema(pw.Schema, append_only=True):
+        # lie that a table is append only to check if values aren't stored
+        a: int
+
+    t = pw.debug.table_from_markdown(
+        """
+          | a | __time__ | __diff__
+        1 | 1 |     2    |     1
+        2 | 2 |     4    |     1
+        1 | 1 |     6    |    -1
+        3 | 3 |     8    |     1
+        3 | 3 |    10    |    -1
+    """,
+        schema=Schema,
+    )
+
+    count = 0
+
+    @pw.udf
+    def f(a: int) -> int:
+        nonlocal count
+        count += 1
+        return count
+
+    result = t.with_columns(b=f(pw.this.a))
+
+    [rows] = pw.debug._compute_tables(result)
+    assert sorted([row.values[0] for row in rows]) == [1, 1, 2, 3, 3]
+    assert sorted([row.values[1] for row in rows]) == [1, 2, 3, 4, 5]
+
+
+@xfail_on_multiple_threads
+def test_append_only_results_stored_forever_column_append_only_storage_not_append_only():
+    class Schema(pw.Schema):
+        a: int = pw.column_definition(append_only=True)
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+          | a | b | __time__ | __diff__
+        1 | 1 | 2 |     2    |     1
+        2 | 2 | 3 |     4    |     1
+        1 | 1 | 2 |     6    |    -1
+        1 | 1 | 4 |     6    |     1
+        3 | 3 | 5 |     8    |     1
+        3 | 3 | 5 |    10    |    -1
+        3 | 3 | 6 |    10    |     1
+    """,
+        schema=Schema,
+    )
+
+    count = 0
+
+    @pw.udf
+    def f(a: int) -> int:
+        nonlocal count
+        count += 1
+        return count
+
+    result = t.select(a=f(pw.this.a), b=pw.this.b)
+
+    expected = pw.debug.table_from_markdown(
+        """
+          | a | b | __time__ | __diff__
+        1 | 1 | 2 |     2    |     1
+        2 | 2 | 3 |     4    |     1
+        1 | 1 | 2 |     6    |    -1
+        1 | 1 | 4 |     6    |     1
+        3 | 3 | 5 |     8    |     1
+        3 | 3 | 5 |    10    |    -1
+        3 | 3 | 6 |    10    |     1
+    """,
+        _new_universe=True,
+    )
+
+    assert_stream_equality(result, expected)
+
+
+@xfail_on_multiple_threads
+def test_append_only_results_stored_temporarily_column_not_append_only_storage_not_append_only():
+    class Schema(pw.Schema):
+        a: int
+        b: int
+
+    t = pw.debug.table_from_markdown(
+        """
+          | a | b | __time__ | __diff__
+        1 | 1 | 2 |     2    |     1
+        2 | 2 | 3 |     4    |     1
+        1 | 1 | 2 |     6    |    -1
+        1 | 1 | 4 |     6    |     1
+        3 | 3 | 5 |     8    |     1
+        3 | 3 | 5 |    10    |    -1
+        3 | 3 | 6 |    10    |     1
+    """,
+        schema=Schema,
+    )
+
+    count = 0
+
+    @pw.udf
+    def f(a: int) -> int:
+        nonlocal count
+        count += 1
+        return count
+
+    result = t.select(a=f(pw.this.a), b=pw.this.b)
+
+    expected = pw.debug.table_from_markdown(
+        """
+          | a | b | __time__ | __diff__
+        1 | 1 | 2 |     2    |     1
+        2 | 2 | 3 |     4    |     1
+        1 | 1 | 2 |     6    |    -1
+        1 | 3 | 4 |     6    |     1
+        3 | 4 | 5 |     8    |     1
+        3 | 4 | 5 |    10    |    -1
+        3 | 5 | 6 |    10    |     1
+    """,
+        _new_universe=True,
+    )
+
+    assert_stream_equality(result, expected)

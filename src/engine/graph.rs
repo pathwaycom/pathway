@@ -268,18 +268,13 @@ impl DataRow {
     }
 }
 
+#[derive(Clone)]
 pub struct ExpressionData {
     pub expression: Arc<Expression>,
     pub properties: Arc<TableProperties>,
-}
-
-impl ExpressionData {
-    pub fn new(expression: Arc<Expression>, properties: Arc<TableProperties>) -> Self {
-        ExpressionData {
-            expression,
-            properties,
-        }
-    }
+    pub append_only: bool,
+    pub deterministic: bool,
+    pub gil: bool,
 }
 
 #[derive(Clone)]
@@ -288,22 +283,6 @@ pub struct ReducerData {
     pub skip_errors: bool,
     pub column_paths: Vec<ColumnPath>,
     pub trace: Trace,
-}
-
-impl ReducerData {
-    pub fn new(
-        reducer: Reducer,
-        skip_errors: bool,
-        column_paths: Vec<ColumnPath>,
-        trace: Trace,
-    ) -> Self {
-        ReducerData {
-            reducer,
-            skip_errors,
-            column_paths,
-            trace,
-        }
-    }
 }
 
 pub struct JoinData {
@@ -711,7 +690,7 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle>;
 
     fn columns_to_table(
@@ -748,7 +727,7 @@ pub trait Graph {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle>;
 
     fn subscribe_table(
@@ -1134,7 +1113,7 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
         expressions: Vec<ExpressionData>,
         wrapper: BatchWrapper,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.expression_table(
@@ -1142,7 +1121,7 @@ impl Graph for ScopedGraph {
                 column_paths,
                 expressions,
                 wrapper,
-                deterministic,
+                append_only_or_deterministic,
             )
         })
     }
@@ -1191,7 +1170,7 @@ impl Graph for ScopedGraph {
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
         trace: Trace,
-        deterministic: bool,
+        append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.async_apply_table(
@@ -1200,7 +1179,7 @@ impl Graph for ScopedGraph {
                 column_paths,
                 table_properties,
                 trace,
-                deterministic,
+                append_only_or_deterministic,
             )
         })
     }

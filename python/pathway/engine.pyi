@@ -176,6 +176,15 @@ class Reducer:
     EARLIEST: Reducer
     LATEST: Reducer
 
+class ExpressionData:
+    def __init__(
+        self,
+        expression: Expression,
+        properties: TableProperties,
+        append_only: bool,
+        deterministic: bool,
+    ) -> None: ...
+
 @dataclasses.dataclass
 class ReducerData:
     reducer: Reducer
@@ -472,7 +481,7 @@ class Scope:
         self,
         table: Table,
         column_paths: list[ColumnPath],
-        expressions: list[tuple[Expression, TableProperties]],
+        expressions: list[ExpressionData],
         deterministic: bool,
     ) -> Table: ...
     def table_properties(self, table: Table, path: ColumnPath) -> TableProperties: ...
