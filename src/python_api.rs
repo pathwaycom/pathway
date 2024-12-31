@@ -75,12 +75,16 @@ use crate::connectors::data_format::{
     KeyGenerationPolicy, NullFormatter, Parser, PsqlSnapshotFormatter, PsqlUpdatesFormatter,
     SingleColumnFormatter, TransparentParser,
 };
+use crate::connectors::data_lake::iceberg::{
+    IcebergBatchWriter, IcebergDBParams, IcebergTableParams,
+};
+use crate::connectors::data_lake::DeltaBatchWriter;
 use crate::connectors::data_storage::{
     new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
-    ConnectorMode, DeltaTableReader, DeltaTableWriter, ElasticSearchWriter, FileWriter,
-    KafkaReader, KafkaWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
-    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, Writer,
+    ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, KafkaReader, KafkaWriter,
+    LakeWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlWriter,
+    PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod, ReaderBuilder,
+    SqliteReader, Writer,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -3696,6 +3700,7 @@ pub struct DataStorage {
     downloader_threads_count: Option<usize>,
     database: Option<String>,
     start_from_timestamp_ms: Option<i64>,
+    namespace: Option<Vec<String>>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4010,6 +4015,7 @@ impl DataStorage {
         downloader_threads_count = None,
         database = None,
         start_from_timestamp_ms = None,
+        namespace = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4037,6 +4043,7 @@ impl DataStorage {
         downloader_threads_count: Option<usize>,
         database: Option<String>,
         start_from_timestamp_ms: Option<i64>,
+        namespace: Option<Vec<String>>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4063,6 +4070,7 @@ impl DataStorage {
             downloader_threads_count,
             database,
             start_from_timestamp_ms,
+            namespace,
         }
     }
 }
@@ -4767,15 +4775,52 @@ impl DataStorage {
         for field in &data_format.value_fields {
             value_fields.push(field.borrow(py).clone());
         }
-        let writer = DeltaTableWriter::new(
-            path,
+        let batch_writer =
+            DeltaBatchWriter::new(path, &value_fields, self.delta_storage_options(py)?).map_err(
+                |e| PyIOError::new_err(format!("Unable to create DeltaTable writer: {e}")),
+            )?;
+        let writer = LakeWriter::new(
+            Box::new(batch_writer),
             &value_fields,
-            self.delta_storage_options(py)?,
             self.min_commit_frequency.map(time::Duration::from_millis),
         )
         .map_err(|e| {
-            PyIOError::new_err(format!("Unable to start DeltaTable output connector: {e}"))
+            PyIOError::new_err(format!("Unable to start data lake output connector: {e}"))
         })?;
+        Ok(Box::new(writer))
+    }
+
+    fn construct_iceberg_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<Box<dyn Writer>> {
+        let uri = self.path()?;
+        let warehouse = &self.database;
+        let table_name = self.table_name()?;
+        let namespace = self
+            .namespace
+            .clone()
+            .ok_or_else(|| PyValueError::new_err("Namespace must be specified"))?;
+        let mut value_fields = Vec::new();
+        for field in &data_format.value_fields {
+            value_fields.push(field.borrow(py).clone());
+        }
+
+        let db_params = IcebergDBParams::new(uri.to_string(), warehouse.clone(), namespace);
+        let table_params = IcebergTableParams::new(table_name.to_string(), &value_fields)
+            .map_err(|e| PyIOError::new_err(format!("Unable to create Iceberg writer: {e}")))?;
+        let batch_writer = IcebergBatchWriter::new(&db_params, &table_params)
+            .map_err(|e| PyIOError::new_err(format!("Unable to create Iceberg writer: {e}")))?;
+        let writer = LakeWriter::new(
+            Box::new(batch_writer),
+            &value_fields,
+            self.min_commit_frequency.map(time::Duration::from_millis),
+        )
+        .map_err(|e| {
+            PyIOError::new_err(format!("Unable to start data lake output connector: {e}"))
+        })?;
+
         Ok(Box::new(writer))
     }
 
@@ -4817,6 +4862,7 @@ impl DataStorage {
             "mongodb" => self.construct_mongodb_writer(),
             "null" => Ok(Box::new(NullWriter::new())),
             "nats" => self.construct_nats_writer(),
+            "iceberg" => self.construct_iceberg_writer(py, data_format),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data sink {other:?}"
             ))),

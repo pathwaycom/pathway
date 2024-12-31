@@ -15,7 +15,7 @@ pub mod external_integration;
 pub mod persistence;
 pub mod python_api;
 
-mod async_runtime;
+pub mod async_runtime;
 mod env;
 mod fs_helpers;
 mod mat_mul;

@@ -10,6 +10,7 @@ from pathway.io import (
     fs,
     gdrive,
     http,
+    iceberg,
     jsonlines,
     kafka,
     logstash,
@@ -60,6 +61,7 @@ __all__ = [
     "sqlite",
     "pubsub",
     "deltalake",
+    "iceberg",
     "mongodb",
     "nats",
 ]

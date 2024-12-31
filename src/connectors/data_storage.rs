@@ -22,10 +22,11 @@ use std::path::Path;
 use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arcstr::ArcStr;
 use futures::StreamExt;
+use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
@@ -44,7 +45,6 @@ use crate::connectors::{Offset, OffsetKey, OffsetValue};
 use crate::engine::error::limit_length;
 use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
-use crate::engine::time::DateTime as EngineDateTime;
 use crate::engine::Type;
 use crate::engine::Value;
 use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
@@ -55,43 +55,23 @@ use crate::persistence::{ExternalPersistentId, PersistentId};
 use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::PythonSubject;
-use crate::python_api::ValueField;
 
 use async_nats::client::FlushError as NatsFlushError;
 use async_nats::client::PublishError as NatsPublishError;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
 use bincode::ErrorKind as BincodeError;
-use deltalake::arrow::array::Array as ArrowArray;
-use deltalake::arrow::array::RecordBatch as DTRecordBatch;
-use deltalake::arrow::array::{
-    BinaryArray as ArrowBinaryArray, BooleanArray as ArrowBooleanArray,
-    Float64Array as ArrowFloat64Array, Int64Array as ArrowInt64Array,
-    StringArray as ArrowStringArray, TimestampMicrosecondArray as ArrowTimestampArray,
-};
-use deltalake::arrow::datatypes::{
-    DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema,
-    TimeUnit as ArrowTimeUnit,
-};
+use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::error::ArrowError;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::kernel::Action as DeltaLakeAction;
-use deltalake::kernel::DataType as DeltaTableKernelType;
-use deltalake::kernel::PrimitiveType as DeltaTablePrimitiveType;
-use deltalake::kernel::StructField as DeltaTableStructField;
-use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
 use deltalake::parquet::errors::ParquetError;
 use deltalake::parquet::file::reader::FileReader as DeltaLakeParquetFileReader;
 use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
 use deltalake::parquet::record::Row as ParquetRow;
-use deltalake::protocol::SaveMode as DeltaTableSaveMode;
 use deltalake::table::PeekCommit as DeltaLakePeekCommit;
-use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
-use deltalake::{
-    open_table_with_storage_options as open_delta_table, DeltaConfigKey, DeltaTable,
-    DeltaTableError,
-};
+use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, DeltaTableError};
 use elasticsearch::{BulkParts, Elasticsearch};
 use glob::PatternError as GlobPatternError;
 use mongodb::bson::Document as BsonDocument;
@@ -109,6 +89,8 @@ use rusqlite::Connection as SqliteConnection;
 use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
 use serde::{Deserialize, Serialize};
+
+pub use super::data_lake::LakeWriter;
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum DataEventType {
@@ -584,6 +566,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     NatsFlush(#[from] NatsFlushError),
+
+    #[error(transparent)]
+    IcebergError(#[from] IcebergError),
 
     #[error("type mismatch with delta table schema: got {0} expected {1}")]
     TypeMismatchWithSchema(Value, ArrowDataType),
@@ -1613,277 +1598,6 @@ impl Reader for SqliteReader {
         if persistent_id.is_some() {
             unimplemented!("persistence is not supported for Sqlite data source")
         }
-    }
-}
-
-const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [("time", Type::Int), ("diff", Type::Int)];
-
-pub struct DeltaTableWriter {
-    table: DeltaTable,
-    writer: DTRecordBatchWriter,
-    schema: Arc<ArrowSchema>,
-    buffered_columns: Vec<Vec<Value>>,
-    min_commit_frequency: Option<Duration>,
-    last_commit_at: Instant,
-}
-
-impl DeltaTableWriter {
-    pub fn new(
-        path: &str,
-        value_fields: &Vec<ValueField>,
-        storage_options: HashMap<String, String>,
-        min_commit_frequency: Option<Duration>,
-    ) -> Result<Self, WriteError> {
-        let schema = Arc::new(Self::construct_schema(value_fields)?);
-        let table = Self::open_table(path, value_fields, storage_options)?;
-        let writer = DTRecordBatchWriter::for_table(&table)?;
-
-        let mut empty_buffered_columns = Vec::new();
-        for _ in 0..schema.flattened_fields().len() {
-            empty_buffered_columns.push(Vec::new());
-        }
-        Ok(Self {
-            table,
-            writer,
-            schema,
-            buffered_columns: empty_buffered_columns,
-            min_commit_frequency,
-
-            // before the first commit, the time should be
-            // measured from the moment of the start
-            last_commit_at: Instant::now(),
-        })
-    }
-
-    fn array_of_target_type<ElementType>(
-        values: &Vec<Value>,
-        mut to_simple_type: impl FnMut(&Value) -> Result<ElementType, WriteError>,
-    ) -> Result<Vec<Option<ElementType>>, WriteError> {
-        let mut values_vec: Vec<Option<ElementType>> = Vec::new();
-        for value in values {
-            if matches!(value, Value::None) {
-                values_vec.push(None);
-                continue;
-            }
-            values_vec.push(Some(to_simple_type(value)?));
-        }
-        Ok(values_vec)
-    }
-
-    fn arrow_array_for_type(
-        type_: &ArrowDataType,
-        values: &Vec<Value>,
-    ) -> Result<Arc<dyn ArrowArray>, WriteError> {
-        match type_ {
-            ArrowDataType::Boolean => {
-                let v = Self::array_of_target_type::<bool>(values, |v| match v {
-                    Value::Bool(b) => Ok(*b),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                Ok(Arc::new(ArrowBooleanArray::from(v)))
-            }
-            ArrowDataType::Int64 => {
-                let v = Self::array_of_target_type::<i64>(values, |v| match v {
-                    Value::Int(i) => Ok(*i),
-                    Value::Duration(d) => Ok(d.microseconds()),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                Ok(Arc::new(ArrowInt64Array::from(v)))
-            }
-            ArrowDataType::Float64 => {
-                let v = Self::array_of_target_type::<f64>(values, |v| match v {
-                    Value::Float(f) => Ok((*f).into()),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                Ok(Arc::new(ArrowFloat64Array::from(v)))
-            }
-            ArrowDataType::Utf8 => {
-                let v = Self::array_of_target_type::<String>(values, |v| match v {
-                    Value::String(s) => Ok(s.to_string()),
-                    Value::Pointer(p) => Ok(p.to_string()),
-                    Value::Json(j) => Ok(j.to_string()),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                Ok(Arc::new(ArrowStringArray::from(v)))
-            }
-            ArrowDataType::Binary => {
-                let mut vec_owned = Self::array_of_target_type::<Vec<u8>>(values, |v| match v {
-                    Value::Bytes(b) => Ok(b.to_vec()),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                let mut vec_refs = Vec::new();
-                for item in &mut vec_owned {
-                    vec_refs.push(item.as_mut().map(|v| v.as_slice()));
-                }
-                Ok(Arc::new(ArrowBinaryArray::from(vec_refs)))
-            }
-            ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, None) => {
-                let v = Self::array_of_target_type::<i64>(values, |v| match v {
-                    #[allow(clippy::cast_possible_truncation)]
-                    Value::DateTimeNaive(dt) => Ok(dt.timestamp_microseconds()),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                Ok(Arc::new(ArrowTimestampArray::from(v)))
-            }
-            ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, Some(tz)) => {
-                let v = Self::array_of_target_type::<i64>(values, |v| match v {
-                    #[allow(clippy::cast_possible_truncation)]
-                    Value::DateTimeUtc(dt) => Ok(dt.timestamp_microseconds()),
-                    _ => Err(WriteError::TypeMismatchWithSchema(v.clone(), type_.clone())),
-                })?;
-                Ok(Arc::new(ArrowTimestampArray::from(v).with_timezone(&**tz)))
-            }
-            _ => panic!("provided type {type_} is unknown to the engine"),
-        }
-    }
-
-    fn prepare_delta_batch(&self) -> Result<DTRecordBatch, WriteError> {
-        let mut data_columns = Vec::new();
-        for (index, column) in self.buffered_columns.iter().enumerate() {
-            data_columns.push(Self::arrow_array_for_type(
-                self.schema.field(index).data_type(),
-                column,
-            )?);
-        }
-        Ok(DTRecordBatch::try_new(self.schema.clone(), data_columns)?)
-    }
-
-    fn delta_table_primitive_type(type_: &Type) -> Result<DeltaTableKernelType, WriteError> {
-        Ok(DeltaTableKernelType::Primitive(match type_ {
-            Type::Bool => DeltaTablePrimitiveType::Boolean,
-            Type::Float => DeltaTablePrimitiveType::Double,
-            Type::String | Type::Json => DeltaTablePrimitiveType::String,
-            Type::Bytes => DeltaTablePrimitiveType::Binary,
-            Type::DateTimeNaive => DeltaTablePrimitiveType::TimestampNtz,
-            Type::DateTimeUtc => DeltaTablePrimitiveType::Timestamp,
-            Type::Int | Type::Duration => DeltaTablePrimitiveType::Long,
-            Type::Optional(wrapped) => return Self::delta_table_primitive_type(wrapped),
-            Type::Any
-            | Type::Array(_, _)
-            | Type::Tuple(_)
-            | Type::List(_)
-            | Type::PyObjectWrapper
-            | Type::Pointer => return Err(WriteError::UnsupportedType(type_.clone())),
-        }))
-    }
-
-    fn arrow_data_type(type_: &Type) -> Result<ArrowDataType, WriteError> {
-        Ok(match type_ {
-            Type::Bool => ArrowDataType::Boolean,
-            Type::Int | Type::Duration => ArrowDataType::Int64,
-            Type::Float => ArrowDataType::Float64,
-            Type::Pointer | Type::String | Type::Json => ArrowDataType::Utf8,
-            Type::Bytes => ArrowDataType::Binary,
-            // DeltaLake timestamps are stored in microseconds:
-            // https://docs.rs/deltalake/latest/deltalake/kernel/enum.PrimitiveType.html#variant.Timestamp
-            Type::DateTimeNaive => ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, None),
-            Type::DateTimeUtc => {
-                ArrowDataType::Timestamp(ArrowTimeUnit::Microsecond, Some("UTC".into()))
-            }
-            Type::Optional(wrapped) => return Self::arrow_data_type(wrapped),
-            Type::Any
-            | Type::Array(_, _)
-            | Type::Tuple(_)
-            | Type::List(_)
-            | Type::PyObjectWrapper => return Err(WriteError::UnsupportedType(type_.clone())),
-        })
-    }
-
-    pub fn construct_schema(value_fields: &Vec<ValueField>) -> Result<ArrowSchema, WriteError> {
-        let mut schema_fields: Vec<ArrowField> = Vec::new();
-        for field in value_fields {
-            schema_fields.push(ArrowField::new(
-                field.name.clone(),
-                Self::arrow_data_type(&field.type_)?,
-                field.type_.can_be_none(),
-            ));
-        }
-        for (field, type_) in SPECIAL_OUTPUT_FIELDS {
-            schema_fields.push(ArrowField::new(
-                field,
-                Self::arrow_data_type(&type_)?,
-                false,
-            ));
-        }
-        Ok(ArrowSchema::new(schema_fields))
-    }
-
-    pub fn open_table(
-        path: &str,
-        schema_fields: &Vec<ValueField>,
-        storage_options: HashMap<String, String>,
-    ) -> Result<DeltaTable, WriteError> {
-        let mut struct_fields = Vec::new();
-        for field in schema_fields {
-            struct_fields.push(DeltaTableStructField::new(
-                field.name.clone(),
-                Self::delta_table_primitive_type(&field.type_)?,
-                field.type_.can_be_none(),
-            ));
-        }
-        for (field, type_) in SPECIAL_OUTPUT_FIELDS {
-            struct_fields.push(DeltaTableStructField::new(
-                field,
-                Self::delta_table_primitive_type(&type_)?,
-                false,
-            ));
-        }
-
-        let runtime = create_async_tokio_runtime()?;
-        let table: DeltaTable = runtime
-            .block_on(async {
-                let builder = DeltaTableCreateBuilder::new()
-                    .with_location(path)
-                    .with_save_mode(DeltaTableSaveMode::Append)
-                    .with_columns(struct_fields)
-                    .with_configuration_property(DeltaConfigKey::AppendOnly, Some("true"))
-                    .with_storage_options(storage_options.clone());
-
-                builder.await
-            })
-            .or_else(
-                |e| {
-                    warn!("Unable to create DeltaTable for output: {e}. Trying to open the existing one by this path.");
-                    runtime.block_on(async {
-                        open_delta_table(path, storage_options).await
-                    })
-                }
-            )?;
-
-        Ok(table)
-    }
-}
-
-impl Writer for DeltaTableWriter {
-    fn write(&mut self, data: FormatterContext) -> Result<(), WriteError> {
-        for (index, value) in data.values.into_iter().enumerate() {
-            self.buffered_columns[index].push(value);
-        }
-        let time_column_idx = self.buffered_columns.len() - 2;
-        let diff_column_idx = self.buffered_columns.len() - 1;
-        self.buffered_columns[time_column_idx].push(Value::Int(data.time.0.try_into().unwrap()));
-        self.buffered_columns[diff_column_idx].push(Value::Int(data.diff.try_into().unwrap()));
-        Ok(())
-    }
-
-    fn flush(&mut self, forced: bool) -> Result<(), WriteError> {
-        let commit_needed = !self.buffered_columns[0].is_empty()
-            && (self
-                .min_commit_frequency
-                .map_or(true, |f| self.last_commit_at.elapsed() >= f)
-                || forced);
-        if commit_needed {
-            // Deadlocks if new_current_thread is used
-            create_async_tokio_runtime()?.block_on(async {
-                self.writer.write(self.prepare_delta_batch()?).await?;
-                self.writer.flush_and_commit(&mut self.table).await?;
-                for column in &mut self.buffered_columns {
-                    column.clear();
-                }
-                Ok::<(), WriteError>(())
-            })?;
-        }
-        Ok(())
     }
 }
 

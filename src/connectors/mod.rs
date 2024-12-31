@@ -18,6 +18,7 @@ use timely::dataflow::operators::probe::Handle;
 
 pub mod adaptors;
 pub mod data_format;
+pub mod data_lake;
 pub mod data_storage;
 pub mod data_tokenize;
 pub mod metadata;
@@ -44,7 +45,7 @@ use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWrite
 
 use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
 use data_storage::{
-    DataEventType, ReadError, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError,
+    DataEventType, ReadError, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError, Writer,
 };
 
 pub use adaptors::SessionType;

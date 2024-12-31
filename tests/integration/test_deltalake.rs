@@ -12,8 +12,9 @@ use tempfile::tempdir;
 use pathway_engine::connectors::data_format::{
     Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
 };
+use pathway_engine::connectors::data_lake::DeltaBatchWriter;
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, DeltaTableReader, DeltaTableWriter, ObjectDownloader, WriteError, Writer,
+    ConnectorMode, DeltaTableReader, LakeWriter, ObjectDownloader, WriteError, Writer,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{
@@ -33,12 +34,12 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         default: None,
     }];
 
-    let mut writer = DeltaTableWriter::new(
+    let batch_writer = DeltaBatchWriter::new(
         test_storage_path.to_str().unwrap(),
         &value_fields,
         HashMap::new(),
-        None,
     )?;
+    let mut writer = LakeWriter::new(Box::new(batch_writer), &value_fields, None)?;
     let mut formatter = IdentityFormatter::new();
 
     for value in values {
