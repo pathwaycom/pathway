@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - values of non-deterministic UDFs are not stored in tables that are `append_only`.
+- `pw.Table.ix` has better runtime error message that includes id of the missing row.
 
 ### Fixed
 - temporal behaviors in temporal operators (`windowby`, `interval_join`) now consume no CPU when no data passes through them.

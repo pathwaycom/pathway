@@ -617,6 +617,49 @@ def test_with_universe_of():
     )
 
 
+def test_ix():
+    t1 = pw.debug.table_from_markdown(
+        """
+          | a
+        1 | 1
+        2 | 3
+        3 | 2
+        4 | 2
+    """
+    ).with_columns(ap=pw.this.pointer_from(pw.this.a))
+
+    t2 = pw.debug.table_from_markdown(
+        """
+          | c
+        1 | 10
+        2 | 13
+    """
+    )
+    res = t1.select(pw.this.a, c=t2.ix(pw.this.ap).c)
+    res = res.select(pw.this.a, c=pw.fill_error(res.c, -1))
+    expected = pw.debug.table_from_markdown(
+        """
+          | a |  c
+        1 | 1 | 10
+        2 | 3 | -1
+        3 | 2 | 13
+        5 | 2 | 13
+    """
+    )
+    expected_errors = T(
+        """
+        message
+        key missing in output table: ^Z3QWT294JQSHPSR8KTPG9ECE4W
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, pw.global_error_log().select(pw.this.message)),
+        (expected, expected_errors),
+        terminate_on_error=False,
+    )
+
+
 def test_remove_errors():
     t1 = T(
         """

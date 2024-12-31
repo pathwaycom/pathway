@@ -1022,24 +1022,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
     }
 
     #[track_caller]
-    fn assert_collections_same_size<V1: Data, V2: Data>(
-        &self,
-        left: &Collection<S, V1>,
-        right: &Collection<S, V2>,
-    ) -> Result<()> {
-        let error_logger = self.create_error_logger()?;
-        left.map_named("assert_collections_same_size::left", |_| ())
-            .negate()
-            .concat(&right.map_named("assert_collections_same_size::right", |_| ()))
-            .consolidate()
-            .inspect(move |(_data, _time, diff)| {
-                assert_ne!(diff, &0);
-                error_logger.log_error(DataError::ValueMissing);
-            });
-        Ok(())
-    }
-
-    #[track_caller]
     fn assert_input_keys_match_output_keys(
         &self,
         input_keys: &Keys<S>,
@@ -1062,6 +1044,38 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 }
             });
         Ok(())
+    }
+
+    fn make_output_keys_match_input_keys(
+        &self,
+        input_values: &Values<S>,
+        output_collection: &Collection<S, (Key, Value)>,
+    ) -> Result<Collection<S, (Key, Value)>> {
+        let leftover_values = input_values.concat(
+            &output_collection
+                .map_named(
+                    "restrict_or_override_table_universe::compare",
+                    |(key, values)| {
+                        (
+                            key,
+                            values.as_tuple().expect("values should be a tuple")[0].clone(),
+                        )
+                    },
+                )
+                .distinct()
+                .negate(),
+        );
+        let error_logger = self.create_error_logger()?;
+
+        Ok(
+            output_collection.concat(&leftover_values.consolidate().map_named(
+                "restrict_or_override_table_universe::fill",
+                move |(key, new_values)| {
+                    error_logger.log_error(DataError::KeyMissingInOutputTable(key));
+                    (key, Value::from([new_values, Value::Error].as_slice()))
+                },
+            )),
+        )
     }
 
     fn static_universe(&mut self, keys: Vec<Key>) -> Result<UniverseHandle> {
@@ -1701,29 +1715,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 ))
             },
         );
-        let leftover_values = new_table.values().concat(
-            &result
-                .map_named(
-                    "restrict_or_override_table_universe::compare",
-                    |(key, values)| {
-                        (
-                            key,
-                            values.as_tuple().expect("values should be a tuple")[0].clone(),
-                        )
-                    },
-                )
-                .distinct()
-                .negate(),
-        );
-        let error_logger = self.create_error_logger()?;
-
-        let result = result.concat(&leftover_values.consolidate().map_named(
-            "restrict_or_override_table_universe::fill",
-            move |(key, new_values)| {
-                error_logger.log_error(DataError::KeyMissingInOutputTable(key));
-                (key, Value::from([new_values, Value::Error].as_slice()))
-            },
-        ));
+        let result = self.make_output_keys_match_input_keys(new_table.values(), &result)?;
 
         if !self.ignore_asserts && same_universes {
             self.assert_input_keys_match_output_keys(original_table.keys(), &result)?;
@@ -2249,8 +2241,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
             _ => new_table,
         };
-        if !self.ignore_asserts && ix_key_policy != IxKeyPolicy::SkipMissing {
-            self.assert_collections_same_size(key_table.values(), &new_table)?;
+        let new_table = if ix_key_policy == IxKeyPolicy::SkipMissing {
+            new_table
+        } else {
+            self.make_output_keys_match_input_keys(key_table.values(), &new_table)?
         };
 
         Ok(self
