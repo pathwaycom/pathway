@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Fixed
+- temporal behaviors in temporal operators (`windowby`, `interval_join`) now consume no CPU when no data passes through them.
+
 ## [0.16.2] - 2024-12-19
 
 ### Added

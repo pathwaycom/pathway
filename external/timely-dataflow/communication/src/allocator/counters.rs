@@ -34,7 +34,7 @@ impl<T, P: Push<T>> Push<T> for Pusher<T, P> {
         //     if self.count != 0 {
         //         self.events
         //             .borrow_mut()
-        //             .push_back(self.index);
+        //             .push(self.index);
         //         self.count = 0;
         //     }
         // }
@@ -43,10 +43,19 @@ impl<T, P: Push<T>> Push<T> for Pusher<T, P> {
         // }
         // TODO: Version above is less chatty, but can be a bit late in
         //       moving information along. Better, but needs cooperation.
-        self.events
-            .borrow_mut()
-            .push(self.index);
 
+        // [Pathway extension]: do not push index if the message is none.
+        // Without it, the program never parks if Variable is used. Then None messages
+        // circulate and in every call to `step_or_park` some operators are activated.
+        // This Pusher is only used by Thread allocator and apparently ignoring None
+        // messages here doesn't block the computation. (The Thread allocator is used
+        // if only one worker is used and always for Pipeline pact).
+        if element.is_some() {
+            self.events
+                .borrow_mut()
+                .push(self.index);
+        }
+        
         self.pusher.push(element)
     }
 }
