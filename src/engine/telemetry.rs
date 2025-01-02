@@ -377,7 +377,7 @@ fn register_sys_metrics() {
             move |observer| {
                 let mut sys: System = System::new();
                 let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
-                sys.refresh_processes(ProcessesToUpdate::Some(&[pid]));
+                sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
 
                 if let Some(process) = sys.process(pid) {
                     observer.observe_u64(&memory_usage_gauge, process.memory(), &[]);
