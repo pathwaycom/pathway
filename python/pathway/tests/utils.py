@@ -693,6 +693,11 @@ def write_lines(path: str | pathlib.Path, data: str | list[str]):
         f.writelines(data)
 
 
+def read_lines(path: str | pathlib.Path) -> list[str]:
+    with open(path) as f:
+        return f.readlines()
+
+
 def get_aws_s3_settings():
     return pw.io.s3.AwsS3Settings(
         bucket_name="aws-integrationtest",
@@ -777,3 +782,28 @@ def deprecated_call_here(
     *, match: str | re.Pattern[str] | None = None
 ) -> AbstractContextManager[pytest.WarningsRecorder]:
     return warns_here((DeprecationWarning, PendingDeprecationWarning), match=match)
+
+
+def consolidate(df: pd.DataFrame) -> pd.DataFrame:
+    values = None
+    for column in df.columns:
+        if column in ["time", "diff"]:
+            continue
+        if values is None:
+            values = df[column].astype(str)
+        else:
+            values = values + "," + df[column].astype(str)
+    df["_all_values"] = values
+
+    total = {}
+    for _, row in df.iterrows():
+        value = row["_all_values"]
+        if value not in total:
+            total[value] = 0
+        total[value] += row["diff"]
+
+    for i in range(df.shape[0]):
+        value = df.at[i, "_all_values"]
+        df.at[i, "diff"] = total[value]
+        total[value] = 0
+    return df[df["diff"] != 0].drop(columns=["_all_values"])

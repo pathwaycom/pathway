@@ -9,24 +9,25 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Error as IoError;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use s3::bucket::Bucket as S3Bucket;
 
-use crate::persistence::input_snapshot::{
-    Event, InputSnapshotReader, InputSnapshotWriter, MockSnapshotReader, ReadInputSnapshot,
-    SnapshotMode,
-};
-
 use crate::connectors::{PersistenceMode, SnapshotAccess};
 use crate::deepcopy::DeepCopy;
-use crate::engine::{Timestamp, TotalFrontier};
+use crate::engine::error::DynError;
+use crate::engine::license::License;
+use crate::engine::{Result, Timestamp, TotalFrontier};
 use crate::fs_helpers::ensure_directory;
 use crate::persistence::backends::{
     FilesystemKVStorage, MockKVStorage, PersistenceBackend, S3KVStorage,
 };
 use crate::persistence::cached_object_storage::CachedObjectStorage;
+use crate::persistence::input_snapshot::{
+    Event, InputSnapshotReader, InputSnapshotWriter, MockSnapshotReader, ReadInputSnapshot,
+    SnapshotMode,
+};
 use crate::persistence::operator_snapshot::{
     ConcreteSnapshotMerger, ConcreteSnapshotReader, ConcreteSnapshotWriter,
     MultiConcreteSnapshotReader,
@@ -96,6 +97,15 @@ impl PersistenceManagerOuterConfig {
 
     pub fn into_inner(self, worker_id: usize, total_workers: usize) -> PersistenceManagerConfig {
         PersistenceManagerConfig::new(self, worker_id, total_workers)
+    }
+
+    pub fn validate(&self, license: &License) -> Result<()> {
+        if matches!(self.persistence_mode, PersistenceMode::OperatorPersisting) {
+            license
+                .check_entitlements(["full_persistence"])
+                .map_err(DynError::from)?;
+        }
+        Ok(())
     }
 }
 
@@ -417,11 +427,36 @@ impl PersistenceManagerConfig {
         Ok(assigned_paths)
     }
 
-    pub fn create_operator_snapshot_readers(
-        &self,
+    fn create_operator_snapshot_merger<D, R>(
+        &mut self,
+        persistent_id: PersistentId,
+        receiver: mpsc::Receiver<()>,
+    ) -> Result<ConcreteSnapshotMerger, PersistenceBackendError>
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
+        let merger_backend = self.get_writer_backend(persistent_id)?;
+        let metadata_backend = self.backend.create()?;
+        let time_querier = FinalizedTimeQuerier::new(metadata_backend, self.total_workers);
+        let merger = ConcreteSnapshotMerger::new::<D, R>(
+            merger_backend,
+            self.snapshot_interval,
+            time_querier,
+            receiver,
+        );
+        Ok(merger)
+    }
+
+    pub fn create_operator_snapshot_readers<D, R>(
+        &mut self,
         persistent_id: PersistentId,
         threshold_time: TotalFrontier<Timestamp>,
-    ) -> Result<MultiConcreteSnapshotReader, PersistenceBackendError> {
+    ) -> Result<(MultiConcreteSnapshotReader, ConcreteSnapshotMerger), PersistenceBackendError>
+    where
+        D: ExchangeData,
+        R: ExchangeData + Semigroup,
+    {
         info!("Using threshold time: {threshold_time:?}");
         let mut readers: Vec<ConcreteSnapshotReader> = Vec::new();
         let backends =
@@ -430,27 +465,22 @@ impl PersistenceManagerConfig {
             let reader = ConcreteSnapshotReader::new(backend, threshold_time);
             readers.push(reader);
         }
-        Ok(MultiConcreteSnapshotReader::new(readers))
+        let (sender, receiver) = mpsc::channel(); // pair used to block merger until reader finishes
+        let reader = MultiConcreteSnapshotReader::new(readers, sender);
+        let merger = self.create_operator_snapshot_merger::<D, R>(persistent_id, receiver)?;
+        Ok((reader, merger))
     }
 
     pub fn create_operator_snapshot_writer<D, R>(
         &mut self,
         persistent_id: PersistentId,
-    ) -> Result<(ConcreteSnapshotWriter<D, R>, ConcreteSnapshotMerger), PersistenceBackendError>
+    ) -> Result<ConcreteSnapshotWriter<D, R>, PersistenceBackendError>
     where
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
         let backend = self.get_writer_backend(persistent_id)?;
-        let merger_backend = self.get_writer_backend(persistent_id)?;
         let writer = ConcreteSnapshotWriter::new(backend, self.snapshot_interval);
-        let metadata_backend = self.backend.create()?;
-        let time_querier = FinalizedTimeQuerier::new(metadata_backend, self.total_workers);
-        let merger = ConcreteSnapshotMerger::new::<D, R>(
-            merger_backend,
-            self.snapshot_interval,
-            time_querier,
-        );
-        Ok((writer, merger))
+        Ok(writer)
     }
 }

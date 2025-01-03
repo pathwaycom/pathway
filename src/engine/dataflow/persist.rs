@@ -13,21 +13,62 @@ use differential_dataflow::{AsCollection, Collection, ExchangeData};
 use log::error;
 use ordered_float::OrderedFloat;
 use timely::dataflow::channels::pact::Exchange;
-use timely::dataflow::operators::{Capability, Operator};
+use timely::dataflow::operators::{Capability, Filter, Operator};
 use timely::dataflow::Scope;
 use timely::{order::TotalOrder, progress::Timestamp as TimelyTimestampTrait};
 
 use crate::engine::reduce::IntSumState;
-use crate::engine::{Key, Result, Timestamp, Value};
+use crate::engine::{Error, Key, Result, Timestamp, Value};
 use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::operator_snapshot::{OperatorSnapshotReader, OperatorSnapshotWriter};
-use crate::persistence::tracker::{SharedWorkerPersistentStorage, WorkerPersistentStorage};
-use crate::persistence::{PersistenceTime, PersistentId};
+use crate::persistence::tracker::{
+    RequiredPersistenceMode, SharedWorkerPersistentStorage, WorkerPersistentStorage,
+};
+use crate::persistence::{ExternalPersistentId, PersistenceTime, PersistentId};
 
-use super::maybe_total::MaybeTotalScope;
-use super::{shard::Shard, Poller};
+use crate::engine::dataflow::maybe_total::MaybeTotalScope;
+use crate::engine::dataflow::shard::Shard;
+use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell};
 
-pub trait PersistenceWrapper<S>
+pub(super) fn effective_persistent_id<S>(
+    persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+    reader_is_internal: bool,
+    external_persistent_id: Option<&ExternalPersistentId>,
+    required_persistence_mode: RequiredPersistenceMode,
+    logic: impl FnOnce(u64) -> String,
+) -> Result<Option<ExternalPersistentId>>
+where
+    S: MaybeTotalScope,
+{
+    let has_persistent_storage = persistence_wrapper
+        .get_worker_persistent_storage()
+        .is_some();
+    if let Some(external_persistent_id) = external_persistent_id {
+        if has_persistent_storage {
+            Ok(Some(external_persistent_id.clone()))
+        } else {
+            Err(Error::NoPersistentStorage(external_persistent_id.clone()))
+        }
+    } else if has_persistent_storage && !reader_is_internal {
+        let next_state_id = persistence_wrapper.next_state_id();
+        let worker_persistent_storage = persistence_wrapper
+            .get_worker_persistent_storage()
+            .unwrap()
+            .lock()
+            .unwrap();
+        if worker_persistent_storage.persistent_id_generation_enabled(required_persistence_mode)
+            && worker_persistent_storage.table_persistence_enabled()
+        {
+            Ok(Some(logic(next_state_id)))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) trait PersistenceWrapper<S>
 where
     S: MaybeTotalScope,
 {
@@ -43,6 +84,11 @@ where
         Option<Poller>,
         Option<std::thread::JoinHandle<()>>,
     )>;
+    fn filter_out_persisted(
+        &self,
+        collection: PersistableCollection<S>,
+    ) -> PersistableCollection<S>;
+    fn next_state_id(&mut self) -> u64;
 }
 
 pub struct EmptyPersistenceWrapper;
@@ -71,6 +117,17 @@ where
     )> {
         Ok((collection, None, None))
     }
+
+    fn filter_out_persisted(
+        &self,
+        collection: PersistableCollection<S>,
+    ) -> PersistableCollection<S> {
+        collection
+    }
+
+    fn next_state_id(&mut self) -> u64 {
+        0
+    }
 }
 
 /// Why is `PersistableCollection` needed? We could have generic `maybe_persist_named` instead?
@@ -87,7 +144,7 @@ where
 /// To handle this, operator snapshot writer is created in a separate object (instance of `TimestampBasedPersistenceWrapper`)
 /// that is aware that `MaybeTotalTimestamp` = `Timestamp`.
 
-pub enum PersistableCollection<S: MaybeTotalScope> {
+pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyValueIsize(Collection<S, (Key, Value), isize>),
     KeyIntSumState(Collection<S, Key, IntSumState>),
     KeyIsize(Collection<S, Key, isize>),
@@ -99,6 +156,13 @@ pub enum PersistableCollection<S: MaybeTotalScope> {
         Collection<S, (Key, Option<Vec<(Option<Value>, Key, Value)>>), isize>,
     ),
     KeyOptionKeyValue(Collection<S, (Key, Option<(Key, Value)>), isize>),
+    SortingCellIsize(Collection<S, SortingCell, isize>),
+    KeyMaybeUpdateIsize(Collection<S, (Key, MaybeUpdate<Value>), isize>),
+    KeyKeyIsize(Collection<S, (Key, Key), isize>),
+    KeyKeyValueIsize(Collection<S, (Key, (Key, Value)), isize>),
+    KeyIntSumStateIsize(Collection<S, (Key, IntSumState), isize>),
+    KeyIsizeIsize(Collection<S, (Key, isize), isize>),
+    KeyKeyValueKeyValueIsize(Collection<S, (Key, (Key, Value), (Key, Value)), isize>),
 }
 
 macro_rules! impl_conversion {
@@ -158,10 +222,34 @@ impl_conversion!(
     (Key, Option<(Key, Value)>),
     isize
 );
+impl_conversion!(PersistableCollection::SortingCellIsize, SortingCell, isize);
+impl_conversion!(
+    PersistableCollection::KeyMaybeUpdateIsize,
+    (Key, MaybeUpdate<Value>),
+    isize
+);
+impl_conversion!(PersistableCollection::KeyKeyIsize, (Key, Key), isize);
+impl_conversion!(
+    PersistableCollection::KeyKeyValueIsize,
+    (Key, (Key, Value)),
+    isize
+);
+impl_conversion!(
+    PersistableCollection::KeyIntSumStateIsize,
+    (Key, IntSumState),
+    isize
+);
+impl_conversion!(PersistableCollection::KeyIsizeIsize, (Key, isize), isize);
+impl_conversion!(
+    PersistableCollection::KeyKeyValueKeyValueIsize,
+    (Key, (Key, Value), (Key, Value)),
+    isize
+);
 
 pub struct TimestampBasedPersistenceWrapper {
     persistence_config: PersistenceManagerConfig,
     worker_persistent_storage: SharedWorkerPersistentStorage,
+    persisted_states_count: u64,
 }
 
 impl TimestampBasedPersistenceWrapper {
@@ -172,6 +260,7 @@ impl TimestampBasedPersistenceWrapper {
         Ok(Self {
             persistence_config,
             worker_persistent_storage,
+            persisted_states_count: 0,
         })
     }
 
@@ -197,6 +286,22 @@ impl TimestampBasedPersistenceWrapper {
         let (result, poller, thread_handle) = collection.persist_named(name, reader, writer);
         Ok((result.into(), Some(poller), Some(thread_handle)))
     }
+}
+
+fn generic_filter_out_persisted<S, D, R>(
+    collection: &Collection<S, D, R>,
+) -> PersistableCollection<S>
+where
+    S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
+    D: ExchangeData + Shard,
+    R: ExchangeData + Semigroup,
+    Collection<S, D, R>: Into<PersistableCollection<S>>,
+{
+    collection
+        .inner
+        .filter(|(_data, time, _diff)| *time != PersistenceTime::persistence_time())
+        .as_collection()
+        .into()
 }
 
 impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
@@ -248,7 +353,89 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             PersistableCollection::KeyOptionKeyValue(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
+            PersistableCollection::SortingCellIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyMaybeUpdateIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyKeyIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyKeyValueIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyIntSumStateIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyIsizeIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
+            PersistableCollection::KeyKeyValueKeyValueIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
         }
+    }
+
+    fn filter_out_persisted(
+        &self,
+        collection: PersistableCollection<S>,
+    ) -> PersistableCollection<S> {
+        match collection {
+            PersistableCollection::KeyValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyIntSumState(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionOrderderFloatIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionValueKeyIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionVecValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionVecOptionValueKeyValue(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionKeyValue(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::SortingCellIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyMaybeUpdateIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyKeyIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyKeyValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyIntSumStateIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyIsizeIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyKeyValueKeyValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+        }
+    }
+
+    fn next_state_id(&mut self) -> u64 {
+        self.persisted_states_count += 1;
+        self.persisted_states_count
     }
 }
 
@@ -331,7 +518,7 @@ where
         .spawn(move || {
             let data = reader.load_persisted();
             if let Err(e) = sender.send(data) {
-                error!("Failed to send data from persistence: {e}"); // FIXME possibly exit
+                error!("Failed to send data from persistence: {e}");
             }
         })
         .expect("persistence read thread creation should succeed");
@@ -347,8 +534,7 @@ where
                 ControlFlow::Continue(Some(next_try_at))
             }
             Ok(Err(backend_error)) => {
-                error!("Error while reading persisted data: {backend_error}");
-                ControlFlow::Continue(Some(next_try_at))
+                panic!("Error while reading persisted data: {backend_error}"); // TODO make pollers return Result
             }
             Err(TryRecvError::Empty) => ControlFlow::Continue(Some(next_try_at)),
             Err(TryRecvError::Disconnected) => {

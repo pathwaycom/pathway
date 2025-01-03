@@ -3305,14 +3305,16 @@ pub fn run_with_new_graph(
     let config = Config::from_env().map_err(|msg| {
         PyErr::from_type_bound(ENGINE_ERROR_TYPE.bind(py).clone(), msg.to_string())
     })?;
+    let license = License::new(license_key)?;
     let persistence_config = {
         if let Some(persistence_config) = persistence_config {
-            Some(persistence_config.prepare(py)?)
+            let persistence_config = persistence_config.prepare(py)?;
+            persistence_config.validate(&license)?;
+            Some(persistence_config)
         } else {
             None
         }
     };
-    let license = License::new(license_key)?;
     let telemetry_config =
         EngineTelemetryConfig::create(&license, run_id, monitoring_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {

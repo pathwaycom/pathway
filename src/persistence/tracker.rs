@@ -263,17 +263,19 @@ impl WorkerPersistentStorage {
     }
 
     pub fn create_operator_snapshot_reader<D, R>(
-        &self,
+        &mut self,
         persistent_id: PersistentId,
     ) -> Result<Box<dyn OperatorSnapshotReader<D, R> + Send>, PersistenceBackendError>
     where
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
-        Ok(Box::new(self.config.create_operator_snapshot_readers(
+        let (reader, merger) = self.config.create_operator_snapshot_readers::<D, R>(
             persistent_id,
             self.metadata_storage.past_runs_threshold_time(),
-        )?))
+        )?;
+        self.operator_snapshot_mergers.push(merger);
+        Ok(Box::new(reader))
     }
 
     pub fn create_operator_snapshot_writer<D, R>(
@@ -284,12 +286,11 @@ impl WorkerPersistentStorage {
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
-        let (writer, merger) = self.config.create_operator_snapshot_writer(persistent_id)?;
+        let writer = self.config.create_operator_snapshot_writer(persistent_id)?;
         let writer = Arc::new(Mutex::new(writer));
         let writer_flushable: Arc<Mutex<dyn Flushable + Send>> = writer.clone();
         self.operator_snapshot_writers
             .insert(persistent_id, writer_flushable);
-        self.operator_snapshot_mergers.push(merger);
         Ok(writer)
     }
 }

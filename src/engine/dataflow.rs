@@ -68,7 +68,7 @@ use log::{error, info};
 use ndarray::ArrayD;
 use once_cell::unsync::{Lazy, OnceCell};
 use persist::{
-    EmptyPersistenceWrapper, PersistableCollection, PersistenceWrapper,
+    effective_persistent_id, EmptyPersistenceWrapper, PersistableCollection, PersistenceWrapper,
     TimestampBasedPersistenceWrapper,
 };
 use pyo3::PyObject;
@@ -342,12 +342,16 @@ enum ColumnData<S: MaybeTotalScope> {
         collection: Values<S>,
         arranged: OnceCell<ValuesArranged<S>>,
         consolidated: OnceCell<Values<S>>,
+        persisted_arranged: OnceCell<ValuesArranged<S>>,
         keys: OnceCell<Keys<S>>,
+        keys_persisted_arranged: OnceCell<KeysArranged<S>>,
     },
     Arranged {
         arranged: ValuesArranged<S>,
         collection: OnceCell<Values<S>>,
+        persisted_arranged: OnceCell<ValuesArranged<S>>,
         keys: OnceCell<Keys<S>>,
+        keys_persisted_arranged: OnceCell<KeysArranged<S>>,
     },
 }
 
@@ -357,7 +361,9 @@ impl<S: MaybeTotalScope> ColumnData<S> {
             collection,
             arranged: OnceCell::new(),
             consolidated: OnceCell::new(),
+            persisted_arranged: OnceCell::new(),
             keys: OnceCell::new(),
+            keys_persisted_arranged: OnceCell::new(),
         }
     }
 
@@ -365,7 +371,9 @@ impl<S: MaybeTotalScope> ColumnData<S> {
         Self::Arranged {
             collection: OnceCell::new(),
             arranged,
+            persisted_arranged: OnceCell::new(),
             keys: OnceCell::new(),
+            keys_persisted_arranged: OnceCell::new(),
         }
     }
 
@@ -389,6 +397,32 @@ impl<S: MaybeTotalScope> ColumnData<S> {
         }
     }
 
+    fn persisted_arranged(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+        pollers: &mut Vec<Poller>,
+        connector_threads: &mut Vec<JoinHandle<()>>,
+    ) -> Result<&ValuesArranged<S>> {
+        match self {
+            Self::Collection {
+                persisted_arranged, ..
+            }
+            | Self::Arranged {
+                persisted_arranged, ..
+            } => persisted_arranged.get_or_try_init(|| {
+                Ok(self
+                    .collection()
+                    .maybe_persist_internal(
+                        persistence_wrapper,
+                        pollers,
+                        connector_threads,
+                        "values_arranged",
+                    )?
+                    .arrange())
+            }),
+        }
+    }
+
     fn keys(&self) -> &Keys<S> {
         match self {
             Self::Collection { keys, .. } | Self::Arranged { keys, .. } => keys.get_or_init(|| {
@@ -398,9 +432,32 @@ impl<S: MaybeTotalScope> ColumnData<S> {
         }
     }
 
-    fn keys_arranged(&self) -> KeysArranged<S> {
-        self.keys().arrange()
-        // FIXME: maybe sth better if it is possible to extract arranged keys from an arranged collection
+    fn keys_persisted_arranged(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+        pollers: &mut Vec<Poller>,
+        connector_threads: &mut Vec<JoinHandle<()>>,
+    ) -> Result<&KeysArranged<S>> {
+        match self {
+            Self::Collection {
+                keys_persisted_arranged,
+                ..
+            }
+            | Self::Arranged {
+                keys_persisted_arranged,
+                ..
+            } => keys_persisted_arranged.get_or_try_init(|| {
+                Ok(self
+                    .keys()
+                    .maybe_persist_internal(
+                        persistence_wrapper,
+                        pollers,
+                        connector_threads,
+                        "keys_arranged",
+                    )?
+                    .arrange())
+            }),
+        }
     }
 
     fn consolidated(&self) -> &Values<S> {
@@ -487,17 +544,18 @@ impl<S: MaybeTotalScope> Table<S> {
         }
     }
 
-    fn from_arranged(values: ValuesArranged<S>) -> Self {
-        let data = Rc::new(ColumnData::from_arranged(values));
-        Self::from_data(data)
-    }
-
     fn values(&self) -> &Values<S> {
         self.data.collection()
     }
 
-    fn values_arranged(&self) -> &ValuesArranged<S> {
-        self.data.arranged()
+    fn values_persisted_arranged(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+        pollers: &mut Vec<Poller>,
+        connector_threads: &mut Vec<JoinHandle<()>>,
+    ) -> Result<&ValuesArranged<S>> {
+        self.data
+            .persisted_arranged(persistence_wrapper, pollers, connector_threads)
     }
 
     fn values_consolidated(&self) -> &Values<S> {
@@ -508,8 +566,14 @@ impl<S: MaybeTotalScope> Table<S> {
         self.data.keys()
     }
 
-    fn keys_arranged(&self) -> KeysArranged<S> {
-        self.data.keys_arranged()
+    fn keys_persisted_arranged(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+        pollers: &mut Vec<Poller>,
+        connector_threads: &mut Vec<JoinHandle<()>>,
+    ) -> Result<&KeysArranged<S>> {
+        self.data
+            .keys_persisted_arranged(persistence_wrapper, pollers, connector_threads)
     }
 }
 
@@ -771,7 +835,6 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     probes: HashMap<usize, ProbeHandle<S::Timestamp>>,
     ignore_asserts: bool,
     persistence_wrapper: Box<dyn PersistenceWrapper<S>>,
-    persisted_states_count: u64,
     config: Arc<Config>,
     terminate_on_error: bool,
     default_error_log: Option<ErrorLog>,
@@ -955,6 +1018,101 @@ enum MaybeUpdate<T> {
     Update(T),
 }
 
+trait MaybePersist<S>
+where
+    S: MaybeTotalScope,
+    Self: Sized,
+{
+    fn maybe_persist(&self, graph: &mut DataflowGraphInner<S>, name: &str) -> Result<Self> {
+        self.maybe_persist_internal(
+            &mut graph.persistence_wrapper,
+            &mut graph.pollers,
+            &mut graph.connector_threads,
+            name,
+        )
+    }
+
+    fn maybe_persist_internal(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+        pollers: &mut Vec<Poller>,
+        connector_threads: &mut Vec<JoinHandle<()>>,
+        name: &str,
+    ) -> Result<Self>;
+
+    fn filter_out_persisted(&self, graph: &mut Box<dyn PersistenceWrapper<S>>) -> Result<Self>;
+}
+
+impl<S, D, R> MaybePersist<S> for Collection<S, D, R>
+where
+    S: MaybeTotalScope,
+    D: ExchangeData + Shard,
+    R: ExchangeData + Semigroup,
+    Collection<S, D, R>: Into<PersistableCollection<S>> + From<PersistableCollection<S>>,
+{
+    fn maybe_persist_internal(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+        pollers: &mut Vec<Poller>,
+        connector_threads: &mut Vec<JoinHandle<()>>,
+        name: &str,
+    ) -> Result<Self> {
+        // TODO: generate better persistent ids that can be used even if graph changes
+        let effective_persistent_id = effective_persistent_id(
+            persistence_wrapper,
+            false,
+            None,
+            RequiredPersistenceMode::OperatorPersistence,
+            |next_state_id| {
+                let generated_external_id = format!("{name}-{next_state_id}");
+                info!("Persistent ID autogenerated for {name}: {generated_external_id}");
+                generated_external_id
+            },
+        )?;
+        let persistent_id = effective_persistent_id
+            .clone()
+            .map(IntoPersistentId::into_persistent_id);
+
+        if let Some(persistent_id) = persistent_id {
+            let (persisted_collection, poller, thread_handle) = persistence_wrapper
+                .as_mut()
+                .maybe_persist_named(self.clone().into(), name, persistent_id)?;
+            if let Some(poller) = poller {
+                pollers.push(poller);
+            }
+            if let Some(thread_handle) = thread_handle {
+                connector_threads.push(thread_handle);
+            }
+            Ok(persisted_collection.into())
+        } else {
+            Ok(self.clone())
+        }
+    }
+
+    fn filter_out_persisted(
+        &self,
+        persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
+    ) -> Result<Self> {
+        // Check if persistent id would be generated for the operator.
+        // If yes, it means operator persistence is enabled and we need to filter out old persisted rows.
+        let with_persistent_id = effective_persistent_id(
+            persistence_wrapper,
+            false,
+            None,
+            RequiredPersistenceMode::OperatorPersistence,
+            |_| String::new(),
+        )?
+        .is_some();
+        if with_persistent_id {
+            Ok(persistence_wrapper
+                .filter_out_persisted(self.clone().into())
+                .into())
+        } else {
+            Ok(self.clone())
+        }
+    }
+}
+
 #[allow(clippy::unnecessary_wraps)] // we want to always return Result for symmetry
 impl<S: MaybeTotalScope> DataflowGraphInner<S> {
     #[allow(clippy::too_many_arguments)]
@@ -984,7 +1142,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             probes: HashMap::new(),
             ignore_asserts,
             persistence_wrapper,
-            persisted_states_count: 0,
             config,
             terminate_on_error,
             default_error_log,
@@ -1007,6 +1164,36 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
     fn process_count(&self) -> usize {
         self.config.processes()
+    }
+
+    fn get_table_values_persisted_arranged(
+        &mut self,
+        handle: TableHandle,
+    ) -> Result<ValuesArranged<S>> {
+        self.tables
+            .get(handle)
+            .ok_or(Error::InvalidTableHandle)?
+            .values_persisted_arranged(
+                &mut self.persistence_wrapper,
+                &mut self.pollers,
+                &mut self.connector_threads,
+            )
+            .cloned()
+    }
+
+    fn get_table_keys_persisted_arranged(
+        &mut self,
+        handle: TableHandle,
+    ) -> Result<KeysArranged<S>> {
+        self.tables
+            .get(handle)
+            .ok_or(Error::InvalidTableHandle)?
+            .keys_persisted_arranged(
+                &mut self.persistence_wrapper,
+                &mut self.pollers,
+                &mut self.connector_threads,
+            )
+            .cloned()
     }
 
     fn empty_universe(&mut self) -> Result<UniverseHandle> {
@@ -1062,7 +1249,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         )
                     },
                 )
-                .distinct()
                 .negate(),
         );
         let error_logger = self.create_error_logger()?;
@@ -1696,25 +1882,27 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         same_universes: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
+        let original_values_arranged =
+            self.get_table_values_persisted_arranged(original_table_handle)?;
+        let new_values_arranged = self.get_table_values_persisted_arranged(new_table_handle)?;
         let original_table = self
             .tables
             .get(original_table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-
         let new_table = self
             .tables
             .get(new_table_handle)
             .ok_or(Error::InvalidTableHandle)?;
 
-        let result = new_table.values_arranged().join_core(
-            original_table.values_arranged(),
-            |key, new_values, orig_values| {
+        let result = new_values_arranged
+            .join_core(&original_values_arranged, |key, new_values, orig_values| {
                 once((
                     *key,
                     Value::from([new_values.clone(), orig_values.clone()].as_slice()),
                 ))
-            },
-        );
+            })
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
+
         let result = self.make_output_keys_match_input_keys(new_table.values(), &result)?;
 
         if !self.ignore_asserts && same_universes {
@@ -1732,29 +1920,31 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         other_table_handles: Vec<TableHandle>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        let table = self
-            .tables
-            .get(table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-        let mut new_values = table.data.clone();
+        let mut restricted_keys: Option<KeysArranged<S>> = None;
         for other_table_handle in other_table_handles {
-            let other_table = self
-                .tables
-                .get(other_table_handle)
-                .ok_or(Error::InvalidTableHandle)?;
-            new_values = Rc::new(ColumnData::from_collection(
-                new_values
-                    .arranged()
-                    .join_core(&other_table.keys_arranged(), |k, values, ()| {
-                        once((*k, values.clone()))
-                    })
-                    .into(),
-            ));
+            let other_table_keys_arranged =
+                self.get_table_keys_persisted_arranged(other_table_handle)?;
+            restricted_keys = if let Some(restricted_keys) = restricted_keys {
+                Some(
+                    restricted_keys
+                        .join_core(&other_table_keys_arranged, |k, (), ()| once((*k, ())))
+                        .arrange(),
+                )
+            } else {
+                Some(other_table_keys_arranged)
+            };
         }
 
-        Ok(self
-            .tables
-            .alloc(Table::from_data(new_values).with_properties(table_properties)))
+        if let Some(restricted_keys) = restricted_keys {
+            let data = self
+                .get_table_values_persisted_arranged(table_handle)?
+                .join_core(&restricted_keys, |k, values, ()| once((*k, values.clone())))
+                .filter_out_persisted(&mut self.persistence_wrapper)?;
+            let table = Table::from_collection(data);
+            Ok(self.tables.alloc(table.with_properties(table_properties)))
+        } else {
+            Ok(table_handle)
+        }
     }
 
     fn reindex_table(
@@ -1798,20 +1988,18 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         right_table_handle: TableHandle,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
+        let left_values_arranged = self.get_table_values_persisted_arranged(left_table_handle)?;
+        let right_keys_arranged = self.get_table_keys_persisted_arranged(right_table_handle)?;
         let left_table = self
             .tables
             .get(left_table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-        let right_table = self
-            .tables
-            .get(right_table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
 
-        let intersection = left_table
-            .values_arranged()
-            .join_core(&right_table.keys_arranged(), |k, values, ()| {
+        let intersection = left_values_arranged
+            .join_core(&right_keys_arranged, |k, values, ()| {
                 once((*k, values.clone()))
-            });
+            })
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
 
         let new_values = left_table
             .values()
@@ -1942,6 +2130,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     SortingCell::new(instance, key, id)
                 },
             )
+            .maybe_persist(self, "sort_table")?
             .arrange();
 
         let prev_next: ArrangedByKey<S, Key, [Value; 2]> =
@@ -1959,8 +2148,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 })
                 .arrange();
 
-        let new_values = table
-            .values_arranged()
+        let new_values = self
+            .get_table_values_persisted_arranged(table_handle)?
             .join_core(&prev_next, |key, values, prev_next| {
                 once((
                     *key,
@@ -1971,7 +2160,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                             .collect(),
                     ),
                 ))
-            });
+            })
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
 
         Ok(self
             .tables
@@ -2004,6 +2194,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         (k, MaybeUpdate::Update(v))
                     }),
             )
+            .maybe_persist(self, "update_rows")?
             .arrange_named("update_rows_arrange::both"))
     }
 
@@ -2016,7 +2207,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let error_logger = self.create_error_logger()?;
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
-        let updated_values = both_arranged.reduce_abelian(
+        let updated_values: ValuesArranged<S> = both_arranged.reduce_abelian(
             "update_rows_table::updated",
             move |key, input, output| {
                 let values = match input {
@@ -2033,10 +2224,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 output.push((values.clone(), 1));
             },
         );
+        let result = updated_values
+            .as_collection(|k: &Key, v: &Value| (*k, v.clone()))
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
 
         Ok(self
             .tables
-            .alloc(Table::from_arranged(updated_values).with_properties(table_properties)))
+            .alloc(Table::from_collection(result).with_properties(table_properties)))
     }
 
     fn update_cells_table(
@@ -2052,7 +2246,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
 
-        let updated_values = both_arranged.reduce_abelian(
+        let updated_values: ValuesArranged<S> = both_arranged.reduce_abelian(
             "update_cells_table::updated",
             move |key, input, output| {
                 let (original_values, selected_values, selected_paths) = match input {
@@ -2093,9 +2287,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             },
         );
 
+        let result = updated_values
+            .as_collection(|k, v| (*k, v.clone()))
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
+
         Ok(self
             .tables
-            .alloc(Table::from_arranged(updated_values).with_properties(table_properties)))
+            .alloc(Table::from_collection(result).with_properties(table_properties)))
     }
 
     fn gradual_broadcast(
@@ -2167,10 +2365,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         ix_key_policy: IxKeyPolicy,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        let to_ix_table = self
-            .tables
-            .get(to_ix_handle)
-            .ok_or(Error::InvalidTableHandle)?;
         let key_table = self
             .tables
             .get(key_handle)
@@ -2206,22 +2400,25 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 }
             }),
         };
+        let to_ix_table_values_arranged = self.get_table_values_persisted_arranged(to_ix_handle)?;
+
         let new_table = if ix_key_policy == IxKeyPolicy::SkipMissing {
             let valued_to_keys_arranged: ArrangedByKey<S, Key, Key> = values_to_keys
                 .map_named(
                     "ix_skip_missing_arrange_keys",
                     |(source_key, (result_key, _result_value))| (source_key, result_key),
                 )
+                .maybe_persist(self, "ix")?
                 .arrange();
             valued_to_keys_arranged.join_core(
-                to_ix_table.values_arranged(),
+                &to_ix_table_values_arranged,
                 |_source_key, result_key, to_ix_row| once((*result_key, to_ix_row.clone())),
             )
         } else {
             let values_to_keys_arranged: ArrangedByKey<S, Key, (Key, Value)> =
-                values_to_keys.arrange();
+                values_to_keys.maybe_persist(self, "ix")?.arrange();
             values_to_keys_arranged.join_core(
-                to_ix_table.values_arranged(),
+                &to_ix_table_values_arranged,
                 |_source_key, (result_key, result_row), to_ix_row| {
                     once((
                         *result_key,
@@ -2229,7 +2426,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     ))
                 },
             )
-        };
+        }
+        .filter_out_persisted(&mut self.persistence_wrapper)?;
         let new_table = match ix_key_policy {
             IxKeyPolicy::ForwardNone => {
                 let none_keys =
@@ -2244,6 +2442,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let new_table = if ix_key_policy == IxKeyPolicy::SkipMissing {
             new_table
         } else {
+            let key_table = self
+                .tables
+                .get(key_handle)
+                .ok_or(Error::InvalidTableHandle)?;
             self.make_output_keys_match_input_keys(key_table.values(), &new_table)?
         };
 
@@ -2342,10 +2544,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .get(left_data.table_handle)
             .ok_or(Error::InvalidTableHandle)?;
-        let right_table = self
-            .tables
-            .get(right_data.table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
 
         let error_reporter_left = self.error_reporter.clone();
         let error_reporter_right = self.error_reporter.clone();
@@ -2369,7 +2567,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 });
         let join_left = left_with_join_key
             .flat_map(|(join_key, left_key_values)| Some((join_key?, left_key_values)));
-        let join_left_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_left.arrange();
+        let join_left_arranged: ArrangedByKey<S, Key, (Key, Value)> =
+            join_left.maybe_persist(self, "join")?.arrange();
+
+        let right_table = self
+            .tables
+            .get(right_data.table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
         let right_with_join_key =
             right_table
                 .values()
@@ -2386,12 +2590,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 });
         let join_right = right_with_join_key
             .flat_map(|(join_key, right_key_values)| Some((join_key?, right_key_values)));
-        let join_right_arranged: ArrangedByKey<S, Key, (Key, Value)> = join_right.arrange();
+        let join_right_arranged: ArrangedByKey<S, Key, (Key, Value)> =
+            join_right.maybe_persist(self, "join")?.arrange();
 
         let join_left_right = join_left_arranged
             .join_core(&join_right_arranged, |join_key, left_key, right_key| {
                 once((*join_key, left_key.clone(), right_key.clone()))
-            });
+            }); // TODO modify join_core internals to avoid recomputing join on restart
 
         let join_left_right_to_result_fn = match join_type {
             JoinType::LeftKeysFull | JoinType::LeftKeysSubset => {
@@ -2402,26 +2607,28 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     .with_shard_of(join_key)
             },
         };
-        let result_left_right = join_left_right.map_named(
-            "join::result_left_right",
-            move |(join_key, (left_key, left_values), (right_key, right_values))| {
-                (
-                    join_left_right_to_result_fn(join_key, left_key, right_key),
-                    Value::from(
-                        [
-                            Value::Pointer(left_key),
-                            left_values,
-                            Value::Pointer(right_key),
-                            right_values,
-                        ]
-                        .as_slice(),
-                    ),
-                )
-            },
-        );
+        let result_left_right = join_left_right
+            .filter_out_persisted(&mut self.persistence_wrapper)?
+            .map_named(
+                "join::result_left_right",
+                move |(join_key, (left_key, left_values), (right_key, right_values))| {
+                    (
+                        join_left_right_to_result_fn(join_key, left_key, right_key),
+                        Value::from(
+                            [
+                                Value::Pointer(left_key),
+                                left_values,
+                                Value::Pointer(right_key),
+                                right_values,
+                            ]
+                            .as_slice(),
+                        ),
+                    )
+                },
+            );
 
-        let left_outer = || {
-            left_with_join_key.concat(
+        let mut left_outer = || -> Result<_> {
+            Ok(left_with_join_key.concat(
                 &join_left_right
                     .map_named(
                         "join::left_outer_res",
@@ -2430,12 +2637,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         },
                     )
                     .distinct()
+                    .filter_out_persisted(&mut self.persistence_wrapper)?
                     .negate()
                     .map_named("join::left_outer_wrap", |(key, values)| (Some(key), values)),
-            )
+            ))
         };
         let result_left_outer = match join_type {
-            JoinType::LeftOuter | JoinType::FullOuter => Some(left_outer().map_named(
+            JoinType::LeftOuter | JoinType::FullOuter => Some(left_outer()?.map_named(
                 "join::result_left_outer",
                 |(join_key, (left_key, left_values))| {
                     let result_key = Key::for_values(&[Value::from(left_key), Value::None])
@@ -2444,7 +2652,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     (left_key, left_values, result_key)
                 },
             )),
-            JoinType::LeftKeysFull => Some(left_outer().map_named(
+            JoinType::LeftKeysFull => Some(left_outer()?.map_named(
                 "join::result_left_outer",
                 |(_join_key, (left_key, left_values))| (left_key, left_values, left_key),
             )),
@@ -2475,22 +2683,23 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             result_left_right
         };
 
-        let right_outer = || {
-            right_with_join_key.concat(
+        let mut right_outer = || -> Result<_> {
+            Ok(right_with_join_key.concat(
                 &join_left_right
                     .map_named(
                         "join::right_outer_res",
                         |(join_key, _left_key, right_key_values)| (join_key, right_key_values),
                     )
                     .distinct()
+                    .filter_out_persisted(&mut self.persistence_wrapper)?
                     .negate()
                     .map_named("join::right_outer_wrap", |(key, values)| {
                         (Some(key), values)
                     }),
-            )
+            ))
         };
         let result_right_outer = match join_type {
-            JoinType::RightOuter | JoinType::FullOuter => Some(right_outer().map_named(
+            JoinType::RightOuter | JoinType::FullOuter => Some(right_outer()?.map_named(
                 "join::right_result_outer",
                 |(join_key, (right_key, right_values))| {
                     let result_key = Key::for_values(&[Value::None, Value::from(right_key)])
@@ -2662,85 +2871,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .tables
             .alloc(Table::from_collection(new_values).with_properties(table_properties)))
     }
-
-    fn effective_persistent_id(
-        &self,
-        reader_is_internal: bool,
-        external_persistent_id: Option<&ExternalPersistentId>,
-        required_persistence_mode: RequiredPersistenceMode,
-        logic: impl FnOnce() -> String,
-    ) -> Result<Option<ExternalPersistentId>> {
-        let has_persistent_storage = self
-            .persistence_wrapper
-            .get_worker_persistent_storage()
-            .is_some();
-        if let Some(external_persistent_id) = external_persistent_id {
-            if !has_persistent_storage {
-                return Err(Error::NoPersistentStorage(external_persistent_id.clone()));
-            }
-        }
-        if external_persistent_id.is_some() {
-            Ok(external_persistent_id.cloned())
-        } else if has_persistent_storage && !reader_is_internal {
-            let worker_persistent_storage = self
-                .persistence_wrapper
-                .get_worker_persistent_storage()
-                .unwrap()
-                .lock()
-                .unwrap();
-            if worker_persistent_storage.persistent_id_generation_enabled(required_persistence_mode)
-                && worker_persistent_storage.table_persistence_enabled()
-            {
-                Ok(Some(logic()))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn maybe_persist<D, R>(
-        &mut self,
-        collection: Collection<S, D, R>,
-        name: &str,
-    ) -> Result<Collection<S, D, R>>
-    where
-        D: ExchangeData + Shard,
-        R: ExchangeData + Semigroup,
-        Collection<S, D, R>: Into<PersistableCollection<S>> + From<PersistableCollection<S>>,
-    {
-        self.persisted_states_count += 1;
-        // TODO: generate better persistent ids that can be used even if graph changes
-        let effective_persistent_id = self.effective_persistent_id(
-            false,
-            None,
-            RequiredPersistenceMode::OperatorPersistence,
-            || {
-                let generated_external_id = format!("{name}-{}", self.persisted_states_count);
-                info!("Persistent ID autogenerated for {name}: {generated_external_id}");
-                generated_external_id
-            },
-        )?;
-        let persistent_id = effective_persistent_id
-            .clone()
-            .map(IntoPersistentId::into_persistent_id);
-
-        if let Some(persistent_id) = persistent_id {
-            let (persisted_collection, poller, thread_handle) = self
-                .persistence_wrapper
-                .maybe_persist_named(collection.into(), name, persistent_id)?;
-            if let Some(poller) = poller {
-                self.pollers.push(poller);
-            }
-            if let Some(thread_handle) = thread_handle {
-                self.connector_threads.push(thread_handle);
-            }
-            Ok(persisted_collection.into())
-        } else {
-            Ok(collection)
-        }
-    }
 }
 
 trait DataflowReducer<S: MaybeTotalScope> {
@@ -2765,22 +2895,22 @@ where
         _trace: Trace,
         graph: &mut DataflowGraphInner<S>,
     ) -> Result<Values<S>> {
-        let initialized = values.map_named("DataFlowReducer::reduce::init", {
-            let self_ = self.clone();
-            let error_logger = error_logger.clone();
-            move |(source_key, result_key, values)| {
-                let state = if values.contains(&Value::Error) {
-                    None
-                } else {
-                    self_
-                        .init(&source_key, &values)
-                        .ok_with_logger(error_logger.as_ref())
-                };
-                (result_key, state)
-            }
-        });
-        Ok(graph
-            .maybe_persist(initialized, "DataFlowReducer::reduce")?
+        Ok(values
+            .map_named("DataFlowReducer::reduce::init", {
+                let self_ = self.clone();
+                let error_logger = error_logger.clone();
+                move |(source_key, result_key, values)| {
+                    let state = if values.contains(&Value::Error) {
+                        None
+                    } else {
+                        self_
+                            .init(&source_key, &values)
+                            .ok_with_logger(error_logger.as_ref())
+                    };
+                    (result_key, state)
+                }
+            })
+            .maybe_persist(graph, "DataFlowReducer::reduce")?
             .reduce({
                 let self_ = self.clone();
                 move |_key, input, output| {
@@ -2819,7 +2949,7 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
         _trace: Trace,
         graph: &mut DataflowGraphInner<S>,
     ) -> Result<Values<S>> {
-        let initialized = values
+        Ok(values
             .map_named("IntSumReducer::reduce::init", {
                 let self_ = self.clone();
                 move |(source_key, result_key, values)| {
@@ -2833,9 +2963,8 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for IntSumReducer {
                     (result_key, state)
                 }
             })
-            .explode(|(key, state)| once((key, state)));
-        Ok(graph
-            .maybe_persist(initialized, "IntSumReducer::reduce")?
+            .explode(|(key, state)| once((key, state)))
+            .maybe_persist(graph, "IntSumReducer::reduce")?
             .count()
             .map_named("IntSumReducer::reduce", move |(key, state)| {
                 (key, self.finish(state))
@@ -2852,12 +2981,12 @@ impl<S: MaybeTotalScope> DataflowReducer<S> for CountReducer {
         _trace: Trace,
         graph: &mut DataflowGraphInner<S>,
     ) -> Result<Values<S>> {
-        let initialized = values.map_named(
-            "CountReducer::reduce::init",
-            |(_source_key, result_key, _values)| (result_key),
-        );
-        Ok(graph
-            .maybe_persist(initialized, "CountReducer::reduce")?
+        Ok(values
+            .map_named(
+                "CountReducer::reduce::init",
+                |(_source_key, result_key, _values)| (result_key),
+            )
+            .maybe_persist(graph, "CountReducer::reduce")?
             .count()
             .map_named("CountReducer::reduce", |(key, count)| {
                 (key, Value::from(count as i64))
@@ -3108,15 +3237,19 @@ where
                     once((*key, new_values))
                 });
             }
-            joined.map_named("group_by_table::wrap", |(key, values)| {
-                (key, Value::Tuple(values))
-            })
+            joined
+                .map_named("group_by_table::wrap", |(key, values)| {
+                    (key, Value::Tuple(values))
+                })
+                .filter_out_persisted(&mut self.persistence_wrapper)?
         } else {
             with_new_key
                 .map_named("group_by_table::empty", |(_key, new_key, _values)| {
                     (new_key, Value::Tuple(Arc::from([])))
                 })
+                .maybe_persist(self, "groupby")?
                 .distinct()
+                .filter_out_persisted(&mut self.persistence_wrapper)?
         };
         Ok(self
             .tables
@@ -3144,13 +3277,13 @@ where
             .ok_or(Error::InvalidTableHandle)?;
 
         let error_reporter = self.error_reporter.clone();
-        self.persisted_states_count += 1;
-        let effective_persistent_id = self.effective_persistent_id(
+        let effective_persistent_id = effective_persistent_id(
+            &mut self.persistence_wrapper,
             false,
             external_persistent_id,
             RequiredPersistenceMode::InputOrOperatorPersistence,
-            || {
-                let generated_external_id = format!("deduplicate-{}", self.persisted_states_count);
+            |next_state_id| {
+                let generated_external_id = format!("deduplicate-{next_state_id}");
                 info!("Persistent ID autogenerated for deduplicate: {generated_external_id}");
                 generated_external_id
             },
@@ -3323,11 +3456,12 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         table_properties: Arc<TableProperties>,
         external_persistent_id: Option<&ExternalPersistentId>,
     ) -> Result<TableHandle> {
-        let effective_persistent_id = self.effective_persistent_id(
+        let effective_persistent_id = effective_persistent_id(
+            &mut self.persistence_wrapper,
             reader.is_internal(),
             external_persistent_id,
             RequiredPersistenceMode::InputOrOperatorPersistence,
-            || {
+            |_| {
                 let generated_external_id = reader.name(None, self.connector_monitors.len());
                 reader
                     .update_persistent_id(Some(generated_external_id.clone().into_persistent_id()));

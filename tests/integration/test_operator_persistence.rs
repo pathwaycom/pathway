@@ -25,7 +25,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::ControlFlow;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use timely::communication::allocator::Generic;
@@ -420,11 +420,16 @@ fn test_operator_snapshot_reader_reads_correct_files_1() {
             .times(1)
             .returning(|_key| Ok(()));
     }
-    let mut reader = MultiConcreteSnapshotReader::new(vec![ConcreteSnapshotReader::new(
-        Box::new(backend),
-        TotalFrontier::At(Timestamp(34)),
-    )]);
+    let (sender, receiver) = mpsc::channel();
+    let mut reader = MultiConcreteSnapshotReader::new(
+        vec![ConcreteSnapshotReader::new(
+            Box::new(backend),
+            TotalFrontier::At(Timestamp(34)),
+        )],
+        sender,
+    );
     assert_eq!(reader.load_persisted().unwrap(), vec![(3, 7)]);
+    receiver.recv().unwrap();
 }
 
 #[test]
@@ -480,11 +485,16 @@ fn test_operator_snapshot_reader_consolidates() {
             .times(1)
             .returning(|_key| Ok(()));
     }
-    let mut reader = MultiConcreteSnapshotReader::new(vec![ConcreteSnapshotReader::new(
-        Box::new(backend),
-        TotalFrontier::At(Timestamp(22)),
-    )]);
+    let (sender, receiver) = mpsc::channel();
+    let mut reader = MultiConcreteSnapshotReader::new(
+        vec![ConcreteSnapshotReader::new(
+            Box::new(backend),
+            TotalFrontier::At(Timestamp(22)),
+        )],
+        sender,
+    );
     let mut result = reader.load_persisted().unwrap();
+    receiver.recv().unwrap();
     result.sort();
     assert_eq!(
         result,

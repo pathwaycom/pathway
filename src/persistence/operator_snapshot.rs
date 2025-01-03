@@ -197,11 +197,15 @@ where
 
 pub struct MultiConcreteSnapshotReader {
     snapshot_readers: Vec<ConcreteSnapshotReader>,
+    sender: mpsc::Sender<()>,
 }
 
 impl MultiConcreteSnapshotReader {
-    pub fn new(snapshot_readers: Vec<ConcreteSnapshotReader>) -> Self {
-        Self { snapshot_readers }
+    pub fn new(snapshot_readers: Vec<ConcreteSnapshotReader>, sender: mpsc::Sender<()>) -> Self {
+        Self {
+            snapshot_readers,
+            sender,
+        }
     }
 }
 
@@ -220,6 +224,7 @@ where
             result.append(&mut v);
         }
         consolidate(&mut result);
+        self.sender.send(()).expect("merger should exist"); // inform merger that it can start its work
         Ok(result)
     }
 }
@@ -344,13 +349,14 @@ impl ConcreteSnapshotMerger {
         backend: Box<dyn PersistenceBackend>,
         snapshot_interval: core::time::Duration,
         time_querier: FinalizedTimeQuerier,
+        receiver: mpsc::Receiver<()>,
     ) -> Self
     where
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
         let (finish_sender, thread_handle) =
-            Self::start::<D, R>(backend, snapshot_interval, time_querier);
+            Self::start::<D, R>(backend, snapshot_interval, time_querier, receiver);
         Self {
             finish_sender,
             thread_handle: Some(thread_handle),
@@ -436,10 +442,14 @@ impl ConcreteSnapshotMerger {
         receiver: &mpsc::Receiver<()>,
         timeout: core::time::Duration,
         time_querier: &mut FinalizedTimeQuerier,
+        reader_finished_receiver: &mpsc::Receiver<()>,
     ) where
         D: ExchangeData,
         R: ExchangeData + Semigroup,
     {
+        if reader_finished_receiver.recv().is_err() {
+            error!("Can't start snapshot merger as snapshot reader didn't finish gracefully");
+        }
         let mut next_try_at = Instant::now();
         loop {
             let now = Instant::now();
@@ -464,6 +474,7 @@ impl ConcreteSnapshotMerger {
         backend: Box<dyn PersistenceBackend>,
         timeout: core::time::Duration,
         mut time_querier: FinalizedTimeQuerier,
+        reader_finished_receiver: mpsc::Receiver<()>,
     ) -> (mpsc::Sender<()>, thread::JoinHandle<()>)
     where
         D: ExchangeData,
@@ -473,7 +484,15 @@ impl ConcreteSnapshotMerger {
         let (sender, receiver) = mpsc::channel();
         let thread_handle = thread::Builder::new()
             .name("SnapshotMerger".to_string()) // TODO maybe better name
-            .spawn(move || Self::run::<D, R>(backend, &receiver, timeout, &mut time_querier))
+            .spawn(move || {
+                Self::run::<D, R>(
+                    backend,
+                    &receiver,
+                    timeout,
+                    &mut time_querier,
+                    &reader_finished_receiver,
+                );
+            })
             .expect("persistence read thread creation should succeed");
         (sender, thread_handle)
     }
