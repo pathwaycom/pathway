@@ -296,6 +296,10 @@ class _GDriveSubject(ConnectorSubject):
     def _with_metadata(self) -> bool:
         return self._append_metadata
 
+    @property
+    def _deletions_enabled(self) -> bool:
+        return self._mode == "streaming"
+
     def run(self) -> None:
         client = _GDriveClient(
             self._credentials_factory(),
