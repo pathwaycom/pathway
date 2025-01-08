@@ -1,6 +1,7 @@
 // Copyright © 2024 Pathway
 use std::cmp::Reverse;
 use std::collections::{hash_map::Entry, BinaryHeap, HashMap};
+use std::hash::Hash;
 use std::ops::ControlFlow;
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -12,11 +13,17 @@ use differential_dataflow::input::InputSession;
 use differential_dataflow::{AsCollection, Collection, ExchangeData};
 use log::error;
 use ordered_float::OrderedFloat;
+use serde::{Deserialize, Serialize};
 use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::{Capability, Filter, Operator};
 use timely::dataflow::Scope;
 use timely::{order::TotalOrder, progress::Timestamp as TimelyTimestampTrait};
 
+use crate::engine::dataflow::maybe_total::MaybeTotalScope;
+use crate::engine::dataflow::operators::stateful_reduce::StatefulReduce;
+use crate::engine::dataflow::operators::MapWrapped;
+use crate::engine::dataflow::shard::Shard;
+use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell};
 use crate::engine::reduce::IntSumState;
 use crate::engine::{Error, Key, Result, Timestamp, Value};
 use crate::persistence::config::PersistenceManagerConfig;
@@ -25,10 +32,6 @@ use crate::persistence::tracker::{
     RequiredPersistenceMode, SharedWorkerPersistentStorage, WorkerPersistentStorage,
 };
 use crate::persistence::{ExternalPersistentId, PersistenceTime, PersistentId};
-
-use crate::engine::dataflow::maybe_total::MaybeTotalScope;
-use crate::engine::dataflow::shard::Shard;
-use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell};
 
 pub(super) fn effective_persistent_id<S>(
     persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
@@ -163,6 +166,7 @@ pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyIntSumStateIsize(Collection<S, (Key, IntSumState), isize>),
     KeyIsizeIsize(Collection<S, (Key, isize), isize>),
     KeyKeyValueKeyValueIsize(Collection<S, (Key, (Key, Value), (Key, Value)), isize>),
+    KeyVecValueIsize(Collection<S, (Key, Vec<Value>), isize>),
 }
 
 macro_rules! impl_conversion {
@@ -243,6 +247,11 @@ impl_conversion!(PersistableCollection::KeyIsizeIsize, (Key, isize), isize);
 impl_conversion!(
     PersistableCollection::KeyKeyValueKeyValueIsize,
     (Key, (Key, Value), (Key, Value)),
+    isize
+);
+impl_conversion!(
+    PersistableCollection::KeyVecValueIsize,
+    (Key, Vec<Value>),
     isize
 );
 
@@ -374,6 +383,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             PersistableCollection::KeyKeyValueKeyValueIsize(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
+            PersistableCollection::KeyVecValueIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
         }
     }
 
@@ -428,6 +440,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
                 generic_filter_out_persisted(&collection)
             }
             PersistableCollection::KeyKeyValueKeyValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyVecValueIsize(collection) => {
                 generic_filter_out_persisted(&collection)
             }
         }
@@ -546,6 +561,94 @@ where
     (state, poller, thread_handle)
 }
 
+fn persist_state<S, D, R>(
+    collection: &Collection<S, D, R>,
+    name: &str,
+    writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
+) -> Collection<S, D, R>
+where
+    S: Scope,
+    S::Timestamp: TotalOrder + PersistenceTime,
+    D: ExchangeData + Shard,
+    R: ExchangeData + Semigroup,
+{
+    let exchange = Exchange::new(move |(data, _time, _diff): &(D, S::Timestamp, R)| data.shard());
+    collection
+        .inner
+        .unary_frontier(exchange, name, |_capability, _info| {
+            // The opreator streams input to output.
+            // It holds capabilities, only drop them if the input frontier advances.
+            // Without holding the capabities, frontier can advance in output connectors
+            // earlier than we persist the data for this frontier.
+            let mut data_by_time: HashMap<S::Timestamp, Vec<(D, R)>> = HashMap::new();
+            let mut buffer = Vec::new();
+            let mut capabilities = BinaryHeap::new();
+            let mut times_in_data = BinaryHeap::new();
+            move |input, output| {
+                input.for_each(|capability, data| {
+                    data.swap(&mut buffer);
+                    // preserve input data to persist it later
+                    let mut new_times = Vec::new();
+                    for (val, time, diff) in &buffer {
+                        if *time == S::Timestamp::persistence_time() {
+                            continue; // we don't want to save already saved entries
+                        }
+                        match data_by_time.entry(time.clone()) {
+                            Entry::Occupied(mut occupied_entry) => {
+                                occupied_entry.get_mut().push((val.clone(), diff.clone()));
+                            }
+                            Entry::Vacant(vacant_entry) => {
+                                let vec = vacant_entry.insert(Vec::new());
+                                vec.push((val.clone(), diff.clone()));
+                                times_in_data.push(Reverse(time.clone()));
+                                new_times.push(time.clone());
+                            }
+                        }
+                    }
+                    // push input to output
+                    output.session(&capability).give_vec(&mut buffer);
+                    // preserve capabilities
+                    for time in &new_times {
+                        capabilities.push(Reverse(CapabilityOrdWrapper(capability.delayed(time))));
+                    }
+                });
+
+                let mut writer_local = writer.lock().unwrap();
+                while !times_in_data.is_empty() {
+                    let Reverse(time) = times_in_data.peek().unwrap();
+                    // If the input frontier is less or equal to a given time,
+                    // we might still get entries with this time in the future.
+                    // We want to persist all entries for a given time at once
+                    // and we can't persist it now. We break and wait for a next closure call.
+                    if input.frontier().less_equal(time) {
+                        break;
+                    }
+                    let data = data_by_time.remove(time).unwrap();
+                    let Reverse(time) = times_in_data.pop().unwrap();
+                    writer_local.persist(time, data);
+                }
+
+                while !capabilities.is_empty() {
+                    // Holding capabilities gives us a guarantee that we write data
+                    // up to time t to persistence earlier than time t is finished
+                    // in all output operators. If it was finished in output operators
+                    // earlier than we would persist the data, we would advance
+                    // the persistence metadata to time t without having all data saved.
+                    let Reverse(CapabilityOrdWrapper(c)) = capabilities.peek().unwrap();
+                    if input.frontier().less_equal(c.time()) {
+                        break;
+                    }
+                    // We drop the capability. If it was associated with time `t`,
+                    // dropping it guarantees that the operator won't produce entries with
+                    // time lower or equal to `t` and output frontier can advance.
+                    // Note that the capabilities are dropped in order of increasing time.
+                    capabilities.pop();
+                }
+            }
+        })
+        .as_collection()
+}
+
 impl<S, D, R> Persist<S, D, R> for Collection<S, D, R>
 where
     S: Scope,
@@ -560,87 +663,94 @@ where
         writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
     ) -> (Collection<S, D, R>, Poller, thread::JoinHandle<()>) {
         let (state, poller, thread_handle) = read_persisted_state(name, self.scope(), reader);
-        let exchange =
-            Exchange::new(move |(data, _time, _diff): &(D, S::Timestamp, R)| data.shard());
-        let collection_after_saving = self
-            .concat(&state) // concat state before saving to prevent persisting new data before reading from persistence finishes
-            .inner
-            .unary_frontier(exchange, name, |_capability, _info| {
-                // The opreator streams input to output.
-                // It holds capabilities, only drop them if the input frontier advances.
-                // Without holding the capabities, frontier can advance in output connectors
-                // earlier than we persist the data for this frontier.
-                let mut data_by_time: HashMap<S::Timestamp, Vec<(D, R)>> = HashMap::new();
-                let mut buffer = Vec::new();
-                let mut capabilities = BinaryHeap::new();
-                let mut times_in_data = BinaryHeap::new();
-                move |input, output| {
-                    input.for_each(|capability, data| {
-                        data.swap(&mut buffer);
-                        // preserve input data to persist it later
-                        let mut new_times = Vec::new();
-                        for (val, time, diff) in &buffer {
-                            if *time == S::Timestamp::persistence_time() {
-                                continue; // we don't want to save already saved entries
-                            }
-                            match data_by_time.entry(time.clone()) {
-                                Entry::Occupied(mut occupied_entry) => {
-                                    occupied_entry.get_mut().push((val.clone(), diff.clone()));
-                                }
-                                Entry::Vacant(vacant_entry) => {
-                                    let vec = vacant_entry.insert(Vec::new());
-                                    vec.push((val.clone(), diff.clone()));
-                                    times_in_data.push(Reverse(time.clone()));
-                                    new_times.push(time.clone());
-                                }
-                            }
-                        }
-                        // push input to output
-                        output.session(&capability).give_vec(&mut buffer);
-                        // preserve capabilities
-                        for time in &new_times {
-                            capabilities
-                                .push(Reverse(CapabilityOrdWrapper(capability.delayed(time))));
-                        }
-                    });
-
-                    let mut writer_local = writer.lock().unwrap();
-                    while !times_in_data.is_empty() {
-                        let Reverse(time) = times_in_data.peek().unwrap();
-                        // If the input frontier is less or equal to a given time,
-                        // we might still get entries with this time in the future.
-                        // We want to persist all entries for a given time at once
-                        // and we can't persist it now. We break and wait for a next closure call.
-                        if input.frontier().less_equal(time) {
-                            break;
-                        }
-                        let data = data_by_time.remove(time).unwrap();
-                        let Reverse(time) = times_in_data.pop().unwrap();
-                        writer_local.persist(time, data);
-                    }
-
-                    while !capabilities.is_empty() {
-                        // Holding capabilities gives us a guarantee that we write data
-                        // up to time t to persistence earlier than time t is finished
-                        // in all output operators. If it was finished in output operators
-                        // earlier than we would persist the data, we would advance
-                        // the persistence metadata to time t without having all data saved.
-                        let Reverse(CapabilityOrdWrapper(c)) = capabilities.peek().unwrap();
-                        if input.frontier().less_equal(c.time()) {
-                            break;
-                        }
-                        // We drop the capability. If it was associated with time `t`,
-                        // dropping it guarantees that the operator won't produce entries with
-                        // time lower or equal to `t` and output frontier can advance.
-                        // Note that the capabilities are dropped in order of increasing time.
-                        capabilities.pop();
-                    }
-                }
-            })
-            .as_collection();
-
+        let collection_after_saving = persist_state(&self.concat(&state), name, writer);
         (collection_after_saving, poller, thread_handle)
     }
 }
 
 // arrange in reduce uses DD's Hashable, not our hasher in exchange
+
+pub trait PersistedStatefulReduce<S, K, V, R>
+where
+    S: Scope,
+    S::Timestamp: TotalOrder,
+    R: Semigroup,
+{
+    fn persisted_stateful_reduce_named<V2>(
+        &self,
+        name: &str,
+        logic: impl FnMut(Option<&V2>, Vec<(V, R)>) -> Option<V2> + 'static,
+        reader: Box<dyn OperatorSnapshotReader<(K, V2), R> + Send>,
+        writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, (K, V2), R>>>,
+    ) -> (Collection<S, (K, V2), R>, Poller, thread::JoinHandle<()>)
+    where
+        (K, V2): Shard,
+        V2: ExchangeData;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum OldOrNew<A, B> {
+    Old(A),
+    New(B),
+}
+
+impl<S, K, V, R> PersistedStatefulReduce<S, K, V, R> for Collection<S, (K, V), R>
+where
+    S: MaybeTotalScope,
+    S::Timestamp: TotalOrder + PersistenceTime,
+    K: ExchangeData + Hash + Shard,
+    V: ExchangeData,
+    R: ExchangeData + Semigroup + From<i8>,
+{
+    fn persisted_stateful_reduce_named<V2>(
+        &self,
+        name: &str,
+        mut logic: impl FnMut(Option<&V2>, Vec<(V, R)>) -> Option<V2> + 'static,
+        reader: Box<dyn OperatorSnapshotReader<(K, V2), R> + Send>,
+        writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, (K, V2), R>>>,
+    ) -> (Collection<S, (K, V2), R>, Poller, thread::JoinHandle<()>)
+    where
+        (K, V2): Shard,
+        V2: ExchangeData,
+    {
+        let (state, poller, thread_handle) = read_persisted_state(name, self.scope(), reader);
+        let new_data = self.map_named("Persist: Either::Left", |(key, value)| {
+            (key, OldOrNew::New(value))
+        });
+        let state = state.map_named("Persist: Either::Right", |(key, value)| {
+            (key, OldOrNew::Old(value))
+        });
+        let reduced = new_data
+            .concat(&state)
+            .stateful_reduce_named(name, move |state, data| {
+                let mut old = None;
+                let mut new = Vec::with_capacity(data.len());
+                for entry in data {
+                    match entry {
+                        (OldOrNew::Old(entry), diff) => {
+                            assert_eq!(diff, R::from(1));
+                            assert!(old.is_none());
+                            old = Some(entry);
+                        }
+                        (OldOrNew::New(entry), diff) => new.push((entry, diff)),
+                    }
+                }
+                // If `state` is not None, state from persistence (if any) should be already read in previous iterations.
+                // If `state` is None, we check if we can read state from persistence.
+                let state = if let Some(state) = state {
+                    assert!(old.is_none());
+                    Some(state)
+                } else {
+                    old.as_ref()
+                };
+
+                if new.is_empty() {
+                    state.cloned()
+                } else {
+                    logic(state, new)
+                }
+            });
+        let collection_after_saving = persist_state(&reduced, &format!("Persist: {name}"), writer);
+        (collection_after_saving, poller, thread_handle)
+    }
+}
