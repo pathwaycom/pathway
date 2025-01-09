@@ -8,20 +8,20 @@ from pyiceberg.catalog import load_catalog
 
 import pathway as pw
 from pathway.internals.parse_graph import G
-from pathway.tests.utils import wait_result_with_checker
+from pathway.tests.utils import run, wait_result_with_checker
 
-INPUT_CONTENTS_1 = """{"id": 1, "name": "John"}
-{"id": 2, "name": "Jane"}
-{"id": 3, "name": "Alice"}
-{"id": 4, "name": "Bob"}"""
-INPUT_CONTENTS_2 = """{"id": 5, "name": "Peter"}
-{"id": 6, "name": "Jake"}
-{"id": 7, "name": "Dora"}
-{"id": 8, "name": "Barbara"}"""
-INPUT_CONTENTS_3 = """{"id": 9, "name": "Anna"}
-{"id": 10, "name": "Paul"}
-{"id": 11, "name": "Steve"}
-{"id": 12, "name": "Sarah"}"""
+INPUT_CONTENTS_1 = """{"user_id": 1, "name": "John"}
+{"user_id": 2, "name": "Jane"}
+{"user_id": 3, "name": "Alice"}
+{"user_id": 4, "name": "Bob"}"""
+INPUT_CONTENTS_2 = """{"user_id": 5, "name": "Peter"}
+{"user_id": 6, "name": "Jake"}
+{"user_id": 7, "name": "Dora"}
+{"user_id": 8, "name": "Barbara"}"""
+INPUT_CONTENTS_3 = """{"user_id": 9, "name": "Anna"}
+{"user_id": 10, "name": "Paul"}
+{"user_id": 11, "name": "Steve"}
+{"user_id": 12, "name": "Sarah"}"""
 
 CATALOG_URI = "http://iceberg:8181"
 INPUT_CONTENTS = {
@@ -51,21 +51,78 @@ class IcebergEntriesCountChecker:
             return False
 
 
+def test_iceberg_read_after_write(tmp_path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    pstorage_path = tmp_path / "pstorage"
+    table_name = str(uuid.uuid4())
+
+    def run_single_iteration(seq_number: int):
+        input_path.write_text(INPUT_CONTENTS[seq_number])
+        name_for_id_from_new_part = {}
+        for input_line in INPUT_CONTENTS[seq_number].splitlines():
+            data = json.loads(input_line)
+            name_for_id_from_new_part[data["user_id"]] = data["name"]
+
+        class InputSchema(pw.Schema):
+            user_id: int = pw.column_definition(primary_key=True)
+            name: str
+
+        # Place some data into the Iceberg table
+        table = pw.io.jsonlines.read(
+            input_path,
+            schema=InputSchema,
+            mode="static",
+        )
+        pw.io.iceberg.write(
+            table,
+            catalog_uri=CATALOG_URI,
+            namespace=["my_database"],
+            table_name=table_name,
+        )
+        run()
+
+        # Read the data from the Iceberg table via Pathway
+        G.clear()
+        table = pw.io.iceberg.read(
+            catalog_uri=CATALOG_URI,
+            namespace=["my_database"],
+            table_name=table_name,
+            mode="static",
+            schema=InputSchema,
+        )
+        pw.io.jsonlines.write(table, output_path)
+        persistence_config = pw.persistence.Config(
+            pw.persistence.Backend.filesystem(pstorage_path),
+        )
+        run(persistence_config=persistence_config)
+
+        name_for_id = {}
+        with open(output_path, "r") as f:
+            for line in f:
+                data = json.loads(line)
+                name_for_id[data["user_id"]] = data["name"]
+        assert name_for_id == name_for_id_from_new_part
+
+    for seq_number in range(1, len(INPUT_CONTENTS) + 1):
+        run_single_iteration(seq_number)
+
+
 def test_iceberg_several_runs(tmp_path):
     input_path = tmp_path / "input.txt"
     table_name = str(uuid.uuid4())
     all_ids = set()
     all_names = set()
 
-    def run(seq_number: int):
+    def run_single_iteration(seq_number: int):
         input_path.write_text(INPUT_CONTENTS[seq_number])
         for input_line in INPUT_CONTENTS[seq_number].splitlines():
             data = json.loads(input_line)
-            all_ids.add(data["id"])
+            all_ids.add(data["user_id"])
             all_names.add(data["name"])
 
         class InputSchema(pw.Schema):
-            id: int
+            user_id: int
             name: str
 
         G.clear()
@@ -80,12 +137,12 @@ def test_iceberg_several_runs(tmp_path):
             namespace=["my_database"],
             table_name=table_name,
         )
-        pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+        run()
 
         iceberg_table_name = f"my_database.{table_name}"
         pandas_table = _get_pandas_table(iceberg_table_name)
         assert pandas_table.shape == (4 * seq_number, 4)
-        assert set(pandas_table["id"]) == all_ids
+        assert set(pandas_table["user_id"]) == all_ids
         assert set(pandas_table["name"]) == all_names
         assert set(pandas_table["diff"]) == {1}
         assert len(set(pandas_table["time"])) == seq_number
@@ -93,7 +150,7 @@ def test_iceberg_several_runs(tmp_path):
     # The first run includes the table creation.
     # The second and the following runs check that the case with the created table also works correctly.
     for seq_number in range(1, len(INPUT_CONTENTS) + 1):
-        run(seq_number)
+        run_single_iteration(seq_number)
 
 
 def test_iceberg_streaming(tmp_path):
@@ -108,7 +165,7 @@ def test_iceberg_streaming(tmp_path):
             time.sleep(5)
 
     class InputSchema(pw.Schema):
-        id: int
+        user_id: int
         name: str
 
     table = pw.io.jsonlines.read(
@@ -138,13 +195,13 @@ def test_iceberg_streaming(tmp_path):
     for i in range(1, len(INPUT_CONTENTS) + 1):
         for input_line in INPUT_CONTENTS[i].splitlines():
             data = json.loads(input_line)
-            all_ids.add(data["id"])
+            all_ids.add(data["user_id"])
             all_names.add(data["name"])
 
     iceberg_table_name = f"my_database.{table_name}"
     pandas_table = _get_pandas_table(iceberg_table_name)
     assert pandas_table.shape == (4 * len(INPUT_CONTENTS), 4)
-    assert set(pandas_table["id"]) == all_ids
+    assert set(pandas_table["user_id"]) == all_ids
     assert set(pandas_table["name"]) == all_names
     assert set(pandas_table["diff"]) == {1}
     assert len(set(pandas_table["time"])) == len(INPUT_CONTENTS)

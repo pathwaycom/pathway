@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.iceberg.read` method for reading Apache Iceberg tables into Pathway.
+
+### Changed
+- **BREAKING**: `pw.io.deltalake.read` now requires explicit specification of primary key fields.
+
 ## [0.16.4] - 2025-01-09
 
 ### Fixed

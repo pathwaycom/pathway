@@ -4682,6 +4682,7 @@ dependencies = [
  "eyre",
  "futures",
  "glob",
+ "half",
  "hex",
  "hyper 0.14.30",
  "iceberg",

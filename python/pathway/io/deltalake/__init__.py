@@ -51,6 +51,10 @@ def read(
     Reads a table from Delta Lake. Currently, local and S3 lakes are supported. The table
     doesn't have to be append only, however, the deletion vectors are not supported yet.
 
+    Note that the connector requires primary key fields to be specified in the schema.
+    You can specify the fields to be used in the primary key with ``pw.column_definition``
+    function.
+
     Args:
         uri: URI of the Delta Lake source that must be read.
         schema: Schema of the resulting table.
@@ -84,7 +88,7 @@ def read(
 
     >>> import pathway as pw
     >>> class KVSchema(pw.Schema):
-    ...     key: str
+    ...     key: str = pw.column_definition(primary_key=True)
     ...     value: str
 
     Then, this table must be written into a Delta Lake storage. In the example, it can
@@ -123,6 +127,11 @@ def read(
     are provided but the path starts with ``s3://`` or ``s3a://``, Pathway will use the
     credentials of the currently authenticated user.
     """
+    if schema.primary_key_columns() is None:
+        raise ValueError(
+            "DeltaLake reader requires explicit primary key fields specification"
+        )
+
     _check_entitlements("deltalake")
     prepared_connection_settings = _prepare_connection_settings(s3_connection_settings)
 

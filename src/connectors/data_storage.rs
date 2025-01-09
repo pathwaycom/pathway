@@ -11,26 +11,27 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufWriter;
 use std::io::Write;
-use std::io::{Seek, SeekFrom};
 use std::mem::take;
-use std::path::Path;
 use std::str::{from_utf8, Utf8Error};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
 use arcstr::ArcStr;
+use deltalake::arrow::datatypes::DataType as ArrowDataType;
+use deltalake::arrow::error::ArrowError;
+use deltalake::datafusion::parquet::record::Field as ParquetValue;
+use deltalake::parquet::errors::ParquetError;
+use deltalake::DeltaTableError;
 use futures::StreamExt;
 use iceberg::Error as IcebergError;
 use itertools::Itertools;
 use log::{error, info, warn};
 use postgres::types::ToSql;
-use tempfile::tempfile;
 use tokio::runtime::Runtime as TokioRuntime;
 
 use crate::async_runtime::create_async_tokio_runtime;
@@ -47,7 +48,6 @@ use crate::engine::error::DynResult;
 use crate::engine::error::STANDARD_OBJECT_LENGTH_LIMIT;
 use crate::engine::Type;
 use crate::engine::Value;
-use crate::engine::{DateTimeNaive, DateTimeUtc, Duration as EngineDuration};
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
@@ -61,17 +61,6 @@ use async_nats::client::PublishError as NatsPublishError;
 use async_nats::Client as NatsClient;
 use async_nats::Subscriber as NatsSubscriber;
 use bincode::ErrorKind as BincodeError;
-use deltalake::arrow::datatypes::DataType as ArrowDataType;
-use deltalake::arrow::error::ArrowError;
-use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
-use deltalake::datafusion::parquet::record::Field as ParquetValue;
-use deltalake::kernel::Action as DeltaLakeAction;
-use deltalake::parquet::errors::ParquetError;
-use deltalake::parquet::file::reader::FileReader as DeltaLakeParquetFileReader;
-use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
-use deltalake::parquet::record::Row as ParquetRow;
-use deltalake::table::PeekCommit as DeltaLakePeekCommit;
-use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, DeltaTableError};
 use elasticsearch::{BulkParts, Elasticsearch};
 use glob::PatternError as GlobPatternError;
 use mongodb::bson::Document as BsonDocument;
@@ -90,6 +79,8 @@ use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
 use serde::{Deserialize, Serialize};
 
+pub use super::data_lake::delta::{DeltaTableReader, ObjectDownloader};
+pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
@@ -241,6 +232,9 @@ pub enum ReadError {
     Bincode(#[from] BincodeError),
 
     #[error(transparent)]
+    Iceberg(#[from] IcebergError),
+
+    #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 
     #[error("malformed data")]
@@ -262,9 +256,9 @@ pub enum ReadError {
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
 #[error("cannot create a field {field_name:?} with type {type_} from value {value_repr}")]
 pub struct ConversionError {
-    value_repr: String,
-    field_name: String,
-    type_: Type,
+    pub value_repr: String,
+    pub field_name: String,
+    pub type_: Type,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -280,6 +274,7 @@ pub enum StorageType {
     DeltaLake,
     Nats,
     PosixLike,
+    Iceberg,
 }
 
 impl StorageType {
@@ -299,6 +294,7 @@ impl StorageType {
             StorageType::Sqlite => SqliteReader::merge_two_frontiers(lhs, rhs),
             StorageType::DeltaLake => DeltaTableReader::merge_two_frontiers(lhs, rhs),
             StorageType::Nats => NatsReader::merge_two_frontiers(lhs, rhs),
+            StorageType::Iceberg => IcebergReader::merge_two_frontiers(lhs, rhs),
         }
     }
 }
@@ -1598,348 +1594,6 @@ impl Reader for SqliteReader {
         if persistent_id.is_some() {
             unimplemented!("persistence is not supported for Sqlite data source")
         }
-    }
-}
-
-pub enum ObjectDownloader {
-    Local,
-    S3(Box<S3Bucket>),
-}
-
-impl ObjectDownloader {
-    fn download_object(&self, path: &str) -> Result<File, ReadError> {
-        let obj = match self {
-            Self::Local => File::open(path)?,
-            Self::S3(bucket) => {
-                let contents = S3Scanner::download_object_from_path_and_bucket(path, bucket)?;
-                let mut tempfile = tempfile()?;
-                tempfile.write_all(contents.bytes())?;
-                tempfile.flush()?;
-                tempfile.seek(SeekFrom::Start(0))?;
-                tempfile
-            }
-        };
-        Ok(obj)
-    }
-}
-
-#[derive(Debug)]
-pub struct DeltaReaderAction {
-    action_type: DataEventType,
-    path: String,
-}
-
-impl DeltaReaderAction {
-    pub fn new(action_type: DataEventType, path: String) -> Self {
-        Self { action_type, path }
-    }
-}
-
-pub struct DeltaTableReader {
-    table: DeltaTable,
-    streaming_mode: ConnectorMode,
-    column_types: HashMap<String, Type>,
-    persistent_id: Option<PersistentId>,
-    base_path: String,
-    object_downloader: ObjectDownloader,
-
-    reader: Option<ParquetRowIterator<'static>>,
-    current_version: i64,
-    last_fully_read_version: Option<i64>,
-    rows_read_within_version: i64,
-    parquet_files_queue: VecDeque<DeltaReaderAction>,
-    current_event_type: DataEventType,
-}
-
-const DELTA_LAKE_INITIAL_POLL_DURATION: Duration = Duration::from_millis(5);
-const DELTA_LAKE_MAX_POLL_DURATION: Duration = Duration::from_millis(100);
-const DELTA_LAKE_POLL_BACKOFF: u32 = 2;
-
-impl DeltaTableReader {
-    pub fn new(
-        path: &str,
-        object_downloader: ObjectDownloader,
-        storage_options: HashMap<String, String>,
-        column_types: HashMap<String, Type>,
-        streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
-    ) -> Result<Self, ReadError> {
-        let runtime = create_async_tokio_runtime()?;
-        let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
-        let current_version = table.version();
-        let parquet_files_queue = Self::get_reader_actions(&table, path)?;
-
-        Ok(Self {
-            table,
-            column_types,
-            streaming_mode,
-            persistent_id,
-            base_path: path.to_string(),
-
-            current_version,
-            object_downloader,
-            last_fully_read_version: None,
-            reader: None,
-            parquet_files_queue,
-            rows_read_within_version: 0,
-            current_event_type: DataEventType::Insert,
-        })
-    }
-
-    fn get_reader_actions(
-        table: &DeltaTable,
-        base_path: &str,
-    ) -> Result<VecDeque<DeltaReaderAction>, ReadError> {
-        Ok(table
-            .snapshot()?
-            .file_actions()?
-            .into_iter()
-            .map(|action| {
-                DeltaReaderAction::new(
-                    DataEventType::Insert,
-                    Self::ensure_absolute_path_with_base(&action.path, base_path),
-                )
-            })
-            .collect())
-    }
-
-    fn ensure_absolute_path(&self, path: &str) -> String {
-        Self::ensure_absolute_path_with_base(path, &self.base_path)
-    }
-
-    fn ensure_absolute_path_with_base(path: &str, base_path: &str) -> String {
-        if path.starts_with(base_path) {
-            return path.to_string();
-        }
-        if base_path.ends_with('/') {
-            format!("{base_path}{path}")
-        } else {
-            format!("{base_path}/{path}")
-        }
-    }
-
-    fn upgrade_table_version(&mut self, is_polling_enabled: bool) -> Result<(), ReadError> {
-        let runtime = create_async_tokio_runtime()?;
-        runtime.block_on(async {
-            self.parquet_files_queue.clear();
-            let mut sleep_duration = DELTA_LAKE_INITIAL_POLL_DURATION;
-            while self.parquet_files_queue.is_empty() {
-                let diff = self.table.peek_next_commit(self.current_version).await?;
-                let DeltaLakePeekCommit::New(next_version, txn_actions) = diff else {
-                    if !is_polling_enabled {
-                        break;
-                    }
-                    // Fully up to date, no changes yet
-                    sleep(sleep_duration);
-                    sleep_duration *= DELTA_LAKE_POLL_BACKOFF;
-                    if sleep_duration > DELTA_LAKE_MAX_POLL_DURATION {
-                        sleep_duration = DELTA_LAKE_MAX_POLL_DURATION;
-                    }
-                    continue;
-                };
-
-                let mut added_blocks = VecDeque::new();
-                let mut data_changed = false;
-                for action in txn_actions {
-                    // Protocol description for Delta Lake actions:
-                    // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#actions
-                    let action = match action {
-                        DeltaLakeAction::Remove(action) => {
-                            if action.deletion_vector.is_some() {
-                                return Err(ReadError::DeltaDeletionVectorsNotSupported);
-                            }
-                            data_changed |= action.data_change;
-                            let action_path = self.ensure_absolute_path(&action.path);
-                            DeltaReaderAction::new(DataEventType::Delete, action_path)
-                        }
-                        DeltaLakeAction::Add(action) => {
-                            data_changed |= action.data_change;
-                            let action_path = self.ensure_absolute_path(&action.path);
-                            DeltaReaderAction::new(DataEventType::Insert, action_path)
-                        }
-                        _ => continue,
-                    };
-                    added_blocks.push_back(action);
-                }
-
-                self.last_fully_read_version = Some(self.current_version);
-                self.current_version = next_version;
-                self.rows_read_within_version = 0;
-                if data_changed {
-                    self.parquet_files_queue = added_blocks;
-                }
-            }
-            Ok(())
-        })
-    }
-
-    fn read_next_row_native(&mut self, is_polling_enabled: bool) -> Result<ParquetRow, ReadError> {
-        loop {
-            if let Some(ref mut reader) = &mut self.reader {
-                match reader.next() {
-                    Some(Ok(row)) => return Ok(row),
-                    Some(Err(parquet_err)) => return Err(ReadError::Parquet(parquet_err)),
-                    None => self.reader = None,
-                };
-            } else {
-                if self.parquet_files_queue.is_empty() {
-                    self.upgrade_table_version(is_polling_enabled)?;
-                    if self.parquet_files_queue.is_empty() {
-                        return Err(ReadError::NoObjectsToRead);
-                    }
-                }
-                let next_action = self.parquet_files_queue.pop_front().unwrap();
-                let local_object = self.object_downloader.download_object(&next_action.path)?;
-                self.current_event_type = next_action.action_type;
-                self.reader = Some(DeltaLakeParquetReader::try_from(local_object)?.into_iter());
-            }
-        }
-    }
-
-    fn rows_in_file_count(path: &str) -> Result<i64, ReadError> {
-        let reader = DeltaLakeParquetReader::try_from(Path::new(path))?;
-        let metadata = reader.metadata();
-        let mut n_rows = 0;
-        for row_group in metadata.row_groups() {
-            n_rows += row_group.num_rows();
-        }
-        Ok(n_rows)
-    }
-}
-
-impl Reader for DeltaTableReader {
-    fn read(&mut self) -> Result<ReadResult, ReadError> {
-        let parquet_row = match self.read_next_row_native(self.streaming_mode.is_polling_enabled())
-        {
-            Ok(row) => row,
-            Err(ReadError::NoObjectsToRead) => return Ok(ReadResult::Finished),
-            Err(other) => return Err(other),
-        };
-        let mut row_map = HashMap::new();
-        for (name, parquet_value) in parquet_row.get_column_iter() {
-            let Some(expected_type) = self.column_types.get(name) else {
-                // Column outside of the user-provided schema
-                continue;
-            };
-
-            let value = match (parquet_value, expected_type) {
-                (ParquetValue::Null, _) => Some(Value::None),
-                (ParquetValue::Bool(b), Type::Bool | Type::Any) => Some(Value::from(*b)),
-                (ParquetValue::Long(i), Type::Int | Type::Any) => Some(Value::from(*i)),
-                (ParquetValue::Long(i), Type::Duration) => Some(Value::from(
-                    EngineDuration::new_with_unit(*i, "us").unwrap(),
-                )),
-                (ParquetValue::Double(f), Type::Float | Type::Any) => {
-                    Some(Value::Float((*f).into()))
-                }
-                (ParquetValue::Str(s), Type::String | Type::Any) => Some(Value::String(s.into())),
-                (ParquetValue::Str(s), Type::Json) => serde_json::from_str::<serde_json::Value>(s)
-                    .ok()
-                    .map(Value::from),
-                (ParquetValue::TimestampMicros(us), Type::DateTimeNaive | Type::Any) => Some(
-                    Value::from(DateTimeNaive::from_timestamp(*us, "us").unwrap()),
-                ),
-                (ParquetValue::TimestampMicros(us), Type::DateTimeUtc) => {
-                    Some(Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap()))
-                }
-                (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => {
-                    Some(Value::Bytes(b.data().into()))
-                }
-                _ => None,
-            };
-            let value = if let Some(value) = value {
-                Ok(value)
-            } else {
-                let value_repr =
-                    limit_length(format!("{parquet_value:?}"), STANDARD_OBJECT_LENGTH_LIMIT);
-                Err(Box::new(ConversionError {
-                    value_repr,
-                    field_name: name.clone(),
-                    type_: expected_type.clone(),
-                }))
-            };
-            row_map.insert(name.clone(), value);
-        }
-
-        self.rows_read_within_version += 1;
-        Ok(ReadResult::Data(
-            ReaderContext::from_diff(self.current_event_type, None, row_map.into()),
-            (
-                OffsetKey::Empty,
-                OffsetValue::DeltaTablePosition {
-                    version: self.current_version,
-                    rows_read_within_version: self.rows_read_within_version,
-                    last_fully_read_version: self.last_fully_read_version,
-                },
-            ),
-        ))
-    }
-
-    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
-        // The offset denotes the last fully processed Delta Table version.
-        // Then, the `seek` loads this checkpoint and ensures that no diffs
-        // from the current version will be applied.
-        let offset_value = frontier.get_offset(&OffsetKey::Empty);
-        let Some(OffsetValue::DeltaTablePosition {
-            version,
-            rows_read_within_version: n_rows_to_rewind,
-            last_fully_read_version,
-        }) = offset_value
-        else {
-            if offset_value.is_some() {
-                warn!("Incorrect type of offset value in DeltaLake frontier: {offset_value:?}");
-            }
-            return Ok(());
-        };
-
-        self.reader = None;
-        let runtime = create_async_tokio_runtime()?;
-        if let Some(last_fully_read_version) = last_fully_read_version {
-            // The offset is based on the diff between `last_fully_read_version` and `version`
-            self.current_version = *last_fully_read_version;
-            runtime.block_on(async { self.table.load_version(self.current_version).await })?;
-            self.upgrade_table_version(false)?;
-        } else {
-            // The offset is based on the full set of files present for `version`
-            self.current_version = *version;
-            runtime.block_on(async { self.table.load_version(self.current_version).await })?;
-            self.parquet_files_queue = Self::get_reader_actions(&self.table, &self.base_path)?;
-        }
-
-        self.rows_read_within_version = 0;
-        while !self.parquet_files_queue.is_empty() {
-            let next_block = self.parquet_files_queue.front().unwrap();
-            let block_size = Self::rows_in_file_count(&next_block.path)?;
-            if self.rows_read_within_version + block_size <= *n_rows_to_rewind {
-                info!(
-                    "Skipping parquet block with the size of {block_size} entries: {next_block:?}"
-                );
-                self.rows_read_within_version += block_size;
-                self.parquet_files_queue.pop_front();
-            } else {
-                break;
-            }
-        }
-
-        let rows_left_to_rewind = *n_rows_to_rewind - self.rows_read_within_version;
-        info!("Not quickly-rewindable entries count: {rows_left_to_rewind}");
-        for _ in 0..rows_left_to_rewind {
-            let _ = self.read_next_row_native(false)?;
-        }
-
-        Ok(())
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn storage_type(&self) -> StorageType {
-        StorageType::DeltaLake
     }
 }
 

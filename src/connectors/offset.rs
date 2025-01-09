@@ -8,6 +8,7 @@ use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
+use crate::connectors::data_lake::iceberg::IcebergSnapshotId;
 use crate::engine::value::HashInto;
 use crate::persistence::cached_object_storage::CachedObjectVersion;
 
@@ -60,6 +61,9 @@ pub enum OffsetValue {
         version: i64,
         rows_read_within_version: i64,
         last_fully_read_version: Option<i64>,
+    },
+    IcebergSnapshot {
+        snapshot_id: IcebergSnapshotId,
     },
     NatsReadEntriesCount(usize),
     Empty,
@@ -137,6 +141,9 @@ impl HashInto for OffsetValue {
                     .hash_into(hasher);
             }
             OffsetValue::NatsReadEntriesCount(count) => count.hash_into(hasher),
+            OffsetValue::IcebergSnapshot { snapshot_id } => {
+                snapshot_id.hash_into(hasher);
+            }
             OffsetValue::Empty => {}
         };
     }

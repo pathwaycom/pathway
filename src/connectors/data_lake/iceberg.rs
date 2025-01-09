@@ -1,11 +1,16 @@
-use std::collections::HashMap;
+use log::warn;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
 
-use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
+use deltalake::arrow::record_batch::RecordBatch as ArrowRecordBatch;
 use deltalake::parquet::file::properties::WriterProperties;
+use futures::{stream, StreamExt, TryStreamExt};
+use iceberg::scan::{FileScanTask, FileScanTaskStream};
 use iceberg::spec::{
     NestedField, PrimitiveType as IcebergPrimitiveType, Schema as IcebergSchema,
-    Type as IcebergType, UnboundPartitionSpec,
+    Type as IcebergType,
 };
 use iceberg::table::Table as IcebergTable;
 use iceberg::transaction::Transaction;
@@ -15,14 +20,22 @@ use iceberg::writer::file_writer::location_generator::{
 };
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::{IcebergWriter, IcebergWriterBuilder};
+use iceberg::Error as IcebergError;
 use iceberg::{Catalog, Namespace, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_catalog_rest::{RestCatalog, RestCatalogConfig};
 use tokio::runtime::Runtime as TokioRuntime;
 
-use super::{LakeBatchWriter, SPECIAL_OUTPUT_FIELDS};
+use super::{columns_into_pathway_values, LakeBatchWriter, SPECIAL_OUTPUT_FIELDS};
 use crate::async_runtime::create_async_tokio_runtime;
-use crate::connectors::WriteError;
+use crate::connectors::data_storage::ConnectorMode;
+use crate::connectors::metadata::IcebergMetadata;
+use crate::connectors::{
+    DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
+    StorageType, WriteError,
+};
 use crate::engine::Type;
+use crate::persistence::frontier::OffsetAntichain;
+use crate::persistence::PersistentId;
 use crate::python_api::ValueField;
 use crate::timestamp::current_unix_timestamp_ms;
 
@@ -57,9 +70,9 @@ impl IcebergDBParams {
         &self,
         runtime: &TokioRuntime,
         catalog: &RestCatalog,
-    ) -> Result<Namespace, WriteError> {
+    ) -> Result<Namespace, IcebergError> {
         let ident = NamespaceIdent::from_strs(self.namespace.clone())?;
-        Ok(runtime.block_on(async {
+        runtime.block_on(async {
             if let Ok(ns) = catalog.get_namespace(&ident).await {
                 return Ok(ns);
             }
@@ -69,7 +82,7 @@ impl IcebergDBParams {
                     HashMap::from([("author".to_string(), "pathway".to_string())]),
                 )
                 .await
-        })?)
+        })
     }
 }
 
@@ -100,7 +113,6 @@ impl IcebergTableParams {
             } else {
                 let creation_builder = TableCreation::builder()
                     .name(self.name.clone())
-                    .partition_spec(UnboundPartitionSpec::builder().with_spec_id(1).build())
                     .properties(HashMap::from([(
                         "author".to_string(),
                         "pathway".to_string(),
@@ -241,5 +253,261 @@ impl LakeBatchWriter for IcebergBatchWriter {
 
             Ok::<(), WriteError>(())
         })
+    }
+}
+
+/// Wrapper for `FileScanTask` that allows to compare them.
+#[derive(Debug, Eq, Hash, PartialEq)]
+struct FileScanTaskDescriptor {
+    data_file_path: String,
+    start: u64,
+    length: u64,
+}
+
+impl FileScanTaskDescriptor {
+    fn for_task(task: &FileScanTask) -> Self {
+        Self {
+            data_file_path: task.data_file_path.clone(),
+            start: task.start,
+            length: task.length,
+        }
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub type IcebergSnapshotId = i64;
+
+#[allow(clippy::module_name_repetitions)]
+pub struct IcebergReader {
+    catalog: RestCatalog,
+    table_ident: TableIdent,
+    persistent_id: Option<PersistentId>,
+    column_types: HashMap<String, Type>,
+    streaming_mode: ConnectorMode,
+
+    runtime: TokioRuntime,
+    current_table_plan: HashMap<FileScanTaskDescriptor, FileScanTask>,
+    current_snapshot_id: Option<IcebergSnapshotId>,
+    diff_queue: VecDeque<ReadResult>,
+    is_initialized: bool,
+}
+
+const ICEBERG_SLEEP_BETWEEN_SNAPSHOT_CHECKS: Duration = Duration::from_millis(100);
+
+impl IcebergReader {
+    pub fn new(
+        db_params: &IcebergDBParams,
+        table_params: &IcebergTableParams,
+        column_types: HashMap<String, Type>,
+        streaming_mode: ConnectorMode,
+        persistent_id: Option<PersistentId>,
+    ) -> Result<Self, ReadError> {
+        let runtime = create_async_tokio_runtime()?;
+        let catalog = db_params.create_catalog();
+        let namespace = db_params.ensure_namespace(&runtime, &catalog)?;
+        let table_ident = TableIdent::new(namespace.name().clone(), table_params.name.clone());
+
+        // Check that the table exists.
+        runtime.block_on(async { catalog.load_table(&table_ident).await })?;
+
+        Ok(Self {
+            catalog,
+            table_ident,
+            persistent_id,
+            column_types,
+            streaming_mode,
+
+            runtime,
+            current_table_plan: HashMap::new(),
+            current_snapshot_id: None,
+            diff_queue: VecDeque::new(),
+            is_initialized: false,
+        })
+    }
+
+    fn wait_for_snapshot_update(&mut self) -> Result<(), ReadError> {
+        self.runtime.block_on(async {
+            while self.diff_queue.is_empty() {
+                let table = self.catalog.load_table(&self.table_ident).await?;
+                let available_snapshot_id = table.metadata().current_snapshot_id();
+                let snapshot_id_changed = available_snapshot_id != self.current_snapshot_id;
+                if available_snapshot_id.is_none() || !snapshot_id_changed {
+                    sleep(ICEBERG_SLEEP_BETWEEN_SNAPSHOT_CHECKS);
+                    continue;
+                }
+
+                // The snapshot has been updated at this point.
+                let updated_table_plan: Vec<FileScanTask> = table
+                    .scan()
+                    .build()?
+                    // TODO: there can be many files, yet the diff may consist only of a few of them.
+                    // But the versions of an iceberg table form a tree.
+                    // So the following solution should be possible:
+                    // - Find the least common ancestor of the current and the updated snapshot.
+                    // - Traverse the path from the old version to the LCA and undo the changes on this path.
+                    // - Traverse the path from the LCA to the new version and apply changes on this path.
+                    // More reading on the protocol must be done to understand how to implement this.
+                    .plan_files()
+                    .await?
+                    .try_collect()
+                    .await?;
+
+                let updated_table_plan: HashMap<FileScanTaskDescriptor, FileScanTask> =
+                    updated_table_plan
+                        .into_iter()
+                        .map(|task| (FileScanTaskDescriptor::for_task(&task), task))
+                        .collect();
+
+                // Find the difference between the current and the updated table plan.
+                let insertion_tasks =
+                    Self::table_plans_difference(&updated_table_plan, &self.current_table_plan);
+                let diffs = Self::create_version_diffs(
+                    &table,
+                    &self.column_types,
+                    insertion_tasks,
+                    DataEventType::Insert,
+                    available_snapshot_id.unwrap(),
+                )
+                .await?;
+                self.diff_queue.extend(diffs);
+
+                let deletion_tasks =
+                    Self::table_plans_difference(&self.current_table_plan, &updated_table_plan);
+                let diffs = Self::create_version_diffs(
+                    &table,
+                    &self.column_types,
+                    deletion_tasks,
+                    DataEventType::Delete,
+                    available_snapshot_id.unwrap(),
+                )
+                .await?;
+                self.diff_queue.extend(diffs);
+
+                if !self.diff_queue.is_empty() {
+                    let new_source_metadata = IcebergMetadata::new(available_snapshot_id.unwrap());
+                    self.diff_queue
+                        .push_front(ReadResult::NewSource(new_source_metadata.into()));
+                    self.diff_queue.push_back(ReadResult::FinishedSource {
+                        commit_allowed: true,
+                    });
+                }
+
+                self.current_snapshot_id = available_snapshot_id;
+                self.current_table_plan = updated_table_plan;
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Return a vector of tasks that are in the plan `model` but not in the plan `other`.
+    fn table_plans_difference(
+        model: &HashMap<FileScanTaskDescriptor, FileScanTask>,
+        other: &HashMap<FileScanTaskDescriptor, FileScanTask>,
+    ) -> Vec<FileScanTask> {
+        let model_keys: HashSet<_> = model.keys().collect();
+        let other_keys: HashSet<_> = other.keys().collect();
+        let keys_difference: Vec<_> = model_keys.difference(&other_keys).collect();
+        keys_difference
+            .into_iter()
+            .map(|key| model[key].clone())
+            .collect()
+    }
+
+    async fn create_version_diffs(
+        table: &IcebergTable,
+        column_types: &HashMap<String, Type>,
+        difference_tasks: Vec<FileScanTask>,
+        event_type: DataEventType,
+        snapshot_id: IcebergSnapshotId,
+    ) -> Result<Vec<ReadResult>, IcebergError> {
+        let iceberg_task_stream: FileScanTaskStream =
+            stream::iter(difference_tasks.into_iter().map(Ok)).boxed();
+
+        let reader_builder = table.reader_builder();
+        let entries: Vec<_> = reader_builder
+            .build()
+            .read(iceberg_task_stream)?
+            .try_collect()
+            .await?;
+        let mut result = Vec::new();
+        for entry in entries {
+            let converted_values = columns_into_pathway_values(&entry, column_types);
+            for values_map in converted_values {
+                let deferred_read_result = ReadResult::Data(
+                    ReaderContext::from_diff(event_type, None, values_map),
+                    (
+                        OffsetKey::Empty,
+                        OffsetValue::IcebergSnapshot { snapshot_id },
+                    ),
+                );
+                result.push(deferred_read_result);
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+impl Reader for IcebergReader {
+    fn read(&mut self) -> Result<ReadResult, ReadError> {
+        loop {
+            if let Some(result) = self.diff_queue.pop_front() {
+                return Ok(result);
+            }
+            if self.streaming_mode.is_polling_enabled() || !self.is_initialized {
+                self.is_initialized = true;
+                self.wait_for_snapshot_update()?;
+            } else {
+                return Ok(ReadResult::Finished);
+            }
+        }
+    }
+
+    fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError> {
+        let offset_value = frontier.get_offset(&OffsetKey::Empty);
+        let Some(OffsetValue::IcebergSnapshot { snapshot_id }) = offset_value else {
+            if offset_value.is_some() {
+                warn!("Incorrect type of offset value in Iceberg frontier: {offset_value:?}");
+            }
+            return Ok(());
+        };
+
+        self.runtime.block_on(async {
+            let table = self.catalog.load_table(&self.table_ident).await?;
+            let current_table_plan: Vec<FileScanTask> = table
+                .scan()
+                .snapshot_id(*snapshot_id)
+                .build()?
+                .plan_files()
+                .await?
+                .try_collect()
+                .await?;
+
+            #[allow(clippy::mutable_key_type)]
+            let current_table_plan: HashMap<FileScanTaskDescriptor, FileScanTask> =
+                current_table_plan
+                    .into_iter()
+                    .map(|task| (FileScanTaskDescriptor::for_task(&task), task))
+                    .collect();
+            self.current_table_plan = current_table_plan;
+
+            Ok::<(), IcebergError>(())
+        })?;
+
+        self.current_snapshot_id = Some(*snapshot_id);
+        Ok(())
+    }
+
+    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
+        self.persistent_id = persistent_id;
+    }
+
+    fn persistent_id(&self) -> Option<PersistentId> {
+        self.persistent_id
+    }
+
+    fn storage_type(&self) -> StorageType {
+        StorageType::Iceberg
     }
 }

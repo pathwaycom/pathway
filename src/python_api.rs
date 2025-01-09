@@ -81,10 +81,10 @@ use crate::connectors::data_lake::iceberg::{
 use crate::connectors::data_lake::DeltaBatchWriter;
 use crate::connectors::data_storage::{
     new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
-    ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, KafkaReader, KafkaWriter,
-    LakeWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader, PsqlWriter,
-    PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod, ReaderBuilder,
-    SqliteReader, Writer,
+    ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
+    KafkaWriter, LakeWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
+    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
+    ReaderBuilder, SqliteReader, Writer,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -2248,7 +2248,7 @@ impl Computer {
 pub struct Scope {
     #[pyo3(get)]
     parent: Option<Py<Self>>,
-
+    license: Option<License>,
     graph: SendWrapper<ScopedGraph>,
 
     // empty_universe: Lazy<Py<Universe>>,
@@ -2262,10 +2262,10 @@ pub struct Scope {
 }
 
 impl Scope {
-    fn new(parent: Option<Py<Self>>, event_loop: PyObject) -> Self {
+    fn new(parent: Option<Py<Self>>, event_loop: PyObject, license: Option<License>) -> Self {
         Scope {
             parent,
-
+            license,
             graph: SendWrapper::new(ScopedGraph::new()),
             universes: RefCell::new(HashMap::new()),
             columns: RefCell::new(HashMap::new()),
@@ -2384,6 +2384,7 @@ impl Scope {
             &data_format.borrow(),
             connector_index,
             self_.borrow().worker_index(),
+            self_.borrow().license.as_ref(),
         )?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
@@ -2427,6 +2428,7 @@ impl Scope {
                     Scope::new(
                         Some(self_.clone().unbind()),
                         self_.borrow().event_loop.clone(),
+                        None,
                     ),
                 )?;
                 scope.borrow().graph.scoped(graph, || {
@@ -3318,13 +3320,17 @@ pub fn run_with_new_graph(
     let telemetry_config =
         EngineTelemetryConfig::create(&license, run_id, monitoring_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
+        let scope_license = license.clone();
         py.allow_threads(|| {
             run_with_new_dataflow_graph(
                 move |graph| {
                     let thread_state = PythonThreadState::new();
 
                     let captured_tables = Python::with_gil(|py| {
-                        let our_scope = &Bound::new(py, Scope::new(None, event_loop.clone()))?;
+                        let our_scope = &Bound::new(
+                            py,
+                            Scope::new(None, event_loop.clone(), Some(scope_license.clone())),
+                        )?;
                         let tables: Vec<(PyRef<Table>, Vec<ColumnPath>)> =
                             our_scope.borrow().graph.scoped(graph, || {
                                 from_py_iterable(&logic.bind(py).call1((our_scope,))?)
@@ -4595,7 +4601,18 @@ impl DataStorage {
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
+        license: Option<&License>,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if data_format.key_field_names.is_none() {
+            return Err(PyValueError::new_err(
+                "DeltaLake reader requires explicit primary key fields specification",
+            ));
+        }
+
+        if let Some(license) = license {
+            license.check_entitlements(["deltalake"])?;
+        }
+
         let reader = DeltaTableReader::new(
             self.path()?,
             self.object_downloader(py)?,
@@ -4638,12 +4655,58 @@ impl DataStorage {
         Ok((Box::new(reader), 32))
     }
 
+    fn construct_iceberg_reader(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+        license: Option<&License>,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+        if data_format.key_field_names.is_none() {
+            return Err(PyValueError::new_err(
+                "Iceberg reader requires explicit primary key fields specification",
+            ));
+        }
+
+        if let Some(license) = license {
+            license.check_entitlements(["iceberg"])?;
+        }
+
+        let uri = self.path()?;
+        let warehouse = &self.database;
+        let table_name = self.table_name()?;
+        let namespace = self
+            .namespace
+            .clone()
+            .ok_or_else(|| PyValueError::new_err("Namespace must be specified"))?;
+        let mut value_fields = Vec::new();
+        for field in &data_format.value_fields {
+            value_fields.push(field.borrow(py).clone());
+        }
+
+        let db_params = IcebergDBParams::new(uri.to_string(), warehouse.clone(), namespace);
+        let table_params = IcebergTableParams::new(table_name.to_string(), &value_fields)
+            .map_err(|e| PyIOError::new_err(format!("Unable to create Iceberg writer: {e}")))?;
+        let reader = IcebergReader::new(
+            &db_params,
+            &table_params,
+            data_format.value_fields_type_map(py),
+            self.mode,
+            self.internal_persistent_id(),
+        )
+        .map_err(|e| {
+            PyIOError::new_err(format!("Unable to start data lake input connector: {e}"))
+        })?;
+
+        Ok((Box::new(reader), 1))
+    }
+
     fn construct_reader(
         &self,
         py: pyo3::Python,
         data_format: &DataFormat,
         connector_index: usize,
         worker_index: usize,
+        license: Option<&License>,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_reader(),
@@ -4653,8 +4716,9 @@ impl DataStorage {
             "kafka" => self.construct_kafka_reader(),
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
-            "deltalake" => self.construct_deltalake_reader(py, data_format),
+            "deltalake" => self.construct_deltalake_reader(py, data_format, license),
             "nats" => self.construct_nats_reader(connector_index, worker_index),
+            "iceberg" => self.construct_iceberg_reader(py, data_format, license),
             other => Err(PyValueError::new_err(format!(
                 "Unknown data source {other:?}"
             ))),

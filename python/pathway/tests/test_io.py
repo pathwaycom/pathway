@@ -3421,3 +3421,32 @@ def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
     result = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
     expected = pd.read_csv(input_path, usecols=["k", "v"], index_col=["k"]).sort_index()
     assert result.equals(expected)
+
+
+def test_deltalake_no_primary_key(tmp_path: pathlib.Path):
+    class InputSchema(pw.Schema):
+        k: int
+        v: str
+
+    with pytest.raises(
+        ValueError,
+        match="DeltaLake reader requires explicit primary key fields specification",
+    ):
+        pw.io.deltalake.read(tmp_path / "lake", schema=InputSchema)
+
+
+def test_iceberg_no_primary_key(tmp_path: pathlib.Path):
+    class InputSchema(pw.Schema):
+        k: int
+        v: str
+
+    with pytest.raises(
+        ValueError,
+        match="Iceberg reader requires explicit primary key fields specification",
+    ):
+        pw.io.iceberg.read(
+            catalog_uri="http://localhost:8181",
+            namespace=["app"],
+            table_name="test",
+            schema=InputSchema,
+        )
