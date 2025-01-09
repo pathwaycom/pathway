@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.16.4] - 2025-01-09
+
 ### Fixed
 - Google Drive connector in static mode now correctly displays in jupyter visualizations.
 
