@@ -1,7 +1,16 @@
 $sources:
   - !pw.io.gdrive.read
     object_id: "1ErwN5WajWsEdIRMBIjyBfncNUmkxRfRy" # large: "1ErwN5WajWsEdIRMBIjyBfncNUmkxRfRy" # small: "1f73nnDnZ0j3URkYEG5VoLhFs_ThI2hve"
-    service_user_credentials_file: /integration_tests/rag_evals/gdrive_indexer.json  # ./gdrive_indexer.json  # ./public/pathway/integration_tests/rag_evals/gdrive_indexer.json
+    service_user_credentials_file: /integration_tests/rag_evals/gdrive_indexer.json  # ./gdrive_indexer.json  # /integration_tests/rag_evals/gdrive_indexer.json
+    file_name_pattern:
+      - "*.pdf"
+      - "*.docx"
+    object_size_limit: null
+    with_metadata: true
+    refresh_interval: 30
+  - !pw.io.gdrive.read
+    object_id: "1GC0jVKLd2_GZb4pJx1umgJwmjOCxzkDW" # synthetic dataset
+    service_user_credentials_file: /integration_tests/rag_evals/gdrive_indexer.json  # ./gdrive_indexer.json  # /integration_tests/rag_evals/gdrive_indexer.json
     file_name_pattern:
       - "*.pdf"
       - "*.docx"

@@ -25,6 +25,7 @@ class Data:
     label: str
     file: str
     reworded_question: str
+    reference_contexts: str | None = ""
 
 
 @dataclass
@@ -134,7 +135,6 @@ class RAGEvaluator:
         answer = self.connector.pw_ai_answer_question(
             question,
             filter,
-            return_context_docs=True,
         )
         return answer
 
@@ -144,7 +144,6 @@ class RAGEvaluator:
             self.connector.pw_ai_answer_question,
             question,
             filter,
-            return_context_docs=True,
         )
         return answer
 
@@ -170,7 +169,9 @@ class RAGEvaluator:
             tasks.append(task)
 
         print("Async predict dataset with number of tasks:", len(tasks))
+        logging.info(f"Async predict dataset with number of tasks: {len(tasks)}")
         results = await asyncio.gather(*tasks)
+        logging.info("Async predicted the dataset.")
         return results
 
     def apredict_dataset(self) -> None:
@@ -185,8 +186,6 @@ class RAGEvaluator:
             file = dc.file
             api_response: dict = results[idx]
 
-            # logging.info(f"api_response sample: {str(api_response['context_docs'])}")
-
             pred = PredictedData(
                 question=question,
                 label=dc.label,
@@ -194,8 +193,11 @@ class RAGEvaluator:
                 reworded_question=dc.reworded_question,
                 pred=api_response["response"],
                 docs=api_response["context_docs"],
+                reference_contexts=dc.reference_contexts,
             )
             self.predicted_dataset.append(pred)
+
+            logging.info(f"Constructing predicted ds for file: {file}")
 
         logging.info("Finished running `apredict_dataset`.")
 

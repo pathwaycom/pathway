@@ -3,7 +3,7 @@ from ragas import EvaluationDataset, SingleTurnSample, evaluate
 from ragas.llms import LangchainLLMWrapper
 from ragas.metrics import AnswerCorrectness, Faithfulness
 
-from .evaluator import PredictedData
+from .evaluator import Data, PredictedData
 
 
 def create_ragas_dataset(dataset: list[PredictedData]) -> EvaluationDataset:
@@ -19,11 +19,33 @@ def create_ragas_dataset(dataset: list[PredictedData]) -> EvaluationDataset:
                 and not isinstance(elem.label, float)  # 1 instance of data is float nan
                 else "No information found."
             ),
+            reference_contexts=(
+                [str(doc) for doc in elem.reference_contexts]  # type: ignore
+                if elem.reference_contexts and isinstance(elem.reference_contexts, list)
+                else None
+            ),
         )
         for elem in dataset
     ]
 
     return EvaluationDataset(samples=single_samples)
+
+
+def ragas_dataset_to_eval(dataset: EvaluationDataset, file: str) -> list[Data]:
+    ls = []
+    for sample in dataset:
+        elem = Data(
+            question=sample.user_input,
+            reworded_question=sample.user_input,
+            # docs=sample.retrieved_contexts,
+            # pred=sample.response,
+            label=sample.reference,
+            file=file,
+            reference_contexts=sample.reference_contexts,
+        )
+        ls.append(elem)
+
+    return ls
 
 
 def run_ragas_evaluations(dataset: EvaluationDataset):

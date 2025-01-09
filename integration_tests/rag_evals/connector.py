@@ -165,7 +165,6 @@ class RagConnector:
         filter=None,
         response_type="short",
         model=None,
-        return_context_docs=False,
     ) -> dict:
         api_url = f"{self.base_url}/v1/pw_ai_answer"
         payload = {
@@ -188,8 +187,7 @@ class RagConnector:
 
         context_docs = self.index_client.query(prompt, metadata_filter=filter, k=6)
 
-        if return_context_docs:
-            result["context_docs"] = context_docs
+        result["context_docs"] = context_docs
 
         return result
 

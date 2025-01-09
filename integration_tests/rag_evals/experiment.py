@@ -1,17 +1,23 @@
 import logging
 import os
 import shutil
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 import mlflow
 import pandas as pd
+from ragas import EvaluationDataset
 
 from .connector import RagConnector
 from .dataset import DatasetUtils
 from .eval_questions import eval_questions, question_mapper
 from .evaluator import RAGEvaluator, compare_sim_with_date
 from .logging_utils import get_run_params
-from .ragas_utils import create_ragas_dataset, run_ragas_evaluations
+from .ragas_utils import (
+    create_ragas_dataset,
+    ragas_dataset_to_eval,
+    run_ragas_evaluations,
+)
 from .utils import save_pivot_table_as_confusion
 
 mlflow.set_tracking_uri("https://mlflow.internal.pathway.com")
@@ -20,10 +26,67 @@ EXPERIMENT_NAME = "CI RAG Evals"
 RUN_RAGAS_EVALS: bool = True
 
 
+@dataclass
+class NamedDataset:
+    name: str
+    dataset: EvaluationDataset
+    file: str
+
+
+def load_synthetic_tests(dataset_folder_path: str) -> list[NamedDataset]:
+    dataset_paths = [
+        os.path.join(dataset_folder_path, f)
+        for f in os.listdir(dataset_folder_path)
+        if f.endswith(".jsonl")
+    ]
+
+    dataset_ls = []
+    for data_path in dataset_paths:
+        logging.info(f"Loaded synthetic dataset: {data_path}")
+        dataset = EvaluationDataset.from_jsonl(data_path)
+        full_fname = data_path.split(os.path.sep)[-1]
+        named_ds = NamedDataset(
+            name=full_fname, dataset=dataset, file=full_fname.split("==")[0]
+        )
+        dataset_ls.append(named_ds)
+
+    return dataset_ls
+
+
+def run_ragas_evals(
+    ragas_dataset: EvaluationDataset, subfolder_name: str, dataset_name: str
+):
+    CORRECTNESS_CUTOFF: float = 0.65  # TODO: adjust
+    # ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
+    cleaned_dataset_name = dataset_name.split(".")[0]
+
+    ragas_evals_dataset = run_ragas_evaluations(ragas_dataset)
+
+    ragas_scores_df = pd.DataFrame(ragas_evals_dataset.scores)
+    ragas_scores_df["answer_correctness_withcutoff"] = (
+        ragas_scores_df["answer_correctness"] > CORRECTNESS_CUTOFF
+    ).astype(float)
+
+    ragas_scores: dict = ragas_scores_df.mean().to_dict()
+
+    for metric_name, value in ragas_scores.items():
+        mlflow.log_metric(f"Ragas-{cleaned_dataset_name}-{metric_name}", value=value)
+
+    ragas_evaluation_df = ragas_evals_dataset.to_pandas()
+
+    mlflow.log_table(
+        ragas_evaluation_df,
+        subfolder_name + f"/ragas_{dataset_name}_dataset.json",
+    )
+    # If this gets error: 'Request Entity Too Large for url'
+    # increase nginx body size
+
+
 def run_eval_experiment(
     experiment: str | None = None,
     base_url: str = "http://0.0.0.0:8000",
     dataset_path: str = "dataset/labeled.tsv",
+    synthetic_dataset_path: str = "dataset/synthetic_tests/",
     config_file_path: str = "app.yaml",
     cleanup_dir_on_exit: bool = False,
 ) -> float:
@@ -123,31 +186,39 @@ def run_eval_experiment(
         subfolder_name + "/predicted_dataset_artifact.json",
     )
 
-    if RUN_RAGAS_EVALS:
-        CORRECTNESS_CUTOFF: float = 0.65  # TODO: adjust
-        ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
+    experiment_name: str = experiment.replace(":", "_")
 
-        ragas_evals_dataset = run_ragas_evaluations(ragas_dataset)
+    # if RUN_RAGAS_EVALS:
+    #     ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
 
-        ragas_scores_df = pd.DataFrame(ragas_evals_dataset.scores)
-        ragas_scores_df["answer_correctness_withcutoff"] = (
-            ragas_scores_df["answer_correctness"] > CORRECTNESS_CUTOFF
-        ).astype(float)
+    #     run_ragas_evals(ragas_dataset, experiment_name, dataset_name="main_dataset")
 
-        ragas_scores: dict = ragas_scores_df.mean().to_dict()
+    synthetic_datasets = load_synthetic_tests(synthetic_dataset_path)
+    logging.info(
+        f"Loaded synthetic datasets. Number of datasets: {len(synthetic_datasets)}"
+    )
 
-        for metric_name, value in ragas_scores.items():
-            mlflow.log_metric(f"Ragas-{metric_name}", value=value)
+    for named_ds in synthetic_datasets:
+        eval_dataset = ragas_dataset_to_eval(named_ds.dataset, named_ds.file)
 
-        ragas_evaluation_df = ragas_evals_dataset.to_pandas()
+        eval_dict_dataset = [asdict(d) for d in eval_dataset]
+        logging.info(f"eval_dataset sample-{str(eval_dict_dataset[: 4])}")
+        eval_dataset_name = named_ds.name
 
-        mlflow.log_table(
-            ragas_evaluation_df,
-            subfolder_name + "/ragas_dataset.json",
+        logging.info(f"Running predictions for: {eval_dataset_name}")
+
+        evaluator = RAGEvaluator(eval_dict_dataset, compare_sim_with_date, conn)
+        logging.info(f"eval_dataset sample-{str(evaluator.dataset[: 4])}")
+        evaluator.apredict_dataset()
+        logging.info(
+            f"predicted_dataset sample-{str(evaluator.predicted_dataset[: 4])}"
         )
-        # Gets error: 'Request Entity Too Large for url'
+        logging.info(f"Creating RAGAS dataset for: {eval_dataset_name}")
+        ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
+        logging.info(f"Calculating RAGAS metrics for: {eval_dataset_name}")
+        run_ragas_evals(ragas_dataset, experiment_name, dataset_name=eval_dataset_name)
 
-    mlflow.end_run()
+    mlflow.end_run()  # this is also called if exception is thrown above (atexit)
 
     if cleanup_dir_on_exit:
         shutil.rmtree(dataset_name)
