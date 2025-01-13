@@ -352,7 +352,7 @@ class Optional(DType):
         return self.wrapped.is_value_compatible(arg)
 
     @cached_property
-    def typehint(self) -> type[UnionType]:
+    def typehint(self) -> UnionType:
         return self.wrapped.typehint | None
 
     def max_size(self) -> float:

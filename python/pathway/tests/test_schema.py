@@ -141,6 +141,8 @@ def test_schema_class_generation(tmp_path: pathlib.Path):
             "f": pw.column_definition(dtype=tuple[int, Any]),
             "g": pw.column_definition(dtype=pw.DateTimeUtc),
             "h": pw.column_definition(dtype=tuple[int, ...]),
+            "i": pw.column_definition(dtype=str | None),
+            "j": pw.column_definition(dtype=None),
         },
         name="Foo",
     )
@@ -156,6 +158,37 @@ def test_schema_class_generation(tmp_path: pathlib.Path):
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
         assert_same_schema(schema_from_builder, module.Foo)
+    finally:
+        del sys.modules[module_name]
+
+
+def test_schema_class_generation_from_auto_schema(tmp_path: pathlib.Path):
+    a = pw.Table.empty(
+        a=int,
+        b=str,
+        c=Any,
+        d=float,
+        e=tuple[int, Any],
+        f=pw.DateTimeUtc,
+        g=tuple[int, ...],
+        h=str | None,
+        i=None,
+    )
+
+    schema = a.schema
+    schema.__name__ = "Foo"
+
+    path = tmp_path / "foo.py"
+
+    module_name = "pathway_schema_test"
+
+    try:
+        schema.generate_class_to_file(path, class_name="Foo", generate_imports=True)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        assert_same_schema(schema, module.Foo)
     finally:
         del sys.modules[module_name]
 

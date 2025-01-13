@@ -11,6 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **BREAKING**: `pw.io.deltalake.read` now requires explicit specification of primary key fields.
 
+### Fixed
+- `generate_class` method in `Schema` now correctly renders columns of `UnionType` and `None` types.
+
 ## [0.16.4] - 2025-01-09
 
 ### Fixed

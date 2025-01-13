@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable, KeysView, Mapping
 from dataclasses import dataclass
 from os import PathLike
 from pydoc import locate
-from types import MappingProxyType
+from types import MappingProxyType, UnionType
 from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
 from warnings import warn
 
@@ -468,26 +468,34 @@ class SchemaMetaclass(type):
                 run code (default is False)
         """
 
-        def get_type_definition_and_modules(type: object) -> tuple[str, list[str]]:
-            if type.__module__ != "builtins":
-                modules = [type.__module__]
-                type_definition = (
-                    type.__module__
-                    + "."
-                    + type.__qualname__  # type:ignore[attr-defined]
-                )
+        def get_type_definition_and_modules(_type: object) -> tuple[str, list[str]]:
+            modules = []
+            if _type in {type(None), None}:
+                type_repr = "None"
+            elif not hasattr(_type, "__qualname__"):
+                type_repr = repr(_type)
+            elif _type.__module__ != "builtins":
+                type_repr = f"{_type.__module__}.{_type.__qualname__}"
+                modules = [_type.__module__]
             else:
-                modules = []
-                type_definition = type.__qualname__  # type:ignore[attr-defined]
-            if not hasattr(type, "__origin__"):
-                return (type_definition, modules)
-            else:
-                args_definitions = []
-                for arg in type.__args__:  # type:ignore[attr-defined]
-                    definition, arg_modules = get_type_definition_and_modules(arg)
-                    args_definitions.append(definition)
+                type_repr = _type.__qualname__
+
+            if hasattr(_type, "__args__"):
+                args = []
+                for arg in _type.__args__:
+                    arg_repr, arg_modules = get_type_definition_and_modules(arg)
+                    args.append(arg_repr)
                     modules += arg_modules
-                return (f"{type_definition}[{', '.join(args_definitions)}]", modules)
+
+                if isinstance(_type, UnionType):
+                    return (" | ".join(args), modules)
+                else:
+                    return (
+                        f"{type_repr}[{', '.join(args)}]",
+                        modules,
+                    )
+            else:
+                return type_repr, modules
 
         required_modules: StableSet[str] = StableSet()
 
