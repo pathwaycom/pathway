@@ -26,7 +26,7 @@
 # %% [markdown]
 # # Always Up-to-date Data Indexing pipeline
 #
-# This showcase shows how to use Pathway to deploy a live data indexing pipeline, which can be queried like a typical vector store. However, under the hood, Pathway updates the index on each data change, always giving up-to-date answers.
+# This showcase demonstrates how to use Pathway to deploy a live data indexing pipeline that can be queried similarly to a typical vector store. Unlike traditional approaches, Pathway updates the index with every data change, ensuring consistently up-to-date answers.
 # <!-- canva link: https://www.canva.com/design/DAF1cxQW5Vg/LcFdDrPApBrgwM5kyirY6w/edit  -->
 # ::article-img
 # ---
@@ -61,7 +61,7 @@
 # Then download sample data.
 
 # %%
-# _MD_SHOW_!pip install pathway litellm
+# _MD_SHOW_!pip install "pathway[xpack-llm,xpack-llm-docs]"
 # _MD_SHOW_ !pip install unstructured[all-docs]
 # _MD_SHOW_!mkdir -p sample_documents
 # _MD_SHOW_![ -f sample_documents/repo_readme.md ] || wget 'https://gist.githubusercontent.com/janchorowski/dd22a293f3d99d1b726eedc7d46d2fc0/raw/pathway_readme.md' -O 'sample_documents/repo_readme.md'
