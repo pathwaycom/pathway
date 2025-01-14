@@ -253,7 +253,11 @@ impl DeltaTableReader {
             self.parquet_files_queue.clear();
             let mut sleep_duration = DELTA_LAKE_INITIAL_POLL_DURATION;
             while self.parquet_files_queue.is_empty() {
-                let diff = self.table.peek_next_commit(self.current_version).await?;
+                let diff = self
+                    .table
+                    .log_store()
+                    .peek_next_commit(self.current_version)
+                    .await?;
                 let DeltaLakePeekCommit::New(next_version, txn_actions) = diff else {
                     if !is_polling_enabled {
                         break;
