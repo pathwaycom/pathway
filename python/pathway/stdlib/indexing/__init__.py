@@ -19,12 +19,6 @@ from .nearest_neighbors import (
     UsearchKnnFactory,
 )
 from .retrievers import AbstractRetrieverFactory
-from .sorting import (
-    SortedIndex,
-    build_sorted_index,
-    retrieve_prev_next_values,
-    sort_from_index,
-)
 from .vector_document_index import (
     default_brute_force_knn_document_index,
     default_lsh_knn_document_index,
@@ -48,13 +42,9 @@ __all__ = [
     "TantivyBM25Factory",
     "HybridIndex",
     "HybridIndexFactory",
-    "SortedIndex",
     "default_vector_document_index",
     "default_lsh_knn_document_index",
     "default_usearch_knn_document_index",
     "default_brute_force_knn_document_index",
     "default_full_text_document_index",
-    "retrieve_prev_next_values",
-    "sort_from_index",
-    "build_sorted_index",
 ]

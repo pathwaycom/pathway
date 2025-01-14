@@ -29,6 +29,29 @@ class InterpolateMode(Enum):
     LINEAR = 0
 
 
+def _retrieving_prev_next_value(tab: pw.Table) -> pw.Table:
+    return tab.with_columns(
+        prev_value=pw.coalesce(
+            pw.this.prev_value, tab.ix(pw.this.prev, optional=True).prev_value
+        ),
+        next_value=pw.coalesce(
+            pw.this.next_value, tab.ix(pw.this.next, optional=True).next_value
+        ),
+    )
+
+
+def _retrieve_prev_next_values(ordered_table: pw.Table) -> pw.Table:
+
+    ordered_table = ordered_table[["prev", "next", "value"]]
+    ordered_table = ordered_table.with_columns(
+        prev_value=pw.require(pw.this.id, pw.this.value),
+        next_value=pw.require(pw.this.id, pw.this.value),
+    )
+    return pw.iterate(_retrieving_prev_next_value, tab=ordered_table)[
+        ["prev_value", "next_value"]
+    ]
+
+
 @trace_user_frame
 def interpolate(
     self: pw.Table,
@@ -78,8 +101,6 @@ def interpolate(
     6         | 6.0      | 60.0
     """
 
-    from pathway.stdlib.indexing.sorting import retrieve_prev_next_values
-
     if mode != InterpolateMode.LINEAR:
         raise ValueError(
             """interpolate: Invalid mode. Only Interpolate.LINEAR is currently available."""
@@ -119,7 +140,7 @@ def interpolate(
             timestamp=timestamp, value=value
         )
 
-        table_with_prev_next = retrieve_prev_next_values(sorted_timestamp_value)
+        table_with_prev_next = _retrieve_prev_next_values(sorted_timestamp_value)
 
         interpolated_table = table_with_prev_next + sorted_timestamp_value
 
