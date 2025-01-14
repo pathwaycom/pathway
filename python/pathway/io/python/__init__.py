@@ -51,7 +51,9 @@ class ConnectorSubject(ABC):
 
     Custom python connector can be created by extending this class and implementing
     :py:meth:`run` function responsible for filling the buffer with data.
-    This function will be started by pathway engine in a separate thread.
+    This function will be started by pathway engine in a separate thread. When
+    the :py:meth:`run` function terminates, the connector will be considered finished
+    and pathway won't wait for new messages from it.
 
     In order to send a message :py:meth:`next` method can be used.
 
