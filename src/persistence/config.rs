@@ -102,7 +102,7 @@ impl PersistenceManagerOuterConfig {
     pub fn validate(&self, license: &License) -> Result<()> {
         if matches!(self.persistence_mode, PersistenceMode::OperatorPersisting) {
             license
-                .check_entitlements(["full_persistence"])
+                .check_entitlements(["full-persistence"])
                 .map_err(DynError::from)?;
         }
         Ok(())
