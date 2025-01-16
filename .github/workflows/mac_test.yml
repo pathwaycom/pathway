@@ -9,5 +9,5 @@ jobs:
       fail-fast: false
     uses: pathwaycom/pathway/.github/workflows/package_test.yml@main
     with:
-      runner: 'ec2-macOS'
+      runner: 'selfhosted-macOS'
     secrets: inherit

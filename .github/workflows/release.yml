@@ -48,7 +48,7 @@ jobs:
         python-version: ["3.10"]
         os:
           - ubuntu-22.04
-          - ec2-macOS
+          - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -96,7 +96,7 @@ jobs:
           before-script-linux: yum install -y perl-core
 
       - name: Build package macOS Apple silicon
-        if: ${{ matrix.os == 'ec2-macOS'}}
+        if: ${{ matrix.os == 'selfhosted-macOS'}}
         uses: PyO3/maturin-action@v1
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
@@ -135,7 +135,7 @@ jobs:
           path: ./target/wheels/
 
       - name: Upload artifact
-        if: ${{ matrix.os == 'ec2-macOS' }}
+        if: ${{ matrix.os == 'selfhosted-macOS' }}
         uses: actions/upload-artifact@v4
         with:
           name: pathway-arm64
@@ -198,7 +198,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11"]
         os:
-          - ec2-macOS
+          - selfhosted-macOS
           - ${{ needs.start-runner.outputs.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -208,7 +208,7 @@ jobs:
           mkdir -p wheels
 
       - uses: actions/download-artifact@v4
-        if: ${{ matrix.os == 'ec2-macOS' }}
+        if: ${{ matrix.os == 'selfhosted-macOS' }}
         with:
           name: pathway-arm64
           path: ./wheels/
