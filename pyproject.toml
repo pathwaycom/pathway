@@ -23,7 +23,7 @@ dependencies = [
     "scikit-learn >= 1.0",
     "shapely >= 2.0.1",
     "sqlglot == 10.6.1",
-    "pyarrow >= 10.0.0",
+    "pyarrow >= 10.0.0, < 19.0.0",
     "requests >= 2.31.0",
     "python-sat >= 0.1.8.dev",
     "beartype >= 0.14.0, < 0.16.0",
