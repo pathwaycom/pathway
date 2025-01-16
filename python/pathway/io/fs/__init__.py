@@ -84,13 +84,12 @@ of it in one commit. The default value is "streaming".
         object_pattern: Unix shell style pattern for filtering only certain files in the \
 directory. Ignored in case a path to a single file is specified. This value will be \
 deprecated soon, please use glob pattern in ``path`` instead.
-        with_metadata: When set to true, the connector will add an additional column \
-named ``_metadata`` to the table. This column will be a JSON field that will contain two \
-optional fields - ``created_at`` and ``modified_at``. These fields will have integral \
-UNIX timestamps for the creation and modification time respectively. Additionally, the \
-column will also have an optional field named ``owner`` that will contain the name of \
-the file owner (applicable only for Un). Finally, the column will also contain a field \
-named ``path`` that will show the full path to the file from where a row was filled.
+        with_metadata: When set to true, the connector will add an additional column
+named ``_metadata`` to the table. This JSON field may contain: (1) created_at - UNIX
+timestamp of file creation; (2) modified_at - UNIX timestamp of last modification;
+(3) seen_at is a UNIX timestamp of when they file was found by the engine;
+(4) owner - Name of the file owner (only for Un); (5) path - Full file path of the
+source row. (6) size - File size in bytes.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
