@@ -454,16 +454,6 @@ def table_from_markdown(
     )
 
 
-def parse_to_table(*args, **kwargs) -> Table:
-    warn(
-        "pw.debug.parse_to_table is deprecated, use pw.debug.table_from_markdown instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    kwargs["_stacklevel"] = 2
-    return table_from_markdown(*args, **kwargs)
-
-
 @check_arg_types
 def table_from_parquet(
     path: str | PathLike,

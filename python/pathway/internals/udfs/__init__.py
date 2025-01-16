@@ -41,10 +41,7 @@ from pathway.internals.udfs.utils import coerce_async
 
 __all__ = [
     "udf",
-    "udf_async",
     "UDF",
-    "UDFSync",
-    "UDFAsync",
     "auto_executor",
     "async_executor",
     "sync_executor",
@@ -208,23 +205,6 @@ class UDF(abc.ABC):
             deterministic=self.deterministic,
             args=args,
             kwargs=kwargs,
-        )
-
-
-class UDFSync(UDF):
-    """
-    Deprecated. Subclass ``UDF`` instead.
-
-    UDFs that are executed as regular python functions.
-
-    To implement your own UDF as a class please implement the ``__wrapped__`` function.
-    """
-
-    def __init_subclass__(cls) -> None:
-        warn(
-            "UDFSync is deprecated, use UDF with executor=pw.udfs.sync_executor() instead.",
-            DeprecationWarning,
-            stacklevel=3,
         )
 
 
@@ -400,122 +380,3 @@ def udf(
         executor=executor,
         cache_strategy=cache_strategy,
     )
-
-
-class UDFAsync(UDF):
-    """
-    Deprecated. Subclass ``UDF`` instead.
-
-    UDFs that are executed as python async functions.
-
-    To implement your own UDF as a class please implement the ``__wrapped__`` async function.
-    """
-
-    __wrapped__: Callable
-    capacity: int | None
-    retry_strategy: AsyncRetryStrategy | None
-
-    def __init__(
-        self,
-        *,
-        capacity: int | None = None,
-        retry_strategy: AsyncRetryStrategy | None = None,
-        cache_strategy: CacheStrategy | None = None,
-    ) -> None:
-        """Init UDFAsync.
-
-        Args:
-            capacity: Maximum number of concurrent operations allowed.
-                Defaults to None, indicating no specific limit.
-            retry_strategy: Strategy for handling retries in case of failures.
-                Defaults to None, meaning no retries.
-            cache_strategy: Defines the caching mechanism.
-                Defaults to None.
-        """
-        executor = async_executor(capacity=capacity, retry_strategy=retry_strategy)
-        super().__init__(executor=executor, cache_strategy=cache_strategy)
-        self.capacity = capacity
-        self.retry_strategy = retry_strategy
-
-    def __init_subclass__(cls) -> None:
-        warn(
-            "UDFAsync is deprecated, use UDF with executor=pw.udfs.async_executor() instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-
-
-@overload
-def udf_async(fun: Callable) -> Callable: ...
-
-
-@overload
-def udf_async(
-    *,
-    capacity: int | None = None,
-    retry_strategy: AsyncRetryStrategy | None = None,
-    cache_strategy: CacheStrategy | None = None,
-) -> Callable[[Callable], Callable]: ...
-
-
-def udf_async(
-    fun: Callable | None = None,
-    *,
-    capacity: int | None = None,
-    retry_strategy: AsyncRetryStrategy | None = None,
-    cache_strategy: CacheStrategy | None = None,
-):
-    r"""Deprecated. Use ``udf`` instead.
-
-    Create a Python asynchronous UDF (user-defined function) out of a callable.
-
-    Output column type deduced from type-annotations of a function.
-    Can be applied to a regular or asynchronous function.
-
-    Args:
-        capacity: Maximum number of concurrent operations allowed.
-            Defaults to None, indicating no specific limit.
-        retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
-        cache_strategy: Defines the caching mechanism.
-            Defaults to None.
-    Example:
-
-    >>> import pathway as pw
-    >>> import asyncio
-    >>> @pw.udf_async
-    ... async def concat(left: str, right: str) -> str:
-    ...   await asyncio.sleep(0.1)
-    ...   return left+right
-    >>> t1 = pw.debug.table_from_markdown('''
-    ... age  owner  pet
-    ...  10  Alice  dog
-    ...   9    Bob  dog
-    ...   8  Alice  cat
-    ...   7    Bob  dog''')
-    >>> t2 = t1.select(col = concat(t1.owner, t1.pet))
-    >>> pw.debug.compute_and_print(t2, include_id=False)
-    col
-    Alicecat
-    Alicedog
-    Bobdog
-    Bobdog
-    """
-
-    if fun is None:
-        warn(
-            "udf_async is deprecated, use udf() with executor=pw.udfs.async_executor() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return udf(
-            executor=async_executor(capacity=capacity, retry_strategy=retry_strategy),
-            cache_strategy=cache_strategy,
-        )
-    else:
-        warn(
-            "udf_async is deprecated, use udf instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return udf(fun)

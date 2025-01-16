@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import wraps
-from warnings import warn
 
 import pathway.internals.expression as expr
 from pathway.internals.join_mode import JoinMode
@@ -68,40 +67,6 @@ def windowby_handler(
         "behavior": behavior,
         "instance": instance,
     }
-
-
-def shard_deprecation(self, *args, shard=None, instance=None, **kwargs):
-    if shard is not None:
-        if instance is None:
-            instance = shard
-            warn(
-                "The `shard` argument is deprecated. Please use `instance` instead.",
-                DeprecationWarning,
-                stacklevel=6,
-            )
-        else:
-            raise ValueError(
-                "The arguments `shard` and `instance` cannot be set at the same moment.\n"
-                + "Please use `instance` only, as `shard` is deprecated."
-            )
-    return (self, *args), {"instance": instance, **kwargs}
-
-
-def offset_deprecation(*args, offset=None, origin=None, **kwargs):
-    if offset is not None:
-        if origin is None:
-            origin = offset
-            warn(
-                "The `offset` argument is deprecated. Please use `origin` instead.",
-                DeprecationWarning,
-                stacklevel=7,
-            )
-        else:
-            raise ValueError(
-                "The arguments `offset` and `instance` cannot be set at the same moment.\n"
-                + "Please use `origin` only, as `origin` is deprecated."
-            )
-    return args, {"origin": origin, **kwargs}
 
 
 def join_kwargs_handler(*, allow_how: bool, allow_id: bool):

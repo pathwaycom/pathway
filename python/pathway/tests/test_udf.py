@@ -20,7 +20,6 @@ from pathway.tests.utils import (
     T,
     assert_stream_equality,
     assert_table_equality,
-    deprecated_call_here,
     run_all,
     warns_here,
     xfail_on_multiple_threads,
@@ -51,46 +50,6 @@ def test_udf():
             2
             3
             4
-            """,
-        ),
-    )
-
-
-def test_udf_class_deprecated():
-    with deprecated_call_here(
-        match=re.escape(
-            "UDFSync is deprecated, use UDF with executor=pw.udfs.sync_executor() instead."
-        )
-    ):
-
-        class Inc(pw.UDFSync):
-            def __init__(self, inc) -> None:
-                super().__init__()
-                self.inc = inc
-
-            def __wrapped__(self, a: int) -> int:
-                return a + self.inc
-
-    input = pw.debug.table_from_markdown(
-        """
-        a
-        1
-        2
-        3
-        """
-    )
-
-    inc = Inc(2)
-    result = input.select(ret=inc(pw.this.a))
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            3
-            4
-            5
             """,
         ),
     )
@@ -128,55 +87,6 @@ def test_udf_class():
             """,
         ),
     )
-
-
-def test_udf_async_options_deprecated(tmp_path: pathlib.Path):
-    cache_dir = tmp_path / "test_cache"
-
-    counter = mock.Mock()
-
-    with deprecated_call_here():
-
-        @pw.udf_async(cache_strategy=pw.udfs.DiskCache())
-        async def inc(x: int) -> int:
-            counter()
-            return x + 5
-
-    input = T(
-        """
-        foo
-        1
-        2
-        3
-        """
-    )
-    result = input.select(ret=inc(pw.this.foo))
-    expected = T(
-        """
-        ret
-        6
-        7
-        8
-        """
-    )
-
-    # run twice to check if cache is used
-    assert_table_equality(
-        result,
-        expected,
-        persistence_config=pw.persistence.Config(
-            pw.persistence.Backend.filesystem(cache_dir),
-        ),
-    )
-    assert_table_equality(
-        result,
-        expected,
-        persistence_config=pw.persistence.Config(
-            pw.persistence.Backend.filesystem(cache_dir),
-        ),
-    )
-    assert os.path.exists(cache_dir)
-    assert counter.call_count == 3
 
 
 def test_udf_async_options(tmp_path: pathlib.Path):
@@ -224,38 +134,6 @@ def test_udf_async_options(tmp_path: pathlib.Path):
     )
     assert os.path.exists(cache_dir)
     assert counter.call_count == 3
-
-
-def test_udf_async_deprecated():
-    with deprecated_call_here():
-
-        @pw.udf_async
-        async def inc(a: int) -> int:
-            await asyncio.sleep(0.1)
-            return a + 3
-
-    input = pw.debug.table_from_markdown(
-        """
-        a
-        1
-        2
-        3
-        """
-    )
-
-    result = input.select(ret=inc(pw.this.a))
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            4
-            5
-            6
-            """,
-        ),
-    )
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="test requires asyncio.Barrier")
@@ -342,47 +220,6 @@ def test_udf_sync_with_async_executor():
             4
             5
             6
-            """,
-        ),
-    )
-
-
-def test_udf_async_class_deprecated():
-    with deprecated_call_here(
-        match=re.escape(
-            "UDFAsync is deprecated, use UDF with executor=pw.udfs.async_executor() instead."
-        )
-    ):
-
-        class Inc(pw.UDFAsync):
-            def __init__(self, inc, **kwargs) -> None:
-                super().__init__(**kwargs)
-                self.inc = inc
-
-            async def __wrapped__(self, a: int) -> int:
-                await asyncio.sleep(0.1)
-                return a + self.inc
-
-    input = pw.debug.table_from_markdown(
-        """
-        a
-        1
-        2
-        3
-        """
-    )
-
-    inc = Inc(40)
-    result = input.select(ret=inc(pw.this.a))
-
-    assert_table_equality(
-        result,
-        T(
-            """
-            ret
-            41
-            42
-            43
             """,
         ),
     )
@@ -815,49 +652,6 @@ def test_udf_too_fast_for_timeout():
             """,
         ),
     )
-
-
-def test_asynchronous_deprecation():
-    message = re.escape(
-        "pathway.asynchronous module is deprecated. Its content has been moved to pathway.udfs."
-    )
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.AsyncRetryStrategy == pw.udfs.AsyncRetryStrategy
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.CacheStrategy == pw.udfs.CacheStrategy
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.DefaultCache == pw.udfs.DefaultCache
-
-    with deprecated_call_here(match=message):
-        assert (
-            pw.asynchronous.ExponentialBackoffRetryStrategy
-            == pw.udfs.ExponentialBackoffRetryStrategy
-        )
-
-    with deprecated_call_here(match=message):
-        assert (
-            pw.asynchronous.FixedDelayRetryStrategy == pw.udfs.FixedDelayRetryStrategy
-        )
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.NoRetryStrategy == pw.udfs.NoRetryStrategy
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.async_options == pw.udfs.async_options
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.coerce_async == pw.udfs.coerce_async
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.with_cache_strategy == pw.udfs.with_cache_strategy
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.with_capacity == pw.udfs.with_capacity
-
-    with deprecated_call_here(match=message):
-        assert pw.asynchronous.with_retry_strategy == pw.udfs.with_retry_strategy
 
 
 @pytest.mark.parametrize("sync", [True, False])

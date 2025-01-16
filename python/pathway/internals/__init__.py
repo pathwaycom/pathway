@@ -69,7 +69,7 @@ from pathway.internals.table import Table, groupby
 from pathway.internals.table_like import TableLike
 from pathway.internals.table_slice import TableSlice
 from pathway.internals.thisclass import left, right, this
-from pathway.internals.udfs import UDF, UDFAsync, UDFSync, udf, udf_async
+from pathway.internals.udfs import UDF, udf
 from pathway.internals.version import __version__
 from pathway.internals.yaml_loader import load_yaml
 
@@ -81,10 +81,7 @@ __all__ = [
     "reducers",
     "apply",
     "udf",
-    "udf_async",
     "UDF",
-    "UDFAsync",
-    "UDFSync",
     "apply_async",
     "apply_with_type",
     "attribute",

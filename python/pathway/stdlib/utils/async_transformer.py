@@ -14,7 +14,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar
-from warnings import warn
 
 import pathway.internals as pw
 import pathway.internals.dtype as dt
@@ -285,7 +284,7 @@ class AsyncTransformer(ABC):
 
     :py:meth:`invoke` will be called asynchronously for each row of an input_table.
 
-    Output table can be acccesed via :py:attr:`result`.
+    Output table can be acccesed via :py:attr:`successful`.
 
     Example:
 
@@ -304,7 +303,7 @@ class AsyncTransformer(ABC):
     ... 1 | 42
     ... 2 | 44
     ... ''')
-    >>> result = AsyncIncrementTransformer(input_table=input).result
+    >>> result = AsyncIncrementTransformer(input_table=input).successful
     >>> pw.debug.compute_and_print(result, include_id=False)
     ret
     43
@@ -417,20 +416,6 @@ class AsyncTransformer(ABC):
         """
         self._connector.set_options(capacity, timeout, retry_strategy, cache_strategy)
         return self
-
-    @property
-    def result(self) -> pw.Table:
-        """
-        The resulting table containing only rows that were executed successfully.
-
-        Deprecated. Use ``successful`` instead.
-        """
-        warn(
-            'The "result" property of AsyncTransformer is deprecated. Use "successful" instead.',
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.successful
 
     @functools.cached_property
     def successful(self) -> pw.Table:

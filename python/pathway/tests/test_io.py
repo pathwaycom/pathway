@@ -3,7 +3,6 @@
 import json
 import os
 import pathlib
-import re
 import socket
 import sqlite3
 import sys
@@ -2416,22 +2415,6 @@ def test_python_connector_defaults():
     """
     )
     assert_table_equality_wo_index(result, expected)
-
-
-def test_parse_to_table_deprecation():
-    table_def = """
-        A | B
-        1 | 2
-        3 | 4
-        """
-    with deprecated_call_here(
-        match=re.escape(
-            "pw.debug.parse_to_table is deprecated, use pw.debug.table_from_markdown instead"
-        )
-    ):
-        t = pw.debug.parse_to_table(table_def)
-    expected = pw.debug.table_from_markdown(table_def)
-    assert_table_equality(t, expected)
 
 
 @pytest.mark.flaky(reruns=2)

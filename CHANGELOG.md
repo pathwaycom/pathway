@@ -15,6 +15,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - `generate_class` method in `Schema` now correctly renders columns of `UnionType` and `None` types.
 
+### Removed
+- **BREAKING**: Removed deprecated methods `pw.Table.unsafe_promise_same_universe_as`, `pw.Table.unsafe_promise_universes_are_pairwise_disjoint`, `pw.Table.unsafe_promise_universe_is_subset_of`, `pw.Table.left_join`, `pw.Table.right_join`, `pw.Table.outer_join`, `pw.stdlib.utils.AsyncTransformer.result`.
+- **BREAKING**: Removed deprecated column `_pw_shard` in the result of `windowby`.
+- **BREAKING**: Removed deprecated functions `pw.debug.parse_to_table`, `pw.udf_async`, `pw.reducers.npsum`, `pw.reducers.int_sum`, `pw.stdlib.utils.col.flatten_column`.
+- **BREAKING**: Removed deprecated module `pw.asynchronous`.
+- **BREAKING**: Removed deprecated access to functions from `pw.io` in `pw`.
+- **BREAKING**: Removed deprecated classes `pw.UDFSync`, `pw.UDFAsync`.
+
 ## [0.16.4] - 2025-01-09
 
 ### Fixed

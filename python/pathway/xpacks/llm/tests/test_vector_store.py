@@ -117,7 +117,7 @@ def test_sync_embedder():
 
 
 def test_async_embedder():
-    @pw.udf_async
+    @pw.udf
     async def fake_embeddings_model(x: str) -> list[float]:
         await asyncio.sleep(0.001)
         return [1.0, 1.0, 0.0]
@@ -158,7 +158,7 @@ def test_embedder_cache_strategy(cache_strategy_cls, tmp_path: pathlib.Path):
         pw.persistence.Backend.filesystem(persistent_storage_path),
     )
 
-    @pw.udf_async(cache_strategy=cache_strategy)
+    @pw.udf(cache_strategy=cache_strategy)
     async def fake_embeddings_model(x: str) -> list[float]:
         await asyncio.sleep(0.001)
         return [1.0, 1.0, 0.0]
@@ -169,7 +169,7 @@ def test_embedder_cache_strategy(cache_strategy_cls, tmp_path: pathlib.Path):
 def test_async_embedder_preserves_params():
     call_count = 0
 
-    @pw.udf_async(cache_strategy=pw.udfs.InMemoryCache())
+    @pw.udf(cache_strategy=pw.udfs.InMemoryCache())
     async def fake_embeddings_model(x: str) -> list[float]:
         await asyncio.sleep(0.001)
         nonlocal call_count

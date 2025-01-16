@@ -12,12 +12,7 @@ import pytest
 import pathway as pw
 from pathway.internals import dtype as dt
 from pathway.internals.dtype import DATE_TIME_NAIVE, DATE_TIME_UTC
-from pathway.tests.utils import (
-    T,
-    assert_table_equality_wo_index,
-    deprecated_call_here,
-    warns_here,
-)
+from pathway.tests.utils import T, assert_table_equality_wo_index, warns_here
 
 
 def test_session_simple():
@@ -41,89 +36,6 @@ def test_session_simple():
     gb = t.windowby(
         t.t, window=pw.temporal.session(predicate=should_merge), instance=t.instance
     )
-    result = gb.reduce(
-        pw.this._pw_instance,
-        pw.this._pw_window_start,
-        pw.this._pw_window_end,
-        min_t=pw.reducers.min(pw.this.t),
-        max_v=pw.reducers.max(pw.this.v),
-        count=pw.reducers.count(),
-    )
-    res = T(
-        """
-        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_v | count
-        0            | 1                | 2              | 1     | 10    | 2
-        0            | 4                | 4              | 4     | 3     | 1
-        0            | 8                | 10             | 8     | 8     | 3
-        1            | 1                | 2              | 1     | 16    | 2
-    """
-    )
-    assert_table_equality_wo_index(result, res)
-
-
-def test_session_simple_deprecated():
-    t = T(
-        """
-            | instance |  t |  v
-        1   | 0        |  1 |  10
-        2   | 0        |  2 |  1
-        3   | 0        |  4 |  3
-        4   | 0        |  8 |  2
-        5   | 0        |  9 |  4
-        6   | 0        |  10|  8
-        7   | 1        |  1 |  9
-        8   | 1        |  2 |  16
-    """
-    )
-
-    def should_merge(a, b):
-        return abs(a - b) <= 1
-
-    gb = t.windowby(
-        t.t, window=pw.temporal.session(predicate=should_merge), instance=t.instance
-    )
-    with pytest.deprecated_call():
-        result = gb.reduce(
-            pw.this._pw_shard,
-        )
-    res = T(
-        """
-        _pw_instance
-        0
-        0
-        0
-        1
-    """
-    )
-    assert_table_equality_wo_index(result, res)
-
-
-def test_deprecation():
-    t = T(
-        """
-            | instance |  t |  v
-        1   | 0        |  1 |  10
-        2   | 0        |  2 |  1
-        3   | 0        |  4 |  3
-        4   | 0        |  8 |  2
-        5   | 0        |  9 |  4
-        6   | 0        |  10|  8
-        7   | 1        |  1 |  9
-        8   | 1        |  2 |  16
-    """
-    )
-
-    def should_merge(a, b):
-        return abs(a - b) <= 1
-
-    with deprecated_call_here(
-        match=re.escape(
-            "The `shard` argument is deprecated. Please use `instance` instead."
-        )
-    ):
-        gb = t.windowby(
-            t.t, window=pw.temporal.session(predicate=should_merge), shard=t.instance
-        )
     result = gb.reduce(
         pw.this._pw_instance,
         pw.this._pw_window_start,
@@ -390,43 +302,6 @@ def test_flush_buffer_long_chain_of_operators():
     assert_table_equality_wo_index(t, expected)
 
 
-def test_sliding_deprecate_offset():
-    t = T(
-        """
-            | t
-        1   |  12
-        2   |  13
-        3   |  14
-        4   |  15
-        5   |  16
-        6   |  17
-    """
-    )
-    with deprecated_call_here(
-        match=re.escape(
-            "The `offset` argument is deprecated. Please use `origin` instead."
-        )
-    ):
-        gb = t.windowby(t.t, window=pw.temporal.sliding(duration=10, hop=3, offset=13))
-    result = gb.reduce(
-        pw.this._pw_instance,
-        pw.this._pw_window_start,
-        pw.this._pw_window_end,
-        min_t=pw.reducers.min(pw.this.t),
-        max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(),
-    )
-
-    res = T(
-        """
-        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
-                     |     13           |     23         | 13    | 17    | 5
-                     |     16           |     26         | 16    | 17    | 2
-    """
-    )
-    assert_table_equality_wo_index(result, res)
-
-
 def test_sliding_origin():
     t = T(
         """
@@ -559,60 +434,6 @@ def test_tumbling():
     """
     )
     assert_table_equality_wo_index(result, res)
-
-
-def test_tumbling_deprecate_offset():
-    t = T(
-        """
-            | t
-        0   |  3
-        1   |  12
-        2   |  13
-        3   |  14
-        4   |  15
-        5   |  16
-        6   |  17
-    """
-    )
-    with deprecated_call_here(
-        match=re.escape(
-            "The `offset` argument is deprecated. Please use `origin` instead."
-        ),
-    ):
-        gb = t.windowby(t.t, window=pw.temporal.tumbling(duration=3, offset=7))
-    result = gb.reduce(
-        pw.this._pw_instance,
-        pw.this._pw_window_start,
-        pw.this._pw_window_end,
-        min_t=pw.reducers.min(pw.this.t),
-        max_t=pw.reducers.max(pw.this.t),
-        count=pw.reducers.count(),
-    )
-
-    res = T(
-        """
-    _pw_instance | _pw_window_start | _pw_window_end | min_t | max_t | count
-                 |     10           |     13         | 12    | 12    | 1
-                 |     13           |     16         | 13    | 15    | 3
-                 |     16           |     19         | 16    | 17    | 2
-    """
-    )
-    assert_table_equality_wo_index(result, res)
-
-
-def test_tumbling_setting_both_offset_and_origin_errors():
-    t = T(
-        """
-        t
-        3
-        """
-    )
-    with pytest.raises(
-        ValueError,
-        match="The arguments `offset` and `instance` cannot be set at the same moment.\n"
-        + "Please use `origin` only, as `origin` is deprecated.",
-    ):
-        t.windowby(t.t, window=pw.temporal.tumbling(duration=3, offset=7, origin=6))
 
 
 def test_tumbling_origin():

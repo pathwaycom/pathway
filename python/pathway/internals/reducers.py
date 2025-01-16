@@ -544,11 +544,6 @@ def tuple(arg: expr.ColumnExpression, *, skip_nones: bool = False):
     return _apply_unary_reducer(_tuple(skip_nones), arg, skip_nones=skip_nones)
 
 
-def npsum(arg):
-    warn("Using pathway.reducers.npsum() is deprecated, use pathway.reducers.sum()")
-    return sum(arg)
-
-
 def count(*args):
     """
     Returns the number of aggregated elements.
@@ -606,13 +601,6 @@ def avg(expression: expr.ColumnExpression) -> expr.ColumnExpression:
     5.0
     """
     return sum(expression) / count(expression)
-
-
-def int_sum(expression: expr.ColumnExpression):
-    warn(
-        "Reducer pathway.reducers.int_sum is deprecated, use pathway.reducers.sum instead."
-    )
-    return sum(expression)
 
 
 def ndarray(expression: expr.ColumnExpression, *, skip_nones: bool = False):

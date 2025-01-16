@@ -22,7 +22,6 @@ from pathway.tests.utils import (
     T,
     assert_stream_split_into_groups,
     assert_table_equality,
-    deprecated_call_here,
     needs_multiprocessing_fork,
     run,
     wait_result_with_checker,
@@ -297,37 +296,6 @@ def test_with_instance():
         0.5 |     4
         1.0 |     6
         0.1 |     6
-    """
-        ),
-    )
-
-
-def test_result_deprecation():
-    class OutputSchema(pw.Schema):
-        ret: float
-
-    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-        async def invoke(self, value: float) -> dict[str, Any]:
-            return dict(ret=value)
-
-    input_table = T(
-        """
-        value
-         1.3
-    """
-    )
-
-    with deprecated_call_here(
-        match='The "result" property of AsyncTransformer is deprecated. Use "successful" instead.'
-    ):
-        result = TestAsyncTransformer(input_table=input_table).result
-
-    assert_table_equality(
-        result,
-        T(
-            """
-        ret
-        1.3
     """
         ),
     )
@@ -639,7 +607,7 @@ def test_commits_even_if_nothing_to_process(tmp_path):
         value: int
 
     a = pw.demo.range_stream(nb_rows=4)
-    b = pw.python.read(
+    b = pw.io.python.read(
         HangingSubject(),
         schema=InputSchema,
     )

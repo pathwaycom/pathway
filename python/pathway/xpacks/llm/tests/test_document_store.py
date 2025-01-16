@@ -126,7 +126,7 @@ def test_sync_embedder():
 
 
 def test_async_embedder():
-    @pw.udf_async
+    @pw.udf
     async def fake_embeddings_model(x: str) -> list[float]:
         asyncio.sleep
         return [1.0, 1.0, 0.0]

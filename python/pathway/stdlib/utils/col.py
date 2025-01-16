@@ -1,7 +1,6 @@
 # Copyright © 2024 Pathway
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable, Sequence
 from typing import overload
 
@@ -9,51 +8,6 @@ import pathway.internals as pw
 from pathway.internals import dtype as dt
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.trace import trace_user_frame
-
-
-@check_arg_types
-@trace_user_frame
-def flatten_column(
-    column: pw.ColumnReference,
-    origin_id: str | pw.ColumnReference | None = "origin_id",
-) -> pw.Table:
-    """Deprecated: use pw.Table.flatten instead.
-
-    Flattens a column of a table.
-
-    Input:
-    - column: Column expression of column to be flattened
-    - origin_id: name of output column where to store id's of input rows
-
-    Output:
-    - Table with flattened column `column` and other columns spread.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> t1 = pw.debug.table_from_markdown('''
-    ...   | pet  |  age
-    ... 1 | Dog  |   2
-    ... 7 | Cat  |   5
-    ... ''')
-    >>> t2 = pw.utils.col.flatten_column(t1.pet)
-    >>> pw.debug.compute_and_print(t2.without(pw.this.origin_id), include_id=False)
-    pet | age
-    C   | 5
-    D   | 2
-    a   | 5
-    g   | 2
-    o   | 2
-    t   | 5
-    """
-
-    warnings.warn(
-        "pw.stdlib.utils.col.flatten_column() is deprecated, use pw.Table.flatten() instead",
-        DeprecationWarning,
-        stacklevel=5,
-    )
-    input_table = column.table
-    return input_table.flatten(column, origin_id=origin_id)
 
 
 @overload

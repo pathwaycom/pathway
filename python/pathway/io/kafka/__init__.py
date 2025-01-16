@@ -616,7 +616,7 @@ def write(
 
     This table can be generated with a Python input connector as follows:
 
-    >>> class T2GenerationSubject(pw.python.ConnectorSubject):
+    >>> class T2GenerationSubject(pw.io.python.ConnectorSubject):
     ...     def run(self) -> None:
     ...         # TODO: define generation logic
     ...         pass

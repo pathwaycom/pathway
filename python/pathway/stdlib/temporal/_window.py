@@ -10,12 +10,7 @@ from typing import Any
 
 import pathway.internals as pw
 from pathway.internals import dtype as dt
-from pathway.internals.arg_handlers import (
-    arg_handler,
-    offset_deprecation,
-    shard_deprecation,
-    windowby_handler,
-)
+from pathway.internals.arg_handlers import arg_handler, windowby_handler
 from pathway.internals.desugaring import desugar
 from pathway.internals.joins import validate_join_condition
 from pathway.internals.runtime_type_check import check_arg_types
@@ -654,7 +649,6 @@ def session(
 
 @check_arg_types
 @trace_user_frame
-@arg_handler(handler=offset_deprecation)
 def sliding(
     hop: int | float | datetime.timedelta,
     duration: int | float | datetime.timedelta | None = None,
@@ -731,7 +725,6 @@ def sliding(
 
 @check_arg_types
 @trace_user_frame
-@arg_handler(handler=offset_deprecation)
 def tumbling(
     duration: int | float | datetime.timedelta,
     origin: int | float | datetime.datetime | None = None,
@@ -857,7 +850,6 @@ def intervals_over(
 
 @trace_user_frame
 @desugar
-@arg_handler(handler=shard_deprecation)
 @arg_handler(handler=windowby_handler)
 @check_arg_types
 def windowby(

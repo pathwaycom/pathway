@@ -6,7 +6,7 @@ import pathway._engine_finder  # noqa: F401  # isort: split
 
 import pathway.reducers as reducers
 import pathway.universes as universes
-from pathway import asynchronous, debug, demo, io, udfs
+from pathway import debug, demo, io, udfs
 from pathway.internals import (
     UDF,
     ColumnExpression,
@@ -29,8 +29,6 @@ from pathway.internals import (
     Table,
     TableLike,
     TableSlice,
-    UDFAsync,
-    UDFSync,
     __version__,
     apply,
     apply_async,
@@ -69,7 +67,6 @@ from pathway.internals import (
     table_transformer,
     this,
     udf,
-    udf_async,
     unwrap,
     wrap_py_object,
 )
@@ -102,10 +99,7 @@ __all__ = [
     "ml",
     "apply",
     "udf",
-    "udf_async",
     "UDF",
-    "UDFAsync",
-    "UDFSync",
     "apply_async",
     "apply_with_type",
     "declare_type",
@@ -185,60 +179,6 @@ __all__ = [
     "local_error_log",
     "load_yaml",
 ]
-
-
-def __getattr__(name: str):
-    from warnings import warn
-
-    old_io_names = [
-        "csv",
-        "debezium",
-        "elasticsearch",
-        "http",
-        "jsonlines",
-        "kafka",
-        "logstash",
-        "null",
-        "plaintext",
-        "postgres",
-        "python",
-        "redpanda",
-        "subscribe",
-        "s3_csv",
-    ]
-
-    legacy_names = [
-        "ALL",
-        "FILES",
-        "FOLDERS",
-        "File",
-        "Folder",
-        "PathError",
-        "PathObject",
-        "SomethingElse",
-        "new",
-    ]
-
-    if name in old_io_names:
-        old_name = f"{__name__}.{name}"
-        new_name = f"{__name__}.io.{name}"
-        warn(
-            f"{old_name!r} has been moved to {new_name!r}",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return getattr(io, name)
-
-    error = f"module {__name__!r} has no attribute {name!r}"
-    warning = None
-
-    if name in legacy_names:
-        warning = "For help with legacy packages, reach out to the team at pathway.com."
-        error += "\n" + warning
-        warn(warning, stacklevel=2)
-
-    raise AttributeError(error)
-
 
 Table.asof_join = temporal.asof_join
 Table.asof_join_left = temporal.asof_join_left

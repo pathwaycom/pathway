@@ -653,7 +653,7 @@ pw.debug.compute_and_print(table_greeks, n_rows=5)
 #
 # As an example, you might want to send the results to a CSV file, using Pathway CSV output connector:
 
-pw.csv.write(table_greeks, "./options-greeks.csv")
+pw.io.csv.write(table_greeks, "./options-greeks.csv")
 
 # Now, all you need it to run the computation:
 
