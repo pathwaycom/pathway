@@ -49,12 +49,11 @@ def read(
 ) -> Table:
     """Reads a table from one or several files with the specified format.
 
-    In case the folder is passed to the engine, the order in which files from the
-    directory are processed is determined according to the modification time of files
-    within this folder: they will be processed by ascending order of the modification time.
-
     In case the format is "plaintext", the table will consist of a single column
     ``data`` with each cell containing a single line from the file.
+
+    In case the format is one of "plaintext_by_file" or "binary" the table will consist of
+    a single column ``data`` with each cell containing contents of the whole file.
 
     Args:
         path: Path to the file or to the folder with files or \
