@@ -85,7 +85,7 @@ class GenericDataSource(DataSource):
         return self.datastorage.mode == api.ConnectorMode.STATIC
 
     def is_append_only(self) -> bool:
-        return self.datastorage.mode != api.ConnectorMode.STREAMING or self.append_only
+        return self.append_only
 
     @property
     def name(self) -> str:

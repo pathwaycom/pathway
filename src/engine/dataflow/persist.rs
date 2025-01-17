@@ -91,6 +91,20 @@ where
         &self,
         collection: PersistableCollection<S>,
     ) -> PersistableCollection<S>;
+    fn maybe_persist_with_logic(
+        &self,
+        collection: Collection<S, (Key, Value), isize>,
+        name: &str,
+        persistent_id: Option<PersistentId>,
+        logic: Box<
+            dyn FnOnce(Collection<S, (Key, OldOrNew<Value, Value>)>) -> Collection<S, (Key, Value)>,
+        >,
+        purge: Box<dyn Fn(Value) -> Value>,
+    ) -> Result<(
+        Collection<S, (Key, Value), isize>,
+        Option<Poller>,
+        Option<std::thread::JoinHandle<()>>,
+    )>;
     fn next_state_id(&mut self) -> u64;
 }
 
@@ -130,6 +144,29 @@ where
 
     fn next_state_id(&mut self) -> u64 {
         0
+    }
+
+    fn maybe_persist_with_logic(
+        &self,
+        collection: Collection<S, (Key, Value), isize>,
+        _name: &str,
+        _persistent_id: Option<PersistentId>,
+        logic: Box<
+            dyn FnOnce(Collection<S, (Key, OldOrNew<Value, Value>)>) -> Collection<S, (Key, Value)>,
+        >,
+        _purge: Box<dyn Fn(Value) -> Value>,
+    ) -> Result<(
+        Collection<S, (Key, Value), isize>,
+        Option<Poller>,
+        Option<std::thread::JoinHandle<()>>,
+    )> {
+        Ok((
+            logic(
+                collection.map_named("NoPersist:New", |(key, value)| (key, OldOrNew::New(value))),
+            ),
+            None,
+            None,
+        ))
     }
 }
 
@@ -448,6 +485,46 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
         }
     }
 
+    fn maybe_persist_with_logic(
+        &self,
+        collection: Collection<S, (Key, Value), isize>,
+        name: &str,
+        persistent_id: Option<PersistentId>,
+        logic: Box<
+            dyn FnOnce(Collection<S, (Key, OldOrNew<Value, Value>)>) -> Collection<S, (Key, Value)>,
+        >,
+        purge: Box<dyn Fn(Value) -> Value>,
+    ) -> Result<(
+        Collection<S, (Key, Value), isize>,
+        Option<Poller>,
+        Option<std::thread::JoinHandle<()>>,
+    )> {
+        let Some(persistent_id) = persistent_id else {
+            return EmptyPersistenceWrapper.maybe_persist_with_logic(
+                collection,
+                name,
+                persistent_id,
+                logic,
+                purge,
+            );
+        };
+        let mut worker_persistent_storage = self.worker_persistent_storage.lock().unwrap();
+        let reader = worker_persistent_storage.create_operator_snapshot_reader(persistent_id)?;
+        let writer = worker_persistent_storage.create_operator_snapshot_writer(persistent_id)?;
+        let (state, poller, thread_handle) = read_persisted_state(name, collection.scope(), reader);
+        let new_data =
+            collection.map_named("Persist: New", |(key, value)| (key, OldOrNew::New(value)));
+        let state = state.map_named("Persist: Old", |(key, value)| (key, OldOrNew::Old(value)));
+        let processed = logic(new_data.concat(&state));
+        let collection_after_saving = persist_state(
+            &processed,
+            &format!("Persist: {name}"),
+            writer,
+            move |(key, value)| (key, purge(value)),
+        );
+        Ok((collection_after_saving, Some(poller), Some(thread_handle)))
+    }
+
     fn next_state_id(&mut self) -> u64 {
         self.persisted_states_count += 1;
         self.persisted_states_count
@@ -565,6 +642,7 @@ fn persist_state<S, D, R>(
     collection: &Collection<S, D, R>,
     name: &str,
     writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
+    purge: impl Fn(D) -> D + 'static,
 ) -> Collection<S, D, R>
 where
     S: Scope,
@@ -593,13 +671,14 @@ where
                         if *time == S::Timestamp::persistence_time() {
                             continue; // we don't want to save already saved entries
                         }
+                        let purged_val = purge(val.clone());
                         match data_by_time.entry(time.clone()) {
                             Entry::Occupied(mut occupied_entry) => {
-                                occupied_entry.get_mut().push((val.clone(), diff.clone()));
+                                occupied_entry.get_mut().push((purged_val, diff.clone()));
                             }
                             Entry::Vacant(vacant_entry) => {
                                 let vec = vacant_entry.insert(Vec::new());
-                                vec.push((val.clone(), diff.clone()));
+                                vec.push((purged_val, diff.clone()));
                                 times_in_data.push(Reverse(time.clone()));
                                 new_times.push(time.clone());
                             }
@@ -663,7 +742,8 @@ where
         writer: Arc<Mutex<dyn OperatorSnapshotWriter<S::Timestamp, D, R>>>,
     ) -> (Collection<S, D, R>, Poller, thread::JoinHandle<()>) {
         let (state, poller, thread_handle) = read_persisted_state(name, self.scope(), reader);
-        let collection_after_saving = persist_state(&self.concat(&state), name, writer);
+        let collection_after_saving =
+            persist_state(&self.concat(&state), name, writer, |data| data);
         (collection_after_saving, poller, thread_handle)
     }
 }
@@ -689,7 +769,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-enum OldOrNew<A, B> {
+pub enum OldOrNew<A, B> {
     Old(A),
     New(B),
 }
@@ -714,12 +794,8 @@ where
         V2: ExchangeData,
     {
         let (state, poller, thread_handle) = read_persisted_state(name, self.scope(), reader);
-        let new_data = self.map_named("Persist: Either::Left", |(key, value)| {
-            (key, OldOrNew::New(value))
-        });
-        let state = state.map_named("Persist: Either::Right", |(key, value)| {
-            (key, OldOrNew::Old(value))
-        });
+        let new_data = self.map_named("Persist:New", |(key, value)| (key, OldOrNew::New(value)));
+        let state = state.map_named("Persist:Old", |(key, value)| (key, OldOrNew::Old(value)));
         let reduced = new_data
             .concat(&state)
             .stateful_reduce_named(name, move |state, data| {
@@ -750,7 +826,10 @@ where
                     logic(state, new)
                 }
             });
-        let collection_after_saving = persist_state(&reduced, &format!("Persist: {name}"), writer);
+        let collection_after_saving =
+            persist_state(&reduced, &format!("Persist: {name}"), writer, |key_state| {
+                key_state
+            });
         (collection_after_saving, poller, thread_handle)
     }
 }

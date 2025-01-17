@@ -436,11 +436,6 @@ computations from the moment they were terminated last time.
         format_type="transparent",
         session_type=subject._session_type,
     )
-    mode = (
-        api.ConnectorMode.STREAMING
-        if subject._deletions_enabled
-        else api.ConnectorMode.STATIC
-    )
     data_storage = api.DataStorage(
         storage_type="python",
         python_subject=api.PythonSubject(
@@ -454,7 +449,6 @@ computations from the moment they were terminated last time.
         ),
         read_method=internal_read_method(format),
         persistent_id=persistent_id,
-        mode=mode,
     )
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms
@@ -466,6 +460,7 @@ computations from the moment they were terminated last time.
             data_source_options=data_source_options,
             schema=schema,
             datasource_name=name,
+            append_only=not subject._deletions_enabled,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

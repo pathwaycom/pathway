@@ -640,3 +640,72 @@ def test_deduplicate(tmp_path, mode, persistent_id):
     run(["a", "6"], set())
     run(["a", "3"], set())
     run(["a", "7"], {"4,-1", "7,1"})
+
+
+@pytest.mark.parametrize(
+    "mode", [api.PersistenceMode.OPERATOR_PERSISTING]
+)  # api.PersistenceMode.PERSISTING doesn't work as it replays the data without storing UDF results
+@pytest.mark.parametrize("sync", [True, False])
+def test_non_deterministic_udf(tmp_path, mode, sync):
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    x = 0
+
+    if sync:
+
+        @pw.udf
+        def foo(a: int) -> int:
+            nonlocal x
+            x += 1
+            return x
+
+    else:
+
+        @pw.udf
+        async def foo(a: int) -> int:
+            nonlocal x
+            x += 1
+            return x
+
+    def logic(t: pw.Table) -> pw.Table:
+        return t.select(pw.this.a, x=foo(pw.this.b))
+
+    run, input_path = get_one_table_runner(tmp_path, mode, logic, InputSchema)
+
+    run(["a,b", "1,2"], {"1,1,1"})
+    os.remove(input_path / "1")
+    run(["a,b", "1,3"], {"1,1,-1", "1,2,1"})
+    run(["a,b", "2,4"], {"2,3,1"})
+    os.remove(input_path / "3")
+    run(["a,b"], {"2,3,-1"})
+
+
+@pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+def test_deterministic_udf_not_persisted(tmp_path, mode):
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    x = 0
+
+    @pw.udf(
+        deterministic=True
+    )  # lie that it is deterministic to check if it not persisted
+    def foo(a: int) -> int:
+        nonlocal x
+        x += 1
+        return x
+
+    def logic(t: pw.Table) -> pw.Table:
+        return t.select(pw.this.a, x=foo(pw.this.b))
+
+    run, input_path = get_one_table_runner(tmp_path, mode, logic, InputSchema)
+
+    run(["a,b", "1,2"], {"1,1,1"})
+    os.remove(input_path / "1")
+    run(["a,b", "1,3"], {"1,2,-1", "1,3,1"})
+    run(["a,b", "2,4"], {"2,4,1"})
+    os.remove(input_path / "3")
+    run(["a,b"], {"2,5,-1"})

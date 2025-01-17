@@ -9,8 +9,6 @@ pub mod time_column;
 mod utils;
 
 use std::any::type_name;
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::panic::Location;
 
 use differential_dataflow::difference::{Monoid, Semigroup};
@@ -305,42 +303,42 @@ where
     }
 }
 
-pub trait MapWithConsistentDeletions<S, K, V, R>
+pub trait FlatMapWithDeletionsFirst<S, D, R>
 where
     S: MaybeTotalScope,
     R: Monoid + ExchangeData,
 {
-    fn map_named_with_deletions_first<V2: Data>(
+    fn flat_map_named_with_deletions_first<D2: Data>(
         &self,
         name: &str,
         wrapper: BatchWrapper,
-        logic: impl FnMut((K, V)) -> (K, V2) + 'static,
-    ) -> Collection<S, (K, V2), R>;
+        logic: impl FnMut(D) -> Option<D2> + 'static,
+    ) -> Collection<S, D2, R>;
 
-    fn map_named_async_with_consistent_deletions<F: Future>(
+    fn map_named_async_with_deletions_handling<D2, F: Future>(
         &self,
         name: &str,
-        logic: impl Fn((K, V)) -> F + 'static,
+        preprocess: impl FnMut(D, R) -> Option<D2> + 'static,
+        async_logic: impl Fn(D2) -> F + 'static,
+        postprocess: impl FnMut(F::Output, R) -> F::Output + 'static,
     ) -> Collection<S, F::Output, R>
     where
         F::Output: Data;
 }
 
-impl<S, K, V, R> MapWithConsistentDeletions<S, K, V, R> for Collection<S, (K, V), R>
+impl<S, D, R> FlatMapWithDeletionsFirst<S, D, R> for Collection<S, D, R>
 where
     S: MaybeTotalScope,
-    K: ExchangeData + Shard + Hash,
-    V: ExchangeData,
-    (K, V): Shard,
-    R: Monoid + ExchangeData,
+    D: ExchangeData + Shard,
+    R: Monoid + ExchangeData + Copy,
 {
     #[track_caller]
-    fn map_named_with_deletions_first<V2: Data>(
+    fn flat_map_named_with_deletions_first<D2: Data>(
         &self,
         name: &str,
         wrapper: BatchWrapper,
-        mut logic: impl FnMut((K, V)) -> (K, V2) + 'static,
-    ) -> Collection<S, (K, V2), R> {
+        mut logic: impl FnMut(D) -> Option<D2> + 'static,
+    ) -> Collection<S, D2, R> {
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
         self.consolidate_for_output_named(&format!("ConsolidateForOutput: {name}"), false)
@@ -353,8 +351,8 @@ where
                             for batch in vector.drain(..) {
                                 let OutputBatch { time, mut data } = batch;
                                 output.session(&cap.delayed(&time)).give_iterator(
-                                    data.drain(..).map(|((key, value), diff)| {
-                                        (logic((key.clone(), value)), time.clone(), diff)
+                                    data.drain(..).filter_map(|(data, diff)| {
+                                        logic(data).map(|data| (data, time.clone(), diff))
                                     }),
                                 );
                             }
@@ -366,10 +364,12 @@ where
     }
 
     #[track_caller]
-    fn map_named_async_with_consistent_deletions<F: Future>(
+    fn map_named_async_with_deletions_handling<D2, F: Future>(
         &self,
         name: &str,
-        logic: impl Fn((K, V)) -> F + 'static,
+        mut preprocess: impl FnMut(D, R) -> Option<D2> + 'static,
+        async_logic: impl Fn(D2) -> F + 'static,
+        mut postprocess: impl FnMut(F::Output, R) -> F::Output + 'static,
     ) -> Collection<S, F::Output, R>
     where
         F::Output: Data,
@@ -377,7 +377,6 @@ where
         let caller = Location::caller();
         let name = format!("{name} at {caller}");
         let mut buffer = Vec::new();
-        let mut cache: HashMap<K, F::Output> = HashMap::new();
         self.consolidate_for_output_named(&format!("ConsolidateForOutput: {name}"), false)
             .unary(Pipeline, &name, move |_, _| {
                 let mut vector = Vec::new();
@@ -386,36 +385,21 @@ where
                         data.swap(&mut vector);
                         for batch in vector.drain(..) {
                             let OutputBatch { time, mut data } = batch;
-                            let futures: FuturesOrdered<_> =
-                                data.drain(..)
-                                    .map(|((key, value), diff)| {
-                                        let maybe_result =
-                                            if diff < Monoid::zero() {
-                                                Some(cache.remove(&key).expect(
-                                            "result for negative diff should be stored",
-                                        ).clone())
-                                            } else {
-                                                None
-                                            };
-                                        ((key, value), diff, maybe_result)
-                                    })
-                                    .map(|((key, value), diff, maybe_result)| async {
-                                        if let Some(result) = maybe_result {
-                                            (result, diff, key)
-                                        } else {
-                                            (logic((key.clone(), value)).await, diff, key)
-                                        }
-                                    })
-                                    .collect();
+                            let futures: FuturesOrdered<_> = data
+                                .drain(..)
+                                .filter_map(|(data, diff)| {
+                                    preprocess(data, diff).map(|data| (data, diff))
+                                })
+                                .map(|(data, diff)| {
+                                    let async_logic = &async_logic;
+                                    async move { (async_logic(data).await, diff) }
+                                })
+                                .collect();
                             assert!(buffer.is_empty());
                             buffer.reserve(futures.len());
 
-                            futures::executor::block_on(futures.for_each(|item| {
-                                let (result, diff, key) = item;
-                                if diff > Monoid::zero() {
-                                    let current = cache.insert(key, result.clone());
-                                    assert!(current.is_none());
-                                }
+                            futures::executor::block_on(futures.for_each(|(data, diff)| {
+                                let result = postprocess(data, diff);
                                 buffer.push((result, time.clone(), diff));
                                 future::ready(())
                             }));
