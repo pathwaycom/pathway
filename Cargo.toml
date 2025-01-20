@@ -24,15 +24,15 @@ async-nats = "0.38.0"
 base32 = "0.5.1"
 base64 = "0.22.1"
 bincode = "1.3.3"
-bitflags = { version = "2.7.0", features = ["std"] } # Hack to keep features unified between normal and dev deps
+bitflags = { version = "2.8.0", features = ["std"] } # Hack to keep features unified between normal and dev deps
 bytes = "1.9.0"
 cached = "0.54.0"
 cfg-if = "1.0.0"
 chrono = { version = "0.4.39", features = ["std", "clock"], default-features = false }
-chrono-tz = "0.10.0"
+chrono-tz = "0.10.1"
 crossbeam-channel = "0.5.14"
 csv = "1.3.1"
-deltalake = { version = "0.23.1", features = ["datafusion", "s3"] }
+deltalake = { version = "0.23.2", features = ["datafusion", "s3"] }
 derivative = "2.2.0"
 differential-dataflow = { path = "./external/differential-dataflow" }
 ed25519-dalek = { version = "2.1.1", features = ["serde", "pkcs8"] }
@@ -49,8 +49,8 @@ itertools = "0.14.0"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
 jmespath = "0.3.0"
 libc = "0.2.169"
-log = { version = "0.4.22", features = ["std"] }
-mongodb = { version = "3.1.1", features = ["sync"] }
+log = { version = "0.4.25", features = ["std"] }
+mongodb = { version = "3.2.0", features = ["sync"] }
 ndarray = { version = "0.15.6", features = ["serde"] }
 nix = { version = "0.29.0", features = ["fs", "user", "resource"] }
 num-integer = "0.1.46"
@@ -62,7 +62,7 @@ opentelemetry-semantic-conventions = "0.16.0"
 opentelemetry_sdk = { version = "0.24.1", features = ["rt-tokio", "rt-tokio-current-thread"] }
 ordered-float = { version = "4.6.0", features = ["serde"] }
 postgres = { version = "0.19.9", features = ["with-chrono-0_4", "with-serde_json-1"] }
-prometheus-client = "0.23.0"
+prometheus-client = "0.23.1"
 pyo3 = { version = "0.21.2", features = ["abi3-py310", "multiple-pymethods"] }
 pyo3-asyncio = { version = "0.21.0", package = "pyo3-asyncio-0-21" }
 pyo3-log = "0.10.0"
@@ -88,7 +88,7 @@ timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
 tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
 tonic = { version = "0.12.3", features = ["tls-native-roots"] }
 usearch = "2.15.3"
-uuid = { version = "1.11.1", features = ["v4"] }
+uuid = { version = "1.12.0", features = ["v4"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]
