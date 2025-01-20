@@ -56,24 +56,24 @@ def read(
     a single column ``data`` with each cell containing contents of the whole file.
 
     Args:
-        path: Path to the file or to the folder with files or \
-`glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the \
-objects to be read. The connector will read the contents of all matching files as well \
-as recursively read the contents of all matching folders.
-        format: Format of data to be read. Currently "csv", "json", "plaintext", \
-"plaintext_by_file" and "binary" formats are supported. The difference between \
-"plaintext" and "plaintext_by_file" is how the input is tokenized: if the "plaintext" \
-option is chosen, it's split by the newlines. Otherwise, the files are split in full \
-and one row will correspond to one file. In case the "binary" format is specified, \
-the data is read as raw bytes without UTF-8 parsing.
+        path: Path to the file or to the folder with files or
+            `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the
+            objects to be read. The connector will read the contents of all matching files as well
+            as recursively read the contents of all matching folders.
+        format: Format of data to be read. Currently "csv", "json", "plaintext",
+            "plaintext_by_file" and "binary" formats are supported. The difference between
+            "plaintext" and "plaintext_by_file" is how the input is tokenized: if the "plaintext"
+            option is chosen, it's split by the newlines. Otherwise, the files are split in full
+            and one row will correspond to one file. In case the "binary" format is specified,
+            the data is read as raw bytes without UTF-8 parsing.
         schema: Schema of the resulting table.
-        mode: Denotes how the engine polls the new data from the source. Currently \
-"streaming" and "static" are supported. If set to "streaming" the engine will wait for \
-the updates in the specified directory. It will track file additions, deletions, and \
-modifications and reflect these events in the state. For example, if a file was deleted,\
-"streaming" mode will also remove rows obtained by reading this file from the table. On \
-the other hand, the "static" mode will only consider the available data and ingest all \
-of it in one commit. The default value is "streaming".
+        mode: Denotes how the engine polls the new data from the source. Currently
+            "streaming" and "static" are supported. If set to "streaming" the engine will wait for
+            the updates in the specified directory. It will track file additions, deletions, and
+            modifications and reflect these events in the state. For example, if a file was deleted,
+            "streaming" mode will also remove rows obtained by reading this file from the table. On
+            the other hand, the "static" mode will only consider the available data and ingest all
+            of it in one commit. The default value is "streaming".
         csv_settings: Settings for the CSV parser. This parameter is used only in case
             the specified format is "csv".
         json_field_paths: If the format is "json", this field allows to map field names
@@ -81,15 +81,15 @@ of it in one commit. The default value is "streaming".
             it should be given in the format ``<field_name>: <path to be mapped>``,
             where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
-        object_pattern: Unix shell style pattern for filtering only certain files in the \
-directory. Ignored in case a path to a single file is specified. This value will be \
-deprecated soon, please use glob pattern in ``path`` instead.
+        object_pattern: Unix shell style pattern for filtering only certain files in the
+            directory. Ignored in case a path to a single file is specified. This value will be
+            deprecated soon, please use glob pattern in ``path`` instead.
         with_metadata: When set to true, the connector will add an additional column
-named ``_metadata`` to the table. This JSON field may contain: (1) created_at - UNIX
-timestamp of file creation; (2) modified_at - UNIX timestamp of last modification;
-(3) seen_at is a UNIX timestamp of when they file was found by the engine;
-(4) owner - Name of the file owner (only for Un); (5) path - Full file path of the
-source row. (6) size - File size in bytes.
+            named ``_metadata`` to the table. This JSON field may contain: (1) created_at - UNIX
+            timestamp of file creation; (2) modified_at - UNIX timestamp of last modification;
+            (3) seen_at is a UNIX timestamp of when they file was found by the engine;
+            (4) owner - Name of the file owner (only for Un); (5) path - Full file path of the
+            source row. (6) size - File size in bytes.
         persistent_id: (unstable) An identifier, under which the state of the table
             will be persisted or ``None``, if there is no need to persist the state of this table.
             When a program restarts, it restores the state for all input tables according to what
@@ -294,7 +294,7 @@ def write(table: Table, filename: str | PathLike, format: str) -> None:
     First, import Pathway and create a table:
 
     >>> import pathway as pw
-    >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
+    >>> t = pw.debug.table_from_markdown("age owner pet \\n1 10 Alice dog \\n2 9 Bob cat \\n3 8 Alice cat")
 
     Consider you would want to output the stream of changes of this table in csv format.
     In order to do that you simply do:
@@ -338,8 +338,8 @@ def write(table: Table, filename: str | PathLike, format: str) -> None:
         {"age":9,"owner":"Bob","pet":"cat","diff":1,"time":0}
         {"age":8,"owner":"Alice","pet":"cat","diff":1,"time":0}
 
-    As one can easily see, the values remain the same, while the format has changed to \
-a plain JSON.
+    As one can easily see, the values remain the same, while the format has changed to
+    a plain JSON.
     """
 
     if format not in SUPPORTED_OUTPUT_FORMATS:
