@@ -51,7 +51,7 @@ def test_object_modified(tmp_path, s3_path, storage_type):
     t.join()
 
 
-@pytest.mark.parametrize("storage_type", ["s3"])
+@pytest.mark.parametrize("storage_type", ["s3", "minio"])
 def test_object_deleted(tmp_path, s3_path, storage_type):
     input_path_1 = f"{s3_path}/input_1.txt"
     input_path_2 = f"{s3_path}/input_2.txt"
