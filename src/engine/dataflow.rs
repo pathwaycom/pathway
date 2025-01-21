@@ -88,7 +88,7 @@ use self::maybe_total::MaybeTotalScope;
 use self::operators::output::{ConsolidateForOutput, OutputBatch};
 use self::operators::prev_next::add_prev_next_pointers;
 use self::operators::stateful_reduce::StatefulReduce;
-use self::operators::time_column::{MaxTimestamp, TimeColumnBuffer};
+use self::operators::time_column::TimeColumnBuffer;
 use self::operators::{ArrangeWithTypes, FlatMapWithDeletionsFirst, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
@@ -114,8 +114,8 @@ use super::telemetry::maybe_run_telemetry_thread;
 use super::{
     BatchWrapper, ColumnHandle, ColumnPath, ColumnProperties, ComplexColumn, Error, ErrorLogHandle,
     Expression, ExpressionData, Graph, IterationLogic, IxKeyPolicy, JoinData, JoinType, Key,
-    LegacyTable, OperatorStats, ProberStats, Reducer, ReducerData, Result, ShardPolicy,
-    TableHandle, TableProperties, Timestamp, UniverseHandle, Value,
+    LegacyTable, OperatorStats, OriginalOrRetraction, ProberStats, Reducer, ReducerData, Result,
+    ShardPolicy, TableHandle, TableProperties, Timestamp, UniverseHandle, Value,
 };
 use crate::external_integration::{
     make_accessor, make_option_accessor, ExternalIndex, IndexDerivedImpl,
@@ -2081,36 +2081,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .alloc(Table::from_collection(on_time).with_properties(table_properties)))
     }
 
-    fn buffer(
-        &mut self,
-        table_handle: TableHandle,
-        threshold_time_column_path: ColumnPath,
-        current_time_column_path: ColumnPath,
-        table_properties: Arc<TableProperties>,
-    ) -> Result<TableHandle>
-    where
-        S::MaybeTotalTimestamp: Epsilon + MaxTimestamp,
-    {
-        let table = self
-            .tables
-            .get(table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-
-        //TODO: report errors
-        let _error_reporter = self.error_reporter.clone();
-
-        let new_table = table.values().postpone(
-            table.values().scope(),
-            move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
-            move |val| current_time_column_path.extract_from_value(val).unwrap(),
-            true,
-        );
-
-        Ok(self
-            .tables
-            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
-    }
-
     fn restrict_column(
         &mut self,
         universe_handle: UniverseHandle,
@@ -3758,6 +3728,47 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .alloc(Table::from_collection(table_values).with_properties(table_properties)))
     }
 
+    fn buffer(
+        &mut self,
+        table_handle: TableHandle,
+        threshold_time_column_path: ColumnPath,
+        current_time_column_path: ColumnPath,
+        table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle> {
+        let table = self
+            .tables
+            .get(table_handle)
+            .ok_or(Error::InvalidTableHandle)?;
+
+        let error_reporter_1 = self.error_reporter.clone();
+        let error_reporter_2 = self.error_reporter.clone();
+
+        let new_table = table
+            .values()
+            .clone()
+            .postpone(
+                table.values().scope(),
+                move |val| {
+                    threshold_time_column_path
+                        .extract_from_value(val)
+                        .unwrap_with_reporter(&error_reporter_1)
+                },
+                move |val| {
+                    current_time_column_path
+                        .extract_from_value(val)
+                        .unwrap_with_reporter(&error_reporter_2)
+                },
+                true,
+                true,
+                |collection| collection.maybe_persist(self, "buffer"),
+            )?
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
+
+        Ok(self
+            .tables
+            .alloc(Table::from_collection(new_table).with_properties(table_properties)))
+    }
+
     fn forget(
         &mut self,
         table_handle: TableHandle,
@@ -3774,19 +3785,24 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         let error_reporter_1 = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
 
-        let new_table = table.values().forget(
-            move |val| {
-                threshold_time_column_path
-                    .extract_from_value(val)
-                    .unwrap_with_reporter(&error_reporter_1)
-            },
-            move |val| {
-                current_time_column_path
-                    .extract_from_value(val)
-                    .unwrap_with_reporter(&error_reporter_2)
-            },
-            mark_forgetting_records,
-        );
+        let new_table = table
+            .values()
+            .clone()
+            .forget(
+                move |val| {
+                    threshold_time_column_path
+                        .extract_from_value(val)
+                        .unwrap_with_reporter(&error_reporter_1)
+                },
+                move |val| {
+                    current_time_column_path
+                        .extract_from_value(val)
+                        .unwrap_with_reporter(&error_reporter_2)
+                },
+                mark_forgetting_records,
+                |collection| collection.maybe_persist(self, "forget"),
+            )?
+            .filter_out_persisted(&mut self.persistence_wrapper)?;
 
         Ok(self
             .tables
@@ -3811,7 +3827,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .values()
             .inner
             .inspect(|(_data, time, _diff)| {
-                assert!(time.0 % 2 == 0, "Neu time encountered at forget() input.");
+                assert!(
+                    time.is_original(),
+                    "Neu time encountered at forget() input."
+                );
             })
             .as_collection()
             .concat(&forgetting_stream);
@@ -3833,7 +3852,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         let new_table = table
             .values()
             .inner
-            .filter(|(_data, time, _diff)| time.0 % 2 == 0)
+            .filter(|(_data, time, _diff)| time.is_original())
             .as_collection();
         Ok(self
             .tables
@@ -3850,7 +3869,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         stats.on_batch_started();
         let time = batch.time;
         for ((key, values), diff) in batch.data {
-            if time == Timestamp::persistence_time() && worker_persistent_storage.is_some() {
+            if time.is_from_persistence() && worker_persistent_storage.is_some() {
                 // Ignore entries, which had been written before
                 continue;
             }
@@ -4047,7 +4066,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         output_columns
             .consolidate_for_output(true)
             .inspect(move |batch| {
-                if batch.time == Timestamp::persistence_time() && skip_initial_time {
+                if batch.time.is_from_persistence() && skip_initial_time {
                     return;
                 }
                 wrapper

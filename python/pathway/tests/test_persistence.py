@@ -15,6 +15,7 @@ from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CsvPathwayChecker,
+    LogicChecker,
     consolidate,
     needs_multiprocessing_fork,
     run,
@@ -709,3 +710,177 @@ def test_deterministic_udf_not_persisted(tmp_path, mode):
     run(["a,b", "2,4"], {"2,4,1"})
     os.remove(input_path / "3")
     run(["a,b"], {"2,5,-1"})
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
+)
+@needs_multiprocessing_fork
+def test_buffer(tmp_path, mode):
+    class InputSchema(pw.Schema):
+        t: int
+
+    input_path = tmp_path / "1"
+    os.makedirs(input_path)
+    output_path = tmp_path / "out.csv"
+    persistent_storage_path = tmp_path / "p"
+    count = 0
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+        persistence_mode=mode,
+    )
+
+    def setup(inputs: list[str]) -> None:
+        nonlocal count
+        count += 1
+        G.clear()
+        path = input_path / str(count)
+        write_lines(path, inputs)
+        t_1 = pw.io.csv.read(input_path, schema=InputSchema, mode="streaming")
+        res = t_1._buffer(pw.this.t + 10, pw.this.t)
+        pw.io.csv.write(res, output_path)
+
+    def get_checker(expected: set[str]) -> Callable:
+        def check() -> None:
+            try:
+                result = combine_columns(consolidate(pd.read_csv(output_path)))
+            except pd.errors.EmptyDataError:
+                result = pd.Series([])
+            assert set(result) == expected
+
+        return LogicChecker(check)
+
+    setup(["t", "1", "3", "11"])
+    wait_result_with_checker(
+        get_checker({"1,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "15", "16"])
+    wait_result_with_checker(
+        get_checker({"3,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "6", "21"])
+    wait_result_with_checker(
+        get_checker({"6,1", "11,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "9", "10"])
+    wait_result_with_checker(
+        get_checker({"9,1", "10,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "26"])
+    wait_result_with_checker(
+        get_checker({"15,1", "16,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+
+
+@pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+def test_forget(tmp_path, mode):
+    class InputSchema(pw.Schema):
+        t: int
+
+    def logic(t_1: pw.Table) -> pw.Table:
+        return t_1._forget(pw.this.t + 10, pw.this.t, mark_forgetting_records=False)
+
+    run, _ = get_one_table_runner(tmp_path, mode, logic, InputSchema)
+
+    run(["t", "1", "3", "11"], {"1,1", "3,1", "11,1"})
+    run(["t", "15", "16"], {"1,-1", "15,1", "16,1"})
+    run(["t", "6", "21"], {"3,-1", "21,1"})
+    run(["t", "9", "10"], {"11,-1"})
+    run(["t", "26"], {"26,1"})
+    run(["t", "22"], {"15,-1", "16,-1", "22,1"})
+
+
+@pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_forget_streaming(tmp_path, mode):
+    class InputSchema(pw.Schema):
+        t: int
+
+    input_path = tmp_path / "1"
+    os.makedirs(input_path)
+    output_path = tmp_path / "out.csv"
+    persistent_storage_path = tmp_path / "p"
+    count = 0
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+        persistence_mode=mode,
+    )
+
+    def setup(inputs: list[str]) -> None:
+        nonlocal count
+        count += 1
+        G.clear()
+        path = input_path / str(count)
+        write_lines(path, inputs)
+        t_1 = pw.io.csv.read(input_path, schema=InputSchema, mode="streaming")
+        res = t_1._forget(pw.this.t + 10, pw.this.t, mark_forgetting_records=False)
+        pw.io.csv.write(res, output_path)
+
+    def get_checker(expected: set[str]) -> Callable:
+        def check() -> None:
+            try:
+                result = combine_columns(consolidate(pd.read_csv(output_path)))
+            except pd.errors.EmptyDataError:
+                result = pd.Series([])
+            assert set(result) == expected
+
+        return LogicChecker(check)
+
+    setup(["t", "1", "3", "11"])
+    wait_result_with_checker(
+        get_checker({"1,1", "3,1", "11,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "15", "16"])
+    wait_result_with_checker(
+        get_checker({"1,-1", "15,1", "16,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "6", "21"])
+    wait_result_with_checker(
+        get_checker({"3,-1", "21,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "9", "10"])
+    wait_result_with_checker(
+        get_checker({"11,-1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "26"])
+    wait_result_with_checker(
+        get_checker({"26,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )
+    setup(["t", "22"])
+    wait_result_with_checker(
+        get_checker({"15,-1", "16,-1", "22,1"}),
+        timeout_sec=10,
+        target=run,
+        kwargs={"persistence_config": persistence_config},
+    )

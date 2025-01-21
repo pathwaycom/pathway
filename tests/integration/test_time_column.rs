@@ -7,8 +7,7 @@ use super::operator_test_utils::run_test;
 use differential_dataflow::operators::arrange::ArrangeByKey;
 
 use pathway_engine::engine::dataflow::operators::time_column::{
-    postpone_core, MaxTimestamp, SelfCompactionTime, TimeColumnBuffer, TimeColumnForget,
-    TimeColumnFreeze, TimeKey,
+    postpone_core, MaxTimestamp, TimeColumnBuffer, TimeColumnForget, TimeColumnFreeze, TimeKey,
 };
 use pathway_engine::engine::Timestamp;
 
@@ -18,36 +17,36 @@ fn test_core_basic() {
         vec![
             (
                 (TimeKey { time: 100, key: 1 }, (100, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 2 }, (100, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 3 }, (200, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 4 }, (200, 44)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 300, key: 5 }, (300, 55)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
             (
                 (TimeKey { time: 300, key: 6 }, (300, 66)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
         ],
@@ -56,19 +55,11 @@ fn test_core_basic() {
     // hence no release of 200 threshold entries
     // also, the first batch is released only when we reach the third (update of time to 199 happens after we are done reading the second batch)
     let expected = vec![vec![
-        (
-            (1, (100, 11)),
-            SelfCompactionTime::original(Timestamp(2)),
-            1,
-        ),
-        (
-            (2, (100, 22)),
-            SelfCompactionTime::original(Timestamp(2)),
-            1,
-        ),
+        ((1, (100, 11)), Timestamp::original_from(2), 1),
+        ((2, (100, 22)), Timestamp::original_from(2), 1),
     ]];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false, false).arrange_by_key()
     });
 }
 
@@ -78,68 +69,52 @@ fn test_core_basic_test_border_threshold() {
         vec![
             (
                 (TimeKey { time: 100, key: 1 }, (100, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 2 }, (100, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 3 }, (200, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 4 }, (200, 44)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 300, key: 5 }, (300, 55)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
             (
                 (TimeKey { time: 300, key: 6 }, (300, 66)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
         ],
     ];
     let expected = vec![
         vec![
-            (
-                (1, (100, 11)),
-                SelfCompactionTime::original(Timestamp(1)),
-                1,
-            ),
-            (
-                (2, (100, 22)),
-                SelfCompactionTime::original(Timestamp(1)),
-                1,
-            ),
+            ((1, (100, 11)), Timestamp::original_from(1), 1),
+            ((2, (100, 22)), Timestamp::original_from(1), 1),
         ],
         vec![
-            (
-                (3, (200, 33)),
-                SelfCompactionTime::original(Timestamp(2)),
-                1,
-            ),
-            (
-                (4, (200, 44)),
-                SelfCompactionTime::original(Timestamp(2)),
-                1,
-            ),
+            ((3, (200, 33)), Timestamp::original_from(2), 1),
+            ((4, (200, 44)), Timestamp::original_from(2), 1),
         ],
     ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t, false).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t, false, false).arrange_by_key()
     });
 }
 
@@ -149,62 +124,54 @@ fn test_core_basic_flush() {
         vec![
             (
                 (TimeKey { time: 100, key: 1 }, (100, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 2 }, (100, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 3 }, (200, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 4 }, (200, 44)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 300, key: 5 }, (300, 55)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
             (
                 (TimeKey { time: 300, key: 6 }, (300, 66)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
         ],
     ];
     let expected = vec![
         vec![
-            (
-                (1, (100, 11)),
-                SelfCompactionTime::original(Timestamp(2)),
-                1,
-            ),
-            (
-                (2, (100, 22)),
-                SelfCompactionTime::original(Timestamp(2)),
-                1,
-            ),
+            ((1, (100, 11)), Timestamp::original_from(2), 1),
+            ((2, (100, 22)), Timestamp::original_from(2), 1),
         ],
         vec![
-            ((3, (200, 33)), SelfCompactionTime::get_max_timestamp(), 1),
-            ((4, (200, 44)), SelfCompactionTime::get_max_timestamp(), 1),
-            ((5, (300, 55)), SelfCompactionTime::get_max_timestamp(), 1),
-            ((6, (300, 66)), SelfCompactionTime::get_max_timestamp(), 1),
+            ((3, (200, 33)), Timestamp::get_max_timestamp(), 1),
+            ((4, (200, 44)), Timestamp::get_max_timestamp(), 1),
+            ((5, (300, 55)), Timestamp::get_max_timestamp(), 1),
+            ((6, (300, 66)), Timestamp::get_max_timestamp(), 1),
         ],
     ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, true).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, true, false).arrange_by_key()
     });
 }
 
@@ -214,78 +181,152 @@ fn test_core_late_forwarding() {
         vec![
             (
                 (TimeKey { time: 100, key: 1 }, (100, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 2 }, (100, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 3 }, (200, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 4 }, (200, 44)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
         ],
         vec![(
             (TimeKey { time: 300, key: 5 }, (300, 55)),
-            SelfCompactionTime::original(Timestamp(2)),
+            Timestamp::original_from(2),
             1,
         )],
         vec![
             (
                 (TimeKey { time: 400, key: 7 }, (400, 77)),
-                SelfCompactionTime::original(Timestamp(3)),
+                Timestamp::original_from(3),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 6 }, (100, 66)),
-                SelfCompactionTime::original(Timestamp(3)),
+                Timestamp::original_from(3),
+                1,
+            ),
+            (
+                (TimeKey { time: 100, key: 8 }, (100, 60)),
+                Timestamp::original_from(3),
                 1,
             ),
         ],
     ];
     let expected = vec![
         vec![
+            ((1, (100, 11)), Timestamp::original_from(2), 1),
+            ((2, (100, 22)), Timestamp::original_from(2), 1),
+        ],
+        vec![
+            ((3, (200, 33)), Timestamp::original_from(3), 1),
+            ((4, (200, 44)), Timestamp::original_from(3), 1),
+            ((6, (100, 66)), Timestamp::original_from(3), 1),
+            ((8, (100, 60)), Timestamp::original_from(3), 1),
+        ],
+    ];
+    run_test(input, expected, |coll| {
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false, false).arrange_by_key()
+    });
+}
+
+#[test]
+fn test_core_emitted_immediately() {
+    let input = vec![
+        vec![
             (
-                (1, (100, 11)),
-                SelfCompactionTime::original(Timestamp(2)),
+                (TimeKey { time: 100, key: 1 }, (100, 11)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
-                (2, (100, 22)),
-                SelfCompactionTime::original(Timestamp(2)),
+                (TimeKey { time: 100, key: 11 }, (100, 13)),
+                Timestamp::original_from(0),
+                1,
+            ),
+            (
+                (TimeKey { time: 102, key: 2 }, (102, 22)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
-                (3, (200, 33)),
-                SelfCompactionTime::original(Timestamp(3)),
+                (TimeKey { time: 200, key: 3 }, (200, 33)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
-                (4, (200, 44)),
-                SelfCompactionTime::original(Timestamp(3)),
+                (TimeKey { time: 200, key: 13 }, (200, 35)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
-                (6, (100, 66)),
-                SelfCompactionTime::original(Timestamp(3)),
+                (TimeKey { time: 202, key: 4 }, (202, 44)),
+                Timestamp::original_from(1),
+                1,
+            ),
+        ],
+        vec![(
+            (TimeKey { time: 300, key: 5 }, (300, 55)),
+            Timestamp::original_from(2),
+            1,
+        )],
+        vec![
+            (
+                (TimeKey { time: 400, key: 7 }, (400, 77)),
+                Timestamp::original_from(3),
+                1,
+            ),
+            (
+                (TimeKey { time: 200, key: 6 }, (200, 66)),
+                Timestamp::original_from(3),
+                1,
+            ),
+            (
+                (TimeKey { time: 200, key: 8 }, (200, 60)),
+                Timestamp::original_from(3),
+                1,
+            ),
+            (
+                (TimeKey { time: 202, key: 9 }, (202, 67)),
+                Timestamp::original_from(3),
                 1,
             ),
         ],
     ];
+    let expected = vec![
+        vec![
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((11, (100, 13)), Timestamp::original_from(0), 1),
+        ],
+        vec![
+            ((2, (102, 22)), Timestamp::original_from(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((13, (200, 35)), Timestamp::original_from(1), 1),
+        ],
+        vec![((4, (202, 44)), Timestamp::original_from(2), 1)],
+        vec![
+            ((5, (300, 55)), Timestamp::original_from(3), 1),
+            ((6, (200, 66)), Timestamp::original_from(3), 1),
+            ((8, (200, 60)), Timestamp::original_from(3), 1),
+            ((9, (202, 67)), Timestamp::original_from(3), 1),
+        ],
+    ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false, true).arrange_by_key()
     });
 }
 
@@ -295,88 +336,64 @@ fn test_core_late_forwarding_ignore_retraction() {
         vec![
             (
                 (TimeKey { time: 100, key: 1 }, (100, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 2 }, (100, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 300, key: 3 }, (300, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 300, key: 4 }, (300, 44)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 400, key: 5 }, (400, 55)),
-                SelfCompactionTime::original(Timestamp(3)),
+                Timestamp::original_from(3),
                 1,
             ),
             (
                 (TimeKey { time: 100, key: 6 }, (100, 66)),
-                SelfCompactionTime::original(Timestamp(3)),
+                Timestamp::original_from(3),
                 1,
             ),
         ],
         vec![(
             (TimeKey { time: 100, key: 7 }, (100, 77)),
-            SelfCompactionTime::original(Timestamp(4)),
+            Timestamp::original_from(4),
             1,
         )],
         vec![(
             (TimeKey { time: 100, key: 8 }, (100, 88)),
-            SelfCompactionTime::retraction(Timestamp(4)),
+            Timestamp::retraction_from(4),
             1,
         )],
     ];
     let expected = vec![
         vec![
-            (
-                (1, (100, 11)),
-                SelfCompactionTime::original(Timestamp(3)),
-                1,
-            ),
-            (
-                (2, (100, 22)),
-                SelfCompactionTime::original(Timestamp(3)),
-                1,
-            ),
-            (
-                (6, (100, 66)),
-                SelfCompactionTime::original(Timestamp(3)),
-                1,
-            ),
+            ((1, (100, 11)), Timestamp::original_from(3), 1),
+            ((2, (100, 22)), Timestamp::original_from(3), 1),
+            ((6, (100, 66)), Timestamp::original_from(3), 1),
         ],
         vec![
-            (
-                (7, (100, 77)),
-                SelfCompactionTime::original(Timestamp(4)),
-                1,
-            ),
-            (
-                (3, (300, 33)),
-                SelfCompactionTime::original(Timestamp(4)),
-                1,
-            ),
-            (
-                (4, (300, 44)),
-                SelfCompactionTime::original(Timestamp(4)),
-                1,
-            ),
+            ((7, (100, 77)), Timestamp::original_from(4), 1),
+            ((3, (300, 33)), Timestamp::original_from(4), 1),
+            ((4, (300, 44)), Timestamp::original_from(4), 1),
         ],
     ];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false, false).arrange_by_key()
     });
 }
 
@@ -386,59 +403,51 @@ fn test_core_aggregate_to_zero() {
         vec![
             (
                 (TimeKey { time: 200, key: 1 }, (200, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 2 }, (200, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 3 }, (200, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 1 }, (200, 11)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 -1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 300, key: 5 }, (300, 55)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
             (
                 (TimeKey { time: 300, key: 6 }, (300, 66)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
         ],
         vec![(
             (TimeKey { time: 300, key: 7 }, (700, 77)),
-            SelfCompactionTime::original(Timestamp(3)),
+            Timestamp::original_from(3),
             1,
         )],
     ];
     let expected = vec![vec![
-        (
-            (2, (200, 22)),
-            SelfCompactionTime::original(Timestamp(3)),
-            1,
-        ),
-        (
-            (3, (200, 33)),
-            SelfCompactionTime::original(Timestamp(3)),
-            1,
-        ),
+        ((2, (200, 22)), Timestamp::original_from(3), 1),
+        ((3, (200, 33)), Timestamp::original_from(3), 1),
     ]];
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false, false).arrange_by_key()
     });
 }
 
@@ -448,65 +457,53 @@ fn test_core_aggregate_replace() {
         vec![
             (
                 (TimeKey { time: 200, key: 1 }, (200, 11)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 2 }, (200, 22)),
-                SelfCompactionTime::original(Timestamp(0)),
+                Timestamp::original_from(0),
                 1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 3 }, (200, 33)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 1,
             ),
             (
                 (TimeKey { time: 200, key: 1 }, (200, 11)),
-                SelfCompactionTime::original(Timestamp(1)),
+                Timestamp::original_from(1),
                 -1,
             ),
         ],
         vec![
             (
                 (TimeKey { time: 200, key: 1 }, (200, 55)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
             (
                 (TimeKey { time: 300, key: 6 }, (300, 66)),
-                SelfCompactionTime::original(Timestamp(2)),
+                Timestamp::original_from(2),
                 1,
             ),
         ],
         vec![(
             (TimeKey { time: 300, key: 7 }, (700, 77)),
-            SelfCompactionTime::original(Timestamp(3)),
+            Timestamp::original_from(3),
             1,
         )],
     ];
     let expected = vec![vec![
-        (
-            (1, (200, 55)),
-            SelfCompactionTime::original(Timestamp(3)),
-            1,
-        ),
-        (
-            (2, (200, 22)),
-            SelfCompactionTime::original(Timestamp(3)),
-            1,
-        ),
-        (
-            (3, (200, 33)),
-            SelfCompactionTime::original(Timestamp(3)),
-            1,
-        ),
+        ((1, (200, 55)), Timestamp::original_from(3), 1),
+        ((2, (200, 22)), Timestamp::original_from(3), 1),
+        ((3, (200, 33)), Timestamp::original_from(3), 1),
     ]];
 
     run_test(input, expected, |coll| {
-        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false).arrange_by_key()
+        postpone_core(coll.arrange_by_key(), |(t, _d)| *t - 1, false, false).arrange_by_key()
     });
 }
 
@@ -514,26 +511,34 @@ fn test_core_aggregate_replace() {
 fn test_wrapper_basic() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (200, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (200, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
     ];
     let expected = vec![vec![
-        ((1, (100, 11)), Timestamp(2), 1),
-        ((2, (100, 22)), Timestamp(2), 1),
+        ((1, (100, 11)), Timestamp::original_from(2), 1),
+        ((2, (100, 22)), Timestamp::original_from(2), 1),
     ]];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t, _d)| *t,
+            |(t, _d)| *t - 1,
+            false,
+            false,
+            Ok,
+        )
+        .unwrap()
+        .arrange_by_key()
     });
 }
 
@@ -541,22 +546,22 @@ fn test_wrapper_basic() {
 fn test_wrapper_basic_flush() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (200, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (200, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(2), 1),
-            ((2, (100, 22)), Timestamp(2), 1),
+            ((1, (100, 11)), Timestamp::original_from(2), 1),
+            ((2, (100, 22)), Timestamp::original_from(2), 1),
         ],
         vec![
             ((3, (200, 33)), Timestamp::get_max_timestamp(), 1),
@@ -567,36 +572,52 @@ fn test_wrapper_basic_flush() {
     ];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, true)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t, _d)| *t,
+            |(t, _d)| *t - 1,
+            true,
+            false,
+            Ok,
+        )
+        .unwrap()
+        .arrange_by_key()
     });
 }
 
 #[test]
 fn test_wrapper_split_batch_by_time() {
     let input = vec![vec![
-        ((1, (100, 11)), Timestamp(0), 1),
-        ((2, (100, 22)), Timestamp(0), 1),
-        ((3, (200, 33)), Timestamp(2), 1),
-        ((4, (200, 44)), Timestamp(2), 1),
-        ((5, (300, 55)), Timestamp(4), 1),
-        ((6, (300, 66)), Timestamp(4), 1),
-        ((7, (400, 77)), Timestamp(6), 1),
+        ((1, (100, 11)), Timestamp::original_from(0), 1),
+        ((2, (100, 22)), Timestamp::original_from(0), 1),
+        ((3, (200, 33)), Timestamp::original_from(2), 1),
+        ((4, (200, 44)), Timestamp::original_from(2), 1),
+        ((5, (300, 55)), Timestamp::original_from(4), 1),
+        ((6, (300, 66)), Timestamp::original_from(4), 1),
+        ((7, (400, 77)), Timestamp::original_from(6), 1),
     ]];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(4), 1),
-            ((2, (100, 22)), Timestamp(4), 1),
+            ((1, (100, 11)), Timestamp::original_from(4), 1),
+            ((2, (100, 22)), Timestamp::original_from(4), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(6), 1),
-            ((4, (200, 44)), Timestamp(6), 1),
+            ((3, (200, 33)), Timestamp::original_from(6), 1),
+            ((4, (200, 44)), Timestamp::original_from(6), 1),
         ],
     ];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t, _d)| *t,
+            |(t, _d)| *t - 1,
+            false,
+            false,
+            Ok,
+        )
+        .unwrap()
+        .arrange_by_key()
     });
 }
 
@@ -604,38 +625,46 @@ fn test_wrapper_split_batch_by_time() {
 fn test_wrapper_late_forwarding() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (200, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (200, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (100, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (100, 66)), Timestamp::original_from(2), 1),
         ],
         vec![
-            ((7, (400, 77)), Timestamp(3), 1),
-            ((8, (100, 88)), Timestamp(3), 1),
+            ((7, (400, 77)), Timestamp::original_from(3), 1),
+            ((8, (100, 88)), Timestamp::original_from(3), 1),
         ],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(2), 1),
-            ((2, (100, 22)), Timestamp(2), 1),
-            ((6, (100, 66)), Timestamp(2), 1),
+            ((1, (100, 11)), Timestamp::original_from(2), 1),
+            ((2, (100, 22)), Timestamp::original_from(2), 1),
+            ((6, (100, 66)), Timestamp::original_from(2), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(3), 1),
-            ((4, (200, 44)), Timestamp(3), 1),
-            ((8, (100, 88)), Timestamp(3), 1),
+            ((3, (200, 33)), Timestamp::original_from(3), 1),
+            ((4, (200, 44)), Timestamp::original_from(3), 1),
+            ((8, (100, 88)), Timestamp::original_from(3), 1),
         ],
     ];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t, _d)| *t,
+            |(t, _d)| *t - 1,
+            false,
+            false,
+            Ok,
+        )
+        .unwrap()
+        .arrange_by_key()
     });
 }
 
@@ -643,27 +672,35 @@ fn test_wrapper_late_forwarding() {
 fn test_wrapper_aggregate_to_zero() {
     let input = vec![
         vec![
-            ((1, (200, 11)), Timestamp(0), 1),
-            ((2, (200, 22)), Timestamp(0), 1),
+            ((1, (200, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((1, (200, 11)), Timestamp(1), -1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((1, (200, 11)), Timestamp::original_from(1), -1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
-        vec![((7, (400, 77)), Timestamp(3), 1)],
+        vec![((7, (400, 77)), Timestamp::original_from(3), 1)],
     ];
     let expected = vec![vec![
-        ((2, (200, 22)), Timestamp(3), 1),
-        ((3, (200, 33)), Timestamp(3), 1),
+        ((2, (200, 22)), Timestamp::original_from(3), 1),
+        ((3, (200, 33)), Timestamp::original_from(3), 1),
     ]];
 
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t, _d)| *t,
+            |(t, _d)| *t - 1,
+            false,
+            false,
+            Ok,
+        )
+        .unwrap()
+        .arrange_by_key()
     });
 }
 
@@ -671,27 +708,35 @@ fn test_wrapper_aggregate_to_zero() {
 fn test_wrapper_aggregate_replace() {
     let input = vec![
         vec![
-            ((1, (200, 11)), Timestamp(0), 1),
-            ((2, (200, 22)), Timestamp(0), 1),
+            ((1, (200, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((1, (200, 11)), Timestamp(1), -1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((1, (200, 11)), Timestamp::original_from(1), -1),
         ],
         vec![
-            ((1, (200, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((1, (200, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
-        vec![((7, (400, 77)), Timestamp(3), 1)],
+        vec![((7, (400, 77)), Timestamp::original_from(3), 1)],
     ];
     let expected = vec![vec![
-        ((1, (200, 55)), Timestamp(3), 1),
-        ((2, (200, 22)), Timestamp(3), 1),
-        ((3, (200, 33)), Timestamp(3), 1),
+        ((1, (200, 55)), Timestamp::original_from(3), 1),
+        ((2, (200, 22)), Timestamp::original_from(3), 1),
+        ((3, (200, 33)), Timestamp::original_from(3), 1),
     ]];
     run_test(input, expected, |coll| {
-        coll.postpone(coll.scope(), |(t, _d)| *t, |(t, _d)| *t - 1, false)
-            .arrange_by_key()
+        coll.postpone(
+            coll.scope(),
+            |(t, _d)| *t,
+            |(t, _d)| *t - 1,
+            false,
+            false,
+            Ok,
+        )
+        .unwrap()
+        .arrange_by_key()
     });
 }
 
@@ -699,25 +744,25 @@ fn test_wrapper_aggregate_replace() {
 fn test_wrapper_two_times() {
     let input = vec![
         vec![
-            ((1, (200, 100, 11)), Timestamp(0), 1),
-            ((2, (200, 100, 22)), Timestamp(0), 1),
+            ((1, (200, 100, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 100, 33)), Timestamp(1), 1),
-            ((4, (200, 100, 44)), Timestamp(1), 1),
+            ((3, (200, 100, 33)), Timestamp::original_from(1), 1),
+            ((4, (200, 100, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (200, 200, 55)), Timestamp(2), 1),
-            ((6, (300, 200, 66)), Timestamp(2), 1),
+            ((5, (200, 200, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 200, 66)), Timestamp::original_from(2), 1),
         ],
-        vec![((7, (300, 300, 77)), Timestamp(3), 1)],
+        vec![((7, (300, 300, 77)), Timestamp::original_from(3), 1)],
     ];
     let expected = vec![vec![
-        ((1, (200, 100, 11)), Timestamp(3), 1),
-        ((2, (200, 100, 22)), Timestamp(3), 1),
-        ((3, (200, 100, 33)), Timestamp(3), 1),
-        ((4, (200, 100, 44)), Timestamp(3), 1),
-        ((5, (200, 200, 55)), Timestamp(3), 1),
+        ((1, (200, 100, 11)), Timestamp::original_from(3), 1),
+        ((2, (200, 100, 22)), Timestamp::original_from(3), 1),
+        ((3, (200, 100, 33)), Timestamp::original_from(3), 1),
+        ((4, (200, 100, 44)), Timestamp::original_from(3), 1),
+        ((5, (200, 200, 55)), Timestamp::original_from(3), 1),
     ]];
     run_test(input, expected, |coll| {
         coll.postpone(
@@ -725,7 +770,10 @@ fn test_wrapper_two_times() {
             |(t1, _t2, _d)| *t1,
             |(_t1, t2, _d)| *t2,
             false,
+            false,
+            Ok,
         )
+        .unwrap()
         .arrange_by_key()
     });
 }
@@ -734,23 +782,23 @@ fn test_wrapper_two_times() {
 fn test_wrapper_two_times_replace_aggregate() {
     let input = vec![
         vec![
-            ((1, (200, 100, 11)), Timestamp(0), 1),
-            ((2, (200, 100, 22)), Timestamp(0), 1),
+            ((1, (200, 100, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 100, 33)), Timestamp(1), 1),
-            ((1, (200, 100, 11)), Timestamp(1), -1),
+            ((3, (200, 100, 33)), Timestamp::original_from(1), 1),
+            ((1, (200, 100, 11)), Timestamp::original_from(1), -1),
         ],
         vec![
-            ((1, (200, 200, 55)), Timestamp(2), 1),
-            ((6, (300, 200, 66)), Timestamp(2), 1),
+            ((1, (200, 200, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 200, 66)), Timestamp::original_from(2), 1),
         ],
-        vec![((7, (300, 300, 77)), Timestamp(3), 1)],
+        vec![((7, (300, 300, 77)), Timestamp::original_from(3), 1)],
     ];
     let expected = vec![vec![
-        ((1, (200, 200, 55)), Timestamp(3), 1),
-        ((2, (200, 100, 22)), Timestamp(3), 1),
-        ((3, (200, 100, 33)), Timestamp(3), 1),
+        ((1, (200, 200, 55)), Timestamp::original_from(3), 1),
+        ((2, (200, 100, 22)), Timestamp::original_from(3), 1),
+        ((3, (200, 100, 33)), Timestamp::original_from(3), 1),
     ]];
     run_test(input, expected, |coll| {
         coll.postpone(
@@ -758,7 +806,10 @@ fn test_wrapper_two_times_replace_aggregate() {
             |(t1, _t2, _d)| *t1,
             |(_t1, t2, _d)| *t2,
             false,
+            false,
+            Ok,
         )
+        .unwrap()
         .arrange_by_key()
     });
 }
@@ -767,28 +818,28 @@ fn test_wrapper_two_times_replace_aggregate() {
 fn test_wrapper_two_times_forward_late() {
     let input = vec![
         vec![
-            ((1, (100, 100, 11)), Timestamp(0), 1),
-            ((2, (100, 100, 22)), Timestamp(0), 1),
+            ((1, (100, 100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 100, 33)), Timestamp(1), 1),
-            ((4, (200, 200, 44)), Timestamp(1), 1),
+            ((3, (200, 100, 33)), Timestamp::original_from(1), 1),
+            ((4, (200, 200, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (100, 200, 55)), Timestamp(2), 1),
-            ((6, (300, 200, 66)), Timestamp(2), 1),
+            ((5, (100, 200, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 200, 66)), Timestamp::original_from(2), 1),
         ],
-        vec![((7, (300, 300, 77)), Timestamp(3), 1)],
+        vec![((7, (300, 300, 77)), Timestamp::original_from(3), 1)],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 100, 11)), Timestamp(1), 1),
-            ((2, (100, 100, 22)), Timestamp(1), 1),
+            ((1, (100, 100, 11)), Timestamp::original_from(1), 1),
+            ((2, (100, 100, 22)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((3, (200, 100, 33)), Timestamp(2), 1),
-            ((4, (200, 200, 44)), Timestamp(2), 1),
-            ((5, (100, 200, 55)), Timestamp(2), 1),
+            ((3, (200, 100, 33)), Timestamp::original_from(2), 1),
+            ((4, (200, 200, 44)), Timestamp::original_from(2), 1),
+            ((5, (100, 200, 55)), Timestamp::original_from(2), 1),
         ],
     ];
     run_test(input, expected, |coll| {
@@ -797,7 +848,10 @@ fn test_wrapper_two_times_forward_late() {
             |(t1, _t2, _d)| *t1,
             |(_t1, t2, _d)| *t2,
             false,
+            false,
+            Ok,
         )
+        .unwrap()
         .arrange_by_key()
     });
 }
@@ -806,37 +860,38 @@ fn test_wrapper_two_times_forward_late() {
 fn test_forget() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(2), 1),
-            ((4, (200, 44)), Timestamp(2), 1),
+            ((3, (200, 33)), Timestamp::original_from(2), 1),
+            ((4, (200, 44)), Timestamp::original_from(2), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(4), 1),
-            ((6, (300, 66)), Timestamp(4), 1),
+            ((5, (300, 55)), Timestamp::original_from(4), 1),
+            ((6, (300, 66)), Timestamp::original_from(4), 1),
         ],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(2), 1),
-            ((4, (200, 44)), Timestamp(2), 1),
+            ((3, (200, 33)), Timestamp::original_from(2), 1),
+            ((4, (200, 44)), Timestamp::original_from(2), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(4), 1),
-            ((6, (300, 66)), Timestamp(4), 1),
-            ((1, (100, 11)), Timestamp(4), -1),
-            ((2, (100, 22)), Timestamp(4), -1),
+            ((5, (300, 55)), Timestamp::original_from(4), 1),
+            ((6, (300, 66)), Timestamp::original_from(4), 1),
+            ((1, (100, 11)), Timestamp::original_from(4), -1),
+            ((2, (100, 22)), Timestamp::original_from(4), -1),
         ],
     ];
 
     run_test(input, expected, |coll| {
-        coll.forget(|(t, _d)| *t + 1, |(t, _d)| *t, false)
+        coll.forget(|(t, _d)| *t + 1, |(t, _d)| *t, false, Ok)
+            .unwrap()
             .arrange_by_key()
     });
 }
@@ -889,7 +944,8 @@ fn test_forget_mark_forgetting_records() {
     ];
 
     run_test(input, expected, |coll| {
-        coll.forget(|(t, _d)| *t + 1, |(t, _d)| *t, true)
+        coll.forget(|(t, _d)| *t + 1, |(t, _d)| *t, true, Ok)
+            .unwrap()
             .arrange_by_key()
     });
 }
@@ -898,30 +954,30 @@ fn test_forget_mark_forgetting_records() {
 fn test_cutoff() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (100, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (100, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (100, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (100, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (100, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (100, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
     ];
 
@@ -945,30 +1001,30 @@ fn test_cutoff() {
 fn test_cutoff_late() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (200, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (100, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (100, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (200, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 22)), Timestamp::original_from(0), 1),
         ],
-        vec![((3, (200, 33)), Timestamp(1), 1)],
+        vec![((3, (200, 33)), Timestamp::original_from(1), 1)],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (300, 66)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (300, 66)), Timestamp::original_from(2), 1),
         ],
     ];
-    let expected_late = vec![vec![((4, (100, 44)), Timestamp(1), 1)]];
+    let expected_late = vec![vec![((4, (100, 44)), Timestamp::original_from(1), 1)]];
 
     run_test(input.clone(), expected, |coll| {
         coll.freeze(|(t, _d)| *t + 1, |(t, _d)| *t)
@@ -987,33 +1043,33 @@ fn test_cutoff_late() {
 fn test_cutoff_late_multiple() {
     let input = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (200, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 22)), Timestamp::original_from(0), 1),
         ],
         vec![
-            ((3, (200, 33)), Timestamp(1), 1),
-            ((4, (100, 44)), Timestamp(1), 1),
+            ((3, (200, 33)), Timestamp::original_from(1), 1),
+            ((4, (100, 44)), Timestamp::original_from(1), 1),
         ],
         vec![
-            ((5, (300, 55)), Timestamp(2), 1),
-            ((6, (100, 66)), Timestamp(2), 1),
-            ((7, (-100, 77)), Timestamp(2), 1),
+            ((5, (300, 55)), Timestamp::original_from(2), 1),
+            ((6, (100, 66)), Timestamp::original_from(2), 1),
+            ((7, (-100, 77)), Timestamp::original_from(2), 1),
         ],
     ];
     let expected = vec![
         vec![
-            ((1, (100, 11)), Timestamp(0), 1),
-            ((2, (200, 22)), Timestamp(0), 1),
+            ((1, (100, 11)), Timestamp::original_from(0), 1),
+            ((2, (200, 22)), Timestamp::original_from(0), 1),
         ],
-        vec![((3, (200, 33)), Timestamp(1), 1)],
-        vec![((5, (300, 55)), Timestamp(2), 1)],
+        vec![((3, (200, 33)), Timestamp::original_from(1), 1)],
+        vec![((5, (300, 55)), Timestamp::original_from(2), 1)],
     ];
 
     let expected_late = vec![
-        vec![((4, (100, 44)), Timestamp(1), 1)],
+        vec![((4, (100, 44)), Timestamp::original_from(1), 1)],
         vec![
-            ((6, (100, 66)), Timestamp(2), 1),
-            ((7, (-100, 77)), Timestamp(2), 1),
+            ((6, (100, 66)), Timestamp::original_from(2), 1),
+            ((7, (-100, 77)), Timestamp::original_from(2), 1),
         ],
     ];
     run_test(input.clone(), expected, |coll| {

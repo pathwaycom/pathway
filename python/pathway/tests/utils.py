@@ -452,6 +452,22 @@ class CsvPathwayChecker:
         return self.exception
 
 
+class LogicChecker:
+    def __init__(self, logic: Callable) -> None:
+        self.logic = logic
+
+    def __call__(self):
+        try:
+            self.logic()
+        except Exception as exception:
+            self.exception = exception
+            return False
+        return True
+
+    def provide_information_on_failure(self):
+        return self.exception
+
+
 @dataclass(frozen=True)
 class TestDataSource(datasource.DataSource):
     __test__ = False

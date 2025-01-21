@@ -345,7 +345,7 @@ where
 {
     collection
         .inner
-        .filter(|(_data, time, _diff)| *time != PersistenceTime::persistence_time())
+        .filter(|(_data, time, _diff)| !time.is_from_persistence())
         .as_collection()
         .into()
 }

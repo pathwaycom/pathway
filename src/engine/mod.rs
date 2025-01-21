@@ -50,6 +50,7 @@ pub use telemetry::Config;
 pub mod external_index_wrappers;
 
 pub mod timestamp;
+pub use timestamp::OriginalOrRetraction;
 pub use timestamp::Timestamp;
 
 pub mod py_object_wrapper;

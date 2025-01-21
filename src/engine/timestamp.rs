@@ -26,6 +26,14 @@ impl Timestamp {
         let new_timestamp = (new_timestamp / 2) * 2; //use only even times (required by alt-neu)
         Timestamp(new_timestamp)
     }
+
+    pub fn original_from(value: u64) -> Self {
+        Timestamp(value * 2)
+    }
+
+    pub fn retraction_from(value: u64) -> Self {
+        Timestamp(value * 2 + 1)
+    }
 }
 
 impl PartialOrder for Timestamp {
@@ -136,5 +144,18 @@ mod python_conversions {
         fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
             ob.extract().map(Self)
         }
+    }
+}
+
+pub trait OriginalOrRetraction {
+    fn is_original(&self) -> bool;
+    fn is_retraction(&self) -> bool {
+        !self.is_original()
+    }
+}
+
+impl OriginalOrRetraction for Timestamp {
+    fn is_original(&self) -> bool {
+        self.0 % 2 == 0
     }
 }

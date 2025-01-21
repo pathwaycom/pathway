@@ -93,11 +93,11 @@ pub fn run_test<
     .expect("Computation terminated abnormally");
 
     let to_print: Vec<(T, OutputBatch<K2, V2, T>)> = recv.extract();
-    assert!(to_print.len() == expected_output_batches.len());
+    assert_eq!(to_print.len(), expected_output_batches.len());
 
     for (mut returned, mut expected) in zip_eq(to_print, expected_output_batches) {
         returned.1.sort();
         expected.sort();
-        assert!(returned.1.eq(&expected));
+        assert_eq!(returned.1, expected);
     }
 }

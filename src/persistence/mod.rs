@@ -43,6 +43,8 @@ impl IntoPersistentId for ExternalPersistentId {
 pub trait PersistenceTime {
     fn persistence_time() -> Self;
 
+    fn is_from_persistence(&self) -> bool;
+
     //TODO: better name
     //has to be a transitive relation
     fn should_be_saved_together(&self, other: &Self, snapshot_interval: Duration) -> bool;
@@ -77,5 +79,9 @@ impl PersistenceTime for Timestamp {
         } else {
             Self((self.0 / div) * div)
         }
+    }
+
+    fn is_from_persistence(&self) -> bool {
+        self.0 <= 1 // check also neu time
     }
 }

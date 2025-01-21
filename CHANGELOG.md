@@ -11,9 +11,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **BREAKING**: `pw.io.deltalake.read` now requires explicit specification of primary key fields.
 - **BREAKING**: `pw.indexing.build_sorted_index`, `pw.indexing.retrieve_prev_next_values`, `pw.indexing.sort_from_index` and `pw.indexing.SortedIndex` are removed. Sorting is now done with `pw.Table.sort`.
+- **BREAKING**: When using delay in temporal behavior, current time is updated immediately, not in the next batch.
 
 ### Fixed
 - `generate_class` method in `Schema` now correctly renders columns of `UnionType` and `None` types.
+- a bug in delay in temporal behavior. It was possible to emit a single entry twice in a specific situation.
 
 ### Removed
 - **BREAKING**: Removed deprecated methods `pw.Table.unsafe_promise_same_universe_as`, `pw.Table.unsafe_promise_universes_are_pairwise_disjoint`, `pw.Table.unsafe_promise_universe_is_subset_of`, `pw.Table.left_join`, `pw.Table.right_join`, `pw.Table.outer_join`, `pw.stdlib.utils.AsyncTransformer.result`.
