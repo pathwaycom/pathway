@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.iceberg.read` method for reading Apache Iceberg tables into Pathway.
+- methods `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now accept an additional argument `init_mode`, which allows initializing the table before writing.
 
 ### Changed
 - **BREAKING**: `pw.io.deltalake.read` now requires explicit specification of primary key fields.

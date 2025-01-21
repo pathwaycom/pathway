@@ -70,7 +70,7 @@ class PostgresContext:
         self.cursor.execute(condition)
 
     def create_table(self, schema: type[pw.Schema], *, used_for_output: bool) -> str:
-        table_name = f'postgres_{str(uuid.uuid4()).replace("-", "")}'
+        table_name = self.random_table_name()
 
         primary_key_found = False
         fields = []
@@ -106,7 +106,10 @@ class PostgresContext:
         return table_name
 
     def get_table_contents(
-        self, table_name: str, column_names: list[str]
+        self,
+        table_name: str,
+        column_names: list[str],
+        sort_by: str | tuple | None = None,
     ) -> list[dict[str, str | int | bool | float]]:
         select_query = f'SELECT {",".join(column_names)} FROM {table_name};'
         self.cursor.execute(select_query)
@@ -117,7 +120,15 @@ class PostgresContext:
             for name, value in zip(column_names, row):
                 row_map[name] = value
             result.append(row_map)
+        if sort_by is not None:
+            if isinstance(sort_by, tuple):
+                result.sort(key=lambda item: tuple(item[key] for key in sort_by))
+            else:
+                result.sort(key=lambda item: item[sort_by])
         return result
+
+    def random_table_name(self) -> str:
+        return f'postgres_{str(uuid.uuid4()).replace("-", "")}'
 
 
 class MongoDBContext:

@@ -757,6 +757,8 @@ class DataStorage:
     object_pattern: str
     mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None
     table_name: str | None
+    sql_writer_init_mode: SqlWriterInitMode
+
     def __init__(self, *args, **kwargs): ...
 
 class CsvParserSettings:
@@ -806,6 +808,11 @@ class PythonConnectorEventType(Enum):
 class SessionType(Enum):
     NATIVE: SessionType
     UPSERT: SessionType
+
+class SqlWriterInitMode(Enum):
+    DEFAULT: SqlWriterInitMode
+    CREATE_IF_NOT_EXISTS: SqlWriterInitMode
+    REPLACE: SqlWriterInitMode
 
 class SnapshotEvent:
     @staticmethod

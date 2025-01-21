@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
 
+use postgres::Transaction as PsqlTransaction;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PyBytes;
 use rdkafka::util::Timeout;
@@ -1070,14 +1071,133 @@ impl PsqlWriter {
         client: PsqlClient,
         max_batch_size: Option<usize>,
         snapshot_mode: bool,
-    ) -> PsqlWriter {
-        PsqlWriter {
+        table_name: &str,
+        schema: &HashMap<String, Type>,
+        key_field_names: &Option<Vec<String>>,
+        mode: SqlWriterInitMode,
+    ) -> Result<PsqlWriter, WriteError> {
+        let mut writer = PsqlWriter {
             client,
             max_batch_size,
             buffer: Vec::new(),
             snapshot_mode,
-        }
+        };
+        writer.initialize(mode, table_name, schema, key_field_names)?;
+        Ok(writer)
     }
+
+    pub fn initialize(
+        &mut self,
+        mode: SqlWriterInitMode,
+        table_name: &str,
+        schema: &HashMap<String, Type>,
+        key_field_names: &Option<Vec<String>>,
+    ) -> Result<(), WriteError> {
+        match mode {
+            SqlWriterInitMode::Default => return Ok(()),
+            SqlWriterInitMode::Replace | SqlWriterInitMode::CreateIfNotExists => {
+                let mut transaction = self.client.transaction()?;
+
+                if mode == SqlWriterInitMode::Replace {
+                    Self::drop_table_if_exists(&mut transaction, table_name)?;
+                }
+                Self::create_table_if_not_exists(
+                    &mut transaction,
+                    table_name,
+                    schema,
+                    key_field_names,
+                )?;
+
+                transaction.commit()?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn create_table_if_not_exists(
+        transaction: &mut PsqlTransaction,
+        table_name: &str,
+        schema: &HashMap<String, Type>,
+        key_field_names: &Option<Vec<String>>,
+    ) -> Result<(), WriteError> {
+        let columns: Vec<String> = schema
+            .iter()
+            .map(|(name, dtype)| {
+                Self::postgres_data_type(dtype).map(|dtype_str| format!("{name} {dtype_str}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let primary_key = key_field_names
+            .as_ref()
+            .filter(|keys| !keys.is_empty())
+            .map_or(String::new(), |keys| {
+                format!(", PRIMARY KEY ({})", keys.join(", "))
+            });
+
+        transaction.execute(
+            &format!(
+                "CREATE TABLE IF NOT EXISTS {} ({}, time BIGINT, diff BIGINT{})",
+                table_name,
+                columns.join(", "),
+                primary_key
+            ),
+            &[],
+        )?;
+
+        Ok(())
+    }
+
+    fn drop_table_if_exists(
+        transaction: &mut PsqlTransaction,
+        table_name: &str,
+    ) -> Result<(), WriteError> {
+        let query = format!("DROP TABLE IF EXISTS {table_name}");
+        transaction.execute(&query, &[])?;
+        Ok(())
+    }
+
+    fn postgres_data_type(type_: &Type) -> Result<String, WriteError> {
+        Ok(match type_ {
+            Type::Bool => "BOOLEAN".to_string(),
+            Type::Int | Type::Duration => "BIGINT".to_string(),
+            Type::Float => "DOUBLE PRECISION".to_string(),
+            Type::Pointer | Type::String => "TEXT".to_string(),
+            Type::Bytes => "BYTEA".to_string(),
+            Type::Json => "JSONB".to_string(),
+            Type::DateTimeNaive => "TIMESTAMP".to_string(),
+            Type::DateTimeUtc => "TIMESTAMPTZ".to_string(),
+            Type::Optional(wrapped) | Type::List(wrapped) => {
+                if let Type::Any = **wrapped {
+                    return Err(WriteError::UnsupportedType(type_.clone()));
+                }
+
+                let wrapped = Self::postgres_data_type(wrapped)?;
+                if let Type::Optional(_) = type_ {
+                    return Ok(wrapped);
+                }
+                format!("{wrapped}[]")
+            }
+            Type::Tuple(fields) => {
+                let mut iter = fields.iter();
+                if !fields.is_empty() && iter.all(|field| field == &fields[0]) {
+                    let first = Self::postgres_data_type(&fields[0])?;
+                    return Ok(format!("{first}[]"));
+                }
+                return Err(WriteError::UnsupportedType(type_.clone()));
+            }
+            Type::Any | Type::Array(_, _) | Type::PyObjectWrapper => {
+                return Err(WriteError::UnsupportedType(type_.clone()))
+            }
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SqlWriterInitMode {
+    Default,
+    CreateIfNotExists,
+    Replace,
 }
 
 mod to_sql {

@@ -13,6 +13,18 @@ def _connection_string_from_settings(settings: dict):
     return " ".join(k + "=" + v for (k, v) in settings.items())
 
 
+def _init_mode_from_str(init_mode: str) -> api.SqlWriterInitMode:
+    match init_mode:
+        case "default":
+            return api.SqlWriterInitMode.DEFAULT
+        case "create_if_not_exists":
+            return api.SqlWriterInitMode.CREATE_IF_NOT_EXISTS
+        case "replace":
+            return api.SqlWriterInitMode.REPLACE
+        case _:
+            raise ValueError(f"Invalid init_mode: {init_mode}")
+
+
 @check_arg_types
 @trace_user_frame
 def write(
@@ -20,6 +32,7 @@ def write(
     postgres_settings: dict,
     table_name: str,
     max_batch_size: int | None = None,
+    init_mode: str = "default",
 ) -> None:
     """Writes ``table``'s stream of updates to a postgres table.
 
@@ -27,10 +40,15 @@ def write(
     and ``diff`` columns of the integer type.
 
     Args:
+        table: Table to be written.
         postgres_settings: Components for the connection string for Postgres.
         table_name: Name of the target table.
-        max_batch_size: Maximum number of entries allowed to be committed within a \
-single transaction.
+        max_batch_size: Maximum number of entries allowed to be committed within a
+            single transaction.
+        init_mode: "default": The default initialization mode;
+            "create_if_not_exists": initializes the SQL writer by creating the necessary table
+            if they do not already exist;
+            "replace": Initializes the SQL writer by replacing any existing table.
 
     Returns:
         None
@@ -94,6 +112,8 @@ single transaction.
         storage_type="postgres",
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
+        table_name=table_name,
+        sql_writer_init_mode=_init_mode_from_str(init_mode),
     )
     data_format = api.DataFormat(
         format_type="sql",
@@ -116,6 +136,7 @@ def write_snapshot(
     table_name: str,
     primary_key: list[str],
     max_batch_size: int | None = None,
+    init_mode: str = "default",
 ) -> None:
     """Maintains a snapshot of a table within a Postgres table.
 
@@ -126,8 +147,13 @@ def write_snapshot(
         postgres_settings: Components of the connection string for Postgres.
         table_name: Name of the target table.
         primary_key: Names of the fields which serve as a primary key in the Postgres table.
-        max_batch_size: Maximum number of entries allowed to be committed within a \
-single transaction.
+        max_batch_size: Maximum number of entries allowed to be committed within a
+            single transaction.
+        init_mode: "default": The default initialization mode;
+            "create_if_not_exists": initializes the SQL writer by creating the necessary table
+            if they do not already exist;
+            "replace": Initializes the SQL writer by replacing any existing table.
+
 
     Returns:
         None
@@ -177,6 +203,8 @@ single transaction.
         connection_string=_connection_string_from_settings(postgres_settings),
         max_batch_size=max_batch_size,
         snapshot_maintenance_on_output=True,
+        table_name=table_name,
+        sql_writer_init_mode=_init_mode_from_str(init_mode),
     )
     data_format = api.DataFormat(
         format_type="sql_snapshot",

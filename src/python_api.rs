@@ -84,7 +84,7 @@ use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
     PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
-    ReaderBuilder, SqliteReader, Writer,
+    ReaderBuilder, SqlWriterInitMode, SqliteReader, Writer,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -654,6 +654,18 @@ impl<'py> FromPyObject<'py> for MonitoringLevel {
 impl IntoPy<PyObject> for MonitoringLevel {
     fn into_py(self, py: Python<'_>) -> PyObject {
         PyMonitoringLevel(self).into_py(py)
+    }
+}
+
+impl<'py> FromPyObject<'py> for SqlWriterInitMode {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PySqlWriterInitMode>>()?.0)
+    }
+}
+
+impl IntoPy<PyObject> for SqlWriterInitMode {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PySqlWriterInitMode(self).into_py(py)
     }
 }
 
@@ -1759,6 +1771,19 @@ impl PyMonitoringLevel {
 
     #[classattr]
     pub const ALL: MonitoringLevel = MonitoringLevel::All;
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "SqlWriterInitMode")]
+pub struct PySqlWriterInitMode(SqlWriterInitMode);
+
+#[pymethods]
+impl PySqlWriterInitMode {
+    #[classattr]
+    pub const DEFAULT: SqlWriterInitMode = SqlWriterInitMode::Default;
+    #[classattr]
+    pub const CREATE_IF_NOT_EXISTS: SqlWriterInitMode = SqlWriterInitMode::CreateIfNotExists;
+    #[classattr]
+    pub const REPLACE: SqlWriterInitMode = SqlWriterInitMode::Replace;
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
@@ -3709,6 +3734,7 @@ pub struct DataStorage {
     database: Option<String>,
     start_from_timestamp_ms: Option<i64>,
     namespace: Option<Vec<String>>,
+    sql_writer_init_mode: SqlWriterInitMode,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4024,6 +4050,7 @@ impl DataStorage {
         database = None,
         start_from_timestamp_ms = None,
         namespace = None,
+        sql_writer_init_mode = SqlWriterInitMode::Default,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4052,6 +4079,7 @@ impl DataStorage {
         database: Option<String>,
         start_from_timestamp_ms: Option<i64>,
         namespace: Option<Vec<String>>,
+        sql_writer_init_mode: SqlWriterInitMode,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4079,6 +4107,7 @@ impl DataStorage {
             database,
             start_from_timestamp_ms,
             namespace,
+            sql_writer_init_mode,
         }
     }
 }
@@ -4804,14 +4833,25 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
-    fn construct_postgres_writer(&self) -> PyResult<Box<dyn Writer>> {
+    fn construct_postgres_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<Box<dyn Writer>> {
         let connection_string = self.connection_string()?;
         let storage = match Client::connect(connection_string, NoTls) {
             Ok(client) => PsqlWriter::new(
                 client,
                 self.max_batch_size,
                 self.snapshot_maintenance_on_output,
-            ),
+                self.table_name()?,
+                &data_format.value_fields_type_map(py),
+                &data_format.key_field_names,
+                self.sql_writer_init_mode,
+            )
+            .map_err(|e| {
+                PyIOError::new_err(format!("Unable to initialize PostgreSQL table: {e}"))
+            })?,
             Err(e) => {
                 return Err(PyIOError::new_err(format!(
                     "Failed to establish PostgreSQL connection: {e:?}"
@@ -4922,7 +4962,7 @@ impl DataStorage {
         match self.storage_type.as_ref() {
             "fs" => self.construct_fs_writer(),
             "kafka" => self.construct_kafka_writer(),
-            "postgres" => self.construct_postgres_writer(),
+            "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py),
             "deltalake" => self.construct_deltalake_writer(py, data_format),
             "mongodb" => self.construct_mongodb_writer(),
@@ -5498,6 +5538,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyKeyGenerationPolicy>()?;
     m.add_class::<PyReadMethod>()?;
     m.add_class::<PyMonitoringLevel>()?;
+    m.add_class::<PySqlWriterInitMode>()?;
     m.add_class::<Universe>()?;
     m.add_class::<Column>()?;
     m.add_class::<LegacyTable>()?;
