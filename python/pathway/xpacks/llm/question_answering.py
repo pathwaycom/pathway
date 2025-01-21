@@ -436,6 +436,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             prompt: str
             filters: str | None = pw.column_definition(default_value=None)
             model: str | None = pw.column_definition(default_value=default_llm_name)
+            return_context_docs: bool = pw.column_definition(default_value=False)
 
         class SummarizeQuerySchema(pw.Schema):
             text_list: list[str]
@@ -472,11 +473,28 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         )
 
         pw_ai_results += pw_ai_results.select(
-            result=self.llm(
+            response=self.llm(
                 llms.prompt_chat_single_qa(pw.this.rag_prompt),
                 model=pw.this.model,
             )
         )
+
+        @pw.udf
+        def prepare_response(
+            response: str, docs: list[dict], return_context_docs: bool
+        ) -> pw.Json:
+            api_response: dict = {"response": response}
+            if return_context_docs:
+                api_response["context_docs"] = docs
+
+            return pw.Json(api_response)
+
+        pw_ai_results += pw_ai_results.select(
+            result=prepare_response(
+                pw.this.response, pw.this.docs, pw.this.return_context_docs
+            )
+        )
+
         return pw_ai_results
 
     def pw_ai_query(self, pw_ai_queries: pw.Table) -> pw.Table:
@@ -730,6 +748,13 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             ),
         )
 
+        @pw.udf
+        def prepare_response(response: str) -> pw.Json:
+            api_response: dict = {"response": response}
+            return pw.Json(api_response)
+
+        result = result.with_columns(result=prepare_response(pw.this.result))
+
         return result
 
 
@@ -931,6 +956,7 @@ class RAGClient:
         prompt: str,
         filters: str | None = None,
         model: str | None = None,
+        return_context_docs: bool | None = None,
     ):
         """
         Return RAG answer based on a given prompt and optional filter.
@@ -951,6 +977,9 @@ class RAGClient:
 
         if model:
             payload["model"] = model
+
+        if return_context_docs is not None:
+            payload["return_context_docs"] = return_context_docs  # type: ignore
 
         response = send_post_request(api_url, payload, self.additional_headers)
         return response

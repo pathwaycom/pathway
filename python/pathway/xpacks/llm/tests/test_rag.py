@@ -61,13 +61,18 @@ def test_base_rag():
     answer_queries = pw.debug.table_from_rows(
         schema=rag.AnswerQuerySchema,
         rows=[
-            ("foo", None, "gpt3.5"),
+            ("foo", None, "gpt3.5", False),
         ],
     )
 
     answer_output = rag.answer_query(answer_queries)
+
+    casted_table = answer_output.select(
+        result=pw.apply_with_type(lambda x: x.value, str, pw.this.result["response"])
+    )
+
     assert_table_equality(
-        answer_output.select(result=pw.this.result),
+        casted_table,
         pw.debug.table_from_markdown(
             """
             result

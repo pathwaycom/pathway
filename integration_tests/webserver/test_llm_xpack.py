@@ -17,6 +17,8 @@ from llama_index.retrievers.pathway import PathwayRetriever
 import pathway as pw
 from pathway.internals.udfs.caches import InMemoryCache
 from pathway.tests.utils import wait_result_with_checker
+from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer, RAGClient
+from pathway.xpacks.llm.tests.mocks import FakeChatModel, fake_embeddings_model
 from pathway.xpacks.llm.tests.utils import build_vector_store, create_build_rag_app
 from pathway.xpacks.llm.vector_store import VectorStoreClient, VectorStoreServer
 
@@ -548,6 +550,104 @@ def test_serve_callable_with_search(port: int):
             except Exception:
                 return False
         return False
+
+    wait_result_with_checker(
+        checker,
+        20,
+        target=rag_app.run_server,
+    )
+
+
+def test_rag_client(port: int):
+
+    doc0 = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"path": "test_module.py", "user": "admin"},
+            )
+        ],
+    )
+
+    doc1 = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test 2.".encode("utf-8"),
+                {"path": "abc.py", "user": "user0"},
+            )
+        ],
+    )
+
+    vector_server = VectorStoreServer(
+        doc0,
+        doc1,
+        embedder=fake_embeddings_model,
+    )
+
+    chat = FakeChatModel()
+    chat.kwargs = {"model": "gpt"}
+
+    rag_app = BaseRAGQuestionAnswerer(
+        llm=chat,
+        indexer=vector_server,
+    )
+
+    rag_app.build_server(host=PATHWAY_HOST, port=port)
+
+    def wait_for_start(
+        client: RAGClient, retries: int = 3, interval: int | float = 15.0
+    ) -> bool:
+        import time
+
+        EXPECTED_DOCS_COUNT: int = 2
+        docs: list[dict] = []
+
+        for iter in range(retries):
+            try:
+                docs = client.pw_list_documents()
+                if docs and len(docs) >= EXPECTED_DOCS_COUNT:
+                    return True
+            except ConnectionError as conn_err:
+                print(
+                    f"""Connection error on iteration: {iter}.
+                Server not ready. {str(conn_err)}"""
+                )
+            except (Exception, TimeoutError) as e:
+                print(f"Unreachable error on iteration: {iter}. \n{str(e)}")
+
+            time.sleep(interval)
+        return False
+
+    def checker() -> bool:
+        client = RAGClient(host=PATHWAY_HOST, port=port)
+
+        wait_for_start(client)
+
+        response = client.pw_ai_answer("prompt")
+
+        assert isinstance(response, dict)
+        assert response.get("context_docs") is None
+
+        response = client.pw_ai_answer("prompt", return_context_docs=True)
+        assert response["context_docs"]
+
+        response = client.pw_ai_answer(
+            "prompt",
+            filters="globmatch(`test_module.py`, path)",
+            return_context_docs=True,
+        )
+
+        assert len(response["context_docs"]) == 1
+
+        response = client.retrieve(
+            "prompt", metadata_filter="globmatch(`test_module.py`, path)"
+        )
+
+        assert len(response) == 1
+
+        return True
 
     wait_result_with_checker(
         checker,
