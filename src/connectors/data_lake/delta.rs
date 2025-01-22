@@ -9,9 +9,11 @@ use std::time::Duration;
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
 use deltalake::kernel::Action as DeltaLakeAction;
+use deltalake::kernel::ArrayType as DeltaTableArrayType;
 use deltalake::kernel::DataType as DeltaTableKernelType;
 use deltalake::kernel::PrimitiveType as DeltaTablePrimitiveType;
 use deltalake::kernel::StructField as DeltaTableStructField;
+use deltalake::kernel::StructType as DeltaTableStructType;
 use deltalake::operations::create::CreateBuilder as DeltaTableCreateBuilder;
 use deltalake::parquet::file::reader::FileReader as DeltaLakeParquetFileReader;
 use deltalake::parquet::record::reader::RowIter as ParquetRowIterator;
@@ -23,7 +25,9 @@ use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable,
 use s3::bucket::Bucket as S3Bucket;
 use tempfile::tempfile;
 
-use super::{parquet_row_into_values_map, LakeBatchWriter, SPECIAL_OUTPUT_FIELDS};
+use super::{
+    parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
+};
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_storage::ConnectorMode;
 use crate::connectors::scanner::S3Scanner;
@@ -62,14 +66,14 @@ impl DeltaBatchWriter {
         for field in schema_fields {
             struct_fields.push(DeltaTableStructField::new(
                 field.name.clone(),
-                Self::delta_table_primitive_type(&field.type_)?,
+                Self::delta_table_type(&field.type_)?,
                 field.type_.can_be_none(),
             ));
         }
         for (field, type_) in SPECIAL_OUTPUT_FIELDS {
             struct_fields.push(DeltaTableStructField::new(
                 field,
-                Self::delta_table_primitive_type(&type_)?,
+                Self::delta_table_type(&type_)?,
                 false,
             ));
         }
@@ -98,23 +102,73 @@ impl DeltaBatchWriter {
         Ok(table)
     }
 
-    fn delta_table_primitive_type(type_: &Type) -> Result<DeltaTableKernelType, WriteError> {
-        Ok(DeltaTableKernelType::Primitive(match type_ {
-            Type::Bool => DeltaTablePrimitiveType::Boolean,
-            Type::Float => DeltaTablePrimitiveType::Double,
-            Type::String | Type::Json => DeltaTablePrimitiveType::String,
-            Type::Bytes => DeltaTablePrimitiveType::Binary,
-            Type::DateTimeNaive => DeltaTablePrimitiveType::TimestampNtz,
-            Type::DateTimeUtc => DeltaTablePrimitiveType::Timestamp,
-            Type::Int | Type::Duration => DeltaTablePrimitiveType::Long,
-            Type::Optional(wrapped) => return Self::delta_table_primitive_type(wrapped),
-            Type::Any
-            | Type::Array(_, _)
-            | Type::Tuple(_)
-            | Type::List(_)
-            | Type::PyObjectWrapper
-            | Type::Pointer => return Err(WriteError::UnsupportedType(type_.clone())),
-        }))
+    fn delta_table_type(type_: &Type) -> Result<DeltaTableKernelType, WriteError> {
+        let delta_type = match type_ {
+            Type::Bool => DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Boolean),
+            Type::Float => DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Double),
+            Type::String | Type::Json => {
+                DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::String)
+            }
+            Type::PyObjectWrapper | Type::Pointer | Type::Bytes => {
+                DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Binary)
+            }
+            Type::DateTimeNaive => {
+                DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::TimestampNtz)
+            }
+            Type::DateTimeUtc => {
+                DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Timestamp)
+            }
+            Type::Int | Type::Duration => {
+                DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Long)
+            }
+            Type::List(element_type) => {
+                let element_type_is_optional = element_type.is_optional();
+                let nested_element_type = Self::delta_table_type(element_type.unoptionalize())?;
+                let array_type =
+                    DeltaTableArrayType::new(nested_element_type, element_type_is_optional);
+                DeltaTableKernelType::Array(array_type.into())
+            }
+            Type::Array(_, nested_type) => {
+                let wrapped_type = nested_type.as_ref();
+                let elements_kernel_type = match wrapped_type {
+                    Type::Int => DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Long),
+                    Type::Float => DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Double),
+                    _ => panic!("Type::Array can't contain elements of the type {wrapped_type:?}"),
+                };
+                let shape_data_type = DeltaTableKernelType::Array(
+                    DeltaTableArrayType::new(
+                        DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Long),
+                        true,
+                    )
+                    .into(),
+                );
+                let elements_data_type = DeltaTableKernelType::Array(
+                    DeltaTableArrayType::new(elements_kernel_type, true).into(),
+                );
+                let struct_descriptor = DeltaTableStructType::new(vec![
+                    DeltaTableStructField::new("shape", shape_data_type, false),
+                    DeltaTableStructField::new("elements", elements_data_type, false),
+                ]);
+                DeltaTableKernelType::Struct(struct_descriptor.into())
+            }
+            Type::Tuple(nested_types) => {
+                let mut struct_fields = Vec::new();
+                for (index, nested_type) in nested_types.iter().enumerate() {
+                    let nested_type_is_optional = nested_type.is_optional();
+                    let nested_delta_type = Self::delta_table_type(nested_type)?;
+                    struct_fields.push(DeltaTableStructField::new(
+                        format!("[{index}]"),
+                        nested_delta_type,
+                        nested_type_is_optional,
+                    ));
+                }
+                let struct_descriptor = DeltaTableStructType::new(struct_fields);
+                DeltaTableKernelType::Struct(struct_descriptor.into())
+            }
+            Type::Optional(wrapped) => return Self::delta_table_type(wrapped),
+            Type::Any => return Err(WriteError::UnsupportedType(type_.clone())),
+        };
+        Ok(delta_type)
     }
 }
 
@@ -125,6 +179,13 @@ impl LakeBatchWriter for DeltaBatchWriter {
             self.writer.flush_and_commit(&mut self.table).await?;
             Ok::<(), WriteError>(())
         })
+    }
+
+    fn settings(&self) -> LakeWriterSettings {
+        LakeWriterSettings {
+            use_64bit_size_type: false,
+            utc_timezone_name: "UTC".into(),
+        }
     }
 }
 

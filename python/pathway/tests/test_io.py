@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import pickle
 import socket
 import sqlite3
 import sys
@@ -11,9 +12,11 @@ import time
 from typing import Any, Optional
 from unittest import mock
 
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
+from dateutil import tz
 from deltalake import DeltaTable, write_deltalake
 from fs import open_fs
 
@@ -30,7 +33,6 @@ from pathway.tests.utils import (
     T,
     assert_table_equality,
     assert_table_equality_wo_index,
-    assert_table_equality_wo_index_types,
     deprecated_call_here,
     needs_multiprocessing_fork,
     run,
@@ -214,7 +216,7 @@ def test_python_connector_raw():
 
     table = pw.io.python.read(TestSubject(), format="raw")
 
-    assert_table_equality_wo_index_types(
+    assert_table_equality_wo_index(
         table,
         T(
             """
@@ -2358,7 +2360,7 @@ def test_python_connector_metadata():
             3   | baz  | 1701283942
             """,
         ).update_types(
-            data=Any,
+            data=str,
             createdAt=Optional[int],
         ),
         result,
@@ -3418,7 +3420,7 @@ def test_deltalake_no_primary_key(tmp_path: pathlib.Path):
         pw.io.deltalake.read(tmp_path / "lake", schema=InputSchema)
 
 
-def test_iceberg_no_primary_key(tmp_path: pathlib.Path):
+def test_iceberg_no_primary_key():
     class InputSchema(pw.Schema):
         k: int
         v: str
@@ -3433,3 +3435,102 @@ def test_iceberg_no_primary_key(tmp_path: pathlib.Path):
             table_name="test",
             schema=InputSchema,
         )
+
+
+def test_py_object_wrapper_in_deltalake(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.jsonl"
+    lake_path = tmp_path / "delta-lake"
+    output_path = tmp_path / "output.jsonl"
+    input_path.write_text("test")
+
+    table = pw.io.plaintext.read(input_path, mode="static")
+    table = table.select(
+        data=pw.this.data, fun=pw.wrap_py_object(len, serializer=pickle)  # type: ignore
+    )
+    pw.io.deltalake.write(table, lake_path)
+    run_all()
+    G.clear()
+
+    class InputSchema(pw.Schema):
+        data: str = pw.column_definition(primary_key=True)
+        fun: pw.PyObjectWrapper
+
+    @pw.udf
+    def use_python_object(a: pw.PyObjectWrapper, x: str) -> int:
+        return a.value(x)
+
+    table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
+    table = table.select(len=use_python_object(pw.this.fun, pw.this.data))
+    pw.io.jsonlines.write(table, output_path)
+    run_all()
+
+    with open(output_path, "r") as f:
+        data = json.load(f)
+        assert data["len"] == 4
+
+
+def test_deltalake_different_types_serialization(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.jsonl"
+    lake_path = tmp_path / "delta-lake"
+    input_path.write_text("test")
+
+    column_values = {
+        "boolean": True,
+        "integer": 123,
+        "double": -5.6,
+        "string": "abcdef",
+        "binary_data": b"fedcba",
+        "datetime_naive": pw.DateTimeNaive(year=2025, month=1, day=17),
+        "datetime_utc_aware": pw.DateTimeUtc(year=2025, month=1, day=17, tz=tz.UTC),
+        "duration": pw.Duration(days=5),
+        "ints": np.array([9, 9, 9], dtype=int),
+        "floats": np.array([1.1, 2.2, 3.3], dtype=float),
+        "json_data": pw.Json.parse('{"a": 15, "b": "hello"}'),
+        "tuple_data": (b"world", True),
+        "list_data": ["lorem", None, "ipsum"],
+        "fun": pw.wrap_py_object(len, serializer=pickle),
+    }
+    table = pw.io.plaintext.read(input_path, mode="static")
+    table = table.select(
+        data=pw.this.data,
+        **column_values,
+    )
+    table = table.update_types(
+        ints=np.ndarray[None, int],
+        floats=np.ndarray[None, float],
+        tuple_data=tuple[bytes, bool],
+        list_data=list[str | None],
+    )
+    table = table.select()
+    pw.io.deltalake.write(table, lake_path)
+    run_all()
+    G.clear()
+
+    class InputSchema(pw.Schema):
+        data: str = pw.column_definition(primary_key=True)
+        boolean: bool
+        integer: int
+        double: float
+        string: str
+        binary_data: bytes
+        datetime_naive: pw.DateTimeNaive
+        datetime_utc_aware: pw.DateTimeUtc
+        duration: pw.Duration
+        ints: np.ndarray[None, int]
+        floats: np.ndarray[None, float]
+        json_data: pw.Json
+        tuple_data: tuple[bytes, bool]
+        list_data: list[str | None]
+        fun: pw.PyObjectWrapper
+
+    def on_change(key, row, time, is_addition):
+        for field, expected_value in column_values.items():
+            if isinstance(field, np.ndarray):
+                assert row[field].shape() == expected_value.shape()
+                assert (row[field] == expected_value).all()
+            else:
+                assert row[field] == expected_value
+
+    table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
+    pw.io.subscribe(table, on_change=on_change)
+    run_all()

@@ -73,7 +73,11 @@ SUPPORTED_INPUT_FORMATS: set[str] = {
 
 
 class RawDataSchema(pw.Schema):
-    data: Any
+    data: bytes
+
+
+class PlaintextDataSchema(pw.Schema):
+    data: str
 
 
 class MetadataSchema(Schema):
@@ -294,7 +298,12 @@ def construct_schema_and_data_format(
             if param in kwargs and kwargs[param] is not None:
                 raise ValueError(f"Unexpected argument for plaintext format: {param}")
 
-        schema = RawDataSchema
+        parse_utf8 = format != "binary"
+        if parse_utf8:
+            schema = PlaintextDataSchema
+        else:
+            schema = RawDataSchema
+
         if with_metadata:
             schema |= MetadataSchema
         schema, api_schema = read_schema(
@@ -308,7 +317,7 @@ def construct_schema_and_data_format(
         return schema, api.DataFormat(
             format_type=data_format_type,
             **api_schema,
-            parse_utf8=(format != "binary"),
+            parse_utf8=parse_utf8,
             key_generation_policy=(
                 api.KeyGenerationPolicy.ALWAYS_AUTOGENERATE
                 if autogenerate_key

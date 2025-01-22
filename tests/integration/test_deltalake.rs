@@ -5,20 +5,22 @@ use std::path::Path;
 
 use assert_matches::assert_matches;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader;
-use deltalake::datafusion::parquet::record::Field as ParquetField;
+use ndarray::ArrayD;
 use serde_json::json;
 use tempfile::tempdir;
 
 use pathway_engine::connectors::data_format::{
     Formatter, IdentityFormatter, InnerSchemaField, ParsedEvent, TransparentParser,
 };
-use pathway_engine::connectors::data_lake::DeltaBatchWriter;
+use pathway_engine::connectors::data_lake::{parquet_row_into_values_map, DeltaBatchWriter};
 use pathway_engine::connectors::data_storage::{
-    ConnectorMode, DeltaTableReader, LakeWriter, ObjectDownloader, WriteError, Writer,
+    ConnectorMode, ConversionError, DeltaTableReader, LakeWriter, ObjectDownloader, WriteError,
+    Writer,
 };
 use pathway_engine::connectors::SessionType;
 use pathway_engine::engine::{
-    DateTimeNaive, DateTimeUtc, Duration, Key, Result, Timestamp, Type, Value,
+    DateTimeNaive, DateTimeUtc, Duration, Duration as EngineDuration, Key, Result, Timestamp, Type,
+    Value,
 };
 use pathway_engine::python_api::ValueField;
 
@@ -49,23 +51,53 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         writer.write(context)?;
     }
     writer.flush(true)?;
-    let rows_present = read_from_deltalake(test_storage_path.to_str().unwrap(), &type_);
+    let rows_present: Vec<_> = read_from_deltalake(test_storage_path.to_str().unwrap(), &type_)
+        .into_iter()
+        .map(|item| item.unwrap())
+        .collect();
     assert_eq!(rows_present, values);
 
-    let rows_roundtrip = read_with_connector(test_storage_path.to_str().unwrap(), type_)?;
+    let rows_roundtrip = read_with_connector(test_storage_path.to_str().unwrap(), &type_)?;
     assert_eq!(rows_roundtrip, values);
+
+    let is_optional = matches!(type_, Type::Optional(_));
+    if !is_optional {
+        // If the type isn't optional, we run a test for its optional version.
+        // To do that, we create an optional version of the type, append a null-value
+        // to the end of the tested values vector, and run test on the parameters
+        // modified this way.
+        let mut values_with_nulls = values.to_vec();
+        values_with_nulls.push(Value::None);
+        run_single_column_save(Type::Optional(type_.into()), &values_with_nulls)?;
+    } else {
+        // If the type is optional, we've previously added None to the end of the vector.
+        // Then we need to check that the without optionality would fail.
+        let mut rows_roundtrip =
+            read_from_deltalake(test_storage_path.to_str().unwrap(), type_.unoptionalize());
+        assert!(rows_roundtrip.pop().unwrap().is_err());
+        let rows_roundtrip: Vec<_> = rows_roundtrip
+            .into_iter()
+            .map(|item| item.unwrap())
+            .collect();
+        assert_eq!(rows_roundtrip, values[..rows_roundtrip.len()]);
+
+        let mut rows_roundtrip =
+            read_with_connector(test_storage_path.to_str().unwrap(), type_.unoptionalize())?;
+        assert_eq!(rows_roundtrip.pop().unwrap(), Value::Error);
+        assert_eq!(rows_roundtrip, values[..rows_roundtrip.len()]);
+    }
 
     Ok(())
 }
 
-fn read_with_connector(path: &str, type_: Type) -> Result<Vec<Value>> {
+fn read_with_connector(path: &str, type_: &Type) -> Result<Vec<Value>> {
     let mut schema = HashMap::new();
     schema.insert(
         "field".to_string(),
-        InnerSchemaField::new(Type::Optional(type_.clone().into()), None),
+        InnerSchemaField::new(type_.clone(), None),
     );
     let mut type_map = HashMap::new();
-    type_map.insert("field".to_string(), type_);
+    type_map.insert("field".to_string(), type_.clone());
     let reader = DeltaTableReader::new(
         path,
         ObjectDownloader::Local,
@@ -90,8 +122,12 @@ fn read_with_connector(path: &str, type_: Type) -> Result<Vec<Value>> {
     Ok(result)
 }
 
-fn read_from_deltalake(path: &str, type_: &Type) -> Vec<Value> {
+fn read_from_deltalake(path: &str, type_: &Type) -> Vec<Result<Value, Box<ConversionError>>> {
     let mut reread_values = Vec::new();
+    let mut column_types = HashMap::new();
+    column_types.insert("field".to_string(), type_.clone());
+    column_types.insert("time".to_string(), Type::Int);
+    column_types.insert("diff".to_string(), Type::Int);
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -108,37 +144,11 @@ fn read_from_deltalake(path: &str, type_: &Type) -> Vec<Value> {
                 .map(|p| SerializedFileReader::try_from(Path::new(p)).unwrap())
                 .flat_map(|r| r.into_iter());
             for row in rows {
-                let mut has_time_column = false;
-                let mut has_diff_column = false;
-                for (name, field) in row.expect("row reading failed").get_column_iter() {
-                    if name == "time" {
-                        has_time_column = true;
-                    }
-                    if name == "diff" {
-                        has_diff_column = true;
-                    }
-                    if name != "field" {
-                        continue;
-                    }
-                    let parsed_value = match (field, type_) {
-                        (ParquetField::Null, _) => Value::None,
-                        (ParquetField::Bool(b), Type::Bool) => Value::from(*b),
-                        (ParquetField::Long(i), Type::Int) => Value::from(*i),
-                        (ParquetField::Long(i), Type::Duration) => Value::from(Duration::new_with_unit(*i, "us").unwrap()),
-                        (ParquetField::Double(f), Type::Float) => Value::Float((*f).into()),
-                        (ParquetField::Str(s), Type::String) => Value::String(s.into()),
-                        (ParquetField::Str(s), Type::Json) => {
-                            let json: serde_json::Value = serde_json::from_str(s).unwrap();
-                            Value::from(json)
-                        },
-                        (ParquetField::TimestampMicros(us), Type::DateTimeNaive) => Value::from(DateTimeNaive::from_timestamp(*us, "us").unwrap()),
-                        (ParquetField::TimestampMicros(us), Type::DateTimeUtc) => Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap()),
-                        (ParquetField::Bytes(b), Type::Bytes) => Value::Bytes(b.data().into()),
-                        (field, type_) => panic!("Pathway shouldn't have serialized field of type {type_:?} as {field:?}"),
-                    };
-                    reread_values.push(parsed_value);
-                }
-                assert!(has_time_column && has_diff_column);
+                let row = row.expect("row reading failed");
+                let values_map = parquet_row_into_values_map(&row, &column_types);
+                reread_values.push(values_map.get("field").unwrap().clone());
+                assert!(values_map.get("time").is_some());
+                assert!(values_map.get("diff").is_some());
             }
         });
 
@@ -219,21 +229,266 @@ fn test_save_json() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_unsupported_types_fail_as_expected() -> eyre::Result<()> {
-    let unsupported_types = &[
-        Type::Any,
-        Type::Array(Some(2), Type::Int.into()),
-        Type::PyObjectWrapper,
-        Type::Tuple([].into()),
-        Type::Pointer,
+fn test_save_list() -> eyre::Result<()> {
+    let value_list_1 = vec![
+        Value::Duration(EngineDuration::new_with_unit(-1, "s")?),
+        Value::Duration(EngineDuration::new_with_unit(2, "ms")?),
+        Value::Duration(EngineDuration::new_with_unit(0, "ns")?),
     ];
-    for t in unsupported_types {
-        let save_result = run_single_column_save(t.clone(), &[]);
-        assert!(save_result.is_err());
-        assert_matches!(
-            save_result.err().unwrap().downcast::<WriteError>(),
-            Ok(WriteError::UnsupportedType(_))
-        );
-    }
+    let value_list_2 = vec![
+        Value::Duration(EngineDuration::new_with_unit(-10, "s")?),
+        Value::Duration(EngineDuration::new_with_unit(20, "ms")?),
+        Value::Duration(EngineDuration::new_with_unit(0, "ns")?),
+    ];
+    run_single_column_save(
+        Type::List(Type::Duration.into()),
+        &[
+            Value::Tuple(value_list_1.into()),
+            Value::Tuple(value_list_2.into()),
+        ],
+    )
+}
+
+#[test]
+fn test_save_optionals_list() -> eyre::Result<()> {
+    let value_list_1 = vec![
+        Value::Duration(EngineDuration::new_with_unit(-1, "s")?),
+        Value::Duration(EngineDuration::new_with_unit(2, "ms")?),
+        Value::Duration(EngineDuration::new_with_unit(0, "ns")?),
+        Value::None,
+    ];
+    let value_list_2 = vec![
+        Value::Duration(EngineDuration::new_with_unit(-10, "s")?),
+        Value::None,
+        Value::Duration(EngineDuration::new_with_unit(20, "ms")?),
+        Value::Duration(EngineDuration::new_with_unit(0, "ns")?),
+    ];
+    run_single_column_save(
+        Type::List(Type::Optional(Type::Duration.into()).into()),
+        &[
+            Value::Tuple(value_list_1.into()),
+            Value::Tuple(value_list_2.into()),
+        ],
+    )
+}
+
+#[test]
+fn test_save_pointer() -> eyre::Result<()> {
+    run_single_column_save(Type::Pointer, &[Value::Pointer(Key::random())])
+}
+
+#[test]
+fn test_save_int_array() -> eyre::Result<()> {
+    let array1 = ArrayD::<i64>::from_shape_vec(vec![2, 3], vec![0, 1, 2, 3, 4, 5]).unwrap();
+    let array2 =
+        ArrayD::<i64>::from_shape_vec(vec![2, 2, 2], vec![0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+    run_single_column_save(
+        Type::Array(None, Type::Int.into()),
+        &[Value::from(array1), Value::from(array2)],
+    )
+}
+
+#[test]
+fn test_save_float_array() -> eyre::Result<()> {
+    let array1 =
+        ArrayD::<f64>::from_shape_vec(vec![2, 3], vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5]).unwrap();
+    let array2 =
+        ArrayD::<f64>::from_shape_vec(vec![2, 2, 2], vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+            .unwrap();
+    run_single_column_save(
+        Type::Array(None, Type::Float.into()),
+        &[Value::from(array1), Value::from(array2)],
+    )
+}
+
+#[test]
+fn test_save_tuple() -> eyre::Result<()> {
+    let tuple_contents = vec![Type::String, Type::Int];
+    let tuple_type = Type::Tuple(tuple_contents.into());
+
+    run_single_column_save(
+        tuple_type,
+        &[
+            Value::Tuple(vec![Value::String("hello".into()), Value::Int(10)].into()),
+            Value::Tuple(vec![Value::String("world".into()), Value::Int(20)].into()),
+        ],
+    )
+}
+
+#[test]
+fn test_save_tuple_with_optionals() -> eyre::Result<()> {
+    let tuple_contents = vec![
+        Type::String,
+        Type::Optional(Type::Int.into()),
+        Type::Optional(Type::Bool.into()),
+    ];
+    let tuple_type = Type::Tuple(tuple_contents.into());
+
+    run_single_column_save(
+        tuple_type,
+        &[
+            Value::Tuple(vec![Value::String("lorem".into()), Value::Int(10), Value::None].into()),
+            Value::Tuple(
+                vec![
+                    Value::String("ipsum".into()),
+                    Value::Int(20),
+                    Value::Bool(true),
+                ]
+                .into(),
+            ),
+            Value::Tuple(
+                vec![
+                    Value::String("dolor".into()),
+                    Value::None,
+                    Value::Bool(false),
+                ]
+                .into(),
+            ),
+            Value::Tuple(vec![Value::String("sit".into()), Value::None, Value::None].into()),
+        ],
+    )
+}
+
+#[test]
+fn test_save_tuple_nested_tuples() -> eyre::Result<()> {
+    // (String, (Int, (Bool, Bytes)))
+    let tuple_contents = vec![
+        Type::String,
+        Type::Tuple(vec![Type::Int, Type::Tuple(vec![Type::Bool, Type::Bytes].into())].into()),
+    ];
+    let tuple_type = Type::Tuple(tuple_contents.into());
+
+    run_single_column_save(
+        tuple_type,
+        &[
+            Value::Tuple(
+                vec![
+                    Value::String("lorem".into()),
+                    Value::Tuple(
+                        vec![
+                            Value::Int(10),
+                            Value::Tuple(
+                                vec![Value::Bool(true), Value::Bytes(b"lorem".to_vec().into())]
+                                    .into(),
+                            ),
+                        ]
+                        .into(),
+                    ),
+                ]
+                .into(),
+            ),
+            Value::Tuple(
+                vec![
+                    Value::String("ipsum".into()),
+                    Value::Tuple(
+                        vec![
+                            Value::Int(20),
+                            Value::Tuple(
+                                vec![Value::Bool(false), Value::Bytes(b"ipsum".to_vec().into())]
+                                    .into(),
+                            ),
+                        ]
+                        .into(),
+                    ),
+                ]
+                .into(),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn test_save_tuple_nested_tuples_with_arrays() -> eyre::Result<()> {
+    // (String, (Int, (Optional<IntArray>, FloatArray)))
+    let tuple_contents = vec![
+        Type::String,
+        Type::Tuple(
+            vec![
+                Type::Int,
+                Type::Tuple(
+                    vec![
+                        Type::Optional(Type::Array(None, Type::Int.into()).into()),
+                        Type::Array(None, Type::Float.into()),
+                    ]
+                    .into(),
+                ),
+            ]
+            .into(),
+        ),
+    ];
+    let tuple_type = Type::Tuple(tuple_contents.into());
+
+    let int_array_1 = ArrayD::<i64>::from_shape_vec(vec![2, 3], vec![0, 1, 2, 3, 4, 5]).unwrap();
+    let int_array_2 =
+        ArrayD::<i64>::from_shape_vec(vec![2, 2, 2], vec![0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+    let float_array_1 =
+        ArrayD::<f64>::from_shape_vec(vec![2, 3], vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5]).unwrap();
+    let float_array_2 =
+        ArrayD::<f64>::from_shape_vec(vec![2, 2, 2], vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+            .unwrap();
+    let float_array_3 = ArrayD::<f64>::from_shape_vec(vec![2, 1], vec![-1.1, 1.2]).unwrap();
+
+    run_single_column_save(
+        tuple_type,
+        &[
+            Value::Tuple(
+                vec![
+                    Value::String("lorem".into()),
+                    Value::Tuple(
+                        vec![
+                            Value::Int(10),
+                            Value::Tuple(
+                                vec![Value::from(int_array_1), Value::from(float_array_1)].into(),
+                            ),
+                        ]
+                        .into(),
+                    ),
+                ]
+                .into(),
+            ),
+            Value::Tuple(
+                vec![
+                    Value::String("ipsum".into()),
+                    Value::Tuple(
+                        vec![
+                            Value::Int(20),
+                            Value::Tuple(
+                                vec![Value::from(int_array_2), Value::from(float_array_2)].into(),
+                            ),
+                        ]
+                        .into(),
+                    ),
+                ]
+                .into(),
+            ),
+            Value::Tuple(
+                vec![
+                    Value::String("dolor".into()),
+                    Value::Tuple(
+                        vec![
+                            Value::Int(30),
+                            Value::Tuple(vec![Value::None, Value::from(float_array_3)].into()),
+                        ]
+                        .into(),
+                    ),
+                ]
+                .into(),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn test_py_object_wrapper_makes_no_error() -> eyre::Result<()> {
+    run_single_column_save(Type::PyObjectWrapper, &[])
+}
+
+#[test]
+fn test_save_any_is_unsupported() -> eyre::Result<()> {
+    let save_result = run_single_column_save(Type::Any, &[Value::from(json!({"A": 100}))]);
+    assert_matches!(
+        save_result.err().unwrap().downcast::<WriteError>(),
+        Ok(WriteError::UnsupportedType(_))
+    );
     Ok(())
 }

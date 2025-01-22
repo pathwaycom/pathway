@@ -527,11 +527,16 @@ impl Type {
     pub fn can_be_none(&self) -> bool {
         matches!(self, Self::Optional(_) | Self::Any)
     }
+
     pub fn unoptionalize(&self) -> &Self {
         match self {
             Self::Optional(arg) => arg,
             type_ => type_,
         }
+    }
+
+    pub fn is_optional(&self) -> bool {
+        matches!(self, Self::Optional(_))
     }
 }
 

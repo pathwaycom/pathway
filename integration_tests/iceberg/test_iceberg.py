@@ -1,9 +1,12 @@
 import json
+import os
+import pickle
 import threading
 import time
 import uuid
 
 import pandas as pd
+from dateutil import tz
 from pyiceberg.catalog import load_catalog
 
 import pathway as pw
@@ -23,7 +26,7 @@ INPUT_CONTENTS_3 = """{"user_id": 9, "name": "Anna"}
 {"user_id": 11, "name": "Steve"}
 {"user_id": 12, "name": "Sarah"}"""
 
-CATALOG_URI = "http://iceberg:8181"
+CATALOG_URI = os.environ.get("ICEBERG_CATALOG_URI", "http://iceberg:8181")
 INPUT_CONTENTS = {
     1: INPUT_CONTENTS_1,
     2: INPUT_CONTENTS_2,
@@ -205,3 +208,104 @@ def test_iceberg_streaming(tmp_path):
     assert set(pandas_table["name"]) == all_names
     assert set(pandas_table["diff"]) == {1}
     assert len(set(pandas_table["time"])) == len(INPUT_CONTENTS)
+
+
+def test_py_object_wrapper_in_iceberg(tmp_path):
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "output.jsonl"
+    iceberg_table_name = str(uuid.uuid4())
+    input_path.write_text("test")
+
+    table = pw.io.plaintext.read(input_path, mode="static")
+    table = table.select(
+        data=pw.this.data,
+        fun=pw.wrap_py_object(len, serializer=pickle),  # type: ignore
+    )
+    pw.io.iceberg.write(
+        table,
+        catalog_uri=CATALOG_URI,
+        namespace=["my_database"],
+        table_name=iceberg_table_name,
+    )
+    run()
+    G.clear()
+
+    class InputSchema(pw.Schema):
+        data: str = pw.column_definition(primary_key=True)
+        fun: pw.PyObjectWrapper
+
+    @pw.udf
+    def use_python_object(a: pw.PyObjectWrapper, x: str) -> int:
+        return a.value(x)
+
+    table = pw.io.iceberg.read(
+        catalog_uri=CATALOG_URI,
+        namespace=["my_database"],
+        table_name=iceberg_table_name,
+        mode="static",
+        schema=InputSchema,
+    )
+    table = table.select(len=use_python_object(pw.this.fun, pw.this.data))
+    pw.io.jsonlines.write(table, output_path)
+    run()
+
+    with open(output_path, "r") as f:
+        data = json.load(f)
+        assert data["len"] == 4
+
+
+def test_iceberg_different_types_serialization(tmp_path):
+    input_path = tmp_path / "input.jsonl"
+    iceberg_table_name = str(uuid.uuid4())
+    input_path.write_text("test")
+
+    column_values = {
+        "boolean": True,
+        "integer": 123,
+        "double": -5.6,
+        "string": "abcdef",
+        "binary_data": b"fedcba",
+        "datetime_naive": pw.DateTimeNaive(year=2025, month=1, day=17),
+        "datetime_utc_aware": pw.DateTimeUtc(year=2025, month=1, day=17, tz=tz.UTC),
+        "duration": pw.Duration(days=5),
+        "json_data": pw.Json.parse('{"a": 15, "b": "hello"}'),
+    }
+    table = pw.io.plaintext.read(input_path, mode="static")
+    table = table.select(
+        data=pw.this.data,
+        **column_values,
+    )
+    pw.io.iceberg.write(
+        table,
+        catalog_uri=CATALOG_URI,
+        namespace=["my_database"],
+        table_name=iceberg_table_name,
+    )
+    run()
+    G.clear()
+
+    class InputSchema(pw.Schema):
+        data: str = pw.column_definition(primary_key=True)
+        boolean: bool
+        integer: int
+        double: float
+        string: str
+        binary_data: bytes
+        datetime_naive: pw.DateTimeNaive
+        datetime_utc_aware: pw.DateTimeUtc
+        duration: pw.Duration
+        json_data: pw.Json
+
+    def on_change(key, row, time, is_addition):
+        for field, expected_value in column_values.items():
+            assert row[field] == expected_value
+
+    table = pw.io.iceberg.read(
+        catalog_uri=CATALOG_URI,
+        namespace=["my_database"],
+        table_name=iceberg_table_name,
+        mode="static",
+        schema=InputSchema,
+    )
+    pw.io.subscribe(table, on_change=on_change)
+    run()

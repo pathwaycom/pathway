@@ -9,8 +9,8 @@ use deltalake::parquet::file::properties::WriterProperties;
 use futures::{stream, StreamExt, TryStreamExt};
 use iceberg::scan::{FileScanTask, FileScanTaskStream};
 use iceberg::spec::{
-    NestedField, PrimitiveType as IcebergPrimitiveType, Schema as IcebergSchema,
-    Type as IcebergType,
+    ListType as IcebergListType, NestedField, NestedField as IcebergNestedField,
+    PrimitiveType as IcebergPrimitiveType, Schema as IcebergSchema, Type as IcebergType,
 };
 use iceberg::table::Table as IcebergTable;
 use iceberg::transaction::Transaction;
@@ -25,7 +25,9 @@ use iceberg::{Catalog, Namespace, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_catalog_rest::{RestCatalog, RestCatalogConfig};
 use tokio::runtime::Runtime as TokioRuntime;
 
-use super::{columns_into_pathway_values, LakeBatchWriter, SPECIAL_OUTPUT_FIELDS};
+use super::{
+    columns_into_pathway_values, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
+};
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_storage::ConnectorMode;
 use crate::connectors::metadata::IcebergMetadata;
@@ -159,22 +161,34 @@ impl IcebergTableParams {
     }
 
     fn iceberg_type(type_: &Type) -> Result<IcebergType, WriteError> {
-        Ok(IcebergType::Primitive(match type_ {
-            Type::Bool => IcebergPrimitiveType::Boolean,
-            Type::Float => IcebergPrimitiveType::Double,
-            Type::String | Type::Json => IcebergPrimitiveType::String,
-            Type::Bytes => IcebergPrimitiveType::Binary,
-            Type::DateTimeNaive => IcebergPrimitiveType::Timestamp,
-            Type::DateTimeUtc => IcebergPrimitiveType::Timestamptz,
-            Type::Int | Type::Duration => IcebergPrimitiveType::Long,
-            Type::Optional(wrapped) => return Self::iceberg_type(wrapped),
-            Type::Any
-            | Type::Array(_, _)
-            | Type::Tuple(_)
-            | Type::List(_)  // TODO: it is possible to support lists with the usage of IcebergType::List
-            | Type::PyObjectWrapper
-            | Type::Pointer => return Err(WriteError::UnsupportedType(type_.clone())),
-        }))
+        let iceberg_type = match type_ {
+            Type::Bool => IcebergType::Primitive(IcebergPrimitiveType::Boolean),
+            Type::Float => IcebergType::Primitive(IcebergPrimitiveType::Double),
+            Type::String | Type::Json => IcebergType::Primitive(IcebergPrimitiveType::String),
+            Type::Bytes | Type::PyObjectWrapper | Type::Pointer => {
+                IcebergType::Primitive(IcebergPrimitiveType::Binary)
+            }
+            Type::DateTimeNaive => IcebergType::Primitive(IcebergPrimitiveType::Timestamp),
+            Type::DateTimeUtc => IcebergType::Primitive(IcebergPrimitiveType::Timestamptz),
+            Type::Int | Type::Duration => IcebergType::Primitive(IcebergPrimitiveType::Long),
+            Type::Optional(wrapped) => Self::iceberg_type(wrapped)?,
+            Type::List(element_type) => {
+                let element_type_is_optional = element_type.is_optional();
+                let nested_element_type = Self::iceberg_type(element_type.unoptionalize())?;
+                let nested_type = IcebergNestedField::new(
+                    0,
+                    "element",
+                    nested_element_type,
+                    !element_type_is_optional,
+                );
+                let array_type = IcebergListType::new(nested_type.into());
+                IcebergType::List(array_type)
+            }
+            Type::Any | Type::Array(_, _) | Type::Tuple(_) => {
+                return Err(WriteError::UnsupportedType(type_.clone()))
+            }
+        };
+        Ok(iceberg_type)
     }
 }
 
@@ -200,6 +214,7 @@ impl IcebergBatchWriter {
             &namespace,
             db_params.warehouse.as_ref(),
         )?;
+
         Ok(Self {
             runtime,
             catalog,
@@ -253,6 +268,13 @@ impl LakeBatchWriter for IcebergBatchWriter {
 
             Ok::<(), WriteError>(())
         })
+    }
+
+    fn settings(&self) -> LakeWriterSettings {
+        LakeWriterSettings {
+            use_64bit_size_type: true,
+            utc_timezone_name: "+00:00".into(),
+        }
     }
 }
 

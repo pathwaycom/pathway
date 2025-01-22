@@ -25,6 +25,7 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     MetadataSchema,
+    PlaintextDataSchema,
     RawDataSchema,
     assert_schema_or_value_columns_not_none,
     get_data_format_type,
@@ -418,7 +419,10 @@ computations from the moment they were terminated last time.
             raise ValueError("raw format must not be used with primary_key property")
         if value_columns:
             raise ValueError("raw format must not be used with value_columns property")
-        schema = RawDataSchema
+        if format == "binary":
+            schema = RawDataSchema
+        else:
+            schema = PlaintextDataSchema
         if subject._with_metadata is True:
             schema |= MetadataSchema
     assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)
