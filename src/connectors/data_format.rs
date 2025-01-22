@@ -1001,7 +1001,7 @@ impl Formatter for DsvFormatter {
         Ok(FormatterContext::new(
             payloads,
             *key,
-            Vec::new(),
+            values.to_vec(),
             time,
             diff,
         ))
@@ -1852,7 +1852,7 @@ impl Formatter for JsonLinesFormatter {
         Ok(FormatterContext::new_single_payload(
             serializer.into_inner(),
             *key,
-            Vec::new(),
+            values.to_vec(),
             time,
             diff,
         ))

@@ -577,3 +577,41 @@ def test_start_from_timestamp_ms_seek_to_end(
         ),
         30,
     )
+
+
+@pytest.mark.flaky(reruns=3)
+def test_kafka_json_key(tmp_path, kafka_context):
+    input_path = tmp_path / "input.jsonl"
+    with open(input_path, "w") as f:
+        f.write(json.dumps({"k": 0, "v": "foo"}))
+        f.write("\n")
+        f.write(json.dumps({"k": 1, "v": "bar"}))
+        f.write("\n")
+        f.write(json.dumps({"k": 2, "v": "baz"}))
+        f.write("\n")
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=kafka_context.output_topic,
+        format="json",
+        key=table["v"],
+        headers=[table["k"], table["v"]],
+    )
+    pw.run()
+    output_topic_contents = kafka_context.read_output_topic()
+    for message in output_topic_contents:
+        key = message.key
+        value = json.loads(message.value)
+        assert value["v"].encode("utf-8") == key
+        assert "k" in value
+        headers = {}
+        for header_key, header_value in message.headers:
+            headers[header_key] = header_value
+        assert headers["k"] == str(value["k"]).encode("utf-8")
+        assert headers["v"] == f'"{value["v"]}"'.encode("utf-8")

@@ -548,16 +548,17 @@ def write(
             ``table`` must either contain exactly one binary column that will be dumped as it is into the
             Kafka message, or the reference to the target binary column must be specified explicitly
             in the ``value`` parameter. Similarly, if "plaintext" is chosen, the table should consist
-            of a single column of the string type.
+            of a single column of the string type, or the reference to the target string column
+            must be specified explicitly in the ``value`` parameter.
         delimiter: field delimiter to be used in case of delimiter-separated values
-            format.
-        key: reference to the column that should be used as a key in the
-            produced message in 'plaintext' or 'raw' format. If left empty, an internal primary key will
-            be used.
+            format 'dsv'.
+        key: reference to the column that should be used as a key in the produced message.
+            If left empty, an internal primary key will be used.
         value: reference to the column that should be used as a value in
             the produced message in 'plaintext' or 'raw' format. It can be deduced automatically if the
             table has exactly one column. Otherwise it must be specified directly. It also has to be
-            explicitly specified, if ``key`` is set.
+            explicitly specified, if ``key`` is set. The type of the column must correspond to the
+            format used: ``str`` for the 'plaintext' format and ``binary`` for the 'raw' format.
         headers: references to the table fields that must be provided as message
             headers. These headers are named in the same way as fields that are forwarded and correspond
             to the string representations of the respective values encoded in UTF-8. If a binary
