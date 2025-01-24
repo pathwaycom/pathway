@@ -1,4 +1,7 @@
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
 Copyright (c) 2020 Frommi
+Copyright (c) 2017-2024 oyvindln
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
