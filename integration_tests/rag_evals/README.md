@@ -19,6 +19,10 @@ Run the following to get credentials.
 
 Create the `.env` file and put API key.
 
+## Customizing the Pathway params
+
+Simply change the config in the `app.yaml` file.
+
 ## TODO
 - Add examples to RAGAS answer_correctness evaluator to relax the evaluation (should bump the scored performance a bit)
 - Add gitignore

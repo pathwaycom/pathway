@@ -370,7 +370,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     ...     prompt_template=prompt_template,
     ... )
     >>> app = QASummaryRestServer(app_host, app_port, rag)  # doctest: +SKIP
-    >>> app.run_server()  # doctest: +SKIP
+    >>> app.run()  # doctest: +SKIP
     """  # noqa: E501
 
     def __init__(
