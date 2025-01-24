@@ -3,6 +3,8 @@
     <img src="https://pathway.com/logo-light.svg"/>
   </a>
   <br /><br />
+  <a href="https://trendshift.io/repositories/10388" target="_blank"><img src="https://trendshift.io/api/badge/repositories/10388" alt="pathwaycom%2Fpathway | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+  <br /><br />
 </div>
 <p align="center">
         <a href="https://github.com/pathwaycom/pathway/actions/workflows/ubuntu_test.yml">
