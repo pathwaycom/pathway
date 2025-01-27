@@ -4,3 +4,5 @@ seaborn
 mlflow
 ragas==0.2.7
 langchain-openai
+langchain-core
+langchain-community

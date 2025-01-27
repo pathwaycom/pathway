@@ -5,6 +5,8 @@ from ragas.metrics import AnswerCorrectness, Faithfulness
 
 from .evaluator import Data, PredictedData
 
+# set_llm_cache(SQLiteCache(database_path="./Cache/langchain_ragas_cache.db"))
+
 
 def create_ragas_dataset(dataset: list[PredictedData]) -> EvaluationDataset:
 
@@ -50,7 +52,9 @@ def ragas_dataset_to_eval(dataset: EvaluationDataset, file: str) -> list[Data]:
 
 def run_ragas_evaluations(dataset: EvaluationDataset):
 
-    evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini"))
+    evaluator_llm = LangchainLLMWrapper(
+        ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+    )
 
     answer_correctness_metric = AnswerCorrectness(
         llm=evaluator_llm,
