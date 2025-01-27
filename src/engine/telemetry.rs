@@ -1,3 +1,4 @@
+use opentelemetry::InstrumentationScope;
 use std::{
     sync::Arc,
     thread::{Builder, JoinHandle},
@@ -13,23 +14,23 @@ use nix::sys::{
     resource::{getrusage, UsageWho},
     time::TimeValLike,
 };
-use opentelemetry::metrics::noop::NoopMeterProvider;
-use opentelemetry::{global, KeyValue};
-use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry::{
+    global,
+    metrics::{Meter, MeterProvider},
+    KeyValue,
+};
+use opentelemetry_otlp::{Protocol, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::{
-    metrics::{
-        reader::{DefaultAggregationSelector, DefaultTemporalitySelector},
-        PeriodicReader, SdkMeterProvider,
-    },
+    metrics::{PeriodicReader, SdkMeterProvider},
     propagation::TraceContextPropagator,
     runtime,
-    trace::{self, TracerProvider},
+    trace::TracerProvider,
     Resource,
 };
 use opentelemetry_semantic_conventions::resource::{
     SERVICE_INSTANCE_ID, SERVICE_NAME, SERVICE_NAMESPACE, SERVICE_VERSION,
 };
-use sysinfo::{get_current_pid, ProcessesToUpdate, System};
+use sysinfo::{get_current_pid, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::mpsc;
 use tonic::transport::ClientTlsConfig;
 use uuid::Uuid;
@@ -73,31 +74,24 @@ impl Telemetry {
         ])
     }
 
-    fn base_otel_exporter_builder(
-        server_endpoint: &str,
-    ) -> opentelemetry_otlp::TonicExporterBuilder {
-        let tls_config = ClientTlsConfig::new().with_enabled_roots();
-        opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_protocol(Protocol::Grpc)
-            .with_endpoint(server_endpoint)
-            .with_timeout(OPENTELEMETRY_EXPORT_TIMEOUT)
-            .with_tls_config(tls_config)
-    }
-
     fn init_tracer_provider(&self) {
         if self.config.tracing_servers.is_empty() {
             return;
         }
         global::set_text_map_propagator(TraceContextPropagator::new());
 
-        let mut provider_builder = TracerProvider::builder()
-            .with_config(trace::Config::default().with_resource(self.resource()));
+        let mut provider_builder = TracerProvider::builder().with_resource(self.resource());
 
         for endpoint in &self.config.tracing_servers {
-            let exporter = Telemetry::base_otel_exporter_builder(endpoint)
-                .build_span_exporter()
+            let exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_protocol(Protocol::Grpc)
+                .with_endpoint(endpoint)
+                .with_timeout(OPENTELEMETRY_EXPORT_TIMEOUT)
+                .with_tls_config(ClientTlsConfig::new().with_enabled_roots())
+                .build()
                 .expect("exporter initialization should not fail");
+
             provider_builder = provider_builder.with_batch_exporter(exporter, runtime::Tokio);
         }
 
@@ -112,12 +106,14 @@ impl Telemetry {
         let mut provider_builder = SdkMeterProvider::builder().with_resource(self.resource());
 
         for endpoint in &self.config.metrics_servers {
-            let exporter = Telemetry::base_otel_exporter_builder(endpoint)
-                .build_metrics_exporter(
-                    Box::new(DefaultAggregationSelector::new()),
-                    Box::new(DefaultTemporalitySelector::new()),
-                )
-                .unwrap();
+            let exporter = opentelemetry_otlp::MetricExporter::builder()
+                .with_tonic()
+                .with_protocol(Protocol::Grpc)
+                .with_endpoint(endpoint)
+                .with_timeout(OPENTELEMETRY_EXPORT_TIMEOUT)
+                .with_tls_config(ClientTlsConfig::new().with_enabled_roots())
+                .build()
+                .expect("exporter initialization should not fail");
 
             let reader = PeriodicReader::builder(exporter, runtime::Tokio)
                 .with_interval(PERIODIC_READER_INTERVAL)
@@ -134,16 +130,32 @@ impl Telemetry {
     }
 
     fn init(&self) -> TelemetryGuard {
+        // Since opentelemetry 0.27.0, the NoopMeterProvider is private, thus we store initial one.
+        // https://github.com/open-telemetry/opentelemetry-rust/issues/2444
+        let noop_meter_provider = MeterProviderWrapper(global::meter_provider());
         let meter_provider = self.init_meter_provider();
         self.init_tracer_provider();
 
-        TelemetryGuard { meter_provider }
+        TelemetryGuard {
+            meter_provider,
+            noop_meter_provider,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MeterProviderWrapper(Arc<dyn MeterProvider + Send + Sync>);
+
+impl MeterProvider for MeterProviderWrapper {
+    fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
+        self.0.meter_with_scope(scope)
     }
 }
 
 #[must_use]
 struct TelemetryGuard {
     meter_provider: Option<SdkMeterProvider>,
+    noop_meter_provider: MeterProviderWrapper,
 }
 
 impl Drop for TelemetryGuard {
@@ -151,8 +163,7 @@ impl Drop for TelemetryGuard {
         if let Some(provider) = self.meter_provider.take() {
             provider.force_flush().unwrap_or(());
         }
-        global::set_meter_provider(NoopMeterProvider::new());
-
+        global::set_meter_provider(self.noop_meter_provider.clone());
         global::shutdown_tracer_provider();
     }
 }
@@ -314,37 +325,49 @@ fn start_telemetry_thread(
 }
 
 fn register_stats_metrics(stats: &Arc<ArcSwapOption<ProberStats>>) {
-    let stats = stats.clone();
-
     let meter = global::meter("pathway-stats");
 
-    let input_latency_gauge = meter
+    let input_stats = stats.clone();
+    meter
         .u64_observable_gauge(INPUT_LATENCY)
         .with_unit("ms")
-        .init();
+        .with_callback(move |observer| {
+            let now = SystemTime::now();
+            if let Some(ref stats) = *input_stats.load() {
+                if let Some(latency) = stats.input_stats.latency(now) {
+                    observer.observe(latency, &[]);
+                }
+            }
+        })
+        .build();
 
-    let output_latency_gauge = meter
+    let output_stats = stats.clone();
+    meter
         .u64_observable_gauge(OUTPUT_LATENCY)
         .with_unit("ms")
-        .init();
-
-    meter
-        .register_callback(
-            &[input_latency_gauge.as_any(), output_latency_gauge.as_any()],
-            move |observer| {
-                let now = SystemTime::now();
-
-                if let Some(ref stats) = *stats.load() {
-                    if let Some(latency) = stats.input_stats.latency(now) {
-                        observer.observe_u64(&input_latency_gauge, latency, &[]);
-                    }
-                    if let Some(latency) = stats.output_stats.latency(now) {
-                        observer.observe_u64(&output_latency_gauge, latency, &[]);
-                    }
+        .with_callback(move |observer| {
+            let now = SystemTime::now();
+            if let Some(ref stats) = *output_stats.load() {
+                if let Some(latency) = stats.output_stats.latency(now) {
+                    observer.observe(latency, &[]);
                 }
-            },
-        )
-        .expect("Initializing meter callback should not fail");
+            }
+        })
+        .build();
+}
+
+fn cpu_refresh(pid: Pid, sys: &mut System) {
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_cpu(),
+    );
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_cpu(),
+    );
 }
 
 fn register_sys_metrics() {
@@ -352,45 +375,43 @@ fn register_sys_metrics() {
 
     let pid = get_current_pid().expect("Failed to get current PID");
 
-    let memory_usage_gauge = meter
+    meter
         .u64_observable_gauge(PROCESS_MEMORY_USAGE)
         .with_unit("byte")
-        .init();
-
-    let cpu_user_time_gauge = meter
-        .i64_observable_gauge(PROCESS_CPU_USER_TIME)
-        .with_unit("s")
-        .init();
-
-    let cpu_system_time_gauge = meter
-        .i64_observable_gauge(PROCESS_CPU_SYSTEM_TIME)
-        .with_unit("s")
-        .init();
+        .with_callback(move |observer| {
+            let mut sys: System = System::new();
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
+            if let Some(process) = sys.process(pid) {
+                observer.observe(process.memory(), &[]);
+            }
+        })
+        .build();
 
     meter
-        .register_callback(
-            &[
-                memory_usage_gauge.as_any(),
-                cpu_user_time_gauge.as_any(),
-                cpu_system_time_gauge.as_any(),
-            ],
-            move |observer| {
-                let mut sys: System = System::new();
-                let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
-                sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        .i64_observable_gauge(PROCESS_CPU_USER_TIME)
+        .with_unit("s")
+        .with_callback(move |observer| {
+            let mut sys: System = System::new();
+            cpu_refresh(pid, &mut sys);
+            let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
+            observer.observe(usage.user_time().num_seconds(), &[]);
+        })
+        .build();
 
-                if let Some(process) = sys.process(pid) {
-                    observer.observe_u64(&memory_usage_gauge, process.memory(), &[]);
-                }
-                observer.observe_i64(&cpu_user_time_gauge, usage.user_time().num_seconds(), &[]);
-                observer.observe_i64(
-                    &cpu_system_time_gauge,
-                    usage.system_time().num_seconds(),
-                    &[],
-                );
-            },
-        )
-        .expect("Initializing meter callback should not fail");
+    meter
+        .i64_observable_gauge(PROCESS_CPU_SYSTEM_TIME)
+        .with_unit("s")
+        .with_callback(move |observer| {
+            let mut sys: System = System::new();
+            cpu_refresh(pid, &mut sys);
+            let usage = getrusage(UsageWho::RUSAGE_SELF).expect("Failed to call getrusage");
+            observer.observe(usage.system_time().num_seconds(), &[]);
+        })
+        .build();
 }
 
 impl Drop for Runner {
