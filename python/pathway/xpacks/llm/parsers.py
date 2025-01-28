@@ -6,14 +6,10 @@ chunks along with their metadata.
 """
 from __future__ import annotations
 
-import asyncio
 import inspect
 import io
 import logging
-import os
 import re
-import subprocess
-import tempfile
 import warnings
 from collections.abc import Callable
 from functools import partial
@@ -27,13 +23,7 @@ import pathway as pw
 from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm import llms, prompts
-from pathway.xpacks.llm._parser_utils import (
-    img_to_b64,
-    maybe_downscale,
-    parse,
-    parse_image_details,
-)
+from pathway.xpacks.llm import _parser_utils, llms, prompts
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
 if TYPE_CHECKING:
@@ -42,9 +32,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# TODO: fix it
 DEFAULT_VISION_LLM = llms.OpenAIChat(
     model=DEFAULT_VISION_MODEL,
-    cache_strategy=udfs.DiskCache(),
+    cache_strategy=udfs.DefaultCache(),
     retry_strategy=udfs.ExponentialBackoffRetryStrategy(max_retries=4),
     verbose=True,
 )
@@ -230,6 +221,135 @@ class ParseUnstructured(pw.UDF):
             removed if they are specific to a single element, e.g. `category_depth`.
         """
         return super().__call__(contents, **kwargs)
+
+
+# uses https://github.com/DS4SD/docling
+# MIT licensed
+class DoclingParser(pw.UDF):
+    """
+    Parse PDFs using `docling` library.
+    This class is a wrapper around the `DocumentConverter` from `docling` library with some extra
+    functionality to also parse images from the PDFs using vision LLMs.
+
+    Args:
+        parse_images (bool): whether to parse the detected images from the PDF. Detected images will be
+            cropped and described by the vision LLM and embedded in the markdown output.
+            If set to `True`, `multimodal_llm` should be provided.
+            If set to `False`, images will be replaced with placeholders in the markdown output.
+        multimodal_llm (llms.OpenAIChat | llms.LiteLLMChat | None): LLM for parsing the image.
+            Provided LLM should support image inputs in the same API format as OpenAI does.
+            Required if `parse_images` is set to `True`.
+        cache_strategy (udfs.CacheStrategy | None): Defines the caching mechanism.
+        pdf_pipeline_options (dict): Additional options for the `DocumentConverter` from `docling`.
+
+    """
+
+    def __init__(
+        self,
+        parse_images: bool = False,
+        multimodal_llm: llms.OpenAIChat | llms.LiteLLMChat | None = None,
+        cache_strategy: udfs.CacheStrategy | None = None,
+        pdf_pipeline_options: dict = {},
+    ):
+        with optional_imports("xpack-llm-docs"):
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        self.multimodal_llm: llms.OpenAIChat | llms.LiteLLMChat | None
+        self.parse_images = parse_images
+
+        if parse_images:
+            if multimodal_llm is None:
+                warnings.warn(
+                    "`parse_images` is set to `True`, but `multimodal_llm` is "
+                    f"not specified in DoclingParser, defaulting to `{DEFAULT_VISION_MODEL}`."
+                )
+                multimodal_llm = llms.OpenAIChat(
+                    model=DEFAULT_VISION_MODEL,
+                    cache_strategy=udfs.DefaultCache(),
+                    retry_strategy=udfs.ExponentialBackoffRetryStrategy(max_retries=4),
+                    verbose=True,
+                )
+            self.image_mode = "embedded"  # will make docling export document to markdown with base64-embedded images
+            self.multimodal_llm = multimodal_llm
+        else:
+            self.multimodal_llm = None
+            self.image_mode = "placeholder"  # will make docling export document to markdown with image placeholders
+
+        default_pipeline_options = {
+            "do_table_structure": True,
+            "generate_picture_images": True if parse_images else False,
+            "generate_page_images": False,
+            "do_ocr": True,
+            "images_scale": 2,
+        }
+
+        pipeline_options = PdfPipelineOptions(
+            **(default_pipeline_options | pdf_pipeline_options)
+        )
+        pipeline_options.table_structure_options.do_cell_matching = False
+
+        # actual docling converter
+        self.converter: DocumentConverter = DocumentConverter(
+            format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)},
+            # TODO: Add more file types
+        )
+        super().__init__(cache_strategy=cache_strategy)
+
+    async def replace_images_with_descriptions(self, md_doc: str) -> str:
+        if not self.multimodal_llm:
+            raise ValueError(
+                "Image parsing is not enabled, cannot replace images with descriptions."
+            )
+
+        image_pattern = re.compile(r"!\[Image\]\(data:image/[^;]+;base64,([^)\s]+)\)")
+        base64_strings = list(set(image_pattern.findall(md_doc)))
+
+        image_descriptions, _ = await _parser_utils._parse_b64_images(
+            base64_strings,
+            self.multimodal_llm,
+            prompts.DEFAULT_IMAGE_PARSE_PROMPT,
+            run_mode="parallel",
+            parse_details=False,
+            detail_parse_schema=None,
+            parse_fn=_parser_utils.parse_image,
+            parse_image_details_fn=None,
+        )
+        # wrap descriptions in newlines for better readability
+        # TODO: consider special token for image descriptions for better chunking
+        image_descriptions = [f"\n{desc}\n" for desc in image_descriptions]
+
+        base64_to_desc = dict(zip(base64_strings, image_descriptions))
+
+        def replace_image(match):
+            base64_str = match.group(1)
+            return base64_to_desc.get(base64_str, "[Image removed]")
+
+        updated_markdown = image_pattern.sub(replace_image, md_doc)
+        return updated_markdown
+
+    async def parse(self, contents: bytes) -> list[tuple[str, dict]]:
+
+        with optional_imports("xpack-llm-docs"):
+            from docling_core.types.io import DocumentStream
+
+        stream = DocumentStream(name="document.pdf", stream=BytesIO(contents))
+
+        # parse document
+        parsing_result = self.converter.convert(stream)
+        doc = parsing_result.document
+
+        # get markdown from parsed document
+        doc_as_md = doc.export_to_markdown(image_mode=self.image_mode)
+
+        # replace all images with their descriptions from the vision LLM
+        if self.parse_images:
+            doc_as_md = await self.replace_images_with_descriptions(doc_as_md)
+
+        return [(doc_as_md, {})]
+
+    async def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
+        return await self.parse(contents)
 
 
 class OpenParse(pw.UDF):
@@ -462,7 +582,7 @@ class ImageParser(pw.UDF):
             retry_strategy=retry_strategy
         )
 
-        self.parse_fn = parser_executor._wrap(parse)
+        self.parse_fn = parser_executor._wrap(_parser_utils.parse_image)
 
         if self.parse_details:
             _schema_parser_executor: udfs.Executor = udfs.async_executor(
@@ -476,7 +596,7 @@ class ImageParser(pw.UDF):
             ).parameters.keys()
 
             parse_image_details_fn = partial(
-                parse_image_details,
+                _parser_utils.parse_image_details,
                 model=llm_args["model"],
                 openai_client_args={
                     key: llm_args[key]
@@ -497,11 +617,13 @@ class ImageParser(pw.UDF):
         logger.info("`ImageParser` applying `maybe_downscale`.")
 
         images = [
-            maybe_downscale(img, self.max_image_size, self.downsize_horizontal_width)
+            _parser_utils.maybe_downscale(
+                img, self.max_image_size, self.downsize_horizontal_width
+            )
             for img in images
         ]
 
-        parsed_content, parsed_details = await parse_images(
+        parsed_content, parsed_details = await _parser_utils.parse_images(
             images,
             self.llm,
             self.parse_prompt,
@@ -531,39 +653,6 @@ class ImageParser(pw.UDF):
         ]
 
         return docs
-
-
-def _convert_pptx_to_pdf(contents: bytes) -> bytes:
-    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as pptx_temp:
-        pptx_temp.write(contents)
-        pptx_temp_path = pptx_temp.name
-
-    pdf_temp_path = pptx_temp_path.replace(".pptx", ".pdf").split(os.path.sep)[-1]
-
-    try:
-        result = subprocess.run(
-            ["soffice", "--headless", "--convert-to", "pdf", pptx_temp_path],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-        logger.info(f"`_convert_pptx_to_pdf` result: {str(result)}")
-
-        with open(pdf_temp_path, "rb") as pdf_temp:
-            pdf_contents = pdf_temp.read()
-
-    except FileNotFoundError:
-        raise Exception(
-            "`LibreOffice` is not installed or `soffice` command is not found. Please install LibreOffice."
-        )
-
-    finally:
-        os.remove(pptx_temp_path)
-        if os.path.exists(pdf_temp_path):
-            os.remove(pdf_temp_path)
-
-    return pdf_contents
 
 
 class SlideParser(pw.UDF):
@@ -649,7 +738,7 @@ class SlideParser(pw.UDF):
             capacity=None, retry_strategy=retry_strategy
         )
 
-        self.parse_fn = _parser_executor._wrap(parse)
+        self.parse_fn = _parser_executor._wrap(_parser_utils.parse_image)
 
         if self.parse_details:
             _schema_parser_executor: udfs.Executor = udfs.async_executor(
@@ -663,7 +752,7 @@ class SlideParser(pw.UDF):
             ).parameters.keys()
 
             parse_image_details_fn = partial(
-                parse_image_details,
+                _parser_utils.parse_image_details,
                 model=llm_args["model"],
                 openai_client_args={
                     key: llm_args[key]
@@ -689,7 +778,7 @@ class SlideParser(pw.UDF):
 
         if filetype == FileType.PPTX:
             logger.info("`SlideParser` converting PPTX to PDF from byte object.")
-            contents = _convert_pptx_to_pdf(contents)
+            contents = _parser_utils._convert_pptx_to_pdf(contents)
 
         logger.info("`SlideParser` converting PDFs to images from byte object.")
 
@@ -704,9 +793,9 @@ class SlideParser(pw.UDF):
             )
             images = convert_from_bytes(contents, size=self.image_size)
 
-        b64_images = [img_to_b64(image) for image in images]
+        b64_images = [_parser_utils.img_to_b64(image) for image in images]
 
-        parsed_content, parsed_details = await _parse_b64_images(
+        parsed_content, parsed_details = await _parser_utils._parse_b64_images(
             b64_images,
             self.llm,
             self.parse_prompt,
@@ -818,111 +907,3 @@ class PypdfParser(pw.UDF):
 
         modified_text = re.sub(r"\n(\w)", replace_newline, text)
         return modified_text
-
-
-async def parse_images(
-    images: list[Image.Image],
-    llm: pw.UDF,
-    parse_prompt: str,
-    *,
-    run_mode: Literal["sequential", "parallel"] = "parallel",
-    parse_details: bool = False,
-    detail_parse_schema: type[BaseModel] | None = None,
-    parse_fn: Callable,
-    parse_image_details_fn: Callable | None,
-) -> tuple[list[str], list[BaseModel]]:
-    """
-    Parse images and optional Pydantic model with a multi-modal LLM.
-    `parse_prompt` will be only used for the regular parsing.
-
-    Args:
-        images: Image list to be parsed. Images are expected to be `PIL.Image.Image`.
-        llm: LLM model to be used for parsing. Needs to support image input.
-        parse_details: Whether to make second LLM call to parse specific Pydantic
-            model from the image.
-        run_mode: Mode of execution,
-            either ``"sequential"`` or ``"parallel"``. Default is ``"parallel"``.
-            ``"parallel"`` mode is suggested for speed, but if timeouts or memory usage in local LLMs are concern,
-            ``"sequential"`` may be better.
-        parse_details: Whether a schema should be parsed.
-        detail_parse_schema: Pydantic model for schema to be parsed.
-        parse_fn: Awaitable image parsing function.
-        parse_image_details_fn: Awaitable image schema parsing function.
-
-    """
-    logger.info("`parse_images` converting images to base64.")
-
-    b64_images = [img_to_b64(image) for image in images]
-
-    return await _parse_b64_images(
-        b64_images,
-        llm,
-        parse_prompt,
-        run_mode=run_mode,
-        parse_details=parse_details,
-        detail_parse_schema=detail_parse_schema,
-        parse_fn=parse_fn,
-        parse_image_details_fn=parse_image_details_fn,
-    )
-
-
-async def _parse_b64_images(
-    b64_images: list[str],
-    llm: pw.UDF,
-    parse_prompt: str,
-    *,
-    run_mode: Literal["sequential", "parallel"],
-    parse_details: bool,
-    detail_parse_schema: type[BaseModel] | None,
-    parse_fn: Callable,
-    parse_image_details_fn: Callable | None,
-) -> tuple[list[str], list[BaseModel]]:
-    tot_pages = len(b64_images)
-
-    if parse_details:
-        assert detail_parse_schema is not None and issubclass(
-            detail_parse_schema, BaseModel
-        ), "`detail_parse_schema` must be valid Pydantic Model class when `parse_details` is True"
-
-    logger.info(f"`parse_images` parsing descriptions for {tot_pages} images.")
-
-    parsed_details: list[BaseModel] = []
-
-    if run_mode == "sequential":
-        parsed_content = []
-
-        for img in b64_images:
-            parsed_txt = await parse_fn(img, llm, parse_prompt)
-            parsed_content.append(parsed_txt)
-
-        if parse_details:
-            assert parse_image_details_fn is not None
-            parsed_details = []
-            for img in b64_images:
-                parsed_detail = await parse_image_details_fn(
-                    img,
-                    parse_schema=detail_parse_schema,
-                )
-                parsed_details.append(parsed_detail)
-
-    else:
-        parse_tasks = [parse_fn(img, llm, parse_prompt) for img in b64_images]
-
-        if parse_details:
-            assert parse_image_details_fn is not None
-            detail_tasks = [
-                parse_image_details_fn(
-                    img,
-                    parse_schema=detail_parse_schema,
-                )
-                for img in b64_images
-            ]
-        else:
-            detail_tasks = []
-
-        results = await asyncio.gather(*parse_tasks, *detail_tasks)
-
-        parsed_content = results[: len(b64_images)]
-        parsed_details = results[len(b64_images) :]
-
-    return parsed_content, parsed_details

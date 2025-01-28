@@ -36,7 +36,7 @@ from openparse.tables.utils import adjust_bbox_with_padding, crop_img_with_paddi
 from pydantic import BaseModel, ConfigDict, Field
 
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm._parser_utils import img_to_b64, parse
+from pathway.xpacks.llm._parser_utils import img_to_b64, parse_image
 from pathway.xpacks.llm._utils import _run_async
 from pathway.xpacks.llm.prompts import DEFAULT_MD_TABLE_PARSE_PROMPT
 
@@ -148,7 +148,7 @@ async def parse_image_list(
 ):
     return await asyncio.gather(
         *[
-            parse(
+            parse_image(
                 img,
                 llm,
                 prompt,

@@ -63,12 +63,13 @@ xpack-llm = [
     "tenacity != 8.4.0", # langchain dependency, 8.4.0 wheel is broken
     "instructor == 1.2.6",
     "google-generativeai >= 0.7.0",
+    "docling >= 2.15, <3.0",
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "unstructured[all-docs] >= 0.16",
-    "surya-ocr == 0.4.14",
+    "surya-ocr == 0.4.14",  # To be removed
     "sentence_transformers", 
-    "transformers",
+    "transformers >= 4.42.0",
 ]
 xpack-llm-docs = [
     "python-docx >= 1.1.2",
