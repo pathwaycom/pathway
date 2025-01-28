@@ -13,7 +13,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - **BREAKING**: `pw.io.deltalake.read` now requires explicit specification of primary key fields.
-- **BREAKING**: `pw.indexing.build_sorted_index`, `pw.indexing.retrieve_prev_next_values`, `pw.indexing.sort_from_index` and `pw.indexing.SortedIndex` are removed. Sorting is now done with `pw.Table.sort`.
 - **BREAKING**: `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` now returns a dictionary from `pw_ai_answer` endpoint.
 - `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer` allows optionally returning context documents from `pw_ai_answer` endpoint.
 - **BREAKING**: When using delay in temporal behavior, current time is updated immediately, not in the next batch.
@@ -25,12 +24,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - a bug in delay in temporal behavior. It was possible to emit a single entry twice in a specific situation.
 
 ### Removed
+- **BREAKING**: `pw.indexing.build_sorted_index`, `pw.indexing.retrieve_prev_next_values`, `pw.indexing.sort_from_index` and `pw.indexing.SortedIndex` are removed. Sorting is now done with `pw.Table.sort`.
 - **BREAKING**: Removed deprecated methods `pw.Table.unsafe_promise_same_universe_as`, `pw.Table.unsafe_promise_universes_are_pairwise_disjoint`, `pw.Table.unsafe_promise_universe_is_subset_of`, `pw.Table.left_join`, `pw.Table.right_join`, `pw.Table.outer_join`, `pw.stdlib.utils.AsyncTransformer.result`.
 - **BREAKING**: Removed deprecated column `_pw_shard` in the result of `windowby`.
 - **BREAKING**: Removed deprecated functions `pw.debug.parse_to_table`, `pw.udf_async`, `pw.reducers.npsum`, `pw.reducers.int_sum`, `pw.stdlib.utils.col.flatten_column`.
 - **BREAKING**: Removed deprecated module `pw.asynchronous`.
 - **BREAKING**: Removed deprecated access to functions from `pw.io` in `pw`.
 - **BREAKING**: Removed deprecated classes `pw.UDFSync`, `pw.UDFAsync`.
+- **BREAKING**: Removed class `pw.xpack.llm.parsers.OpenParse`. It's functionality has been replaced with `pw.xpack.llm.parsers.DoclingParser`.
 
 ## [0.16.4] - 2025-01-09
 

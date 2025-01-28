@@ -67,14 +67,12 @@ xpack-llm = [
 ]
 xpack-llm-local = [  # requirements that allow local ML inference
     "unstructured[all-docs] >= 0.16",
-    "surya-ocr == 0.4.14",  # To be removed
     "sentence_transformers", 
     "transformers >= 4.42.0",
 ]
 xpack-llm-docs = [
     "python-docx >= 1.1.2",
-    "openparse == 0.5.6",
-    "unstructured >= 0.16",
+    "unstructured >= 0.16, < 0.16.12",
     "pdf2image",
     "pypdf",
 ]

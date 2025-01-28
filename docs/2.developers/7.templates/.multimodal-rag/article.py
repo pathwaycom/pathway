@@ -180,7 +180,7 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 # #### Modules:
 # - **[udfs.DiskCache](/developers/api-docs/udfs#pathway.udfs.DiskCache), [udfs.ExponentialBackoffRetryStrategy](/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy)**: Modules for caching and retry strategies.
 # - **[xpacks.llm](/developers/user-guide/llm-xpack/overview)**: Various tools for leveraging Large Language Models effectively.
-# - **[llm.parsers.OpenParse](/developers/api-docs/pathway-xpacks-llm/parsers)**: The `OpenParse` class efficiently handles document parsing tasks, including text extraction and table parsing, providing a streamlined approach for document analysis and content extraction.
+# - **[llm.parsers.OpenParse](/developers/api-docs/pathway-xpacks-llm/parsers)**: The `DoclingParser` class efficiently handles document parsing tasks, including text extraction and table parsing, providing a streamlined approach for document analysis and content extraction.
 # - **[llm.question_answering.BaseRAGQuestionAnswerer](/developers/api-docs/pathway-xpacks-llm/question_answering)**: Sets up a base model for question answering using RAG.
 # - **[llm.vector_store.VectorStoreServer](/developers/api-docs/pathway-xpacks-llm/vectorstore)**: Handles document vector storage and retrieval.
 #
@@ -191,7 +191,7 @@ import logging
 os.environ["TESSDATA_PREFIX"] = "/usr/share/tesseract/tessdata/"
 import pathway as pw
 from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy
-from pathway.xpacks.llm import embedders, llms, parsers, prompts
+from pathway.xpacks.llm import embedders, llms, parsers, prompts, splitters
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
@@ -254,7 +254,8 @@ chat = llms.OpenAIChat(
 # + id="ICYNrImFe4u9"
 app_host = "0.0.0.0"
 app_port = 8000
-parser = parsers.OpenParse()
+# _MD_SHOW_parser = parsers.DoclingParser()
+splitter = splitters.TokenCountSplitter()
 embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())
 
 
@@ -262,7 +263,7 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())
 # _MD_SHOW_doc_store = VectorStoreServer(
 # _MD_SHOW_        *sources,
 # _MD_SHOW_        embedder=embedder,
-# _MD_SHOW_        splitter=None,  # OpenParse parser handles the chunking
+# _MD_SHOW_        splitter=splitter,
 # _MD_SHOW_        parser=parser,
 # _MD_SHOW_    )
 # _MD_SHOW_app = BaseRAGQuestionAnswerer(
