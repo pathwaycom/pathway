@@ -138,7 +138,9 @@ impl Logger {
 
 impl Default for Logger {
     fn default() -> Self {
-        Self::new(Arc::new(PyLogger::default()))
+        let logger =
+            PyLogger::default().filter_target("opentelemetry_sdk".to_owned(), LevelFilter::Warn);
+        Self::new(Arc::new(logger))
     }
 }
 
