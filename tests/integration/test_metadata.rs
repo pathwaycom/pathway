@@ -33,9 +33,9 @@ fn test_metadata_fs_dir() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/csvdir/",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
@@ -71,9 +71,9 @@ fn test_metadata_fs_file() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/minimal.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
@@ -111,8 +111,8 @@ fn test_metadata_csv_dir() -> eyre::Result<()> {
         "tests/data/csvdir/",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let schema = [
         ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
@@ -152,8 +152,8 @@ fn test_metadata_csv_file() -> eyre::Result<()> {
         "tests/data/minimal.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let schema = [
         ("key".to_string(), InnerSchemaField::new(Type::Int, None)),
@@ -187,9 +187,9 @@ fn test_metadata_json_file() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -218,9 +218,9 @@ fn test_metadata_json_dir() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines/",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -250,9 +250,9 @@ fn test_metadata_identity_file() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let parser = IdentityParser::new(
         vec!["data".to_string(), "_metadata".to_string()],
@@ -272,9 +272,9 @@ fn test_metadata_identity_dir() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines/",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let parser = IdentityParser::new(
         vec!["data".to_string(), "_metadata".to_string()],

@@ -52,7 +52,7 @@ use crate::engine::Value;
 use crate::persistence::backends::Error as PersistenceBackendError;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::tracker::WorkerPersistentStorage;
-use crate::persistence::{ExternalPersistentId, PersistentId};
+use crate::persistence::{PersistentId, UniqueName};
 use crate::python_api::extract_value;
 use crate::python_api::threads::PythonThreadState;
 use crate::python_api::PythonSubject;
@@ -303,9 +303,9 @@ impl StorageType {
 pub fn new_filesystem_reader(
     path: &str,
     streaming_mode: ConnectorMode,
-    persistent_id: Option<PersistentId>,
     read_method: ReadMethod,
     object_pattern: &str,
+    is_persisted: bool,
 ) -> Result<PosixLikeReader, ReadError> {
     let scanner = FilesystemScanner::new(path, object_pattern)?;
     let tokenizer = BufReaderTokenizer::new(read_method);
@@ -313,7 +313,7 @@ pub fn new_filesystem_reader(
         Box::new(scanner),
         Box::new(tokenizer),
         streaming_mode,
-        persistent_id,
+        is_persisted,
     )
 }
 
@@ -321,8 +321,8 @@ pub fn new_csv_filesystem_reader(
     path: &str,
     parser_builder: csv::ReaderBuilder,
     streaming_mode: ConnectorMode,
-    persistent_id: Option<PersistentId>,
     object_pattern: &str,
+    is_persisted: bool,
 ) -> Result<PosixLikeReader, ReadError> {
     let scanner = FilesystemScanner::new(path, object_pattern)?;
     let tokenizer = CsvTokenizer::new(parser_builder);
@@ -330,7 +330,7 @@ pub fn new_csv_filesystem_reader(
         Box::new(scanner),
         Box::new(tokenizer),
         streaming_mode,
-        persistent_id,
+        is_persisted,
     )
 }
 
@@ -338,9 +338,9 @@ pub fn new_s3_generic_reader(
     bucket: S3Bucket,
     objects_prefix: impl Into<String>,
     streaming_mode: ConnectorMode,
-    persistent_id: Option<PersistentId>,
     read_method: ReadMethod,
     downloader_threads_count: usize,
+    is_persisted: bool,
 ) -> Result<PosixLikeReader, ReadError> {
     let scanner = S3Scanner::new(bucket, objects_prefix, downloader_threads_count)?;
     let tokenizer = BufReaderTokenizer::new(read_method);
@@ -348,7 +348,7 @@ pub fn new_s3_generic_reader(
         Box::new(scanner),
         Box::new(tokenizer),
         streaming_mode,
-        persistent_id,
+        is_persisted,
     )
 }
 
@@ -357,8 +357,8 @@ pub fn new_s3_csv_reader(
     objects_prefix: impl Into<String>,
     parser_builder: csv::ReaderBuilder,
     streaming_mode: ConnectorMode,
-    persistent_id: Option<PersistentId>,
     downloader_threads_count: usize,
+    is_persisted: bool,
 ) -> Result<PosixLikeReader, ReadError> {
     let scanner = S3Scanner::new(bucket, objects_prefix, downloader_threads_count)?;
     let tokenizer = CsvTokenizer::new(parser_builder);
@@ -366,7 +366,7 @@ pub fn new_s3_csv_reader(
         Box::new(scanner),
         Box::new(tokenizer),
         streaming_mode,
-        persistent_id,
+        is_persisted,
     )
 }
 
@@ -376,8 +376,10 @@ pub trait Reader {
     #[allow(clippy::missing_errors_doc)]
     fn seek(&mut self, frontier: &OffsetAntichain) -> Result<(), ReadError>;
 
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>);
-    fn persistent_id(&self) -> Option<PersistentId>;
+    fn short_description(&self) -> Cow<'static, str> {
+        type_name::<Self>().into()
+    }
+
     fn initialize_cached_objects_storage(
         &mut self,
         _: &WorkerPersistentStorage,
@@ -486,28 +488,13 @@ pub trait Reader {
 pub trait ReaderBuilder: Send + 'static {
     fn build(self: Box<Self>) -> Result<Box<dyn Reader>, ReadError>;
 
-    fn short_description(&self) -> Cow<'static, str> {
-        type_name::<Self>().into()
-    }
-
-    fn name(&self, persistent_id: Option<&ExternalPersistentId>, id: usize) -> String {
-        let desc = self.short_description();
-        let name = desc.split("::").last().unwrap().replace("Builder", "");
-        if let Some(id) = persistent_id {
-            format!("{name}-{id}")
-        } else {
-            format!("{name}-{id}")
-        }
-    }
-
     fn is_internal(&self) -> bool {
         false
     }
 
-    fn persistent_id(&self) -> Option<PersistentId>;
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>);
-
     fn storage_type(&self) -> StorageType;
+    fn short_description(&self) -> Cow<'static, str>;
+    fn name(&self, unique_name: Option<&UniqueName>) -> String;
 }
 
 impl<T> ReaderBuilder for T
@@ -518,16 +505,21 @@ where
         Ok(self)
     }
 
-    fn persistent_id(&self) -> Option<PersistentId> {
-        Reader::persistent_id(self)
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        Reader::update_persistent_id(self, persistent_id);
-    }
-
     fn storage_type(&self) -> StorageType {
         Reader::storage_type(self)
+    }
+
+    fn short_description(&self) -> Cow<'static, str> {
+        Reader::short_description(self)
+    }
+
+    fn name(&self, unique_name: Option<&UniqueName>) -> String {
+        if let Some(unique_name) = unique_name {
+            unique_name.to_string()
+        } else {
+            let desc = self.short_description();
+            desc.split("::").last().unwrap().replace("Builder", "")
+        }
     }
 }
 
@@ -613,28 +605,23 @@ pub trait Writer: Send {
         true
     }
 
-    fn short_description(&self) -> Cow<'static, str> {
-        type_name::<Self>().into()
-    }
-
-    fn name(&self, id: usize) -> String {
-        let name = self
-            .short_description()
-            .split("::")
-            .last()
-            .unwrap()
-            .to_string();
-        format!("{name}-{id}")
+    fn name(&self) -> String {
+        let short_description: Cow<'static, str> = type_name::<Self>().into();
+        short_description.split("::").last().unwrap().to_string()
     }
 }
 
 pub struct FileWriter {
     writer: BufWriter<std::fs::File>,
+    output_path: String,
 }
 
 impl FileWriter {
-    pub fn new(writer: BufWriter<std::fs::File>) -> FileWriter {
-        FileWriter { writer }
+    pub fn new(writer: BufWriter<std::fs::File>, output_path: String) -> FileWriter {
+        FileWriter {
+            writer,
+            output_path,
+        }
     }
 }
 
@@ -669,11 +656,14 @@ impl Writer for FileWriter {
         self.writer.flush()?;
         Ok(())
     }
+
+    fn name(&self) -> String {
+        format!("FileSystem({})", self.output_path)
+    }
 }
 
 pub struct KafkaReader {
     consumer: BaseConsumer<DefaultConsumerContext>,
-    persistent_id: Option<PersistentId>,
     topic: ArcStr,
     positions_for_seek: HashMap<i32, KafkaOffset>,
     deferred_read_result: Option<ReadResult>,
@@ -767,12 +757,8 @@ impl Reader for KafkaReader {
         Ok(())
     }
 
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
+    fn short_description(&self) -> Cow<'static, str> {
+        format!("Kafka({})", self.topic).into()
     }
 
     fn storage_type(&self) -> StorageType {
@@ -788,12 +774,10 @@ impl KafkaReader {
     pub fn new(
         consumer: BaseConsumer<DefaultConsumerContext>,
         topic: String,
-        persistent_id: Option<PersistentId>,
         positions_for_seek: HashMap<i32, KafkaOffset>,
     ) -> KafkaReader {
         KafkaReader {
             consumer,
-            persistent_id,
             topic: topic.into(),
             positions_for_seek,
             deferred_read_result: None,
@@ -818,13 +802,11 @@ impl ConnectorMode {
 
 pub struct PythonReaderBuilder {
     subject: Py<PythonSubject>,
-    persistent_id: Option<PersistentId>,
     schema: HashMap<String, Type>,
 }
 
 pub struct PythonReader {
     subject: Py<PythonSubject>,
-    persistent_id: Option<PersistentId>,
     schema: HashMap<String, Type>,
     total_entries_read: u64,
     current_external_offset: Arc<[u8]>,
@@ -836,31 +818,18 @@ pub struct PythonReader {
 }
 
 impl PythonReaderBuilder {
-    pub fn new(
-        subject: Py<PythonSubject>,
-        persistent_id: Option<PersistentId>,
-        schema: HashMap<String, Type>,
-    ) -> Self {
-        Self {
-            subject,
-            persistent_id,
-            schema,
-        }
+    pub fn new(subject: Py<PythonSubject>, schema: HashMap<String, Type>) -> Self {
+        Self { subject, schema }
     }
 }
 
 impl ReaderBuilder for PythonReaderBuilder {
     fn build(self: Box<Self>) -> Result<Box<dyn Reader>, ReadError> {
         let python_thread_state = PythonThreadState::new();
-        let Self {
-            subject,
-            persistent_id,
-            schema,
-        } = *self;
+        let Self { subject, schema } = *self;
 
         Ok(Box::new(PythonReader {
             subject,
-            persistent_id,
             schema,
             python_thread_state,
             total_entries_read: 0,
@@ -870,16 +839,21 @@ impl ReaderBuilder for PythonReaderBuilder {
         }))
     }
 
+    fn short_description(&self) -> Cow<'static, str> {
+        type_name::<Self>().into()
+    }
+
+    fn name(&self, unique_name: Option<&UniqueName>) -> String {
+        if let Some(unique_name) = unique_name {
+            unique_name.to_string()
+        } else {
+            let desc = self.short_description();
+            desc.split("::").last().unwrap().replace("Builder", "")
+        }
+    }
+
     fn is_internal(&self) -> bool {
         self.subject.get().is_internal
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
     }
 
     fn storage_type(&self) -> StorageType {
@@ -1046,14 +1020,6 @@ impl Reader for PythonReader {
         })
     }
 
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-
     fn storage_type(&self) -> StorageType {
         StorageType::Python
     }
@@ -1064,6 +1030,7 @@ pub struct PsqlWriter {
     max_batch_size: Option<usize>,
     buffer: Vec<FormatterContext>,
     snapshot_mode: bool,
+    table_name: String,
 }
 
 impl PsqlWriter {
@@ -1081,6 +1048,7 @@ impl PsqlWriter {
             max_batch_size,
             buffer: Vec::new(),
             snapshot_mode,
+            table_name: table_name.to_string(),
         };
         writer.initialize(mode, table_name, schema, key_field_names)?;
         Ok(writer)
@@ -1351,6 +1319,10 @@ impl Writer for PsqlWriter {
         Ok(())
     }
 
+    fn name(&self) -> String {
+        format!("Postgres({})", self.table_name)
+    }
+
     fn single_threaded(&self) -> bool {
         self.snapshot_mode
     }
@@ -1425,6 +1397,10 @@ impl Writer for KafkaWriter {
         Ok(())
     }
 
+    fn name(&self) -> String {
+        format!("Kafka({})", self.topic)
+    }
+
     fn retriable(&self) -> bool {
         true
     }
@@ -1485,6 +1461,10 @@ impl Writer for ElasticSearchWriter {
 
             Ok(())
         })
+    }
+
+    fn name(&self) -> String {
+        format!("ElasticSearch({})", self.index_name)
     }
 
     fn single_threaded(&self) -> bool {
@@ -1702,18 +1682,12 @@ impl Reader for SqliteReader {
         }
     }
 
+    fn short_description(&self) -> Cow<'static, str> {
+        format!("SQLite({})", self.table_name).into()
+    }
+
     fn storage_type(&self) -> StorageType {
         StorageType::Sqlite
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        None
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        if persistent_id.is_some() {
-            unimplemented!("persistence is not supported for Sqlite data source")
-        }
     }
 }
 
@@ -1754,14 +1728,18 @@ impl Writer for MongoWriter {
         let _ = command.run()?;
         Ok(())
     }
+
+    fn name(&self) -> String {
+        format!("MongoDB({})", self.collection.name())
+    }
 }
 
 pub struct NatsReader {
     runtime: TokioRuntime,
     subscriber: NatsSubscriber,
     worker_index: usize,
-    persistent_id: Option<PersistentId>,
     total_entries_read: usize,
+    stream_name: String,
 }
 
 impl Reader for NatsReader {
@@ -1796,12 +1774,8 @@ impl Reader for NatsReader {
         Ok(())
     }
 
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
+    fn short_description(&self) -> Cow<'static, str> {
+        format!("NATS({})", self.stream_name).into()
     }
 
     fn storage_type(&self) -> StorageType {
@@ -1818,13 +1792,13 @@ impl NatsReader {
         runtime: TokioRuntime,
         subscriber: NatsSubscriber,
         worker_index: usize,
-        persistent_id: Option<PersistentId>,
+        stream_name: String,
     ) -> NatsReader {
         NatsReader {
             runtime,
             subscriber,
             worker_index,
-            persistent_id,
+            stream_name,
             total_entries_read: 0,
         }
     }
@@ -1865,6 +1839,10 @@ impl Writer for NatsWriter {
         self.runtime
             .block_on(async { self.client.flush().await })
             .map_err(WriteError::NatsFlush)
+    }
+
+    fn name(&self) -> String {
+        format!("NATS({})", self.topic)
     }
 
     fn retriable(&self) -> bool {

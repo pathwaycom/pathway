@@ -22,6 +22,7 @@ def read(
     schema: type[Schema],
     *,
     autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
     debug_data: Any = None,
 ) -> Table:
     """Reads a table from a rowid table in `SQLite <https://www.sqlite.org/>`_ database.
@@ -33,6 +34,9 @@ def read(
         autocommit_duration_ms: The maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
 
     Returns:
         Table: The table read.
@@ -57,7 +61,8 @@ def read(
     )
 
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=name,
     )
     return table_from_datasource(
         datasource.GenericDataSource(

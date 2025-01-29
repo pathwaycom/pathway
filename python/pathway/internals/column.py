@@ -544,7 +544,7 @@ class DeduplicateContext(Context):
     instance: tuple[ColumnWithExpression, ...]
     acceptor: Callable[[Any, Any], bool]
     orig_id_column: IdColumn
-    persistent_id: str | None
+    unique_name: str | None
 
     def column_dependencies_internal(self) -> Iterable[Column]:
         return (self.value,) + self.instance

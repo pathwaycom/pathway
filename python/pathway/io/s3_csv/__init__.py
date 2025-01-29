@@ -23,7 +23,7 @@ def read(
     csv_settings: CsvParserSettings | None = None,
     mode: str = "streaming",
     autocommit_duration_ms: int | None = 1500,
-    persistent_id: str | None = None,
+    name: str | None = None,
     debug_data=None,
     value_columns: list[str] | None = None,
     id_columns: list[str] | None = None,
@@ -50,11 +50,9 @@ def read(
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
         value_columns: Names of the columns to be extracted from the files. [will be deprecated soon]
         id_columns: In case the table should have a primary key generated according to
@@ -114,8 +112,8 @@ def read(
     ...     schema=InputSchema,
     ... )
 
-    In case you are dealing with custom S3 buckets, there are \
-`two ways <https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html>`_
+    In case you are dealing with custom S3 buckets, there are
+    `two ways <https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html>`_
     to work with paths in requests. The default and the one used by AWS S3 is a
     virtually hosted-style. However, some installations of S3 in, for example, min.io
     do require to use of path-style requests. If this is the case, you can use the
@@ -159,8 +157,9 @@ def read(
         schema=schema,
         mode=mode,
         csv_settings=csv_settings,
-        persistent_id=persistent_id,
+        name=name,
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,
+        _stacklevel=5,
         **kwargs,
     )

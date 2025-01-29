@@ -16,6 +16,7 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     MessageQueueOutputFormat,
+    _get_unique_name,
     check_deprecated_kwargs,
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
@@ -37,7 +38,7 @@ def read(
     with_metadata: bool = False,
     start_from_timestamp_ms: int | None = None,
     parallel_readers: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     value_columns: list[str] | None = None,
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
@@ -89,11 +90,9 @@ def read(
             will be taken. This number also can't be greater than the number of Pathway
             engine threads, and will be reduced to the number of engine threads, if it
             exceeds.
-        persistent_id: (unstable) An identifier, under which the state of the table will
-            be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         value_columns: Columns to extract for a table, required for format other than
             "raw". [will be deprecated soon]
         primary_key: In case the table should have a primary key generated according to
@@ -133,8 +132,8 @@ def read(
     ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
 
-    To connect to the topic "animals" and accept messages, the connector must be used \
-        as follows, depending on the format:
+    To connect to the topic "animals" and accept messages, the connector must be used
+    as follows, depending on the format:
 
     Raw version:
 
@@ -262,7 +261,6 @@ def read(
         rdkafka_settings=rdkafka_settings,
         topic=topic,
         parallel_readers=parallel_readers,
-        persistent_id=persistent_id,
         start_from_timestamp_ms=start_from_timestamp_ms,
         mode=api.ConnectorMode.STREAMING,
     )
@@ -280,7 +278,8 @@ def read(
         _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -307,7 +306,8 @@ def simple_read(
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     parallel_readers: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
+    **kwargs,
 ) -> Table:
     """Simplified method to read data from Kafka. Only requires the server address and
     the topic name. If you have any kind of authentication or require fine-tuning of the
@@ -330,9 +330,9 @@ def simple_read(
     Args:
         server: Address of the server.
         topic: Name of topic in Kafka from which the data should be read.
-        read_only_new: If set to `True` only the entries which appear after the start \
-of the program will be read. Otherwise, the read will be done from the beginning of the\
-topic.
+        read_only_new: If set to `True` only the entries which appear after the start
+            of the program will be read. Otherwise, the read will be done from the
+            beginning of the topic.
         schema: Schema of the resulting table.
         format: format of the input data, "raw", "plaintext", or "json".
         debug_data: Static data replacing original one when debug mode is active.
@@ -349,11 +349,9 @@ topic.
             will be taken. This number also can't be greater than the number of Pathway
             engine threads, and will be reduced to the number of engine threads, if it
             exceeds.
-        persistent_id: (unstable) An identifier, under which the state of the table will
-            be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
 
     Returns:
         Table: The table read.
@@ -387,10 +385,13 @@ topic.
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=json_field_paths,
         parallel_readers=parallel_readers,
-        persistent_id=persistent_id,
+        name=name,
+        _stacklevel=5,
+        **kwargs,
     )
 
 
+# TODO: Remove on March 11, 2025
 @check_arg_types
 @trace_user_frame
 def read_from_upstash(
@@ -406,7 +407,8 @@ def read_from_upstash(
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     parallel_readers: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
+    **kwargs,
 ) -> Table:
     """Simplified method to read data from Kafka instance hosted in Upstash. It requires
     endpoint address and topic along with credentials.
@@ -426,15 +428,15 @@ def read_from_upstash(
     taken from the respective parsed JSON fields.
 
     Args:
-        endpoint: Upstash endpoint for the sought queue, which can be found on \
-"Details" page.
+        endpoint: Upstash endpoint for the sought queue, which can be found on
+            "Details" page.
         username: Username generated for this queue.
-        password: Password generated for this queue. These credentials are also \
-available on "Details" page.
+        password: Password generated for this queue. These credentials are also
+            available on "Details" page.
         topic: Name of topic in Kafka from which the data should be read.
-        read_only_new: If set to `True` only the entries which appear after the start \
-of the program will be read. Otherwise, the read will be done from the beginning of the\
-topic.
+        read_only_new: If set to `True` only the entries which appear after the start
+            of the program will be read. Otherwise, the read will be done from the
+            beginning of the topic.
         schema: Schema of the resulting table.
         format: format of the input data, "raw", "plaintext", or "json".
         debug_data: Static data replacing original one when debug mode is active.
@@ -451,11 +453,9 @@ topic.
             will be taken. This number also can't be greater than the number of Pathway
             engine threads, and will be reduced to the number of engine threads, if it
             exceeds.
-        persistent_id: (unstable) An identifier, under which the state of the table will
-            be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
 
     Returns:
         Table: The table read.
@@ -500,7 +500,9 @@ topic.
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=json_field_paths,
         parallel_readers=parallel_readers,
-        persistent_id=persistent_id,
+        name=name,
+        _stacklevel=5,
+        **kwargs,
     )
 
 
@@ -517,6 +519,7 @@ def write(
     key: ColumnReference | None = None,
     value: ColumnReference | None = None,
     headers: Iterable[ColumnReference] | None = None,
+    name: str | None = None,
 ) -> None:
     """Write a table to a given topic on a Kafka instance.
 
@@ -563,7 +566,8 @@ def write(
             headers. These headers are named in the same way as fields that are forwarded and correspond
             to the string representations of the respective values encoded in UTF-8. If a binary
             column is requested, it will be produced "as is" in the respective header.
-
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -682,6 +686,9 @@ def write(
 
     table.to(
         datasink.GenericDataSink(
-            data_storage, output_format.data_format, datasink_name="kafka"
+            data_storage,
+            output_format.data_format,
+            datasink_name="kafka",
+            unique_name=name,
         )
     )

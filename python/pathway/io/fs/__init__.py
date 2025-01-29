@@ -15,6 +15,7 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
+    _get_unique_name,
     construct_schema_and_data_format,
     internal_connector_mode,
     internal_read_method,
@@ -38,7 +39,7 @@ def read(
     json_field_paths: dict[str, str] | None = None,
     object_pattern: str = "*",
     with_metadata: bool = False,
-    persistent_id: str | None = None,
+    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
     value_columns: list[str] | None = None,
@@ -46,6 +47,7 @@ def read(
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
     _stacklevel: int = 1,
+    **kwargs,
 ) -> Table:
     """Reads a table from one or several files with the specified format.
 
@@ -90,11 +92,9 @@ def read(
             (3) seen_at is a UNIX timestamp of when they file was found by the engine;
             (4) owner - Name of the file owner (only for Un); (5) path - Full file path of the
             source row. (6) size - File size in bytes.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
         value_columns: Names of the columns to be extracted from the files. [will be deprecated soon]
         primary_key: In case the table should have a primary key generated according to
@@ -234,7 +234,6 @@ def read(
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
             mode=internal_connector_mode(mode),
             object_pattern=object_pattern,
-            persistent_id=persistent_id,
         )
     else:
         data_storage = api.DataStorage(
@@ -243,7 +242,6 @@ def read(
             mode=internal_connector_mode(mode),
             read_method=internal_read_method(format),
             object_pattern=object_pattern,
-            persistent_id=persistent_id,
         )
 
     schema, data_format = construct_schema_and_data_format(
@@ -260,7 +258,8 @@ def read(
     )
 
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs, _stacklevel + 5),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -276,7 +275,13 @@ def read(
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table, filename: str | PathLike, format: str) -> None:
+def write(
+    table: Table,
+    filename: str | PathLike,
+    format: str,
+    *,
+    name: str | None = None,
+) -> None:
     """Writes ``table``'s stream of updates to a file in the given format.
 
     Args:
@@ -284,6 +289,8 @@ def write(table: Table, filename: str | PathLike, format: str) -> None:
         filename: Path to the target output file.
         format: Format to use for data output. Currently, there are two supported
             formats: "json" and "csv".
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -364,4 +371,8 @@ def write(table: Table, filename: str | PathLike, format: str) -> None:
             value_fields=_format_output_value_fields(table),
         )
 
-    table.to(datasink.GenericDataSink(data_storage, data_format, datasink_name="fs"))
+    table.to(
+        datasink.GenericDataSink(
+            data_storage, data_format, datasink_name="fs", unique_name=name
+        )
+    )

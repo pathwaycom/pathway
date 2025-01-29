@@ -21,8 +21,8 @@ fn test_dsv_dir_ok() -> eyre::Result<()> {
         "tests/data/csvdir",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["key".to_string()]), vec!["foo".to_string()], ','),
@@ -59,8 +59,8 @@ fn test_single_file_ok() -> eyre::Result<()> {
         "tests/data/sample.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -93,8 +93,8 @@ fn test_custom_delimiter() -> eyre::Result<()> {
         "tests/data/sql_injection.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -132,8 +132,8 @@ fn test_escape_fields() -> eyre::Result<()> {
         "tests/data/csv_fields_escaped.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -186,8 +186,8 @@ fn test_escape_newlines() -> eyre::Result<()> {
         "tests/data/csv_escaped_newlines.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(
@@ -222,8 +222,8 @@ fn test_nonexistent_file() -> eyre::Result<()> {
         "tests/data/nonexistent_file.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     );
 
     // We treat this path as a glob pattern, so the situation is normal:
@@ -255,8 +255,8 @@ fn test_special_fields() -> eyre::Result<()> {
         "tests/data/csv_special_fields.txt",
         builder,
         ConnectorMode::Static,
-        None,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(

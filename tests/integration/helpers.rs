@@ -21,6 +21,7 @@ use pathway_engine::connectors::{Connector, Entry, PersistenceMode, SnapshotAcce
 use pathway_engine::engine::{Key, Timestamp, TotalFrontier, Value};
 use pathway_engine::persistence::frontier::OffsetAntichain;
 use pathway_engine::persistence::input_snapshot::Event as SnapshotEvent;
+use pathway_engine::persistence::PersistentId;
 
 #[derive(Debug)]
 pub struct FullReadResult {
@@ -45,12 +46,11 @@ pub fn full_cycle_read(
     reader: Box<dyn ReaderBuilder>,
     parser: &mut dyn Parser,
     persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
+    persistent_id: Option<PersistentId>,
 ) -> FullReadResult {
-    let maybe_persistent_id = reader.persistent_id();
-
     let offsets = Arc::new(Mutex::new(HashMap::<Timestamp, OffsetAntichain>::new()));
     if let Some(persistent_storage) = persistent_storage {
-        if let Some(persistent_id) = reader.persistent_id() {
+        if let Some(persistent_id) = persistent_id {
             persistent_storage
                 .lock()
                 .unwrap()
@@ -60,14 +60,19 @@ pub fn full_cycle_read(
 
     let main_thread = thread::current();
     let (sender, receiver) = mpsc::channel();
-    let mut snapshot_writer =
-        Connector::snapshot_writer(reader.as_ref(), persistent_storage, SnapshotAccess::Full)
-            .unwrap();
+    let mut snapshot_writer = Connector::snapshot_writer(
+        reader.as_ref(),
+        persistent_id,
+        persistent_storage,
+        SnapshotAccess::Full,
+    )
+    .unwrap();
 
     let mut reader = reader.build().expect("building the reader failed");
     Connector::read_snapshot(
         &mut *reader,
         persistent_storage,
+        persistent_id,
         &sender,
         PersistenceMode::Batch,
         SnapshotAccess::Full,
@@ -147,7 +152,7 @@ pub fn full_cycle_read(
 
     assert!(rewind_finish_sentinel_seen);
 
-    if maybe_persistent_id.is_some() && has_persistent_storage {
+    if persistent_id.is_some() && has_persistent_storage {
         let prev_finalized_time = persistent_storage
             .unwrap()
             .lock()

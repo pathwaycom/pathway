@@ -1,4 +1,5 @@
 use log::{info, warn};
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
@@ -37,7 +38,6 @@ use crate::connectors::{
 };
 use crate::engine::Type;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::PersistentId;
 use crate::python_api::ValueField;
 
 #[allow(clippy::module_name_repetitions)]
@@ -187,6 +187,10 @@ impl LakeBatchWriter for DeltaBatchWriter {
             utc_timezone_name: "UTC".into(),
         }
     }
+
+    fn name(&self) -> String {
+        format!("DeltaTable({})", self.table.table_uri())
+    }
 }
 
 pub enum ObjectDownloader {
@@ -229,7 +233,6 @@ pub struct DeltaTableReader {
     table: DeltaTable,
     streaming_mode: ConnectorMode,
     column_types: HashMap<String, Type>,
-    persistent_id: Option<PersistentId>,
     base_path: String,
     object_downloader: ObjectDownloader,
 
@@ -252,7 +255,6 @@ impl DeltaTableReader {
         storage_options: HashMap<String, String>,
         column_types: HashMap<String, Type>,
         streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
     ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
         let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
@@ -263,7 +265,6 @@ impl DeltaTableReader {
             table,
             column_types,
             streaming_mode,
-            persistent_id,
             base_path: path.to_string(),
 
             current_version,
@@ -480,12 +481,8 @@ impl Reader for DeltaTableReader {
         Ok(())
     }
 
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
+    fn short_description(&self) -> Cow<'static, str> {
+        format!("DeltaTable({})", self.base_path).into()
     }
 
     fn storage_type(&self) -> StorageType {

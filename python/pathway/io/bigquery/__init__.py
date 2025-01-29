@@ -53,13 +53,18 @@ class _OutputBuffer:
 
 
 def write(
-    table: Table, dataset_name: str, table_name: str, service_user_credentials_file: str
+    table: Table,
+    dataset_name: str,
+    table_name: str,
+    service_user_credentials_file: str,
+    *,
+    name: str | None = None,
 ) -> None:
-    """Writes ``table``'s stream of changes into the specified BigQuery table. Please note \
-that the schema of the target table must correspond to the schema of the table that is \
-being outputted and include two additional fields: an integral field ``time``, denoting the \
-ID of the minibatch where the change occurred and an integral field ``diff`` which can be \
-either 1 or -1 and which denotes if the entry was inserted to the table or if it was deleted.
+    """Writes ``table``'s stream of changes into the specified BigQuery table. Please note
+    that the schema of the target table must correspond to the schema of the table that is
+    being outputted and include two additional fields: an integral field ``time``, denoting the
+    ID of the minibatch where the change occurred and an integral field ``diff`` which can be
+    either 1 or -1 and which denotes if the entry was inserted to the table or if it was deleted.
 
     Note that the modification of the row is denoted with a sequence of two operations:
     the deletion operation (``diff = -1``) and the insertion operation (``diff = 1``).
@@ -68,10 +73,12 @@ either 1 or -1 and which denotes if the entry was inserted to the table or if it
         table: The table to output.
         dataset_name: The name of the dataset where the table is located.
         table_name: The name of the table to be written.
-        service_user_credentials_file: Google API service user json file. Please \
-follow the instructions provided in the `developer's user guide \
+        service_user_credentials_file: Google API service user json file. Please
+            follow the instructions provided in the `developer's user guide \
 <https://pathway.com/developers/user-guide/connect/connectors/gdrive-connector/#setting-up-google-drive>`_ \
 to obtain them.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -98,5 +105,8 @@ to obtain them.
     )
     output_buffer = _OutputBuffer(dataset_name, table_name, credentials)
     subscribe(
-        table, on_change=output_buffer.on_change, on_time_end=output_buffer.on_time_end
+        table,
+        on_change=output_buffer.on_change,
+        on_time_end=output_buffer.on_time_end,
+        name=name,
     )

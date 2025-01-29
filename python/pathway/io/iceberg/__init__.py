@@ -10,7 +10,7 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import internal_connector_mode, read_schema
+from pathway.io._utils import _get_unique_name, internal_connector_mode, read_schema
 
 
 @check_arg_types
@@ -24,8 +24,9 @@ def read(
     mode: str = "streaming",
     warehouse: str | None = None,
     autocommit_duration_ms: int | None = 1500,
-    persistent_id: str | None = None,
+    name: str | None = None,
     debug_data: Any = None,
+    **kwargs,
 ) -> Table:
     """
     Reads a table from Apache Iceberg. If ran in a streaming mode, the connector tracks
@@ -50,11 +51,9 @@ def read(
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -111,7 +110,6 @@ def read(
         table_name=table_name,
         namespace=namespace,
         mode=internal_connector_mode(mode),
-        persistent_id=persistent_id,
     )
     data_format = api.DataFormat(
         format_type="transparent",
@@ -119,7 +117,8 @@ def read(
     )
 
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -144,6 +143,7 @@ def write(
     *,
     warehouse: str | None = None,
     min_commit_frequency: int | None = 60_000,
+    name: str | None = None,
 ):
     """
     Writes the stream of changes from ``table`` into `Iceberg <https://iceberg.apache.org/>`_
@@ -170,6 +170,8 @@ def write(
             commit in Iceberg creates a new Parquet file and writes an entry in the
             transaction log. Therefore, it is advisable to limit the frequency of commits
             to reduce the overhead of processing the resulting table.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -232,5 +234,6 @@ def write(
             data_storage,
             data_format,
             datasink_name="iceberg",
+            unique_name=name,
         )
     )

@@ -23,9 +23,9 @@ fn test_debezium_reads_ok() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/sample_debezium.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),
@@ -173,9 +173,9 @@ fn test_debezium_mongodb_format() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/sample_debezium_mongodb.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let parser = DebeziumMessageParser::new(
         Some(vec!["id".to_string()]),

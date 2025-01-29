@@ -20,7 +20,7 @@ use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::ConnectorStats;
 use crate::external_integration::ExternalIndex;
-use crate::persistence::ExternalPersistentId;
+use crate::persistence::UniqueName;
 use crate::python_api::extract_value;
 
 use super::error::{DynResult, Trace};
@@ -737,6 +737,7 @@ pub trait Graph {
         callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
         skip_errors: bool,
+        unique_name: Option<UniqueName>,
     ) -> Result<()>;
 
     fn filter_table(
@@ -877,7 +878,7 @@ pub trait Graph {
         grouping_columns_paths: Vec<ColumnPath>,
         reduced_column_paths: Vec<ColumnPath>,
         combine_fn: StatefulCombineFn,
-        external_persistent_id: Option<&ExternalPersistentId>,
+        unique_name: Option<&UniqueName>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -944,7 +945,7 @@ pub trait Graph {
         commit_duration: Option<Duration>,
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
-        external_persistent_id: Option<&ExternalPersistentId>,
+        unique_name: Option<&UniqueName>,
     ) -> Result<TableHandle>;
 
     fn output_table(
@@ -953,6 +954,7 @@ pub trait Graph {
         data_formatter: Box<dyn Formatter>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        unique_name: Option<UniqueName>,
     ) -> Result<()>;
 
     fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()>;
@@ -1191,6 +1193,7 @@ impl Graph for ScopedGraph {
         callbacks: SubscribeCallbacks,
         skip_persisted_batch: bool,
         skip_errors: bool,
+        unique_name: Option<UniqueName>,
     ) -> Result<()> {
         self.try_with(|g| {
             g.subscribe_table(
@@ -1199,6 +1202,7 @@ impl Graph for ScopedGraph {
                 callbacks,
                 skip_persisted_batch,
                 skip_errors,
+                unique_name,
             )
         })
     }
@@ -1446,7 +1450,7 @@ impl Graph for ScopedGraph {
         grouping_columns_paths: Vec<ColumnPath>,
         reduced_column_paths: Vec<ColumnPath>,
         combine_fn: StatefulCombineFn,
-        external_persistent_id: Option<&ExternalPersistentId>,
+        unique_name: Option<&UniqueName>,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1455,7 +1459,7 @@ impl Graph for ScopedGraph {
                 grouping_columns_paths,
                 reduced_column_paths,
                 combine_fn,
-                external_persistent_id,
+                unique_name,
                 table_properties,
             )
         })
@@ -1555,7 +1559,7 @@ impl Graph for ScopedGraph {
         commit_duration: Option<Duration>,
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
-        external_persistent_id: Option<&ExternalPersistentId>,
+        unique_name: Option<&UniqueName>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.connector_table(
@@ -1564,7 +1568,7 @@ impl Graph for ScopedGraph {
                 commit_duration,
                 parallel_readers,
                 table_properties,
-                external_persistent_id,
+                unique_name,
             )
         })
     }
@@ -1575,8 +1579,17 @@ impl Graph for ScopedGraph {
         data_formatter: Box<dyn Formatter>,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        unique_name: Option<UniqueName>,
     ) -> Result<()> {
-        self.try_with(|g| g.output_table(data_sink, data_formatter, table_handle, column_paths))
+        self.try_with(|g| {
+            g.output_table(
+                data_sink,
+                data_formatter,
+                table_handle,
+                column_paths,
+                unique_name,
+            )
+        })
     }
 
     fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()> {

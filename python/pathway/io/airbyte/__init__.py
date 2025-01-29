@@ -11,6 +11,7 @@ import requests
 import yaml
 
 from pathway.internals.schema import Schema
+from pathway.io._utils import _get_unique_name
 from pathway.io.python import read as python_connector_read
 from pathway.optional_import import optional_imports
 from pathway.third_party.airbyte_serverless.executable_runner import (
@@ -116,7 +117,8 @@ def read(
     gcp_job_name: str | None = None,
     enforce_method: str | None = None,
     refresh_interval_ms: int = 60000,
-    persistent_id: int | None = None,
+    name: str | None = None,
+    **kwargs,
 ):
     """
     Reads a table with a free tier Airbyte connector that supports the \
@@ -164,6 +166,9 @@ mode. Please note that reusage Airbyte license is not supported at the moment.
             ``"pypi"``, Pathway will prefer the usage of the latest image available on
             PyPI. Use this option when you need to ensure certain behavior on the local
             run.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
 
     Returns:
 
@@ -337,5 +342,5 @@ mode. Please note that reusage Airbyte license is not supported at the moment.
         schema=_AirbyteRecordSchema,
         autocommit_duration_ms=max(refresh_interval_ms, 1),
         name="airbyte",
-        persistent_id=persistent_id,
+        unique_name=_get_unique_name(name, kwargs),
     )

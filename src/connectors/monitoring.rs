@@ -200,9 +200,9 @@ impl OutputConnectorStats {
         self.batch_start_time = Instant::now();
     }
 
-    pub fn on_batch_entry_written(&mut self) {
-        self.messages_written_in_batch += 1;
-        self.messages_written_in_total += 1;
+    pub fn on_batch_entries_written(&mut self, n_entries: usize) {
+        self.messages_written_in_batch += n_entries;
+        self.messages_written_in_total += n_entries;
     }
 
     pub fn on_batch_finished(&mut self) {

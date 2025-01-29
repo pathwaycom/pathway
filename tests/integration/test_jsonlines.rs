@@ -18,9 +18,9 @@ fn test_jsonlines_ok() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -63,9 +63,9 @@ fn test_jsonlines_incorrect_key() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -97,9 +97,9 @@ fn test_jsonlines_incomplete_key_to_null() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -127,9 +127,9 @@ fn test_jsonlines_incorrect_values() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -160,9 +160,9 @@ fn test_jsonlines_types_parsing() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines_types.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -254,9 +254,9 @@ fn test_jsonlines_complex_paths() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
 
     let mut routes = HashMap::new();
@@ -329,9 +329,9 @@ fn test_jsonlines_complex_paths_error() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
 
     let schema = [
@@ -390,9 +390,9 @@ fn test_jsonlines_complex_path_ignore_errors() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
 
     let schema = [
@@ -447,9 +447,9 @@ fn test_jsonlines_incorrect_key_verbose_error() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -484,9 +484,9 @@ fn test_jsonlines_incorrect_jsonpointer_verbose_error() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/jsonlines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [
         ("a".to_string(), InnerSchemaField::new(Type::String, None)),
@@ -518,9 +518,9 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/json_complex_paths.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let schema = [("pet".to_string(), InnerSchemaField::new(Type::Any, None))];
     let parser = JsonLinesParser::new(

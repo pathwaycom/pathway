@@ -1251,7 +1251,7 @@ class DeduplicateEvaluator(ExpressionEvaluator, context_type=clmn.DeduplicateCon
             instance_paths,
             reduced_columns_paths,
             is_different_with_state,
-            self.context.persistent_id,
+            self.context.unique_name,
             properties,
         )
 

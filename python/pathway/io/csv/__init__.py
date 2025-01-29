@@ -25,7 +25,7 @@ def read(
     object_pattern: str = "*",
     with_metadata: bool = False,
     autocommit_duration_ms: int | None = 1500,
-    persistent_id: str | None = None,
+    name: str | None = None,
     debug_data=None,
     id_columns: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
@@ -75,11 +75,9 @@ def read(
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -170,24 +168,27 @@ def read(
         csv_settings=csv_settings,
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=None,
-        persistent_id=persistent_id,
+        name=name,
         debug_data=debug_data,
         value_columns=value_columns,
         primary_key=id_columns,
         types=types,
         default_values=default_values,
         _stacklevel=5,
+        **kwargs,
     )
 
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table, filename: str | PathLike) -> None:
+def write(table: Table, filename: str | PathLike, *, name: str | None = None) -> None:
     """Writes `table`'s stream of updates to a file in delimiter-separated values format.
 
     Args:
         table: Table to be written.
         filename: Path to the target output file.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -231,4 +232,5 @@ def write(table: Table, filename: str | PathLike) -> None:
         table,
         filename=filename,
         format="csv",
+        name=name,
     )

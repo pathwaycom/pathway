@@ -114,7 +114,7 @@ use crate::persistence::config::{
     ConnectorWorkerPair, PersistenceManagerOuterConfig, PersistentStorageConfig,
 };
 use crate::persistence::input_snapshot::Event as SnapshotEvent;
-use crate::persistence::{ExternalPersistentId, IntoPersistentId, PersistentId};
+use crate::persistence::{IntoPersistentId, UniqueName};
 use crate::pipe::{pipe, ReaderType, WriterType};
 use crate::python_api::external_index_wrappers::PyExternalIndexFactory;
 use crate::timestamp::current_unix_timestamp_ms;
@@ -696,7 +696,6 @@ impl From<EngineError> for PyErr {
                     _ => ENGINE_ERROR_TYPE.bind(py).clone(),
                 },
                 EngineError::IterationLimitTooSmall
-                | EngineError::NoPersistentStorage(_)
                 | EngineError::InconsistentColumnProperties
                 | EngineError::IdInTableProperties => PyValueError::type_object_bound(py),
                 EngineError::ReaderFailed(ReadError::Py(e)) => return e,
@@ -2275,28 +2274,35 @@ pub struct Scope {
     parent: Option<Py<Self>>,
     license: Option<License>,
     graph: SendWrapper<ScopedGraph>,
+    is_persisted: bool,
 
     // empty_universe: Lazy<Py<Universe>>,
     universes: RefCell<HashMap<UniverseHandle, Py<Universe>>>,
     columns: RefCell<HashMap<ColumnHandle, Py<Column>>>,
     tables: RefCell<HashMap<TableHandle, Py<Table>>>,
     error_logs: RefCell<HashMap<ErrorLogHandle, Py<ErrorLog>>>,
-    persistent_ids: RefCell<HashSet<ExternalPersistentId>>,
+    unique_names: RefCell<HashSet<UniqueName>>,
     event_loop: PyObject,
     total_connectors: RefCell<usize>,
 }
 
 impl Scope {
-    fn new(parent: Option<Py<Self>>, event_loop: PyObject, license: Option<License>) -> Self {
+    fn new(
+        parent: Option<Py<Self>>,
+        event_loop: PyObject,
+        license: Option<License>,
+        is_persisted: bool,
+    ) -> Self {
         Scope {
             parent,
             license,
+            is_persisted,
             graph: SendWrapper::new(ScopedGraph::new()),
             universes: RefCell::new(HashMap::new()),
             columns: RefCell::new(HashMap::new()),
             tables: RefCell::new(HashMap::new()),
             error_logs: RefCell::new(HashMap::new()),
-            persistent_ids: RefCell::new(HashSet::new()),
+            unique_names: RefCell::new(HashSet::new()),
             event_loop,
             total_connectors: RefCell::new(0),
         }
@@ -2307,6 +2313,21 @@ impl Scope {
         self.columns.borrow_mut().clear();
         self.tables.borrow_mut().clear();
         self.error_logs.borrow_mut().clear();
+    }
+
+    fn register_unique_name(&self, unique_name: Option<&UniqueName>) -> PyResult<()> {
+        if let Some(unique_name) = &unique_name {
+            let is_unique_id = self
+                .unique_names
+                .borrow_mut()
+                .insert((*unique_name).to_string());
+            if !is_unique_id {
+                return Err(PyValueError::new_err(format!(
+                    "Unique name '{unique_name}' used more than once"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2388,20 +2409,8 @@ impl Scope {
     ) -> PyResult<Py<Table>> {
         let py = self_.py();
 
-        let persistent_id = data_source.borrow().persistent_id.clone();
-        if let Some(persistent_id) = &persistent_id {
-            let is_unique_id = self_
-                .borrow()
-                .persistent_ids
-                .borrow_mut()
-                .insert(persistent_id.to_string());
-            if !is_unique_id {
-                return Err(PyValueError::new_err(format!(
-                    "Persistent ID '{persistent_id}' used more than once"
-                )));
-            }
-        }
-
+        let unique_name = properties.unique_name.clone();
+        self_.borrow().register_unique_name(unique_name.as_ref())?;
         let connector_index = *self_.borrow().total_connectors.borrow();
         *self_.borrow().total_connectors.borrow_mut() += 1;
         let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
@@ -2410,6 +2419,7 @@ impl Scope {
             connector_index,
             self_.borrow().worker_index(),
             self_.borrow().license.as_ref(),
+            self_.borrow().is_persisted,
         )?;
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
@@ -2424,7 +2434,7 @@ impl Scope {
                 .map(time::Duration::from_millis),
             parallel_readers,
             Arc::new(EngineTableProperties::flat(column_properties)),
-            persistent_id.as_ref(),
+            unique_name.as_ref(),
         )?;
         Table::new(self_, table_handle)
     }
@@ -2454,6 +2464,7 @@ impl Scope {
                         Some(self_.clone().unbind()),
                         self_.borrow().event_loop.clone(),
                         None,
+                        false,
                     ),
                 )?;
                 scope.borrow().graph.scoped(graph, || {
@@ -2964,14 +2975,14 @@ impl Scope {
         Table::new(self_, table_handle)
     }
 
-    #[pyo3(signature = (table, grouping_columns_paths, reduced_column_paths, combine, persistent_id, table_properties))]
+    #[pyo3(signature = (table, grouping_columns_paths, reduced_column_paths, combine, unique_name, table_properties))]
     pub fn deduplicate(
         self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] grouping_columns_paths: Vec<ColumnPath>,
         #[pyo3(from_py_with = "from_py_iterable")] reduced_column_paths: Vec<ColumnPath>,
         combine: Py<PyAny>,
-        persistent_id: Option<ExternalPersistentId>,
+        unique_name: Option<UniqueName>,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let table_handle = self_.borrow().graph.deduplicate(
@@ -2979,7 +2990,7 @@ impl Scope {
             grouping_columns_paths,
             reduced_column_paths,
             wrap_stateful_combine(combine),
-            persistent_id.as_ref(),
+            unique_name.as_ref(),
             table_properties.0,
         )?;
         Table::new(self_, table_handle)
@@ -3118,18 +3129,23 @@ impl Scope {
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
         data_sink: &Bound<DataStorage>,
         data_format: &Bound<DataFormat>,
+        unique_name: Option<UniqueName>,
     ) -> PyResult<()> {
         let py = self_.py();
 
+        self_.borrow().register_unique_name(unique_name.as_ref())?;
         let sink_impl = data_sink
             .borrow()
             .construct_writer(py, &data_format.borrow())?;
         let format_impl = data_format.borrow().construct_formatter(py)?;
 
-        self_
-            .borrow()
-            .graph
-            .output_table(sink_impl, format_impl, table.handle, column_paths)?;
+        self_.borrow().graph.output_table(
+            sink_impl,
+            format_impl,
+            table.handle,
+            column_paths,
+            unique_name,
+        )?;
 
         Ok(())
     }
@@ -3144,7 +3160,9 @@ impl Scope {
         on_change: Py<PyAny>,
         on_time_end: Py<PyAny>,
         on_end: Py<PyAny>,
+        unique_name: Option<UniqueName>,
     ) -> PyResult<()> {
+        self_.borrow().register_unique_name(unique_name.as_ref())?;
         let callbacks = SubscribeCallbacksBuilder::new()
             .wrapper(BatchWrapper::WithGil)
             .on_data(Box::new(move |key, values, time, diff| {
@@ -3172,6 +3190,7 @@ impl Scope {
             callbacks,
             skip_persisted_batch,
             skip_errors,
+            unique_name,
         )?;
         Ok(())
     }
@@ -3280,7 +3299,7 @@ fn capture_table_data(
                 Ok(())
             }))
             .build();
-        graph.subscribe_table(table.handle, column_paths, callbacks, false, false)?;
+        graph.subscribe_table(table.handle, column_paths, callbacks, false, false, None)?;
     }
     Ok(table_data)
 }
@@ -3342,6 +3361,7 @@ pub fn run_with_new_graph(
             None
         }
     };
+    let is_persisted = persistence_config.is_some();
     let telemetry_config =
         EngineTelemetryConfig::create(&license, run_id, monitoring_server, trace_parent)?;
     let results: Vec<Vec<_>> = run_with_wakeup_receiver(py, |wakeup_receiver| {
@@ -3354,7 +3374,12 @@ pub fn run_with_new_graph(
                     let captured_tables = Python::with_gil(|py| {
                         let our_scope = &Bound::new(
                             py,
-                            Scope::new(None, event_loop.clone(), Some(scope_license.clone())),
+                            Scope::new(
+                                None,
+                                event_loop.clone(),
+                                Some(scope_license.clone()),
+                                is_persisted,
+                            ),
                         )?;
                         let tables: Vec<(PyRef<Table>, Vec<ColumnPath>)> =
                             our_scope.borrow().graph.scoped(graph, || {
@@ -3722,10 +3747,10 @@ pub struct DataStorage {
     elasticsearch_params: Option<Py<ElasticSearchParams>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Py<PythonSubject>>,
-    persistent_id: Option<ExternalPersistentId>,
+    unique_name: Option<UniqueName>,
     max_batch_size: Option<usize>,
     object_pattern: String,
-    mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
+    mock_events: Option<HashMap<(UniqueName, usize), Vec<SnapshotEvent>>>,
     table_name: Option<String>,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
@@ -4038,7 +4063,7 @@ impl DataStorage {
         elasticsearch_params = None,
         parallel_readers = None,
         python_subject = None,
-        persistent_id = None,
+        unique_name = None,
         max_batch_size = None,
         object_pattern = "*".to_string(),
         mock_events = None,
@@ -4067,10 +4092,10 @@ impl DataStorage {
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
-        persistent_id: Option<ExternalPersistentId>,
+        unique_name: Option<UniqueName>,
         max_batch_size: Option<usize>,
         object_pattern: String,
-        mock_events: Option<HashMap<(ExternalPersistentId, usize), Vec<SnapshotEvent>>>,
+        mock_events: Option<HashMap<(UniqueName, usize), Vec<SnapshotEvent>>>,
         table_name: Option<String>,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
@@ -4095,7 +4120,7 @@ impl DataStorage {
             elasticsearch_params,
             parallel_readers,
             python_subject,
-            persistent_id,
+            unique_name,
             max_batch_size,
             object_pattern,
             mock_events,
@@ -4402,33 +4427,31 @@ impl DataStorage {
         }
     }
 
-    fn internal_persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-            .clone()
-            .map(IntoPersistentId::into_persistent_id)
-    }
-
-    fn construct_fs_reader(&self) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_fs_reader(&self, is_persisted: bool) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let storage = new_filesystem_reader(
             self.path()?,
             self.mode,
-            self.internal_persistent_id(),
             self.read_method,
             &self.object_pattern,
+            is_persisted,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to initialize Filesystem reader: {e}")))?;
         Ok((Box::new(storage), 1))
     }
 
-    fn construct_s3_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_s3_reader(
+        &self,
+        py: pyo3::Python,
+        is_persisted: bool,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let storage = new_s3_generic_reader(
             self.s3_bucket(py)?,
             deduced_path,
             self.mode,
-            self.internal_persistent_id(),
             self.read_method,
             self.downloader_threads_count()?,
+            is_persisted,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
         Ok((Box::new(storage), 1))
@@ -4437,6 +4460,7 @@ impl DataStorage {
     fn construct_s3_csv_reader(
         &self,
         py: pyo3::Python,
+        is_persisted: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let (_, deduced_path) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let storage = new_s3_csv_reader(
@@ -4444,20 +4468,24 @@ impl DataStorage {
             deduced_path,
             self.build_csv_parser_settings(py),
             self.mode,
-            self.internal_persistent_id(),
             self.downloader_threads_count()?,
+            is_persisted,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Creating S3 reader failed: {e}")))?;
         Ok((Box::new(storage), 1))
     }
 
-    fn construct_csv_reader(&self, py: pyo3::Python) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
+    fn construct_csv_reader(
+        &self,
+        py: pyo3::Python,
+        is_persisted: bool,
+    ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let reader = new_csv_filesystem_reader(
             self.path()?,
             self.build_csv_parser_settings(py),
             self.mode,
-            self.internal_persistent_id(),
             &self.object_pattern,
+            is_persisted,
         )
         .map_err(|e| {
             PyIOError::new_err(format!("Failed to initialize CsvFilesystem reader: {e}"))
@@ -4556,12 +4584,7 @@ impl DataStorage {
                 seek_positions.insert(element.partition(), offset);
             }
         }
-        let reader = KafkaReader::new(
-            consumer,
-            topic.to_string(),
-            self.internal_persistent_id(),
-            seek_positions,
-        );
+        let reader = KafkaReader::new(consumer, topic.to_string(), seek_positions);
         Ok((Box::new(reader), self.parallel_readers.unwrap_or(256)))
     }
 
@@ -4574,17 +4597,13 @@ impl DataStorage {
             PyValueError::new_err("For Python connector, python_subject should be specified")
         })?;
 
-        if subject.borrow(py).is_internal && self.persistent_id.is_some() {
+        if subject.borrow(py).is_internal && self.unique_name.is_some() {
             return Err(PyValueError::new_err(
-                "Python connectors marked internal can't have persistent id",
+                "Python connectors marked internal can't have unique names",
             ));
         }
 
-        let reader = PythonReaderBuilder::new(
-            subject,
-            self.internal_persistent_id(),
-            data_format.value_fields_type_map(py),
-        );
+        let reader = PythonReaderBuilder::new(subject, data_format.value_fields_type_map(py));
         Ok((Box::new(reader), 1))
     }
 
@@ -4648,7 +4667,6 @@ impl DataStorage {
             self.delta_storage_options(py)?,
             data_format.value_fields_type_map(py),
             self.mode,
-            self.internal_persistent_id(),
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to connect to DeltaLake: {e}")))?;
         Ok((Box::new(reader), 1))
@@ -4668,19 +4686,14 @@ impl DataStorage {
                 .await
                 .map_err(|e| PyIOError::new_err(format!("Failed to connect to NATS: {e}")))?;
             let subscriber = client
-                .queue_subscribe(topic, consumer_queue) // Kafka "consumer group" equivalent to enable parallel reads
+                .queue_subscribe(topic.clone(), consumer_queue) // Kafka "consumer group" equivalent to enable parallel reads
                 .await
                 .map_err(|e| {
                     PyIOError::new_err(format!("Failed to subscribe to NATS topic: {e}"))
                 })?;
             Ok::<NatsSubscriber, PyErr>(subscriber)
         })?;
-        let reader = NatsReader::new(
-            runtime,
-            subscriber,
-            worker_index,
-            self.internal_persistent_id(),
-        );
+        let reader = NatsReader::new(runtime, subscriber, worker_index, topic);
         Ok((Box::new(reader), 32))
     }
 
@@ -4720,7 +4733,6 @@ impl DataStorage {
             &table_params,
             data_format.value_fields_type_map(py),
             self.mode,
-            self.internal_persistent_id(),
         )
         .map_err(|e| {
             PyIOError::new_err(format!("Unable to start data lake input connector: {e}"))
@@ -4736,12 +4748,13 @@ impl DataStorage {
         connector_index: usize,
         worker_index: usize,
         license: Option<&License>,
+        is_persisted: bool,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         match self.storage_type.as_ref() {
-            "fs" => self.construct_fs_reader(),
-            "s3" => self.construct_s3_reader(py),
-            "s3_csv" => self.construct_s3_csv_reader(py),
-            "csv" => self.construct_csv_reader(py),
+            "fs" => self.construct_fs_reader(is_persisted),
+            "s3" => self.construct_s3_reader(py, is_persisted),
+            "s3_csv" => self.construct_s3_csv_reader(py, is_persisted),
+            "csv" => self.construct_csv_reader(py, is_persisted),
             "kafka" => self.construct_kafka_reader(),
             "python" => self.construct_python_reader(py, data_format),
             "sqlite" => self.construct_sqlite_reader(py, data_format),
@@ -4770,10 +4783,8 @@ impl DataStorage {
             }
             "mock" => {
                 let mut events = HashMap::<ConnectorWorkerPair, Vec<SnapshotEvent>>::new();
-                for ((external_persistent_id, worker_id), es) in self.mock_events.as_ref().unwrap()
-                {
-                    let internal_persistent_id =
-                        external_persistent_id.clone().into_persistent_id();
+                for ((unique_name, worker_id), es) in self.mock_events.as_ref().unwrap() {
+                    let internal_persistent_id = unique_name.clone().into_persistent_id();
                     events.insert((internal_persistent_id, *worker_id), es.clone());
                 }
                 Ok(PersistentStorageConfig::Mock(events))
@@ -4806,7 +4817,7 @@ impl DataStorage {
             match file {
                 Ok(f) => {
                     let buf_writer = BufWriter::new(f);
-                    FileWriter::new(buf_writer)
+                    FileWriter::new(buf_writer, path.to_string())
                 }
                 Err(_) => return Err(PyIOError::new_err("Filesystem operation (create) failed")),
             }
@@ -5223,6 +5234,8 @@ pub struct ConnectorProperties {
     unsafe_trusted_ids: bool,
     #[pyo3(get)]
     column_properties: Vec<ColumnProperties>,
+    #[pyo3(get)]
+    unique_name: Option<UniqueName>,
 }
 
 #[pymethods]
@@ -5231,17 +5244,20 @@ impl ConnectorProperties {
     #[pyo3(signature = (
         commit_duration_ms = None,
         unsafe_trusted_ids = false,
-        column_properties = vec![]
+        column_properties = vec![],
+        unique_name = None
     ))]
     fn new(
         commit_duration_ms: Option<u64>,
         unsafe_trusted_ids: bool,
         #[pyo3(from_py_with = "from_py_iterable")] column_properties: Vec<ColumnProperties>,
+        unique_name: Option<String>,
     ) -> Self {
         Self {
             commit_duration_ms,
             unsafe_trusted_ids,
             column_properties,
+            unique_name,
         }
     }
 }

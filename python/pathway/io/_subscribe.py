@@ -15,6 +15,8 @@ def subscribe(
     on_change: OnChangeCallback,
     on_end: OnFinishCallback = lambda: None,
     on_time_end: OnTimeEndCallback = lambda time: None,
+    *,
+    name: str | None = None,
 ):
     """
     Calls a callback function on_change on every change happening in table.
@@ -28,6 +30,8 @@ def subscribe(
           names key, row, time and is_addition respectively.
         on_end: the callback to be called when the stream of changes ends.
         on_time_end: the callback function to be called on each closed time of computation.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
     Returns:
         None
 
@@ -66,4 +70,5 @@ def subscribe(
         on_change=on_change,
         on_time_end=on_time_end,
         on_end=on_end,
+        name=name,
     )

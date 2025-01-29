@@ -1,6 +1,7 @@
 // Copyright © 2024 Pathway
 
 use log::{error, info, warn};
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::mem::take;
@@ -38,8 +39,8 @@ impl From<QueuedAction> for CurrentAction {
 pub struct PosixLikeReader {
     scanner: Box<dyn PosixLikeScanner>,
     tokenizer: Box<dyn Tokenize>,
-    persistent_id: Option<PersistentId>,
     streaming_mode: ConnectorMode,
+    is_persisted: bool,
 
     total_entries_read: u64,
     had_queue_refresh: bool,
@@ -53,13 +54,13 @@ impl PosixLikeReader {
         scanner: Box<dyn PosixLikeScanner>,
         tokenizer: Box<dyn Tokenize>,
         streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
+        is_persisted: bool,
     ) -> Result<Self, ReadError> {
         Ok(Self {
             scanner,
             tokenizer,
             streaming_mode,
-            persistent_id,
+            is_persisted,
 
             total_entries_read: 0,
             had_queue_refresh: false,
@@ -159,12 +160,8 @@ impl Reader for PosixLikeReader {
         Ok(ReadResult::Finished)
     }
 
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
-    }
-
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
+    fn short_description(&self) -> Cow<'static, str> {
+        self.scanner.short_description().into()
     }
 
     fn storage_type(&self) -> StorageType {
@@ -186,8 +183,7 @@ impl PosixLikeReader {
                 }
                 QueuedAction::Read(path, _) => {
                     let are_deletions_enabled = self.are_deletions_enabled();
-                    let is_persisted = self.persistent_id.is_some();
-                    if !is_persisted && !are_deletions_enabled {
+                    if !self.is_persisted && !are_deletions_enabled {
                         // Don't store a copy in memory if it won't be
                         // needed for undoing an object.
                         self.cached_object_storage
@@ -270,7 +266,7 @@ impl PosixLikeReader {
     }
 
     fn are_deletions_enabled(&self) -> bool {
-        self.persistent_id.is_some() || self.streaming_mode.is_polling_enabled()
+        self.is_persisted || self.streaming_mode.is_polling_enabled()
     }
 
     fn sleep_duration() -> Duration {

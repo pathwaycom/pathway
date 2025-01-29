@@ -99,14 +99,14 @@ class EndpointExamples:
         Adds an example to the collection.
 
         Args:
-            id: Short and unique ID for the example. It is used for naming the example \
-within the Open API schema. By using `default` as an ID, you can set the example \
-default for the readers, while users will be able to select another ones via the \
-dropdown menu.
-            summary: Human-readable summary of the example, describing what is shown. \
-It is shown in the automatically generated dropdown menu.
-            values: The key-value dictionary, a mapping from the fields described in \
-schema to their values in the example.
+            id: Short and unique ID for the example. It is used for naming the example
+                within the Open API schema. By using `default` as an ID, you can set the example
+                default for the readers, while users will be able to select another ones via the
+                dropdown menu.
+            summary: Human-readable summary of the example, describing what is shown.
+                It is shown in the automatically generated dropdown menu.
+            values: The key-value dictionary, a mapping from the fields described in
+                schema to their values in the example.
 
         Returns:
             None
@@ -131,8 +131,8 @@ class EndpointDocumentation:
         summary: Short endpoint description shown as a hint in the endpoints list.
         description: Comprehensive description for the endpoint.
         tags: Tags for grouping the endpoints.
-        method_types: If set, Pathway will document only the given method types. This \
-way, one can exclude certain endpoints and methods from being documented.
+        method_types: If set, Pathway will document only the given method types. This
+            way, one can exclude certain endpoints and methods from being documented.
     """
 
     DEFAULT_RESPONSES_DESCRIPTION = {
@@ -336,11 +336,11 @@ class PathwayWebserver:
     Args:
         host: TCP/IP host or a sequence of hosts for the created endpoint.
         port: Port for the created endpoint.
-        with_schema_endpoint: If set to True, the server will also provide ``/_schema`` \
-endpoint containing Open API 3.0.3 schema for the handlers generated with \
-``pw.io.http.rest_connector`` calls.
-        with_cors: If set to True, the server will allow cross-origin requests on the \
-added endpoints.
+        with_schema_endpoint: If set to True, the server will also provide ``/_schema``
+            endpoint containing Open API 3.0.3 schema for the handlers generated with
+            ``pw.io.http.rest_connector`` calls.
+        with_cors: If set to True, the server will allow cross-origin requests on the
+            added endpoints.
     """
 
     _host: str
@@ -505,7 +505,7 @@ class RestServerSubject(io.python.ConnectorSubject):
         documentation: EndpointDocumentation = EndpointDocumentation(),
         cache_strategy: CacheStrategy | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(datasource_name="rest-connector")
         self._webserver = webserver
         self._tasks = webserver._tasks
         self._schema = schema
@@ -645,8 +645,8 @@ def rest_connector(
     respective request's responses.
 
     Args:
-        webserver: configuration object containing host and port information. You only \
-need to create only one instance of this class per single host-port pair;
+        webserver: configuration object containing host and port information. You only
+          need to create only one instance of this class per single host-port pair;
         route: route which will be listened to by the web server;
         schema: schema of the resulting table;
         methods: HTTP methods that this endpoint will accept;
@@ -664,16 +664,16 @@ need to create only one instance of this class per single host-port pair;
 
     Returns:
         table: the table read;
-        response_writer: a callable, where the result table should be provided. The \
-result table must contain columns `query_id` corresponding to the primary key of an \
-object from the input table and `result`, corresponding to the endpoint's return value.
+        response_writer: a callable, where the result table should be provided. The
+            result table must contain columns `query_id` corresponding to the primary key of an
+            object from the input table and `result`, corresponding to the endpoint's return value.
 
     Example:
 
-    Let's consider the following example: there is a collection of words that are \
-received through HTTP REST endpoint `/uppercase` located at `127.0.0.1`, port `9999`. \
-The Pathway program processes this table by converting these words to the upper case. \
-This conversion result must be provided to the user on the output.
+    Let's consider the following example: there is a collection of words that are
+    received through HTTP REST endpoint `/uppercase` located at `127.0.0.1`, port `9999`.
+    The Pathway program processes this table by converting these words to the upper case.
+    This conversion result must be provided to the user on the output.
 
     Then, you can proceed with the following REST connector configuration code.
 
@@ -703,11 +703,11 @@ This conversion result must be provided to the user on the output.
     ... )
     >>> response_writer(uppercase_words)
 
-    Please note that you don't need to create another web server object if you need to \
-have more than one endpoint running on the same host and port. For example, if you need \
-to create another endpoint that converts words to lower case, in the same way, you \
-need to reuse the existing `webserver` object. That is, the configuration would start \
-with:
+    Please note that you don't need to create another web server object if you need to
+    have more than one endpoint running on the same host and port. For example, if you need
+    to create another endpoint that converts words to lower case, in the same way, you
+    need to reuse the existing `webserver` object. That is, the configuration would start
+    with:
 
     >>> words_for_lowercase, response_writer_for_lowercase = pw.io.http.rest_connector(
     ...     webserver=webserver,
@@ -772,7 +772,6 @@ with:
         schema=schema,
         format="json",
         autocommit_duration_ms=autocommit_duration_ms,
-        name="rest-connector",
     )
 
     def response_writer(responses: pw.Table):

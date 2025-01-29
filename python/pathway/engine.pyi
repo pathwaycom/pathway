@@ -97,6 +97,7 @@ class ConnectorProperties:
     commit_duration_ms: int | None = None
     unsafe_trusted_ids: bool | None = False
     column_properties: list[ColumnProperties] = []
+    unique_name: str | None = None
 
 class Column:
     """A Column holds data and conceptually is a Dict[Universe elems, dt]
@@ -596,7 +597,7 @@ class Scope:
         grouping_columns: list[ColumnPath],
         reduced_columns: list[ColumnPath],
         combine: Callable[[Any, Any], Any],
-        persistent_id: str | None,
+        unique_name: str | None,
         table_properties: TableProperties,
     ) -> Table: ...
     def ix_table(
@@ -671,6 +672,7 @@ class Scope:
         on_change: Callable,
         on_time_end: Callable,
         on_end: Callable,
+        unique_name: str | None = None,
     ): ...
     def output_table(
         self,
@@ -678,6 +680,7 @@ class Scope:
         column_paths: Iterable[ColumnPath],
         data_sink: DataStorage,
         data_format: DataFormat,
+        unique_name: str | None = None,
     ): ...
     def export_table(
         self, table: Table, column_paths: Iterable[ColumnPath]
@@ -752,7 +755,7 @@ class DataStorage:
     elasticsearch_params: ElasticSearchParams | None
     parallel_readers: int | None
     python_subject: PythonSubject | None
-    persistent_id: str | None
+    unique_name: str | None
     max_batch_size: int | None
     object_pattern: str
     mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None
@@ -824,7 +827,7 @@ class SnapshotEvent:
     FINISHED: SnapshotEvent
 
 class LocalBinarySnapshotWriter:
-    def __init__(self, path: str, persistent_id: str, worker_id: int): ...
+    def __init__(self, path: str, unique_name: str, worker_id: int): ...
     def write(self, events: list[SnapshotEvent]): ...
 
 class TelemetryConfig:

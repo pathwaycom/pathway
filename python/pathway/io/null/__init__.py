@@ -10,7 +10,7 @@ from pathway.internals.trace import trace_user_frame
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table) -> None:
+def write(table: Table, *, name: str | None = None) -> None:
     """Writes ``table``'s stream of updates to the empty sink.
 
     Inside this routine, the data is formatted into the empty object, and then doesn't
@@ -18,6 +18,8 @@ def write(table: Table) -> None:
 
     Args:
         table: Table to be written.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -45,5 +47,6 @@ def write(table: Table) -> None:
             data_storage,
             data_format,
             datasink_name="null",
+            unique_name=name,
         )
     )

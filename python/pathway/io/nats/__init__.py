@@ -13,6 +13,7 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     MessageQueueOutputFormat,
+    _get_unique_name,
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
 )
@@ -29,8 +30,9 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     parallel_readers: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     debug_data=None,
+    **kwargs,
 ) -> Table:
     """Reads data from a specified NATS topic.
 
@@ -64,11 +66,9 @@ def read(
             specified, it defaults to ``min(pathway_threads, total_partitions)``. It
             can't exceed the number of Pathway engine threads and will be reduced if
             necessary.
-        persistent_id: (unstable) An identifier, under which the state of the table will
-            be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -124,7 +124,6 @@ def read(
         path=uri,
         topic=topic,
         parallel_readers=parallel_readers,
-        persistent_id=persistent_id,
         mode=api.ConnectorMode.STREAMING,
     )
     schema, data_format = construct_schema_and_data_format(
@@ -134,7 +133,8 @@ def read(
         json_field_paths=json_field_paths,
     )
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -160,6 +160,7 @@ def write(
     delimiter: str = ",",
     value: ColumnReference | None = None,
     headers: Iterable[ColumnReference] | None = None,
+    name: str | None = None,
 ) -> None:
     """Writes data into the specified NATS topic.
 
@@ -200,6 +201,8 @@ def write(
             to the string representations of the respective values encoded in UTF-8. Note that
             due to NATS constraints imposed on headers, the binary fields must also be UTF-8
             serializable.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Example:
 
@@ -272,6 +275,9 @@ def write(
 
     table.to(
         datasink.GenericDataSink(
-            data_storage, output_format.data_format, datasink_name="nats"
+            data_storage,
+            output_format.data_format,
+            datasink_name="nats",
+            unique_name=name,
         )
     )

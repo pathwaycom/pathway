@@ -156,7 +156,7 @@ class _SharePointSubject(ConnectorSubject):
         max_failed_attempts_in_row,
     ):
         _check_entitlements("xpack-sharepoint")
-        super().__init__()
+        super().__init__(datasource_name="sharepoint")
         self._context_wrapper = context_wrapper
         self._root_path = root_path
         self._refresh_interval = refresh_interval
@@ -373,4 +373,4 @@ you can configure the connector this way:
         max_failed_attempts_in_row=max_failed_attempts_in_row,
     )
 
-    return pw.io.python.read(subject, format="binary", name="sharepoint")
+    return pw.io.python.read(subject, format="binary")

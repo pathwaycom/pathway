@@ -488,17 +488,17 @@ class _EmptyConnectorSubject(ConnectorSubject):
 
 
 class StreamGenerator:
-    _persistent_id = itertools.count()
+    _unique_name = itertools.count()
     events: dict[tuple[str, int], list[api.SnapshotEvent]] = {}
 
-    def _get_next_persistent_id(self) -> str:
-        return str(f"_stream_generator_{next(self._persistent_id)}")
+    def _get_next_unique_name(self) -> str:
+        return str(f"_stream_generator_{next(self._unique_name)}")
 
     def _advance_time_for_all_workers(
-        self, persistent_id: str, workers: Iterable[int], timestamp: int
+        self, unique_name: str, workers: Iterable[int], timestamp: int
     ):
         for worker in workers:
-            self.events[(persistent_id, worker)].append(
+            self.events[(unique_name, worker)].append(
                 api.SnapshotEvent.advance_time(timestamp)
             )
 
@@ -519,10 +519,10 @@ class StreamGenerator:
             batches: dictionary with specified batches to be put in the table
             schema: schema of the table
         """
-        persistent_id = self._get_next_persistent_id()
+        unique_name = self._get_next_unique_name()
         workers = {worker for batch in batches.values() for worker in batch}
         for worker in workers:
-            self.events[(persistent_id, worker)] = []
+            self.events[(unique_name, worker)] = []
 
         timestamps = set(batches.keys())
 
@@ -541,24 +541,23 @@ class StreamGenerator:
             batches = {2 * timestamp: batches[timestamp] for timestamp in batches}
 
         for timestamp in sorted(batches):
-            self._advance_time_for_all_workers(persistent_id, workers, timestamp)
+            self._advance_time_for_all_workers(unique_name, workers, timestamp)
             batch = batches[timestamp]
             for worker, changes in batch.items():
                 for diff, key, values in changes:
                     if diff == 1:
                         event = api.SnapshotEvent.insert(key, values)
-                        self.events[(persistent_id, worker)] += [event] * diff
+                        self.events[(unique_name, worker)] += [event] * diff
                     elif diff == -1:
                         event = api.SnapshotEvent.delete(key, values)
-                        self.events[(persistent_id, worker)] += [event] * (-diff)
+                        self.events[(unique_name, worker)] += [event] * (-diff)
                     else:
                         raise ValueError("only diffs of 1 and -1 are supported")
 
         return read(
-            _EmptyConnectorSubject(),
-            persistent_id=persistent_id,
+            _EmptyConnectorSubject(datasource_name="debug.stream-generator"),
+            name=unique_name,
             schema=schema,
-            name="debug.stream-generator",
         )
 
     def table_from_list_of_batches_by_workers(

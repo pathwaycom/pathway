@@ -13,7 +13,7 @@ use crate::helpers::ReplaceErrors;
 
 fn read_bytes_from_path(path: &str) -> eyre::Result<Vec<ParsedEvent>> {
     let mut reader =
-        new_filesystem_reader(path, ConnectorMode::Static, None, ReadMethod::Full, "*")?;
+        new_filesystem_reader(path, ConnectorMode::Static, ReadMethod::Full, "*", false)?;
     let mut parser = IdentityParser::new(
         vec!["data".to_string()],
         false,

@@ -132,7 +132,7 @@ def run_backfilling_program(
                     topic=kafka_context.input_topic,
                     format="plaintext",
                     autocommit_duration_ms=5,
-                    persistent_id="1",
+                    name="1",
                 ),
                 kwargs={"persistence_config": persistence_config},
             )

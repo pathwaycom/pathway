@@ -278,7 +278,7 @@ class _GDriveSubject(ConnectorSubject):
         object_size_limit: int | None,
         file_name_pattern: list | str | None,
     ) -> None:
-        super().__init__()
+        super().__init__(datasource_name="gdrive")
         self._credentials_factory = credentials_factory
         self._refresh_interval = refresh_interval
         self._root = root
@@ -346,6 +346,8 @@ def read(
     service_user_credentials_file: str,
     with_metadata: bool = False,
     file_name_pattern: list | str | None = None,
+    name: str | None = None,
+    **kwargs,
 ) -> pw.Table:
     """Reads a table from a Google Drive directory or file.
 
@@ -371,6 +373,10 @@ def read(
         file_name_pattern: glob pattern (or list of patterns) to be used to filter files based on their names.
             Defaults to `None` which doesn't filter anything. Doesn't apply to folder names.
             For example, `*.pdf` will only return files that has `.pdf` extension.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
+
     Returns:
         The table read.
 
@@ -402,4 +408,10 @@ def read(
         file_name_pattern=file_name_pattern,
     )
 
-    return pw.io.python.read(subject, format="binary", name="gdrive")
+    return pw.io.python.read(
+        subject,
+        format="binary",
+        name=name,
+        _stacklevel=4,
+        **kwargs,
+    )

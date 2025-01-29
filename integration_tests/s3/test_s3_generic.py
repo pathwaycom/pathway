@@ -30,7 +30,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
-        persistent_id="1",
+        name="1",
     )
     pw.io.csv.write(table, str(tmp_path / "output.csv"))
     pw.run(
@@ -50,7 +50,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
-        persistent_id="1",
+        name="1",
     )
     pw.io.csv.write(table, str(tmp_path / "output_backfilled.csv"))
     pw.run(
@@ -74,7 +74,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
         value_columns=["key", "value"],
         mode="static",
         autocommit_duration_ms=1000,
-        persistent_id="1",
+        name="1",
     )
     pw.io.csv.write(table, str(output_path))
     pw.run(
@@ -120,7 +120,7 @@ def test_s3_json_read_and_recovery(
             format="json",
             schema=InputSchema,
             mode="static",
-            persistent_id="1",
+            name="1",
         )
         pw.io.jsonlines.write(table, str(output_path))
         pw.run(

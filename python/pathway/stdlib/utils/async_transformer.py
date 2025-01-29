@@ -70,7 +70,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
     _logger: logging.Logger
 
     def __init__(self, transformer: AsyncTransformer) -> None:
-        super().__init__()
+        super().__init__(datasource_name="async-transformer")
         self._transformer = transformer
         self._event_loop = asyncio.new_event_loop()
         self._logger = logging.getLogger(__name__)
@@ -491,7 +491,6 @@ class AsyncTransformer(ABC):
         table: pw.Table = io.python.read(
             self._connector,
             schema=schema | _AsyncStatusSchema,
-            name="async-transformer",
             autocommit_duration_ms=self._autocommit_duration_ms,
         )
         input_node = table._source.operator

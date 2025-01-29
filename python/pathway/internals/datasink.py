@@ -20,6 +20,7 @@ class GenericDataSink(DataSink):
     datastorage: api.DataStorage
     dataformat: api.DataFormat
     datasink_name: str
+    unique_name: str | None
 
     @property
     def name(self) -> str:
@@ -33,6 +34,7 @@ class CallbackDataSink(DataSink):
     on_end: Callable[[], None]
     skip_persisted_batch: bool
     skip_errors: bool
+    unique_name: str | None
 
 
 @dataclass(frozen=True)

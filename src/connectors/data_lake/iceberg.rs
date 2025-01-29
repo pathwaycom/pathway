@@ -1,4 +1,5 @@
 use log::warn;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -37,7 +38,6 @@ use crate::connectors::{
 };
 use crate::engine::Type;
 use crate::persistence::frontier::OffsetAntichain;
-use crate::persistence::PersistentId;
 use crate::python_api::ValueField;
 use crate::timestamp::current_unix_timestamp_ms;
 
@@ -276,6 +276,14 @@ impl LakeBatchWriter for IcebergBatchWriter {
             utc_timezone_name: "+00:00".into(),
         }
     }
+
+    fn name(&self) -> String {
+        format!(
+            "Iceberg({}, {})",
+            self.table_ident.namespace.to_url_string(),
+            self.table_ident.name
+        )
+    }
 }
 
 /// Wrapper for `FileScanTask` that allows to compare them.
@@ -303,7 +311,6 @@ pub type IcebergSnapshotId = i64;
 pub struct IcebergReader {
     catalog: RestCatalog,
     table_ident: TableIdent,
-    persistent_id: Option<PersistentId>,
     column_types: HashMap<String, Type>,
     streaming_mode: ConnectorMode,
 
@@ -322,7 +329,6 @@ impl IcebergReader {
         table_params: &IcebergTableParams,
         column_types: HashMap<String, Type>,
         streaming_mode: ConnectorMode,
-        persistent_id: Option<PersistentId>,
     ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
         let catalog = db_params.create_catalog();
@@ -335,7 +341,6 @@ impl IcebergReader {
         Ok(Self {
             catalog,
             table_ident,
-            persistent_id,
             column_types,
             streaming_mode,
 
@@ -521,12 +526,13 @@ impl Reader for IcebergReader {
         Ok(())
     }
 
-    fn update_persistent_id(&mut self, persistent_id: Option<PersistentId>) {
-        self.persistent_id = persistent_id;
-    }
-
-    fn persistent_id(&self) -> Option<PersistentId> {
-        self.persistent_id
+    fn short_description(&self) -> Cow<'static, str> {
+        format!(
+            "Iceberg({}, {})",
+            self.table_ident.namespace.to_url_string(),
+            self.table_ident.name
+        )
+        .into()
     }
 
     fn storage_type(&self) -> StorageType {

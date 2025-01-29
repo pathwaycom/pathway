@@ -31,8 +31,10 @@ def write(
     table: Table,
     postgres_settings: dict,
     table_name: str,
+    *,
     max_batch_size: int | None = None,
     init_mode: str = "default",
+    name: str | None = None,
 ) -> None:
     """Writes ``table``'s stream of updates to a postgres table.
 
@@ -49,6 +51,8 @@ def write(
             "create_if_not_exists": initializes the SQL writer by creating the necessary table
             if they do not already exist;
             "replace": Initializes the SQL writer by replacing any existing table.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -124,7 +128,10 @@ def write(
 
     table.to(
         datasink.GenericDataSink(
-            data_storage, data_format, datasink_name="postgres.sink"
+            data_storage,
+            data_format,
+            datasink_name="postgres.sink",
+            unique_name=name,
         )
     )
 
@@ -135,8 +142,10 @@ def write_snapshot(
     postgres_settings: dict,
     table_name: str,
     primary_key: list[str],
+    *,
     max_batch_size: int | None = None,
     init_mode: str = "default",
+    name: str | None = None,
 ) -> None:
     """Maintains a snapshot of a table within a Postgres table.
 
@@ -153,7 +162,8 @@ def write_snapshot(
             "create_if_not_exists": initializes the SQL writer by creating the necessary table
             if they do not already exist;
             "replace": Initializes the SQL writer by replacing any existing table.
-
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -215,6 +225,9 @@ def write_snapshot(
 
     table.to(
         datasink.GenericDataSink(
-            data_storage, data_format, datasink_name="postgres.snapshot"
+            data_storage,
+            data_format,
+            datasink_name="postgres.snapshot",
+            unique_name=name,
         )
     )

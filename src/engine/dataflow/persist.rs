@@ -25,32 +25,32 @@ use crate::engine::dataflow::operators::MapWrapped;
 use crate::engine::dataflow::shard::Shard;
 use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell};
 use crate::engine::reduce::IntSumState;
-use crate::engine::{Error, Key, Result, Timestamp, Value};
+use crate::engine::{Key, Result, Timestamp, Value};
 use crate::persistence::config::PersistenceManagerConfig;
 use crate::persistence::operator_snapshot::{OperatorSnapshotReader, OperatorSnapshotWriter};
 use crate::persistence::tracker::{
     RequiredPersistenceMode, SharedWorkerPersistentStorage, WorkerPersistentStorage,
 };
-use crate::persistence::{ExternalPersistentId, PersistenceTime, PersistentId};
+use crate::persistence::{PersistenceTime, PersistentId, UniqueName};
 
 pub(super) fn effective_persistent_id<S>(
     persistence_wrapper: &mut Box<dyn PersistenceWrapper<S>>,
     reader_is_internal: bool,
-    external_persistent_id: Option<&ExternalPersistentId>,
+    unique_name: Option<&UniqueName>,
     required_persistence_mode: RequiredPersistenceMode,
     logic: impl FnOnce(u64) -> String,
-) -> Result<Option<ExternalPersistentId>>
+) -> Option<UniqueName>
 where
     S: MaybeTotalScope,
 {
     let has_persistent_storage = persistence_wrapper
         .get_worker_persistent_storage()
         .is_some();
-    if let Some(external_persistent_id) = external_persistent_id {
+    if let Some(unique_name) = unique_name {
         if has_persistent_storage {
-            Ok(Some(external_persistent_id.clone()))
+            Some(unique_name.clone())
         } else {
-            Err(Error::NoPersistentStorage(external_persistent_id.clone()))
+            None
         }
     } else if has_persistent_storage && !reader_is_internal {
         let next_state_id = persistence_wrapper.next_state_id();
@@ -62,12 +62,12 @@ where
         if worker_persistent_storage.persistent_id_generation_enabled(required_persistence_mode)
             && worker_persistent_storage.table_persistence_enabled()
         {
-            Ok(Some(logic(next_state_id)))
+            Some(logic(next_state_id))
         } else {
-            Ok(None)
+            None
         }
     } else {
-        Ok(None)
+        None
     }
 }
 

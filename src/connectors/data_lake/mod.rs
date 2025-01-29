@@ -46,6 +46,8 @@ pub trait LakeBatchWriter: Send {
     fn write_batch(&mut self, batch: ArrowRecordBatch) -> Result<(), WriteError>;
 
     fn settings(&self) -> LakeWriterSettings;
+
+    fn name(&self) -> String;
 }
 
 type ParsedValue = Result<Value, Box<ConversionError>>;

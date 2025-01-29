@@ -55,7 +55,7 @@ if __name__ == "__main__":
         schema=InputSchema,
         format="json",
         mode=args.mode,
-        persistent_id="1",
+        name="1",
         autocommit_duration_ms=100,
     )
     result = words.groupby(words.word).reduce(

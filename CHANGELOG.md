@@ -10,6 +10,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - methods `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now accept an additional argument `init_mode`, which allows initializing the table before writing.
 - `pw.io.deltalake.read` now supports serialization and deserialization for all Pathway data types.
 - New parser `pathway.xpacks.llm.parsers.DoclingParser` supporting parsing of pdfs with tables and images.
+- Output connectors now include an optional `name` parameter. If provided, this name will appear in logs and monitoring dashboards.
+- Automatic naming for input and output connectors has been enhanced.
 
 ### Changed
 - **BREAKING**: `pw.io.deltalake.read` now requires explicit specification of primary key fields.
@@ -18,6 +20,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING**: When using delay in temporal behavior, current time is updated immediately, not in the next batch.
 - **BREAKING**: The `Pointer` type is now serialized to Delta Tables as raw bytes.
 - `pw.io.kafka.write` now allows to specify `key` and `headers` for JSON and CSV data formats.
+- `persistent_id` parameter in connectors has been renamed to `name`. This new `name` parameter allows you to assign names to connectors, which will appear in logs and monitoring dashboards.
 
 ### Fixed
 - `generate_class` method in `Schema` now correctly renders columns of `UnionType` and `None` types.

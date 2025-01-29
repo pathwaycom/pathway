@@ -10,7 +10,6 @@ use super::{Key, Value};
 use crate::persistence::Error as PersistenceBackendError;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
-use crate::persistence::ExternalPersistentId;
 
 #[allow(clippy::module_name_repetitions)]
 pub type DynError = Box<dyn error::Error + Send + Sync>;
@@ -115,9 +114,6 @@ pub enum Error {
         inner: DynError,
         trace: Trace,
     },
-
-    #[error("persistent id {0} is assigned, but no persistent storage is configured")]
-    NoPersistentStorage(ExternalPersistentId),
 
     #[error("snapshot writer failed: {0}")]
     SnapshotWriterError(#[source] WriteError),

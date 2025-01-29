@@ -83,6 +83,7 @@ def subscribe(
     on_time_end: OnTimeEndCallback = lambda time: None,
     on_end: OnFinishCallback = lambda: None,
     skip_errors: bool = True,
+    name: str | None = None,
 ) -> None:
     """
     Calls a callback function on_change on every change happening in table. This method
@@ -103,6 +104,8 @@ def subscribe(
         on_time_end: the callback function to be called on each closed time of computation.
         on_end: the callback function to be called when the stream of changes ends.
         skip_errors: whether to skip rows containing errors
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
     Returns:
         None
     """
@@ -142,5 +145,6 @@ def subscribe(
             on_end=on_end,
             skip_persisted_batch=skip_persisted_batch,
             skip_errors=skip_errors,
+            unique_name=name,
         ),
     )

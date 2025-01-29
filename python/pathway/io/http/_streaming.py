@@ -27,7 +27,7 @@ class HttpStreamingSubject(ConnectorSubject):
         delimiter: str | bytes | None = None,
         response_mapper: Callable[[str | bytes], bytes] | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(datasource_name="http")
         self._url = url
         self._headers = headers
         self._sender = sender

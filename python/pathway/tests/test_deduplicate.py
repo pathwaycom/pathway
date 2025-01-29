@@ -397,7 +397,7 @@ def test_deduplicate_keeps_state_with_regular_persistence(tmp_path: pathlib.Path
     run_computation(5, 6, [6, 8, 10])
 
 
-def test_selective_persistence_persistent_id_set(
+def test_selective_persistence_name_set(
     tmp_path: pathlib.Path,
 ):
     persistence_path = tmp_path / "persistence"
@@ -430,9 +430,7 @@ def test_selective_persistence_persistent_id_set(
         return new_value >= old_value + 2
 
     table = pw.debug.table_from_markdown(data_1)
-    result = table.deduplicate(
-        value=pw.this.val, acceptor=acceptor, persistent_id="foo"
-    )
+    result = table.deduplicate(value=pw.this.val, acceptor=acceptor, name="foo")
 
     expected_1 = pw.debug.table_from_markdown(
         """
@@ -450,9 +448,7 @@ def test_selective_persistence_persistent_id_set(
     G.clear()
 
     table = pw.debug.table_from_markdown(data_2)
-    result = table.deduplicate(
-        value=pw.this.val, acceptor=acceptor, persistent_id="foo"
-    )
+    result = table.deduplicate(value=pw.this.val, acceptor=acceptor, name="foo")
 
     expected_2 = pw.debug.table_from_markdown(
         """
@@ -472,7 +468,7 @@ def test_selective_persistence_persistent_id_set(
 @pytest.mark.parametrize(
     "first_id,second_id", [(None, None), ("foo", "bar"), (None, "foo"), ("bar", None)]
 )
-def test_selective_persistence_no_persistent_id_set_or_different_ids_set(
+def test_selective_persistence_no_name_set_or_different_names_set(
     tmp_path: pathlib.Path,
     first_id: str | None,
     second_id: str | None,
@@ -507,9 +503,7 @@ def test_selective_persistence_no_persistent_id_set_or_different_ids_set(
         return new_value >= old_value + 2
 
     table = pw.debug.table_from_markdown(data_1)
-    result = table.deduplicate(
-        value=pw.this.val, acceptor=acceptor, persistent_id=first_id
-    )
+    result = table.deduplicate(value=pw.this.val, acceptor=acceptor, name=first_id)
 
     expected_1 = pw.debug.table_from_markdown(
         """
@@ -527,9 +521,7 @@ def test_selective_persistence_no_persistent_id_set_or_different_ids_set(
     G.clear()
 
     table = pw.debug.table_from_markdown(data_2)
-    result = table.deduplicate(
-        value=pw.this.val, acceptor=acceptor, persistent_id=second_id
-    )
+    result = table.deduplicate(value=pw.this.val, acceptor=acceptor, name=second_id)
 
     expected_2 = pw.debug.table_from_markdown(
         """

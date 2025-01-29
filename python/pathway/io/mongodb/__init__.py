@@ -18,6 +18,7 @@ def write(
     database: str,
     collection: str,
     max_batch_size: int | None = None,
+    name: str | None = None,
 ) -> None:
     """Writes ``table``'s stream of updates to a MongoDB table.
 
@@ -29,8 +30,8 @@ def write(
     and ``diff`` shows the nature of the change: ``1`` means a row was added and ``-1``
     means a row was deleted.
 
-    **Note:** Since MongoDB \
-`stores DateTime in milliseconds <https://www.mongodb.com/docs/manual/reference/bson-types/#date>`_,\
+    **Note:** Since MongoDB
+    `stores DateTime in milliseconds <https://www.mongodb.com/docs/manual/reference/bson-types/#date>`_,
     the `Duration </developers/api-docs/pathway/#pathway.Duration>`_ type is also
     serialized as an integer number of milliseconds for consistency.
 
@@ -41,6 +42,8 @@ for the details.
         database: The name of the database to update.
         collection: The name of the collection to write to.
         max_batch_size: The maximum number of entries to insert in one batch.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -185,6 +188,9 @@ for the details.
 
     table.to(
         datasink.GenericDataSink(
-            data_storage, data_format, datasink_name="mongodb.sink"
+            data_storage,
+            data_format,
+            datasink_name="mongodb.sink",
+            unique_name=name,
         )
     )

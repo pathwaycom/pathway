@@ -25,7 +25,7 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     json_field_paths: dict[str, str] | None = None,
     parallel_readers: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     value_columns: list[str] | None = None,
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
@@ -55,11 +55,9 @@ def read(
             will be taken. This number also can't be greater than the number of Pathway
             engine threads, and will be reduced to the number of engine threads, if it
             exceeds.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         value_columns: Columns to extract for a table, required for format other than
             "raw". [will be deprecated soon]
         primary_key: In case the table should have a primary key generated according to
@@ -92,8 +90,8 @@ def read(
     ...    "session.timeout.ms": "60000"
     ... }
 
-    To connect to the topic "animals" and accept messages, the connector must be used \
-        as follows, depending on the format:
+    To connect to the topic "animals" and accept messages, the connector must be used
+    as follows, depending on the format:
 
     Raw version:
 
@@ -218,7 +216,7 @@ def read(
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=json_field_paths,
         parallel_readers=parallel_readers,
-        persistent_id=persistent_id,
+        name=name,
         _stacklevel=5,
     )
 
@@ -231,6 +229,7 @@ def write(
     topic_name: str,
     *,
     format: str = "json",
+    name: str | None = None,
     **kwargs,
 ) -> None:
     """Write a table to a given topic on a Redpanda instance.
@@ -241,6 +240,8 @@ def write(
 `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic_name: name of topic in Redpanda to which the data should be sent.
         format: format of the input data, only "json" is currently supported.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -261,7 +262,7 @@ def write(
     ...    "bootstrap.servers": "localhost:9092",
     ...    "security.protocol": "sasl_ssl",
     ...    "sasl.mechanism": "SCRAM-SHA-256",
-    ...   "sasl.username": os.environ["KAFKA_USERNAME"],
+    ...    "sasl.username": os.environ["KAFKA_USERNAME"],
     ...    "sasl.password": os.environ["KAFKA_PASSWORD"]
     ... }
 
@@ -270,8 +271,8 @@ def write(
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown("age owner pet \\n 1 10 Alice dog \\n 2 9 Bob cat \\n 3 8 Alice cat")
 
-    To connect to the topic "animals" and send messages, the connector must be used \
-        as follows, depending on the format:
+    To connect to the topic "animals" and send messages, the connector must be used
+    as follows, depending on the format:
 
     JSON version:
 
@@ -290,5 +291,6 @@ def write(
         rdkafka_settings=rdkafka_settings,
         topic_name=topic_name,
         format=format,
+        name=name,
         **kwargs,
     )

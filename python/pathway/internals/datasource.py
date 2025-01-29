@@ -17,6 +17,7 @@ from pathway.internals.schema import Schema, schema_from_pandas
 class DataSourceOptions:
     commit_duration_ms: int | None = None
     unsafe_trusted_ids: bool | None = False
+    unique_name: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -39,6 +40,7 @@ class DataSource(ABC):
             commit_duration_ms=self.data_source_options.commit_duration_ms,
             unsafe_trusted_ids=self.data_source_options.unsafe_trusted_ids,
             column_properties=columns,
+            unique_name=self.data_source_options.unique_name,
         )
 
     def get_effective_schema(self) -> type[Schema]:

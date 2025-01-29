@@ -620,8 +620,8 @@ def test_groupby_2(tmp_path, mode):
     "mode",
     [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
 )
-@pytest.mark.parametrize("persistent_id", [None, "ded"])
-def test_deduplicate(tmp_path, mode, persistent_id):
+@pytest.mark.parametrize("name", [None, "ded"])
+def test_deduplicate(tmp_path, mode, name):
     class InputSchema(pw.Schema):
         a: int
 
@@ -629,9 +629,7 @@ def test_deduplicate(tmp_path, mode, persistent_id):
         return new_value > old_value + 2
 
     def logic(t_1: pw.Table) -> pw.Table:
-        return t_1.deduplicate(
-            value=pw.this.a, acceptor=acceptor, persistent_id=persistent_id
-        )
+        return t_1.deduplicate(value=pw.this.a, acceptor=acceptor, name=name)
 
     run, _ = get_one_table_runner(tmp_path, mode, logic, InputSchema)
 

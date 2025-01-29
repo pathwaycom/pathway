@@ -20,7 +20,7 @@ pub mod state;
 pub mod tracker;
 
 pub type PersistentId = u128;
-pub type ExternalPersistentId = String;
+pub type UniqueName = String;
 pub type SharedSnapshotWriter = Arc<Mutex<InputSnapshotWriter>>;
 pub type SharedOperatorSnapshotWriter<D, R> =
     Arc<Mutex<dyn OperatorSnapshotWriter<Timestamp, D, R>>>;
@@ -31,7 +31,7 @@ pub trait IntoPersistentId {
     fn into_persistent_id(self) -> PersistentId;
 }
 
-impl IntoPersistentId for ExternalPersistentId {
+impl IntoPersistentId for UniqueName {
     fn into_persistent_id(self) -> PersistentId {
         let mut hasher = Hasher::default();
         hasher.update(self.as_bytes());

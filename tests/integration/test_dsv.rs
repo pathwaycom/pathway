@@ -21,9 +21,9 @@ fn test_dsv_read_ok() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/sample.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -73,9 +73,9 @@ fn test_dsv_column_does_not_exist() -> eyre::Result<()> {
     let reader = new_filesystem_reader(
         "tests/data/sample.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["c".to_string()], ','),
@@ -101,9 +101,9 @@ fn test_dsv_rows_parsing_ignore_type() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/sample_str_int.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -141,9 +141,9 @@ fn test_dsv_not_enough_columns() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/sample_bad_lines.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(Some(vec!["a".to_string()]), vec!["b".to_string()], ','),
@@ -191,9 +191,9 @@ fn test_dsv_autogenerate_pkey() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/sample.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(None, vec!["a".to_string(), "b".to_string()], ','),
@@ -239,9 +239,9 @@ fn test_dsv_composite_pkey() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/sample_composite_pkey.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -309,9 +309,9 @@ fn test_dsv_read_schema_ok() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/schema.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(
@@ -383,9 +383,9 @@ fn test_dsv_read_schema_nonparsable() -> eyre::Result<()> {
     let mut reader = new_filesystem_reader(
         "tests/data/incorrect_types.txt",
         ConnectorMode::Static,
-        None,
         ReadMethod::ByLine,
         "*",
+        false,
     )?;
     let mut parser = DsvParser::new(
         DsvSettings::new(

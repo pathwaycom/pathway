@@ -36,6 +36,10 @@ impl LakeBatchWriter for ArrowBatchWriter {
             utc_timezone_name: "UTC".into(),
         }
     }
+
+    fn name(&self) -> String {
+        "test".to_string()
+    }
 }
 
 fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {

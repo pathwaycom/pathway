@@ -18,9 +18,11 @@ def write(
     retry_policy: RetryPolicy = RetryPolicy.default(),
     connect_timeout_ms: int | None = None,
     request_timeout_ms: int | None = None,
+    *,
+    name: str | None = None,
 ) -> None:
-    """Sends the stream of updates from the table to \
-`HTTP input <https://www.elastic.co/guide/en/logstash/current/plugins-inputs-http.html>`
+    """Sends the stream of updates from the table to
+    `HTTP input <https://www.elastic.co/guide/en/logstash/current/plugins-inputs-http.html>`
     of Logstash. The data is sent in the format of flat JSON objects, with two extra
     fields for time and diff.
 
@@ -29,10 +31,12 @@ def write(
         endpoint: Logstash endpoint, accepting entries;
         n_retries: number of retries in case of failure;
         retry_policy: policy of delays or backoffs for the retries;
-        connect_timeout_ms: connection timeout, specified in milliseconds. In case \
-it's None, no restrictions on connection duration will be applied;
-        request_timeout_ms: request timeout, specified in milliseconds. In case it's \
-None, no restrictions on request duration will be applied.
+        connect_timeout_ms: connection timeout, specified in milliseconds. In cas it's None,
+            no restrictions on connection duration will be applied;
+        request_timeout_ms: request timeout, specified in milliseconds. In case it's None,
+            no restrictions on request duration will be applied.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Example:
 
@@ -67,4 +71,5 @@ None, no restrictions on request duration will be applied.
         retry_policy=retry_policy,
         connect_timeout_ms=connect_timeout_ms,
         request_timeout_ms=request_timeout_ms,
+        name=name,
     )

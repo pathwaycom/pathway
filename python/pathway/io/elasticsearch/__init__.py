@@ -49,7 +49,14 @@ class ElasticSearchAuth:
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> None:
+def write(
+    table: Table,
+    host: str,
+    auth: ElasticSearchAuth,
+    index_name: str,
+    *,
+    name: str | None = None,
+) -> None:
     """Write a table to a given index in ElasticSearch.
 
     Args:
@@ -57,6 +64,8 @@ def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> 
         host: the host and port, on which Elasticsearch server works.
         auth: credentials for Elasticsearch authorization.
         index_name: name of the index, which gets the docs.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -113,5 +122,6 @@ def write(table: Table, host: str, auth: ElasticSearchAuth, index_name: str) -> 
             data_storage,
             data_format,
             datasink_name="elasticsearch",
+            unique_name=name,
         )
     )

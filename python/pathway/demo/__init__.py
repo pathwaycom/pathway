@@ -32,7 +32,7 @@ def generate_custom_stream(
     nb_rows: int | None = None,
     autocommit_duration_ms: int = 1000,
     input_rate: float = 1.0,
-    persistent_id: str | None = None,
+    name: str | None = None,
 ) -> pw.Table:
     """Generates a data stream.
 
@@ -104,12 +104,11 @@ provided the default type is ``pw.Type.ANY``.
                     time.sleep(1.0 / input_rate)
 
     table = pw.io.python.read(
-        FileStreamSubject(),
+        FileStreamSubject(datasource_name="demo.custom-stream"),
         schema=schema,
         format="json",
         autocommit_duration_ms=autocommit_duration_ms,
-        persistent_id=persistent_id,
-        name="demo.custom-stream",
+        name=name,
     )
 
     return table
@@ -247,11 +246,10 @@ def replay_csv(
                     time.sleep(1.0 / input_rate)
 
     return pw.io.python.read(
-        FileStreamSubject(),
+        FileStreamSubject(datasource_name="demo.replay-csv"),
         schema=schema.with_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
-        name="demo.replay-csv",
     ).cast_to_types(**schema.typehints())
 
 
@@ -331,9 +329,8 @@ def replay_csv_with_time(
                     self.next_json(values)
 
     return pw.io.python.read(
-        FileStreamSubject(),
+        FileStreamSubject(datasource_name="demo.replay-csv-with-time"),
         schema=schema.with_types(**{name: str for name in schema.column_names()}),
         autocommit_duration_ms=autocommit_ms,
         format="json",
-        name="demo.replay-csv-with-time",
     ).cast_to_types(**schema.typehints())

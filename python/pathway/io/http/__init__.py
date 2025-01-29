@@ -47,6 +47,7 @@ def read(
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    name: str | None = None,
 ):
     """Reads a table from an HTTP stream.
 
@@ -88,6 +89,9 @@ def read(
         default_values: dictionary containing default values for columns replacing
           blank entries. The default value of the column must be specified explicitly,
           otherwise there will be no default value. [will be deprecated soon]
+        name: A unique name for the connector. If provided, this name will be used in
+          logs and monitoring dashboards. Additionally, if persistence is enabled, it
+          will be used as the name for the snapshot that stores the connector's progress.
 
     Examples:
 
@@ -149,7 +153,8 @@ def read(
         default_values=default_values,
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,
-        name="http",
+        name=name,
+        _stacklevel=5,
     )
 
 
@@ -170,6 +175,7 @@ def write(
     headers: dict[str, str] | None = None,
     allow_redirects: bool = True,
     retry_codes: tuple | None = (429, 500, 502, 503, 504),
+    name: str | None = None,
 ) -> None:
     """Sends the stream of updates from the table to the specified HTTP API.
 
@@ -195,6 +201,8 @@ def write(
           JSON, it will be defaulted to "application/json".
         headers: request headers in the form of dict. Wildcards are allowed both, in
           keys and in values.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Wildcards:
 
@@ -288,7 +296,7 @@ def write(
             data=payload,
         )
 
-    subscribe(table, callback)
+    subscribe(table, callback, name=name)
 
 
 __all__ = [

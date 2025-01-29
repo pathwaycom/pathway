@@ -12,7 +12,7 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import read_schema
+from pathway.io._utils import _get_unique_name, read_schema
 
 
 @check_arg_types
@@ -25,11 +25,12 @@ def read(
     schema: type[Schema] | None = None,
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
-    persistent_id: str | None = None,
+    name: str | None = None,
     value_columns: list[str] | None = None,
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    **kwargs,
 ) -> Table:
     """
     Connector, which takes a topic in the format of Debezium
@@ -46,11 +47,9 @@ def read(
         autocommit_duration_ms:the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         value_columns: Columns to extract for a table. [will be deprecated soon]
         primary_key: In case the table should have a primary key generated according to
             a subset of its columns, the set of columns should be specified in this field.
@@ -126,7 +125,6 @@ def read(
         storage_type="kafka",
         rdkafka_settings=rdkafka_settings,
         topic=topic_name,
-        persistent_id=persistent_id,
     )
     schema, data_format_definition = read_schema(
         schema=schema,
@@ -136,7 +134,8 @@ def read(
         default_values=default_values,
     )
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs),
     )
     data_format = api.DataFormat(
         format_type="debezium", debezium_db_type=db_type, **data_format_definition

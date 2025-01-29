@@ -169,6 +169,10 @@ impl PosixLikeScanner for S3Scanner {
         }
         Ok(result)
     }
+
+    fn short_description(&self) -> String {
+        format!("S3({})", self.objects_prefix)
+    }
 }
 
 #[allow(clippy::module_name_repetitions)]

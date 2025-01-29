@@ -38,4 +38,5 @@ pub trait PosixLikeScanner: Send {
         are_deletions_enabled: bool,
         cached_object_storage: &CachedObjectStorage,
     ) -> Result<Vec<QueuedAction>, ReadError>;
+    fn short_description(&self) -> String;
 }

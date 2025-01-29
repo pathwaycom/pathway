@@ -47,13 +47,18 @@ class _OutputBuffer:
 
 
 def write(
-    table, publisher: pubsub_v1.PublisherClient, project_id: str, topic_id: str
+    table,
+    publisher: pubsub_v1.PublisherClient,
+    project_id: str,
+    topic_id: str,
+    *,
+    name: str | None = None,
 ) -> None:
-    """Publish the ``table``'s stream of changes into the specified PubSub topic. Please note \
-that ``table`` must consist of a single column of the binary type. In addition, the connector \
-adds two attributes: ``pathway_time`` containing the logical time of the change and \
-``pathway_diff`` corresponding to the change type: either addition (``pathway_diff = 1``) \
-or deletion (``pathway_diff = -1``).
+    """Publish the ``table``'s stream of changes into the specified PubSub topic. Please note
+    that ``table`` must consist of a single column of the binary type. In addition, the connector
+    adds two attributes: ``pathway_time`` containing the logical time of the change and
+    ``pathway_diff`` corresponding to the change type: either addition (``pathway_diff = 1``)
+    or deletion (``pathway_diff = -1``).
 
     Args:
         table: The table to publish.
@@ -67,6 +72,8 @@ the example of a simple publisher configuration. You can also see the examples f
 <https://cloud.google.com/pubsub/docs/samples/pubsub-publisher-flow-control?hl=en>`_.
         project_id: The ID of the project where the changes are published.
         topic_id: The topic ID where the changes are published.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -119,5 +126,8 @@ the example of a simple publisher configuration. You can also see the examples f
 
     output_buffer = _OutputBuffer(publisher, project_id, topic_id)
     subscribe(
-        table, on_change=output_buffer.on_change, on_time_end=output_buffer.on_time_end
+        table,
+        on_change=output_buffer.on_change,
+        on_time_end=output_buffer.on_time_end,
+        name=name,
     )

@@ -17,7 +17,7 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import internal_connector_mode, read_schema
+from pathway.io._utils import _get_unique_name, internal_connector_mode, read_schema
 from pathway.io.minio import MinIOSettings
 from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
@@ -44,8 +44,9 @@ def read(
         AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
     ) = None,
     autocommit_duration_ms: int | None = 1500,
-    persistent_id: str | None = None,
+    name: str | None = None,
     debug_data: Any = None,
+    **kwargs,
 ) -> Table:
     """
     Reads a table from Delta Lake. Currently, local and S3 lakes are supported. The table
@@ -69,11 +70,9 @@ def read(
             endpoint, which is necessary for buckets hosted outside of Amazon AWS. If the
             custom endpoint is left blank, the authorized user's credentials for S3 will
             be used.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
@@ -151,7 +150,6 @@ def read(
         aws_s3_settings=_engine_s3_connection_settings(
             uri, prepared_connection_settings
         ),
-        persistent_id=persistent_id,
     )
     data_format = api.DataFormat(
         format_type="transparent",
@@ -159,7 +157,8 @@ def read(
     )
 
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -184,6 +183,7 @@ def write(
         AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
     ) = None,
     min_commit_frequency: int | None = 60_000,
+    name: str | None = None,
 ) -> None:
     """
     Writes the stream of changes from ``table`` into `Delta Lake <https://delta.io/>_` data
@@ -217,6 +217,8 @@ def write(
             or \
 `optimize <https://docs.delta.io/2.0.2/optimizations-oss.html#optimize-performance-with-file-management>`_
             operations afterwards.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -276,6 +278,7 @@ def write(
             data_storage,
             data_format,
             datasink_name="deltalake",
+            unique_name=name,
         )
     )
 

@@ -24,7 +24,7 @@ def run_graph(
         nb_rows=rows_to_generate,
         input_rate=15,
         autocommit_duration_ms=50,
-        persistent_id="1",
+        name="1",
     )
 
     callback = CountDifferentTimestampsCallback(expected_count)

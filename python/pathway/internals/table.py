@@ -1067,7 +1067,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         value: expr.ColumnExpression | Value,
         instance: expr.ColumnExpression | None = None,
         acceptor: Callable[[T, T], bool],
-        persistent_id: str | None = None,
+        name: str | None = None,
     ) -> Table:
         """Deduplicates rows in `self` on `value` column using acceptor function.
 
@@ -1080,10 +1080,10 @@ id_type=<class 'pathway.engine.Pointer'>>
                 values in this column, deduplication will be performed separately.
                 Defaults to None.
             acceptor: callback telling whether two values are different.
-            persistent_id: (unstable) An identifier, under which the state of the table
+            name:  An identifier, under which the state of the table
                 will be persisted or ``None``, if there is no need to persist the state of this table.
                 When a program restarts, it restores the state for all input tables according to what
-                was saved for their ``persistent_id``. This way it's possible to configure the start of
+                was saved for their ``name``. This way it's possible to configure the start of
                 computations from the moment they were terminated last time.
 
         Returns:
@@ -1155,7 +1155,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             (instance_col,),
             acceptor,
             self._id_column,
-            persistent_id,
+            name,
         )
 
         return self._table_with_context(context)

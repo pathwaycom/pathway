@@ -27,6 +27,7 @@ from pathway.io._utils import (
     MetadataSchema,
     PlaintextDataSchema,
     RawDataSchema,
+    _get_unique_name,
     assert_schema_or_value_columns_not_none,
     get_data_format_type,
     internal_read_method,
@@ -96,13 +97,15 @@ class ConnectorSubject(ABC):
     _exception: BaseException | None
     _already_used: bool
     _pw_format: str
+    _datasource_name: str
 
-    def __init__(self) -> None:
+    def __init__(self, datasource_name: str = "python") -> None:
         self._buffer = Queue()
         self._thread = None
         self._exception = None
         self._already_used = False
         self._started = False
+        self._datasource_name = datasource_name
 
     @abstractmethod
     def run(self) -> None: ...
@@ -329,7 +332,7 @@ class ConnectorSubject(ABC):
 
         We need this distinction, because internal usages don't read user data and
         aren't a part of the external perimeter, which is currently persisted. Therefore
-        we need to tell the engine not to require persistent_id from such connectors
+        we need to tell the engine not to require name from such connectors
         and not to store the snapshot of its inputs.
         """
         return False
@@ -360,8 +363,9 @@ def read(
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
-    persistent_id: str | None = None,
-    name: str = "python",
+    name: str | None = None,
+    _stacklevel: int = 1,
+    **kwargs,
 ) -> Table:
     """Reads a table from a ConnectorSubject.
 
@@ -385,11 +389,9 @@ def read(
         default_values: dictionary containing default values for columns replacing
             blank entries. The default value of the column must be specified explicitly,
             otherwise there will be no default value. [will be deprecated soon]
-        persistent_id: (unstable) An identifier, under which the state of the table \
-will be persisted or ``None``, if there is no need to persist the state of this table. \
-When a program restarts, it restores the state for all input tables according to what \
-was saved for their ``persistent_id``. This way it's possible to configure the start of \
-computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
 
     Returns:
         Table: The table read.
@@ -433,7 +435,7 @@ computations from the moment they were terminated last time.
         primary_key=primary_key,
         types=types,
         default_values=default_values,
-        _stacklevel=5,
+        _stacklevel=_stacklevel + 4,
     )
     data_format = api.DataFormat(
         **api_schema,
@@ -452,10 +454,10 @@ computations from the moment they were terminated last time.
             deletions_enabled=subject._deletions_enabled,
         ),
         read_method=internal_read_method(format),
-        persistent_id=persistent_id,
     )
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -463,7 +465,7 @@ computations from the moment they were terminated last time.
             dataformat=data_format,
             data_source_options=data_source_options,
             schema=schema,
-            datasource_name=name,
+            datasource_name=subject._datasource_name,
             append_only=not subject._deletions_enabled,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),

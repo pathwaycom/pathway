@@ -13,6 +13,7 @@ from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     CsvParserSettings,
+    _get_unique_name,
     construct_s3_data_storage,
     construct_schema_and_data_format,
     internal_connector_mode,
@@ -102,9 +103,11 @@ def read(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
+    _stacklevel: int = 1,
+    **kwargs,
 ) -> Table:
     """Reads a table from one or several objects in Amazon S3 bucket in the given
     format.
@@ -147,11 +150,9 @@ def read(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -272,7 +273,6 @@ def read(
         format=format,
         mode=internal_mode,
         csv_settings=csv_settings,
-        persistent_id=persistent_id,
         downloader_threads_count=downloader_threads_count,
     )
 
@@ -282,10 +282,11 @@ def read(
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
         with_metadata=with_metadata,
-        _stacklevel=5,
+        _stacklevel=_stacklevel + 4,
     )
     data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -312,9 +313,10 @@ def read_from_digital_ocean(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
+    **kwargs,
 ) -> Table:
     """Reads a table from one or several objects in Digital Ocean S3 bucket.
 
@@ -356,11 +358,9 @@ def read_from_digital_ocean(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -403,7 +403,6 @@ def read_from_digital_ocean(
         format=format,
         mode=internal_mode,
         csv_settings=csv_settings,
-        persistent_id=persistent_id,
         downloader_threads_count=downloader_threads_count,
     )
 
@@ -416,7 +415,8 @@ def read_from_digital_ocean(
         _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs),
     )
     return table_from_datasource(
         datasource.GenericDataSource(
@@ -443,9 +443,10 @@ def read_from_wasabi(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
+    **kwargs,
 ) -> Table:
     """Reads a table from one or several objects in Wasabi S3 bucket.
 
@@ -486,11 +487,9 @@ def read_from_wasabi(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -534,7 +533,6 @@ def read_from_wasabi(
         mode=internal_mode,
         downloader_threads_count=downloader_threads_count,
         csv_settings=csv_settings,
-        persistent_id=persistent_id,
     )
     schema, data_format = construct_schema_and_data_format(
         format,
@@ -545,7 +543,8 @@ def read_from_wasabi(
         _stacklevel=5,
     )
     datasource_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs),
     )
     return table_from_datasource(
         datasource.GenericDataSource(

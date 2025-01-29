@@ -413,4 +413,8 @@ impl Writer for LakeWriter {
         }
         Ok(())
     }
+
+    fn name(&self) -> String {
+        self.batch_writer.name()
+    }
 }

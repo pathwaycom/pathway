@@ -41,7 +41,7 @@ use crate::persistence::config::ReadersQueryPurpose;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::persistence::input_snapshot::{Event as SnapshotEvent, SnapshotMode};
 use crate::persistence::tracker::{RequiredPersistenceMode, WorkerPersistentStorage};
-use crate::persistence::{ExternalPersistentId, PersistentId, SharedSnapshotWriter};
+use crate::persistence::{PersistentId, SharedSnapshotWriter, UniqueName};
 
 use data_format::{ParseError, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser};
 use data_storage::{
@@ -342,6 +342,7 @@ impl Connector {
     pub fn read_snapshot(
         reader: &mut dyn Reader,
         persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
+        persistent_id: Option<PersistentId>,
         sender: &Sender<Entry>,
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
@@ -356,7 +357,7 @@ impl Connector {
             persistence_mode.on_before_reading_snapshot(sender);
         }
         if let Some(persistent_storage) = persistent_storage {
-            if let Some(persistent_id) = reader.persistent_id() {
+            if let Some(persistent_id) = persistent_id {
                 reader.initialize_cached_objects_storage(
                     &persistent_storage.lock().unwrap(),
                     persistent_id,
@@ -394,13 +395,14 @@ impl Connector {
 
     pub fn snapshot_writer(
         reader: &dyn ReaderBuilder,
+        persistent_id: Option<PersistentId>,
         persistent_storage: Option<&Arc<Mutex<WorkerPersistentStorage>>>,
         snapshot_access: SnapshotAccess,
     ) -> Result<Option<SharedSnapshotWriter>, WriteError> {
         if !snapshot_access.is_snapshot_writing_allowed() {
             Ok(None)
         } else if let Some(persistent_storage) = &persistent_storage {
-            if let Some(persistent_id) = reader.persistent_id() {
+            if let Some(persistent_id) = persistent_id {
                 Ok(Some(
                     persistent_storage
                         .lock()
@@ -418,7 +420,6 @@ impl Connector {
                 Ok(None)
             }
         } else {
-            assert!(reader.persistent_id().is_none());
             Ok(None)
         }
     }
@@ -433,9 +434,9 @@ impl Connector {
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key + 'static,
         probe: Handle<Timestamp>,
         persistent_storage: Option<Arc<Mutex<WorkerPersistentStorage>>>,
-        connector_id: usize,
+        persistent_id: Option<PersistentId>,
         realtime_reader_needed: bool,
-        external_persistent_id: Option<&ExternalPersistentId>,
+        unique_name: Option<&UniqueName>,
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
@@ -450,10 +451,11 @@ impl Connector {
             reader.short_description(),
             parser.short_description()
         );
-        let reader_name = reader.name(external_persistent_id, connector_id);
+        let reader_name = reader.name(unique_name);
 
         let mut snapshot_writer = Self::snapshot_writer(
             reader.as_ref(),
+            persistent_id,
             persistent_storage.as_ref(),
             snapshot_access,
         )
@@ -473,6 +475,7 @@ impl Connector {
                 Self::read_snapshot(
                     &mut *reader,
                     persistent_storage.as_ref(),
+                    persistent_id,
                     &sender,
                     persistence_mode,
                     snapshot_access,
@@ -864,11 +867,11 @@ pub struct SnapshotReaderState {
 pub fn read_persisted_state(
     mut input_session: InputSession<Timestamp, (Key, Vec<Value>), isize>,
     persistent_storage: Arc<Mutex<WorkerPersistentStorage>>,
-    external_persistent_id: &ExternalPersistentId,
+    unique_name: &UniqueName,
     persistent_id: PersistentId,
 ) -> SnapshotReaderState {
     let (sender, receiver) = mpsc::channel();
-    let thread_name = format!("pathway:{external_persistent_id}");
+    let thread_name = format!("pathway:{unique_name}");
 
     let input_thread_handle = thread::Builder::new()
         .name(thread_name)

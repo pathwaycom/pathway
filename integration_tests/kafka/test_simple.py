@@ -396,7 +396,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         value_columns=["v"],
         primary_key=["k"],
         autocommit_duration_ms=100,
-        persistent_id="1",
+        name="1",
     )
 
     pw.io.csv.write(table, tmp_path / "output.csv")
@@ -438,7 +438,7 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         value_columns=["v"],
         primary_key=["k"],
         autocommit_duration_ms=100,
-        persistent_id="1",
+        name="1",
     )
 
     pw.io.csv.write(table, tmp_path / "output_backfilled.csv")

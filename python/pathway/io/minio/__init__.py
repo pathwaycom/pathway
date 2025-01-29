@@ -21,9 +21,9 @@ class MinIOSettings:
         access_key: Access key for the bucket.
         secret_access_key: Secret access key for the bucket.
         region: Region of the bucket.
-        with_path_style: Whether to use path-style addresses for bucket access. It defaults \
-to True as this is the most widespread way to access MinIO, but can be overridden in case \
-of a custom configuration.
+        with_path_style: Whether to use path-style addresses for bucket access. It defaults
+            to True as this is the most widespread way to access MinIO, but can be overridden
+            in case of a custom configuration.
     """
 
     def __init__(
@@ -67,9 +67,10 @@ def read(
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     downloader_threads_count: int | None = None,
-    persistent_id: str | None = None,
+    name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
+    **kwargs,
 ) -> Table:
     """Reads a table from one or several objects from S3 bucket in MinIO.
 
@@ -110,11 +111,9 @@ def read(
             of the bucket under the given path. It defaults to the number of cores
             available on the machine. It is recommended to increase the number of
             threads if your bucket contains many small files.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
 
     Returns:
@@ -158,8 +157,10 @@ def read(
         mode=mode,
         with_metadata=with_metadata,
         autocommit_duration_ms=autocommit_duration_ms,
-        persistent_id=persistent_id,
+        name=name,
         json_field_paths=json_field_paths,
         downloader_threads_count=downloader_threads_count,
         debug_data=debug_data,
+        _stacklevel=5,
+        **kwargs,
     )

@@ -101,8 +101,13 @@ def check_deprecated_kwargs(
                 stacklevel=stacklevel + 1,
             )
             kwargs.pop(kwarg_name)
-    if kwargs:
-        unexpected_arg_names = ", ".join(repr(arg) for arg in kwargs.keys())
+    deprecated_kwargs_with_custom_report = ["persistent_id"]
+    unexpected_args_list = []
+    for kwarg in kwargs.keys():
+        if kwarg not in deprecated_kwargs_with_custom_report:
+            unexpected_args_list.append(kwarg)
+    if unexpected_args_list:
+        unexpected_arg_names = ", ".join(repr(arg) for arg in unexpected_args_list)
         raise TypeError(f"Got unexpected keyword arguments: {unexpected_arg_names}")
 
 
@@ -136,9 +141,9 @@ class CsvParserSettings:
         escape: What character to use for escaping fields in CSV.
         enable_double_quote_escapes: Enable escapes of double quotes.
         enable_quoting: Enable quoting for the fields.
-        comment_character: If specified, the lines starting with the comment \
-character will be treated as comments and therefore, will be ignored by \
-parser
+        comment_character: If specified, the lines starting with the comment
+            character will be treated as comments and therefore, will be ignored by
+            parser
     """
 
     def __init__(
@@ -371,7 +376,6 @@ def construct_s3_data_storage(
     *,
     downloader_threads_count: int | None = None,
     csv_settings: CsvParserSettings | None = None,
-    persistent_id: str | None = None,
 ):
     if format == "csv":
         return api.DataStorage(
@@ -381,7 +385,6 @@ def construct_s3_data_storage(
             csv_parser_settings=csv_settings.api_settings if csv_settings else None,
             downloader_threads_count=downloader_threads_count,
             mode=internal_connector_mode(mode),
-            persistent_id=persistent_id,
         )
     else:
         return api.DataStorage(
@@ -391,7 +394,6 @@ def construct_s3_data_storage(
             mode=internal_connector_mode(mode),
             read_method=internal_read_method(format),
             downloader_threads_count=downloader_threads_count,
-            persistent_id=persistent_id,
         )
 
 
@@ -522,3 +524,22 @@ class MessageQueueOutputFormat:
         field_indices[column_name] = index_in_new_table
         selection_list.append(column_reference)
         return index_in_new_table
+
+
+def _get_unique_name(
+    name: str | None, kwargs: dict[str, Any], stacklevel: int = 6
+) -> str:
+    deprecated_name = kwargs.get("persistent_id")
+    if name is not None:
+        if deprecated_name is not None:
+            raise ValueError(
+                "'persistent_id' and 'name' should not be used together. Please use 'name' only."
+            )
+        return name
+    if deprecated_name is not None:
+        warnings.warn(
+            "'persistent_id' is deprecated. Please use 'name' instead.",
+            DeprecationWarning,
+            stacklevel=stacklevel,
+        )
+    return deprecated_name

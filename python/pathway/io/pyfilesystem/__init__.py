@@ -30,7 +30,7 @@ class _PyFilesystemSubject(ConnectorSubject):
     def __init__(
         self, source, *, path, mode, refresh_interval, with_metadata, **kwargs
     ):
-        super().__init__(**kwargs)
+        super().__init__(datasource_name="pyfilesystem", **kwargs)
         self.source = source
         self.path = path
         self.mode = mode
@@ -146,37 +146,42 @@ def read(
     refresh_interval: float = 30,
     mode: str = "streaming",
     with_metadata: bool = False,
+    name: str | None = None,
 ) -> Table:
-    """Reads a table from \
-`PyFilesystem <https://docs.pyfilesystem.org/en/latest/introduction.html>_` source.
+    """Reads a table from
+    `PyFilesystem <https://docs.pyfilesystem.org/en/latest/introduction.html>_` source.
 
-    It returns a table with a single column `data` containing each file in a binary \
-format. If the `with_metadata` option is specified, it also attaches a column \
-`_metadata` containing the metadata of the objects read.
+    It returns a table with a single column ``data`` containing each file in a binary
+    format. If the ``with_metadata`` option is specified, it also attaches a column
+    ``_metadata`` containing the metadata of the objects read.
 
     Args:
         source: PyFilesystem source.
-        path: Path inside the PyFilesystem source to process. All files within this \
-path will be processed recursively. If unspecified, the root of the source is taken.
-        mode: denotes how the engine polls the new data from the source. Currently \
-"streaming" and "static" are supported. If set to "streaming", it will check for \
-updates, deletions, and new files every `refresh_interval` seconds. "static" mode will \
-only consider the available data and ingest all of it in one commit. \
-The default value is "streaming".
-        refresh_interval: time in seconds between scans. Applicable if the mode is \
-set to "streaming".
-        with_metadata: when set to True, the connector will add column \
-named `_metadata` to the table. This column will contain file metadata, such as: \
-`path`, `name`, `owner`, `created_at`, `modified_at`, `accessed_at`, `size`.
+        path: Path inside the PyFilesystem source to process. All files within this
+            path will be processed recursively. If unspecified, the root of the source is taken.
+        mode: denotes how the engine polls the new data from the source. Currently
+            "streaming" and "static" are supported. If set to "streaming", it will check for
+            updates, deletions, and new files every ``refresh_interval`` seconds. "static" mode will
+            only consider the available data and ingest all of it in one commit.
+            The default value is "streaming".
+        refresh_interval: time in seconds between scans. Applicable if the mode is
+            set to "streaming".
+        with_metadata: when set to True, the connector will add column
+            named ``_metadata`` to the table. This column will contain file metadata, such as:
+            ``path``, ``name``, ``owner``, ``created_at``, ``modified_at``, ``accessed_at``,
+            ``size``.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
 
     Returns:
         The table read.
 
     Example:
 
-    Suppose that you want to read a file from a ZIP archive `projects.zip` with the \
-usage of PyFilesystem. To do that, you first need to import the `fs` library or just \
-the `open_fs` method and to create the data source. It can be done as follows:
+    Suppose that you want to read a file from a ZIP archive ``projects.zip`` with the
+    usage of PyFilesystem. To do that, you first need to import the `fs` library or just
+    the ``open_fs`` method and to create the data source. It can be done as follows:
 
     >>> from fs import open_fs
     >>> source = open_fs("zip://projects.zip")  # doctest: +SKIP
@@ -187,19 +192,19 @@ the `open_fs` method and to create the data source. It can be done as follows:
     ...
     >>> table = pw.io.pyfilesystem.read(source)  # doctest: +SKIP
 
-    This command reads all files in the archive in full. If the data is not supposed to \
-be changed, it makes sense to run this read in the static mode. It can be done by \
-specifying the `mode` parameter:
+    This command reads all files in the archive in full. If the data is not supposed to
+    be changed, it makes sense to run this read in the static mode. It can be done by
+    specifying the ``mode`` parameter:
 
     >>> table = pw.io.pyfilesystem.read(source, mode="static")  # doctest: +SKIP
 
-    Please note that PyFilesystem offers a great variety of sources that can be \
-read. You can refer to the \
-`"Index of Filesystems" <https://www.pyfilesystem.org/page/index-of-filesystems/>_` \
-web page for the list and the respective documentation.
+    Please note that PyFilesystem offers a great variety of sources that can be
+    read. You can refer to the
+    `"Index of Filesystems" <https://www.pyfilesystem.org/page/index-of-filesystems/>_`
+    web page for the list and the respective documentation.
 
-    For instance, you can also read a dataset from the remote FTP source with this \
-connector. It can be done with the usage of `FTP` file source with the code as follows:
+    For instance, you can also read a dataset from the remote FTP source with this
+    connector. It can be done with the usage of ``FTP`` file source with the code as follows:
 
     >>> source = fs.open_fs('ftp://login:password@ftp.example.com/datasets')  # doctest: +SKIP
     >>> table = pw.io.pyfilesystem.read(source)  # doctest: +SKIP
@@ -217,5 +222,6 @@ connector. It can be done with the usage of `FTP` file source with the code as f
         subject,
         format="binary",
         autocommit_duration_ms=None,
-        name="pyfilesystem",
+        name=name,
+        _stacklevel=5,
     )

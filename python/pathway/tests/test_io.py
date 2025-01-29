@@ -1019,9 +1019,9 @@ def test_python_connector_persistence(tmp_path: pathlib.Path):
         G.clear()
         write_lines(input_path, "\n".join(fs_connector_input))
         table_py = pw.io.python.read(
-            TestSubject(py_connector_input), format="raw", persistent_id="1"
+            TestSubject(py_connector_input), format="raw", name="1"
         )
-        table_csv = pw.io.plaintext.read(input_path, persistent_id="2", mode="static")
+        table_csv = pw.io.plaintext.read(input_path, name="2", mode="static")
         table_joined = table_py.join(table_csv, table_py.data == table_csv.data).select(
             table_py.data
         )
@@ -1081,7 +1081,7 @@ def test_no_pstorage(tmp_path: pathlib.Path):
         )
 
 
-def test_persistent_id_not_assigned_autogenerate(tmp_path: pathlib.Path):
+def test_name_not_assigned_autogenerate(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     write_lines(input_path, "test_data")
     pstorage_path = tmp_path / "PStrorage"
@@ -1097,20 +1097,16 @@ def test_persistent_id_not_assigned_autogenerate(tmp_path: pathlib.Path):
     )
 
 
-def test_no_persistent_storage(tmp_path: pathlib.Path):
+def test_no_persistent_storage_has_name(tmp_path: pathlib.Path):
     input_path = tmp_path / "input.txt"
     write_lines(input_path, "test_data")
 
-    table = pw.io.plaintext.read(input_path, persistent_id="1")
+    table = pw.io.plaintext.read(input_path, name="1", mode="static")
     pw.io.csv.write(table, tmp_path / "output.txt")
-    with pytest.raises(
-        ValueError,
-        match="persistent id 1 is assigned, but no persistent storage is configured",
-    ):
-        run()
+    run()
 
 
-def test_duplicated_persistent_id(tmp_path: pathlib.Path):
+def test_duplicated_name(tmp_path: pathlib.Path):
     pstorage_path = tmp_path / "PStorage"
     input_path = tmp_path / "input_first.txt"
     input_path_2 = tmp_path / "input_second.txt"
@@ -1119,15 +1115,60 @@ def test_duplicated_persistent_id(tmp_path: pathlib.Path):
     write_lines(input_path, "hello")
     write_lines(input_path_2, "world")
 
-    table_1 = pw.io.plaintext.read(input_path, persistent_id="one")
-    table_2 = pw.io.plaintext.read(input_path_2, persistent_id="one")
+    table_1 = pw.io.plaintext.read(input_path, name="one")
+    table_2 = pw.io.plaintext.read(input_path_2, name="one")
     pw.universes.promise_are_pairwise_disjoint(table_1, table_2)
     table_concat = table_1.concat(table_2)
     pw.io.csv.write(table_concat, output_path)
 
     with pytest.raises(
         ValueError,
-        match="Persistent ID 'one' used more than once",
+        match="Unique name 'one' used more than once",
+    ):
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path)
+            )
+        )
+
+
+def test_duplicated_name_between_input_and_output(tmp_path: pathlib.Path):
+    pstorage_path = tmp_path / "PStorage"
+    input_path = tmp_path / "input_first.txt"
+    input_path_2 = tmp_path / "input_second.txt"
+    output_path = tmp_path / "output.txt"
+
+    write_lines(input_path, "hello")
+    write_lines(input_path_2, "world")
+
+    table = pw.io.plaintext.read(input_path, name="one")
+    pw.io.jsonlines.write(table, output_path, name="one")
+
+    with pytest.raises(
+        ValueError,
+        match="Unique name 'one' used more than once",
+    ):
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(pstorage_path)
+            )
+        )
+
+
+def test_duplicated_name_between_input_and_subscribe(tmp_path: pathlib.Path):
+    pstorage_path = tmp_path / "PStorage"
+    input_path = tmp_path / "input_first.txt"
+    input_path_2 = tmp_path / "input_second.txt"
+
+    write_lines(input_path, "hello")
+    write_lines(input_path_2, "world")
+
+    table = pw.io.plaintext.read(input_path, name="one")
+    pw.io.subscribe(table, lambda **kwargs: print(kwargs), name="one")
+
+    with pytest.raises(
+        ValueError,
+        match="Unique name 'one' used more than once",
     ):
         run(
             persistence_config=pw.persistence.Config(
@@ -1585,7 +1626,7 @@ def test_persistent_subscribe(snapshot_access, tmp_path):
     table = pw.io.csv.read(
         str(input_path),
         schema=TestSchema,
-        persistent_id="1",
+        name="1",
         mode="static",
     )
 
@@ -1624,7 +1665,7 @@ def test_persistent_subscribe(snapshot_access, tmp_path):
     table = pw.io.csv.read(
         str(input_path),
         schema=TestSchema,
-        persistent_id="1",
+        name="1",
         mode="static",
     )
 
@@ -1726,7 +1767,7 @@ def test_replay(tmp_path: pathlib.Path):
             nb_rows=generate_rows,
             input_rate=15,
             autocommit_duration_ms=50,
-            persistent_id="1",
+            name="1",
         )
 
         callback = CollectValuesCallback(expected, "number")
@@ -1824,7 +1865,7 @@ def test_replay_timestamps(tmp_path: pathlib.Path):
             nb_rows=generate_rows,
             input_rate=15,
             autocommit_duration_ms=50,
-            persistent_id="1",
+            name="1",
         )
 
         callback = CountDifferentTimestampsCallback(expected_count)
@@ -1951,7 +1992,7 @@ def test_mock_snapshot_reader():
         nb_rows=0,
         input_rate=15,
         autocommit_duration_ms=50,
-        persistent_id="1",
+        name="1",
     )
 
     on_change = mock.Mock()

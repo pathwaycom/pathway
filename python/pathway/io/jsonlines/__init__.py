@@ -24,12 +24,13 @@ def read(
     object_pattern: str = "*",
     with_metadata: bool = False,
     autocommit_duration_ms: int | None = 1500,
-    persistent_id: str | None = None,
+    name: str | None = None,
     debug_data=None,
     value_columns: list[str] | None = None,
     primary_key: list[str] | None = None,
     types: dict[str, PathwayType] | None = None,
     default_values: dict[str, Any] | None = None,
+    **kwargs,
 ) -> Table:
     """Reads a table from one or several files in jsonlines format.
 
@@ -39,40 +40,38 @@ def read(
     the modification time.
 
     Args:
-        path: Path to the file or to the folder with files or \
-`glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the \
-objects to be read. The connector will read the contents of all matching files as well \
-as recursively read the contents of all matching folders.
+        path: Path to the file or to the folder with files or
+            `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the
+            objects to be read. The connector will read the contents of all matching files as well
+            as recursively read the contents of all matching folders.
         schema: Schema of the resulting table.
-        mode: Denotes how the engine polls the new data from the source. Currently \
-"streaming" and "static" are supported. If set to "streaming" the engine will wait for \
-the updates in the specified directory. It will track file additions, deletions, and \
-modifications and reflect these events in the state. For example, if a file was deleted,\
-"streaming" mode will also remove rows obtained by reading this file from the table. On \
-the other hand, the "static" mode will only consider the available data and ingest all \
-of it in one commit. The default value is "streaming".
+        mode: Denotes how the engine polls the new data from the source. Currently
+            "streaming" and "static" are supported. If set to "streaming" the engine will wait for
+            the updates in the specified directory. It will track file additions, deletions, and
+            modifications and reflect these events in the state. For example, if a file was deleted,
+            "streaming" mode will also remove rows obtained by reading this file from the table. On
+            the other hand, the "static" mode will only consider the available data and ingest all
+            of it in one commit. The default value is "streaming".
         json_field_paths: This field allows to map field names into path in the field.
             For the field which require such mapping, it should be given in the format
             ``<field_name>: <path to be mapped>``, where the path to be mapped needs to be a
             `JSON Pointer (RFC 6901) <https://www.rfc-editor.org/rfc/rfc6901>`_.
-        object_pattern: Unix shell style pattern for filtering only certain files in the \
-directory. Ignored in case a path to a single file is specified. This value will be \
-deprecated soon, please use glob pattern in ``path`` instead.
-        with_metadata: When set to true, the connector will add an additional column \
-named ``_metadata`` to the table. This column will be a JSON field that will contain two \
-optional fields - ``created_at`` and ``modified_at``. These fields will have integral \
-UNIX timestamps for the creation and modification time respectively. Additionally, the \
-column will also have an optional field named ``owner`` that will contain the name of \
-the file owner (applicable only for Un). Finally, the column will also contain a field \
-named ``path`` that will show the full path to the file from where a row was filled.
+        object_pattern: Unix shell style pattern for filtering only certain files in the
+            directory. Ignored in case a path to a single file is specified. This value will be
+            deprecated soon, please use glob pattern in ``path`` instead.
+        with_metadata: When set to true, the connector will add an additional column
+            named ``_metadata`` to the table. This column will be a JSON field that will contain two
+            optional fields - ``created_at`` and ``modified_at``. These fields will have integral
+            UNIX timestamps for the creation and modification time respectively. Additionally, the
+            column will also have an optional field named ``owner`` that will contain the name of
+            the file owner (applicable only for Un). Finally, the column will also contain a field
+            named ``path`` that will show the full path to the file from where a row was filled.
         autocommit_duration_ms: the maximum time between two commits. Every
-          autocommit_duration_ms milliseconds, the updates received by the connector are
-          committed and pushed into Pathway's computation graph.
-        persistent_id: (unstable) An identifier, under which the state of the table
-            will be persisted or ``None``, if there is no need to persist the state of this table.
-            When a program restarts, it restores the state for all input tables according to what
-            was saved for their ``persistent_id``. This way it's possible to configure the start of
-            computations from the moment they were terminated last time.
+            autocommit_duration_ms milliseconds, the updates received by the connector are
+            committed and pushed into Pathway's computation graph.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
         value_columns: Names of the columns to be extracted from the files. [will be deprecated soon]
         primary_key: In case the table should have a primary key generated according to
@@ -172,7 +171,7 @@ named ``path`` that will show the full path to the file from where a row was fil
         mode=mode,
         json_field_paths=json_field_paths,
         debug_data=debug_data,
-        persistent_id=persistent_id,
+        name=name,
         autocommit_duration_ms=autocommit_duration_ms,
         value_columns=value_columns,
         object_pattern=object_pattern,
@@ -181,17 +180,20 @@ named ``path`` that will show the full path to the file from where a row was fil
         types=types,
         default_values=default_values,
         _stacklevel=5,
+        **kwargs,
     )
 
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table, filename: str | PathLike) -> None:
+def write(table: Table, filename: str | PathLike, *, name: str | None = None) -> None:
     """Writes ``table``'s stream of updates to a file in jsonlines format.
 
     Args:
         table: Table to be written.
         filename: Path to the target output file.
+        name: A unique name for the connector. If provided, this name will be used in
+            logs and monitoring dashboards.
 
     Returns:
         None
@@ -230,4 +232,4 @@ def write(table: Table, filename: str | PathLike) -> None:
     you have read three rows and all of them were added to the collection (``diff = 1``).
     """
 
-    pw.io.fs.write(table, filename=filename, format="json")
+    pw.io.fs.write(table, filename=filename, format="json", name=name)

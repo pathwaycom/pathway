@@ -56,6 +56,10 @@ impl PosixLikeScanner for FilesystemScanner {
         result.append(&mut self.new_insertion_actions(cached_object_storage)?);
         Ok(result)
     }
+
+    fn short_description(&self) -> String {
+        format!("FileSystem({})", self.path)
+    }
 }
 
 impl FilesystemScanner {
