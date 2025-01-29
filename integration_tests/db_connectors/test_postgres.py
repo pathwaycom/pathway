@@ -94,6 +94,73 @@ def test_psql_output_snapshot(tmp_path, postgres):
     assert rows == expected_rows
 
 
+def test_psql_write_snapshot_no_primary_key(postgres):
+    class InputSchema(pw.Schema):
+        a: int
+
+    table_name = postgres.random_table_name()
+
+    with pytest.raises(ValueError, match="Primary key must be specified"):
+        table = pw.debug.table_from_rows(InputSchema, [(1,), (2,), (3,)])
+        pw.io.postgres.write_snapshot(
+            table,
+            table_name=table_name,
+            postgres_settings=POSTGRES_SETTINGS,
+            primary_key=[],
+            init_mode="create_if_not_exists",
+        )
+        run()
+
+
+def test_psql_write_snapshot_single_column(postgres):
+    class InputSchema(pw.Schema):
+        a: int
+
+    table_name = postgres.random_table_name()
+
+    for i in range(3):
+        G.clear()
+        table = pw.debug.table_from_rows(InputSchema, [(j + 1,) for j in range(i + 1)])
+        pw.io.postgres.write_snapshot(
+            table,
+            table_name=table_name,
+            postgres_settings=POSTGRES_SETTINGS,
+            primary_key=["a"],
+            init_mode="create_if_not_exists",
+        )
+        run()
+
+    result = postgres.get_table_contents(table_name, InputSchema.column_names(), ("a"))
+
+    assert result == [{"a": 1}, {"a": 2}, {"a": 3}]
+
+
+def test_psql_write_snapshot_only_primary_keys(postgres):
+    class InputSchema(pw.Schema):
+        a: int
+        b: int
+
+    table_name = postgres.random_table_name()
+
+    for i in range(3):
+        G.clear()
+        table = pw.debug.table_from_rows(InputSchema, [(1, 1), (2, 2), (3, 3)])
+        pw.io.postgres.write_snapshot(
+            table,
+            table_name=table_name,
+            postgres_settings=POSTGRES_SETTINGS,
+            primary_key=["a", "b"],
+            init_mode="create_if_not_exists",
+        )
+        run()
+
+    result = postgres.get_table_contents(
+        table_name, InputSchema.column_names(), ("a", "b")
+    )
+
+    assert result == [{"a": 1, "b": 1}, {"a": 2, "b": 2}, {"a": 3, "b": 3}]
+
+
 def write_snapshot(primary_key: list[str]):
     def _write_snapshot(table: pw.Table, /, **kwargs):
         pw.io.postgres.write_snapshot(table, **kwargs, primary_key=primary_key)

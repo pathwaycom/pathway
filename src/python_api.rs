@@ -5092,11 +5092,14 @@ impl DataFormat {
                 Ok(Box::new(formatter))
             }
             "sql_snapshot" => {
+                let key_field_names = self
+                    .key_field_names
+                    .clone()
+                    .filter(|k| !k.is_empty())
+                    .ok_or_else(|| PyValueError::new_err("Primary key must be specified"))?;
                 let maybe_formatter = PsqlSnapshotFormatter::new(
                     self.table_name()?,
-                    self.key_field_names
-                        .clone()
-                        .ok_or_else(|| PyValueError::new_err("Primary key must be specified"))?,
+                    key_field_names,
                     self.value_field_names(py),
                 );
                 match maybe_formatter {

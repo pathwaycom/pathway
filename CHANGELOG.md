@@ -22,6 +22,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - `generate_class` method in `Schema` now correctly renders columns of `UnionType` and `None` types.
 - a bug in delay in temporal behavior. It was possible to emit a single entry twice in a specific situation.
+- `pw.io.postgres.write_snapshot` now correctly handles tables that only have primary key columns.
 
 ### Removed
 - **BREAKING**: `pw.indexing.build_sorted_index`, `pw.indexing.retrieve_prev_next_values`, `pw.indexing.sort_from_index` and `pw.indexing.SortedIndex` are removed. Sorting is now done with `pw.Table.sort`.

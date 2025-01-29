@@ -1744,37 +1744,42 @@ impl Formatter for PsqlSnapshotFormatter {
         let mut result = Vec::new();
 
         if diff == 1 {
-            let update_condition = self
-                .key_field_positions
-                .iter()
-                .map(|position| {
-                    format!(
-                        "{}.{}=${}",
-                        self.table_name,
-                        self.value_field_names[*position],
-                        *position + 1
-                    )
-                })
-                .join(" AND ");
-
             let update_pairs = self
                 .value_field_positions
                 .iter()
                 .map(|position| format!("{}=${}", self.value_field_names[*position], *position + 1))
                 .join(",");
+
+            let on_conflict = if update_pairs.is_empty() {
+                "DO NOTHING".to_string()
+            } else {
+                let update_condition = self
+                    .key_field_positions
+                    .iter()
+                    .map(|position| {
+                        format!(
+                            "{}.{}=${}",
+                            self.table_name,
+                            self.value_field_names[*position],
+                            *position + 1
+                        )
+                    })
+                    .join(" AND ");
+                format!(
+                    "DO UPDATE SET {update_pairs},time={time},diff={diff} WHERE {update_condition}"
+                )
+            };
+
             writeln!(
                 result,
-                "INSERT INTO {} ({},time,diff) VALUES ({},{},{}) ON CONFLICT ({}) DO UPDATE SET {},time={},diff={} WHERE {}",
-                self.table_name,  // INSERT INTO ...
-                self.value_field_names.iter().format(","),  // (...
-                (1..=values.len()).format_with(",", |x, f| f(&format_args!("${x}"))),  // VALUES(...
-                time,  // VALUES(..., time
-                diff,  // VALUES(..., time, diff
-                self.key_field_names.iter().join(","),  // ON CONFLICT(...
-                update_pairs,  // DO UPDATE SET ...
+                "INSERT INTO {} ({},time,diff) VALUES ({},{},{}) ON CONFLICT ({}) {}",
+                self.table_name,
+                self.value_field_names.iter().format(","),
+                (1..=values.len()).format_with(",", |x, f| f(&format_args!("${x}"))),
                 time,
                 diff,
-                update_condition,  // WHERE ...
+                self.key_field_names.iter().join(","),
+                on_conflict
             )
             .unwrap();
 
@@ -1799,6 +1804,7 @@ impl Formatter for PsqlSnapshotFormatter {
                     format_args!("${}", key_part_values.len())
                 ));
             }
+
             writeln!(
                 result,
                 "DELETE FROM {} WHERE {}",
