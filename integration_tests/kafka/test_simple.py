@@ -169,7 +169,7 @@ def test_kafka_simple_wrapper_bytes_io(
     kafka_context.fill(["foo", "bar"])
 
     table = pw.io.kafka.simple_read(
-        "kafka:9092",
+        kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
     )
     pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
@@ -178,7 +178,7 @@ def test_kafka_simple_wrapper_bytes_io(
     # check that reread will have all these messages again
     G.clear()
     table = pw.io.kafka.simple_read(
-        "kafka:9092",
+        kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
     )
     pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
@@ -201,7 +201,7 @@ def test_kafka_simple_wrapper_plaintext_io(
     kafka_context.fill(["foo", "bar"])
 
     table = pw.io.kafka.simple_read(
-        "kafka:9092",
+        kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
         format="plaintext",
     )
@@ -211,7 +211,7 @@ def test_kafka_simple_wrapper_plaintext_io(
     # check that reread will have all these messages again
     G.clear()
     table = pw.io.kafka.simple_read(
-        "kafka:9092",
+        kafka_context.default_rdkafka_settings()["bootstrap.servers"],
         kafka_context.input_topic,
         format="plaintext",
     )
