@@ -62,7 +62,7 @@ class VectorStoreServer:
         self.docs = docs
 
         self.parser: Callable[[bytes], list[tuple[str, dict]]] = _unwrap_udf(
-            parser if parser is not None else pathway.xpacks.llm.parsers.ParseUtf8()
+            parser if parser is not None else pathway.xpacks.llm.parsers.Utf8Parser()
         )
         self.doc_post_processors = []
 

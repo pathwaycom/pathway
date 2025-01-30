@@ -34,7 +34,7 @@ $splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
   min_tokens: 150
   max_tokens: 400
 
-$parser: !pw.xpacks.llm.parsers.ParseUnstructured
+$parser: !pw.xpacks.llm.parsers.UnstructuredParser
   cache_strategy: !pw.udfs.DefaultCache
 
 # $retriever_factory: !pw.stdlib.indexing.BruteForceKnnFactory

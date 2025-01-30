@@ -11,7 +11,7 @@ from fpdf import FPDF
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.parsers import ParseUnstructured, ParseUtf8, PypdfParser
+from pathway.xpacks.llm.parsers import PypdfParser, UnstructuredParser, Utf8Parser
 
 for _ in range(10):
     try:
@@ -27,8 +27,8 @@ for _ in range(10):
         break
 
 
-def test_parseutf8():
-    parser = ParseUtf8()
+def test_utf8parser():
+    parser = Utf8Parser()
     txt = "Pójdź, kińże tę chmurność w głąb flaszy 🍾."
     input_df = pd.DataFrame([dict(raw=txt.encode("utf8"))])
 
@@ -45,7 +45,7 @@ def test_parseutf8():
 
 @pytest.mark.environment_changes
 def test_parse_unstructured(monkeypatch):
-    parser = ParseUnstructured()
+    parser = UnstructuredParser()
     txt = "Pójdź, kińże tę chmurność w głąb flaszy 🍾."
     input_df = pd.DataFrame([dict(raw=txt.encode("utf8"))])
 

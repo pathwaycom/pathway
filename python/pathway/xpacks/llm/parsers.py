@@ -38,7 +38,7 @@ DEFAULT_VISION_LLM = llms.OpenAIChat(
 )
 
 
-class ParseUtf8(pw.UDF):
+class Utf8Parser(pw.UDF):
     """
     Decode text encoded as UTF-8.
     """
@@ -61,10 +61,17 @@ class ParseUtf8(pw.UDF):
         return super().__call__(contents, **kwargs)
 
 
+class ParseUtf8(Utf8Parser):
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn("This class is deprecated, use `Utf8Parser` instead.")
+        super().__init__(*args, **kwargs)
+
+
 # Based on:
 # https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/document_loaders/unstructured.py#L134
 # MIT licensed
-class ParseUnstructured(pw.UDF):
+class UnstructuredParser(pw.UDF):
     """
     Parse document using `https://unstructured.io/ <https://unstructured.io/>`_.
 
@@ -218,6 +225,13 @@ class ParseUnstructured(pw.UDF):
             removed if they are specific to a single element, e.g. `category_depth`.
         """
         return super().__call__(contents, **kwargs)
+
+
+class ParseUnstructured(UnstructuredParser):
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn("This class is deprecated, use `UnstructuredParser` instead.")
+        super().__init__(*args, **kwargs)
 
 
 # uses https://github.com/DS4SD/docling

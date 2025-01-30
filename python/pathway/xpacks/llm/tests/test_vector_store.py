@@ -182,7 +182,7 @@ def test_async_embedder_preserves_params():
 
 
 @pytest.mark.environment_changes  # unstructured parser adds env vars after first use
-@pytest.mark.parametrize("parser_cls", [parsers.ParseUnstructured])
+@pytest.mark.parametrize("parser_cls", [parsers.UnstructuredParser])
 def test_vs_parsing(parser_cls):
     def fake_embeddings_model(x: str) -> list[float]:
         return [1.0, 1.0, 0.0]

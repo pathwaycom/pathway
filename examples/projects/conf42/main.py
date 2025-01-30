@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 
 import pathway as pw
 from pathway.xpacks.llm import embedders, llms, prompts
-from pathway.xpacks.llm.parsers import ParseUnstructured
+from pathway.xpacks.llm.parsers import UnstructuredParser
 from pathway.xpacks.llm.splitters import TokenCountSplitter
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
@@ -46,7 +46,7 @@ vector_server = VectorStoreServer(
     documents,
     embedder=embedder,
     splitter=text_splitter,
-    parser=ParseUnstructured(),
+    parser=UnstructuredParser(),
 )
 
 # Connect the webserver for the queries

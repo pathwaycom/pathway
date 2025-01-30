@@ -21,6 +21,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING**: The `Pointer` type is now serialized to Delta Tables as raw bytes.
 - `pw.io.kafka.write` now allows to specify `key` and `headers` for JSON and CSV data formats.
 - `persistent_id` parameter in connectors has been renamed to `name`. This new `name` parameter allows you to assign names to connectors, which will appear in logs and monitoring dashboards.
+- Changed names of parsers to be more consistent: `ParseUnstrutured` -> `UnstructuredParser`, `ParseUtf8` -> `Utf8Parser`. `ParseUnstrutured` and `ParseUtf8` are now deprecated.
 
 ### Fixed
 - `generate_class` method in `Schema` now correctly renders columns of `UnionType` and `None` types.

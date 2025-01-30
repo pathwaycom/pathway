@@ -46,7 +46,7 @@ dependencies = [
     "google-cloud-pubsub >= 2.21.1",
     "google-cloud-bigquery",
     "pydantic ~= 2.9.0",
-    "gitpython >= 3.1.43",
+    "gitpython >= 3.1.43"
 ]
 
 [project.optional-dependencies]

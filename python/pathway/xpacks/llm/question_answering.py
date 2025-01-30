@@ -348,7 +348,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
     >>> sources = [my_folder]  # doctest: +SKIP
     >>> app_host = "0.0.0.0"  # doctest: +SKIP
     >>> app_port = 8000  # doctest: +SKIP
-    >>> parser = parsers.ParseUnstructured()  # doctest: +SKIP
+    >>> parser = parsers.UnstructuredParser()  # doctest: +SKIP
     >>> text_splitter = splitters.TokenCountSplitter(max_tokens=400)  # doctest: +SKIP
     >>> embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())  # doctest: +SKIP
     >>> vector_server = VectorStoreServer(  # doctest: +SKIP
@@ -677,7 +677,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
     >>> sources = [my_folder]  # doctest: +SKIP
     >>> app_host = "0.0.0.0"  # doctest: +SKIP
     >>> app_port = 8000  # doctest: +SKIP
-    >>> parser = parsers.ParseUnstructured()  # doctest: +SKIP
+    >>> parser = parsers.UnstructuredParser()  # doctest: +SKIP
     >>> text_splitter = splitters.TokenCountSplitter(max_tokens=400)  # doctest: +SKIP
     >>> embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())  # doctest: +SKIP
     >>> vector_server = VectorStoreServer(  # doctest: +SKIP
