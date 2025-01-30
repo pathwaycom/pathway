@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 import warnings
 from dataclasses import KW_ONLY, dataclass
@@ -17,7 +16,7 @@ from pathway.internals._io_helpers import (
 )
 from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
 from pathway.internals.expression import ColumnReference
-from pathway.internals.schema import ColumnDefinition, Schema
+from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 
 STATIC_MODE_NAME = "static"
@@ -165,89 +164,9 @@ class CsvParserSettings:
         )
 
 
-def _compat_schema(
-    value_columns: list[str] | None,
-    primary_key: list[str] | None,
-    types: dict[str, api.PathwayType] | None,
-    default_values: dict[str, Any] | None,
-):
-    columns: dict[str, ColumnDefinition] = {
-        name: pw.column_definition(primary_key=True) for name in primary_key or {}
-    }
-    columns.update(
-        {
-            name: pw.column_definition()
-            for name in (value_columns or {})
-            if name not in columns
-        }
-    )
-    if types is not None:
-        for name, dtype in types.items():
-            columns[name] = dataclasses.replace(
-                columns[name],
-                dtype=_PATHWAY_TYPE_MAPPING.get(dtype, dt.ANY),
-            )
-    if default_values is not None:
-        for name, default_value in default_values.items():
-            columns[name] = dataclasses.replace(
-                columns[name], default_value=default_value
-            )
-    return pw.schema_builder(columns=columns)
-
-
-def _read_schema(
-    *,
-    schema: type[Schema] | None,
-    value_columns: list[str] | None,
-    primary_key: list[str] | None,
-    types: dict[str, api.PathwayType] | None,
-    default_values: dict[str, Any] | None,
-    _stacklevel: int = 1,
-) -> type[Schema]:
-    kwargs = locals()
-    deprecated_kwargs = ["value_columns", "primary_key", "types", "default_values"]
-
-    if schema is None:
-        for name in deprecated_kwargs:
-            if name in kwargs and kwargs[name] is not None:
-                warnings.warn(
-                    "'{}' is deprecated and will be removed soon. Please use `schema` instead".format(
-                        name
-                    ),
-                    DeprecationWarning,
-                    stacklevel=_stacklevel + 1,
-                )
-        schema = _compat_schema(
-            primary_key=primary_key,
-            value_columns=value_columns,
-            types=types,
-            default_values=default_values,
-        )
-    else:
-        for name in deprecated_kwargs:
-            if kwargs[name] is not None:
-                raise ValueError(f"cannot use `schema` and `{name}`")
-
-    return schema
-
-
 def read_schema(
-    *,
-    schema: type[Schema] | None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, api.PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
-    _stacklevel: int = 1,
+    schema: type[Schema],
 ) -> tuple[type[Schema], dict[str, Any]]:
-    schema = _read_schema(
-        schema=schema,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
-        _stacklevel=_stacklevel + 1,
-    )
     value_fields = _form_value_fields(schema)
     return schema, dict(
         # There is a distinction between an empty set of columns denoting
@@ -258,19 +177,20 @@ def read_schema(
     )
 
 
-def assert_schema_or_value_columns_not_none(
+def assert_schema_not_none(
     schema: type[Schema] | None,
-    value_columns: list[str] | None,
     data_format_type: str | None = None,
-):
-    if schema is None and value_columns is None:
+) -> type[Schema]:
+    if schema is None:
         if data_format_type == "dsv":
             raise ValueError(
-                "Neither schema nor value_columns were specified. "
+                "Schema must be specified. "
                 "Consider using `pw.schema_from_csv` for generating schema from a CSV file"
             )
         else:
-            raise ValueError("Neither schema nor value_columns were specified")
+            raise ValueError("Schema must be specified.")
+    else:
+        return schema
 
 
 def construct_schema_and_data_format(
@@ -281,10 +201,6 @@ def construct_schema_and_data_format(
     autogenerate_key: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     _stacklevel: int = 1,
 ) -> tuple[type[Schema], api.DataFormat]:
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
@@ -293,11 +209,8 @@ def construct_schema_and_data_format(
         kwargs = locals()
         unexpected_params = [
             "schema",
-            "value_columns",
-            "primary_key",
             "csv_settings",
             "json_field_paths",
-            "types",
         ]
         for param in unexpected_params:
             if param in kwargs and kwargs[param] is not None:
@@ -311,13 +224,7 @@ def construct_schema_and_data_format(
 
         if with_metadata:
             schema |= MetadataSchema
-        schema, api_schema = read_schema(
-            schema=schema,
-            value_columns=None,
-            primary_key=None,
-            types=None,
-            default_values=None,
-        )
+        schema, api_schema = read_schema(schema)
 
         return schema, api.DataFormat(
             format_type=data_format_type,
@@ -330,24 +237,11 @@ def construct_schema_and_data_format(
             ),
         )
 
-    assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)
-
+    schema = assert_schema_not_none(schema, data_format_type)
     if with_metadata:
-        if schema is not None:
-            schema |= MetadataSchema
-        elif value_columns is not None:
-            value_columns.append(METADATA_COLUMN_NAME)
-        else:
-            raise ValueError("Neither schema nor value_columns were specified")
+        schema |= MetadataSchema
 
-    schema, api_schema = read_schema(
-        schema=schema,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
-        _stacklevel=_stacklevel + 1,
-    )
+    schema, api_schema = read_schema(schema)
     if data_format_type == "dsv":
         if json_field_paths is not None:
             raise ValueError("Unexpected argument for csv format: json_field_paths")

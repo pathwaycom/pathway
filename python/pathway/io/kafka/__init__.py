@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import uuid
 import warnings
-from typing import Any, Iterable
+from typing import Iterable
 
 from pathway.internals import api, datasink, datasource
-from pathway.internals.api import PathwayType
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -39,10 +38,6 @@ def read(
     start_from_timestamp_ms: int | None = None,
     parallel_readers: int | None = None,
     name: str | None = None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     _stacklevel: int = 1,
     **kwargs,
 ) -> Table:
@@ -93,19 +88,6 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
-        value_columns: Columns to extract for a table, required for format other than
-            "raw". [will be deprecated soon]
-        primary_key: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated randomly. [will be deprecated soon]
-        types: Dictionary containing the mapping between the columns and the data
-            types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
-            Otherwise, the primary key will be generated randomly.
-            provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entries. The default value of the column must be specified explicitly,
-            Otherwise, the primary key will be generated randomly.
-            otherwise there will be no default value. [will be deprecated soon]
 
     Returns:
         Table: The table read.
@@ -271,10 +253,6 @@ def read(
         schema=schema,
         csv_settings=None,
         json_field_paths=json_field_paths,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
         _stacklevel=5,
     )
     data_source_options = datasource.DataSourceOptions(

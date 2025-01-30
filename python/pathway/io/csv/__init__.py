@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Any
 
 import pathway as pw
-from pathway.internals.api import PathwayType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -17,7 +15,6 @@ from pathway.io._utils import CsvParserSettings, check_deprecated_kwargs
 @trace_user_frame
 def read(
     path: str | PathLike,
-    value_columns: list[str] | None = None,
     *,
     schema: type[pw.Schema] | None = None,
     csv_settings: CsvParserSettings | None = None,
@@ -27,9 +24,6 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     debug_data=None,
-    id_columns: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     **kwargs,
 ) -> Table:
     """Reads a table from one or several files with delimiter-separated values.
@@ -44,11 +38,7 @@ def read(
             `glob <https://en.wikipedia.org/wiki/Glob_(programming)>`_ pattern for the
             objects to be read. The connector will read the contents of all matching files as well
             as recursively read the contents of all matching folders.
-        value_columns: Names of the columns to be extracted from the files. [will be deprecated soon]
         schema: Schema of the resulting table.
-        id_columns: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated randomly. [will be deprecated soon]
         csv_settings: Settings for the CSV parser.
         mode: Denotes how the engine polls the new data from the source. Currently
             "streaming" and "static" are supported. If set to "streaming" the engine will wait for
@@ -66,12 +56,6 @@ def read(
             (3) seen_at is a UNIX timestamp of when they file was found by the engine;
             (4) owner - Name of the file owner (only for Un); (5) path - Full file path of the
             source row. (6) size - File size in bytes.
-        types: Dictionary containing the mapping between the columns and the data
-            types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
-            provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entries. The default value of the column must be specified explicitly,
-            otherwise there will be no default value. [will be deprecated soon]
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph.
@@ -170,10 +154,6 @@ def read(
         json_field_paths=None,
         name=name,
         debug_data=debug_data,
-        value_columns=value_columns,
-        primary_key=id_columns,
-        types=types,
-        default_values=default_values,
         _stacklevel=5,
         **kwargs,
     )

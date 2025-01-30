@@ -575,7 +575,7 @@ class StreamGenerator:
             schema: schema of the table
         """
         key = itertools.count()
-        schema, api_schema = read_schema(schema=schema, _stacklevel=_stacklevel + 1)
+        schema, api_schema = read_schema(schema)
         value_fields: list[api.ValueField] = api_schema["value_fields"]
 
         def next_key() -> api.Pointer:
@@ -636,7 +636,7 @@ class StreamGenerator:
             schema = schema_from_pandas(
                 df, exclude_columns={"_time", "_diff", "_worker"}
             )
-        schema, api_schema = read_schema(schema=schema, _stacklevel=_stacklevel + 1)
+        schema, api_schema = read_schema(schema)
         value_fields: list[api.ValueField] = api_schema["value_fields"]
 
         if "_time" not in df:

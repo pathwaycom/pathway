@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from pathway.internals.api import PathwayType, Pointer
+from pathway.internals.api import Pointer
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -43,10 +43,6 @@ def read(
     retry_codes: tuple | None = (429, 500, 502, 503, 504),
     autocommit_duration_ms: int = 10000,
     debug_data=None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     name: str | None = None,
 ):
     """Reads a table from an HTTP stream.
@@ -79,16 +75,6 @@ def read(
           autocommit_duration_ms milliseconds, the updates received by the connector are
           committed and pushed into Pathway's computation graph.
         debug_data: static data replacing original one when debug mode is active.
-        value_columns: columns to extract for a table. [will be deprecated soon]
-        primary_key: in case the table should have a primary key generated according to
-          a subset of its columns, the set of columns should be specified in this field.
-          Otherwise, the primary key will be generated as uuid4. [will be deprecated soon]
-        types: dictionary containing the mapping between the columns and the data types
-          (``pw.Type``) of the values of those columns. This parameter is optional, and
-          if not provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-          blank entries. The default value of the column must be specified explicitly,
-          otherwise there will be no default value. [will be deprecated soon]
         name: A unique name for the connector. If provided, this name will be used in
           logs and monitoring dashboards. Additionally, if persistence is enabled, it
           will be used as the name for the snapshot that stores the connector's progress.
@@ -147,10 +133,6 @@ def read(
         ),
         schema=schema,
         format=format,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
         autocommit_duration_ms=autocommit_duration_ms,
         debug_data=debug_data,
         name=name,

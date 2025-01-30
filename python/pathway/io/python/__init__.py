@@ -13,12 +13,7 @@ import panel as pn
 from IPython.display import display
 
 from pathway.internals import Table, api, datasource
-from pathway.internals.api import (
-    PathwayType,
-    Pointer,
-    PythonConnectorEventType,
-    SessionType,
-)
+from pathway.internals.api import Pointer, PythonConnectorEventType, SessionType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table_io import table_from_datasource
@@ -28,7 +23,7 @@ from pathway.io._utils import (
     PlaintextDataSchema,
     RawDataSchema,
     _get_unique_name,
-    assert_schema_or_value_columns_not_none,
+    assert_schema_not_none,
     get_data_format_type,
     internal_read_method,
     read_schema,
@@ -359,10 +354,6 @@ def read(
     format: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data=None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     name: str | None = None,
     _stacklevel: int = 1,
     **kwargs,
@@ -379,16 +370,6 @@ def read(
         autocommit_duration_ms: the maximum time between two commits. Every
             autocommit_duration_ms milliseconds, the updates received by the connector are
             committed and pushed into Pathway's computation graph
-        value_columns: Columns to extract for a table. [will be deprecated soon]
-        primary_key: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated randomly. [will be deprecated soon]
-        types: Dictionary containing the mapping between the columns and the data
-            types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
-            provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entries. The default value of the column must be specified explicitly,
-            otherwise there will be no default value. [will be deprecated soon]
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -417,26 +398,15 @@ def read(
     data_format_type = get_data_format_type(format, SUPPORTED_INPUT_FORMATS)
 
     if data_format_type == "identity":
-        if primary_key:
-            raise ValueError("raw format must not be used with primary_key property")
-        if value_columns:
-            raise ValueError("raw format must not be used with value_columns property")
         if format == "binary":
             schema = RawDataSchema
         else:
             schema = PlaintextDataSchema
         if subject._with_metadata is True:
             schema |= MetadataSchema
-    assert_schema_or_value_columns_not_none(schema, value_columns, data_format_type)
 
-    schema, api_schema = read_schema(
-        schema=schema,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
-        _stacklevel=_stacklevel + 4,
-    )
+    schema = assert_schema_not_none(schema, data_format_type)
+    schema, api_schema = read_schema(schema)
     data_format = api.DataFormat(
         **api_schema,
         format_type="transparent",

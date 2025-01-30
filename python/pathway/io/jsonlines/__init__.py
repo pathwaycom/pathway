@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Any
 
 import pathway as pw
-from pathway.internals.api import PathwayType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -26,10 +24,6 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     debug_data=None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     **kwargs,
 ) -> Table:
     """Reads a table from one or several files in jsonlines format.
@@ -73,16 +67,6 @@ def read(
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
-        value_columns: Names of the columns to be extracted from the files. [will be deprecated soon]
-        primary_key: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated randomly. [will be deprecated soon]
-        types: Dictionary containing the mapping between the columns and the data
-            types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
-            provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entries. The default value of the column must be specified explicitly,
-            otherwise there will be no default value. [will be deprecated soon]
 
     Returns:
         Table: The table read.
@@ -173,12 +157,8 @@ def read(
         debug_data=debug_data,
         name=name,
         autocommit_duration_ms=autocommit_duration_ms,
-        value_columns=value_columns,
         object_pattern=object_pattern,
         with_metadata=with_metadata,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
         _stacklevel=5,
         **kwargs,
     )

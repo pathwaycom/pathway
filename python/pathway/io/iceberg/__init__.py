@@ -95,13 +95,7 @@ def read(
         )
 
     _check_entitlements("iceberg")
-    schema, api_schema = read_schema(
-        schema=schema,
-        value_columns=None,
-        primary_key=None,
-        types=None,
-        default_values=None,
-    )
+    schema, api_schema = read_schema(schema)
 
     data_storage = api.DataStorage(
         storage_type="iceberg",

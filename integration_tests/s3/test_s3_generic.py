@@ -27,7 +27,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     table = pw.io.s3_csv.read(
         s3_path,
         aws_s3_settings=get_aws_s3_settings(),
-        value_columns=["key", "value"],
+        schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
         name="1",
@@ -47,7 +47,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     table = pw.io.s3_csv.read(
         s3_path,
         aws_s3_settings=get_aws_s3_settings(),
-        value_columns=["key", "value"],
+        schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
         name="1",
@@ -71,7 +71,7 @@ def test_s3_backfilling(snapshot_access, tmp_path: pathlib.Path, s3_path: str):
     table = pw.io.s3_csv.read(
         s3_path,
         aws_s3_settings=get_aws_s3_settings(),
-        value_columns=["key", "value"],
+        schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
         name="1",
@@ -196,7 +196,7 @@ def test_s3_alternative_path(tmp_path: pathlib.Path, s3_path: str):
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         ),
-        value_columns=["key", "value"],
+        schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
     )
@@ -224,7 +224,7 @@ def test_s3_wrong_path(tmp_path: pathlib.Path, s3_path: str):
             secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
             region="eu-central-1",
         ),
-        value_columns=["key", "value"],
+        schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
     )
@@ -250,7 +250,7 @@ def test_s3_creds_from_profiles(tmp_path: pathlib.Path, s3_path: str):
     table = pw.io.s3_csv.read(
         f"s3://aws-integrationtest/{input_s3_path}",
         aws_s3_settings=pw.io.s3_csv.AwsS3Settings(region="eu-central-1"),
-        value_columns=["key", "value"],
+        schema=pw.schema_from_types(key=int, value=str),
         mode="static",
         autocommit_duration_ms=1000,
     )

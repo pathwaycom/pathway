@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from pathway.internals.api import PathwayType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -26,10 +23,6 @@ def read(
     json_field_paths: dict[str, str] | None = None,
     parallel_readers: int | None = None,
     name: str | None = None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     **kwargs,
 ) -> Table:
     """Reads table from a set of topics in Redpanda.
@@ -58,17 +51,6 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
-        value_columns: Columns to extract for a table, required for format other than
-            "raw". [will be deprecated soon]
-        primary_key: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated as uuid4. [will be deprecated soon]
-        types: Dictionary containing the mapping between the columns and the data
-            types (pw.Type) of the values of those columns. This parameter is optional, and if not
-            provided the default type is pw.Type.ANY. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entries. The default value of the column must be specified explicitly,
-            otherwise there will be no default value. [will be deprecated soon]
 
     Returns:
         Table: The table read.
@@ -208,10 +190,6 @@ def read(
         topic=topic,
         schema=schema,
         format=format,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
         debug_data=debug_data,
         autocommit_duration_ms=autocommit_duration_ms,
         json_field_paths=json_field_paths,

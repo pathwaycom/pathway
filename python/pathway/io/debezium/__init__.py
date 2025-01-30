@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pathway.engine import DebeziumDBType
 from pathway.internals import api, datasource
-from pathway.internals.api import PathwayType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -22,14 +19,10 @@ def read(
     topic_name: str,
     *,
     db_type: DebeziumDBType = DebeziumDBType.POSTGRES,
-    schema: type[Schema] | None = None,
+    schema: type[Schema],
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     **kwargs,
 ) -> Table:
     """
@@ -50,16 +43,6 @@ def read(
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
-        value_columns: Columns to extract for a table. [will be deprecated soon]
-        primary_key: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated randomly. [will be deprecated soon]
-        types: Dictionary containing the mapping between the columns and the data
-            types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
-            provided the default type is ``pw.Type.ANY``. [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entries. The default value of the column must be specified explicitly,
-            otherwise there will be no default value. [will be deprecated soon]
 
     Returns:
         Table: The table read.
@@ -126,13 +109,7 @@ def read(
         rdkafka_settings=rdkafka_settings,
         topic=topic_name,
     )
-    schema, data_format_definition = read_schema(
-        schema=schema,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
-    )
+    schema, data_format_definition = read_schema(schema)
     data_source_options = datasource.DataSourceOptions(
         commit_duration_ms=autocommit_duration_ms,
         unique_name=_get_unique_name(name, kwargs),

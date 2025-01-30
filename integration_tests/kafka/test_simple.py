@@ -393,8 +393,12 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
         topic=kafka_context.input_topic,
         format="json",
-        value_columns=["v"],
-        primary_key=["k"],
+        schema=pw.schema_builder(
+            columns={
+                "k": pw.column_definition(dtype=int, primary_key=True),
+                "v": pw.column_definition(dtype=str),
+            }
+        ),
         autocommit_duration_ms=100,
         name="1",
     )
@@ -435,8 +439,12 @@ def test_kafka_recovery(tmp_path: pathlib.Path, kafka_context: KafkaTestContext)
         rdkafka_settings=kafka_context.default_rdkafka_settings(),
         topic=kafka_context.input_topic,
         format="json",
-        value_columns=["v"],
-        primary_key=["k"],
+        schema=pw.schema_builder(
+            columns={
+                "k": pw.column_definition(dtype=int, primary_key=True),
+                "v": pw.column_definition(dtype=str),
+            }
+        ),
         autocommit_duration_ms=100,
         name="1",
     )

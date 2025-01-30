@@ -33,7 +33,6 @@ from pathway.tests.utils import (
     T,
     assert_table_equality,
     assert_table_equality_wo_index,
-    deprecated_call_here,
     needs_multiprocessing_fork,
     run,
     run_all,
@@ -171,41 +170,18 @@ def test_python_connector_no_primary_key():
             self.next_json({"x": 1, "y": 1})
             self.next_json({"x": 2, "y": 2})
 
-    variants = []
+    table = pw.io.python.read(TestSubject(), schema=InputSchema, format="json")
 
-    variants.append(pw.io.python.read(TestSubject(), schema=InputSchema, format="json"))
-    with deprecated_call_here():
-        variants.append(
-            pw.io.python.read(
-                TestSubject(),
-                primary_key=[],
-                value_columns=["x", "y"],
-                types={"x": pw.Type.INT, "y": pw.Type.INT},
-                format="json",
-            )
-        )
-    with deprecated_call_here():
-        variants.append(
-            pw.io.python.read(
-                TestSubject(),
-                primary_key=None,
-                value_columns=["x", "y"],
-                types={"x": pw.Type.INT, "y": pw.Type.INT},
-                format="json",
-            )
-        )
-
-    for table in variants:
-        assert_table_equality_wo_index(
-            table,
-            T(
-                """
-                x | y
-                1 | 1
-                2 | 2
-                """
-            ),
-        )
+    assert_table_equality_wo_index(
+        table,
+        T(
+            """
+            x | y
+            1 | 1
+            2 | 2
+            """
+        ),
+    )
 
 
 def test_python_connector_raw():
@@ -600,52 +576,6 @@ def test_json_default_values(tmp_path: pathlib.Path):
             """
         ).with_id_from(pw.this.k),
     )
-
-
-def test_deprecated_schema_compatiblity(tmp_path: pathlib.Path):
-    data = """
-        a | b | c  | d
-        a | 1 | 42 | foo
-        b | 2 | 43 | bar
-        c | 3 |    | 42
-    """
-    input_path = tmp_path / "input.csv"
-    write_csv(input_path, data)
-
-    class InputSchema(pw.Schema):
-        a: str = pw.column_definition(primary_key=True)
-        b: int = pw.column_definition(primary_key=True)
-        c: int = pw.column_definition(default_value=0)
-        d: Any = pw.column_definition()
-        e: Any
-
-    table1 = pw.io.csv.read(
-        str(input_path),
-        schema=InputSchema,
-        mode="static",
-    )
-    with deprecated_call_here():
-        table2 = pw.io.csv.read(
-            str(input_path),
-            id_columns=["a", "b"],
-            value_columns=[
-                "a",
-                "c",
-                "d",
-                "e",
-            ],
-            types={
-                "a": pw.Type.STRING,
-                "b": pw.Type.INT,
-                "c": pw.Type.INT,
-                "d": pw.Type.ANY,
-            },
-            default_values={"c": 0},
-            mode="static",
-        )
-
-    assert table1.schema == table2.schema
-    assert_table_equality(table1, table2)
 
 
 def test_subscribe():

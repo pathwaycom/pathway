@@ -12,7 +12,6 @@ import pytest
 
 import pathway as pw
 from pathway.internals.schema import Schema
-from pathway.io._utils import _compat_schema
 from pathway.tests.utils import write_csv
 
 
@@ -110,15 +109,6 @@ def test_schema_eq():
         },
         name="Foo",
     )
-    compat_schema = _compat_schema(
-        value_columns=["a", "b"],
-        primary_key=["a"],
-        default_values={"b": "foo"},
-        types={
-            "a": pw.Type.INT,
-            "b": pw.Type.STRING,
-        },
-    )
 
     assert A != B, "column order should match"
     assert A != C, "column count should match"
@@ -127,7 +117,6 @@ def test_schema_eq():
     assert A != F, "schema properties should match"
     assert A == Same
     assert A == schema_from_builder
-    assert A == compat_schema
 
 
 def test_schema_class_generation(tmp_path: pathlib.Path):

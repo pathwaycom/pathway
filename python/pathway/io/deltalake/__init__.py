@@ -135,13 +135,7 @@ def read(
     prepared_connection_settings = _prepare_connection_settings(s3_connection_settings)
 
     uri = fspath(uri)
-    schema, api_schema = read_schema(
-        schema=schema,
-        value_columns=None,
-        primary_key=None,
-        types=None,
-        default_values=None,
-    )
+    schema, api_schema = read_schema(schema)
 
     data_storage = api.DataStorage(
         storage_type="deltalake",

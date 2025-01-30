@@ -8,7 +8,6 @@ from typing import Any
 
 from pathway.internals import Schema, api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
-from pathway.internals.api import PathwayType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
@@ -42,10 +41,6 @@ def read(
     name: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     debug_data: Any = None,
-    value_columns: list[str] | None = None,
-    primary_key: list[str] | None = None,
-    types: dict[str, PathwayType] | None = None,
-    default_values: dict[str, Any] | None = None,
     _stacklevel: int = 1,
     **kwargs,
 ) -> Table:
@@ -96,17 +91,6 @@ def read(
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
         debug_data: Static data replacing original one when debug mode is active.
-        value_columns: Names of the columns to be extracted from the files. [will be deprecated soon]
-        primary_key: In case the table should have a primary key generated according to
-            a subset of its columns, the set of columns should be specified in this field.
-            Otherwise, the primary key will be generated randomly. [will be deprecated soon]
-        types: Dictionary containing the mapping between the columns and the data
-            types (``pw.Type``) of the values of those columns. This parameter is optional, and if not
-            provided the default type is ``pw.Type.ANY``. Supported in "csv" and "json" formats.
-            [will be deprecated soon]
-        default_values: dictionary containing default values for columns replacing
-            blank entriest value of the column must be specified explicitly,
-            otherwise there will be no default value. [will be deprecated soon]
 
     Returns:
         Table: The table read.
@@ -250,10 +234,6 @@ def read(
         with_metadata=with_metadata,
         csv_settings=csv_settings,
         json_field_paths=json_field_paths,
-        value_columns=value_columns,
-        primary_key=primary_key,
-        types=types,
-        default_values=default_values,
         _stacklevel=_stacklevel + 4,
     )
 

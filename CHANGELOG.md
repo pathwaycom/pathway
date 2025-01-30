@@ -36,6 +36,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING**: Removed deprecated access to functions from `pw.io` in `pw`.
 - **BREAKING**: Removed deprecated classes `pw.UDFSync`, `pw.UDFAsync`.
 - **BREAKING**: Removed class `pw.xpack.llm.parsers.OpenParse`. It's functionality has been replaced with `pw.xpack.llm.parsers.DoclingParser`.
+- **BREAKING**: Removed deprecated arguments from input connectors: `value_columns`, `primary_key`, `types`, `default_values`. Schema should be used instead.
 
 ## [0.16.4] - 2025-01-09
 
