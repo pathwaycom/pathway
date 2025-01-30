@@ -133,7 +133,7 @@ class ConnectorSubject(ABC):
         return True
 
     def next(self, **kwargs) -> None:
-        """Sends a message to the enigne.
+        """Sends a message to the engine.
 
         The arguments should be compatible with the schema passed to :py:func:`~pathway.io.python.read`.
         Values for all fields should be passed to this method unless they have a default value

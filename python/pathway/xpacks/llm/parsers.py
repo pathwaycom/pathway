@@ -141,6 +141,7 @@ class UnstructuredParser(pw.UDF):
             removed if they are specific to a single element, e.g. `category_depth`.
         """
         import unstructured.partition.auto
+        from unstructured.documents.elements import Text
 
         kwargs = {**self.kwargs, **kwargs}
 
@@ -150,6 +151,7 @@ class UnstructuredParser(pw.UDF):
 
         post_processors = kwargs.pop("post_processors")
         for element in elements:
+            assert isinstance(element, Text), "unsupported element type"
             for post_processor in post_processors:
                 element.apply(post_processor)
 
