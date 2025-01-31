@@ -119,9 +119,6 @@ pub fn full_cycle_read(
                                 let key = Key::random();
                                 SnapshotEvent::Delete(key, values.clone())
                             }
-                            ParsedEvent::Upsert((_, _)) => {
-                                todo!("upsert aren't supported in this test")
-                            }
                             ParsedEvent::AdvanceTime => {
                                 SnapshotEvent::AdvanceTime(Timestamp(1), frontier.clone())
                             }
@@ -260,8 +257,7 @@ impl ErrorPlacement {
                 .into_iter()
                 .map(|result| match result {
                     ParsedEventWithErrors::Insert((key, _))
-                    | ParsedEventWithErrors::Delete((key, _))
-                    | ParsedEventWithErrors::Upsert((key, _)) => key
+                    | ParsedEventWithErrors::Delete((key, _)) => key
                         .expect("key has to be Some to contain error")
                         .expect_err("error should be in the key but it is not present there"),
                     ParsedEventWithErrors::AdvanceTime => {
@@ -274,8 +270,7 @@ impl ErrorPlacement {
                 .into_iter()
                 .map(|result| match result {
                     ParsedEventWithErrors::Insert((_, values))
-                    | ParsedEventWithErrors::Delete((_, values))
-                    | ParsedEventWithErrors::Upsert((_, Some(values))) => {
+                    | ParsedEventWithErrors::Delete((_, values)) => {
                         values.into_iter().nth(*i).unwrap().expect_err(
                             format!(
                                 "error should be in the values[{}] but it is not present there",

@@ -88,14 +88,12 @@ pub use super::data_lake::LakeWriter;
 pub enum DataEventType {
     Insert,
     Delete,
-    Upsert,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum PythonConnectorEventType {
     Insert,
     Delete,
-    Upsert,
     ExternalOffset,
 }
 
@@ -948,7 +946,6 @@ impl Reader for PythonReader {
             let event = match py_event {
                 PythonConnectorEventType::Insert => DataEventType::Insert,
                 PythonConnectorEventType::Delete => DataEventType::Delete,
-                PythonConnectorEventType::Upsert => DataEventType::Upsert,
                 PythonConnectorEventType::ExternalOffset => {
                     let py_external_offset =
                         objects.get(PW_OFFSET_FIELD_NAME).unwrap_or_else(|| {

@@ -232,12 +232,7 @@ class ConnectorSubject(ABC):
         self._send_special_message(FINISH_LITERAL)
 
     def _send_special_message(self, msg: str) -> None:
-        event_type = (
-            PythonConnectorEventType.INSERT
-            if self._session_type == SessionType.NATIVE
-            else PythonConnectorEventType.UPSERT
-        )
-        self._buffer.put((event_type, None, {"_pw_special": msg}))
+        self._buffer.put((PythonConnectorEventType.INSERT, None, {"_pw_special": msg}))
 
     def start(self) -> None:
         """Runs a separate thread with function feeding data into buffer.
@@ -297,7 +292,7 @@ class ConnectorSubject(ABC):
                 raise ValueError(
                     f"Trying to modify a row in {type(self)} but deletions_enabled is set to False."
                 )
-            self._buffer.put((PythonConnectorEventType.UPSERT, key, values))
+            self._buffer.put((PythonConnectorEventType.INSERT, key, values))
         else:
             raise NotImplementedError(f"session type {self._session_type} not handled")
 

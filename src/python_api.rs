@@ -1730,8 +1730,6 @@ impl PyPythonConnectorEventType {
     #[classattr]
     pub const DELETE: PythonConnectorEventType = PythonConnectorEventType::Delete;
     #[classattr]
-    pub const UPSERT: PythonConnectorEventType = PythonConnectorEventType::Upsert;
-    #[classattr]
     pub const EXTERNAL_OFFSET: PythonConnectorEventType = PythonConnectorEventType::ExternalOffset;
 }
 

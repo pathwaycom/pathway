@@ -12,11 +12,10 @@ pub mod persist;
 pub mod shard;
 mod variable;
 
-use crate::connectors::adaptors::{GenericValues, ValuesSessionAdaptor};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
-use crate::connectors::{Connector, PersistenceMode, SnapshotAccess};
+use crate::connectors::{Connector, PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
 use crate::engine::dataflow::operators::time_column::{
@@ -54,10 +53,13 @@ use differential_dataflow::collection::concatenate;
 use differential_dataflow::difference::Semigroup;
 use differential_dataflow::input::InputSession;
 use differential_dataflow::lattice::Lattice;
+use differential_dataflow::operators::arrange::upsert::arrange_from_upsert;
 use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
 use differential_dataflow::operators::reduce::{Reduce, ReduceCore};
 use differential_dataflow::operators::JoinCore;
+use differential_dataflow::trace::implementations::ord::OrdValBatch;
 use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpine};
+use differential_dataflow::trace::implementations::spine_fueled::Spine;
 use differential_dataflow::{AsCollection as _, Data};
 use differential_dataflow::{Collection, ExchangeData};
 use futures::future::BoxFuture;
@@ -3613,6 +3615,53 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .alloc(Table::from_collection(values).with_properties(table_properties)))
     }
 
+    fn new_upsert_collection(
+        &mut self,
+        collection: &Collection<S, (Key, Value)>,
+    ) -> Result<Collection<S, (Key, Value)>> {
+        collection.maybe_persist_with_logic(
+            self,
+            "upsert_collection",
+            |collection| {
+                let upsert_stream = collection.inner.map(|((key, value), time, diff)| {
+                    // same behavior for new and persisted variants
+                    let value = match value {
+                        OldOrNew::Old(value) | OldOrNew::New(value) => value,
+                    };
+                    let value_for_upsert = if diff == 1 {
+                        Some(value)
+                    } else {
+                        assert_eq!(diff, -1);
+                        None
+                    };
+                    (key, value_for_upsert, time)
+                });
+                arrange_from_upsert::<S, Spine<Rc<OrdValBatch<Key, Value, Timestamp, isize>>>>(
+                    &upsert_stream,
+                    "UpsertSession",
+                )
+                .as_collection(|k, v| (*k, v.clone()))
+            },
+            |d| d,
+        )
+    }
+
+    fn new_collection(
+        &mut self,
+        session_type: SessionType,
+    ) -> Result<(
+        InputSession<Timestamp, (Key, Value), isize>,
+        Collection<S, (Key, Value)>,
+    )> {
+        let mut input_session = InputSession::new();
+        let collection = input_session.to_collection(&mut self.scope);
+        let collection = match session_type {
+            SessionType::Native => collection,
+            SessionType::Upsert => self.new_upsert_collection(&collection)?,
+        };
+        Ok((input_session, collection))
+    }
+
     fn connector_table(
         &mut self,
         reader: Box<dyn ReaderBuilder>,
@@ -3640,8 +3689,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .clone()
             .map(IntoPersistentId::into_persistent_id);
 
-        let (input_session, table_values): (ValuesSessionAdaptor<S::Timestamp>, GenericValues<S>) =
-            parser.session_type().new_collection(&mut self.scope);
+        let (input_session, table_values) = self.new_collection(parser.session_type())?;
 
         let table_values = table_values.reshard();
         table_values.probe_with(&mut self.input_probe);

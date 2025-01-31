@@ -189,31 +189,13 @@ fn test_debezium_mongodb_format() -> eyre::Result<()> {
     let changelog = read_data_from_reader(Box::new(reader), Box::new(parser))?;
 
     let expected_values = vec![
-        ParsedEvent::Upsert((
-            Some(vec![Value::from("1001")]),
-            Some(vec![Value::from("Sally")]),
-        )),
-        ParsedEvent::Upsert((
-            Some(vec![Value::from("1002")]),
-            Some(vec![Value::from("George")]),
-        )),
-        ParsedEvent::Upsert((
-            Some(vec![Value::from("1003")]),
-            Some(vec![Value::from("Edward")]),
-        )),
-        ParsedEvent::Upsert((
-            Some(vec![Value::from("1004")]),
-            Some(vec![Value::from("Anne")]),
-        )),
-        ParsedEvent::Upsert((
-            Some(vec![Value::from("1005")]),
-            Some(vec![Value::from("Bob")]),
-        )),
-        ParsedEvent::Upsert((
-            Some(vec![Value::from("1003")]),
-            Some(vec![Value::from("Sergey")]),
-        )),
-        ParsedEvent::Upsert((Some(vec![Value::from("1004")]), None)),
+        ParsedEvent::Insert((Some(vec![Value::from("1001")]), vec![Value::from("Sally")])),
+        ParsedEvent::Insert((Some(vec![Value::from("1002")]), vec![Value::from("George")])),
+        ParsedEvent::Insert((Some(vec![Value::from("1003")]), vec![Value::from("Edward")])),
+        ParsedEvent::Insert((Some(vec![Value::from("1004")]), vec![Value::from("Anne")])),
+        ParsedEvent::Insert((Some(vec![Value::from("1005")]), vec![Value::from("Bob")])),
+        ParsedEvent::Insert((Some(vec![Value::from("1003")]), vec![Value::from("Sergey")])),
+        ParsedEvent::Delete((Some(vec![Value::from("1004")]), vec![])),
     ];
     assert_eq!(changelog, expected_values);
 

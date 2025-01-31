@@ -52,10 +52,6 @@ pub type ErrorRemovalLogic = Box<dyn Fn(ValueFieldsWithErrors) -> DynResult<Vec<
 pub enum ParsedEventWithErrors {
     AdvanceTime,
     Insert((KeyFieldsWithErrors, ValueFieldsWithErrors)),
-
-    // None as Vec of values means that the record is removed
-    Upsert((KeyFieldsWithErrors, Option<ValueFieldsWithErrors>)),
-
     // If None, finding the key for the provided values becomes responsibility of the connector
     Delete((KeyFieldsWithErrors, ValueFieldsWithErrors)),
 }
@@ -67,21 +63,12 @@ impl ParsedEventWithErrors {
         key: KeyFieldsWithErrors,
         values: ValueFieldsWithErrors,
     ) -> Self {
-        match session_type {
-            SessionType::Native => {
-                match data_event_type {
-                    DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
-                    DataEventType::Delete => ParsedEventWithErrors::Delete((key, values)),
-                    DataEventType::Upsert => panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session"),
-                }
-            }
-            SessionType::Upsert => {
-                match data_event_type {
-                    DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
-                    DataEventType::Delete => ParsedEventWithErrors::Upsert((key, None)),
-                    DataEventType::Upsert => ParsedEventWithErrors::Upsert((key, Some(values))),
-                }
-            }
+        match data_event_type {
+            DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
+            DataEventType::Delete => match session_type {
+                SessionType::Native => ParsedEventWithErrors::Delete((key, values)),
+                SessionType::Upsert => ParsedEventWithErrors::Delete((key, vec![])),
+            },
         }
     }
     pub fn remove_errors(self, logic: &ErrorRemovalLogic) -> DynResult<ParsedEvent> {
@@ -90,9 +77,6 @@ impl ParsedEventWithErrors {
             Self::Insert((key, values)) => key
                 .transpose()
                 .and_then(|key| Ok(ParsedEvent::Insert((key, logic(values)?)))),
-            Self::Upsert((key, values)) => key
-                .transpose()
-                .and_then(|key| Ok(ParsedEvent::Upsert((key, values.map(logic).transpose()?)))),
             Self::Delete((key, values)) => key
                 .transpose()
                 .and_then(|key| Ok(ParsedEvent::Delete((key, logic(values)?)))),
@@ -104,10 +88,6 @@ impl ParsedEventWithErrors {
 pub enum ParsedEvent {
     AdvanceTime,
     Insert((Option<Vec<Value>>, Vec<Value>)),
-
-    // None as Vec of values means that the record is removed
-    Upsert((Option<Vec<Value>>, Option<Vec<Value>>)),
-
     // If None, finding the key for the provided values becomes responsibility of the connector
     Delete((Option<Vec<Value>>, Vec<Value>)),
 }
@@ -119,9 +99,9 @@ impl ParsedEvent {
         offset: Option<&Offset>,
     ) -> Option<Key> {
         match self {
-            ParsedEvent::Insert((raw_key, _))
-            | ParsedEvent::Upsert((raw_key, _))
-            | ParsedEvent::Delete((raw_key, _)) => Some(values_to_key(raw_key.as_ref(), offset)),
+            ParsedEvent::Insert((raw_key, _)) | ParsedEvent::Delete((raw_key, _)) => {
+                Some(values_to_key(raw_key.as_ref(), offset))
+            }
             ParsedEvent::AdvanceTime => None,
         }
     }
@@ -129,7 +109,6 @@ impl ParsedEvent {
     pub fn snapshot_event(&self, key: Key) -> Option<SnapshotEvent> {
         match self {
             ParsedEvent::Insert((_, values)) => Some(SnapshotEvent::Insert(key, values.clone())),
-            ParsedEvent::Upsert((_, values)) => Some(SnapshotEvent::Upsert(key, values.clone())),
             ParsedEvent::Delete((_, values)) => Some(SnapshotEvent::Delete(key, values.clone())),
             ParsedEvent::AdvanceTime => None,
         }
@@ -761,11 +740,8 @@ impl DsvParser {
             };
             let parsed_tokens =
                 self.values_by_indices(tokens, &self.value_column_indices, &self.header);
-            let parsed_entry = match event {
-                DataEventType::Insert => ParsedEventWithErrors::Insert((key, parsed_tokens)),
-                DataEventType::Delete => ParsedEventWithErrors::Delete((key, parsed_tokens)),
-                DataEventType::Upsert => unreachable!("readers can't send upserts to DsvParser"),
-            };
+            let parsed_entry =
+                ParsedEventWithErrors::new(self.session_type(), event, key, parsed_tokens);
             Ok(vec![parsed_entry])
         } else {
             Err(ParseError::UnexpectedNumberOfCsvTokens(tokens.len()).into())
@@ -898,24 +874,7 @@ impl Parser for IdentityParser {
                 };
                 values.push(to_insert);
             }
-            match self.session_type {
-                SessionType::Native => {
-                    match event {
-                        DataEventType::Insert => ParsedEventWithErrors::Insert((key, values)),
-                        DataEventType::Delete => ParsedEventWithErrors::Delete((key, values)),
-                        DataEventType::Upsert => {
-                            panic!("incorrect Reader-Parser configuration: unexpected Upsert event in Native session")
-                        }
-                    }
-                }
-                SessionType::Upsert => {
-                    match event {
-                        DataEventType::Insert => panic!("incorrect Reader-Parser configuration: unexpected Insert event in Upsert session"),
-                        DataEventType::Delete => ParsedEventWithErrors::Upsert((key, None)),
-                        DataEventType::Upsert => ParsedEventWithErrors::Upsert((key, Some(values))),
-                    }
-                }
-            }
+            ParsedEventWithErrors::new(self.session_type(), event, key, values)
         };
 
         Ok(vec![event])
@@ -1277,22 +1236,16 @@ impl DebeziumMessageParser {
             &Value::None,
         );
 
-        match event {
-            DataEventType::Insert => Ok(ParsedEventWithErrors::Insert((key, parsed_values))),
-            DataEventType::Delete => Ok(ParsedEventWithErrors::Delete((key, parsed_values))),
-            DataEventType::Upsert => Ok(ParsedEventWithErrors::Upsert((key, Some(parsed_values)))),
-        }
+        Ok(ParsedEventWithErrors::new(
+            self.session_type(),
+            event,
+            key,
+            parsed_values,
+        ))
     }
 
     fn parse_read_or_create(&mut self, key: &JsonValue, value: &JsonValue) -> ParseResult {
-        let event = match self.db_type {
-            DebeziumDBType::Postgres => {
-                self.parse_event(key, &value["after"], DataEventType::Insert)?
-            }
-            DebeziumDBType::MongoDB => {
-                self.parse_event(key, &value["after"], DataEventType::Upsert)?
-            }
-        };
+        let event = self.parse_event(key, &value["after"], DataEventType::Insert)?;
         Ok(vec![event])
     }
 
@@ -1314,7 +1267,8 @@ impl DebeziumMessageParser {
                     .into_iter()
                     .collect()
                 });
-                ParsedEventWithErrors::Upsert((key, None))
+                //deletion in upsert session - no data needed
+                ParsedEventWithErrors::Delete((key, vec![]))
             }
         };
         Ok(vec![event])
@@ -1329,7 +1283,7 @@ impl DebeziumMessageParser {
                 Ok(vec![event_before, event_after])
             }
             DebeziumDBType::MongoDB => {
-                let event_after = self.parse_event(key, &value["after"], DataEventType::Upsert)?;
+                let event_after = self.parse_event(key, &value["after"], DataEventType::Insert)?;
                 Ok(vec![event_after])
             }
         }

@@ -32,7 +32,6 @@ fn get_chunk_ids_with_backend(backend: &dyn PersistenceBackend) -> Result<Vec<Ch
 pub enum Event {
     Insert(Key, Vec<Value>),
     Delete(Key, Vec<Value>),
-    Upsert(Key, Option<Vec<Value>>),
     AdvanceTime(Timestamp, OffsetAntichain),
     Finished,
 }

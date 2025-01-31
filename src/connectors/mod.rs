@@ -3,6 +3,7 @@
 use differential_dataflow::input::InputSession;
 use itertools::Itertools;
 use log::{error, info, warn};
+use scopeguard::guard;
 use std::cell::RefCell;
 use std::env;
 use std::ops::ControlFlow;
@@ -12,11 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::Thread;
 use std::time::{Duration, SystemTime};
-
-use scopeguard::guard;
 use timely::dataflow::operators::probe::Handle;
 
-pub mod adaptors;
 pub mod data_format;
 pub mod data_lake;
 pub mod data_storage;
@@ -34,7 +32,6 @@ use crate::engine::report_error::{
 };
 use crate::engine::{DataError, Key, Value};
 
-use crate::connectors::adaptors::InputAdaptor;
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
@@ -48,9 +45,15 @@ use data_storage::{
     DataEventType, ReadError, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError, Writer,
 };
 
-pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
+
+type ValuesSession = InputSession<Timestamp, (Key, Value), isize>;
+#[derive(Clone, Copy, Debug)]
+pub enum SessionType {
+    Native,
+    Upsert,
+}
 
 /*
     Below is the custom reader stuff.
@@ -205,7 +208,7 @@ impl Connector {
         }
     }
 
-    fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
+    fn advance_time(&mut self, input_session: &mut ValuesSession) -> Timestamp {
         let new_timestamp = Timestamp::new_from_current_time();
         let timestamp_updated = self.current_timestamp <= new_timestamp;
         if timestamp_updated {
@@ -245,9 +248,7 @@ impl Connector {
                             info!("Reached the end of the snapshot. Exiting the rewind after {entries_read} entries");
                             break;
                         }
-                        SnapshotEvent::Insert(_, _)
-                        | SnapshotEvent::Delete(_, _)
-                        | SnapshotEvent::Upsert(_, _) => {
+                        SnapshotEvent::Insert(_, _) | SnapshotEvent::Delete(_, _) => {
                             entries_read += 1;
                             let send_res = sender.send(Entry::Snapshot(entry_read));
                             if let Err(e) = send_res {
@@ -430,7 +431,7 @@ impl Connector {
         mut self,
         reader: Box<dyn ReaderBuilder>,
         mut parser: Box<dyn Parser>,
-        mut input_session: Box<dyn InputAdaptor<Timestamp>>,
+        mut input_session: ValuesSession,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key + 'static,
         probe: Handle<Timestamp>,
         persistent_storage: Option<Arc<Mutex<WorkerPersistentStorage>>>,
@@ -518,10 +519,11 @@ impl Connector {
                         self.on_parsed_data(
                             parsed_entries,
                             None, // no key generation for time advancement
-                            input_session.as_mut(),
+                            &mut input_session,
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
+                            parser.session_type(),
                         );
                     }
 
@@ -563,7 +565,7 @@ impl Connector {
                             entry,
                             &mut backfilling_finished,
                             &mut parser,
-                            input_session.as_mut(),
+                            &mut input_session,
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
@@ -591,13 +593,14 @@ impl Connector {
         entry: Entry,
         backfilling_finished: &mut bool,
         parser: &mut Box<dyn Parser>,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
+        input_session: &mut ValuesSession,
         values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
         commit_allowed: &mut bool,
     ) {
         let has_persistent_storage = snapshot_writer.is_some();
+        let session_type = parser.session_type();
 
         match entry {
             Entry::Realtime(read_result) => match read_result {
@@ -615,6 +618,7 @@ impl Connector {
                             values_to_key,
                             snapshot_writer,
                             connector_monitor,
+                            session_type,
                         );
                     }
                 }
@@ -642,6 +646,7 @@ impl Connector {
                         values_to_key,
                         snapshot_writer,
                         connector_monitor,
+                        session_type,
                     );
 
                     let (offset_key, offset_value) = offset;
@@ -664,6 +669,7 @@ impl Connector {
                     values_to_key,
                     snapshot_writer,
                     connector_monitor,
+                    session_type,
                 );
             }
             Entry::Snapshot(snapshot) => {
@@ -675,41 +681,11 @@ impl Connector {
                     SnapshotEvent::Delete(key, value) => {
                         Self::on_remove(key, value, input_session);
                     }
-                    SnapshotEvent::Upsert(key, value) => {
-                        Self::on_upsert(key, value, input_session);
-                    }
                     SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => {
                         unreachable!()
                     }
                 };
             }
-        }
-    }
-
-    /*
-        The implementation for non-str pulls.
-    */
-    pub fn run_with_custom_reader(
-        &mut self,
-        custom_reader: &mut dyn CustomReader,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
-        mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
-        snapshot_writer: &mut Option<SharedSnapshotWriter>,
-    ) {
-        loop {
-            match custom_reader.acquire_custom_data() {
-                (Ok(entries), maybe_offset) => self.on_parsed_data(
-                    entries,
-                    maybe_offset.as_ref(),
-                    input_session,
-                    &mut values_to_key,
-                    snapshot_writer,
-                    &mut None,
-                ),
-                (Err(e), _) => {
-                    error!("Read data parsed unsuccessfully. {e}");
-                }
-            };
         }
     }
 
@@ -725,7 +701,7 @@ impl Connector {
         raw_read_data: &ReaderContext,
         offset: Option<&Offset>,
         parser: &mut dyn Parser,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
+        input_session: &mut ValuesSession,
         values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
     ) {
@@ -737,6 +713,7 @@ impl Connector {
                 values_to_key,
                 snapshot_writer,
                 &mut None,
+                parser.session_type(),
             ),
             Err(e) => {
                 error!("Read data parsed unsuccessfully. {e}");
@@ -744,20 +721,12 @@ impl Connector {
         }
     }
 
-    fn on_insert(key: Key, values: Vec<Value>, input_session: &mut dyn InputAdaptor<Timestamp>) {
-        input_session.insert(key, Value::Tuple(values.into()));
+    fn on_insert(key: Key, values: Vec<Value>, input_session: &mut ValuesSession) {
+        input_session.insert((key, Value::Tuple(values.into())));
     }
 
-    fn on_upsert(
-        key: Key,
-        values: Option<Vec<Value>>,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
-    ) {
-        input_session.upsert(key, values.map(|v| Value::Tuple(v.into())));
-    }
-
-    fn on_remove(key: Key, values: Vec<Value>, input_session: &mut dyn InputAdaptor<Timestamp>) {
-        input_session.remove(key, Value::Tuple(values.into()));
+    fn on_remove(key: Key, values: Vec<Value>, input_session: &mut ValuesSession) {
+        input_session.remove((key, Value::Tuple(values.into())));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -765,10 +734,11 @@ impl Connector {
         &mut self,
         parsed_entries: Vec<ParsedEventWithErrors>,
         offset: Option<&Offset>,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
+        input_session: &mut ValuesSession,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
+        session_type: SessionType,
     ) {
         let error_logger = self.error_logger.clone();
         let error_handling_logic: data_format::ErrorRemovalLogic = if self.skip_all_errors {
@@ -797,7 +767,7 @@ impl Connector {
             };
             let key = entry.key(&mut values_to_key, offset);
             if let Some(key) = key {
-                // true for Insert, Remove, Upsert
+                // true for Insert, Delete
                 if let Some(ref mut connector_monitor) = connector_monitor {
                     connector_monitor.increment();
                 }
@@ -821,11 +791,10 @@ impl Connector {
                     }
                     Self::on_insert(key.expect("No key"), values, input_session);
                 }
-                ParsedEvent::Upsert((_, values)) => {
-                    Self::on_upsert(key.expect("No key"), values, input_session);
-                }
                 ParsedEvent::Delete((_, values)) => {
-                    if values.len() != self.num_columns {
+                    if matches!(session_type, SessionType::Native)
+                        && values.len() != self.num_columns
+                    {
                         error!("There are {} tokens in the entry, but the expected number of tokens was {}", values.len(), self.num_columns);
                         continue;
                     }
@@ -894,9 +863,7 @@ pub fn read_persisted_state(
             Ok(Entry::Snapshot(entry)) => match entry {
                 SnapshotEvent::Insert(key, values) => input_session.insert((key, values)),
                 SnapshotEvent::Delete(key, values) => input_session.remove((key, values)),
-                SnapshotEvent::Upsert(_, _)
-                | SnapshotEvent::AdvanceTime(_, _)
-                | SnapshotEvent::Finished => unreachable!(),
+                SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => unreachable!(),
             },
             Ok(Entry::Realtime(_)) => unreachable!(),
             Ok(Entry::RewindFinishSentinel(_)) | Err(_) => return ControlFlow::Break(()),

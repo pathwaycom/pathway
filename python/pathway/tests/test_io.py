@@ -31,6 +31,7 @@ from pathway.tests.utils import (
     CsvLinesNumberChecker,
     FileLinesNumberChecker,
     T,
+    assert_sets_equality_from_path,
     assert_table_equality,
     assert_table_equality_wo_index,
     needs_multiprocessing_fork,
@@ -2220,6 +2221,8 @@ def test_stream_generator_two_tables_multiple_workers(monkeypatch: pytest.Monkey
 
 
 def test_python_connector_upsert_raw(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
     class TestSubject(pw.io.python.ConnectorSubject):
         @property
         def _session_type(self) -> SessionType:
@@ -2228,20 +2231,47 @@ def test_python_connector_upsert_raw(tmp_path: pathlib.Path):
         def run(self):
             self._add(api.ref_scalar(0), b"one")
             time.sleep(5e-2)
+            self._remove(api.ref_scalar(0), b"")
+            time.sleep(5e-2)
             self._add(api.ref_scalar(0), b"two")
             time.sleep(5e-2)
             self._add(api.ref_scalar(0), b"three")
             self.close()
 
     table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
-    pw.io.csv.write(table, tmp_path / "output.csv")
+    pw.io.csv.write(table, output_path)
     run()
 
-    result = pd.read_csv(tmp_path / "output.csv")
+    result = pd.read_csv(output_path)
     assert len(result) == 5
+    assert_sets_equality_from_path(output_path, {"three,1"})
+
+
+def test_python_connector_upsert_remove_raw(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+        def run(self):
+            self._add(api.ref_scalar(0), b"one")
+            time.sleep(5e-2)
+            self._remove(api.ref_scalar(0), b"")
+
+    table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
+    pw.io.csv.write(table, output_path)
+    run()
+
+    result = pd.read_csv(output_path)
+    assert len(result) == 2
+    assert_sets_equality_from_path(output_path, set())
 
 
 def test_python_connector_removal_by_key(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
     class TestSubject(pw.io.python.ConnectorSubject):
         @property
         def _session_type(self) -> SessionType:
@@ -2254,14 +2284,17 @@ def test_python_connector_removal_by_key(tmp_path: pathlib.Path):
             self.close()
 
     table = pw.io.python.read(TestSubject(), format="raw", autocommit_duration_ms=10)
-    pw.io.csv.write(table, tmp_path / "output.csv")
+    pw.io.csv.write(table, output_path)
     run()
 
-    result = pd.read_csv(tmp_path / "output.csv")
+    result = pd.read_csv(output_path)
     assert len(result) == 2
+    assert_sets_equality_from_path(output_path, set())
 
 
 def test_python_connector_upsert_json(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
     class TestSubject(pw.io.python.ConnectorSubject):
         @property
         def _session_type(self) -> SessionType:
@@ -2291,11 +2324,46 @@ def test_python_connector_upsert_json(tmp_path: pathlib.Path):
     table = pw.io.python.read(
         TestSubject(), format="json", schema=InputSchema, autocommit_duration_ms=10
     )
-    pw.io.csv.write(table, tmp_path / "output.csv")
+    pw.io.csv.write(table, output_path)
     run()
 
-    result = pd.read_csv(tmp_path / "output.csv")
+    result = pd.read_csv(output_path)
     assert len(result) == 5
+    assert_sets_equality_from_path(output_path, {"three,3,1"})
+
+
+def test_python_connector_upsert_remove_json(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+        def run(self):
+            self._add(
+                api.ref_scalar(0),
+                json.dumps({"word": "one", "digit": 1}).encode("utf-8"),
+            )
+            time.sleep(5e-2)
+            self._remove_inner(
+                api.ref_scalar(0),
+                {},
+            )
+
+    class InputSchema(pw.Schema):
+        word: str
+        digit: int
+
+    table = pw.io.python.read(
+        TestSubject(), format="json", schema=InputSchema, autocommit_duration_ms=10
+    )
+    pw.io.csv.write(table, output_path)
+    run()
+
+    result = pd.read_csv(output_path)
+    assert len(result) == 2
+    assert_sets_equality_from_path(output_path, set())
 
 
 def test_python_connector_metadata():

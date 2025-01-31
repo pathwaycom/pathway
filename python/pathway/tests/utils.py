@@ -823,3 +823,24 @@ def consolidate(df: pd.DataFrame) -> pd.DataFrame:
         df.at[i, "diff"] = total[value]
         total[value] = 0
     return df[df["diff"] != 0].drop(columns=["_all_values"])
+
+
+def combine_columns(df: pd.DataFrame) -> pd.Series:
+    result = None
+    for column in df.columns:
+        if column == "time":
+            continue
+        if result is None:
+            result = df[column].astype(str)
+        else:
+            result += "," + df[column].astype(str)
+    assert result is not None
+    return result
+
+
+def assert_sets_equality_from_path(path: pathlib.Path, expected: set[str]) -> None:
+    try:
+        result = combine_columns(consolidate(pd.read_csv(path)))
+    except pd.errors.EmptyDataError:
+        result = pd.Series([])
+    assert set(result) == expected

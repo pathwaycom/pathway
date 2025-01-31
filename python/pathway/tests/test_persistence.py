@@ -7,16 +7,16 @@ import pathlib
 import time
 from typing import Callable
 
-import pandas as pd
 import pytest
 
 import pathway as pw
+from pathway.engine import SessionType
 from pathway.internals import api
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CsvPathwayChecker,
     LogicChecker,
-    consolidate,
+    assert_sets_equality_from_path,
     needs_multiprocessing_fork,
     run,
     wait_result_with_checker,
@@ -274,18 +274,6 @@ def test_persistence_modifications(tmp_path, scenario):
         assert actual_diffs == expected_diffs
 
 
-def combine_columns(df: pd.DataFrame) -> pd.Series:
-    result = None
-    for column in df.columns:
-        if column == "time":
-            continue
-        if result is None:
-            result = df[column].astype(str)
-        else:
-            result += "," + df[column].astype(str)
-    return result
-
-
 def get_one_table_runner(
     tmp_path: pathlib.Path,
     mode: api.PersistenceMode,
@@ -313,11 +301,7 @@ def get_one_table_runner(
                 persistence_mode=mode,
             )
         )
-        try:
-            result = combine_columns(consolidate(pd.read_csv(output_path)))
-        except pd.errors.EmptyDataError:
-            result = pd.Series([])
-        assert set(result) == expected
+        assert_sets_equality_from_path(output_path, expected)
 
     return run_computation, input_path
 
@@ -360,8 +344,7 @@ def get_two_tables_runner(
             terminate_on_error=terminate_on_error,
             # hack to allow changes from different files at different point in time
         )
-        result = consolidate(pd.read_csv(output_path))
-        assert set(combine_columns(result)) == expected
+        assert_sets_equality_from_path(output_path, expected)
 
     return run_computation, input_path_1, input_path_2
 
@@ -741,11 +724,7 @@ def test_buffer(tmp_path, mode):
 
     def get_checker(expected: set[str]) -> Callable:
         def check() -> None:
-            try:
-                result = combine_columns(consolidate(pd.read_csv(output_path)))
-            except pd.errors.EmptyDataError:
-                result = pd.Series([])
-            assert set(result) == expected
+            assert_sets_equality_from_path(output_path, expected)
 
         return LogicChecker(check)
 
@@ -832,11 +811,7 @@ def test_forget_streaming(tmp_path, mode):
 
     def get_checker(expected: set[str]) -> Callable:
         def check() -> None:
-            try:
-                result = combine_columns(consolidate(pd.read_csv(output_path)))
-            except pd.errors.EmptyDataError:
-                result = pd.Series([])
-            assert set(result) == expected
+            assert_sets_equality_from_path(output_path, expected)
 
         return LogicChecker(check)
 
@@ -882,3 +857,50 @@ def test_forget_streaming(tmp_path, mode):
         target=run,
         kwargs={"persistence_config": persistence_config},
     )
+
+
+@pytest.mark.parametrize(
+    "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
+)
+def test_upsert_session_with_python_connector(tmp_path, mode):
+    output_path = tmp_path / "out.csv"
+    persistent_storage_path = tmp_path / "p"
+
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    class InputSubject(pw.io.python.ConnectorSubject):
+        data: list[dict[str, int]]
+
+        def __init__(self, data: list[dict[str, int]]) -> None:
+            super().__init__()
+            self.data = data
+
+        def run(self) -> None:
+            for entry in self.data:
+                self.next(**entry)
+
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+    def run_computation(inputs: list[dict[str, int]], expected: set[str]):
+        G.clear()
+        res = pw.io.python.read(InputSubject(inputs), schema=InputSchema)
+        pw.io.csv.write(res, output_path)
+        run(
+            persistence_config=pw.persistence.Config(
+                pw.persistence.Backend.filesystem(persistent_storage_path),
+                persistence_mode=mode,
+            )
+        )
+        assert_sets_equality_from_path(output_path, expected)
+
+    run_computation([{"a": 1, "b": 2}, {"a": 2, "b": 3}], {"1,2,1", "2,3,1"})
+    run_computation(
+        [{"a": 1, "b": 4}, {"a": 3, "b": 10}], {"1,2,-1", "1,4,1", "3,10,1"}
+    )
+    run_computation([{"a": 3, "b": 9}], {"3,10,-1", "3,9,1"})
+    run_computation([{"a": 4, "b": 6}], {"4,6,1"})
+    run_computation([{"a": 1, "b": 0}], {"1,4,-1", "1,0,1"})

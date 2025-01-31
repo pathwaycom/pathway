@@ -139,7 +139,7 @@ fn test_transparent_parser_upsert() -> eyre::Result<()> {
         TransparentParser::new(None, value_field_names, schema.into(), SessionType::Upsert)?;
     let contexts = vec![
         ReaderContext::from_diff(
-            DataEventType::Upsert,
+            DataEventType::Insert,
             None,
             HashMap::from([
                 ("a".to_owned(), Ok(Value::Int(3))),
@@ -158,8 +158,8 @@ fn test_transparent_parser_upsert() -> eyre::Result<()> {
         ),
     ];
     let expected = vec![
-        ParsedEvent::Upsert((None, Some(vec![Value::from(3), Value::from("abc")]))),
-        ParsedEvent::Upsert((None, None)),
+        ParsedEvent::Insert((None, vec![Value::from(3), Value::from("abc")])),
+        ParsedEvent::Delete((None, vec![])),
     ];
     for (context_i, expected_i) in contexts.into_iter().zip_eq(expected) {
         assert_eq!(

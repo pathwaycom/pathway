@@ -805,7 +805,6 @@ class SnapshotAccess(Enum):
 class PythonConnectorEventType(Enum):
     INSERT: PythonConnectorEventType
     DELETE: PythonConnectorEventType
-    UPSERT: PythonConnectorEventType
     EXTERNAL_OFFSET: PythonConnectorEventType
 
 class SessionType(Enum):
