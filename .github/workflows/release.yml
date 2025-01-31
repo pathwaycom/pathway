@@ -105,7 +105,19 @@ jobs:
         with:
           command: build
           args: --release --strip
-          target: universal2-apple-darwin
+          target: aarch64-apple-darwin
+
+      - name: Build package macos x86_64
+        if: ${{ matrix.os == 'selfhosted-macOS'}}
+        uses: PyO3/maturin-action@v1
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          DEVELOPER_DIR: /Library/Developer/CommandLineTools
+          SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+        with:
+          command: build
+          args: --release --strip
+          target: x86_64-apple-darwin
 
       - name: Build package Ubuntu AArch64
         if: ${{ matrix.os == needs.start-runner.outputs.label }}
@@ -138,7 +150,7 @@ jobs:
         if: ${{ matrix.os == 'selfhosted-macOS' }}
         uses: actions/upload-artifact@v4
         with:
-          name: pathway-arm64
+          name: pathway-macOS
           path: ./target/wheels/
 
       - name: Upload artifact
@@ -210,7 +222,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: ${{ matrix.os == 'selfhosted-macOS' }}
         with:
-          name: pathway-arm64
+          name: pathway-macOS
           path: ./wheels/
 
       - uses: actions/download-artifact@v4
@@ -226,7 +238,11 @@ jobs:
           rm -rf "${ENV_NAME}"
           python"${{ matrix.python-version }}" -m venv "${ENV_NAME}"
           source "${ENV_NAME}/bin/activate"
-          WHEEL=(./wheels/pathway-*.whl)
+          if [[ "${{ matrix.os }}" == 'selfhosted-macOS' ]]; then
+            WHEEL=(./wheels/pathway-*arm64.whl)
+          else
+            WHEEL=(./wheels/pathway-*aarch64.whl)
+          fi
           pip install -U pip
           export PATHWAY_MONITORING_HTTP_PORT=20099
           export LLAMA_READER_PORT=8799
@@ -283,7 +299,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: pathway-arm64
+          name: pathway-macOS
           path: ./wheels/
 
       - uses: actions/download-artifact@v4
