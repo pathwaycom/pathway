@@ -4665,6 +4665,7 @@ impl DataStorage {
             self.delta_storage_options(py)?,
             data_format.value_fields_type_map(py),
             self.mode,
+            self.start_from_timestamp_ms,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to connect to DeltaLake: {e}")))?;
         Ok((Box::new(reader), 1))

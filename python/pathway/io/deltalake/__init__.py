@@ -43,6 +43,7 @@ def read(
     s3_connection_settings: (
         AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
     ) = None,
+    start_from_timestamp_ms: int | None = None,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     debug_data: Any = None,
@@ -70,6 +71,9 @@ def read(
             endpoint, which is necessary for buckets hosted outside of Amazon AWS. If the
             custom endpoint is left blank, the authorized user's credentials for S3 will
             be used.
+        start_from_timestamp_ms: If defined, only changes that occurred after the specified
+            timestamp will be read. This parameter can only be used for tables with
+            append-only behavior.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the connector's progress.
@@ -144,6 +148,7 @@ def read(
         aws_s3_settings=_engine_s3_connection_settings(
             uri, prepared_connection_settings
         ),
+        start_from_timestamp_ms=start_from_timestamp_ms,
     )
     data_format = api.DataFormat(
         format_type="transparent",

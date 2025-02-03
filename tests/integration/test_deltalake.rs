@@ -104,6 +104,7 @@ fn read_with_connector(path: &str, type_: &Type) -> Result<Vec<Value>> {
         HashMap::new(),
         type_map,
         ConnectorMode::Static,
+        None,
     )
     .unwrap();
     let parser =

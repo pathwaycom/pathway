@@ -3573,3 +3573,76 @@ def test_deltalake_different_types_serialization(tmp_path: pathlib.Path):
     table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
     pw.io.subscribe(table, on_change=on_change)
     run_all()
+
+
+def test_deltalake_start_from_timestamp(tmp_path: pathlib.Path):
+    data_first_run = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    data_second_run = """
+        k | v
+        4 | foo
+        5 | bar
+        6 | baz
+    """
+    data_third_run = """
+        k | v
+        7 | foo
+        8 | bar
+        9 | baz
+    """
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output"
+    temp_reread_path = tmp_path / "reread.jsonl"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    def write_data(data: str):
+        write_csv(input_path, data)
+        G.clear()
+        table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+        pw.io.deltalake.write(table, output_path)
+        run_all()
+
+    def check_entries_count(start_from_timestamp_ms: int, expected_entries: int):
+        G.clear()
+        table = pw.io.deltalake.read(
+            output_path,
+            schema=InputSchema,
+            mode="static",
+            start_from_timestamp_ms=start_from_timestamp_ms,
+        )
+        pw.io.jsonlines.write(table, temp_reread_path)
+        run_all()
+        n_rows = 0
+        with open(temp_reread_path, "r") as f:
+            for _ in f:
+                n_rows += 1
+        assert n_rows == expected_entries
+
+    start_time_9 = int(time.time() * 1000)
+    time.sleep(0.025)
+    write_data(data_first_run)
+    time.sleep(0.025)
+
+    start_time_6 = int(time.time() * 1000)
+    time.sleep(0.025)
+    write_data(data_second_run)
+    time.sleep(0.025)
+
+    start_time_3 = int(time.time() * 1000)
+    time.sleep(0.025)
+    write_data(data_third_run)
+    time.sleep(0.025)
+
+    start_time_0 = int(time.time() * 1000)
+
+    check_entries_count(start_time_0, 0)
+    check_entries_count(start_time_3, 3)
+    check_entries_count(start_time_6, 6)
+    check_entries_count(start_time_9, 9)

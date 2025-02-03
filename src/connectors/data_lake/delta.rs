@@ -39,6 +39,7 @@ use crate::connectors::{
 use crate::engine::Type;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
+use crate::timestamp::current_unix_timestamp_ms;
 
 #[allow(clippy::module_name_repetitions)]
 pub struct DeltaBatchWriter {
@@ -255,11 +256,47 @@ impl DeltaTableReader {
         storage_options: HashMap<String, String>,
         column_types: HashMap<String, Type>,
         streaming_mode: ConnectorMode,
+        start_from_timestamp_ms: Option<i64>,
     ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
-        let table = runtime.block_on(async { open_delta_table(path, storage_options).await })?;
-        let current_version = table.version();
-        let parquet_files_queue = Self::get_reader_actions(&table, path)?;
+        let mut table =
+            runtime.block_on(async { open_delta_table(path, storage_options).await })?;
+        let mut current_version = table.version();
+        let mut parquet_files_queue = Self::get_reader_actions(&table, path)?;
+
+        if let Some(start_from_timestamp_ms) = start_from_timestamp_ms {
+            let current_timestamp = current_unix_timestamp_ms();
+            if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
+                warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
+            }
+            let (earliest_version, latest_version) = runtime.block_on(async {
+                Ok::<(i64, i64), ReadError>((
+                    table.get_earliest_version().await?,
+                    table.get_latest_version().await?,
+                ))
+            })?;
+            let snapshot = table.snapshot()?;
+
+            let mut last_version_below_threshold = None;
+            for version in earliest_version..=latest_version {
+                let Some(timestamp) = snapshot.version_timestamp(version) else {
+                    continue;
+                };
+                if timestamp < start_from_timestamp_ms {
+                    last_version_below_threshold = Some(version);
+                } else {
+                    break;
+                }
+            }
+            if let Some(last_version_below_threshold) = last_version_below_threshold {
+                runtime
+                    .block_on(async { table.load_version(last_version_below_threshold).await })?;
+                current_version = last_version_below_threshold;
+                parquet_files_queue.clear();
+            } else {
+                warn!("All available versions are newer than the specified timestamp {start_from_timestamp_ms}. The read will start from the beginning.");
+            }
+        }
 
         Ok(Self {
             table,
