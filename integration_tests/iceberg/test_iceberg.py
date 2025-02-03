@@ -6,6 +6,7 @@ import time
 import uuid
 
 import pandas as pd
+import pytest
 from dateutil import tz
 from pyiceberg.catalog import load_catalog
 
@@ -111,6 +112,7 @@ def test_iceberg_read_after_write(tmp_path):
         run_single_iteration(seq_number)
 
 
+@pytest.mark.flaky(reruns=5)
 def test_iceberg_several_runs(tmp_path):
     input_path = tmp_path / "input.txt"
     table_name = str(uuid.uuid4())

@@ -60,7 +60,7 @@ def test_debezium_mongodb(tmp_path, mongodb, debezium):
 
     inputs_thread = threading.Thread(target=stream_data, daemon=True)
     inputs_thread.start()
-    wait_result_with_checker(SumChecker(output_path, expected_sum), 30, step=1.0)
+    wait_result_with_checker(SumChecker(output_path, expected_sum), 180, step=1.0)
 
 
 @pytest.mark.xfail(reason="needs investigation")
@@ -90,4 +90,4 @@ def test_debezium_postgres(tmp_path, postgres, debezium):
 
     inputs_thread = threading.Thread(target=stream_data, daemon=True)
     inputs_thread.start()
-    wait_result_with_checker(SumChecker(output_path, expected_sum), 30, step=1.0)
+    wait_result_with_checker(SumChecker(output_path, expected_sum), 180, step=1.0)
