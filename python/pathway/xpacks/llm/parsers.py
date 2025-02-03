@@ -11,10 +11,11 @@ import io
 import logging
 import re
 import warnings
+from collections import defaultdict
 from collections.abc import Callable
 from functools import partial
 from io import BytesIO
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Iterable, Literal, TypeAlias, get_args
 
 from PIL import Image
 from pydantic import BaseModel
@@ -25,6 +26,10 @@ from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import _parser_utils, llms, prompts
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
+
+if TYPE_CHECKING:
+    with optional_imports("xpack-llm-docs"):
+        from unstructured.documents.elements import Element
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,9 @@ class ParseUtf8(Utf8Parser):
         super().__init__(*args, **kwargs)
 
 
+ChunkingMode: TypeAlias = Literal["single", "elements", "paged", "basic", "by_title"]
+
+
 # Based on:
 # https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/document_loaders/unstructured.py#L134
 # MIT licensed
@@ -78,41 +86,65 @@ class UnstructuredParser(pw.UDF):
     All arguments can be overridden during UDF application.
 
     Args:
-        mode: single, elements or paged.
-          When single, each document is parsed as one long text string.
-          When elements, each document is split into unstructured's elements.
-          When paged, each pages's text is separately extracted.
+        chunking_mode: Mode used to chunk the document.
+            When ``"basic"`` it uses default Unstructured's chunking strategy.
+            When ``"by_title"``, same as ``"basic"`` but it chunks the document preserving section boundaries.
+            When ``"single"``, each document is parsed as one long text string.
+            When ``"elements"``, each document is split into Unstructured's elements.
+            When ``"paged"``, each page's text is separately extracted.
+            Defaults to ``"single"``.
         post_processors: list of callables that will be applied to all extracted texts.
-        **unstructured_kwargs: extra kwargs to be passed to unstructured.io's `partition` function
+        partition_kwargs: extra kwargs to be passed to unstructured.io's ``partition`` function
+        chunking_kwargs: extra kwargs to be passed to unstructured.io's
+            ``chunk_elements`` or ``chunk_by_title`` function
     """
 
     def __init__(
         self,
-        mode: Literal["single", "elements", "paged"] = "single",
+        chunking_mode: ChunkingMode = "single",
+        partition_kwargs: dict = {},
         post_processors: list[Callable] | None = None,
+        chunking_kwargs: dict = {},
         cache_strategy: udfs.CacheStrategy | None = None,
-        **unstructured_kwargs: Any,
     ):
         with optional_imports("xpack-llm-docs"):
             import unstructured.partition.auto  # noqa:F401
 
         super().__init__(cache_strategy=cache_strategy)
-        _valid_modes = {"single", "elements", "paged"}
-        if mode not in _valid_modes:
+
+        self._validate_chunking_mode(chunking_mode)
+
+        self.chunking_mode = chunking_mode
+        self.partition_kwargs = partition_kwargs
+        self.post_processors = post_processors or []
+        self.chunking_kwargs = chunking_kwargs
+
+    @staticmethod
+    def _validate_chunking_mode(chunking_mode: ChunkingMode):
+        if chunking_mode not in get_args(ChunkingMode):
             raise ValueError(
-                f"Got {mode} for `mode`, but should be one of `{_valid_modes}`"
+                f"Got {chunking_mode} for `chunking_mode`, but should be one of `{ChunkingMode}`"
             )
 
-        self.kwargs = dict(
-            mode=mode,
-            post_processors=post_processors or [],
-            unstructured_kwargs=unstructured_kwargs,
-        )
-
-    # `links` and `languages` in metadata are lists, so their content should be added.
-    # We don't want return `coordinates`, `parent_id` and `category_depth` - these are
-    # element specific (i.e. they can differ for elements on the same page)
     def _combine_metadata(self, left: dict, right: dict) -> dict:
+        """
+        Combines two metadata dictionaries into one. Used when elements are
+        grouped together for chunking.
+
+        This method merges two dictionaries containing metadata information.
+        It concatenates the "links" lists from both dictionaries, removes duplicates
+        from the "languages" lists, and updates the result dictionary with the remaining
+        key-value pairs from both dictionaries. Additionally, it removes the keys
+        "coordinates", "parent_id", and "category_depth" from the result as these are
+        element specific.
+
+        Args:
+            left (dict): The first metadata dictionary.
+            right (dict): The second metadata dictionary.
+
+        Returns:
+            dict: A dictionary containing the combined metadata.
+        """
         result = {}
         links = left.pop("links", []) + right.pop("links", [])
         languages = list(set(left.pop("languages", []) + right.pop("languages", [])))
@@ -123,26 +155,106 @@ class UnstructuredParser(pw.UDF):
         result.pop("coordinates", None)
         result.pop("parent_id", None)
         result.pop("category_depth", None)
+        result.pop("category", None)
         return result
 
-    async def __wrapped__(self, contents: bytes, **kwargs) -> list[tuple[str, dict]]:
+    @staticmethod
+    def _extract_element_meta(element: Element) -> tuple[str, dict]:
+        if hasattr(element, "metadata"):
+            metadata = element.metadata.to_dict()
+        else:
+            metadata = {}
+        if hasattr(element, "category"):
+            metadata["category"] = element.category
+        return str(element), metadata
+
+    def _chunk(
+        self,
+        elements: Iterable[Element],
+        chunking_mode: ChunkingMode | None,
+        chunking_kwargs: dict,
+    ) -> list[tuple[str, dict]]:
+
+        with optional_imports("xpack-llm-docs"):
+            from unstructured.chunking.basic import chunk_elements
+            from unstructured.chunking.title import chunk_by_title
+
+        docs: list[tuple[str, dict]]
+
+        chunking_mode = chunking_mode or self.chunking_mode
+
+        if chunking_mode == "basic":
+            chunked_elements = chunk_elements(elements, **chunking_kwargs)
+            docs = [self._extract_element_meta(el) for el in chunked_elements]
+
+        elif chunking_mode == "by_title":
+            chunked_elements = chunk_by_title(elements, **chunking_kwargs)
+            docs = [self._extract_element_meta(el) for el in chunked_elements]
+
+        elif chunking_mode == "elements":
+            docs = [self._extract_element_meta(el) for el in elements]
+
+        elif chunking_mode == "paged":
+            text_dict: dict[int, str] = defaultdict(str)
+            meta_dict: dict[int, dict] = defaultdict(dict)
+
+            for element in elements:
+                el, metadata = self._extract_element_meta(element)
+                page_number = metadata.get("page_number", 1)
+
+                # Append text and update metadata for the given page_number
+                text_dict[page_number] += el + "\n\n"
+                meta_dict[page_number] = self._combine_metadata(
+                    meta_dict[page_number], metadata
+                )
+
+            # Convert the dict to a list of dicts representing documents
+            docs = [
+                (text_dict[key], meta_dict[key])
+                for key in sorted(list(text_dict.keys()))
+            ]
+
+        elif chunking_mode == "single":
+            metadata = {}
+            for element in elements:
+                if hasattr(element, "metadata"):
+                    metadata = self._combine_metadata(
+                        metadata, element.metadata.to_dict()
+                    )
+            text = "\n\n".join([str(el) for el in elements])
+            docs = [(text, metadata)]
+
+        return docs
+
+    async def __wrapped__(
+        self,
+        contents: bytes,
+        chunking_mode: ChunkingMode | None = None,
+        partition_kwargs: dict = {},
+        post_processors: list[Callable] | None = None,
+        chunking_kwargs: dict = {},
+    ) -> list[tuple[str, dict]]:
         """
         Parse the given document:
 
         Args:
             contents: document contents
-            **kwargs: override for defaults set in the constructor
+            partition_kwargs: extra kwargs to be passed to unstructured.io's ``partition`` function
+            post_processors: list of callables that will be applied to all extracted texts.
+            chunking_kwargs: extra kwargs to be passed to unstructured.io's ``chunk_elements``
+                or ``chunk_by_title`` function
 
         Returns:
-            a list of pairs: text chunk and metadata
-            The metadata is obtained from Unstructured, you can check possible values
-            in the `Unstructed documentation <https://unstructured-io.github.io/unstructured/metadata.html>`
-            Note that when `mode` is set to `single` or `paged` some of these fields are
-            removed if they are specific to a single element, e.g. `category_depth`.
+            list[tuple[str, dict]]: list of pairs: text chunk and metadata
+                The metadata is obtained from Unstructured, you can check possible values
+                in the `Unstructed documentation <https://unstructured-io.github.io/unstructured/metadata.html>`
+                Note that when ``chunking_mode`` is set to ``"single"`` or ``"paged"`` some of these fields are
+                removed if they are specific to a single element, e.g. ``"category_depth"``.
         """
-        import unstructured.partition.auto
-        from unstructured.documents.elements import Text
-        from unstructured.partition.common import UnsupportedFileFormatError
+        with optional_imports("xpack-llm-docs"):
+            import unstructured.partition.auto
+            from unstructured.documents.elements import Text
+            from unstructured.partition.common import UnsupportedFileFormatError
 
         class FileFormatOrDependencyError(UnsupportedFileFormatError):
             pw_message: str = (
@@ -153,93 +265,56 @@ class UnstructuredParser(pw.UDF):
             def __init__(self, *args, **kwargs):
                 super().__init__(self.pw_message, *args, **kwargs)
 
-        kwargs = {**self.kwargs, **kwargs}
-
+        partition_kwargs = self.partition_kwargs | dict(partition_kwargs)
         try:
             elements = unstructured.partition.auto.partition(
-                file=BytesIO(contents), **kwargs.pop("unstructured_kwargs")
+                file=BytesIO(contents), **partition_kwargs
             )
         except UnsupportedFileFormatError as e:
             raise FileFormatOrDependencyError(*e.args) from e
 
-        post_processors = kwargs.pop("post_processors")
+        post_processors = post_processors or self.post_processors
         for element in elements:
-            assert isinstance(element, Text), "unsupported element type"
-            for post_processor in post_processors:
-                element.apply(post_processor)
+            if isinstance(element, Text):
+                for post_processor in post_processors:
+                    element.apply(post_processor)
 
-        mode = kwargs.pop("mode")
+        chunking_kwargs = self.chunking_kwargs | dict(chunking_kwargs)
+        docs = self._chunk(elements, chunking_mode, chunking_kwargs)
 
-        if kwargs:
-            raise ValueError(f"Unknown arguments: {', '.join(kwargs.keys())}")
-
-        if mode == "elements":
-            docs: list[tuple[str, dict]] = list()
-            for element in elements:
-                # NOTE(MthwRobinson) - the attribute check is for backward compatibility
-                # with unstructured<0.4.9. The metadata attributed was added in 0.4.9.
-                if hasattr(element, "metadata"):
-                    metadata = element.metadata.to_dict()
-                else:
-                    metadata = {}
-                if hasattr(element, "category"):
-                    metadata["category"] = element.category
-                docs.append((str(element), metadata))
-        elif mode == "paged":
-            text_dict: dict[int, str] = {}
-            meta_dict: dict[int, dict] = {}
-
-            for idx, element in enumerate(elements):
-                if hasattr(element, "metadata"):
-                    metadata = element.metadata.to_dict()
-                else:
-                    metadata = {}
-                page_number = metadata.get("page_number", 1)
-
-                # Check if this page_number already exists in docs_dict
-                if page_number not in text_dict:
-                    # If not, create new entry with initial text and metadata
-                    text_dict[page_number] = str(element) + "\n\n"
-                    meta_dict[page_number] = metadata
-                else:
-                    # If exists, append to text and update the metadata
-                    text_dict[page_number] += str(element) + "\n\n"
-                    meta_dict[page_number] = self._combine_metadata(
-                        meta_dict[page_number], metadata
-                    )
-
-            # Convert the dict to a list of dicts representing documents
-            docs = [(text_dict[key], meta_dict[key]) for key in text_dict.keys()]
-        elif mode == "single":
-            metadata = {}
-            for element in elements:
-                if hasattr(element, "metadata"):
-                    metadata = self._combine_metadata(
-                        metadata, element.metadata.to_dict()
-                    )
-            text = "\n\n".join([str(el) for el in elements])
-            docs = [(text, metadata)]
-        else:
-            raise ValueError(f"mode of {mode} not supported.")
         return docs
 
-    def __call__(self, contents: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+    def __call__(
+        self,
+        contents: pw.ColumnExpression,
+        chunking_mode: pw.ColumnExpression | ChunkingMode | None = None,
+        partition_kwargs: pw.ColumnExpression | dict = {},
+        post_processors: pw.ColumnExpression | list[Callable] | None = None,
+        chunking_kwargs: pw.ColumnExpression | dict = {},
+    ) -> pw.ColumnExpression:
         """
-        Parse the given document.
+        Parse the given document. Providing ``chunking_mode``, ``partition_kwargs``, ``post_processors`` or
+        ``chunking_kwargs`` is used for overriding values set during initialization.
 
         Args:
             contents: document contents
-            **kwargs: override for defaults set in the constructor
+            chunking_mode: Mode used to chunk the document.
+            partition_kwargs: extra kwargs to be passed to unstructured.io's ``partition`` function
+            post_processors: list of callables that will be applied to all extracted texts.
+            chunking_kwargs: extra kwargs to be passed to unstructured.io's ``chunk_elements``
+            or ``chunk_by_title`` function
 
         Returns:
             A column with a list of pairs for each query. Each pair is a text chunk and
             associated metadata.
             The metadata is obtained from Unstructured, you can check possible values
             in the `Unstructed documentation <https://unstructured-io.github.io/unstructured/metadata.html>`
-            Note that when `mode` is set to `single` or `paged` some of these fields are
-            removed if they are specific to a single element, e.g. `category_depth`.
+            Note that when ``chunking_mode`` is set to ``"single"`` or ``"paged"`` some of these fields are
+            removed if they are specific to a single element, e.g. ``category_depth``.
         """
-        return super().__call__(contents, **kwargs)
+        return super().__call__(
+            contents, chunking_mode, partition_kwargs, post_processors, chunking_kwargs
+        )
 
 
 class ParseUnstructured(UnstructuredParser):

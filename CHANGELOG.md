@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- New chunking options in `pathway.xpacks.llm.parsers.UnstructuredParser`
+
+### Changed
+- **BREAKING**: Changed the interface of `UnstructuredParser`
+
+
 ## [0.17.0] - 2025-01-30
 
 ### Added
