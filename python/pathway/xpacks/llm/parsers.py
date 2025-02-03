@@ -142,12 +142,25 @@ class UnstructuredParser(pw.UDF):
         """
         import unstructured.partition.auto
         from unstructured.documents.elements import Text
+        from unstructured.partition.common import UnsupportedFileFormatError
+
+        class FileFormatOrDependencyError(UnsupportedFileFormatError):
+            pw_message: str = (
+                "Unsupported file format. This error may indicate libmagic (magic) dependency is missing. "
+                "Please install it via `apt-get install libmagic1` or `brew install libmagic` (MacOS)."
+            )
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(self.pw_message, *args, **kwargs)
 
         kwargs = {**self.kwargs, **kwargs}
 
-        elements = unstructured.partition.auto.partition(
-            file=BytesIO(contents), **kwargs.pop("unstructured_kwargs")
-        )
+        try:
+            elements = unstructured.partition.auto.partition(
+                file=BytesIO(contents), **kwargs.pop("unstructured_kwargs")
+            )
+        except UnsupportedFileFormatError as e:
+            raise FileFormatOrDependencyError(*e.args) from e
 
         post_processors = kwargs.pop("post_processors")
         for element in elements:
