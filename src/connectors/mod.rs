@@ -1,5 +1,6 @@
 // Copyright © 2024 Pathway
 
+use adaptors::InputAdaptor;
 use differential_dataflow::input::InputSession;
 use itertools::Itertools;
 use log::{error, info, warn};
@@ -15,6 +16,7 @@ use std::thread::Thread;
 use std::time::{Duration, SystemTime};
 use timely::dataflow::operators::probe::Handle;
 
+pub mod adaptors;
 pub mod data_format;
 pub mod data_lake;
 pub mod data_storage;
@@ -45,15 +47,9 @@ use data_storage::{
     DataEventType, ReadError, ReadResult, Reader, ReaderBuilder, ReaderContext, WriteError, Writer,
 };
 
+pub use adaptors::SessionType;
 pub use data_storage::StorageType;
 pub use offset::{Offset, OffsetKey, OffsetValue};
-
-type ValuesSession = InputSession<Timestamp, (Key, Value), isize>;
-#[derive(Clone, Copy, Debug)]
-pub enum SessionType {
-    Native,
-    Upsert,
-}
 
 /*
     Below is the custom reader stuff.
@@ -208,7 +204,7 @@ impl Connector {
         }
     }
 
-    fn advance_time(&mut self, input_session: &mut ValuesSession) -> Timestamp {
+    fn advance_time(&mut self, input_session: &mut dyn InputAdaptor<Timestamp>) -> Timestamp {
         let new_timestamp = Timestamp::new_from_current_time();
         let timestamp_updated = self.current_timestamp <= new_timestamp;
         if timestamp_updated {
@@ -431,7 +427,7 @@ impl Connector {
         mut self,
         reader: Box<dyn ReaderBuilder>,
         mut parser: Box<dyn Parser>,
-        mut input_session: ValuesSession,
+        mut input_session: Box<dyn InputAdaptor<Timestamp>>,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key + 'static,
         probe: Handle<Timestamp>,
         persistent_storage: Option<Arc<Mutex<WorkerPersistentStorage>>>,
@@ -519,7 +515,7 @@ impl Connector {
                         self.on_parsed_data(
                             parsed_entries,
                             None, // no key generation for time advancement
-                            &mut input_session,
+                            input_session.as_mut(),
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
@@ -565,7 +561,7 @@ impl Connector {
                             entry,
                             &mut backfilling_finished,
                             &mut parser,
-                            &mut input_session,
+                            input_session.as_mut(),
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
@@ -593,7 +589,7 @@ impl Connector {
         entry: Entry,
         backfilling_finished: &mut bool,
         parser: &mut Box<dyn Parser>,
-        input_session: &mut ValuesSession,
+        input_session: &mut dyn InputAdaptor<Timestamp>,
         values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,
@@ -701,7 +697,7 @@ impl Connector {
         raw_read_data: &ReaderContext,
         offset: Option<&Offset>,
         parser: &mut dyn Parser,
-        input_session: &mut ValuesSession,
+        input_session: &mut dyn InputAdaptor<Timestamp>,
         values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
     ) {
@@ -721,12 +717,12 @@ impl Connector {
         }
     }
 
-    fn on_insert(key: Key, values: Vec<Value>, input_session: &mut ValuesSession) {
-        input_session.insert((key, Value::Tuple(values.into())));
+    fn on_insert(key: Key, values: Vec<Value>, input_session: &mut dyn InputAdaptor<Timestamp>) {
+        input_session.insert(key, Value::Tuple(values.into()));
     }
 
-    fn on_remove(key: Key, values: Vec<Value>, input_session: &mut ValuesSession) {
-        input_session.remove((key, Value::Tuple(values.into())));
+    fn on_remove(key: Key, values: Vec<Value>, input_session: &mut dyn InputAdaptor<Timestamp>) {
+        input_session.remove(key, Value::Tuple(values.into()));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -734,7 +730,7 @@ impl Connector {
         &mut self,
         parsed_entries: Vec<ParsedEventWithErrors>,
         offset: Option<&Offset>,
-        input_session: &mut ValuesSession,
+        input_session: &mut dyn InputAdaptor<Timestamp>,
         mut values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
         connector_monitor: &mut Option<&mut ConnectorMonitor>,

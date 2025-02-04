@@ -2366,6 +2366,35 @@ def test_python_connector_upsert_remove_json(tmp_path: pathlib.Path):
     assert_sets_equality_from_path(output_path, set())
 
 
+def test_python_connector_immediate_upsert(tmp_path: pathlib.Path):
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        a: int
+
+    class TestSubject(pw.io.python.ConnectorSubject):
+        @property
+        def _session_type(self) -> SessionType:
+            return SessionType.UPSERT
+
+        def run(self):
+            self._disable_commits()
+            self._add_inner(api.ref_scalar(0), dict(a=3))
+            self._add_inner(api.ref_scalar(0), dict(a=1))
+            self._add_inner(api.ref_scalar(0), dict(a=4))
+            self._add_inner(api.ref_scalar(0), dict(a=6))
+            self._add_inner(api.ref_scalar(0), dict(a=2))
+            self._enable_commits()
+
+    table = pw.io.python.read(TestSubject(), schema=InputSchema)
+    pw.io.csv.write(table, output_path)
+    run()
+
+    result = pd.read_csv(output_path)
+    assert len(result) == 1
+    assert_sets_equality_from_path(output_path, {"2,1"})
+
+
 def test_python_connector_metadata():
     class TestSubject(pw.io.python.ConnectorSubject):
         @property

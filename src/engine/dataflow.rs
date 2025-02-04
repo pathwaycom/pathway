@@ -12,6 +12,7 @@ pub mod persist;
 pub mod shard;
 mod variable;
 
+use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
@@ -3650,16 +3651,22 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         &mut self,
         session_type: SessionType,
     ) -> Result<(
-        InputSession<Timestamp, (Key, Value), isize>,
+        Box<dyn InputAdaptor<Timestamp>>,
         Collection<S, (Key, Value)>,
     )> {
-        let mut input_session = InputSession::new();
-        let collection = input_session.to_collection(&mut self.scope);
-        let collection = match session_type {
-            SessionType::Native => collection,
-            SessionType::Upsert => self.new_upsert_collection(&collection)?,
-        };
-        Ok((input_session, collection))
+        match session_type {
+            SessionType::Native => {
+                let mut input_session = InputSession::new();
+                let collection = input_session.to_collection(&mut self.scope);
+                Ok((Box::new(input_session), collection))
+            }
+            SessionType::Upsert => {
+                let mut upsert_session = UpsertSession::new();
+                let collection = upsert_session.to_collection(&mut self.scope);
+                let collection = self.new_upsert_collection(&collection)?;
+                Ok((Box::new(upsert_session), collection))
+            }
+        }
     }
 
     fn connector_table(
