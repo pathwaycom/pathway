@@ -906,6 +906,7 @@ def check_entitlements(
     license_key: str | None,
     entitlements: list[str],
 ): ...
+def deserialize(data: bytes) -> Value: ...
 
 T = TypeVar("T")
 

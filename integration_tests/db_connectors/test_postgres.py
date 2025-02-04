@@ -1,6 +1,7 @@
 import datetime
 import json
 
+import pandas as pd
 import pytest
 from utils import POSTGRES_SETTINGS
 
@@ -218,6 +219,14 @@ def test_init_default_table_not_exists(write_method):
         run()
 
 
+class SimpleObject:
+    def __init__(self, a):
+        self.a = a
+
+    def __eq__(self, other):
+        return self.a == other.a
+
+
 @pytest.mark.parametrize("write_method", [pw.io.postgres.write, write_snapshot(["a"])])
 def test_init_create_if_not_exists(write_method, postgres):
     table_name = postgres.random_table_name()
@@ -231,7 +240,8 @@ def test_init_create_if_not_exists(write_method, postgres):
         f: pw.Json
         g: str
         h: str
-        # i: np.ndarray[typing.Any, np.dtype[int]]
+        i: pw.PyObjectWrapper[SimpleObject]
+        j: pw.Duration
 
     rows = [
         {
@@ -243,7 +253,8 @@ def test_init_create_if_not_exists(write_method, postgres):
             "f": {"foo": "bar", "baz": 123},
             "g": "2025-03-14T10:13:00",
             "h": "2025-04-23T10:13:00+00:00",
-            # "i": np.array([1, 2, 3]),
+            "i": pw.wrap_py_object(SimpleObject("test")),
+            "j": pd.Timedelta("4 days 2 seconds 123 us 456 ns"),
         }
     ]
 
@@ -265,6 +276,13 @@ def test_init_create_if_not_exists(write_method, postgres):
 
     result = postgres.get_table_contents(table_name, InputSchema.column_names())
 
+    for row in result:
+        obj = api.deserialize(bytes(row["i"]))
+        assert isinstance(
+            obj, pw.PyObjectWrapper
+        ), f"expecting PyObjectWrapper, got {type(obj)}"
+        row["i"] = obj.value
+
     assert result == [
         {
             "a": "foo",
@@ -275,8 +293,9 @@ def test_init_create_if_not_exists(write_method, postgres):
             "f": {"foo": "bar", "baz": 123},
             "g": datetime.datetime(2025, 3, 14, 10, 13),
             "h": datetime.datetime(2025, 4, 23, 10, 13, tzinfo=datetime.timezone.utc),
-            # "i": np.array([4, 5, 6], dtype=int),
-        },
+            "i": SimpleObject("test"),
+            "j": pd.Timedelta("4 days 2 seconds 123 us").value // 1_000,
+        }
     ]
 
 

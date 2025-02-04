@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
 from pathway.internals.runtime_type_check import check_arg_types
@@ -33,7 +35,7 @@ def write(
     table_name: str,
     *,
     max_batch_size: int | None = None,
-    init_mode: str = "default",
+    init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     name: str | None = None,
 ) -> None:
     """Writes ``table``'s stream of updates to a postgres table.
@@ -144,7 +146,7 @@ def write_snapshot(
     primary_key: list[str],
     *,
     max_batch_size: int | None = None,
-    init_mode: str = "default",
+    init_mode: Literal["default", "create_if_not_exists", "replace"] = "default",
     name: str | None = None,
 ) -> None:
     """Maintains a snapshot of a table within a Postgres table.

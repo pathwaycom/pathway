@@ -3449,6 +3449,14 @@ pub fn unsafe_make_pointer(value: KeyImpl) -> Key {
     Key(value)
 }
 
+#[pyfunction]
+#[pyo3(signature = (bytes), name="deserialize")]
+pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
+    let value: Value = bincode::deserialize(bytes)
+        .map_err(|e| PyValueError::new_err(format!("failed to deserialize: {e}")))?;
+    Ok(value)
+}
+
 #[pyclass(module = "pathway.engine", frozen)]
 pub struct AwsS3Settings {
     bucket_name: Option<String>,
@@ -5600,6 +5608,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     #[allow(clippy::unsafe_removed_from_name)] // false positive
     m.add_function(wrap_pyfunction!(unsafe_make_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(check_entitlements, m)?)?;
+    m.add_function(wrap_pyfunction!(deserialize, m)?)?;
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;

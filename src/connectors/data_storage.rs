@@ -1128,7 +1128,7 @@ impl PsqlWriter {
             Type::Int | Type::Duration => "BIGINT".to_string(),
             Type::Float => "DOUBLE PRECISION".to_string(),
             Type::Pointer | Type::String => "TEXT".to_string(),
-            Type::Bytes => "BYTEA".to_string(),
+            Type::Bytes | Type::PyObjectWrapper => "BYTEA".to_string(),
             Type::Json => "JSONB".to_string(),
             Type::DateTimeNaive => "TIMESTAMP".to_string(),
             Type::DateTimeUtc => "TIMESTAMPTZ".to_string(),
@@ -1151,7 +1151,7 @@ impl PsqlWriter {
                 }
                 return Err(WriteError::UnsupportedType(type_.clone()));
             }
-            Type::Any | Type::Array(_, _) | Type::PyObjectWrapper => {
+            Type::Any | Type::Array(_, _) => {
                 return Err(WriteError::UnsupportedType(type_.clone()))
             }
         })
@@ -1252,13 +1252,19 @@ mod to_sql {
                     try_forward!(DateTime<Utc>, dt.as_chrono_datetime().and_utc());
                     "UTC date/time"
                 }
-                Self::Duration(_) => "duration", // TODO
+                Self::Duration(dr) => {
+                    try_forward!(i64, dr.microseconds());
+                    "duration"
+                }
                 Self::Json(j) => {
                     try_forward!(&serde_json::Value, &**j);
                     "JSON"
                 }
                 Self::Error => "error",
-                Self::PyObjectWrapper(_) => "PyObjectWrapper",
+                Self::PyObjectWrapper(_) => {
+                    try_forward!(Vec<u8>, bincode::serialize(self).map_err(|e| *e)?);
+                    "python object"
+                }
             };
             Err(Box::new(WrongPathwayType {
                 pathway_type: pathway_type.to_owned(),
