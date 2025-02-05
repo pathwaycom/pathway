@@ -1,3 +1,4 @@
+import base64
 import json
 import time
 
@@ -34,7 +35,7 @@ def test_formats_without_parsing(
 
     if format in ("binary", "plaintext_by_object"):
         expected_output = (
-            [ord(c) for c in input_full_contents]
+            base64.b64encode(input_full_contents.encode("utf-8")).decode("utf-8")
             if format == "binary"
             else input_full_contents
         )

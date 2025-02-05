@@ -23,7 +23,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as JsonValue;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
-const BASE32_ALPHABET: base32::Alphabet = base32::Alphabet::Crockford;
+pub const BASE32_ALPHABET: base32::Alphabet = base32::Alphabet::Crockford;
 
 cfg_if! {
     if #[cfg(feature="yolo-id32")] {
@@ -748,5 +748,17 @@ impl HashInto for PyObjectWrapper {
         self.as_bytes()
             .expect("PyObjectWrapper serialization should not fail")
             .hash_into(hasher);
+    }
+}
+
+pub fn parse_pathway_pointer(serialized: &str) -> Option<Value> {
+    let encoded_pointer = &serialized[1..];
+    let decoded = base32::decode(BASE32_ALPHABET, encoded_pointer)?;
+    if decoded.len() == 16 {
+        let decoded: [u8; 16] = decoded.try_into().unwrap();
+        let key = KeyImpl::from_le_bytes(decoded);
+        Some(Value::Pointer(Key(key)))
+    } else {
+        None
     }
 }

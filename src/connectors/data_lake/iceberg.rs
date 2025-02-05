@@ -164,8 +164,10 @@ impl IcebergTableParams {
         let iceberg_type = match type_ {
             Type::Bool => IcebergType::Primitive(IcebergPrimitiveType::Boolean),
             Type::Float => IcebergType::Primitive(IcebergPrimitiveType::Double),
-            Type::String | Type::Json => IcebergType::Primitive(IcebergPrimitiveType::String),
-            Type::Bytes | Type::PyObjectWrapper | Type::Pointer => {
+            Type::String | Type::Json | Type::Pointer => {
+                IcebergType::Primitive(IcebergPrimitiveType::String)
+            }
+            Type::Bytes | Type::PyObjectWrapper => {
                 IcebergType::Primitive(IcebergPrimitiveType::Binary)
             }
             Type::DateTimeNaive => IcebergType::Primitive(IcebergPrimitiveType::Timestamp),

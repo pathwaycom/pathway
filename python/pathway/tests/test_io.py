@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import base64
 import json
 import os
 import pathlib
@@ -1416,7 +1417,9 @@ def test_bytes_read(tmp_path: pathlib.Path):
 
     with open(output_path) as f:
         result = json.load(f)
-        assert result["data"] == [ord(c) for c in (input_full_contents + "\n")]
+        assert result["data"] == base64.b64encode(
+            (input_full_contents + "\n").encode("utf-8")
+        ).decode("utf-8")
 
 
 def test_binary_data_in_subscribe(tmp_path: pathlib.Path):
@@ -2584,7 +2587,9 @@ def test_apply_bytes_full_cycle(tmp_path: pathlib.Path):
 
     with open(output_path) as f:
         result = json.load(f)
-        assert result["data"] == [ord(c) for c in (input_full_contents + "\n")] * 2
+        assert result["data"] == base64.b64encode(
+            ((input_full_contents + "\n") * 2).encode("utf-8")
+        ).decode("utf-8")
 
 
 def test_server_fail_on_port_wrong_range():
@@ -2734,7 +2739,7 @@ def test_pyfilesystem_simple(tmp_path: pathlib.Path):
             metadata = data["_metadata"]
             paths.add(metadata["path"])
             names.add(metadata["name"])
-            assert metadata["size"] == len(data["data"])
+            assert metadata["size"] == len(base64.b64decode(data["data"]))
 
     assert names == set(["a.txt", "b.txt"])
     assert paths == set(["projects/a.txt", "projects/b.txt"])
@@ -3505,9 +3510,10 @@ def test_iceberg_no_primary_key():
         )
 
 
-def test_py_object_wrapper_in_deltalake(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("data_format", ["delta", "json"])
+def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
-    lake_path = tmp_path / "delta-lake"
+    auxiliary_path = tmp_path / "auxiliary-storage"
     output_path = tmp_path / "output.jsonl"
     input_path.write_text("test")
 
@@ -3515,7 +3521,12 @@ def test_py_object_wrapper_in_deltalake(tmp_path: pathlib.Path):
     table = table.select(
         data=pw.this.data, fun=pw.wrap_py_object(len, serializer=pickle)  # type: ignore
     )
-    pw.io.deltalake.write(table, lake_path)
+    if data_format == "delta":
+        pw.io.deltalake.write(table, auxiliary_path)
+    elif data_format == "json":
+        pw.io.jsonlines.write(table, auxiliary_path)
+    else:
+        raise ValueError(f"Unknown data format: {data_format}")
     run_all()
     G.clear()
 
@@ -3527,7 +3538,12 @@ def test_py_object_wrapper_in_deltalake(tmp_path: pathlib.Path):
     def use_python_object(a: pw.PyObjectWrapper, x: str) -> int:
         return a.value(x)
 
-    table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
+    if data_format == "delta":
+        table = pw.io.deltalake.read(auxiliary_path, schema=InputSchema, mode="static")
+    elif data_format == "json":
+        table = pw.io.jsonlines.read(auxiliary_path, schema=InputSchema, mode="static")
+    else:
+        raise ValueError(f"Unknown data format: {data_format}")
     table = table.select(len=use_python_object(pw.this.fun, pw.this.data))
     pw.io.jsonlines.write(table, output_path)
     run_all()
@@ -3537,9 +3553,10 @@ def test_py_object_wrapper_in_deltalake(tmp_path: pathlib.Path):
         assert data["len"] == 4
 
 
-def test_deltalake_different_types_serialization(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("data_format", ["delta", "json"])
+def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
-    lake_path = tmp_path / "delta-lake"
+    auxiliary_path = tmp_path / "auxiliary-storage"
     input_path.write_text("test")
 
     column_values = {
@@ -3551,12 +3568,13 @@ def test_deltalake_different_types_serialization(tmp_path: pathlib.Path):
         "datetime_naive": pw.DateTimeNaive(year=2025, month=1, day=17),
         "datetime_utc_aware": pw.DateTimeUtc(year=2025, month=1, day=17, tz=tz.UTC),
         "duration": pw.Duration(days=5),
-        "ints": np.array([9, 9, 9], dtype=int),
-        "floats": np.array([1.1, 2.2, 3.3], dtype=float),
+        "ints": np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=int),
+        "floats": np.array([[1.1, 2.2], [3.3, 4.4]], dtype=float),
+        "ints_flat": np.array([9, 9, 9], dtype=int),
+        "floats_flat": np.array([1.1, 2.2, 3.3], dtype=float),
         "json_data": pw.Json.parse('{"a": 15, "b": "hello"}'),
         "tuple_data": (b"world", True),
-        "list_data": ["lorem", None, "ipsum"],
-        "fun": pw.wrap_py_object(len, serializer=pickle),
+        "list_data": ("lorem", None, "ipsum"),
     }
     table = pw.io.plaintext.read(input_path, mode="static")
     table = table.select(
@@ -3566,11 +3584,18 @@ def test_deltalake_different_types_serialization(tmp_path: pathlib.Path):
     table = table.update_types(
         ints=np.ndarray[None, int],
         floats=np.ndarray[None, float],
+        ints_flat=np.ndarray[None, int],
+        floats_flat=np.ndarray[None, float],
         tuple_data=tuple[bytes, bool],
         list_data=list[str | None],
     )
-    table = table.select()
-    pw.io.deltalake.write(table, lake_path)
+    if data_format == "delta":
+        pw.io.deltalake.write(table, auxiliary_path)
+    elif data_format == "json":
+        pw.io.jsonlines.write(table, auxiliary_path)
+    else:
+        raise ValueError(f"Unknown data format: {data_format}")
+
     run_all()
     G.clear()
 
@@ -3586,22 +3611,36 @@ def test_deltalake_different_types_serialization(tmp_path: pathlib.Path):
         duration: pw.Duration
         ints: np.ndarray[None, int]
         floats: np.ndarray[None, float]
+        ints_flat: np.ndarray[None, int]
+        floats_flat: np.ndarray[None, float]
         json_data: pw.Json
         tuple_data: tuple[bytes, bool]
         list_data: list[str | None]
-        fun: pw.PyObjectWrapper
 
-    def on_change(key, row, time, is_addition):
-        for field, expected_value in column_values.items():
-            if isinstance(field, np.ndarray):
-                assert row[field].shape() == expected_value.shape()
-                assert (row[field] == expected_value).all()
-            else:
-                assert row[field] == expected_value
+    class Checker:
+        def __init__(self):
+            self.n_processed_rows = 0
 
-    table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
-    pw.io.subscribe(table, on_change=on_change)
+        def __call__(self, key, row, time, is_addition):
+            self.n_processed_rows += 1
+            for field, expected_value in column_values.items():
+                if isinstance(expected_value, np.ndarray):
+                    assert row[field].shape == expected_value.shape
+                    assert (row[field] == expected_value).all()
+                else:
+                    assert row[field] == expected_value
+
+    if data_format == "delta":
+        table = pw.io.deltalake.read(auxiliary_path, schema=InputSchema, mode="static")
+    elif data_format == "json":
+        table = pw.io.jsonlines.read(auxiliary_path, schema=InputSchema, mode="static")
+    else:
+        raise ValueError(f"Unknown data format: {data_format}")
+
+    checker = Checker()
+    pw.io.subscribe(table, on_change=checker)
     run_all()
+    assert checker.n_processed_rows == 1
 
 
 def test_deltalake_start_from_timestamp(tmp_path: pathlib.Path):

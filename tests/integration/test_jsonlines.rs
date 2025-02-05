@@ -11,7 +11,7 @@ use std::sync::Arc;
 use pathway_engine::connectors::data_format::{InnerSchemaField, JsonLinesParser, ParsedEvent};
 use pathway_engine::connectors::data_storage::{new_filesystem_reader, ConnectorMode, ReadMethod};
 use pathway_engine::connectors::SessionType;
-use pathway_engine::engine::{Type, Value};
+use pathway_engine::engine::{DateTimeNaive, DateTimeUtc, Type, Value};
 
 #[test]
 fn test_jsonlines_ok() -> eyre::Result<()> {
@@ -538,6 +538,64 @@ fn test_jsonlines_failed_to_parse_field() -> eyre::Result<()> {
         r#"failed to create a field "pet" with type Any from json payload: {"animal":"dog","name":"Alice","measurements":[200,400,600]}"#,
         ErrorPlacement::Value(0),
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_jsonlines_timestamp() -> eyre::Result<()> {
+    let reader = new_filesystem_reader(
+        "tests/data/jsonlines_timestamp.txt",
+        ConnectorMode::Static,
+        ReadMethod::ByLine,
+        "*",
+        false,
+    )?;
+    let schema = [
+        (
+            "utc".to_string(),
+            InnerSchemaField::new(Type::DateTimeUtc, None),
+        ),
+        (
+            "naive".to_string(),
+            InnerSchemaField::new(Type::DateTimeNaive, None),
+        ),
+    ];
+    let parser = JsonLinesParser::new(
+        None,
+        vec!["utc".to_string(), "naive".to_string()],
+        HashMap::new(),
+        true,
+        schema.into(),
+        SessionType::Native,
+    )?;
+
+    let entries = read_data_from_reader(Box::new(reader), Box::new(parser))?;
+
+    let expected_values = vec![
+        ParsedEvent::Insert((
+            None,
+            vec![
+                Value::DateTimeUtc(DateTimeUtc::from_timestamp(1738630923123456789, "ns")?),
+                Value::DateTimeNaive(DateTimeNaive::from_timestamp(1738660087987654321, "ns")?),
+            ],
+        )),
+        ParsedEvent::Insert((
+            None,
+            vec![
+                Value::DateTimeUtc(DateTimeUtc::from_timestamp(1738630923123, "ms")?),
+                Value::DateTimeNaive(DateTimeNaive::from_timestamp(1738660087987, "ms")?),
+            ],
+        )),
+        ParsedEvent::Insert((
+            None,
+            vec![
+                Value::DateTimeUtc(DateTimeUtc::from_timestamp(1738630923, "s")?),
+                Value::DateTimeNaive(DateTimeNaive::from_timestamp(1738660087, "s")?),
+            ],
+        )),
+    ];
+    assert_eq!(entries, expected_values);
 
     Ok(())
 }

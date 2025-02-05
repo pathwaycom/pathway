@@ -297,8 +297,8 @@ impl LakeWriter {
             Type::Bool => ArrowDataType::Boolean,
             Type::Int | Type::Duration => ArrowDataType::Int64,
             Type::Float => ArrowDataType::Float64,
-            Type::String | Type::Json => ArrowDataType::Utf8,
-            Type::Bytes | Type::Pointer | Type::PyObjectWrapper => {
+            Type::String | Type::Json | Type::Pointer => ArrowDataType::Utf8,
+            Type::Bytes | Type::PyObjectWrapper => {
                 if settings.use_64bit_size_type {
                     ArrowDataType::LargeBinary
                 } else {

@@ -15,21 +15,26 @@ use crate::connectors::ReaderContext::{Diff, Empty, KeyValue, RawBytes, Tokenize
 use crate::connectors::{DataEventType, Offset, ReaderContext, SessionType, SnapshotEvent};
 use crate::engine::error::{limit_length, DynError, DynResult, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::time::DateTime;
-use crate::engine::{Error, Key, Result, Timestamp, Type, Value};
+use crate::engine::{
+    value::parse_pathway_pointer, DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Error,
+    Key, Result, Timestamp, Type, Value,
+};
 
 use async_nats::header::HeaderMap as NatsHeaders;
 use base64::engine::general_purpose::STANDARD as base64encoder;
 use base64::Engine;
+use bincode::ErrorKind as BincodeError;
 use itertools::{chain, Itertools};
 use log::error;
 use mongodb::bson::{
     bson, spec::BinarySubtype as BsonBinarySubtype, Binary as BsonBinaryContents,
     Bson as BsonValue, DateTime as BsonDateTime, Document as BsonDocument,
 };
+use ndarray::ArrayD;
 use rdkafka::message::{Header as KafkaHeader, OwnedHeaders as KafkaHeaders};
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::json;
-use serde_json::Value as JsonValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::data_storage::{ConversionError, SpecialEvent};
 
@@ -409,9 +414,6 @@ pub enum FormatterError {
     #[error("incorrect column index")]
     IncorrectColumnIndex,
 
-    #[error("type {type_:?} is not json-serializable")]
-    TypeNonJsonSerializable { type_: Type },
-
     #[error("type {type_:?} is not bson-serializable")]
     TypeNonBsonSerializable { type_: Type },
 
@@ -426,6 +428,9 @@ pub enum FormatterError {
 
     #[error("unexpected formatter context type")]
     UnexpectedContextType,
+
+    #[error(transparent)]
+    Bincode(#[from] BincodeError),
 }
 
 pub trait Formatter: Send {
@@ -1035,25 +1040,146 @@ fn parse_tuple_from_json(values: &[JsonValue], dtypes: &[Type]) -> Option<Value>
     Some(Value::from(tuple))
 }
 
+fn parse_ndarray_from_json(value: &JsonMap<String, JsonValue>, dtype: &Type) -> Option<Value> {
+    let JsonValue::Array(ref elements) = value["elements"] else {
+        return None;
+    };
+    let JsonValue::Array(ref json_field_shape) = value["shape"] else {
+        return None;
+    };
+    let mut shape = Vec::new();
+    for shape_element in json_field_shape {
+        let JsonValue::Number(shape_element) = shape_element else {
+            return None;
+        };
+        let shape_element = shape_element.as_u64()?;
+        let Ok(shape_element) = TryInto::<usize>::try_into(shape_element) else {
+            return None;
+        };
+        shape.push(shape_element);
+    }
+
+    match dtype {
+        Type::Int => {
+            let mut flat_elements = Vec::new();
+            for element in elements {
+                let JsonValue::Number(number_element) = element else {
+                    return None;
+                };
+                let int_element = number_element.as_i64()?;
+                flat_elements.push(int_element);
+            }
+            let array_impl = ArrayD::<i64>::from_shape_vec(shape, flat_elements);
+            if let Ok(array_impl) = array_impl {
+                Some(Value::from(array_impl))
+            } else {
+                None
+            }
+        }
+        Type::Float => {
+            let mut flat_elements = Vec::new();
+            for element in elements {
+                let JsonValue::Number(number_element) = element else {
+                    return None;
+                };
+                let float_element = number_element.as_f64()?;
+                flat_elements.push(float_element);
+            }
+            let array_impl = ArrayD::<f64>::from_shape_vec(shape, flat_elements);
+            if let Ok(array_impl) = array_impl {
+                Some(Value::from(array_impl))
+            } else {
+                None
+            }
+        }
+        type_ => {
+            unreachable!("ndarray elements can only be either int or float, but {type_} was used")
+        }
+    }
+}
+
+/// Parses a value of type `dtype` from JSON variable `value`.
+/// If the field is not present or has incorrect format in the
+/// given payload, returns `None`. This `None` is further converted
+/// into `ParseError::FailedToParseFromJson` containing verbose
+/// information about parsing problem.
 fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
-    match (dtype, value) {
-        (Type::Json, value) => Some(Value::from(value.clone())),
-        (Type::Optional(_) | Type::Any, JsonValue::Null) => Some(Value::None),
-        (Type::Optional(arg), value) => parse_value_from_json(value, arg),
-        (Type::String | Type::Any, JsonValue::String(s)) => Some(Value::from(s.as_str())),
-        (Type::Int, JsonValue::Number(v)) => Some(Value::from(v.as_i64()?)),
-        (Type::Float, JsonValue::Number(v)) => v.as_f64().map(Value::from),
+    if value.is_null() {
+        if dtype.is_optional() {
+            return Some(Value::None);
+        }
+        return None;
+    }
+    match (dtype.unoptionalize(), value) {
+        (Type::Bool | Type::Any, JsonValue::Bool(v)) => Some(Value::Bool(*v)),
+        // Numbers parsing
+        (Type::Int, JsonValue::Number(v)) => {
+            let i64_field = v.as_i64()?;
+            Some(Value::from(i64_field))
+        }
+        (Type::Float, JsonValue::Number(v)) => {
+            let f64_field = v.as_f64()?;
+            Some(Value::from(f64_field))
+        }
+        (Type::Duration, JsonValue::Number(v)) => {
+            let duration_ns = v.as_i64()?;
+            let engine_duration = EngineDuration::new_with_unit(duration_ns, "ns");
+            if let Ok(engine_duration) = engine_duration {
+                Some(Value::Duration(engine_duration))
+            } else {
+                None
+            }
+        }
         (Type::Any, JsonValue::Number(v)) => {
             if let Some(parsed_i64) = v.as_i64() {
                 Some(Value::from(parsed_i64))
             } else {
-                Some(Value::from(v.as_f64()?))
+                v.as_f64().map(Value::from)
             }
         }
-        (Type::Bool | Type::Any, JsonValue::Bool(v)) => Some(Value::Bool(*v)),
+        // Strings parsing
+        (Type::String | Type::Any, JsonValue::String(s)) => Some(Value::from(s.as_str())),
+        (Type::Bytes, JsonValue::String(s)) => {
+            let decoded = base64::engine::general_purpose::STANDARD.decode(s);
+            if let Ok(decoded) = decoded {
+                Some(Value::Bytes(decoded.into()))
+            } else {
+                None
+            }
+        }
+        (Type::PyObjectWrapper, JsonValue::String(s)) => {
+            let Ok(raw_bytes) = base64::engine::general_purpose::STANDARD.decode(s) else {
+                return None;
+            };
+            if let Ok(value) = bincode::deserialize::<Value>(&raw_bytes) {
+                Some(value)
+            } else {
+                None
+            }
+        }
+        (Type::Pointer, JsonValue::String(s)) => parse_pathway_pointer(s),
+        (Type::DateTimeUtc, JsonValue::String(s)) => {
+            let engine_datetime = DateTimeUtc::strptime(s, "%Y-%m-%dT%H:%M:%S%.f%z");
+            if let Ok(engine_datetime) = engine_datetime {
+                Some(Value::DateTimeUtc(engine_datetime))
+            } else {
+                None
+            }
+        }
+        (Type::DateTimeNaive, JsonValue::String(s)) => {
+            let engine_datetime = DateTimeNaive::strptime(s, "%Y-%m-%dT%H:%M:%S%.f");
+            if let Ok(engine_datetime) = engine_datetime {
+                Some(Value::DateTimeNaive(engine_datetime))
+            } else {
+                None
+            }
+        }
+        (Type::Json, value) => Some(Value::from(value.clone())),
         (Type::Tuple(dtypes), JsonValue::Array(v)) => parse_tuple_from_json(v, dtypes),
         (Type::List(arg), JsonValue::Array(v)) => parse_list_from_json(v, arg),
-        (Type::Any, JsonValue::Array(v)) => parse_list_from_json(v, &Type::Any),
+        (Type::Array(_, nested_type), JsonValue::Object(v)) => {
+            parse_ndarray_from_json(v, nested_type.as_ref())
+        }
         _ => None,
     }
 }
@@ -1074,34 +1200,41 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
             Ok(JsonValue::Array(items))
         }
         Value::Bytes(b) => {
-            let mut items = Vec::with_capacity(b.len());
-            for item in b.iter() {
-                items.push(json!(item));
-            }
-            Ok(JsonValue::Array(items))
+            let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+            Ok(json!(encoded))
         }
         Value::IntArray(a) => {
-            let mut items = Vec::with_capacity(a.len());
+            let mut flat_elements = Vec::with_capacity(a.len());
             for item in a.iter() {
-                items.push(json!(item));
+                flat_elements.push(json!(item));
             }
-            Ok(JsonValue::Array(items))
+            let serialized_values = json!({
+                "shape": a.shape(),
+                "elements": flat_elements,
+            });
+            Ok(serialized_values)
         }
         Value::FloatArray(a) => {
-            let mut items = Vec::with_capacity(a.len());
+            let mut flat_elements = Vec::with_capacity(a.len());
             for item in a.iter() {
-                items.push(json!(item));
+                flat_elements.push(json!(item));
             }
-            Ok(JsonValue::Array(items))
+            let serialized_values = json!({
+                "shape": a.shape(),
+                "elements": flat_elements,
+            });
+            Ok(serialized_values)
         }
         Value::DateTimeNaive(dt) => Ok(json!(dt.to_string())),
         Value::DateTimeUtc(dt) => Ok(json!(dt.to_string())),
         Value::Duration(d) => Ok(json!(d.nanoseconds())),
         Value::Json(j) => Ok((**j).clone()),
+        Value::PyObjectWrapper(_) => {
+            let raw_bytes = bincode::serialize(value).map_err(|e| *e)?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
+            Ok(json!(encoded))
+        }
         Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable),
-        Value::PyObjectWrapper(_) => Err(FormatterError::TypeNonJsonSerializable {
-            type_: Type::PyObjectWrapper,
-        }),
     }
 }
 

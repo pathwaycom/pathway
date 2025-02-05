@@ -24,7 +24,8 @@ use crate::connectors::data_storage::ValuesMap;
 use crate::connectors::WriteError;
 use crate::engine::error::{limit_length, STANDARD_OBJECT_LENGTH_LIMIT};
 use crate::engine::{
-    value::Kind, DateTimeNaive, DateTimeUtc, Duration as EngineDuration, Type, Value,
+    value::parse_pathway_pointer, value::Kind, DateTimeNaive, DateTimeUtc,
+    Duration as EngineDuration, Type, Value,
 };
 
 pub mod delta;
@@ -86,6 +87,7 @@ pub fn parquet_value_into_pathway_value(
         )),
         (ParquetValue::Double(f), Type::Float | Type::Any) => Some(Value::Float((*f).into())),
         (ParquetValue::Str(s), Type::String | Type::Any) => Some(Value::String(s.into())),
+        (ParquetValue::Str(s), Type::Pointer) => parse_pathway_pointer(s),
         (ParquetValue::Str(s), Type::Json) => serde_json::from_str::<serde_json::Value>(s)
             .ok()
             .map(Value::from),
@@ -96,13 +98,9 @@ pub fn parquet_value_into_pathway_value(
             Some(Value::from(DateTimeUtc::from_timestamp(*us, "us").unwrap()))
         }
         (ParquetValue::Bytes(b), Type::Bytes | Type::Any) => Some(Value::Bytes(b.data().into())),
-        (ParquetValue::Bytes(b), Type::Pointer | Type::PyObjectWrapper) => {
+        (ParquetValue::Bytes(b), Type::PyObjectWrapper) => {
             if let Ok(value) = bincode::deserialize::<Value>(b.data()) {
-                match (value.kind(), expected_type_unopt) {
-                    (Kind::Pointer, Type::Pointer)
-                    | (Kind::PyObjectWrapper, Type::PyObjectWrapper) => Some(value),
-                    _ => None,
-                }
+                Some(value)
             } else {
                 None
             }
@@ -139,11 +137,7 @@ pub fn parquet_value_into_pathway_value(
         Ok(value)
     } else {
         let value_repr = limit_length(format!("{parquet_value:?}"), STANDARD_OBJECT_LENGTH_LIMIT);
-        Err(Box::new(ConversionError {
-            value_repr,
-            field_name: name.to_string(),
-            type_: expected_type.clone(),
-        }))
+        Err(Box::new(conversion_error(&value_repr, name, expected_type)))
     }
 }
 
@@ -297,26 +291,18 @@ fn column_into_pathway_values(
             })
         }
         (ArrowDataType::Boolean, Type::Bool | Type::Any) => convert_arrow_boolean_array(column),
-        (ArrowDataType::Utf8, Type::String | Type::Any) => {
-            convert_arrow_string_array::<i32>(column)
+        (ArrowDataType::Utf8, Type::String | Type::Json | Type::Pointer | Type::Any) => {
+            convert_arrow_string_array::<i32>(column, column_name, expected_type_unopt)
         }
-        (ArrowDataType::Utf8, Type::Json) => {
-            convert_arrow_json_array::<i32>(column, column_name, expected_type)
+        (ArrowDataType::LargeUtf8, Type::String | Type::Json | Type::Pointer | Type::Any) => {
+            convert_arrow_string_array::<i64>(column, column_name, expected_type_unopt)
         }
-        (ArrowDataType::LargeUtf8, Type::String | Type::Any) => {
-            convert_arrow_string_array::<i64>(column)
+        (ArrowDataType::Binary, Type::Bytes | Type::PyObjectWrapper | Type::Any) => {
+            convert_arrow_bytes_array::<i32>(column, column_name, expected_type_unopt)
         }
-        (ArrowDataType::LargeUtf8, Type::Json) => {
-            convert_arrow_json_array::<i64>(column, column_name, expected_type)
+        (ArrowDataType::LargeBinary, Type::Bytes | Type::PyObjectWrapper | Type::Any) => {
+            convert_arrow_bytes_array::<i64>(column, column_name, expected_type_unopt)
         }
-        (
-            ArrowDataType::Binary,
-            Type::Bytes | Type::Pointer | Type::PyObjectWrapper | Type::Any,
-        ) => convert_arrow_bytes_array::<i32>(column, column_name, expected_type_unopt),
-        (
-            ArrowDataType::LargeBinary,
-            Type::Bytes | Type::Pointer | Type::PyObjectWrapper | Type::Any,
-        ) => convert_arrow_bytes_array::<i64>(column, column_name, expected_type_unopt),
         (ArrowDataType::Duration(time_unit), Type::Duration | Type::Any) => {
             convert_arrow_duration_array(column, *time_unit)
         }
@@ -345,11 +331,11 @@ fn column_into_pathway_values(
         }
         (arrow_type, expected_type) => {
             vec![
-                Err(Box::new(ConversionError {
-                    value_repr: format!("{arrow_type:?}"),
-                    field_name: column_name.to_string(),
-                    type_: expected_type.clone(),
-                }));
+                Err(Box::new(conversion_error(
+                    &format!("{arrow_type:?}"),
+                    column_name,
+                    expected_type
+                )));
                 rows_count
             ]
         }
@@ -359,11 +345,11 @@ fn column_into_pathway_values(
     if !is_optional {
         for value in &mut values_vector {
             if value == &Ok(Value::None) {
-                *value = Err(Box::new(ConversionError {
-                    value_repr: "null".to_string(),
-                    field_name: column_name.to_string(),
-                    type_: expected_type.clone(),
-                }));
+                *value = Err(Box::new(conversion_error(
+                    "null",
+                    column_name,
+                    expected_type,
+                )));
             }
         }
     }
@@ -419,7 +405,7 @@ fn convert_arrow_array<N, T: ArrowPrimitiveType<Native = N>>(
         .collect()
 }
 
-fn convert_arrow_json_array<OffsetType: OffsetSizeTrait>(
+fn convert_arrow_string_array<OffsetType: OffsetSizeTrait>(
     column: &Arc<dyn ArrowArray>,
     name: &str,
     expected_type: &Type,
@@ -428,28 +414,24 @@ fn convert_arrow_json_array<OffsetType: OffsetSizeTrait>(
         .as_string::<OffsetType>()
         .into_iter()
         .map(|v| match v {
-            Some(v) => serde_json::from_str::<serde_json::Value>(v)
-                .map(Value::from)
-                .map_err(|_| {
-                    Box::new(ConversionError {
-                        value_repr: limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
-                        field_name: name.to_string(),
-                        type_: expected_type.clone(),
-                    })
-                }),
-            None => Ok(Value::None),
-        })
-        .collect()
-}
-
-fn convert_arrow_string_array<OffsetType: OffsetSizeTrait>(
-    column: &Arc<dyn ArrowArray>,
-) -> Vec<ParsedValue> {
-    column
-        .as_string::<OffsetType>()
-        .into_iter()
-        .map(|v| match v {
-            Some(v) => Ok(Value::String(v.into())),
+            Some(v) => match expected_type {
+                Type::String | Type::Any => Ok(Value::String(v.into())),
+                Type::Json => serde_json::from_str::<serde_json::Value>(v)
+                    .map(Value::from)
+                    .map_err(|_| {
+                        Box::new(conversion_error(
+                            &limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+                            name,
+                            expected_type,
+                        ))
+                    }),
+                Type::Pointer => parse_pathway_pointer(v).ok_or(Box::new(conversion_error(
+                    &limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+                    name,
+                    expected_type,
+                ))),
+                _ => unreachable!("must not be used for type {expected_type}"),
+            },
             None => Ok(Value::None),
         })
         .collect()
@@ -482,20 +464,19 @@ fn convert_arrow_bytes_array<OffsetType: OffsetSizeTrait>(
                     let maybe_value = bincode::deserialize::<Value>(v);
                     if let Ok(value) = maybe_value {
                         match (value.kind(), expected_type) {
-                            (Kind::Pointer, Type::Pointer)
-                            | (Kind::PyObjectWrapper, Type::PyObjectWrapper) => Ok(value),
-                            _ => Err(Box::new(ConversionError {
-                                value_repr: format!("{value}"),
-                                field_name: field_name.to_string(),
-                                type_: expected_type.clone(),
-                            })),
+                            (Kind::PyObjectWrapper, Type::PyObjectWrapper) => Ok(value),
+                            _ => Err(Box::new(conversion_error(
+                                &format!("{value}"),
+                                field_name,
+                                expected_type,
+                            ))),
                         }
                     } else {
-                        Err(Box::new(ConversionError {
-                            value_repr: format!("{maybe_value:?}"),
-                            field_name: field_name.to_string(),
-                            type_: expected_type.clone(),
-                        }))
+                        Err(Box::new(conversion_error(
+                            &format!("{maybe_value:?}"),
+                            field_name,
+                            expected_type,
+                        )))
                     }
                 }
             }
@@ -572,4 +553,12 @@ fn convert_arrow_timestamp_array_utc(
             Err(e) => Err(e),
         })
         .collect()
+}
+
+fn conversion_error(v: &str, name: &str, expected_type: &Type) -> ConversionError {
+    ConversionError {
+        value_repr: limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+        field_name: name.to_string(),
+        type_: expected_type.clone(),
+    }
 }

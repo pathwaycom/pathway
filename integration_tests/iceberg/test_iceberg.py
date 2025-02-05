@@ -298,9 +298,14 @@ def test_iceberg_different_types_serialization(tmp_path):
         duration: pw.Duration
         json_data: pw.Json
 
-    def on_change(key, row, time, is_addition):
-        for field, expected_value in column_values.items():
-            assert row[field] == expected_value
+    class Checker:
+        def __init__(self):
+            self.n_processed_rows = 0
+
+        def __call__(self, key, row, time, is_addition):
+            self.n_processed_rows += 1
+            for field, expected_value in column_values.items():
+                assert row[field] == expected_value
 
     table = pw.io.iceberg.read(
         catalog_uri=CATALOG_URI,
@@ -309,5 +314,7 @@ def test_iceberg_different_types_serialization(tmp_path):
         mode="static",
         schema=InputSchema,
     )
-    pw.io.subscribe(table, on_change=on_change)
+    checker = Checker()
+    pw.io.subscribe(table, on_change=checker)
     run()
+    assert checker.n_processed_rows == 1

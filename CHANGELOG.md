@@ -8,9 +8,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now handle serialization of `PyObjectWrapper` and `Timedelta` properly.
 - New chunking options in `pathway.xpacks.llm.parsers.UnstructuredParser`
+- Now all Pathway types can be serialized into JSON and consistently deserialized back.
 
 ### Changed
 - **BREAKING**: Changed the interface of `UnstructuredParser`
+- **BREAKING**: The `Pointer` type is now serialized and deserialized as a string field in Iceberg and Delta Lake.
+- **BREAKING**: The `Bytes` type is now serialized and deserialized with base64 encoding and decoding when the JSON format is used. A string field is used to store the encoded contents.
+- **BREAKING**: The `Array` type is now serialized and deserialized as an object with two fields: `shape` denoting the shape of the stored multi-dimensional array and `elements` denoting the elements of the flattened array.
 
 
 ## [0.17.0] - 2025-01-30

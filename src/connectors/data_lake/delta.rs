@@ -107,10 +107,10 @@ impl DeltaBatchWriter {
         let delta_type = match type_ {
             Type::Bool => DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Boolean),
             Type::Float => DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Double),
-            Type::String | Type::Json => {
+            Type::String | Type::Json | Type::Pointer => {
                 DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::String)
             }
-            Type::PyObjectWrapper | Type::Pointer | Type::Bytes => {
+            Type::PyObjectWrapper | Type::Bytes => {
                 DeltaTableKernelType::Primitive(DeltaTablePrimitiveType::Binary)
             }
             Type::DateTimeNaive => {

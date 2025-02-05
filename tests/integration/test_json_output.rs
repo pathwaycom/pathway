@@ -216,3 +216,25 @@ fn test_json_duration_serialization() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_json_format_timestamps() -> eyre::Result<()> {
+    let mut formatter = JsonLinesFormatter::new(vec!["utc".to_string(), "naive".to_string()]);
+
+    let result = formatter.format(
+        &Key::for_value(&Value::from("1")),
+        &[
+            Value::DateTimeUtc(DateTimeUtc::from_timestamp(1738686506812, "ms")?),
+            Value::DateTimeNaive(DateTimeNaive::from_timestamp(1738686506812, "ms")?),
+        ],
+        Timestamp(0),
+        1,
+    )?;
+    assert_eq!(result.payloads.len(), 1);
+    assert_document_raw_byte_contents(
+        &result.payloads[0],
+        r#"{"utc":"2025-02-04T16:28:26.812000000+0000","naive":"2025-02-04T16:28:26.812000000","diff":1,"time":0}"#.as_bytes(),
+    );
+
+    Ok(())
+}
