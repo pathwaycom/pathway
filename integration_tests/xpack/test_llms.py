@@ -1,8 +1,9 @@
+import pandas as pd
 import pytest
 
 import pathway as pw
 from pathway.udfs import ExponentialBackoffRetryStrategy
-from pathway.xpacks.llm import llms
+from pathway.xpacks.llm import llms, rerankers
 from pathway.xpacks.llm._utils import _run_async
 
 
@@ -61,3 +62,24 @@ def test_llm_apply_openai():
     values_ls = list(table_values["ret"].values())
 
     assert isinstance(values_ls[0], str)
+
+
+def test_llm_rerank():
+    docs = [
+        {"text": "Pasta is an italian dish"},
+        {"text": "Köfte is a Turkish dish"},
+        {"text": "Sushi is a Japanese dish"},
+        {"text": "Foobar"},
+    ]
+    query = "Where does pasta come from?"
+
+    df = pd.DataFrame({"docs": docs, "query": query})
+
+    chat = llms.OpenAIChat(model="gpt-4o-mini")
+    reranker = rerankers.LLMReranker(llm=chat)
+    docs_table = pw.debug.table_from_pandas(df)
+
+    res = docs_table.select(score=reranker(pw.this.docs["text"], pw.this.query))
+    res_df = pw.debug.table_to_pandas(res)
+
+    assert len(res_df) == len(docs)

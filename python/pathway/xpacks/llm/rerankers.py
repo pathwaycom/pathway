@@ -1,5 +1,5 @@
+import json
 import logging
-import re
 
 import pathway as pw
 from pathway.internals import udfs
@@ -124,16 +124,18 @@ class LLMReranker(pw.UDF):
         prompt = (
             "You are a helper agent for RAG applications. "
             "Given a question, and a context document, "
-            "rate the documents relevance for the question between 1 and 5 as number.\n"
+            "rate the document's relevance for the question on a scale between 1 and 5.\n"
             "5 means the question can be answered based on the given document, and document is very helpful for the question. "  # noqa: E501
-            "1 means document is totally unrelated to the question. "
-            "Now, it is your turn.\n"
+            "1 means document is totally unrelated to the question."
+            "Reply in jsonl format according to the following format:\n"
+            '{"score": <int>}\n'
+            "Do not output any other text apart from the jsonl response.\n"
             f"Context document: `{doc}`\n"
             f"Question: `{query}`\nScore:"
         )
 
         call_kwargs: dict = dict(
-            max_tokens=1,
+            max_tokens=10,
             temperature=0,
         )
 
@@ -147,7 +149,7 @@ class LLMReranker(pw.UDF):
             **call_kwargs,
         )
 
-        return float(self.get_first_number(response))
+        return float(self.parse_score_json(response))
 
     @staticmethod
     def _map_dict_keys_token(dc: dict) -> dict:
@@ -156,18 +158,19 @@ class LLMReranker(pw.UDF):
         tokenizer = tiktoken.encoding_for_model("gpt-4")
         return {tokenizer.encode(k)[0]: v for k, v in dc.items()}
 
-    def get_first_number(self, text: str) -> int:
-        match = re.search(r"\b(\d+)\b", text)
+    def parse_score_json(self, text: str) -> int:
+        # Parse the score from the json response {"score": <int>}
+        score = 0
+        try:
+            score = json.loads(text)["score"]
 
-        if match:
-            number = int(match.group(1))
-            if number < 1 or number > 5:
-                raise ValueError("Ranking should be between 1 and 5")
-            return number
-        else:
-            raise ValueError(
-                f"Expected a number in the text, no number found in `{text}`."
-            )
+        except Exception:
+            raise ValueError(f"Expected a json response, got `{text}`.")
+
+        if score < 1 or score > 5:
+            raise ValueError(f"Expected a number between 1-5, got `{text}`.")
+
+        return score
 
     def __call__(
         self, doc: pw.ColumnExpression, query: pw.ColumnExpression, **kwargs

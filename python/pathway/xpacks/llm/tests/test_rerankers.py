@@ -34,19 +34,19 @@ def _test_llm_reranker_raises(llm):
 def test_llm_reranker():
     class LLM1(llms.OpenAIChat):
         async def __wrapped__(self, *args, **kwargs) -> str:
-            return "1"
+            return '{"score": 1}'
 
     _test_llm_reranker(LLM1(), 1.0)
 
     class LLM2(llms.OpenAIChat):
         async def __wrapped__(self, *args, **kwargs) -> str:
-            return "5.0"
+            return '{"score": 5}'
 
     _test_llm_reranker(LLM2(), 5.0)
 
     class LLM3(llms.OpenAIChat):
         async def __wrapped__(self, *args, **kwargs) -> str:
-            return "6"
+            return '{"score": 6}'
 
     _test_llm_reranker_raises(LLM3())
 
