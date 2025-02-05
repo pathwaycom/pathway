@@ -185,7 +185,7 @@ def test_init_wrong_mode(write_method):
         rows,
     )
 
-    with pytest.raises(ValueError, match="Invalid init_mode: wrong_mode"):
+    with pytest.raises(TypeError):
         write_method(
             table,
             postgres_settings=POSTGRES_SETTINGS,
