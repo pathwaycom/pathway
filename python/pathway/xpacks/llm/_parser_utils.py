@@ -169,13 +169,13 @@ async def parse_image(
 ) -> str:
     """
     Parse base64 image with the LLM. `model` will be set to llm's default if not provided.
-    If llm's `model` is also not set, ``OpenAI`` ``gpt-4o`` will be used.
+    If llm's `model` is also not set, ``OpenAI`` ``gpt-4o-mini`` will be used.
 
     Args:
         b_64_img: Image in base64 format to be parsed. See `img_to_b64` for the conversion utility.
         llm: LLM instance to be called with image.
         prompt: Instructions for image parsing.
-        model: Optional LLM model name. Defaults to ``OpenAI`` ``gpt-4o``,
+        model: Optional LLM model name. Defaults to ``OpenAI`` ``gpt-4o-mini``,
             if neither `model` nor `llm.model` is set.
         kwargs: Additional arguments to be sent to the LLM inference.
             Refer to the specific provider's API for available options.
