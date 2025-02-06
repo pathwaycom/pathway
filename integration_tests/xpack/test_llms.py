@@ -83,3 +83,60 @@ def test_llm_rerank():
     res_df = pw.debug.table_to_pandas(res)
 
     assert len(res_df) == len(docs)
+
+
+def test_llm_openai_list_of_jsons():
+    chat = llms.OpenAIChat(
+        model=None, retry_strategy=ExponentialBackoffRetryStrategy(max_retries=4)
+    )
+    t = pw.debug.table_from_rows(
+        pw.schema_from_types(txt=list[pw.Json]),
+        rows=[
+            (
+                [
+                    {"role": "user", "content": "Wazzup?"},
+                ],
+            )
+        ],
+    )
+    resp_table = t.select(ret=chat(t.txt, model="gpt-3.5-turbo", max_tokens=2))
+
+    _, table_values = pw.debug.table_to_dicts(resp_table)
+
+    values_ls = list(table_values["ret"].values())
+
+    assert isinstance(values_ls[0], str)
+
+
+def test_hf_pipeline_gpt2():
+    chat = llms.HFPipelineChat(model="gpt2")
+    t = pw.debug.table_from_markdown(
+        """
+        txt
+        Wazzup?
+        """
+    )
+    resp_table = t.select(ret=chat(t.txt, max_new_tokens=2))
+
+    _, table_values = pw.debug.table_to_dicts(resp_table)
+
+    values_ls = list(table_values["ret"].values())
+
+    assert isinstance(values_ls[0], str)
+
+
+def test_hf_pipeline_tinyllama():
+    chat = llms.HFPipelineChat(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    t = pw.debug.table_from_markdown(
+        """
+        txt
+        Wazzup?
+        """
+    )
+    resp_table = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt), max_new_tokens=2))
+
+    _, table_values = pw.debug.table_to_dicts(resp_table)
+
+    values_ls = list(table_values["ret"].values())
+
+    assert isinstance(values_ls[0], str)

@@ -13,7 +13,7 @@ import logging
 import uuid
 from abc import abstractmethod
 from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import Any, Iterable
 
 import pathway as pw
 from pathway.internals import udfs
@@ -22,6 +22,19 @@ from pathway.optional_import import optional_imports
 from ._utils import _check_model_accepts_arg
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_messages(messages: list[dict] | list[pw.Json] | pw.Json) -> list[dict]:
+    if isinstance(messages, pw.Json):
+        messages_as_list: Iterable[dict | pw.Json] = messages.as_list()
+    else:
+        messages_as_list = messages
+
+    messages_decoded: list[dict] = [
+        message.as_dict() if isinstance(message, pw.Json) else message
+        for message in messages_as_list
+    ]
+    return messages_decoded
 
 
 class BaseChat(pw.UDF):
@@ -249,14 +262,7 @@ class OpenAIChat(BaseChat):
     async def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
         import openai
 
-        if TYPE_CHECKING:
-            from openai.types.chat import ChatCompletionMessageParam
-
-        if isinstance(messages, pw.Json):
-            messages_decoded: list[ChatCompletionMessageParam] = messages.as_list()
-        else:
-            messages_decoded = messages  # type: ignore
-
+        messages_decoded = _prepare_messages(messages)
         kwargs = {**self.kwargs, **kwargs}
 
         verbose = kwargs.pop("verbose", False)
@@ -269,22 +275,23 @@ class OpenAIChat(BaseChat):
             "_type": "openai_chat_request",
             "kwargs": copy.deepcopy(kwargs),
             "id": msg_id,
-            "messages": _prep_message_log(messages_decoded, verbose),  # type: ignore
+            "messages": _prep_message_log(messages_decoded, verbose),
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
         client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
-        ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)
-        response = ret.choices[0].message.content
+        ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)  # type: ignore
+        response: str | None = ret.choices[0].message.content
 
-        event = {
-            "_type": "openai_chat_response",
-            "response": (
-                response if verbose else response[: min(50, len(response))] + "..."
-            ),
-            "id": msg_id,
-        }
-        logger.info(json.dumps(event, ensure_ascii=False))
+        if response is not None:
+            event = {
+                "_type": "openai_chat_response",
+                "response": (
+                    response if verbose else response[: min(50, len(response))] + "..."
+                ),
+                "id": msg_id,
+            }
+            logger.info(json.dumps(event, ensure_ascii=False))
         return response
 
     def __call__(self, messages: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
@@ -383,10 +390,7 @@ class LiteLLMChat(BaseChat):
     def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
         import litellm
 
-        if isinstance(messages, pw.Json):
-            messages_decoded: list[dict] = messages.as_list()
-        else:
-            messages_decoded = messages
+        messages_decoded = _prepare_messages(messages)
 
         kwargs = {**self.kwargs, **kwargs}
 
@@ -465,7 +469,7 @@ class HFPipelineChat(BaseChat):
     ... txt
     ... Wazzup?
     ... ''')
-    >>> r = t.select(ret=chat(llms.prompt_chat_single_qa(t.txt)))
+    >>> r = t.select(ret=chat(t.txt))
     >>> r
     <pathway.Table schema={'ret': str | None}>
     """  # noqa: E501
@@ -487,20 +491,19 @@ class HFPipelineChat(BaseChat):
         self.tokenizer = self.pipeline.tokenizer
         self.kwargs.update(call_kwargs)
 
-    def __wrapped__(self, messages: list[dict] | pw.Json, **kwargs) -> str | None:
-        if isinstance(messages, pw.Json):
-            messages_decoded = messages.as_list()
+    def __wrapped__(self, messages: list[dict] | pw.Json | str, **kwargs) -> str | None:
+        if isinstance(messages, str):
+            messages_decoded: list[dict] | str = messages
         else:
-            messages_decoded = messages
+            messages_decoded = _prepare_messages(messages)
 
         kwargs = {**self.kwargs, **kwargs}
 
-        prompt = self.tokenizer.apply_chat_template(
-            messages_decoded, tokenize=False, add_generation_prompt=True
-        )
-
-        output = self.pipeline(prompt, **kwargs)
-        return output[0]["generated_text"]
+        output = self.pipeline(messages_decoded, **kwargs)
+        result = output[0]["generated_text"]
+        if isinstance(result, list):
+            result = result[-1]["content"]
+        return result
 
     def crop_to_max_length(
         self, input_string: pw.ColumnExpression, max_prompt_length: int = 500
@@ -617,10 +620,7 @@ class CohereChat(BaseChat):
     ) -> tuple[str, list[dict]]:
         import cohere
 
-        if isinstance(messages, pw.Json):
-            messages_decoded: list = messages.as_list()
-        else:
-            messages_decoded = messages
+        messages_decoded = _prepare_messages(messages)
 
         chat_history = messages_decoded[:-1]
         message = messages_decoded[-1]["content"]
@@ -637,7 +637,7 @@ class CohereChat(BaseChat):
 
         client = cohere.Client(api_key=api_key)
         ret = client.chat(
-            message=message, chat_history=chat_history, documents=docs, **kwargs
+            message=message, chat_history=chat_history, documents=docs, **kwargs  # type: ignore
         )
         response: str = ret.text
         cited_documents: list = ret.citations or []
