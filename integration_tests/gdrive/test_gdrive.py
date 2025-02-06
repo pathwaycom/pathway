@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -30,7 +31,8 @@ def test_single_file_read_with_constraints(object_size_limit, with_metadata, tmp
             row = json.loads(raw_row)
             if object_size_limit is None or object_size_limit > TEST_FILE_SIZE:
                 target_status = pw.io.gdrive.STATUS_DOWNLOADED
-                assert len(row["data"]) == TEST_FILE_SIZE
+                decoded_data = base64.b64decode(row["data"])
+                assert len(decoded_data) == TEST_FILE_SIZE
             else:
                 target_status = pw.io.gdrive.STATUS_SIZE_LIMIT_EXCEEDED
                 assert len(row["data"]) == 0

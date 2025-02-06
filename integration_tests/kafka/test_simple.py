@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import base64
 import json
 import pathlib
 import threading
@@ -188,10 +189,9 @@ def test_kafka_simple_wrapper_bytes_io(
     with open(tmp_path / "output.jsonl", "r") as f:
         for row in f:
             row_parsed = json.loads(row)
-            assert isinstance(row_parsed["data"], list)
-            assert row_parsed["data"] == list(b"foo") or row_parsed["data"] == list(
-                b"bar"
-            )
+            assert isinstance(row_parsed["data"], str)
+            decoded = base64.b64decode(row_parsed["data"])
+            assert decoded in (b"foo", b"bar")
 
 
 @pytest.mark.flaky(reruns=3)

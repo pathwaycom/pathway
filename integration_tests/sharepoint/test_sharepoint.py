@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 
@@ -43,7 +44,8 @@ def test_single_file_read_with_constraints(object_size_limit, with_metadata, tmp
             row = json.loads(raw_row)
             if object_size_limit is None or object_size_limit > TEST_FILE_SIZE:
                 target_status = sharepoint_connector.STATUS_DOWNLOADED
-                assert len(row["data"]) == TEST_FILE_SIZE
+                decoded_data = base64.b64decode(row["data"])
+                assert len(decoded_data) == TEST_FILE_SIZE
             else:
                 target_status = sharepoint_connector.STATUS_SIZE_LIMIT_EXCEEDED
                 assert len(row["data"]) == 0
@@ -63,7 +65,8 @@ def test_sharepoint_link(with_metadata, tmp_path):
     with open(tmp_path / "output.jsonl", "r") as f:
         for raw_row in f:
             row = json.loads(raw_row)
-            assert len(row["data"]) == TEST_LINK_SIZE
+            decoded_data = base64.b64decode(row["data"])
+            assert len(decoded_data) == TEST_LINK_SIZE
             if with_metadata:
                 metadata = row["_metadata"]
                 assert metadata["status"] == sharepoint_connector.STATUS_DOWNLOADED
