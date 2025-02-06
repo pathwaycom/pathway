@@ -413,13 +413,13 @@ jobs:
           webhook-type: webhook-trigger
           payload: |
             {
-              "text": "GitHub Action build result: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.event.pull_request.user.login }}",
+              "text": ":warning: :warning: GitHub Action build result: failure :manul:\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} :warning: :warning:",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "GitHub Action build result: failure :manul:\nPR URL: ${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\nPR Author: ${{ github.event.pull_request.user.login }}"
+                    "text": ":warning: :warning: GitHub Action build result: failure :manul:\nAction run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} :warning: :warning:"
                   }
                 }
               ]
