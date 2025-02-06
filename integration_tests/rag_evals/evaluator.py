@@ -54,7 +54,6 @@ def parse_date(date_str) -> datetime | None:
 
 
 def compare_dates(pred: str, label: str) -> bool:
-    # label_date = datetime.strptime(label, '%m/%d/%y')
     pred_date = parse_date(pred)
     if pred_date:
         formatted_date: str = pred_date.strftime("%-m/%-d/%y")
@@ -163,9 +162,7 @@ class RAGEvaluator:
         for dc in tqdm(self.dataset):
             question = dc.reworded_question
             file = dc.file
-            task = self._apredict_single(
-                question, file
-            )  # asyncio.create_task(self._apredict_single(question, file))
+            task = self._apredict_single(question, file)
             tasks.append(task)
 
         print("Async predict dataset with number of tasks:", len(tasks))
@@ -201,61 +198,6 @@ class RAGEvaluator:
 
         logging.info("Finished running `apredict_dataset`.")
 
-    # def _calculate_question_accuracy(
-    #     self, question: str, compare: Callable[[str, str], bool] | None = None
-    # ):
-    #     if compare is None:
-    #         compare = self.compare
-
-    #     question_responses = [
-    #         i for i in self.predicted_dataset if i.question == question
-    #     ]
-    #     return self._calculate_accuracy(question_responses, compare)
-
-    # def _calculate_file_accuracy(
-    #     self, file: str, compare: Callable[[str, str], bool] | None = None
-    # ):
-    #     if compare is None:
-    #         compare = self.compare
-
-    #     file_responses = [i for i in self.predicted_dataset if i.file == file]
-
-    #     return self._calculate_accuracy(file_responses, compare)
-
-    # def calculate_tot_accuracy(self, compare: Callable[[str, str], bool] | None = None):
-    #     if compare is None:
-    #         compare = self.compare
-
-    #     dataset = [
-    #         i for i in self.predicted_dataset_as_dict_list if "-Answer" in i["question"]
-    #     ]  # only for yes/no questions for now
-
-    #     logging.info(f"`calculate_tot_accuracy` dataset length: {len(dataset)}")
-
-    #     return self._calculate_accuracy(dataset, compare)
-
-    # def _calculate_accuracy(
-    #     self, dataset: list[dict], compare: Callable[[str, str], bool]
-    # ) -> float:
-    #     tot = len(dataset)
-
-    #     true_ct = 0
-    #     for i in dataset:
-    #         try:
-    #             if compare(i["pred"], i["label"]):
-    #                 true_ct += 1
-    #         except Exception as e:
-    #             print("Warning: Found `None` ", i["pred"], i["label"], str(e))
-
-    #     logging.info(f"`_calculate_accuracy` true_ct: {true_ct}, tot: {tot}")
-
-    #     result: float = 0.0
-    #     try:
-    #         result = true_ct / tot
-    #     except ZeroDivisionError:
-    #         print(f"`tot` is 0. Check your dataset! tot: {tot}. true_ct: {true_ct}")
-    #     return result
-
     def calculate_retrieval_metrics(self, dataset: list[dict] | None = None):
         dataset = dataset or [
             i
@@ -265,53 +207,6 @@ class RAGEvaluator:
         return self._calculate_dataset_retrieval_metrics(dataset=dataset)
 
     def _calculate_dataset_retrieval_metrics(self, dataset: list[dict]) -> dict:
-        # def get_hit_index(returned_docs: list[str], labels: list[str]) -> int | None:
-        #     """Returns hit index for a label for returned docs.
-        #     Assumes single ground truth text/phrase. `None` if not found."""
-        #     if label is None:
-        #         return None
-
-        #     # print(label)
-
-        #     def compare_diff(pred: str, label: str) -> float:
-        #         pred, label = pred.lower(), label.lower()
-
-        #         a = "".join(e for e in pred if e.isalnum())
-        #         b = "".join(e for e in label if e.isalnum())
-
-        #         return SequenceMatcher(None, a, b).ratio()
-
-        #     def compare_intersect(pred: str, label: str) -> float:
-        #         intersect_len = len(set(label.split(" ")).intersection(pred.split(" ")))
-        #         return intersect_len / len(set(label.split(" ")))
-
-        #     # print(label)
-        #     # print(returned_docs)
-        #     for idx, t in enumerate(returned_docs):
-        #         if t and str(label) != "nan" and labels:
-        #             # if idx == 2:
-        #             #     print(aga)
-        #             try:
-        #                 cartesian = list(product(t, labels))
-        #                 sim_pass = list(
-        #                     map(lambda x: compare_intersect(x[0], x[1]), cartesian)
-        #                 )
-        #                 # print(cartesian)
-        #                 # print(sim_pass)
-
-        #                 if max(sim_pass) >= 0.7:
-        #                     return idx
-        #             except Exception:
-        #                 print("label empty:", label)
-
-        #     # for idx, t in enumerate(returned_docs):
-        #     #     if t and str(label) != "nan":
-        #     #         try:
-        #     #             if label[0] in t:
-        #     #                 return idx
-        #     #         except Exception:
-        #     #             print("label empty:", label)
-        #     return None
 
         def get_hit_index(
             returned_docs: list[str], labels: list[str] | None

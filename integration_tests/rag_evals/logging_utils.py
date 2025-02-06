@@ -3,6 +3,7 @@ def remove_keys(dc: dict, remove_keys: list | set) -> dict:
 
 
 def add_prefix(dc: dict, prefix: str) -> dict:
+    """Add prefix string to the keys in a dict."""
     return {prefix + k: v for k, v in dc.items()}
 
 

@@ -86,8 +86,6 @@ def create_app(port: int, config_file: str):
     config.update(port=port)
     app = App(**config)
     return app
-    # thread = app.run()
-    # return thread
 
 
 def test_rag_app_accuracy(port: int):

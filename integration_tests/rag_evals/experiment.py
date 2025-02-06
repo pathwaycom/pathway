@@ -20,7 +20,10 @@ from .ragas_utils import (
 )
 from .utils import save_pivot_table_as_confusion
 
-mlflow.set_tracking_uri("https://mlflow.internal.pathway.com")
+MLFLOW_URI: str | None = os.environ.get("MLFLOW_URI")
+assert MLFLOW_URI is not None, "`MLFLOW_URI` is not set in the environ."
+
+mlflow.set_tracking_uri(MLFLOW_URI)  # setting to None doesn't raise exception
 
 EXPERIMENT_NAME = "CI RAG Evals"
 RUN_RAGAS_EVALS: bool = True
@@ -105,7 +108,6 @@ def run_eval_experiment(
     dataset_name = current_dir + "/" + subfolder_name  # : is forbidden in artifact name
 
     conn = RagConnector(base_url=base_url)
-    # dataset = DatasetUtils.read_dataset("labels.jsonl")
 
     df = pd.read_csv(dataset_path, sep="\t")
 
@@ -140,7 +142,6 @@ def run_eval_experiment(
     evaluator.apredict_dataset()
 
     evaluator.save_predicted_dataset(dataset_name + "/predicted_dataset.json")
-    # evaluator.load_predicted_dataset(dataset_name + "/predicted_dataset")
 
     retrieval_metrics = evaluator.calculate_retrieval_metrics()
     mlflow.log_metrics(retrieval_metrics)
@@ -155,10 +156,6 @@ def run_eval_experiment(
         lambda row: compare_sim_with_date(row["pred"], row["label"]),
         axis=1,
     )
-
-    # tot_accuracy = evaluator.calculate_tot_accuracy()
-    # mlflow.log_metric("Total RAG Accuracy", value=tot_accuracy)
-    # logging.info("Total accuracy:", tot_accuracy)
 
     accuracy = df["sim"].mean()
     logging.info(f"Total accuracy: {accuracy}")
@@ -188,10 +185,10 @@ def run_eval_experiment(
 
     experiment_name: str = experiment.replace(":", "_")
 
-    # if RUN_RAGAS_EVALS:
-    #     ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
+    if RUN_RAGAS_EVALS:
+        ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
 
-    #     run_ragas_evals(ragas_dataset, experiment_name, dataset_name="main_dataset")
+        run_ragas_evals(ragas_dataset, experiment_name, dataset_name="main_dataset")
 
     synthetic_datasets = load_synthetic_tests(synthetic_dataset_path)
     logging.info(
@@ -224,7 +221,3 @@ def run_eval_experiment(
         shutil.rmtree(dataset_name)
 
     return accuracy
-
-
-# if __name__ == "__main__":
-#     main()

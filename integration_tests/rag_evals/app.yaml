@@ -37,12 +37,6 @@ $splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
 $parser: !pw.xpacks.llm.parsers.UnstructuredParser
   cache_strategy: !pw.udfs.DefaultCache
 
-# $retriever_factory: !pw.stdlib.indexing.BruteForceKnnFactory
-#   reserved_space: 1000
-#   embedder: $embedder
-#   metric: !pw.stdlib.indexing.BruteForceKnnMetricKind.COS
-#   dimensions: 1536
-
 $knn_index: !pw.stdlib.indexing.BruteForceKnnFactory
   reserved_space: 1000
   embedder: $embedder
@@ -74,8 +68,6 @@ question_answerer: !pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer
   llm: $llm
   indexer: $document_store
   prompt_template: $prompt_template
-  
-  # You can set the number of documents to be included as the context of the query
   # search_topk: 6
 
 # Cache configuration

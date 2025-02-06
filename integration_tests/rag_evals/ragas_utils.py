@@ -39,8 +39,6 @@ def ragas_dataset_to_eval(dataset: EvaluationDataset, file: str) -> list[Data]:
         elem = Data(
             question=sample.user_input,
             reworded_question=sample.user_input,
-            # docs=sample.retrieved_contexts,
-            # pred=sample.response,
             label=sample.reference,
             file=file,
             reference_contexts=sample.reference_contexts,
