@@ -16,6 +16,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING**: The `Bytes` type is now serialized and deserialized with base64 encoding and decoding when the JSON format is used. A string field is used to store the encoded contents.
 - **BREAKING**: The `Array` type is now serialized and deserialized as an object with two fields: `shape` denoting the shape of the stored multi-dimensional array and `elements` denoting the elements of the flattened array.
 
+### Removed
+- **BREAKING**: Removed undocumented `license_key` argument from `pw.run` and `pw.run_all` methods. Instead, `pw.set_license_key` should be used.
+
 
 ## [0.17.0] - 2025-01-30
 

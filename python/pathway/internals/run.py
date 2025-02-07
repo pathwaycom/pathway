@@ -17,7 +17,6 @@ def run(
     default_logging: bool = True,
     persistence_config: PersistenceConfig | None = None,
     runtime_typechecking: bool | None = None,
-    license_key: str | None = None,
     terminate_on_error: bool | None = None,
 ) -> None:
     """Runs the computation graph.
@@ -45,7 +44,6 @@ def run(
         with_http_server=with_http_server,
         default_logging=default_logging,
         persistence_config=persistence_config,
-        license_key=license_key,
         runtime_typechecking=runtime_typechecking,
         terminate_on_error=terminate_on_error,
         _stacklevel=4,
@@ -61,7 +59,6 @@ def run_all(
     default_logging: bool = True,
     persistence_config: PersistenceConfig | None = None,
     runtime_typechecking: bool | None = None,
-    license_key: str | None = None,
     terminate_on_error: bool | None = None,
 ) -> None:
     """Runs the computation graph with disabled tree-shaking optimization.
@@ -90,7 +87,6 @@ def run_all(
         default_logging=default_logging,
         persistence_config=persistence_config,
         runtime_typechecking=runtime_typechecking,
-        license_key=license_key,
         terminate_on_error=terminate_on_error,
         _stacklevel=4,
     ).run_all()

@@ -53,7 +53,6 @@ class GraphRunner:
         default_logging: bool = True,
         persistence_config: PersistenceConfig | None = None,
         runtime_typechecking: bool | None = None,
-        license_key: str | None = None,
         terminate_on_error: bool | None = None,
         _stacklevel: int = 1,
     ) -> None:
@@ -71,9 +70,7 @@ class GraphRunner:
             self.runtime_typechecking = pathway_config.runtime_typechecking
         else:
             self.runtime_typechecking = runtime_typechecking
-        if license_key is None:
-            license_key = pathway_config.license_key
-        self.license_key = license_key
+        self.license_key = pathway_config.license_key
         if terminate_on_error is None:
             terminate_on_error = pathway_config.terminate_on_error
         self.terminate_on_error = terminate_on_error
