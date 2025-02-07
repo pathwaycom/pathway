@@ -1007,7 +1007,9 @@ class RAGClient:
         response = send_post_request(api_url, payload, self.additional_headers)
         return response
 
-    def pw_list_documents(self, filters: str | None = None, keys: list[str] = ["path"]):
+    def pw_list_documents(
+        self, filters: str | None = None, keys: list[str] | None = ["path"]
+    ):
         """
         List indexed documents from the vector store with optional filtering.
 
