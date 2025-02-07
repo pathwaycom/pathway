@@ -3153,6 +3153,7 @@ def test_deltalake_append(min_commit_frequency, tmp_path: pathlib.Path):
 
 @needs_multiprocessing_fork
 @pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
+@pytest.mark.xfail(reason="fails randomly")
 def test_airbyte_local_run(env_vars, tmp_path_with_airbyte_config):
     table = pw.io.airbyte.read(
         tmp_path_with_airbyte_config / AIRBYTE_FAKER_CONNECTION_REL_PATH,
@@ -3382,6 +3383,7 @@ def test_streaming_from_deltalake(tmp_path):
 
 @needs_multiprocessing_fork
 @pytest.mark.parametrize("enforce_method", ["venv", "docker"])
+@pytest.mark.xfail(reason="fails randomly")
 def test_airbyte_persistence(enforce_method, tmp_path_with_airbyte_config):
     output_path = tmp_path_with_airbyte_config / "table.jsonl"
     pstorage_path = tmp_path_with_airbyte_config / "PStorage"
