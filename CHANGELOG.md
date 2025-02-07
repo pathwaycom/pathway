@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.18.0] - 2025-02-07
+
 ### Added
 - `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now handle serialization of `PyObjectWrapper` and `Timedelta` properly.
 - New chunking options in `pathway.xpacks.llm.parsers.UnstructuredParser`
