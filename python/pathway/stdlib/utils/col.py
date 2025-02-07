@@ -130,25 +130,54 @@ def unpack_col_dict(
     typehints = schema._dtypes()
 
     def _convert_from_json(name: str, col: pw.ColumnExpression):
-        _type = typehints[name]
-        is_optional = isinstance(_type, dt.Optional)
-        _type = dt.unoptionalize(_type)
-        result = col
-        if _type == dt.BOOL:
-            result = col.as_bool()
-        elif _type == dt.FLOAT:
-            result = col.as_float()
-        elif _type == dt.INT:
-            result = col.as_int()
-        elif _type == dt.STR:
-            result = col.as_str()
-        elif _type == dt.JSON:
-            result = col
-        else:
-            raise TypeError(f"Unsupported conversion from pw.Json to {typehints[name]}")
-        if not is_optional:
-            result = pw.unwrap(result)
-        return result
+        _type = dt.unoptionalize(typehints[name])
+        is_optional = isinstance(typehints[name], dt.Optional)
+        result: pw.ColumnExpression
+
+        def _optional(
+            col: pw.ColumnExpression,
+            op: Callable[[pw.ColumnExpression], pw.ColumnExpression],
+        ) -> pw.ColumnExpression:
+            if is_optional:
+                return pw.if_else(col == pw.Json.NULL, None, op(col))
+            else:
+                return op(col)
+
+        match _type:
+            case dt.JSON:
+                result = col
+            case dt.BOOL:
+                result = col.as_bool()
+            case dt.FLOAT:
+                result = col.as_float()
+            case dt.INT:
+                result = col.as_int()
+            case dt.STR:
+                result = col.as_str()
+            case dt.DATE_TIME_NAIVE:
+                result = _optional(
+                    col,
+                    lambda col: pw.unwrap(col.as_str()).dt.strptime(
+                        "%Y-%m-%dT%H:%M:%S.%f"
+                    ),
+                )
+            case dt.DATE_TIME_UTC:
+                result = _optional(
+                    col,
+                    lambda col: pw.unwrap(col.as_str()).dt.strptime(
+                        "%Y-%m-%dT%H:%M:%S.%f%z"
+                    ),
+                )
+            case dt.DURATION:
+                result = _optional(
+                    col, lambda col: pw.unwrap(col.as_int()).dt.to_duration("ns")
+                )
+            case _:
+                raise TypeError(
+                    f"Unsupported conversion from pw.Json to {typehints[name]}"
+                )
+
+        return result if is_optional else pw.unwrap(result)
 
     colrefs = [pw.this[column_name] for column_name in schema.column_names()]
     kw = {

@@ -1116,6 +1116,44 @@ class DateTimeNamespace:
             args_used_for_repr=[self._expression, duration],
         )
 
+    def to_duration(self, unit: expr.ColumnExpression | str) -> expr.ColumnExpression:
+        """Converts an integer column into a Duration.
+
+        Args:
+            unit: One of the following time units can be used:
+                - "W" for weeks
+                - "D", "day", "days" for days
+                - "h", "hr", "hour", "hours" for hours
+                - "m", "min", "minute", "minutes" for minutes
+                - "s", "sec", "second", "seconds" for seconds
+                - "ms", "millisecond", "milliseconds", "millis", "milli" for milliseconds
+                - "ns", "nano", "nanos", "nanosecond", "nanoseconds" for nanoseconds
+        Returns:
+            Duration.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> table = pw.debug.table_from_markdown(
+        ...     '''
+        ...      | nanoseconds    | unit
+        ...    0 | 1              | D
+        ...    1 | 86400000000000 | ns
+        ... '''
+        ... )
+        >>> result = table.select(duration=pw.this.nanoseconds.dt.to_duration(pw.this.unit))
+        >>> pw.debug.compute_and_print(result, include_id=False)
+        duration
+        1 days 00:00:00
+        1 days 00:00:00
+        """
+        return expr.MethodCallExpression(
+            (((dt.INT, dt.STR), dt.DURATION, api.Expression.to_duration),),
+            "dt.to_duration",
+            self._expression,
+            unit,
+        )
+
     def nanoseconds(self) -> expr.ColumnExpression:
         """The total number of nanoseconds in a Duration.
 

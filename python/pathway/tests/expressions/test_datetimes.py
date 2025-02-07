@@ -1031,6 +1031,46 @@ def test_weekday(is_naive: bool) -> None:
 
 
 def test_pathway_duration():
+    values = [
+        (1, ["W"]),
+        (1, ["D", "day", "days"]),
+        (24, ["h", "hr", "hour", "hours"]),
+        (24 * 60, ["m", "min", "minute", "minutes"]),
+        (24 * 60 * 60, ["s", "sec", "second", "seconds"]),
+        (24 * 60 * 60 * 1000, ["ms", "millisecond", "milliseconds", "millis", "milli"]),
+        (
+            24 * 60 * 60 * 1000 * 1000,
+            ["us", "microsecond", "microsecond", "micros", "micro"],
+        ),
+        (
+            24 * 60 * 60 * 1000 * 1000 * 1000,
+            ["ns", "nanosecond", "nanoseconds", "nanos", "nano"],
+        ),
+    ]
+
+    markdown = "value | unit\n"
+    for value, units in values:
+        for unit in units:
+            markdown += f"{value} | {unit}\n"
+    t = table_from_markdown(markdown)
+
+    result = t.select(value=pw.this.value.dt.to_duration(pw.this.unit))
+
+    assert_table_equality(
+        result,
+        table_from_pandas(
+            pd.DataFrame(
+                {
+                    "value": [
+                        pd.Timedelta(f"{v} {u}") for v, units in values for u in units
+                    ]
+                }
+            )
+        ),
+    )
+
+
+def test_pathway_duration_from_udf():
     t = table_from_markdown(
         """
         value

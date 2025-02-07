@@ -307,6 +307,7 @@ pub enum DateTimeUtcExpression {
 
 #[derive(Debug)]
 pub enum DurationExpression {
+    FromTimeUnit(Arc<Expression>, Arc<Expression>),
     Neg(Arc<Expression>),
     Add(Arc<Expression>, Arc<Expression>),
     Sub(Arc<Expression>, Arc<Expression>),
@@ -1130,6 +1131,11 @@ impl DateTimeUtcExpression {
 impl DurationExpression {
     pub fn eval(&self, values: &[Value]) -> DynResult<Duration> {
         match self {
+            Self::FromTimeUnit(val, unit) => {
+                let unit = unit.eval_as_string(values)?;
+                let val = val.eval_as_int(values)?;
+                Ok(Duration::new_with_unit(val, unit.as_str())?)
+            }
             Self::Neg(e) => Ok(-e.eval_as_duration(values)?),
             Self::Add(lhs, rhs) => {
                 Ok(lhs.eval_as_duration(values)? + rhs.eval_as_duration(values)?)

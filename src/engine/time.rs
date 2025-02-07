@@ -125,12 +125,16 @@ pub trait DateTime {
 
 fn get_unit_multiplier(unit: &str) -> DataResult<i64> {
     match unit {
-        "s" => Ok(1_000_000_000),
-        "ms" => Ok(1_000_000),
-        "us" => Ok(1_000),
-        "ns" => Ok(1),
+        "W" => Ok(7 * 24 * 60 * 60 * 1_000 * 1_000 * 1_000),
+        "D" | "days" | "day" => Ok(24 * 60 * 60 * 1_000 * 1_000 * 1_000),
+        "h" | "hr" | "hour" | "hours" => Ok(60 * 60 * 1_000 * 1_000 * 1_000),
+        "m" | "min" | "minute" | "minutes" => Ok(60 * 1_000 * 1_000 * 1_000),
+        "s" | "sec" | "second" | "seconds" => Ok(1_000 * 1_000 * 1_000),
+        "ms" | "milli" | "millis" | "millisecond" | "milliseconds" => Ok(1_000 * 1_000),
+        "us" | "micro" | "micros" | "microsecond" | "microseconds" => Ok(1_000),
+        "ns" | "nano" | "nanos" | "nanosecond" | "nanoseconds" => Ok(1),
         _ => Err(DataError::ValueError(format!(
-            "unit has to be one of s, ms, us, ns but is {unit:?}"
+            "unit has to be a valid time unit but is {unit:?}"
         ))),
     }
 }

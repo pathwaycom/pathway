@@ -1613,6 +1613,7 @@ binary_expr!(
 binary_expr!(date_time_utc_to_naive, DateTimeNaiveExpression::FromUtc);
 binary_expr!(date_time_utc_round, DateTimeUtcExpression::Round);
 binary_expr!(date_time_utc_floor, DateTimeUtcExpression::Floor);
+binary_expr!(to_duration, DurationExpression::FromTimeUnit);
 unary_expr!(duration_nanoseconds, IntExpression::DurationNanoseconds);
 unary_expr!(duration_microseconds, IntExpression::DurationMicroseconds);
 unary_expr!(duration_milliseconds, IntExpression::DurationMilliseconds);

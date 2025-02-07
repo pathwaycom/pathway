@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import pathlib
 import re
 from typing import Any, Optional
@@ -11,10 +12,12 @@ import pytest
 
 import pathway as pw
 from pathway.debug import table_from_pandas
+from pathway.internals.column import G
 from pathway.tests.utils import (
     T,
     assert_table_equality,
     assert_table_equality_wo_index,
+    run,
     run_all,
     write_lines,
 )
@@ -28,7 +31,9 @@ def _json_table_from_list(data):
 
         def run(self) -> None:
             for key, row in enumerate(self.data):
-                self.next_json({"key": key + 1, **row})
+                self.next(
+                    key=key + 1, **{name: pw.Json(value) for name, value in row.items()}
+                )
 
     schema = pw.schema_builder(
         columns={
@@ -889,4 +894,189 @@ def test_json_reversed_wrong_value():
     table.select(ret=reversed_(pw.this.data))
 
     with pytest.raises(TypeError, match="'int' object is not reversible"):
+        run_all()
+
+
+def test_json_datetime_serialization():
+    class InputSchema(pw.Schema):
+        a: pw.Json
+        b: pw.PyObjectWrapper[dict]
+        c: pw.PyObjectWrapper[dict]
+
+    @pw.udf
+    def to_json(obj: pw.PyObjectWrapper[dict]) -> pw.Json:
+        return pw.Json(obj.value)
+
+    @pw.udf
+    def to_json_wrapped(obj) -> pw.Json:
+        return pw.Json({k: pw.Json(v) for k, v in obj.value.items()})
+
+    obj = {
+        "dtn": datetime.datetime(2025, 3, 14, 10, 13),
+        "dt": datetime.datetime(
+            2025, 3, 14, 10, 13, microsecond=123456, tzinfo=datetime.timezone.utc
+        ),
+        "pdn": pd.Timestamp("2025-03-14"),
+        "pd": pd.Timestamp("2025-03-14T00:00+00:00"),
+        "pwn": pw.DateTimeNaive("2025-03-14T10:13:00.123456789"),
+        "pw": pw.DateTimeUtc("2025-03-14T10:13:00.123456000+00:00"),
+        "dur": pd.Timedelta("4 days 2 microseconds"),
+    }
+
+    rows = [{"a": obj, "b": pw.wrap_py_object(obj), "c": pw.wrap_py_object(obj)}]
+
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [tuple(row.values()) for row in rows],
+    ).select(a=pw.this.a, b=to_json(pw.this.b), c=to_json_wrapped(pw.this.c))
+
+    expected = {
+        "dtn": "2025-03-14T10:13:00.000000000",
+        "dt": "2025-03-14T10:13:00.123456000+00:00",
+        "pdn": "2025-03-14T00:00:00.000000000",
+        "pd": "2025-03-14T00:00:00.000000000+00:00",
+        "pwn": "2025-03-14T10:13:00.123456789",
+        "pw": "2025-03-14T10:13:00.123456000+00:00",
+        "dur": 345600000002000,
+    }
+
+    keys, result = pw.debug.table_to_dicts(table)
+
+    for col_name in ["a", "b", "c"]:
+        val = result[col_name][keys[0]]
+        assert isinstance(val, pw.Json)
+        assert val.as_dict() == expected
+
+
+def test_json_serde(tmp_path: pathlib.Path):
+    class ObjectSchema(pw.Schema):
+        dtn: pw.DateTimeNaive
+        dt: pw.DateTimeUtc
+        pdn: pw.DateTimeNaive
+        pd: pw.DateTimeUtc
+        pwn: pw.DateTimeNaive
+        pw: pw.DateTimeUtc
+        dur: pw.Duration
+        text: str
+
+    class TableSchema(ObjectSchema):
+        nested: pw.Json
+
+    obj = {
+        "dtn": datetime.datetime(2025, 3, 14, 10, 13),
+        "dt": datetime.datetime(
+            2025, 3, 14, 10, 13, microsecond=123456, tzinfo=datetime.timezone.utc
+        ),
+        "pdn": pd.Timestamp("2025-03-14"),
+        "pd": pd.Timestamp("2025-03-14T00:00+00:00"),
+        "pwn": pw.DateTimeNaive("2025-03-14T10:13:00.123456789"),
+        "pw": pw.DateTimeUtc("2025-03-14T10:13:00.123456000+00:00"),
+        "dur": pd.Timedelta("4 days 2 microseconds"),
+        "text": "2025-03-14T00:00+00:00",
+    }
+
+    obj["nested"] = obj.copy()
+
+    def prepare():
+        G.clear()
+        table = pw.debug.table_from_rows(
+            TableSchema,
+            [(*(obj.values()), obj)],
+        )
+        pw.io.jsonlines.write(table, tmp_path / "input.jsonl")
+        run()
+
+    def read():
+        G.clear()
+        table = pw.io.jsonlines.read(
+            tmp_path / "input.jsonl", schema=TableSchema, mode="static"
+        )
+        expected = pw.debug.table_from_rows(
+            TableSchema,
+            [(*(obj.values()), obj)],
+        )
+        assert_table_equality_wo_index(table, expected)
+
+    prepare()
+    read()
+
+
+def test_json_unpack_col_dict(tmp_path):
+    class ObjectSchema(pw.Schema):
+        dtn: pw.DateTimeNaive
+        dt: pw.DateTimeUtc
+        pdn: pw.DateTimeNaive
+        pd: pw.DateTimeUtc
+        pwn: pw.DateTimeNaive
+        pw: pw.DateTimeUtc
+        null_dt: Optional[pw.DateTimeUtc]
+        dur: pw.Duration
+        null_dur: Optional[pw.Duration]
+        text: str
+
+    class TableSchema(pw.Schema):
+        obj: pw.Json
+
+    obj = {
+        "dtn": datetime.datetime(2025, 3, 14, 10, 13),
+        "dt": datetime.datetime(
+            2025, 3, 14, 10, 13, microsecond=123456, tzinfo=datetime.timezone.utc
+        ),
+        "pdn": pd.Timestamp("2025-03-14"),
+        "pd": pd.Timestamp("2025-03-14T00:00+00:00"),
+        "pwn": pw.DateTimeNaive("2025-03-14T10:13:00.123456789"),
+        "pw": pw.DateTimeUtc("2025-03-14T10:13:00.123456000+00:00"),
+        "null_dt": None,
+        "dur": pd.Timedelta("4 days 2 microseconds"),
+        "null_dur": None,
+        "text": "2025-03-14T00:00+00:00",
+    }
+
+    def prepare():
+        G.clear()
+        table = pw.debug.table_from_rows(
+            TableSchema,
+            [(obj,)],
+        )
+        pw.io.jsonlines.write(table, tmp_path / "input.jsonl")
+        run()
+
+    def read():
+        G.clear()
+        table = pw.io.jsonlines.read(
+            tmp_path / "input.jsonl", schema=TableSchema, mode="static"
+        )
+        result = pw.utils.col.unpack_col_dict(table.obj, ObjectSchema)
+        expected = pw.debug.table_from_rows(
+            ObjectSchema,
+            [tuple(obj.values())],
+        )
+        assert_table_equality_wo_index(result, expected)
+
+    prepare()
+    read()
+
+
+@pytest.mark.parametrize(
+    "_type", [int, float, bool, str, pw.DateTimeNaive, pw.DateTimeUtc, pw.Duration]
+)
+def test_json_unpack_col_null(_type):
+    class TableSchema(pw.Schema):
+        obj: pw.Json
+
+    table = pw.debug.table_from_rows(
+        TableSchema,
+        [({"col": None},)],
+    )
+
+    pw.utils.col.unpack_col_dict(
+        table.obj,
+        pw.schema_builder(
+            columns={
+                "col": pw.column_definition(dtype=_type),
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
         run_all()

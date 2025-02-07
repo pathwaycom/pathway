@@ -351,3 +351,61 @@ def test_init_replace(write_method, postgres):
     result = postgres.get_table_contents(table_name, InputSchema.column_names(), "i")
 
     assert result == [{"i": 2, "data": 2}]
+
+
+def test_psql_json_datetimes(postgres):
+    class InputSchema(pw.Schema):
+        a: pw.Json
+        b: pw.PyObjectWrapper[dict]
+        c: pw.PyObjectWrapper[dict]
+
+    table_name = postgres.random_table_name()
+
+    @pw.udf
+    def to_json(obj: pw.PyObjectWrapper[dict]) -> pw.Json:
+        return pw.Json(obj.value)
+
+    @pw.udf
+    def to_json_wrapped(obj) -> pw.Json:
+        return pw.Json({k: pw.Json(v) for k, v in obj.value.items()})
+
+    obj = {
+        "dtn": datetime.datetime(2025, 3, 14, 10, 13),
+        "dt": datetime.datetime(
+            2025, 3, 14, 10, 13, microsecond=123456, tzinfo=datetime.timezone.utc
+        ),
+        "pdn": pd.Timestamp("2025-03-14"),
+        "pd": pd.Timestamp("2025-03-14T00:00+00:00"),
+        "pwn": pw.DateTimeNaive("2025-03-14T10:13:00.123456789"),
+        "pw": pw.DateTimeUtc("2025-03-14T10:13:00.123456000+00:00"),
+        "dur": pd.Timedelta("4 days 2 microseconds"),
+    }
+    rows = [{"a": obj, "b": pw.wrap_py_object(obj), "c": pw.wrap_py_object(obj)}]
+
+    table = pw.debug.table_from_rows(
+        InputSchema,
+        [tuple(row.values()) for row in rows],
+    ).select(a=pw.this.a, b=to_json(pw.this.b), c=to_json_wrapped(pw.this.c))
+
+    pw.io.postgres.write(
+        table,
+        postgres_settings=POSTGRES_SETTINGS,
+        table_name=table_name,
+        init_mode="replace",
+    )
+    run()
+
+    result = postgres.get_table_contents(table_name, InputSchema.column_names())[0]
+    expected = {
+        "dtn": "2025-03-14T10:13:00.000000000",
+        "dt": "2025-03-14T10:13:00.123456000+00:00",
+        "pdn": "2025-03-14T00:00:00.000000000",
+        "pd": "2025-03-14T00:00:00.000000000+00:00",
+        "pwn": "2025-03-14T10:13:00.123456789",
+        "pw": "2025-03-14T10:13:00.123456000+00:00",
+        "dur": 345600000002000,
+    }
+
+    assert result["a"] == expected
+    assert result["b"] == expected
+    assert result["c"] == expected

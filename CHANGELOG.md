@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.postgres.write` and `pw.io.postgres.write_snapshot` now handle serialization of `PyObjectWrapper` and `Timedelta` properly.
 - New chunking options in `pathway.xpacks.llm.parsers.UnstructuredParser`
 - Now all Pathway types can be serialized into JSON and consistently deserialized back.
+- `table.col.dt.to_duration` converting an integer into a `pw.Duration`.
+- `pw.Json` now supports storing datetime and duration type values in ISO format.
 
 ### Changed
 - **BREAKING**: Changed the interface of `UnstructuredParser`

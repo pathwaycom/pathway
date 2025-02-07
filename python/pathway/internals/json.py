@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import datetime
 import json as _json  # otherwise its easy to mistake `json` and `Json`
 import operator
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, ClassVar, Iterator, TypeVar
 
+import pandas as pd
+
+import pathway.internals.datetime_types as dt
+
 
 class _JsonEncoder(_json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Json):
             return obj.value
+        if isinstance(obj, (pd.Timedelta, dt.Duration)):
+            return obj.value
+        if isinstance(obj, datetime.datetime):
+            obj = pd.Timestamp(obj)
+        if isinstance(obj, (pd.Timestamp, dt.DateTimeNaive, dt.DateTimeUtc)):
+            return obj.isoformat(timespec="nanoseconds")
         return super().default(obj)
 
 
