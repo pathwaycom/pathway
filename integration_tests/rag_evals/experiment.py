@@ -28,6 +28,16 @@ mlflow.set_tracking_uri(MLFLOW_URI)  # setting to None doesn't raise exception
 EXPERIMENT_NAME = "CI RAG Evals"
 RUN_RAGAS_EVALS: bool = True
 
+try:
+    BRANCH_NAME = os.environ["BRANCH"]
+except KeyError:
+    try:
+        import git
+
+        BRANCH_NAME = git.Repo("../../../..").active_branch.name
+    except Exception:
+        BRANCH_NAME = ""
+
 
 @dataclass
 class NamedDataset:
@@ -99,7 +109,10 @@ def run_eval_experiment(
         experiment = datetime.now().strftime("%d-%m-%Y %H:%M")
 
     mlflow.set_experiment(experiment_name=EXPERIMENT_NAME)
-    mlflow.start_run(run_name=experiment)
+    mlflow.start_run(
+        run_name=experiment, description=os.environ.get("MLFLOW_DESCRIPTION", "")
+    )
+    mlflow.set_tag("Branch name", BRANCH_NAME)
 
     current_dir = os.path.dirname(__file__)
 

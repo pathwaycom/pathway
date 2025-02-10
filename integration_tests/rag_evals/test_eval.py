@@ -16,7 +16,7 @@ from .experiment import run_eval_experiment
 
 PATHWAY_HOST = "127.0.0.1"
 
-TEST_TIMEOUT: float = 600.0 * 2
+TEST_TIMEOUT: float = 60.0 * 20  # 20 minutes TODO: I think this doesn't work currently
 
 LOCAL_RUN: bool = os.environ.get("RUN_MODE", "CI") == "LOCAL"
 
@@ -60,7 +60,7 @@ class App(BaseModel):
     port: int
 
     with_cache: bool = True
-    terminate_on_error: bool = False
+    terminate_on_error: bool = True
 
     def run(self):
         server = QASummaryRestServer(self.host, self.port, self.question_answerer)
@@ -68,7 +68,6 @@ class App(BaseModel):
             with_cache=self.with_cache,
             terminate_on_error=self.terminate_on_error,
             cache_backend=pw.persistence.Backend.filesystem("Cache"),
-            # threaded=self.threaded,
         )
 
     @computed_field(return_type=str)
@@ -94,7 +93,7 @@ def test_rag_app_accuracy(port: int):
     dataset_file = f"{current_dir}/dataset/labeled.tsv"
     synthetic_dataset = f"{current_dir}/dataset/synthetic_tests/"
 
-    logging.error(f"Creating pathwap app on port: {port}.")
+    logging.info(f"Creating pathway app on port: {port}.")
     app = create_app(port, config_file=config_file_path)
 
     app_url = app.base_url
@@ -102,16 +101,16 @@ def test_rag_app_accuracy(port: int):
     conn = RagConnector(app_url)
 
     def wait_for_start(retries: int = 10, interval: int | float = 45.0) -> bool:
-        logging.error("Running wait_for_start")
+        logging.info("Running wait_for_start")
         EXPECTED_DOCS_COUNT: int = 23 + 1  # +1 for synthetic data
         docs: list[dict] = []
 
         for iter in range(retries):
-            logging.error(
+            logging.info(
                 f"wait_for_start iteration: {iter}. \
             Indexed docs count: {len(docs)}, expected: {EXPECTED_DOCS_COUNT}"
             )
-            logging.error(f"Indexed documents: {docs}")
+            logging.info(f"Indexed documents: {docs}")
             try:
                 docs = conn.pw_list_documents()
                 if docs and len(docs) >= EXPECTED_DOCS_COUNT:
@@ -128,14 +127,14 @@ def test_rag_app_accuracy(port: int):
             except (Exception, TimeoutError) as e:
                 logging.error(f"Unreachable error on iteration: {iter}. \n{str(e)}")
 
-            logging.error(f"Sleeping for {interval}")
+            logging.info(f"Sleeping for {interval}")
             time.sleep(interval)
         return False
 
     def checker() -> bool:
         MIN_ACCURACY: float = 0.0
 
-        logging.error("starting checker")
+        logging.info("starting checker")
 
         server_started = wait_for_start()
 
@@ -145,7 +144,7 @@ def test_rag_app_accuracy(port: int):
 
         docs = conn.pw_list_documents()
 
-        logging.error(f"Indexed test documents: {docs}")
+        logging.info(f"Indexed test documents: {docs}")
 
         eval_accuracy: float = run_eval_experiment(
             base_url=app_url,
