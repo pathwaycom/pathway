@@ -119,7 +119,7 @@ class OpenAIEmbedder(BaseEmbedder):
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
-    >>> embedder = embedders.OpenAIEmbedder(model="text-embedding-ada-002")
+    >>> embedder = embedders.OpenAIEmbedder(model="text-embedding-3-small")
     >>> t = pw.debug.table_from_markdown('''
     ... txt
     ... Text
@@ -132,7 +132,7 @@ class OpenAIEmbedder(BaseEmbedder):
     >>> embedder = embedders.OpenAIEmbedder()
     >>> t = pw.debug.table_from_markdown('''
     ... txt  | model
-    ... Text | text-embedding-ada-002
+    ... Text | text-embedding-3-small
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
     <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
@@ -144,7 +144,7 @@ class OpenAIEmbedder(BaseEmbedder):
         capacity: int | None = None,
         retry_strategy: udfs.AsyncRetryStrategy | None = None,
         cache_strategy: udfs.CacheStrategy | None = None,
-        model: str | None = "text-embedding-ada-002",
+        model: str | None = "text-embedding-3-small",
         **openai_kwargs,
     ):
         with optional_imports("xpack-llm"):
@@ -211,7 +211,7 @@ class LiteLLMEmbedder(BaseEmbedder):
 
     >>> import pathway as pw
     >>> from pathway.xpacks.llm import embedders
-    >>> embedder = embedders.LiteLLMEmbedder(model="text-embedding-ada-002")
+    >>> embedder = embedders.LiteLLMEmbedder(model="text-embedding-3-small")
     >>> t = pw.debug.table_from_markdown('''
     ... txt
     ... Text
@@ -224,7 +224,7 @@ class LiteLLMEmbedder(BaseEmbedder):
     >>> embedder = embedders.LiteLLMEmbedder()
     >>> t = pw.debug.table_from_markdown('''
     ... txt  | model
-    ... Text | text-embedding-ada-002
+    ... Text | text-embedding-3-small
     ... ''')
     >>> t.select(ret=embedder(pw.this.txt, model=pw.this.model))
     <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
