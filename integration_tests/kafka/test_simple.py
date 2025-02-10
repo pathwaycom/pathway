@@ -5,6 +5,7 @@ import json
 import pathlib
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -623,3 +624,59 @@ def test_kafka_json_key(tmp_path, kafka_context):
             headers[header_key] = header_value
         assert headers["k"] == str(value["k"]).encode("utf-8")
         assert headers["v"] == f'"{value["v"]}"'.encode("utf-8")
+
+
+@pytest.mark.parametrize("output_format", ["json", "plaintext"])
+@pytest.mark.flaky(reruns=3)
+def test_kafka_dynamic_topics(tmp_path, kafka_context, output_format):
+    input_path = tmp_path / "input.jsonl"
+    dynamic_topic_1 = str(uuid.uuid4())
+    dynamic_topic_2 = str(uuid.uuid4())
+    kafka_context._create_topic(f"KafkaTopic.{dynamic_topic_1}")
+    kafka_context._create_topic(f"KafkaTopic.{dynamic_topic_2}")
+    with open(input_path, "w") as f:
+        f.write(json.dumps({"k": "0", "v": "foo", "t": dynamic_topic_1}))
+        f.write("\n")
+        f.write(json.dumps({"k": "1", "v": "bar", "t": dynamic_topic_2}))
+        f.write("\n")
+        f.write(json.dumps({"k": "2", "v": "baz", "t": dynamic_topic_1}))
+        f.write("\n")
+
+    class InputSchema(pw.Schema):
+        k: str = pw.column_definition(primary_key=True)
+        v: str
+        t: str
+
+    table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+    if output_format == "json":
+        write_kwargs = {"format": "json"}
+    elif output_format == "plaintext":
+        write_kwargs = {
+            "format": "plaintext",
+            "key": table.k,
+            "value": table.v,
+        }
+    else:
+        raise RuntimeError(f"Unknown output format: {output_format}")
+    pw.io.kafka.write(
+        table,
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic_name=table.select(topic="KafkaTopic." + pw.this.t)["topic"],
+        **write_kwargs,
+    )
+    pw.run()
+
+    def check_keys_in_topic(topic_name, expected_keys):
+        keys = set()
+        output_topic_contents = kafka_context.read_topic(topic_name)
+        for message in output_topic_contents:
+            if output_format == "json":
+                value = json.loads(message.value)
+                keys.add(value["k"])
+                assert value.keys() == {"k", "v", "t", "time", "diff", "topic"}
+            else:
+                keys.add(message.key.decode("utf-8"))
+        assert keys == expected_keys
+
+    check_keys_in_topic(f"KafkaTopic.{dynamic_topic_1}", {"0", "2"})
+    check_keys_in_topic(f"KafkaTopic.{dynamic_topic_2}", {"1"})

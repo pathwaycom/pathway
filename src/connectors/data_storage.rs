@@ -11,7 +11,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::fmt::Debug;
+use std::fmt;
+use std::fmt::{Debug, Display};
 use std::io;
 use std::io::BufRead;
 use std::io::BufWriter;
@@ -152,6 +153,36 @@ impl ValuesMap {
 impl From<HashMap<String, Result<Value, Box<ConversionError>>>> for ValuesMap {
     fn from(value: HashMap<String, Result<Value, Box<ConversionError>>>) -> Self {
         ValuesMap { map: value }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum MessageQueueTopic {
+    Fixed(String),
+    Dynamic(usize), // Index of the field used as a topic
+}
+
+impl MessageQueueTopic {
+    fn get_for_posting(&self, values: &[Value]) -> Result<String, WriteError> {
+        match self {
+            Self::Fixed(t) => Ok(t.clone()),
+            Self::Dynamic(i) => {
+                if let Value::String(t) = &values[*i] {
+                    Ok(t.to_string())
+                } else {
+                    Err(WriteError::DynamicTopicIsNotAString(values[*i].clone()))
+                }
+            }
+        }
+    }
+}
+
+impl Display for MessageQueueTopic {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Fixed(t) => write!(f, "{t}"),
+            Self::Dynamic(i) => write!(f, "${i}"),
+        }
     }
 }
 
@@ -586,6 +617,9 @@ pub enum WriteError {
 
     #[error(transparent)]
     MongoDB(#[from] MongoError),
+
+    #[error("dynamic topic name is not a string field: {0}")]
+    DynamicTopicIsNotAString(Value),
 }
 
 pub trait Writer: Send {
@@ -1333,7 +1367,7 @@ impl Writer for PsqlWriter {
 
 pub struct KafkaWriter {
     producer: ThreadedProducer<DefaultProducerContext>,
-    topic: String,
+    topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
     key_field_index: Option<usize>,
 }
@@ -1341,7 +1375,7 @@ pub struct KafkaWriter {
 impl KafkaWriter {
     pub fn new(
         producer: ThreadedProducer<DefaultProducerContext>,
-        topic: String,
+        topic: MessageQueueTopic,
         header_fields: Vec<(String, usize)>,
         key_field_index: Option<usize>,
     ) -> KafkaWriter {
@@ -1378,7 +1412,8 @@ impl Writer for KafkaWriter {
         let headers = data.construct_kafka_headers(&self.header_fields);
         for payload in data.payloads {
             let payload = payload.into_raw_bytes()?;
-            let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&self.topic)
+            let effective_topic = self.topic.get_for_posting(&data.values)?;
+            let mut entry = BaseRecord::<Vec<u8>, Vec<u8>>::to(&effective_topic)
                 .payload(&payload)
                 .headers(headers.clone())
                 .key(&key_as_bytes);
@@ -1810,7 +1845,7 @@ impl NatsReader {
 pub struct NatsWriter {
     runtime: TokioRuntime,
     client: NatsClient,
-    topic: String,
+    topic: MessageQueueTopic,
     header_fields: Vec<(String, usize)>,
 }
 
@@ -1829,8 +1864,9 @@ impl Writer for NatsWriter {
                     }
                 };
                 let payload = payload.into_raw_bytes()?;
+                let effective_topic = self.topic.get_for_posting(&data.values)?;
                 self.client
-                    .publish_with_headers(self.topic.clone(), headers, payload.into())
+                    .publish_with_headers(effective_topic, headers, payload.into())
                     .await
                     .map_err(WriteError::NatsPublish)?;
             }
@@ -1867,7 +1903,7 @@ impl NatsWriter {
     pub fn new(
         runtime: TokioRuntime,
         client: NatsClient,
-        topic: String,
+        topic: MessageQueueTopic,
         header_fields: Vec<(String, usize)>,
     ) -> Self {
         NatsWriter {

@@ -313,6 +313,7 @@ class MessageQueueOutputFormat:
     key_field_index: int | None
     header_fields: dict[str, int]
     data_format: api.DataFormat
+    topic_name_index: int | None
 
     @classmethod
     def construct(
@@ -324,12 +325,25 @@ class MessageQueueOutputFormat:
         key: ColumnReference | None = None,
         value: ColumnReference | None = None,
         headers: Iterable[ColumnReference] | None = None,
+        topic_name: ColumnReference | None = None,
     ) -> MessageQueueOutputFormat:
         key_field_index = None
         header_fields: dict[str, int] = {}
         extracted_field_indices: dict[str, int] = {}
         columns_to_extract: list[ColumnReference] = []
         allowed_column_types = (dt.BYTES, dt.STR, dt.ANY)
+
+        if topic_name is not None:
+            topic_name_index = cls.add_column_reference_to_extract(
+                topic_name, columns_to_extract, extracted_field_indices
+            )
+            if topic_name._column.dtype not in (dt.STR, dt.ANY):
+                raise ValueError(
+                    "The topic name column must have a string type, however "
+                    f"{topic_name._column.dtype.typehint} is used"
+                )
+        else:
+            topic_name_index = None
 
         # Common part for all formats: obtain key field index and prepare header fields
         if key is not None:
@@ -399,6 +413,7 @@ class MessageQueueOutputFormat:
             key_field_index=key_field_index,
             header_fields=header_fields,
             data_format=data_format,
+            topic_name_index=topic_name_index,
         )
 
     @staticmethod

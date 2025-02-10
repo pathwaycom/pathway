@@ -82,9 +82,9 @@ use crate::connectors::data_lake::DeltaBatchWriter;
 use crate::connectors::data_storage::{
     new_csv_filesystem_reader, new_filesystem_reader, new_s3_csv_reader, new_s3_generic_reader,
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
-    KafkaWriter, LakeWriter, MongoWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
-    PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError, ReadMethod,
-    ReaderBuilder, SqlWriterInitMode, SqliteReader, Writer,
+    KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, NatsReader, NatsWriter, NullWriter,
+    ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError,
+    ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, Writer,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -3767,6 +3767,7 @@ pub struct DataStorage {
     start_from_timestamp_ms: Option<i64>,
     namespace: Option<Vec<String>>,
     sql_writer_init_mode: SqlWriterInitMode,
+    topic_name_index: Option<usize>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4083,6 +4084,7 @@ impl DataStorage {
         start_from_timestamp_ms = None,
         namespace = None,
         sql_writer_init_mode = SqlWriterInitMode::Default,
+        topic_name_index = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4112,6 +4114,7 @@ impl DataStorage {
         start_from_timestamp_ms: Option<i64>,
         namespace: Option<Vec<String>>,
         sql_writer_init_mode: SqlWriterInitMode,
+        topic_name_index: Option<usize>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4140,6 +4143,7 @@ impl DataStorage {
             start_from_timestamp_ms,
             namespace,
             sql_writer_init_mode,
+            topic_name_index,
         }
     }
 }
@@ -4416,12 +4420,32 @@ impl DataStorage {
         Ok(client_config)
     }
 
-    fn kafka_or_nats_topic(&self) -> PyResult<&str> {
-        let topic = self.topic.as_ref().ok_or_else(|| {
-            PyValueError::new_err("For Kafka or NATS input, topic must be specified")
-        })?;
+    fn kafka_or_nats_topic(&self) -> PyResult<MessageQueueTopic> {
+        if let Some(topic) = &self.topic {
+            if self.topic_name_index.is_some() {
+                Err(PyValueError::new_err(
+                    "Either 'topic' or 'topic_name_index' must be defined, but not both",
+                ))
+            } else {
+                Ok(MessageQueueTopic::Fixed(topic.to_string()))
+            }
+        } else if let Some(topic_name_index) = self.topic_name_index {
+            Ok(MessageQueueTopic::Dynamic(topic_name_index))
+        } else {
+            Err(PyValueError::new_err(
+                "Either 'topic' or 'topic_name_index' must be defined, but none is",
+            ))
+        }
+    }
 
-        Ok(topic)
+    fn kafka_or_nats_fixed_topic(&self) -> PyResult<String> {
+        let topic = self.kafka_or_nats_topic()?;
+        match topic {
+            MessageQueueTopic::Fixed(t) => Ok(t),
+            MessageQueueTopic::Dynamic(_) => Err(PyValueError::new_err(
+                "Dynamic topics aren't supported for Kafka and NATS readers",
+            )),
+        }
     }
 
     fn build_csv_parser_settings(&self, py: pyo3::Python) -> CsvReaderBuilder {
@@ -4518,7 +4542,7 @@ impl DataStorage {
             .create()
             .map_err(|e| PyValueError::new_err(format!("Creating Kafka consumer failed: {e}")))?;
 
-        let topic = self.kafka_or_nats_topic()?;
+        let topic = &self.kafka_or_nats_fixed_topic()?;
         consumer
             .subscribe(&[topic])
             .map_err(|e| PyIOError::new_err(format!("Subscription to Kafka topic failed: {e}")))?;
@@ -4686,7 +4710,7 @@ impl DataStorage {
         worker_index: usize,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
         let uri = self.path()?;
-        let topic: String = self.kafka_or_nats_topic()?.to_string();
+        let topic: String = self.kafka_or_nats_fixed_topic()?.to_string();
         let runtime = create_async_tokio_runtime()?;
         let subscriber = runtime.block_on(async {
             let consumer_queue = format!("pathway-reader-{connector_index}");
@@ -4844,7 +4868,7 @@ impl DataStorage {
         let topic = self.kafka_or_nats_topic()?;
         let writer = KafkaWriter::new(
             producer,
-            topic.to_string(),
+            topic,
             self.header_fields.clone(),
             self.key_field_index,
         );
@@ -4951,7 +4975,7 @@ impl DataStorage {
 
     fn construct_nats_writer(&self) -> PyResult<Box<dyn Writer>> {
         let uri = self.path()?;
-        let topic: String = self.kafka_or_nats_topic()?.to_string();
+        let topic = self.kafka_or_nats_topic()?;
         let runtime = create_async_tokio_runtime()?;
         let client = runtime.block_on(async {
             let client = nats_connect(uri)

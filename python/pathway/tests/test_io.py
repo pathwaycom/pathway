@@ -3717,3 +3717,23 @@ def test_deltalake_start_from_timestamp(tmp_path: pathlib.Path):
     check_entries_count(start_time_3, 3)
     check_entries_count(start_time_6, 6)
     check_entries_count(start_time_9, 9)
+
+
+def test_message_queue_topic_name_error(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.jsonl"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.jsonlines.read(input_path, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="The topic name column must have a string type, however <class 'int'> is used",
+    ):
+        pw.io.nats.write(table, "nats://nats:4448", topic=table.k, format="json")
+    with pytest.raises(
+        ValueError,
+        match="The topic name column must have a string type, however <class 'int'> is used",
+    ):
+        pw.io.kafka.write(table, {}, topic_name=table.k, format="json")

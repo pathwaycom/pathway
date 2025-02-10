@@ -490,7 +490,7 @@ def read_from_upstash(
 def write(
     table: Table,
     rdkafka_settings: dict,
-    topic_name: str,
+    topic_name: str | ColumnReference,
     *,
     format: str = "json",
     delimiter: str = ",",
@@ -523,7 +523,9 @@ def write(
         table: the table to output.
         rdkafka_settings: Connection settings in the format of
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
-        topic_name: name of topic in Kafka to which the data should be sent.
+        topic_name: The Kafka topic where data will be written. This can be a specific topic name
+            or a reference to a column whose values will be used as the topic for each message.
+            If using a column reference, the column must contain string values.
         format: format in which the data is put into Kafka. Currently "json",
             "plaintext", "raw" and "dsv" are supported. If the "raw" format is selected,
             ``table`` must either contain exactly one binary column that will be dumped as it is into the
@@ -651,13 +653,15 @@ def write(
         key=key,
         value=value,
         headers=headers,
+        topic_name=topic_name if isinstance(topic_name, ColumnReference) else None,
     )
     table = output_format.table
 
     data_storage = api.DataStorage(
         storage_type="kafka",
         rdkafka_settings=rdkafka_settings,
-        topic=topic_name,
+        topic=topic_name if isinstance(topic_name, str) else None,
+        topic_name_index=output_format.topic_name_index,
         key_field_index=output_format.key_field_index,
         header_fields=[item for item in output_format.header_fields.items()],
     )

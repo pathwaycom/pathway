@@ -763,6 +763,7 @@ class DataStorage:
     mock_events: dict[tuple[str, int], list[SnapshotEvent]] | None
     table_name: str | None
     sql_writer_init_mode: SqlWriterInitMode
+    topic_name_index: int | None
 
     def __init__(self, *args, **kwargs): ...
 

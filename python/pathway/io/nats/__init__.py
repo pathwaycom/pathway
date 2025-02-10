@@ -154,7 +154,7 @@ def read(
 def write(
     table: Table,
     uri: str,
-    topic: str,
+    topic: str | ColumnReference,
     *,
     format: str = "json",
     delimiter: str = ",",
@@ -184,7 +184,9 @@ def write(
     Args:
         table: The table for output.
         uri: The URI of the NATS server.
-        topic: The name of the NATS topic to write data to.
+        topic: The NATS topic where data will be written. This can be a specific topic name
+            or a reference to a column whose values will be used as the topic for each message.
+            If using a column reference, the column must contain string values.
         format: format in which the data is put into NATS. Currently "json",
             "plaintext", "raw" and "dsv" are supported. If the "raw" format is selected,
             ``table`` must either contain exactly one binary column that will be dumped as it is
@@ -264,12 +266,15 @@ def write(
         delimiter=delimiter,
         value=value,
         headers=headers,
+        topic_name=topic if isinstance(topic, ColumnReference) else None,
     )
+    table = output_format.table
 
     data_storage = api.DataStorage(
         storage_type="nats",
         path=uri,
-        topic=topic,
+        topic=topic if isinstance(topic, str) else None,
+        topic_name_index=output_format.topic_name_index,
         header_fields=list(output_format.header_fields.items()),
     )
 
