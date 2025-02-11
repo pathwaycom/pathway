@@ -72,7 +72,7 @@ class DocumentStore:
         self.splitter: pw.UDF = (
             _wrap_udf(splitter)
             if splitter is not None
-            else pathway.xpacks.llm.splitters.null_splitter
+            else pathway.xpacks.llm.splitters.NullSplitter()
         )
 
         self.build_pipeline()

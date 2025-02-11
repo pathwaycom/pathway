@@ -6,22 +6,22 @@ import pandas as pd
 
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
-from pathway.xpacks.llm.splitters import TokenCountSplitter, null_splitter
+from pathway.xpacks.llm.splitters import NullSplitter, TokenCountSplitter
 
 
 def test_null():
-    func = null_splitter
+    splitter = NullSplitter()
     txt = "Pójdź, kińże tę chmurność w głąb flaszy 🍾."
     input_table = pw.debug.table_from_pandas(pd.DataFrame([dict(ret=txt)]))
-    result = input_table.select(ret=func(pw.this.ret)[0][0])
+    result = input_table.select(ret=splitter(pw.this.ret)[0][0])
 
     assert_table_equality(result, input_table)
 
 
 def test_tokencount():
-    func = TokenCountSplitter()
+    splitter = TokenCountSplitter()
     txt = "Pójdź, kińże tę chmurność w głąb flaszy 🍾."
     input_table = pw.debug.table_from_pandas(pd.DataFrame([dict(ret=txt)]))
-    result = input_table.select(ret=func(pw.this.ret)[0][0])
+    result = input_table.select(ret=splitter(pw.this.ret)[0][0])
 
     assert_table_equality(result, input_table)

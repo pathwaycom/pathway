@@ -3,14 +3,84 @@
 """
 A library of text spliiters - routines which slit a long text into smaller chunks.
 """
+import abc
 import unicodedata
 
 import pathway as pw
 from pathway.optional_import import optional_imports
 
 
-@pw.udf
-def null_splitter(txt: str) -> list[tuple[str, dict]]:
+def _normalize_unicode(text: str):
+    """
+    Get rid of ligatures
+    """
+    return unicodedata.normalize("NFKC", text)
+
+
+class BaseSplitter(pw.UDF):
+    """
+    Abstract base class for splitters that split a long text into smaller chunks.
+    """
+
+    kwargs: dict = {}
+
+    def __call__(self, text: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
+        """
+        Split a given text into smaller chunks. Preserves metadata and propagates it to all chunks
+        that are created from the same input string.
+
+        Args:
+            text: input column containing text to be split
+            **kwargs: override for defaults settings from the constructor
+
+        Returns:
+            pw.ColumnExpression: A column of pairs: (chunk ``text``, ``metadata``).
+                Metadata are propagated to all chunks created from the same input string.
+                If no metadata is provided, an empty dictionary is used.
+        """
+        return super().__call__(text, **kwargs)
+
+    def __wrapped__(
+        self, inputs: str | tuple[str, dict | pw.Json], **kwargs
+    ) -> list[tuple[str, dict]]:
+
+        if isinstance(inputs, tuple):
+            if len(inputs) != 2:
+                raise ValueError(
+                    f"Expected a tuple of length 2, got {len(inputs)} elements"
+                )
+
+            text, metadata = inputs
+            if not isinstance(text, str):
+                raise ValueError(
+                    f"Expected `text` to be of type `str`, got {type(text)}"
+                )
+
+            if isinstance(metadata, pw.Json):
+                metadata = metadata.as_dict()
+            elif isinstance(metadata, dict):
+                pass
+            else:
+                raise ValueError(
+                    f"Expected `metadata` to be of type `dict` or `pw.Json`, got {type(metadata)}"
+                )
+
+        elif isinstance(inputs, str):
+            text, metadata = inputs, {}
+
+        else:
+            raise ValueError(
+                f"Expected `inputs` to be of type `str` or a tuple of `str` and `dict`, got {type(inputs)}"
+            )
+
+        return self.chunk(text, metadata, **kwargs)
+
+    @abc.abstractmethod
+    def chunk(self, text: str, metadata: dict = {}, **kwargs) -> list[tuple[str, dict]]:
+        pass
+
+
+class NullSplitter(BaseSplitter):
     """A splitter which returns its argument as one long text ith null metadata.
 
     Args:
@@ -21,17 +91,12 @@ def null_splitter(txt: str) -> list[tuple[str, dict]]:
 
     The null splitter always return a list of length one containing the full text and empty metadata.
     """
-    return [(txt, {})]
+
+    def chunk(self, text: str, metadata: dict = {}, **kwargs) -> list[tuple[str, dict]]:
+        return [(text, metadata)]
 
 
-def _normalize_unicode(text: str):
-    """
-    Get rid of ligatures
-    """
-    return unicodedata.normalize("NFKC", text)
-
-
-class TokenCountSplitter(pw.UDF):
+class TokenCountSplitter(BaseSplitter):
     """
     Splits a given string or a list of strings into chunks based on token
     count.
@@ -40,13 +105,16 @@ class TokenCountSplitter(pw.UDF):
     ensuring that each chunk has a token count between `min_tokens` and
     `max_tokens`. It also attempts to break chunks at sensible points such as
     punctuation marks.
+    Splitter expects input to be a Pathway column of strings OR pairs of strings and dict metadata.
 
-    All arguments set default which may be overridden in the UDF call
+    All default arguments may be overridden in the UDF call
 
     Args:
         min_tokens: minimum tokens in a chunk of text.
         max_tokens: maximum size of a chunk in tokens.
         encoding_name: name of the encoding from `tiktoken`.
+            For a list of available encodings please refer to the tiktoken documentation:
+            https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
 
     Example:
 
@@ -80,20 +148,34 @@ class TokenCountSplitter(pw.UDF):
             min_tokens=min_tokens, max_tokens=max_tokens, encoding_name=encoding_name
         )
 
-    def __wrapped__(self, txt: str, **kwargs) -> list[tuple[str, dict]]:
+    def chunk(self, text: str, metadata: dict = {}, **kwargs) -> list[tuple[str, dict]]:
+        """
+        Split a given string into smaller chunks. Preserves metadata and propagates it to all chunks
+        that are created from the same input string.
+
+        Args:
+            inputs: input text to be split
+            metadata: metadata associated with the input text
+            **kwargs: override for defaults set in the constructor
+
+        Returns:
+            list[tuple[str, dict]]: List of pairs: (chunk ``text``, ``metadata``).
+                Metadata are propagated to all chunks created from the same input string.
+                If no metadata is provided an empty dictionary is used.
+        """
+
         import tiktoken
 
         kwargs = {**self.kwargs, **kwargs}
-
         tokenizer = tiktoken.get_encoding(kwargs.pop("encoding_name"))
         max_tokens = kwargs.pop("max_tokens")
         min_tokens = kwargs.pop("min_tokens")
-
         if kwargs:
             raise ValueError(f"Unknown arguments: {', '.join(kwargs.keys())}")
 
-        text = _normalize_unicode(txt)
+        text = _normalize_unicode(text)
         tokens = tokenizer.encode_ordinary(text)
+
         output: list[tuple[str, dict]] = []
         i = 0
         while i < len(tokens):
@@ -108,14 +190,6 @@ class TokenCountSplitter(pw.UDF):
             ):
                 chunk = chunk[: last_punctuation + 1]
             i += len(tokenizer.encode_ordinary(chunk))
-            output.append((chunk, {}))
+            output.append((chunk, metadata))
+
         return output
-
-    def __call__(self, text: pw.ColumnExpression, **kwargs) -> pw.ColumnExpression:
-        """Split given strings into smaller chunks.
-
-        Args:
-            messages (ColumnExpression[str]): Column with texts to be split
-            **kwargs: override for defaults set in the constructor
-        """
-        return super().__call__(text, **kwargs)

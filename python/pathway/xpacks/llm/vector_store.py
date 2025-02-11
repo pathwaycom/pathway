@@ -76,7 +76,7 @@ class VectorStoreServer:
         self.splitter = _unwrap_udf(
             splitter
             if splitter is not None
-            else pathway.xpacks.llm.splitters.null_splitter
+            else pathway.xpacks.llm.splitters.NullSplitter()
         )
         if isinstance(embedder, pw.UDF):
             self.embedder = embedder
