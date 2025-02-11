@@ -71,6 +71,30 @@ def _unwrap_udf(func: pw.UDF | Callable) -> Callable:
     return func
 
 
+def _wrap_udf(func: pw.UDF | Callable) -> pw.UDF:
+    """Wrap a callable function into Pathway UDF."""
+    if isinstance(func, pw.UDF):
+        return func
+    return pw.udf(func)
+
+
 def get_func_arg_names(func):
     sig = inspect.signature(func)
     return [param.name for param in sig.parameters.values()]
+
+
+def _is_text_with_meta(text_with_meta) -> bool:
+    return (
+        isinstance(text_with_meta, tuple)
+        and len(text_with_meta) == 2
+        and (
+            isinstance(text_with_meta[1], dict) | isinstance(text_with_meta[1], pw.Json)
+        )
+    )
+
+
+def _to_dict(element: dict | pw.Json):
+    if isinstance(element, pw.Json):
+        return element.as_dict()
+    else:
+        return element

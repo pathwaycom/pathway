@@ -16,12 +16,12 @@ import jmespath
 import pathway as pw
 import pathway.xpacks.llm.parsers
 import pathway.xpacks.llm.splitters
-from pathway.internals.udfs.utils import coerce_async
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.retrievers import AbstractRetrieverFactory
 from pathway.stdlib.ml.classifiers import _knn_lsh
+from pathway.xpacks.llm.utils import combine_metadata
 
-from ._utils import _unwrap_udf
+from ._utils import _wrap_udf
 
 if TYPE_CHECKING:
     import langchain_core.documents
@@ -60,23 +60,17 @@ class DocumentStore:
         ) = None,
     ):
         self.docs = docs
-
-        self.retriever_factory = retriever_factory
-
-        self.parser: Callable[[bytes], list[tuple[str, dict]]] = _unwrap_udf(
-            parser if parser is not None else pathway.xpacks.llm.parsers.Utf8Parser()
+        self.retriever_factory: AbstractRetrieverFactory = retriever_factory
+        self.parser: pw.UDF = (
+            _wrap_udf(parser)
+            if parser is not None
+            else pathway.xpacks.llm.parsers.Utf8Parser()
         )
-        self.doc_post_processors = []
-
-        if doc_post_processors:
-            self.doc_post_processors = [
-                _unwrap_udf(processor)
-                for processor in doc_post_processors
-                if processor is not None
-            ]
-
-        self.splitter = _unwrap_udf(
-            splitter
+        self.doc_post_processors: list[pw.UDF] = (
+            [_wrap_udf(p) for p in doc_post_processors] if doc_post_processors else []
+        )
+        self.splitter: pw.UDF = (
+            _wrap_udf(splitter)
             if splitter is not None
             else pathway.xpacks.llm.splitters.null_splitter
         )
@@ -174,10 +168,17 @@ class DocumentStore:
         )
 
     class _RawDocumentSchema(pw.Schema):
+        # schema for the raw, unparsed documents
         text: bytes
         metadata: pw.Json
 
+    class _DocumentWithMetaSchema(pw.Schema):
+        # schema for document processed by UDFs that outputs both text and metadata into a single column
+        text: tuple[str, dict]
+        metadata: pw.Json
+
     class _DocumentSchema(pw.Schema):
+        # cleaned schema for documents where text and metadata are in separate columns
         text: str
         metadata: pw.Json
 
@@ -215,59 +216,6 @@ class DocumentStore:
     class QueryResultSchema(pw.Schema):
         result: pw.Json
 
-    # Applies udf on (docs.text, docs.metadata), then flattens list and extracts column
-    # from json
-    # It assumes that `processor` takes two arguments and returns a list of dicts with
-    # keys "text" and "metadata"
-    def _apply_processor(self, docs: pw.Table, processor: pw.UDF) -> pw.Table:
-        processed_docs = (
-            docs.select(data=processor(pw.this.text, pw.this.metadata))
-            .flatten(pw.this.data)
-            .select(
-                text=pw.unwrap(pw.this.data["text"].as_str()),
-                metadata=pw.this.data["metadata"],
-            )
-        )
-        return processed_docs
-
-    def parse_documents(
-        self, input_docs: pw.Table[_RawDocumentSchema]
-    ) -> pw.Table[_DocumentSchema]:
-        @pw.udf
-        async def parse_doc(data: bytes, metadata: pw.Json) -> list[pw.Json]:
-            rets = await coerce_async(self.parser)(data)
-            metadata_dict = metadata.as_dict()
-            return [
-                pw.Json(dict(text=ret[0], metadata={**metadata_dict, **ret[1]}))
-                for ret in rets
-            ]
-
-        return self._apply_processor(input_docs, parse_doc)
-
-    def post_process_docs(
-        self, parsed_docs: pw.Table[_DocumentSchema]
-    ) -> pw.Table[_DocumentSchema]:
-        @pw.udf
-        def post_proc_docs(text: str, metadata: pw.Json) -> list[dict]:
-            metadata_dict = metadata.as_dict()
-            for processor in self.doc_post_processors:
-                text, metadata_dict = processor(text, metadata_dict)
-
-            return [dict(text=text, metadata=metadata)]
-
-        return self._apply_processor(parsed_docs, post_proc_docs)
-
-    def split_docs(self, post_processed_docs: pw.Table) -> pw.Table:
-        @pw.udf
-        def split_doc(text: str, metadata: pw.Json) -> list[dict]:
-            rets = self.splitter(text)
-            return [
-                dict(text=ret[0], metadata={**metadata.as_dict(), **ret[1]})
-                for ret in rets
-            ]
-
-        return self._apply_processor(post_processed_docs, split_doc)
-
     def _clean_tables(self, docs: pw.Table | Iterable[pw.Table]) -> list[pw.Table]:
         if isinstance(docs, pw.Table):
             docs = [docs]
@@ -283,6 +231,22 @@ class DocumentStore:
 
         return [_clean_table(doc) for doc in docs]
 
+    @pw.table_transformer
+    def apply_processor(
+        self, table: pw.Table, processor: pw.UDF
+    ) -> pw.Table[_DocumentSchema]:
+
+        processed_docs: pw.Table[DocumentStore._DocumentWithMetaSchema] = table.select(
+            text=processor(pw.this.text),
+            metadata=pw.this.metadata,
+            # some processors might split document into multiple parts so we flatten the results
+            # metadata will be propagated to all new rows
+        ).flatten(pw.this.text)
+        # combine_metadata will transform our columns as follows:
+        # `text` column: tuple[str, new_meta_dict] -> str
+        # `metadata` column: old_meta_dict -> old_meta_dict | new_meta_dict
+        return combine_metadata(processed_docs)
+
     def build_pipeline(self):
 
         cleaned_tables = self._clean_tables(self.docs)
@@ -295,11 +259,29 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         docs = pw.Table.concat_reindex(*cleaned_tables)
 
-        self.input_docs = docs.select(text=pw.this.data, metadata=pw.this._metadata)
-        self.parsed_docs = self.parse_documents(self.input_docs)
-        self.post_processed_docs = self.post_process_docs(self.parsed_docs)
-        self.chunked_docs = self.split_docs(self.post_processed_docs)
+        # rename columns to be consistent with the rest of the pipeline
+        self.input_docs: pw.Table[DocumentStore._RawDocumentSchema] = docs.select(
+            text=pw.this.data, metadata=pw.this._metadata
+        )
 
+        # PARSING
+        self.parsed_docs: pw.Table[DocumentStore._DocumentSchema] = (
+            self.apply_processor(self.input_docs, self.parser)
+        )
+
+        # POST PROCESSING
+        self.post_processed_docs = self.parsed_docs
+        for post_processor in self.doc_post_processors:
+            self.post_processed_docs = self.apply_processor(
+                self.post_processed_docs, post_processor
+            )
+
+        # CHUNKING
+        self.chunked_docs: pw.Table[DocumentStore._DocumentSchema] = (
+            self.apply_processor(self.parsed_docs, self.splitter)
+        )
+
+        # INDEXING
         self._retriever = self.retriever_factory.build_index(
             self.chunked_docs.text,
             self.chunked_docs,
