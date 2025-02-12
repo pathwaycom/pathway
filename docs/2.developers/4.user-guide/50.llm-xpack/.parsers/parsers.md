@@ -52,7 +52,7 @@ Pathway's `UnstructuredParser` supports five chunking modes:
 - `paged` - Collects all elements found on a single page into one chunk. Useful for documents where content is well-separated across pages.
 - `single` - Aggregates all Unstructured elements into a single large chunk. Use this mode when applying other chunking strategies available in Pathway <!-- TODO: Link Pathway-defined chunking here --> or when using a custom chunking approach.
 
-
+::if{path="/llm-xpack/"}
 Example of usage:
 
 ```python
@@ -67,6 +67,18 @@ parser = UnstructuredParser(
 
 result = data_sources.with_columns(parsed=parser(data_sources.data))
 ```
+::
+
+::if{path="/ai-pipelines/"}
+Example of YAML configuration
+```yaml
+$parser: !pw.xpacks.llm.parsers.UnstructuredParser
+  chunking_mode: "by_title"
+  chunking_kwargs:
+    max_characters: 3000        # hard limit on number of characters in each chunk
+    new_after_n_chars: 2000     # soft limit on number of characters in each chunk
+```
+::
 
 Unstructured chunking is character-based rather than token-based, meaning you do not have precise control over the maximum number of tokens each chunk will occupy in the context window.
 
@@ -81,6 +93,7 @@ It is recommended to use this parser when extracting **text**, **tables**, and *
 
 If `parse_images=True`, the parser detects images within the document, processes them with a multimodal LLM (such as OpenAI's GPT-4o), and embeds its descriptions in the Markdown output. If disabled, images are replaced with placeholders.
 
+::if{path="/llm-xpack/"}
 Example:
 
 ```python
@@ -98,6 +111,22 @@ parser = DoclingParser(
     }
 )
 ```
+::
+
+::if{path="/ai-pipelines/"}
+Example of YAML configuration
+```yaml
+$multimodal_llm: !pw.xpacks.llm.llms.OpenAIChat
+  model: "gpt-4o-mini"
+
+$parser: !pw.xpacks.llm.parsers.DoclingParser
+  parse_images: True
+  multimodal_llm: $multimodal_llm
+  pdf_pipeline_options:
+    do_formula_enrichment: True
+    image_scale: 1.5
+```
+::
 
 See [PdfPipelineOptions](https://github.com/DS4SD/docling/blob/6875913e34abacb8d71b5d31543adbf7b5bd5e92/docling/datamodel/pipeline_options.py#L217) for reference of possible configuration, like OCR options, picture classification, code OCR, scientific formula enrichment, etc.
 
@@ -112,6 +141,7 @@ Keep in mind that it might not be adequate for table extraction. No image extrac
 
 This parser can be used to transform image (e.g. in `.png` or `.jpg` format) into a textual description made by multimodal LLM. On top of that it could be used to extract structured information from the image via predefined schema.
 
+::if{path="/llm-xpack/"}
 ### Example
 
 Image that you have an application for detecting breed of dogs from the picture. You also want to know the color and surrounding of the dog.
@@ -174,6 +204,7 @@ The result (after writing to json) will be:
 Under the hood, there are two requests to the `llm` model - the first one generates the basic description using provided `prompt`, while the second one uses [`instructor`](https://github.com/instructor-ai/instructor) to extract information from the image and organize it into a provided `detail_parse_schema`.
 
 The second step is optional - if you don't specify `detail_parse_schema` parameter, instructor won't call LLM.
+::
 
 
 ## SlideParser
