@@ -17,6 +17,7 @@ from pathway.internals.api import Pointer, PythonConnectorEventType, SessionType
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table_io import table_from_datasource
+from pathway.internals.table_subscription import subscribe
 from pathway.internals.trace import trace_user_frame
 from pathway.io._utils import (
     MetadataSchema,
@@ -44,7 +45,8 @@ PW_SPECIAL_OFFSET_KEY = "_pw_offset"
 
 
 class ConnectorSubject(ABC):
-    """An abstract class allowing to create custom python connectors.
+    """An abstract class allowing to create custom python input connectors. Use with
+    :py:func:`~pathway.io.python.read`.
 
     Custom python connector can be created by extending this class and implementing
     :py:meth:`run` function responsible for filling the buffer with data.
@@ -56,35 +58,6 @@ class ConnectorSubject(ABC):
 
     If the subject won't delete records, set the class property ``deletions_enabled``
     to ``False`` as it may help to improve the performance.
-
-    Example:
-
-    >>> import pathway as pw
-    >>> from pathway.io.python import ConnectorSubject
-    >>>
-    >>> class MySchema(pw.Schema):
-    ...     a: int
-    ...     b: str
-    ...
-    >>>
-    >>> class MySubject(ConnectorSubject):
-    ...     def run(self) -> None:
-    ...         for i in range(4):
-    ...             self.next(a=i, b=f"x{i}")
-    ...     @property
-    ...     def _deletions_enabled(self) -> bool:
-    ...         return False
-    ...
-    >>>
-    >>> s = MySubject()
-    >>>
-    >>> table = pw.io.python.read(s, schema=MySchema)
-    >>> pw.debug.compute_and_print(table, include_id=False)
-    a | b
-    0 | x0
-    1 | x1
-    2 | x2
-    3 | x3
     """
 
     _buffer: Queue
@@ -371,6 +344,35 @@ def read(
 
     Returns:
         Table: The table read.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> from pathway.io.python import ConnectorSubject
+    >>>
+    >>> class MySchema(pw.Schema):
+    ...     a: int
+    ...     b: str
+    ...
+    >>>
+    >>> class MySubject(ConnectorSubject):
+    ...     def run(self) -> None:
+    ...         for i in range(4):
+    ...             self.next(a=i, b=f"x{i}")
+    ...     @property
+    ...     def _deletions_enabled(self) -> bool:
+    ...         return False
+    ...
+    >>>
+    >>> s = MySubject()
+    >>>
+    >>> table = pw.io.python.read(s, schema=MySchema)
+    >>> pw.debug.compute_and_print(table, include_id=False)
+    a | b
+    0 | x0
+    1 | x1
+    2 | x2
+    3 | x3
     """
 
     if format is None:
@@ -491,3 +493,102 @@ class InteractiveCsvPlayer(ConnectorSubject):
 
     def on_stop(self) -> None:
         self.int_slider.disabled = True
+
+
+class ConnectorObserver(ABC):
+    """An abstract class for creating custom Python writers.
+    At least `on_change` method must be implemented.
+    Use with :py:func:`~pathway.io.python.write`.
+    """
+
+    @abstractmethod
+    def on_change(
+        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
+    ) -> None:
+        """
+        Called on every change in the table. It is called on table entries in order of increasing processing
+        time. For entries with the same processing time (the same batch) the method can be called in any
+        order. The function must accept:
+
+        Args:
+            key: the key of the changed row;
+            row: the changed row as a dict mapping from the field name to the value;
+            time: the processing time of the modification, also can be referred as minibatch ID of the change;
+            is_addition: boolean value, equals to true if the row is inserted into the
+                table, false otherwise. Please note that update is basically two operations: the
+                deletion of the old value and the insertion of a new value, which happen within a single
+                batch;
+        """
+        ...
+
+    def on_time_end(self, time: int) -> None:
+        """
+        Called when a processing time is closed.
+
+        Args:
+            time: The finished processing time.
+        """
+        pass
+
+    def on_end(self) -> None:
+        """
+        Called when the stream of changes ends.
+        """
+        pass
+
+
+@check_arg_types
+@trace_user_frame
+def write(
+    table: Table,
+    observer: ConnectorObserver,
+    *,
+    name: str | None = None,
+):
+    """Writes stream of changes from a table to a Python observer.
+
+    Args:
+        table: The table to write.
+        observer: An instance of a :py:class:`~pathway.io.python.PythonWriter`.
+        name: A unique name for the writer. If provided, this name will be used in
+            logs and monitoring dashboards. Additionally, if persistence is enabled, it
+            will be used as the name for the snapshot that stores the writer's progress.
+
+    Example:
+
+    >>> from pathway.tests import utils  # NODOCS
+    >>> utils.skip_on_multiple_workers()  # NODOCS
+    >>> import pathway as pw
+    ...
+    >>> table = pw.debug.table_from_markdown('''
+    ...      | pet  | owner   | age | __time__ | __diff__
+    ...    1 | dog  | Alice   | 10  | 0        | 1
+    ...    2 | cat  | Alice   | 8   | 2        | 1
+    ...    3 | dog  | Bob     | 7   | 4        | 1
+    ...    2 | cat  | Alice   | 8   | 6        | -1
+    ... ''')
+    ...
+    >>> class Observer(pw.io.python.ConnectorObserver):
+    ...     def on_change(self, key: pw.Pointer, row: dict, time: int, is_addition: bool):
+    ...         print(f"{row}, {time}, {is_addition}")
+    ...
+    ...     def on_end(self):
+    ...         print("End of stream.")
+    ...
+    >>> pw.io.python.write(table, Observer())
+    >>> pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+    {'pet': 'dog', 'owner': 'Alice', 'age': 10}, 0, True
+    {'pet': 'cat', 'owner': 'Alice', 'age': 8}, 2, True
+    {'pet': 'dog', 'owner': 'Bob', 'age': 7}, 4, True
+    {'pet': 'cat', 'owner': 'Alice', 'age': 8}, 6, False
+    End of stream.
+    """
+
+    subscribe(
+        table,
+        skip_persisted_batch=True,
+        on_change=observer.on_change,
+        on_time_end=observer.on_time_end,
+        on_end=observer.on_end,
+        name=name,
+    )

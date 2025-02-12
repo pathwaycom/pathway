@@ -44,12 +44,12 @@ class OnChangeCallback(Protocol):
         Args:
             key: the key of the changed row;
             row: the changed row as a dict mapping from the field name to the value;
-            time: the time of the modification, also can be referred as minibatch ID of \
-the change;
-            is_addition: boolean value, equals to true if the row is inserted into the \
-table, false otherwise. Please note that update is basically two operations: the \
-deletion of the old value and the insertion of a new value, which happen within a single \
-transaction;
+            time: the processing time of the modification, also can be referred as
+                minibatch ID of the change;
+            is_addition: boolean value, equals to true if the row is inserted into the
+                table, false otherwise. Please note that update is basically two operations: the
+                deletion of the old value and the insertion of a new value, which happen within a single
+                batch;
 
         Returns:
             None

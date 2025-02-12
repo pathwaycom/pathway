@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - `pw.io.kafka.write` and `pw.io.nats.write` now support `ColumnReference` as a topic name. When a `ColumnReference` is provided, each message's topic is determined by the corresponding column value.
+- `pw.io.python.write` accepting `ConnectorObserver` as an alternative to `pw.io.subscribe`.
 
 ## [0.18.0] - 2025-02-07
 

@@ -583,25 +583,82 @@ def test_json_default_values(tmp_path: pathlib.Path):
 def test_subscribe():
     class TestSubject(pw.io.python.ConnectorSubject):
         def run(self):
-            self.next_str("foo")
+            self.next(data="foo")
 
     table = pw.io.python.read(TestSubject(), format="raw")
 
     root = mock.Mock()
-    on_change, on_end = mock.Mock(), mock.Mock()
-    root.on_change, root.on_end = on_change, on_end
 
-    pw.io.subscribe(table, on_change=on_change, on_end=on_end)
+    pw.io.subscribe(
+        table,
+        on_change=root.on_change,
+        on_time_end=root.on_time_end,
+        on_end=root.on_end,
+    )
 
-    run_all()
+    run()
 
     root.assert_has_calls(
         [
             mock.call.on_change(
                 key=mock.ANY, row={"data": "foo"}, time=mock.ANY, is_addition=True
             ),
+            mock.call.on_time_end(mock.ANY),
             mock.call.on_end(),
         ]
+    )
+
+
+def test_python_write():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(data="foo")
+
+    root = mock.Mock()
+
+    class Observer(pw.io.python.ConnectorObserver):
+        def on_change(self, key, row, time, is_addition):
+            root.on_change(key=key, row=row, time=time, is_addition=is_addition)
+
+        def on_time_end(self, time):
+            root.on_time_end(time=time)
+
+        def on_end(self):
+            root.on_end()
+
+    table = pw.io.python.read(TestSubject(), format="raw")
+    pw.io.python.write(table, Observer())
+    run()
+
+    root.assert_has_calls(
+        [
+            mock.call.on_change(
+                key=mock.ANY, row={"data": "foo"}, time=mock.ANY, is_addition=True
+            ),
+            mock.call.on_time_end(time=mock.ANY),
+            mock.call.on_end(),
+        ]
+    )
+
+
+def test_python_write_on_change_only():
+    class TestSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            self.next(data="foo")
+
+    on_change = mock.Mock()
+
+    class Observer(pw.io.python.ConnectorObserver):
+        def on_change(self, key, row, time, is_addition):
+            on_change(key=key, row=row, time=time, is_addition=is_addition)
+
+    table = pw.io.python.read(TestSubject(), format="raw")
+    observer = Observer()
+    pw.io.python.write(table, observer)
+    run_all()
+
+    on_change.assert_called_once_with(
+        key=mock.ANY, row={"data": "foo"}, time=mock.ANY, is_addition=True
     )
 
 

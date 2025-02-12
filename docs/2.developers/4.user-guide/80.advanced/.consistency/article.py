@@ -122,7 +122,7 @@ import logging
 logging.basicConfig(level=logging.INFO, force=True)
 
 
-class TotalBalance:
+class TotalBalance(pw.io.python.ConnectorObserver):
     account_balance: dict[int, int] = {}
 
     def on_change(self, key, row, time, is_addition):
@@ -147,13 +147,9 @@ class TotalBalance:
         self.account_balance.clear()
 
 
-output = TotalBalance()
-
-pw.io.subscribe(
+pw.io.python.write(
     account_balance,
-    on_change=output.on_change,
-    on_time_end=output.on_time_end,
-    on_end=output.on_end,
+    TotalBalance(),
 )
 
 
