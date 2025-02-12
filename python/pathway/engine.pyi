@@ -8,7 +8,7 @@ import asyncio
 import dataclasses
 from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any, Generic, TypeVar, Union, final
+from typing import Any, Generic, TypeVar, TypeVarTuple, Union, final
 
 from pathway.internals.api import (
     CapturedStream,
@@ -21,10 +21,10 @@ from pathway.internals.column_path import ColumnPath
 from pathway.internals.dtype import DType
 from pathway.internals.monitoring import StatsMonitor
 
-_T = TypeVar("_T")
+_T = TypeVarTuple("_T")
 
 @final
-class Pointer(Generic[_T]):
+class Pointer(Generic[*_T]):
     pass
 
 def ref_scalar(*args, optional=False) -> Pointer: ...
