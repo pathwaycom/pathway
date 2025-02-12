@@ -46,15 +46,9 @@ def test_llm_reranker():
 
     class LLM3(llms.OpenAIChat):
         async def __wrapped__(self, *args, **kwargs) -> str:
-            return '{"score": 6}'
-
-    _test_llm_reranker_raises(LLM3())
-
-    class LLM4(llms.OpenAIChat):
-        async def __wrapped__(self, *args, **kwargs) -> str:
             return "text"
 
-    _test_llm_reranker_raises(LLM4())
+    _test_llm_reranker_raises(LLM3())
 
 
 def test_rerank_topk_filter():

@@ -64,6 +64,17 @@ def test_llm_apply_openai():
     assert isinstance(values_ls[0], str)
 
 
+def parse_response_func(response) -> float:
+    if response == "RELEVANT":
+        return 1.0
+    elif response == "NOT_RELEVANT":
+        return 0.0
+    elif response == "NOT_SURE":
+        return 0.5
+    else:
+        raise ValueError(f"Invalid response: {response}")
+
+
 def test_llm_rerank():
     docs = [
         {"text": "Pasta is an italian dish"},
@@ -81,7 +92,28 @@ def test_llm_rerank():
 
     res = docs_table.select(score=reranker(pw.this.docs["text"], pw.this.query))
     res_df = pw.debug.table_to_pandas(res)
+    assert len(res_df) == len(docs)
 
+    custom_prompt = (
+        "Rank the supplied document's relevance to the given query."
+        "Answer with the following categories:\n"
+        "RELEVANT, NOT_RELEVANT, NOT_SURE\n"
+        "Do not output anything other than the category.\n"
+        "-- Document --\n"
+        "{context}\n"
+        "-- End Document --\n"
+        "-- Query --\n"
+        "{query}\n"
+        "-- End Query --\n"
+    )
+
+    reranker = rerankers.LLMReranker(
+        llm=chat, prompt_template=custom_prompt, response_parser=parse_response_func
+    )
+
+    docs_table = pw.debug.table_from_pandas(df)
+    res = docs_table.select(score=reranker(pw.this.docs["text"], pw.this.query))
+    res_df = pw.debug.table_to_pandas(res)
     assert len(res_df) == len(docs)
 
 

@@ -1,11 +1,12 @@
-import json
 import logging
+from typing import Callable
 
 import pathway as pw
+import pathway.xpacks.llm.prompts as prompts
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import Doc, llms
-from pathway.xpacks.llm._utils import _coerce_sync, _extract_value
+from pathway.xpacks.llm._utils import _extract_value
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
 
 logger = logging.getLogger(__name__)
@@ -55,29 +56,25 @@ def rerank_topk_filter(
     return (docs[:k], scores[:k])
 
 
-class LLMReranker(pw.UDF):
+class LLMReranker:
     """Pointwise LLM reranking module.
 
     Asks LLM to evaluate a given doc against a query between 1 and 5.
 
     Args:
         llm: Chat instance to be called during reranking.
-        retry_strategy: Strategy for handling retries in case of failures.
-            Defaults to None, meaning no retries.
-        cache_strategy: Defines the caching mechanism. To enable caching,
-            a valid `CacheStrategy` should be provided.
-            See `Cache strategy <https://pathway.com/developers/api-docs/udfs#pathway.udfs.CacheStrategy>`_
-            for more information. Defaults to None.
-        use_logit_bias: bool or None. Setting it as `None` checks if the LLM provider supports
-            `logit_bias` argument, it can be overridden by setting it as `True` or `False`.
-            Defaults to `None`.
-
+        prompt_template: str or Callable[[str, str], str] or pw.UDF. Template to be used for
+            generating prompt for the LLM. Defaults to `prompts.prompt_rerank`.
+            The prompt template should accept two arguments, `doc` and `query`. The prompt
+            should ask the LLM to return jsonl with an attribute 'score'.
+        response_parser: pw.UDF or Callable[[str], float]. Function to parse the response from the LLM.
+            Must take a string as input and return a float. Defaults to `prompts.parse_score_json`.
     Example:
 
     >>> import pathway as pw
     >>> import pandas as pd
     >>> from pathway.xpacks.llm import rerankers, llms
-    >>> chat = llms.OpenAIChat(model="gpt-3.5-turbo")
+    >>> chat = llms.OpenAIChat(model="gpt-4o-mini")
     >>> reranker = rerankers.LLMReranker(chat)
     >>> docs = [{"text": "Something"}, {"text": "Something else"}, {"text": "Pathway"}]
     >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})
@@ -89,91 +86,22 @@ class LLMReranker(pw.UDF):
     <pathway.Table schema={'docs': <class 'pathway.internals.json.Json'>, 'prompt': <class 'str'>, 'reranker_scores': <class 'float'>}>
     """  # noqa: E501
 
-    number_biases = {"1": 1, "2": 1, "3": 1, "4": 1, "5": 1}
-
     def __init__(
         self,
         llm: llms.BaseChat,
         *,
-        retry_strategy: (
-            udfs.AsyncRetryStrategy | None
-        ) = udfs.ExponentialBackoffRetryStrategy(max_retries=6),
-        cache_strategy: udfs.CacheStrategy | None = None,
-        use_logit_bias: bool | None = None,
+        prompt_template: (
+            str | Callable[[str, str], str] | pw.UDF
+        ) = prompts.prompt_rerank,
+        response_parser: pw.UDF | Callable[[str], float] = prompts.parse_score_json,
     ) -> None:
-        executor = udfs.async_executor(
-            retry_strategy=retry_strategy,
-        )
-        super().__init__(
-            executor=executor,
-            cache_strategy=cache_strategy,
-        )
         self.llm = llm
 
-        if use_logit_bias is None:
-            use_logit_bias = self.llm._accepts_call_arg("logit_bias")
-            logger.info(
-                f"""`use_logit_bias` not specified, setting to model default: {use_logit_bias}"""
-            )
-
-        self.use_logit_bias = use_logit_bias
-
-    def __wrapped__(self, doc: str, query: str, **kwargs) -> float:
-        doc, query = _extract_value(doc), _extract_value(query)
-
-        prompt = (
-            "You are a helper agent for RAG applications. "
-            "Given a question, and a context document, "
-            "rate the document's relevance for the question on a scale between 1 and 5.\n"
-            "5 means the question can be answered based on the given document, and document is very helpful for the question. "  # noqa: E501
-            "1 means document is totally unrelated to the question."
-            "Reply in jsonl format according to the following format:\n"
-            '{"score": <int>}\n'
-            "Do not output any other text apart from the jsonl response.\n"
-            f"Context document: `{doc}`\n"
-            f"Question: `{query}`\nScore:"
-        )
-
-        call_kwargs: dict = dict(
-            max_tokens=10,
-            temperature=0,
-        )
-
-        if self.use_logit_bias:
-            call_kwargs["logit_bias"] = self._map_dict_keys_token(self.number_biases)
-
-        call_kwargs.update(kwargs)
-
-        response = _coerce_sync(self.llm.__wrapped__)(
-            prompt_chat_single_qa.__wrapped__(prompt),
-            **call_kwargs,
-        )
-
-        return float(self.parse_score_json(response))
-
-    @staticmethod
-    def _map_dict_keys_token(dc: dict) -> dict:
-        import tiktoken
-
-        tokenizer = tiktoken.encoding_for_model("gpt-4")
-        return {tokenizer.encode(k)[0]: v for k, v in dc.items()}
-
-    def parse_score_json(self, text: str) -> int:
-        # Parse the score from the json response {"score": <int>}
-        score = 0
-        try:
-            score = json.loads(text)["score"]
-
-        except Exception:
-            raise ValueError(f"Expected a json response, got `{text}`.")
-
-        if score < 1 or score > 5:
-            raise ValueError(f"Expected a number between 1-5, got `{text}`.")
-
-        return score
+        self.prompt_udf = self._get_prompt_udf(prompt_template)
+        self.parse_response_udf = self._get_parse_response_udf(response_parser)
 
     def __call__(
-        self, doc: pw.ColumnExpression, query: pw.ColumnExpression, **kwargs
+        self, doc: pw.ColumnExpression, query: pw.ColumnExpression
     ) -> pw.ColumnExpression:
         """Evaluates the doc against the query.
 
@@ -181,9 +109,51 @@ class LLMReranker(pw.UDF):
             doc (pw.ColumnExpression[str]): Document or document chunk to be scored.
             query (pw.ColumnExpression[str]): User query or prompt that will be used
                 to evaluate relevance of the doc.
-            **kwargs: override for defaults set in the constructor
+
+        Returns:
+            pw.ColumnExpression[float]: A column with the scores for each document.
         """
-        return super().__call__(doc, query, **kwargs)
+        doc, query = pw.udf(_extract_value)(doc), pw.udf(_extract_value)(query)
+
+        call_kwargs = dict(
+            temperature=0,
+        )
+
+        prompt = self.prompt_udf(doc, query)
+
+        response = self.llm(
+            prompt_chat_single_qa(prompt),
+            **call_kwargs,
+        )
+
+        return self.parse_response_udf(response)
+
+    def _get_prompt_udf(self, prompt_template):
+        if isinstance(prompt_template, pw.UDF) or callable(prompt_template):
+            verified_template: prompts.BasePromptTemplate = (
+                prompts.RAGFunctionPromptTemplate(function_template=prompt_template)
+            )
+        elif isinstance(prompt_template, str):
+            verified_template = prompts.RAGPromptTemplate(template=prompt_template)
+        else:
+            raise ValueError(
+                f"Template is not of expected type. Got: {type(prompt_template)}."
+            )
+
+        return verified_template.as_udf()
+
+    def _get_parse_response_udf(self, response_parser: pw.UDF | Callable) -> pw.UDF:
+        response_parser_udf = None
+        if isinstance(response_parser, pw.UDF):
+            response_parser_udf = response_parser
+        elif callable(response_parser):
+            response_parser_udf = pw.udf(response_parser)
+        else:
+            raise ValueError(
+                f"Response parser is not of expected type. Got: {type(response_parser)}."
+            )
+
+        return response_parser_udf
 
 
 class CrossEncoderReranker(pw.UDF):

@@ -1,4 +1,5 @@
 import functools
+import json
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable
@@ -259,6 +260,71 @@ def prompt_qa_geometric_rag(
 
     prompt += f"{response_str}:"
     return prompt
+
+
+@pw.udf
+def prompt_rerank(
+    context: str,
+    query: str,
+    additional_rules: str = "",
+) -> str:
+    """
+    Generate prompt for reranking with given context.
+
+    Given documents and a query, generate a prompt to the llm
+
+    Args:
+        context: Information sources or the documents to be passed to the LLM as context.
+        query: Question or prompt to be answered.
+        additional_rules: Optional, additional instructions appended to the
+            template prompt.
+
+    Returns:
+        Prompt containing question and relevant docs.
+
+    >>> import pandas as pd
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm import prompts
+    >>> t = pw.debug.table_from_pandas(pd.DataFrame([{"context": "Here are some facts about paintings...",
+    ...     "query": "I like impressionism."}]))
+    >>> r = t.select(prompt=prompts.prompt_rerank(pw.this.context, pw.this.query))
+    """  # noqa: E501
+
+    prompt = (
+        "You are a helper agent for RAG applications.\n"
+        "Given a question, and a context document, "
+        "rate the document's relevance for the question on a scale between 1 and 5.\n"
+        "5 means the question can be answered based on the given document, "
+        "and the document is very helpful for the question. "
+        "1 means document is totally unrelated to the question."
+        "Reply in jsonl format according to the following format:\n"
+        '{"score": <int>}\n'
+        "Do not output any other text apart from the jsonl response.\n"
+        "-- Context documents -- \n"
+        f"{context}\n"
+        "-- End of context documents -- \n"
+        "-- Question -- \n"
+        f"{query}\n"
+        "-- End of question -- \n"
+    )
+
+    prompt += additional_rules + " "
+
+    return prompt
+
+
+@pw.udf
+def parse_score_json(text: str) -> float:
+    # Parse the score from the json response {"score": <int>}
+    # Returns float for compatibility with other potential parsers
+    score = 0
+    try:
+        score = int(json.loads(text)["score"])
+
+    except Exception:
+        raise ValueError(f"Expected a json response, got `{text}`.")
+
+    return float(score)
 
 
 # citations
