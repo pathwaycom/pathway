@@ -47,23 +47,33 @@ pub struct IcebergDBParams {
     uri: String,
     warehouse: Option<String>,
     namespace: Vec<String>,
+    props: HashMap<String, String>,
 }
 
 impl IcebergDBParams {
-    pub fn new(uri: String, warehouse: Option<String>, namespace: Vec<String>) -> Self {
+    pub fn new(
+        uri: String,
+        warehouse: Option<String>,
+        namespace: Vec<String>,
+        props: HashMap<String, String>,
+    ) -> Self {
         Self {
             uri,
             warehouse,
             namespace,
+            props,
         }
     }
 
     pub fn create_catalog(&self) -> RestCatalog {
         let config_builder = RestCatalogConfig::builder().uri(self.uri.clone());
         let config = if let Some(warehouse) = &self.warehouse {
-            config_builder.warehouse(warehouse.clone()).build()
+            config_builder
+                .warehouse(warehouse.clone())
+                .props(self.props.clone())
+                .build()
         } else {
-            config_builder.build()
+            config_builder.props(self.props.clone()).build()
         };
         RestCatalog::new(config)
     }

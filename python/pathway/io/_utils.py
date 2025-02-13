@@ -5,12 +5,13 @@ from __future__ import annotations
 import functools
 import warnings
 from dataclasses import KW_ONLY, dataclass
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 import pathway.internals as pw
 import pathway.internals.dtype as dt
 from pathway.internals import api
 from pathway.internals._io_helpers import (
+    AwsS3Settings,
     _form_value_fields,
     _format_output_value_fields,
 )
@@ -18,6 +19,10 @@ from pathway.internals.api import ConnectorMode, PathwayType, ReadMethod
 from pathway.internals.expression import ColumnReference
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
+
+if TYPE_CHECKING:
+    from pathway.io.minio import MinIOSettings
+    from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
 STATIC_MODE_NAME = "static"
 STREAMING_MODE_NAME = "streaming"
@@ -452,3 +457,27 @@ def _get_unique_name(
             stacklevel=stacklevel,
         )
     return deprecated_name
+
+
+def _prepare_s3_connection_settings(
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ),
+) -> AwsS3Settings | None:
+    if isinstance(s3_connection_settings, AwsS3Settings):
+        return s3_connection_settings
+    elif s3_connection_settings is None:
+        return None
+    else:
+        return s3_connection_settings.create_aws_settings()
+
+
+def _prepare_s3_connection_engine_settings(
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ),
+) -> api.AwsS3Settings | None:
+    aws_s3_settings = _prepare_s3_connection_settings(s3_connection_settings)
+    if aws_s3_settings is None:
+        return None
+    return aws_s3_settings.settings

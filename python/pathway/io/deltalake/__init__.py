@@ -17,7 +17,12 @@ from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import _get_unique_name, internal_connector_mode, read_schema
+from pathway.io._utils import (
+    _get_unique_name,
+    _prepare_s3_connection_settings,
+    internal_connector_mode,
+    read_schema,
+)
 from pathway.io.minio import MinIOSettings
 from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
@@ -136,7 +141,9 @@ def read(
         )
 
     _check_entitlements("deltalake")
-    prepared_connection_settings = _prepare_connection_settings(s3_connection_settings)
+    prepared_connection_settings = _prepare_s3_connection_settings(
+        s3_connection_settings
+    )
 
     uri = fspath(uri)
     schema, api_schema = read_schema(schema)
@@ -255,7 +262,9 @@ def write(
     >>> pw.io.deltalake.write(access_log, "s3://logs/access-log/")  # doctest: +SKIP
     """
     _check_entitlements("deltalake")
-    prepared_connection_settings = _prepare_connection_settings(s3_connection_settings)
+    prepared_connection_settings = _prepare_s3_connection_settings(
+        s3_connection_settings
+    )
 
     uri = fspath(uri)
     data_storage = api.DataStorage(
@@ -280,16 +289,3 @@ def write(
             unique_name=name,
         )
     )
-
-
-def _prepare_connection_settings(
-    s3_connection_settings: (
-        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
-    ),
-) -> AwsS3Settings | None:
-    if isinstance(s3_connection_settings, AwsS3Settings):
-        return s3_connection_settings
-    elif s3_connection_settings is None:
-        return None
-    else:
-        return s3_connection_settings.create_aws_settings()

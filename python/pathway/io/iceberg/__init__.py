@@ -3,14 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 from pathway.internals import api, datasink, datasource
-from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals._io_helpers import AwsS3Settings, _format_output_value_fields
 from pathway.internals.config import _check_entitlements
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
-from pathway.io._utils import _get_unique_name, internal_connector_mode, read_schema
+from pathway.io._utils import (
+    _get_unique_name,
+    _prepare_s3_connection_engine_settings,
+    internal_connector_mode,
+    read_schema,
+)
+from pathway.io.minio import MinIOSettings
+from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
 
 
 @check_arg_types
@@ -22,6 +29,9 @@ def read(
     schema: type[Schema],
     *,
     mode: str = "streaming",
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ) = None,
     warehouse: str | None = None,
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
@@ -47,6 +57,7 @@ def read(
             new row additions and reflect these events in the state. On the other hand,
             the ``"static"`` mode will only consider the available data and ingest all
             of it in one commit. The default value is ``"streaming"``.
+        s3_connection_settings: S3 credentials when using S3 as a backend.
         warehouse: Optional, path to the Iceberg storage warehouse.
         autocommit_duration_ms: The maximum time between two commits. Every
             ``autocommit_duration_ms`` milliseconds, the updates received by the connector are
@@ -96,6 +107,7 @@ def read(
 
     _check_entitlements("iceberg")
     schema, api_schema = read_schema(schema)
+    engine_s3_settings = _prepare_s3_connection_engine_settings(s3_connection_settings)
 
     data_storage = api.DataStorage(
         storage_type="iceberg",
@@ -104,6 +116,7 @@ def read(
         table_name=table_name,
         namespace=namespace,
         mode=internal_connector_mode(mode),
+        aws_s3_settings=engine_s3_settings,
     )
     data_format = api.DataFormat(
         format_type="transparent",
@@ -135,6 +148,9 @@ def write(
     namespace: list[str],
     table_name: str,
     *,
+    s3_connection_settings: (
+        AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
+    ) = None,
     warehouse: str | None = None,
     min_commit_frequency: int | None = 60_000,
     name: str | None = None,
@@ -157,6 +173,7 @@ def write(
             doesn't exist, it will be created by the connector.
         table_name: The name of the table to be written. If a table with such a name
             doesn't exist, it will be created by the connector.
+        s3_connection_settings: S3 credentials when using S3 as a backend.
         warehouse: Optional, path to the Iceberg storage warehouse.
         min_commit_frequency: Specifies the minimum time interval between two data
             commits in storage, measured in milliseconds. If set to ``None``, finalized
@@ -208,6 +225,7 @@ def write(
     Iceberg storage.
     """
     _check_entitlements("iceberg")
+    engine_s3_settings = _prepare_s3_connection_engine_settings(s3_connection_settings)
     data_storage = api.DataStorage(
         storage_type="iceberg",
         path=catalog_uri,
@@ -215,6 +233,7 @@ def write(
         database=warehouse,
         table_name=table_name,
         namespace=namespace,
+        aws_s3_settings=engine_s3_settings,
     )
 
     data_format = api.DataFormat(

@@ -3525,9 +3525,7 @@ impl AwsS3Settings {
             ))
         }
     }
-}
 
-impl AwsS3Settings {
     fn final_bucket_name(&self, deduced_name: Option<&str>) -> PyResult<String> {
         if let Some(bucket_name) = &self.bucket_name {
             Ok(bucket_name.to_string())
@@ -4333,6 +4331,60 @@ impl DataStorage {
         }
     }
 
+    fn iceberg_s3_storage_options(&self, py: pyo3::Python) -> HashMap<String, String> {
+        let Some(ref settings) = self.aws_s3_settings else {
+            return HashMap::new();
+        };
+        let settings = settings.borrow(py);
+        let mut props = HashMap::new();
+        if let Some(access_key) = &settings.access_key {
+            props.insert(
+                ::iceberg::io::S3_ACCESS_KEY_ID.to_string(),
+                access_key.to_string(),
+            );
+        }
+        if let Some(secret_access_key) = &settings.secret_access_key {
+            props.insert(
+                ::iceberg::io::S3_SECRET_ACCESS_KEY.to_string(),
+                secret_access_key.to_string(),
+            );
+        }
+        if let Some(session_token) = &settings.session_token {
+            props.insert(
+                ::iceberg::io::S3_SESSION_TOKEN.to_string(),
+                session_token.to_string(),
+            );
+        }
+        if settings.with_path_style {
+            props.insert(
+                ::iceberg::io::S3_PATH_STYLE_ACCESS.to_string(),
+                "true".to_string(),
+            );
+        }
+        if settings.profile.is_some() {
+            warn!("Profile is specified in AWS Credentials, however this kind of authorization is not supported by the Iceberg connector");
+        }
+        if let s3::Region::Custom { endpoint, region } = &settings.region {
+            if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
+                props.insert(::iceberg::io::S3_ENDPOINT.to_string(), endpoint.to_string());
+            } else {
+                props.insert(
+                    ::iceberg::io::S3_ENDPOINT.to_string(),
+                    format!("https://{endpoint}"),
+                );
+            }
+            if region != endpoint {
+                props.insert(::iceberg::io::S3_REGION.to_string(), region.to_string());
+            }
+        } else {
+            props.insert(
+                ::iceberg::io::S3_REGION.to_string(),
+                settings.region.to_string(),
+            );
+        }
+        props
+    }
+
     fn delta_s3_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
         let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
         let s3_settings = self
@@ -4757,9 +4809,18 @@ impl DataStorage {
             value_fields.push(field.borrow(py).clone());
         }
 
-        let db_params = IcebergDBParams::new(uri.to_string(), warehouse.clone(), namespace);
-        let table_params = IcebergTableParams::new(table_name.to_string(), &value_fields)
-            .map_err(|e| PyIOError::new_err(format!("Unable to create Iceberg writer: {e}")))?;
+        let db_params = IcebergDBParams::new(
+            uri.to_string(),
+            warehouse.clone(),
+            namespace,
+            self.iceberg_s3_storage_options(py),
+        );
+        let table_params =
+            IcebergTableParams::new(table_name.to_string(), &value_fields).map_err(|e| {
+                PyIOError::new_err(format!(
+                    "Unable to create table params for Iceberg reader: {e}"
+                ))
+            })?;
         let reader = IcebergReader::new(
             &db_params,
             &table_params,
@@ -4956,11 +5017,23 @@ impl DataStorage {
             value_fields.push(field.borrow(py).clone());
         }
 
-        let db_params = IcebergDBParams::new(uri.to_string(), warehouse.clone(), namespace);
-        let table_params = IcebergTableParams::new(table_name.to_string(), &value_fields)
-            .map_err(|e| PyIOError::new_err(format!("Unable to create Iceberg writer: {e}")))?;
-        let batch_writer = IcebergBatchWriter::new(&db_params, &table_params)
-            .map_err(|e| PyIOError::new_err(format!("Unable to create Iceberg writer: {e}")))?;
+        let db_params = IcebergDBParams::new(
+            uri.to_string(),
+            warehouse.clone(),
+            namespace,
+            self.iceberg_s3_storage_options(py),
+        );
+        let table_params =
+            IcebergTableParams::new(table_name.to_string(), &value_fields).map_err(|e| {
+                PyIOError::new_err(format!(
+                    "Unable to create table params for Iceberg writer: {e}"
+                ))
+            })?;
+        let batch_writer = IcebergBatchWriter::new(&db_params, &table_params).map_err(|e| {
+            PyIOError::new_err(format!(
+                "Unable to create batch writer for Iceberg writer: {e}"
+            ))
+        })?;
         let writer = LakeWriter::new(
             Box::new(batch_writer),
             &value_fields,
