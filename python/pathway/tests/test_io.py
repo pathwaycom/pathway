@@ -26,6 +26,7 @@ from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.io.airbyte.logic import _PathwayAirbyteDestination
+from pathway.tests.test_persistence import only_with_license_key
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
     CountDifferentTimestampsCallback,
@@ -3141,6 +3142,7 @@ def test_non_ascii_characters(tmp_path: pathlib.Path):
         assert word in answers
 
 
+@only_with_license_key
 def test_deltalake_simple(tmp_path: pathlib.Path):
     data = """
         k | v
@@ -3175,6 +3177,7 @@ def test_deltalake_simple(tmp_path: pathlib.Path):
 
 
 @pytest.mark.parametrize("min_commit_frequency", [None, 60_000])
+@only_with_license_key
 def test_deltalake_append(min_commit_frequency, tmp_path: pathlib.Path):
     data = """
         k | v
@@ -3276,6 +3279,7 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
     assert total_lines == 500
 
 
+@only_with_license_key
 def test_deltalake_roundtrip(tmp_path: pathlib.Path):
     data = """
         k | v
@@ -3309,6 +3313,7 @@ def test_deltalake_roundtrip(tmp_path: pathlib.Path):
 @pytest.mark.parametrize(
     "snapshot_access", [api.SnapshotAccess.FULL, api.SnapshotAccess.OFFSETS_ONLY]
 )
+@only_with_license_key
 def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
     data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
     df = pd.DataFrame(data).set_index("k")
@@ -3379,6 +3384,7 @@ def test_deltalake_recovery(snapshot_access, tmp_path: pathlib.Path):
     run_pathway_program({5, 6, 7}, -1)
 
 
+@only_with_license_key
 def test_deltalake_read_after_modification(tmp_path):
     data = [
         {"k": 1, "v": "one"},
@@ -3410,6 +3416,7 @@ def test_deltalake_read_after_modification(tmp_path):
 
 
 @needs_multiprocessing_fork
+@only_with_license_key
 def test_streaming_from_deltalake(tmp_path):
     lake_path = str(tmp_path / "lake")
     output_path = tmp_path / "output.csv"
@@ -3541,6 +3548,7 @@ def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
     assert result.equals(expected)
 
 
+@only_with_license_key
 def test_deltalake_no_primary_key(tmp_path: pathlib.Path):
     class InputSchema(pw.Schema):
         k: int
@@ -3571,6 +3579,7 @@ def test_iceberg_no_primary_key():
 
 
 @pytest.mark.parametrize("data_format", ["delta", "json"])
+@only_with_license_key("data_format", ["delta"])
 def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
     auxiliary_path = tmp_path / "auxiliary-storage"
@@ -3614,6 +3623,7 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
 
 
 @pytest.mark.parametrize("data_format", ["delta", "json"])
+@only_with_license_key("data_format", ["delta"])
 def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
     auxiliary_path = tmp_path / "auxiliary-storage"
@@ -3703,6 +3713,7 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     assert checker.n_processed_rows == 1
 
 
+@only_with_license_key
 def test_deltalake_start_from_timestamp(tmp_path: pathlib.Path):
     data_first_run = """
         k | v

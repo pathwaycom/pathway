@@ -18,6 +18,7 @@ from pathway.tests.utils import (
     LogicChecker,
     assert_sets_equality_from_path,
     needs_multiprocessing_fork,
+    only_with_license_key,
     run,
     wait_result_with_checker,
     write_csv,
@@ -29,6 +30,7 @@ from pathway.tests.utils import (
     "persistence_mode",
     [pw.PersistenceMode.PERSISTING, pw.PersistenceMode.OPERATOR_PERSISTING],
 )
+@only_with_license_key("persistence_mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 @needs_multiprocessing_fork
 def test_groupby_count(persistence_mode, tmp_path):
     input_path = tmp_path / "data"
@@ -352,6 +354,7 @@ def get_two_tables_runner(
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_restrict(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -375,6 +378,7 @@ def test_restrict(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_with_universe_of(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -405,6 +409,7 @@ def test_with_universe_of(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_intersect(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -425,6 +430,7 @@ def test_intersect(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_difference(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -445,6 +451,7 @@ def test_difference(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_sorting_ix(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -467,6 +474,7 @@ def test_sorting_ix(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_update_rows(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -487,6 +495,7 @@ def test_update_rows(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_update_cells(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -510,6 +519,7 @@ def test_update_cells(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_join(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -532,6 +542,7 @@ def test_join(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_groupby(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int
@@ -558,6 +569,7 @@ def test_groupby(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.OPERATOR_PERSISTING]
 )  # can't use api.PersistenceMode.PERSISTING because it is not compatible with stateful_reduce
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_groupby_2(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int
@@ -604,6 +616,7 @@ def test_groupby_2(tmp_path, mode):
     [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
 )
 @pytest.mark.parametrize("name", [None, "ded"])
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_deduplicate(tmp_path, mode, name):
     class InputSchema(pw.Schema):
         a: int
@@ -628,6 +641,7 @@ def test_deduplicate(tmp_path, mode, name):
     "mode", [api.PersistenceMode.OPERATOR_PERSISTING]
 )  # api.PersistenceMode.PERSISTING doesn't work as it replays the data without storing UDF results
 @pytest.mark.parametrize("sync", [True, False])
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_non_deterministic_udf(tmp_path, mode, sync):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -665,6 +679,7 @@ def test_non_deterministic_udf(tmp_path, mode, sync):
 
 
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_deterministic_udf_not_persisted(tmp_path, mode):
     class InputSchema(pw.Schema):
         a: int = pw.column_definition(primary_key=True)
@@ -697,6 +712,7 @@ def test_deterministic_udf_not_persisted(tmp_path, mode):
     "mode",
     [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 @needs_multiprocessing_fork
 def test_buffer(tmp_path, mode):
     class InputSchema(pw.Schema):
@@ -766,6 +782,7 @@ def test_buffer(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_forget(tmp_path, mode):
     class InputSchema(pw.Schema):
         t: int
@@ -784,6 +801,7 @@ def test_forget(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 @needs_multiprocessing_fork
 def test_forget_streaming(tmp_path, mode):
     class InputSchema(pw.Schema):
@@ -862,6 +880,7 @@ def test_forget_streaming(tmp_path, mode):
 @pytest.mark.parametrize(
     "mode", [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING]
 )
+@only_with_license_key("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
 def test_upsert_session_with_python_connector(tmp_path, mode):
     output_path = tmp_path / "out.csv"
     persistent_storage_path = tmp_path / "p"

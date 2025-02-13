@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import collections
+import functools
+import inspect
 import multiprocessing
 import os
 import pathlib
@@ -24,6 +26,7 @@ import pytest
 import pathway as pw
 from pathway.debug import _markdown_to_pandas, table_from_markdown, table_from_pandas
 from pathway.internals import api, datasource
+from pathway.internals.config import get_pathway_config
 from pathway.internals.graph_runner import GraphRunner
 from pathway.internals.schema import is_subschema, schema_from_columns
 from pathway.internals.table import Table
@@ -41,6 +44,49 @@ only_standard_build = pytest.mark.xfail(
     pw.__version__.endswith("+enterprise"),
     reason="only works on standard build",
 )
+
+
+def xfail_on_arg(
+    arg_name=None,
+    xfail_values=None,
+    condition: bool = False,
+    reason: str = "",
+):
+    if callable(arg_name):
+        test_func = arg_name
+
+        @functools.wraps(test_func)
+        def wrapper(*args, **kwargs):
+            if condition:
+                pytest.xfail(reason)
+            return test_func(*args, **kwargs)
+
+        return wrapper
+
+    def decorator(test_func):
+        @functools.wraps(test_func)
+        def wrapper(*args, **kwargs):
+            sig = inspect.signature(test_func)
+            bound_args = sig.bind(*args, **kwargs)
+            bound_args.apply_defaults()
+
+            if arg_name and arg_name in bound_args.arguments:
+                if bound_args.arguments[arg_name] in xfail_values and condition:
+                    pytest.xfail(reason)
+
+            return test_func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+only_with_license_key = functools.partial(
+    xfail_on_arg,
+    condition=get_pathway_config().license_key is None,
+    reason="works only with a proper license key",
+)
+
 
 AIRBYTE_FAKER_CONNECTION_REL_PATH = "connections/faker.yaml"
 
