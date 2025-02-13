@@ -354,7 +354,12 @@ class DoclingParser(pw.UDF):
     ):
         with optional_imports("xpack-llm-docs"):
             from docling.datamodel.pipeline_options import PdfPipelineOptions
-            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.document_converter import (
+                DocumentConverter,
+                InputFormat,
+                PdfFormatOption,
+            )
+            from docling_core.types.doc import ImageRefMode
 
         self.multimodal_llm: llms.OpenAIChat | llms.LiteLLMChat | None
         self.parse_images = parse_images
@@ -371,11 +376,15 @@ class DoclingParser(pw.UDF):
                     retry_strategy=udfs.ExponentialBackoffRetryStrategy(max_retries=4),
                     verbose=True,
                 )
-            self.image_mode = "embedded"  # will make docling export document to markdown with base64-embedded images
+            self.image_mode = (
+                ImageRefMode.EMBEDDED
+            )  # will make docling export document to markdown with base64-embedded images
             self.multimodal_llm = multimodal_llm
         else:
             self.multimodal_llm = None
-            self.image_mode = "placeholder"  # will make docling export document to markdown with image placeholders
+            self.image_mode = (
+                ImageRefMode.PLACEHOLDER
+            )  # will make docling export document to markdown with image placeholders
 
         default_pipeline_options = {
             "do_table_structure": True,
@@ -392,7 +401,9 @@ class DoclingParser(pw.UDF):
 
         # actual docling converter
         self.converter: DocumentConverter = DocumentConverter(
-            format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)},
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            },
             # TODO: Add more file types
         )
         super().__init__(cache_strategy=cache_strategy)
