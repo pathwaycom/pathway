@@ -549,7 +549,7 @@ def write(
 
     Args:
         table: The table to write.
-        observer: An instance of a :py:class:`~pathway.io.python.PythonWriter`.
+        observer: An instance of a :py:class:`~pathway.io.python.ConnectorObserver`.
         name: A unique name for the writer. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the writer's progress.
