@@ -10,6 +10,10 @@ import pathway as pw
 
 
 class BasePromptTemplate(BaseModel, ABC):
+    """Base class for the prompt templates.
+
+    Subclasses should implement ``as_udf``."""
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -27,6 +31,8 @@ class FunctionPromptTemplate(BasePromptTemplate):
     function_template: Callable[[str, str], str] | pw.UDF
 
     def as_udf(self, **kwargs: Any) -> pw.UDF:
+        """Return the ``function_template`` callable as :py:class:`~pathway.UDF`.
+        Given keyword arguments will be passed to the callable during runtime."""
         if isinstance(self.function_template, pw.UDF):
             return self.function_template
         return pw.udf(functools.partial(self.function_template, **kwargs))
@@ -49,9 +55,15 @@ class StringPromptTemplate(BasePromptTemplate):
     template: str
 
     def format(self, **kwargs: Any) -> str:
+        """Format the template string with keyword arguments."""
         return self.template.format(**kwargs)
 
     def as_udf(self, **kwargs: Any) -> pw.UDF:
+        """Return the ``template`` string as a :py:class:`~pathway.UDF` that calls the
+        ``format`` function.
+
+        Given keyword arguments will be passed to the callable during runtime."""
+
         @pw.udf
         def udf_formatter(context: str, query: str) -> str:
             return self.format(query=query, context=context, **kwargs)
@@ -60,9 +72,21 @@ class StringPromptTemplate(BasePromptTemplate):
 
 
 class RAGPromptTemplate(StringPromptTemplate):
+    """
+    A class to validate and handle prompt templates for RAG.
+
+    Checks the given template during construction and raises a ValidationError if the
+    template doesn't have the expected placeholders.
+    """
+
     @field_validator("template")
     @classmethod
     def is_valid_rag_template(cls, template: str) -> str:
+        """
+        Validate the prompt template by checking for required placeholders.
+
+        The template must contain the ``{context}`` and ``{query}`` placeholders.
+        """
         if "{context}" not in template or "{query}" not in template:
             raise ValueError(
                 "Template must contain `{context}` and `{query}` placeholders."
@@ -78,10 +102,17 @@ class RAGPromptTemplate(StringPromptTemplate):
 
 
 class RAGFunctionPromptTemplate(FunctionPromptTemplate):
+    """
+    A class to validate and handle callable prompt templates for RAG.
+
+    Checks the callable template during construction and raises a ValidationError if the
+    template doesn't have the expected placeholders.
+    """
 
     @field_validator("function_template")
     @classmethod
     def is_valid_rag_template(cls, template: Callable | pw.UDF) -> pw.UDF:
+        """Validate the function prompt template by running with empty placeholders."""
         if isinstance(template, pw.UDF):
             fn: Callable = template.__wrapped__
         else:
