@@ -401,7 +401,7 @@ pw.debug.compute_and_print(
 # which is not the case when the id parameter is not set.
 
 pw.debug.compute_and_print(
-    allergies.join(friends, allergies.person == friends.name, id=allergies.id).select(
+    allergies.join(friends, allergies.person == friends.name).select(
         friends.name, allergies.allergy, friends.budget
     )
 )
