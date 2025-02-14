@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from pathway.internals import api, datasink
 from pathway.internals._io_helpers import _format_output_value_fields
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -19,6 +22,7 @@ def write(
     collection: str,
     max_batch_size: int | None = None,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Writes ``table``'s stream of updates to a MongoDB table.
 
@@ -44,6 +48,9 @@ for the details.
         max_batch_size: The maximum number of entries to insert in one batch.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -192,5 +199,6 @@ for the details.
             data_format,
             datasink_name="mongodb.sink",
             unique_name=name,
+            sort_by=sort_by,
         )
     )

@@ -3129,6 +3129,7 @@ impl Scope {
         data_sink: &Bound<DataStorage>,
         data_format: &Bound<DataFormat>,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> PyResult<()> {
         let py = self_.py();
 
@@ -3144,6 +3145,7 @@ impl Scope {
             table.handle,
             column_paths,
             unique_name,
+            sort_by_indices,
         )?;
 
         Ok(())
@@ -3160,6 +3162,7 @@ impl Scope {
         on_time_end: Py<PyAny>,
         on_end: Py<PyAny>,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> PyResult<()> {
         self_.borrow().register_unique_name(unique_name.as_ref())?;
         let callbacks = SubscribeCallbacksBuilder::new()
@@ -3190,6 +3193,7 @@ impl Scope {
             skip_persisted_batch,
             skip_errors,
             unique_name,
+            sort_by_indices,
         )?;
         Ok(())
     }
@@ -3298,7 +3302,15 @@ fn capture_table_data(
                 Ok(())
             }))
             .build();
-        graph.subscribe_table(table.handle, column_paths, callbacks, false, false, None)?;
+        graph.subscribe_table(
+            table.handle,
+            column_paths,
+            callbacks,
+            false,
+            false,
+            None,
+            None,
+        )?;
     }
     Ok(table_data)
 }

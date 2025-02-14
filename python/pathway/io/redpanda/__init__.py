@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -208,6 +211,7 @@ def write(
     *,
     format: str = "json",
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
     **kwargs,
 ) -> None:
     """Write a table to a given topic on a Redpanda instance.
@@ -220,6 +224,9 @@ def write(
         format: format of the input data, only "json" is currently supported.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -270,5 +277,6 @@ def write(
         topic_name=topic_name,
         format=format,
         name=name,
+        sort_by=sort_by,
         **kwargs,
     )

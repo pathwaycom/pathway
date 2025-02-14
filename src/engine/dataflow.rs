@@ -3915,16 +3915,32 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .alloc(Table::from_collection(new_table).with_properties(table_properties)))
     }
 
+    fn prepare_batch_for_output(batch: &mut [((Key, Tuple), isize)], sort_by_indices: &[usize]) {
+        batch.sort_by(|((_, lhs), _), ((_, rhs), _)| {
+            for index in sort_by_indices {
+                let order = lhs[*index].cmp(&rhs[*index]);
+                if order != std::cmp::Ordering::Equal {
+                    return order;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+    }
+
     fn output_batch(
         stats: &mut OutputConnectorStats,
-        batch: OutputBatch<Timestamp, (Key, Tuple), isize>,
+        mut batch: OutputBatch<Timestamp, (Key, Tuple), isize>,
         data_sink: &mut Box<dyn Writer>,
         data_formatter: &mut Box<dyn Formatter>,
         worker_persistent_storage: Option<&SharedWorkerPersistentStorage>,
+        sort_by_indices: Option<&Vec<usize>>,
     ) -> Result<(), DynError> {
         stats.on_batch_started();
         let time = batch.time;
         let batch_size = batch.data.len();
+        if let Some(sort_by_indices) = sort_by_indices {
+            Self::prepare_batch_for_output(&mut batch.data, sort_by_indices);
+        }
         for ((key, values), diff) in batch.data {
             if time.is_from_persistence() && worker_persistent_storage.is_some() {
                 // Ignore entries, which had been written before
@@ -3983,6 +3999,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         let worker_index = self.scope.index();
         let error_logger = self.create_error_logger()?;
@@ -4030,6 +4047,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                                     &mut data_sink,
                                     &mut data_formatter,
                                     worker_persistent_storage.as_ref(),
+                                    sort_by_indices.as_ref(),
                                 )?;
                             }
                             Ok(OutputEvent::Commit(t)) => {
@@ -4077,6 +4095,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn subscribe_table(
         &mut self,
         table_handle: TableHandle,
@@ -4085,6 +4104,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         skip_persisted_batch: bool,
         skip_errors: bool,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         let worker_index = self.scope.index();
 
@@ -4132,10 +4152,19 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 wrapper
                     .run(|| -> DynResult<()> {
                         if let Some(on_data) = on_data.as_mut() {
-                            for ((key, values), diff) in &batch.data {
-                                on_data(*key, values, batch.time, *diff)?;
+                            if let Some(sort_by_indices) = &sort_by_indices {
+                                let mut data = batch.data.clone();
+                                Self::prepare_batch_for_output(&mut data, sort_by_indices);
+                                for ((key, values), diff) in &data {
+                                    on_data(*key, values, batch.time, *diff)?;
+                                }
+                            } else {
+                                for ((key, values), diff) in &batch.data {
+                                    on_data(*key, values, batch.time, *diff)?;
+                                }
                             }
                         }
+
                         if let Some(on_time_end) = on_time_end.as_mut() {
                             on_time_end(batch.time)?;
                         }
@@ -4914,6 +4943,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _skip_persisted_batch: bool,
         _skip_errors: bool,
         _unique_name: Option<UniqueName>,
+        _sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
     }
@@ -5249,6 +5279,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _column_paths: Vec<ColumnPath>,
         _unique_name: Option<UniqueName>,
+        _sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         Err(Error::IoNotPossible)
     }
@@ -5506,6 +5537,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         skip_persisted_batch: bool,
         skip_errors: bool,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         self.0.borrow_mut().subscribe_table(
             table_handle,
@@ -5514,6 +5546,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             skip_persisted_batch,
             skip_errors,
             unique_name,
+            sort_by_indices,
         )
     }
 
@@ -5889,6 +5922,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         self.0.borrow_mut().output_table(
             data_sink,
@@ -5896,6 +5930,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_handle,
             column_paths,
             unique_name,
+            sort_by_indices,
         )
     }
 

@@ -1,11 +1,12 @@
 import json
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from google.cloud import bigquery
 from google.oauth2.service_account import Credentials as ServiceCredentials
 
 from pathway.internals.api import Pointer, Table
+from pathway.internals.expression import ColumnReference
 from pathway.internals.json import Json
 from pathway.io._subscribe import subscribe
 
@@ -59,6 +60,7 @@ def write(
     service_user_credentials_file: str,
     *,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Writes ``table``'s stream of changes into the specified BigQuery table. Please note
     that the schema of the target table must correspond to the schema of the table that is
@@ -79,6 +81,9 @@ def write(
 to obtain them.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -109,4 +114,5 @@ to obtain them.
         on_change=output_buffer.on_change,
         on_time_end=output_buffer.on_time_end,
         name=name,
+        sort_by=sort_by,
     )

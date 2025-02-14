@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -20,6 +23,7 @@ def write(
     request_timeout_ms: int | None = None,
     *,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Sends the stream of updates from the table to
     `HTTP input <https://www.elastic.co/guide/en/logstash/current/plugins-inputs-http.html>`
@@ -37,6 +41,9 @@ def write(
             no restrictions on request duration will be applied.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Example:
 
@@ -72,4 +79,5 @@ def write(
         connect_timeout_ms=connect_timeout_ms,
         request_timeout_ms=request_timeout_ms,
         name=name,
+        sort_by=sort_by,
     )

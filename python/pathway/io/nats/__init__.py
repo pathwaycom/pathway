@@ -161,6 +161,7 @@ def write(
     value: ColumnReference | None = None,
     headers: Iterable[ColumnReference] | None = None,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Writes data into the specified NATS topic.
 
@@ -205,6 +206,9 @@ def write(
             serializable.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Example:
 
@@ -284,5 +288,6 @@ def write(
             output_format.data_format,
             datasink_name="nats",
             unique_name=name,
+            sort_by=sort_by,
         )
     )

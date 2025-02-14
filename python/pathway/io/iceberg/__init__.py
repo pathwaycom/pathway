@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import AwsS3Settings, _format_output_value_fields
 from pathway.internals.config import _check_entitlements
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -154,6 +155,7 @@ def write(
     warehouse: str | None = None,
     min_commit_frequency: int | None = 60_000,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ):
     """
     Writes the stream of changes from ``table`` into `Iceberg <https://iceberg.apache.org/>`_
@@ -183,6 +185,9 @@ def write(
             to reduce the overhead of processing the resulting table.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -248,5 +253,6 @@ def write(
             data_format,
             datasink_name="iceberg",
             unique_name=name,
+            sort_by=sort_by,
         )
     )

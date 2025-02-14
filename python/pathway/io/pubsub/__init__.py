@@ -1,10 +1,11 @@
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from google.cloud import pubsub_v1  # type: ignore
 
 import pathway.internals.dtype as dt
 from pathway.internals.api import Pointer
+from pathway.internals.expression import ColumnReference
 from pathway.io._subscribe import subscribe
 
 
@@ -53,6 +54,7 @@ def write(
     topic_id: str,
     *,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Publish the ``table``'s stream of changes into the specified PubSub topic. Please note
     that ``table`` must consist of a single column of the binary type. In addition, the connector
@@ -74,6 +76,9 @@ the example of a simple publisher configuration. You can also see the examples f
         topic_id: The topic ID where the changes are published.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -130,4 +135,5 @@ the example of a simple publisher configuration. You can also see the examples f
         on_change=output_buffer.on_change,
         on_time_end=output_buffer.on_time_end,
         name=name,
+        sort_by=sort_by,
     )

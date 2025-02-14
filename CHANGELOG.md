@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.kafka.write` and `pw.io.nats.write` now support `ColumnReference` as a topic name. When a `ColumnReference` is provided, each message's topic is determined by the corresponding column value.
 - `pw.io.python.write` accepting `ConnectorObserver` as an alternative to `pw.io.subscribe`.
 - `pw.io.iceberg.read` and `pw.io.iceberg.write` now support S3 as data backend and AWS Glue catalog implementations.
+- All output connectors now support the `sort_by` field for ordering output within a single minibatch.
 
 ### Changed
 - **BREAKING**: Changed the interface of `LLMReranker`, the `use_logit_bias`, `cache_strategy`, `retry_strategy` and `kwargs` arguments are no longer supported.

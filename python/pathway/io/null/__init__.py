@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from pathway.internals import api, datasink
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -10,7 +13,12 @@ from pathway.internals.trace import trace_user_frame
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table, *, name: str | None = None) -> None:
+def write(
+    table: Table,
+    *,
+    name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
+) -> None:
     """Writes ``table``'s stream of updates to the empty sink.
 
     Inside this routine, the data is formatted into the empty object, and then doesn't
@@ -20,6 +28,9 @@ def write(table: Table, *, name: str | None = None) -> None:
         table: Table to be written.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -48,5 +59,6 @@ def write(table: Table, *, name: str | None = None) -> None:
             data_format,
             datasink_name="null",
             unique_name=name,
+            sort_by=sort_by,
         )
     )

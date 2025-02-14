@@ -6,7 +6,7 @@ import time
 import warnings
 from abc import ABC, abstractmethod
 from queue import Queue
-from typing import Any, final
+from typing import Any, Iterable, final
 
 import pandas as pd
 import panel as pn
@@ -14,6 +14,7 @@ from IPython.display import display
 
 from pathway.internals import Table, api, datasource
 from pathway.internals.api import Pointer, PythonConnectorEventType, SessionType
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table_io import table_from_datasource
@@ -544,6 +545,7 @@ def write(
     observer: ConnectorObserver,
     *,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ):
     """Writes stream of changes from a table to a Python observer.
 
@@ -553,6 +555,9 @@ def write(
         name: A unique name for the writer. If provided, this name will be used in
             logs and monitoring dashboards. Additionally, if persistence is enabled, it
             will be used as the name for the snapshot that stores the writer's progress.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Example:
 
@@ -591,4 +596,5 @@ def write(
         on_time_end=observer.on_time_end,
         on_end=observer.on_end,
         name=name,
+        sort_by=sort_by,
     )

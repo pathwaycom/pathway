@@ -730,6 +730,7 @@ pub trait Graph {
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle>;
 
+    #[allow(clippy::too_many_arguments)]
     fn subscribe_table(
         &self,
         table_handle: TableHandle,
@@ -738,6 +739,7 @@ pub trait Graph {
         skip_persisted_batch: bool,
         skip_errors: bool,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()>;
 
     fn filter_table(
@@ -955,6 +957,7 @@ pub trait Graph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()>;
 
     fn set_operator_properties(&self, operator_properties: OperatorProperties) -> Result<()>;
@@ -1194,6 +1197,7 @@ impl Graph for ScopedGraph {
         skip_persisted_batch: bool,
         skip_errors: bool,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         self.try_with(|g| {
             g.subscribe_table(
@@ -1203,6 +1207,7 @@ impl Graph for ScopedGraph {
                 skip_persisted_batch,
                 skip_errors,
                 unique_name,
+                sort_by_indices,
             )
         })
     }
@@ -1580,6 +1585,7 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         unique_name: Option<UniqueName>,
+        sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
         self.try_with(|g| {
             g.output_table(
@@ -1588,6 +1594,7 @@ impl Graph for ScopedGraph {
                 table_handle,
                 column_paths,
                 unique_name,
+                sort_by_indices,
             )
         })
     }

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from os import PathLike
+from typing import Iterable
 
 import pathway as pw
+from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.table import Table
 from pathway.internals.trace import trace_user_frame
@@ -161,7 +163,13 @@ def read(
 
 @check_arg_types
 @trace_user_frame
-def write(table: Table, filename: str | PathLike, *, name: str | None = None) -> None:
+def write(
+    table: Table,
+    filename: str | PathLike,
+    *,
+    name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
+) -> None:
     """Writes `table`'s stream of updates to a file in delimiter-separated values format.
 
     Args:
@@ -169,6 +177,9 @@ def write(table: Table, filename: str | PathLike, *, name: str | None = None) ->
         filename: Path to the target output file.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -213,4 +224,5 @@ def write(table: Table, filename: str | PathLike, *, name: str | None = None) ->
         filename=filename,
         format="csv",
         name=name,
+        sort_by=sort_by,
     )

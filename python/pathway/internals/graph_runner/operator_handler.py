@@ -188,6 +188,7 @@ class OutputOperatorHandler(
                 data_sink=datasink.datastorage,
                 data_format=datasink.dataformat,
                 unique_name=datasink.unique_name,
+                sort_by_indices=datasink.sort_by_indices,
             )
         elif isinstance(datasink, CallbackDataSink):
             self.scope.subscribe_table(
@@ -199,6 +200,7 @@ class OutputOperatorHandler(
                 skip_persisted_batch=datasink.skip_persisted_batch,
                 skip_errors=datasink.skip_errors,
                 unique_name=datasink.unique_name,
+                sort_by_indices=datasink.sort_by_indices(table),
             )
         elif isinstance(datasink, ExportDataSink):
             exported_table = self.scope.export_table(

@@ -675,6 +675,7 @@ class Scope:
         on_time_end: Callable,
         on_end: Callable,
         unique_name: str | None = None,
+        sort_by_indices: Iterable[int] | None = None,
     ): ...
     def output_table(
         self,
@@ -683,6 +684,7 @@ class Scope:
         data_sink: DataStorage,
         data_format: DataFormat,
         unique_name: str | None = None,
+        sort_by_indices: Iterable[int] | None = None,
     ): ...
     def export_table(
         self, table: Table, column_paths: Iterable[ColumnPath]

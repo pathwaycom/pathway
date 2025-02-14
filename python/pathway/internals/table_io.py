@@ -49,6 +49,7 @@ def table_from_datasource(
 def table_to_datasink(
     table: tables.Table, datasink: datasinks.DataSink, *, special: bool = False
 ) -> operators.OutputOperator:
+    datasink.check_sort_by_columns(table)
     return parse_graphs.G.add_operator(
         lambda id: operators.OutputOperator(datasink, id),
         lambda operator: operator(table),

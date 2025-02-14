@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
+from pathway.internals.expression import ColumnReference
 from pathway.internals.table_subscription import (
     OnChangeCallback,
     OnFinishCallback,
@@ -17,6 +20,7 @@ def subscribe(
     on_time_end: OnTimeEndCallback = lambda time: None,
     *,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ):
     """
     Calls a callback function on_change on every change happening in table.
@@ -32,6 +36,9 @@ def subscribe(
         on_time_end: the callback function to be called on each closed time of computation.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
     Returns:
         None
 
@@ -71,4 +78,5 @@ def subscribe(
         on_time_end=on_time_end,
         on_end=on_end,
         name=name,
+        sort_by=sort_by,
     )

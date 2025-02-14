@@ -498,6 +498,7 @@ def write(
     value: ColumnReference | None = None,
     headers: Iterable[ColumnReference] | None = None,
     name: str | None = None,
+    sort_by: Iterable[ColumnReference] | None = None,
 ) -> None:
     """Write a table to a given topic on a Kafka instance.
 
@@ -548,6 +549,9 @@ def write(
             column is requested, it will be produced "as is" in the respective header.
         name: A unique name for the connector. If provided, this name will be used in
             logs and monitoring dashboards.
+        sort_by: If specified, the output will be sorted in ascending order based on the
+            values of the given columns within each minibatch. When multiple columns are provided,
+            the corresponding value tuples will be compared lexicographically.
 
     Returns:
         None
@@ -672,5 +676,6 @@ def write(
             output_format.data_format,
             datasink_name="kafka",
             unique_name=name,
+            sort_by=sort_by,
         )
     )

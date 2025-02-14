@@ -3805,3 +3805,94 @@ def test_message_queue_topic_name_error(tmp_path: pathlib.Path):
         match="The topic name column must have a string type, however <class 'int'> is used",
     ):
         pw.io.kafka.write(table, {}, topic_name=table.k, format="json")
+
+
+def test_output_column_sorting_by_references(tmp_path: pathlib.Path):
+    data = """
+        k | v   | vv
+        1 | foo | bar
+        2 | bar | bar
+        3 | baz | baz
+    """
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output.jsonl"
+    write_csv(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+        vv: str
+
+    class TestCallback:
+        def __init__(self):
+            self.target_column_values = []
+
+        def __call__(self, key, row, time, is_addition):
+            self.target_column_values.append(row["k"])
+
+    def check_indices_in_output(callback: TestCallback, expected_indices: list[int]):
+        run_all()
+        indices_in_output = []
+        with open(output_path, "r") as f:
+            for line in f:
+                data = json.loads(line)
+                indices_in_output.append(data["k"])
+        assert indices_in_output == expected_indices
+        assert callback.target_column_values == expected_indices
+        G.clear()
+
+    on_change_callback = TestCallback()
+    table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    pw.io.fs.write(table, output_path, format="json", sort_by=[table.v])
+    pw.io.subscribe(table, on_change_callback, sort_by=[table.v])
+    check_indices_in_output(on_change_callback, [2, 3, 1])
+
+    on_change_callback = TestCallback()
+    table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    pw.io.fs.write(table, output_path, format="json", sort_by=[table.vv, table.v])
+    pw.io.subscribe(table, on_change_callback, sort_by=[table.vv, table.v])
+    check_indices_in_output(on_change_callback, [2, 1, 3])
+
+    on_change_callback = TestCallback()
+    table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    pw.io.fs.write(table, output_path, format="json", sort_by=[table.k])
+    pw.io.subscribe(table, on_change_callback, sort_by=[table.k])
+    check_indices_in_output(on_change_callback, [1, 2, 3])
+
+
+def test_output_column_sorting_foreign_columns_error_fs(tmp_path: pathlib.Path):
+    input_path_1 = tmp_path / "input_1.csv"
+    input_path_2 = tmp_path / "input_2.csv"
+    output_path = tmp_path / "output.jsonl"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+        vv: str
+
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema, mode="static")
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema, mode="static")
+
+    with pytest.raises(
+        ValueError,
+        match="The column <table1>.v doesn't belong to the target table *",
+    ):
+        pw.io.fs.write(table_1, output_path, format="json", sort_by=[table_2.v])
+
+
+def test_output_column_sorting_foreign_columns_error_subscribe(tmp_path: pathlib.Path):
+    input_path_1 = tmp_path / "input_1.csv"
+    input_path_2 = tmp_path / "input_2.csv"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+        vv: str
+
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema, mode="static")
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema, mode="static")
+    with pytest.raises(
+        ValueError,
+        match="The column <table1>.v doesn't belong to the target table *",
+    ):
+        pw.io.subscribe(table_1, lambda **kwargs: print(kwargs), sort_by=[table_2.v])
