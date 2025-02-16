@@ -42,7 +42,7 @@ Project maintainers have the right and responsibility to remove, edit, or reject
 
 This Code of Conduct applies to all content on pathway.com, Pathway’s GitHub organization, or any other official Pathway web presence allowing for community interactions, as well as at all official Pathway events, whether offline or online.
 
-The Code of Conduct also applies within project spaces and in public spaces whenever an individual is representing Pathwayor its community. Examples of representing a project or community include using an official project e-mail address, posting via an official social media account, or acting as an appointed or de facto representative at an online or offline event. 
+The Code of Conduct also applies within project spaces and in public spaces whenever an individual is representing Pathway or its community. Examples of representing a project or community include using an official project e-mail address, posting via an official social media account, or acting as an appointed or de facto representative at an online or offline event.
 
 
 ## Conflict Resolution
