@@ -1008,6 +1008,7 @@ id_type=<class 'pathway.engine.Pointer'>>
                         "All Table.groupby() arguments have to be a ColumnReference."
                     )
 
+        self._check_for_disallowed_types(*args)
         return groupbys.GroupedTable.create(
             table=self,
             grouping_columns=args,
@@ -1147,6 +1148,7 @@ id_type=<class 'pathway.engine.Pointer'>>
             _value = value
         self._validate_expression(_value)
         self._validate_expression(instance)
+        self._check_for_disallowed_types(_value, instance)
         value_col = self._eval(_value)
         instance_col = self._eval(instance)
 
@@ -2210,6 +2212,7 @@ id_type=<class 'pathway.engine.Pointer'>>
         ^T0B95XH... | Eve     | 15  | 80    |             | ^GBSDEEW...
         """
         instance = clmn.ColumnExpression._wrap(instance)
+        self._check_for_disallowed_types(key, instance)
         context = clmn.SortingContext(
             self._eval(key),
             self._eval(instance),
@@ -2259,6 +2262,15 @@ id_type=<class 'pathway.engine.Pointer'>>
                     + " was called on. You can use <table1>.with_universe_of(<table2>)"
                     + " to assign universe of <table2> to <table1> if you're sure their"
                     + " sets of keys are equal."
+                )
+
+    def _check_for_disallowed_types(self, *expressions: expr.ColumnExpression):
+        for expression in expressions:
+            dtype = self.eval_type(expression)
+            if isinstance(dtype, dt.Future):
+                raise TypeError(
+                    f"Using column of type {dtype.typehint} is not allowed here."
+                    + " Consider applying `await_futures()` to the table first."
                 )
 
     def _wrap_column_in_context(
@@ -2511,13 +2523,83 @@ id_type=<class 'pathway.engine.Pointer'>>
         5 | 5 | 1
         6 | 2 | 3
         """
-        context = clmn.RemoveErrorsContext(self._id_column)
+        context = clmn.FilterOutValueContext(self._id_column, api.ERROR)
+        return self._table_with_context(context)
+
+    def await_futures(self) -> Table[TSchema]:
+        """Waits for the results of asynchronous computation.
+
+        It strips the ``Future`` wrapper from table columns where applicable. In practice,
+        it filters out the ``Pending`` values and produces a column with a data type that
+        was the argument of `Future`.
+
+        Columns of `Future` data type are produced by fully asynchronous UDFs. Columns of
+        this type can be propagated further, but can't be used in most expressions
+        (e.g. arithmetic operations). You can wait for their results using this method
+        and later use the results in expressions you want.
+
+        Example:
+
+        >>> import pathway as pw
+        >>> import asyncio
+        >>>
+        >>> t = pw.debug.table_from_markdown(
+        ...     '''
+        ...     a | b
+        ...     1 | 2
+        ...     3 | 4
+        ...     5 | 6
+        ... '''
+        ... )
+        >>>
+        >>> @pw.udf(executor=pw.udfs.fully_async_executor())
+        ... async def long_running_async_function(a: int, b: int) -> int:
+        ...     c = a * b
+        ...     await asyncio.sleep(0.1 * c)
+        ...     return c
+        ...
+        >>>
+        >>> result = t.with_columns(res=long_running_async_function(pw.this.a, pw.this.b))
+        >>> print(result.schema)
+        id          | a   | b   | res
+        ANY_POINTER | INT | INT | Future(INT)
+        >>>
+        >>> awaited_result = result.await_futures()
+        >>> print(awaited_result.schema)
+        id          | a   | b   | res
+        ANY_POINTER | INT | INT | INT
+        >>> pw.debug.compute_and_print(awaited_result, include_id=False)
+        a | b | res
+        1 | 2 | 2
+        3 | 4 | 12
+        5 | 6 | 30
+        """
+        result = self._await_futures()
+        new_dtypes = {}
+        for name, column in result._columns.items():
+            if isinstance(column.dtype, dt.Future):
+                new_dtypes[name] = column.dtype.wrapped
+        new_schema = self.schema.with_types(**new_dtypes)
+        return result._with_schema(new_schema)
+
+    @trace_user_frame
+    @contextualized_operator
+    def _await_futures(self) -> Table[TSchema]:
+        context = clmn.FilterOutValueContext(self._id_column, api.PENDING)
         return self._table_with_context(context)
 
     @contextualized_operator
     def _remove_retractions(self) -> Table[TSchema]:
         context = clmn.RemoveRetractionsContext(self._id_column)
         return self._table_with_context(context)
+
+    @contextualized_operator
+    def _async_transformer(self, context: clmn.AsyncTransformerContext) -> Table:
+        columns = {
+            name: clmn.ColumnWithoutExpression(context, context.universe, dtype)
+            for name, dtype in context.schema._dtypes().items()
+        }
+        return Table(_columns=columns, _context=context)
 
     def _subtables(self) -> StableSet[Table]:
         return StableSet([self])

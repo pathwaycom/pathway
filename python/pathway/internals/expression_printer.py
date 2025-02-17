@@ -163,6 +163,10 @@ class ExpressionFormatter(ExpressionVisitor):
         args = self._eval_args_kwargs((expression._expr, expression._replacement))
         return f"pathway.fill_error({args})"
 
+    def eval_fully_async_apply(self, expression: expr.FullyAsyncApplyExpression):
+        args = self._eval_args_kwargs(expression._args, expression._kwargs)
+        return f"pathway.apply_fully_async({expression._fun.__name__}, {args})"
+
 
 def get_expression_info(expression: expr.ColumnExpression) -> str:
     printer = ExpressionFormatter()

@@ -221,6 +221,11 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.ReducerExpression:
         expression = super().eval_reducer(expression, state=state, **kwargs)
+        args_dtypes = [e._dtype for e in expression._args]
+        kwargs_dtypes = [e._dtype for e in expression._kwargs.values()]
+        self._check_for_disallowed_types(
+            f"pathway.reducers.{expression._reducer.name}", *args_dtypes, *kwargs_dtypes
+        )
         return _wrap(
             expression,
             expression._reducer.return_type(
@@ -238,7 +243,13 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.ApplyExpression:
         expression = super().eval_apply(expression, state=state, **kwargs)
-        return _wrap(expression, expression._return_type)
+        args_dtypes = [e._dtype for e in expression._args]
+        kwargs_dtypes = [e._dtype for e in expression._kwargs.values()]
+        if expression._check_for_disallowed_types:
+            self._check_for_disallowed_types(
+                "pathway.apply", *args_dtypes, *kwargs_dtypes
+            )
+        return _wrap(expression, expression._maybe_optional_return_type)
 
     def eval_async_apply(
         self,
@@ -247,7 +258,21 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.AsyncApplyExpression:
         expression = super().eval_async_apply(expression, state=state, **kwargs)
-        return _wrap(expression, expression._return_type)
+        args_dtypes = [e._dtype for e in expression._args]
+        kwargs_dtypes = [e._dtype for e in expression._kwargs.values()]
+        self._check_for_disallowed_types(
+            "pathway.apply_async", *args_dtypes, *kwargs_dtypes
+        )
+        return _wrap(expression, expression._maybe_optional_return_type)
+
+    def eval_fully_async_apply(
+        self,
+        expression: expr.FullyAsyncApplyExpression,
+        state: TypeInterpreterState | None = None,
+        **kwargs,
+    ) -> expr.FullyAsyncApplyExpression:
+        expression = super().eval_fully_async_apply(expression, state=state, **kwargs)
+        return _wrap(expression, dt.Future(expression._maybe_optional_return_type))
 
     def eval_call(
         self,
@@ -275,6 +300,9 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.PointerExpression:
         expression = super().eval_pointer(expression, state=state, **kwargs)
         arg_types = [arg._dtype for arg in expression._args]
+        if expression._instance is not None:
+            arg_types.append(expression._instance._dtype)
+        self._check_for_disallowed_types("pathway.pointer_from", *arg_types)
         if expression._optional and any(
             isinstance(arg, dt.Optional) or arg == dt.ANY for arg in arg_types
         ):
@@ -327,6 +355,7 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.CoalesceExpression:
         expression = super().eval_coalesce(expression, state=state, **kwargs)
         dtypes = [arg._dtype for arg in expression._args]
+        self._check_for_disallowed_types("pathway.coalesce", *dtypes)
         ret_type = dtypes[0]
         non_optional_arg = False
         for dtype in dtypes:
@@ -360,10 +389,12 @@ class TypeInterpreter(IdentityTransform):
         args = [
             self.eval_expression(arg, state=state, **kwargs) for arg in expression._args
         ]
+        arg_dtypes = [arg._dtype for arg in args]
         new_state = state.with_new_col(
             [arg for arg in expression._args if isinstance(arg, expr.ColumnReference)]
         )
         val = self.eval_expression(expression._val, state=new_state, **kwargs)
+        self._check_for_disallowed_types("pathway.require", val._dtype, *arg_dtypes)
         expression = expr.RequireExpression(val, *args)
         ret_type = dt.Optional(val._dtype)
         return _wrap(expression, ret_type)
@@ -375,6 +406,7 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.IsNotNoneExpression:
         ret = super().eval_not_none(expression, state=state, **kwargs)
+        self._check_for_disallowed_types("pathway.is_not_none", ret._expr._dtype)
         return _wrap(ret, dt.BOOL)
 
     def eval_none(
@@ -384,6 +416,7 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.IsNoneExpression:
         ret = super().eval_none(expression, state=state, **kwargs)
+        self._check_for_disallowed_types("pathway.is_none", ret._expr._dtype)
         return _wrap(ret, dt.BOOL)
 
     def eval_ifelse(
@@ -393,7 +426,7 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.IfElseExpression:
         assert state is not None
-        if_ = self.eval_expression(expression._if, state=state)
+        if_ = self.eval_expression(expression._if, state=state, **kwargs)
         if_dtype = if_._dtype
         if if_dtype != dt.BOOL:
             raise TypeError(
@@ -404,19 +437,19 @@ class TypeInterpreter(IdentityTransform):
             if_._expr, expr.ColumnReference
         ):
             then_ = self.eval_expression(
-                expression._then, state=state.with_new_col([if_._expr])
+                expression._then, state=state.with_new_col([if_._expr]), **kwargs
             )
         else:
-            then_ = self.eval_expression(expression._then, state=state)
+            then_ = self.eval_expression(expression._then, state=state, **kwargs)
 
         if isinstance(if_, expr.IsNoneExpression) and isinstance(
             if_._expr, expr.ColumnReference
         ):
             else_ = self.eval_expression(
-                expression._else, state=state.with_new_col([if_._expr])
+                expression._else, state=state.with_new_col([if_._expr], **kwargs)
             )
         else:
-            else_ = self.eval_expression(expression._else, state=state)
+            else_ = self.eval_expression(expression._else, state=state, **kwargs)
 
         then_dtype = then_._dtype
         else_dtype = else_._dtype
@@ -441,15 +474,8 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.MakeTupleExpression:
         expression = super().eval_make_tuple(expression, state=state, **kwargs)
         dtypes = tuple(arg._dtype for arg in expression._args)
+        self._check_for_disallowed_types("pathway.make_tuple", *dtypes)
         return _wrap(expression, dt.Tuple(*dtypes))
-
-    def _eval_json_get(
-        self,
-        expression: expr.GetExpression,
-        state: TypeInterpreterState | None = None,
-        **kwargs,
-    ) -> expr.GetExpression:
-        return _wrap(expression, dt.JSON)
 
     def eval_get(
         self,
@@ -570,6 +596,7 @@ class TypeInterpreter(IdentityTransform):
     ) -> expr.UnwrapExpression:
         expression = super().eval_unwrap(expression, state=state, **kwargs)
         dtype = expression._expr._dtype
+        self._check_for_disallowed_types("pathway.unwrap", dtype)
         return _wrap(expression, dt.unoptionalize(dtype))
 
     def eval_fill_error(
@@ -588,6 +615,19 @@ class TypeInterpreter(IdentityTransform):
                 + f" {inner_dtype.typehint} and {replacement_dtype.typehint}."
             )
         return _wrap(expression, lca)
+
+    def _check_for_disallowed_types(self, name: str, *dtypes: dt.DType) -> None:
+        disallowed_dtypes: list[dt.DType] = []
+        for dtype in dtypes:
+            if isinstance(dtype, dt.Future):
+                disallowed_dtypes.append(dtype)
+        if disallowed_dtypes:
+            dtypes_repr = ", ".join(f"{dtype.typehint}" for dtype in disallowed_dtypes)
+            # adjust message if more than dt.Future is involved
+            raise TypeError(
+                f"Cannot perform {name} when column of type {dtypes_repr} is involved."
+                + " Consider applying `await_futures()` to the table used here."
+            )
 
 
 class ReducerInterprerer(TypeInterpreter):

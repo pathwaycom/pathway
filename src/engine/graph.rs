@@ -128,31 +128,26 @@ pub enum ColumnPath {
 
 impl ColumnPath {
     pub fn extract(&self, key: &Key, value: &Value) -> Result<Value> {
-        match self {
-            Self::Key => Ok(Value::from(*key)),
-            Self::ValuePath(path) => {
-                let mut value = value;
-                for i in path {
-                    if *value == Value::None || *value == Value::Error {
-                        break;
-                        // needed in outer joins and replacing rows with duplicated ids with error
-                    }
-                    value = value
-                        .as_tuple()?
-                        .get(*i)
-                        .ok_or_else(|| Error::InvalidColumnPath(self.clone()))?;
-                }
-                Ok(value.clone())
-            }
-        }
+        self.extract_inner(Some(key), value)
     }
 
     pub fn extract_from_value(&self, value: &Value) -> Result<Value> {
+        self.extract_inner(None, value)
+    }
+
+    fn extract_inner(&self, key: Option<&Key>, value: &Value) -> Result<Value> {
         match self {
-            Self::Key => Err(Error::ExtractFromValueNotSupportedForKey),
+            Self::Key => match key {
+                Some(key) => Ok(Value::from(*key)),
+                None => Err(Error::ExtractFromValueNotSupportedForKey),
+            },
             Self::ValuePath(path) => {
                 let mut value = value;
                 for i in path {
+                    if *value == Value::None || *value == Value::Error || *value == Value::Pending {
+                        break;
+                        // needed in outer joins and replacing rows with duplicated ids with error
+                    }
                     value = value
                         .as_tuple()?
                         .get(*i)
@@ -550,6 +545,7 @@ pub struct SubscribeCallbacks {
     pub on_data: Option<OnDataFn>,
     pub on_time_end: Option<OnTimeEndFn>,
     pub on_end: Option<OnEndFn>,
+    pub on_frontier: Option<OnTimeEndFn>,
 }
 
 pub struct SubscribeCallbacksBuilder {
@@ -564,6 +560,7 @@ impl SubscribeCallbacksBuilder {
                 on_data: None,
                 on_time_end: None,
                 on_end: None,
+                on_frontier: None,
             },
         }
     }
@@ -602,6 +599,13 @@ impl Default for SubscribeCallbacksBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SubscribeConfig {
+    pub skip_persisted_batch: bool,
+    pub skip_errors: bool,
+    pub skip_pending: bool,
 }
 
 pub type ExportedTableCallback = Box<dyn FnMut() -> ControlFlow<()> + Send>;
@@ -736,8 +740,7 @@ pub trait Graph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
-        skip_persisted_batch: bool,
-        skip_errors: bool,
+        config: SubscribeConfig,
         unique_name: Option<UniqueName>,
         sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()>;
@@ -986,11 +989,25 @@ pub trait Graph {
 
     fn import_table(&self, table: Arc<dyn ExportedTable>) -> Result<TableHandle>;
 
-    fn remove_errors_from_table(
+    fn remove_value_from_table(
         &self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        value: Value,
         table_properties: Arc<TableProperties>,
+    ) -> Result<TableHandle>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn async_transformer(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
+        reader: Box<dyn ReaderBuilder>,
+        parser: Box<dyn Parser>,
+        commit_duration: Option<Duration>,
+        table_properties: Arc<TableProperties>,
+        skip_errors: bool,
     ) -> Result<TableHandle>;
 }
 
@@ -1194,8 +1211,7 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
-        skip_persisted_batch: bool,
-        skip_errors: bool,
+        config: SubscribeConfig,
         unique_name: Option<UniqueName>,
         sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
@@ -1204,8 +1220,7 @@ impl Graph for ScopedGraph {
                 table_handle,
                 column_paths,
                 callbacks,
-                skip_persisted_batch,
-                skip_errors,
+                config,
                 unique_name,
                 sort_by_indices,
             )
@@ -1641,12 +1656,40 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.import_table(table))
     }
 
-    fn remove_errors_from_table(
+    fn remove_value_from_table(
         &self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        value: Value,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.try_with(|g| g.remove_errors_from_table(table_handle, column_paths, table_properties))
+        self.try_with(|g| {
+            g.remove_value_from_table(table_handle, column_paths, value, table_properties)
+        })
+    }
+
+    fn async_transformer(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
+        reader: Box<dyn ReaderBuilder>,
+        parser: Box<dyn Parser>,
+        commit_duration: Option<Duration>,
+        table_properties: Arc<TableProperties>,
+        skip_errors: bool,
+    ) -> Result<TableHandle> {
+        self.try_with(|g| {
+            g.async_transformer(
+                table_handle,
+                column_paths,
+                callbacks,
+                reader,
+                parser,
+                commit_duration,
+                table_properties,
+                skip_errors,
+            )
+        })
     }
 }

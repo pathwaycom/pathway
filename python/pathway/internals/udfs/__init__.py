@@ -26,6 +26,7 @@ from pathway.internals.udfs.executors import (
     async_executor,
     async_options,
     auto_executor,
+    fully_async_executor,
     sync_executor,
     with_capacity,
     with_timeout,
@@ -45,6 +46,7 @@ __all__ = [
     "auto_executor",
     "async_executor",
     "sync_executor",
+    "fully_async_executor",
     "CacheStrategy",
     "DefaultCache",
     "DiskCache",
@@ -203,6 +205,7 @@ class UDF(abc.ABC):
             return_type=self._get_return_type(),
             propagate_none=self.propagate_none,
             deterministic=self.deterministic,
+            **self.executor.additional_expression_args(),
             args=args,
             kwargs=kwargs,
         )

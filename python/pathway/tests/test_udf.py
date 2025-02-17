@@ -8,6 +8,7 @@ import pathlib
 import re
 import sys
 import threading
+import time
 import warnings
 from typing import Optional
 from unittest import mock
@@ -16,10 +17,13 @@ import pytest
 
 import pathway as pw
 from pathway.internals import api
+from pathway.internals.udfs.executors import Executor
 from pathway.tests.utils import (
     T,
     assert_stream_equality,
     assert_table_equality,
+    assert_table_equality_wo_index,
+    assert_table_equality_wo_types,
     run_all,
     warns_here,
     xfail_on_multiple_threads,
@@ -89,12 +93,22 @@ def test_udf_class():
     )
 
 
-def test_udf_async_options(tmp_path: pathlib.Path):
+def get_async_executor(fully_async: bool) -> Executor:
+    if fully_async:
+        return pw.udfs.fully_async_executor()
+    else:
+        return pw.udfs.async_executor()
+
+
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_udf_async_options(tmp_path: pathlib.Path, fully_async):
     cache_dir = tmp_path / "test_cache"
 
     counter = mock.Mock()
 
-    @pw.udf(cache_strategy=pw.udfs.DiskCache())
+    @pw.udf(
+        executor=get_async_executor(fully_async), cache_strategy=pw.udfs.DiskCache()
+    )
     async def inc(x: int) -> int:
         counter()
         return x + 5
@@ -108,6 +122,8 @@ def test_udf_async_options(tmp_path: pathlib.Path):
         """
     )
     result = input.select(ret=inc(pw.this.foo))
+    if fully_async:
+        result = result.await_futures()
     expected = T(
         """
         ret
@@ -136,12 +152,13 @@ def test_udf_async_options(tmp_path: pathlib.Path):
     assert counter.call_count == 3
 
 
+@pytest.mark.parametrize("fully_async", [True, False])
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="test requires asyncio.Barrier")
-def test_udf_async():
+def test_udf_async(fully_async):
     barrier = asyncio.Barrier(3)  # type: ignore[attr-defined]
     # mypy complains because of versions lower than 3.11
 
-    @pw.udf
+    @pw.udf(executor=get_async_executor(fully_async))
     async def inc(a: int) -> int:
         await barrier.wait()
         return a + 3
@@ -156,6 +173,9 @@ def test_udf_async():
     )
 
     result = input.select(ret=inc(pw.this.a))
+
+    if fully_async:
+        result = result.await_futures()
 
     assert_table_equality(
         result,
@@ -193,10 +213,11 @@ def test_udf_sync():
         run_all()
 
 
-def test_udf_sync_with_async_executor():
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_udf_sync_with_async_executor(fully_async):
     barrier = threading.Barrier(3, timeout=10)
 
-    @pw.udf(executor=pw.udfs.async_executor())
+    @pw.udf(executor=get_async_executor(fully_async))
     def inc(a: int) -> int:
         barrier.wait()
         return a + 3
@@ -212,6 +233,9 @@ def test_udf_sync_with_async_executor():
 
     result = input.select(ret=inc(pw.this.a))
 
+    if fully_async:
+        result = result.await_futures()
+
     assert_table_equality(
         result,
         T(
@@ -225,7 +249,8 @@ def test_udf_sync_with_async_executor():
     )
 
 
-def test_udf_async_class():
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_udf_async_class(fully_async):
     class Inc(pw.UDF):
         def __init__(self, inc, **kwargs) -> None:
             super().__init__(**kwargs)
@@ -244,8 +269,10 @@ def test_udf_async_class():
         """
     )
 
-    inc = Inc(40)
+    inc = Inc(40, executor=get_async_executor(fully_async))
     result = input.select(ret=inc(pw.this.a))
+    if fully_async:
+        result = result.await_futures()
 
     assert_table_equality(
         result,
@@ -260,10 +287,11 @@ def test_udf_async_class():
     )
 
 
-def test_udf_propagate_none():
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_udf_propagate_none(fully_async):
     internal_add = mock.Mock()
 
-    @pw.udf(propagate_none=True)
+    @pw.udf(executor=get_async_executor(fully_async), propagate_none=True)
     def add(a: int, b: int) -> int:
         assert a is not None
         assert b is not None
@@ -280,6 +308,8 @@ def test_udf_propagate_none():
     )
 
     result = input.select(ret=add(pw.this.a, pw.this.b))
+    if fully_async:
+        result = result.await_futures()
 
     assert_table_equality(
         result,
@@ -531,10 +561,11 @@ def test_udf_deterministic_not_stored(monkeypatch, tmp_path: pathlib.Path, sync)
     assert internal_inc.call_count == 5
 
 
-def test_async_udf_propagate_none():
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_async_udf_propagate_none(fully_async):
     internal_add = mock.Mock()
 
-    @pw.udf(propagate_none=True)
+    @pw.udf(propagate_none=True, executor=get_async_executor(fully_async))
     async def add(a: int, b: int) -> int:
         assert a is not None
         assert b is not None
@@ -551,6 +582,8 @@ def test_async_udf_propagate_none():
     )
 
     result = input.select(ret=add(pw.this.a, pw.this.b))
+    if fully_async:
+        result = result.await_futures()
 
     assert_table_equality(
         result,
@@ -566,10 +599,11 @@ def test_async_udf_propagate_none():
     internal_add.assert_called_once()
 
 
-def test_async_udf_with_none():
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_async_udf_with_none(fully_async):
     internal_add = mock.Mock()
 
-    @pw.udf()
+    @pw.udf(executor=get_async_executor(fully_async))
     async def add(a: int, b: int) -> int:
         internal_add()
         if a is None:
@@ -588,6 +622,8 @@ def test_async_udf_with_none():
     )
 
     result = input.select(ret=add(pw.this.a, pw.this.b))
+    if fully_async:
+        result = result.await_futures()
 
     assert_table_equality(
         result,
@@ -603,8 +639,14 @@ def test_async_udf_with_none():
     assert internal_add.call_count == 3
 
 
-def test_udf_timeout():
-    @pw.udf(executor=pw.udfs.async_executor(timeout=0.1))
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_udf_timeout(fully_async):
+    if fully_async:
+        executor = pw.udfs.fully_async_executor(timeout=0.1)
+    else:
+        executor = pw.udfs.async_executor(timeout=0.1)
+
+    @pw.udf(executor=executor)
     async def inc(a: int) -> int:
         await asyncio.sleep(2)
         return a + 1
@@ -618,7 +660,9 @@ def test_udf_timeout():
 
     input.select(ret=inc(pw.this.a))
     expected: type[Exception]
-    if sys.version_info < (3, 11):
+    if fully_async:
+        expected = api.EngineError
+    elif sys.version_info < (3, 11):
         expected = asyncio.exceptions.TimeoutError
     else:
         expected = TimeoutError
@@ -626,8 +670,14 @@ def test_udf_timeout():
         run_all()
 
 
-def test_udf_too_fast_for_timeout():
-    @pw.udf(executor=pw.udfs.async_executor(timeout=10.0))
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_udf_too_fast_for_timeout(fully_async):
+    if fully_async:
+        executor = pw.udfs.fully_async_executor(timeout=10.0)
+    else:
+        executor = pw.udfs.async_executor(timeout=10.0)
+
+    @pw.udf(executor=executor)
     async def inc(a: int) -> int:
         return a + 1
 
@@ -641,6 +691,8 @@ def test_udf_too_fast_for_timeout():
     )
 
     result = input.select(ret=inc(pw.this.a))
+    if fully_async:
+        result = result.await_futures()
     assert_table_equality(
         result,
         T(
@@ -654,11 +706,11 @@ def test_udf_too_fast_for_timeout():
     )
 
 
-@pytest.mark.parametrize("sync", [True, False])
-def test_udf_in_memory_cache(sync: bool) -> None:
+@pytest.mark.parametrize("sync", ["sync", "async", "fully_async"])
+def test_udf_in_memory_cache(sync: str) -> None:
     internal_inc = mock.Mock()
 
-    if sync:
+    if sync == "sync":
 
         @pw.udf(cache_strategy=pw.udfs.InMemoryCache())
         def inc(a: int) -> int:
@@ -667,7 +719,10 @@ def test_udf_in_memory_cache(sync: bool) -> None:
 
     else:
 
-        @pw.udf(cache_strategy=pw.udfs.InMemoryCache())
+        @pw.udf(
+            cache_strategy=pw.udfs.InMemoryCache(),
+            executor=get_async_executor(sync == "fully_async"),
+        )
         async def inc(a: int) -> int:
             await asyncio.sleep(a / 10)
             internal_inc(a)
@@ -684,6 +739,8 @@ def test_udf_in_memory_cache(sync: bool) -> None:
     """
     )
     result = input.select(ret=inc(pw.this.a))
+    if sync == "fully_async":
+        result = result.await_futures()
     expected = T(
         """
         ret
@@ -704,11 +761,11 @@ def test_udf_in_memory_cache(sync: bool) -> None:
     assert internal_inc.call_count == 3  # count did not change
 
 
-@pytest.mark.parametrize("sync", [True, False])
-def test_udf_in_memory_cache_with_limit(sync: bool) -> None:
+@pytest.mark.parametrize("sync", ["sync", "async", "fully_async"])
+def test_udf_in_memory_cache_with_limit(sync: str) -> None:
     internal_inc = mock.Mock()
 
-    if sync:
+    if sync == "sync":
 
         @pw.udf(cache_strategy=pw.udfs.InMemoryCache(max_size=0))
         def inc(a: int) -> int:
@@ -717,7 +774,10 @@ def test_udf_in_memory_cache_with_limit(sync: bool) -> None:
 
     else:
 
-        @pw.udf(cache_strategy=pw.udfs.InMemoryCache(max_size=0))
+        @pw.udf(
+            cache_strategy=pw.udfs.InMemoryCache(max_size=0),
+            executor=get_async_executor(sync == "fully_async"),
+        )
         async def inc(a: int) -> int:
             await asyncio.sleep(a / 10)
             internal_inc(a)
@@ -732,6 +792,8 @@ def test_udf_in_memory_cache_with_limit(sync: bool) -> None:
     """
     )
     result = input.select(ret=inc(pw.this.a))
+    if sync == "fully_async":
+        result = result.await_futures()
     expected = T(
         """
         ret
@@ -745,11 +807,23 @@ def test_udf_in_memory_cache_with_limit(sync: bool) -> None:
     assert internal_inc.call_count == 3
 
 
-@pytest.mark.parametrize("sync", [True, False])
+@pytest.mark.parametrize(
+    "sync",
+    [
+        "sync",
+        "async",
+        pytest.param(
+            "fully_async",
+            marks=pytest.mark.xfail(
+                sys.platform != "linux", reason="InMemoryCache uses incompatible loop"
+            ),
+        ),
+    ],
+)
 def test_udf_in_memory_cache_multiple_places(sync: bool) -> None:
     internal_inc = mock.Mock()
 
-    if sync:
+    if sync == "sync":
 
         @pw.udf(cache_strategy=pw.udfs.InMemoryCache())
         def inc(a: int) -> int:
@@ -758,7 +832,10 @@ def test_udf_in_memory_cache_multiple_places(sync: bool) -> None:
 
     else:
 
-        @pw.udf(cache_strategy=pw.udfs.InMemoryCache())
+        @pw.udf(
+            cache_strategy=pw.udfs.InMemoryCache(),
+            executor=get_async_executor(sync == "fully_async"),
+        )
         async def inc(a: int) -> int:
             internal_inc(a)
             return a + 1
@@ -775,6 +852,8 @@ def test_udf_in_memory_cache_multiple_places(sync: bool) -> None:
     )
     result = input.with_columns(ret=inc(pw.this.a))
     result = result.with_columns(ret_2=inc(pw.this.a))
+    if sync == "fully_async":
+        result = result.await_futures()
     expected = T(
         """
         a | ret | ret_2
@@ -815,10 +894,19 @@ def test_udf_dont_warn_on_broader_return_type() -> None:
         f(pw.this.a)
 
 
-def test_cast_on_return() -> None:
-    @pw.udf()
-    def f(a: int) -> float:
-        return a
+@pytest.mark.parametrize("sync", ["sync", "async", "fully_async"])
+def test_cast_on_return(sync: str) -> None:
+    if sync == "sync":
+
+        @pw.udf()
+        def f(a: int) -> float:
+            return a
+
+    else:
+
+        @pw.udf(executor=get_async_executor(sync == "fully_async"))
+        async def f(a: int) -> float:
+            return a
 
     t = pw.debug.table_from_markdown(
         """
@@ -829,6 +917,8 @@ def test_cast_on_return() -> None:
     """
     ).with_columns(a=f(pw.this.a))
 
+    if sync == "fully_async":
+        t = t.await_futures()
     res = t.select(c=pw.this.a + pw.this.b)
     expected = pw.debug.table_from_markdown(
         """
@@ -966,3 +1056,412 @@ def test_append_only_results_stored_temporarily_column_not_append_only_storage_n
     )
 
     assert_stream_equality(result, expected)
+
+
+def test_fully_async_udf():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def inc(a: int) -> int:
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        """
+    )
+
+    result = input.select(ret=inc(pw.this.a))
+
+    assert_table_equality_wo_types(
+        result,
+        T(
+            """
+            ret
+            2
+            3
+            4
+            """,
+        ),
+    )
+
+
+def test_fully_async_udf_propagation_allowed():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def inc(a: int) -> int:
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        """
+    )
+
+    t = input.with_columns(ret=inc(pw.this.a))
+    result = t.select(a=pw.this.a + 2, b=pw.this.ret)
+
+    assert_table_equality_wo_types(
+        result,
+        T(
+            """
+            a | b
+            3 | 2
+            4 | 3
+            5 | 4
+            """,
+        ),
+    )
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_expression():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def inc(a: int) -> int:
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        """
+    )
+
+    msg = "Pathway does not support using binary operator add on columns of types _asyncio.Future[int], <class 'int'>."
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        input.select(ret=inc(pw.this.a) + 1)
+
+
+def table_with_future_ret() -> pw.Table:
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def inc(a: int) -> int:
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        """
+    )
+    return input.with_columns(ret=inc(pw.this.a))
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_reduce():
+    t = table_with_future_ret()
+    msg = (
+        "Cannot perform pathway.reducers.sum when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here"
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.reduce(s=pw.reducers.sum(pw.this.ret))
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_groupby():
+    t = table_with_future_ret()
+    msg = (
+        "Using column of type _asyncio.Future[int] is not allowed here."
+        + " Consider applying `await_futures()` to the table first."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.groupby(pw.this.ret)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_sort_key():
+    t = table_with_future_ret()
+    msg = (
+        "Using column of type _asyncio.Future[int] is not allowed here."
+        + " Consider applying `await_futures()` to the table first."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.sort(pw.this.ret)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_sort_instance():
+    t = table_with_future_ret()
+    msg = (
+        "Using column of type _asyncio.Future[int] is not allowed here."
+        + " Consider applying `await_futures()` to the table first."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.sort(pw.this.a, instance=pw.this.ret)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_deduplicate():
+    t = table_with_future_ret()
+
+    def acceptor(new_value, old_value) -> bool:
+        return new_value >= old_value + 2
+
+    msg = (
+        "Using column of type _asyncio.Future[int] is not allowed here."
+        + " Consider applying `await_futures()` to the table first."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.deduplicate(value=pw.this.ret, acceptor=acceptor)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_deduplicate_instance():
+    t = table_with_future_ret()
+
+    def acceptor(new_value, old_value) -> bool:
+        return new_value >= old_value + 2
+
+    msg = (
+        "Using column of type _asyncio.Future[int] is not allowed here."
+        + " Consider applying `await_futures()` to the table first."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.deduplicate(value=pw.this.a, instance=pw.this.ret, acceptor=acceptor)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_expressions():
+    t = table_with_future_ret()
+    msg = (
+        "Cannot perform pathway.pointer_from when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=t.pointer_from(t.ret))
+
+    msg = "Cannot perform pathway.if_else on columns of types _asyncio.Future[int] and <class 'int'>."
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=pw.if_else(t.a > 2, t.ret, 2))
+
+    msg = (
+        "Cannot perform pathway.make_tuple when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=pw.make_tuple(t.ret, 2))
+
+    msg = (
+        "Cannot perform pathway.is_none when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=t.ret.is_none())
+
+    msg = (
+        "Cannot perform pathway.is_not_none when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=t.ret.is_not_none())
+
+    @pw.udf
+    def foo(a: int) -> int:
+        return a - 1
+
+    @pw.udf
+    async def bar(a: int) -> int:
+        return a - 1
+
+    msg = (
+        "Cannot perform pathway.apply when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=foo(t.ret))
+
+    msg = (
+        "Cannot perform pathway.apply_async when column of type _asyncio.Future[int] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=bar(t.ret))
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="_asyncio.Future arg not printed"
+)
+def test_future_dtype_disallowed_in_expressions_2():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def inc(a: int | None) -> int | None:
+        if a is None:
+            return None
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 1
+        3 | 1
+          | 1
+        """
+    )
+    t = input.with_columns(ret=inc(pw.this.a))
+
+    msg = (
+        "Cannot perform pathway.coalesce when column of type _asyncio.Future[int | None] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=pw.coalesce(t.ret, t.b))
+
+    msg = (
+        "Cannot perform pathway.require when column of type _asyncio.Future[int | None] is involved."
+        + " Consider applying `await_futures()` to the table used here."
+    )
+    with pytest.raises(TypeError, match=re.escape(msg)):
+        t.select(p=pw.require(t.ret, t.a))
+
+
+def test_fully_async_udf_expression_allowed_after_await():
+    result = table_with_future_ret().await_futures().select(ret=pw.this.ret + 2)
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            ret
+            4
+            5
+            6
+           """,
+        ),
+    )
+
+
+def test_fully_async_udf_reducer_allowed_after_await():
+    result = (
+        table_with_future_ret().await_futures().reduce(s=pw.reducers.sum(pw.this.ret))
+    )
+
+    assert_table_equality_wo_index(
+        result,
+        T(
+            """
+            s
+            9
+            """,
+        ),
+    )
+
+
+def test_fully_async_udf_chaining():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def inc(a: int) -> int:
+        print(a)
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+        """
+    )
+
+    result = input.select(ret=inc(inc(pw.this.a)))
+
+    assert_table_equality_wo_types(
+        result,
+        T(
+            """
+            ret
+            3
+            4
+            5
+            """,
+        ),
+    )
+
+
+@pytest.mark.parametrize("fully_async", [True, False])
+def test_fully_async_udf_error_propagation(fully_async):
+
+    @pw.udf(executor=get_async_executor(fully_async))
+    async def inc(a: int) -> int:
+        return a + 1
+
+    input = pw.debug.table_from_markdown(
+        """
+        a | b
+        1 | 1
+        2 | 0
+        3 | 1
+        """
+    )
+
+    result = input.select(ret=inc(pw.this.a // pw.this.b))
+    if fully_async:
+        result = result.await_futures()
+    result = result.select(ret=pw.fill_error(pw.this.ret, -1))
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            ret
+             2
+            -1
+             4
+            """,
+        ),
+        terminate_on_error=False,
+    )
+
+
+def test_fully_async_udf_first_result_after_deletion_and_next_insertion():
+    class InputSchema(pw.Schema):
+        a: int
+
+    class InputSubject(pw.io.python.ConnectorSubject):
+        def run(self):
+            time.sleep(2)
+            self._add_inner(api.ref_scalar(3), dict(a=10))
+            time.sleep(0.2)
+            self._remove_inner(api.ref_scalar(3), dict(a=10))
+            time.sleep(0.2)
+            self._add_inner(api.ref_scalar(3), dict(a=12))
+
+    @pw.udf
+    def foo(a: int) -> int:
+        return a + 1
+
+    @pw.udf(executor=pw.udfs.fully_async_executor(autocommit_duration_ms=10))
+    async def bar(a: int) -> int:
+        time.sleep(0.5)
+        return a + 2
+
+    t = pw.io.python.read(InputSubject(), schema=InputSchema, autocommit_duration_ms=10)
+    res = t.select(x=foo(pw.this.a), y=bar(pw.this.a))
+    expected = pw.debug.table_from_markdown(
+        """
+          |  x |  y
+        3 | 13 | 14
+    """
+    )
+    assert_table_equality_wo_types(res, expected)

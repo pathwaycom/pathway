@@ -6,24 +6,21 @@ import asyncio
 import collections
 import functools
 import inspect
-import json
 import logging
 import re
-from abc import ABC, abstractmethod
+from abc import ABCMeta, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar
 
 import pathway.internals as pw
+import pathway.internals.column as clmn
 import pathway.internals.dtype as dt
 import pathway.io as io
-from pathway.internals import api, operator, parse_graph, udfs
-from pathway.internals.api import Pointer
-from pathway.internals.helpers import StableSet
-from pathway.internals.operator import Operator
+from pathway.internals import api, datasource, udfs
+from pathway.internals.api import Pointer, SessionType
 from pathway.internals.schema import Schema, schema_from_types
-from pathway.internals.table_subscription import subscribe
 from pathway.internals.type_interpreter import eval_type
 
 
@@ -34,7 +31,7 @@ class _AsyncStatus(Enum):
 
 
 _ASYNC_STATUS_COLUMN = "_async_status"
-_AsyncStatusSchema = schema_from_types(**{_ASYNC_STATUS_COLUMN: str})
+_AsyncStatusSchema = schema_from_types(**{_ASYNC_STATUS_COLUMN: dt.Future(dt.STR)})
 _INSTANCE_COLUMN = "_pw_instance"
 
 
@@ -43,6 +40,7 @@ class _Entry:
     key: Pointer
     time: int
     is_addition: bool
+    task_id: Pointer
 
 
 ResultType = dict[str, api.Value] | _AsyncStatus | None
@@ -52,7 +50,9 @@ ResultType = dict[str, api.Value] | _AsyncStatus | None
 class _Instance:
     pending: collections.deque[_Entry] = field(default_factory=collections.deque)
     finished: dict[_Entry, ResultType] = field(default_factory=dict)
-    buffer: list[tuple[Pointer, bool, ResultType]] = field(default_factory=list)
+    buffer: list[tuple[Pointer, bool, Pointer, ResultType]] = field(
+        default_factory=list
+    )
     buffer_time: int | None = None
     correct: bool = True
 
@@ -61,15 +61,14 @@ class _AsyncConnector(io.python.ConnectorSubject):
     _requests: asyncio.Queue
     _apply: Callable
     _loop: asyncio.AbstractEventLoop
-    _transformer: AsyncTransformer
-    _state: dict[Pointer, Any]
+    _transformer: _BaseAsyncTransformer
     _tasks: dict[Pointer, asyncio.Task]
     _invoke: Callable[..., Awaitable[dict[str, Any]]]
     _instances: dict[api.Value, _Instance]
     _time_finished: int | None
     _logger: logging.Logger
 
-    def __init__(self, transformer: AsyncTransformer) -> None:
+    def __init__(self, transformer: _BaseAsyncTransformer) -> None:
         super().__init__(datasource_name="async-transformer")
         self._transformer = transformer
         self._event_loop = asyncio.new_event_loop()
@@ -92,7 +91,6 @@ class _AsyncConnector(io.python.ConnectorSubject):
 
     def run(self) -> None:
         self._tasks = {}
-        self._state = {}
         self._transformer.open()
         self._instances = collections.defaultdict(_Instance)
         self._time_finished = None
@@ -108,28 +106,49 @@ class _AsyncConnector(io.python.ConnectorSubject):
                     self._on_time_end(request)
                     continue
 
-                (key, values, time, addition) = request
-                instance = values[_INSTANCE_COLUMN]
-                entry = _Entry(key=key, time=time, is_addition=addition)
+                (key, values, time, diff) = request
+                row = {}
+                input_table = self._transformer._input_table
+                task_id = values[-1]
+                values = values[:-1]
+                if input_table is not None:
+                    for field_name, field_value in zip(
+                        input_table._columns.keys(), values, strict=True
+                    ):
+                        row[field_name] = field_value
+                else:
+                    for i, field_value in enumerate(values):
+                        row[f"{i}"] = field_value
+
+                assert diff in [-1, 1], "diff should be 1 or -1"
+                addition = diff == 1
+                instance = row.get(_INSTANCE_COLUMN, key)
+                entry = _Entry(
+                    key=key, time=time, is_addition=addition, task_id=task_id
+                )
                 self._instances[instance].pending.append(entry)
 
                 previous_task = self._tasks.get(key, None)
-                if previous_task is None:
-                    self._set_status(key, _AsyncStatus.PENDING)
 
                 async def task(
                     key: Pointer,
                     values: dict[str, Any],
                     time: int,
                     addition: bool,
+                    task_id: Pointer,
                     previous_task: asyncio.Task | None,
                 ):
-                    instance = values.pop(_INSTANCE_COLUMN)
+                    instance = values.pop(_INSTANCE_COLUMN, key)
                     if not addition:
                         if previous_task is not None:
                             await previous_task
                         self._on_task_finished(
-                            key, instance, time, is_addition=False, result=None
+                            key,
+                            instance,
+                            time,
+                            is_addition=False,
+                            result=None,
+                            task_id=task_id,
                         )
                     else:
                         result: dict[str, Any] | _AsyncStatus
@@ -147,11 +166,16 @@ class _AsyncConnector(io.python.ConnectorSubject):
                         if previous_task is not None:
                             await previous_task
                         self._on_task_finished(
-                            key, instance, time, is_addition=True, result=result
+                            key,
+                            instance,
+                            time,
+                            is_addition=True,
+                            result=result,
+                            task_id=task_id,
                         )
 
                 current_task = event_loop.create_task(
-                    task(key, values, time, addition, previous_task)
+                    task(key, row, time, addition, task_id, previous_task)
                 )
                 self._tasks[key] = current_task
 
@@ -176,9 +200,10 @@ class _AsyncConnector(io.python.ConnectorSubject):
         *,
         is_addition: bool,
         result: dict[str, Any] | _AsyncStatus | None,
+        task_id: Pointer,
     ) -> None:
         instance_data = self._instances[instance]
-        entry = _Entry(key=key, time=time, is_addition=is_addition)
+        entry = _Entry(key=key, time=time, is_addition=is_addition, task_id=task_id)
         instance_data.finished[entry] = result
         self._maybe_produce_instance(instance)
 
@@ -202,7 +227,9 @@ class _AsyncConnector(io.python.ConnectorSubject):
             result = instance_data.finished.pop(entry)
             if result == _AsyncStatus.FAILURE:
                 instance_data.correct = False
-            instance_data.buffer.append((entry.key, entry.is_addition, result))
+            instance_data.buffer.append(
+                (entry.key, entry.is_addition, entry.task_id, result)
+            )
             instance_data.pending.popleft()
 
         if (
@@ -216,34 +243,32 @@ class _AsyncConnector(io.python.ConnectorSubject):
     def _flush_buffer(self, instance_data: _Instance) -> None:
         if not instance_data.buffer:
             return
+        self.commit()
         self._disable_commits()
-        for key, is_addition, result in instance_data.buffer:
+        for key, is_addition, task_id, result in instance_data.buffer:
             if is_addition and instance_data.correct:
                 assert isinstance(result, dict)
-                self._upsert(key, result)
+                self._upsert(key, result, task_id)
             elif is_addition:
-                self._set_status(key, _AsyncStatus.FAILURE)
+                self._set_failure(key, task_id)
             else:
-                self._remove_by_key(key)
+                self._remove_by_key(key, task_id)
         self._enable_commits()  # does a commit as well
         instance_data.buffer.clear()
 
-    def _set_status(self, key: Pointer, status: _AsyncStatus) -> None:
+    def _set_failure(self, key: Pointer, task_id: Pointer) -> None:
+        # TODO: replace None with api.ERROR
         data = {col: None for col in self._transformer.output_schema.column_names()}
-        self._upsert(key, data, status)
+        self._upsert(key, data, task_id, _AsyncStatus.FAILURE)
 
-    def _upsert(self, key: Pointer, data: dict, status=_AsyncStatus.SUCCESS) -> None:
-        data = {**data, _ASYNC_STATUS_COLUMN: status.value}
-        payload = json.dumps(data).encode()
-        self._remove_by_key(key)
-        self._add(key, payload)
-        self._state[key] = data
+    def _upsert(
+        self, key: Pointer, data: dict, task_id: Pointer, status=_AsyncStatus.SUCCESS
+    ) -> None:
+        data[_ASYNC_STATUS_COLUMN] = status.value
+        self._add_inner(task_id, data)
 
-    def _remove_by_key(self, key) -> None:
-        if key in self._state:
-            payload = json.dumps(self._state[key]).encode()
-            self._remove(key, payload)
-            del self._state[key]
+    def _remove_by_key(self, key: Pointer, task_id: Pointer) -> None:
+        self._remove_inner(task_id, {})
 
     def _check_result_against_schema(self, result: dict) -> None:
         if result.keys() != self._transformer.output_schema.keys():
@@ -253,7 +278,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
         self._transformer.close()
 
     def on_subscribe_change(
-        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
+        self, key: Pointer, row: list[Any], time: int, is_addition: bool
     ) -> None:
         self._put_request((key, row, time, is_addition))
 
@@ -277,8 +302,72 @@ class _AsyncConnector(io.python.ConnectorSubject):
     def _is_internal(self) -> bool:
         return True
 
+    @property
+    def _session_type(self) -> SessionType:
+        return SessionType.UPSERT
 
-class AsyncTransformer(ABC):
+
+class _BaseAsyncTransformer(metaclass=ABCMeta):
+    output_schema: ClassVar[type[pw.Schema]]
+    wrapped_output_schema: ClassVar[type[pw.Schema]]
+    _connector: _AsyncConnector
+    _autocommit_duration_ms: int | None
+    _input_table: pw.Table | None
+
+    def __init__(self, autocommit_duration_ms: int | None = 1500) -> None:
+        assert self.output_schema is not None
+        self._connector = _AsyncConnector(self)
+        self._autocommit_duration_ms = autocommit_duration_ms
+        self._input_table = None
+
+    def __init_subclass__(
+        cls, /, output_schema: type[pw.Schema] | None = None, **kwargs
+    ):
+        super().__init_subclass__(**kwargs)
+        if output_schema is None:
+            return
+        cls.output_schema = output_schema
+        cls.wrapped_output_schema = (
+            output_schema.with_types(
+                **{
+                    key: dt.Future(dt.Optional(orig_dtype))
+                    for key, orig_dtype in output_schema._dtypes().items()
+                }
+            )
+            | _AsyncStatusSchema
+        )
+
+    def _get_datasource(self) -> datasource.GenericDataSource:
+        return io.python._create_python_datasource(
+            self._connector,
+            schema=self.wrapped_output_schema,
+            autocommit_duration_ms=self._autocommit_duration_ms,
+        )
+
+    def open(self) -> None:
+        """
+        Called before actual work. Suitable for one time setup.
+        """
+        pass
+
+    def close(self) -> None:
+        """
+        Called once at the end. Proper place for cleanup.
+        """
+        pass
+
+    @abstractmethod
+    async def invoke(self, *args, **kwargs) -> dict[str, Any]:
+        """
+        Called for every row of input_table. The arguments will correspond to the
+        columns in the input table.
+
+        Should return dict of values matching :py:attr:`output_schema`.
+        """
+        ...
+
+
+class AsyncTransformer(_BaseAsyncTransformer, metaclass=ABCMeta):
     """
     Allows to perform async transformations on a table.
 
@@ -294,7 +383,7 @@ class AsyncTransformer(ABC):
     ...    ret: int
     ...
     >>> class AsyncIncrementTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
-    ...     async def invoke(self, value) -> Dict[str, Any]:
+    ...     async def invoke(self, value) -> dict[str, Any]:
     ...         await asyncio.sleep(0.1)
     ...         return {"ret": value + 1 }
     ...
@@ -310,8 +399,6 @@ class AsyncTransformer(ABC):
     45
     """
 
-    output_schema: ClassVar[type[pw.Schema]]
-    _connector: _AsyncConnector
     _input_table: pw.Table
     _instance_expression: pw.ColumnExpression | api.Value
 
@@ -322,8 +409,7 @@ class AsyncTransformer(ABC):
         instance: pw.ColumnExpression | api.Value = pw.this.id,
         autocommit_duration_ms: int | None = 1500,
     ) -> None:
-        assert self.output_schema is not None
-        self._connector = _AsyncConnector(self)
+        super().__init__(autocommit_duration_ms=autocommit_duration_ms)
 
         # TODO: when AsyncTransformer uses persistence backend for cache
         # just take the settings for persistence config
@@ -342,7 +428,6 @@ class AsyncTransformer(ABC):
             )
 
         self._input_table = input_table
-        self._autocommit_duration_ms = autocommit_duration_ms
 
     def _check_signature_matches_schema(
         self, sig: inspect.Signature, schema: type[Schema]
@@ -366,30 +451,7 @@ class AsyncTransformer(ABC):
             raise e
 
     def __init_subclass__(cls, /, output_schema: type[pw.Schema], **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.output_schema = output_schema
-
-    def open(self) -> None:
-        """
-        Called before actual work. Suitable for one time setup.
-        """
-        pass
-
-    def close(self) -> None:
-        """
-        Called once at the end. Proper place for cleanup.
-        """
-        pass
-
-    @abstractmethod
-    async def invoke(self, *args, **kwargs) -> dict[str, Any]:
-        """
-        Called for every row of input_table. The arguments will correspond to the
-        columns in the input table.
-
-        Should return dict of values matching :py:attr:`output_schema`.
-        """
-        ...
+        super().__init_subclass__(output_schema, **kwargs)
 
     def with_options(
         self,
@@ -423,7 +485,7 @@ class AsyncTransformer(ABC):
         The resulting table containing only rows that were executed successfully.
         """
         return (
-            self.output_table.filter(
+            self.finished.filter(
                 pw.this[_ASYNC_STATUS_COLUMN] == _AsyncStatus.SUCCESS.value
             )
             .without(pw.this[_ASYNC_STATUS_COLUMN])
@@ -437,7 +499,7 @@ class AsyncTransformer(ABC):
         If the ``instance`` argument is specified, it also contains rows that were executed
         successfully but at least one element from their instance with less or equal time failed.
         """
-        return self.output_table.filter(
+        return self.finished.filter(
             pw.this[_ASYNC_STATUS_COLUMN] == _AsyncStatus.FAILURE.value
         ).without(pw.this[_ASYNC_STATUS_COLUMN])
 
@@ -454,9 +516,7 @@ class AsyncTransformer(ABC):
 
         If you want to get only rows that executed successfully, use ``successful`` property instead.
         """
-        return self.output_table.filter(
-            pw.this[_ASYNC_STATUS_COLUMN] != _AsyncStatus.PENDING.value
-        )
+        return self.output_table.await_futures()
 
     @functools.cached_property
     def output_table(self) -> pw.Table:
@@ -472,40 +532,16 @@ class AsyncTransformer(ABC):
         a Table containing only rows that were executed successfully.
         """
 
-        subscribe(
-            self._input_table,
-            skip_persisted_batch=False,
-            on_change=self._connector.on_subscribe_change,
-            on_time_end=self._connector.on_subscribe_time_end,
-            on_end=self._connector.on_subscribe_end,
+        input_id_column = self._input_table._id_column
+        input_columns = list(self._input_table._columns.values())
+
+        context = clmn.AsyncTransformerContext(
+            input_id_column,
+            input_columns,
+            self.wrapped_output_schema,
+            self._connector.on_subscribe_change,
+            self._connector.on_subscribe_time_end,
+            self._connector.on_subscribe_end,
+            self._get_datasource(),
         )
-        output_node = list(parse_graph.G.global_scope.nodes)[-1]
-
-        schema = self.output_schema.with_types(
-            **{
-                key: dt.Optional(orig_dtype)
-                for key, orig_dtype in self.output_schema._dtypes().items()
-            }
-        )
-
-        table: pw.Table = io.python.read(
-            self._connector,
-            schema=schema | _AsyncStatusSchema,
-            autocommit_duration_ms=self._autocommit_duration_ms,
-        )
-        input_node = table._source.operator
-
-        class AsyncInputHandle(operator.InputHandle):
-            @property
-            def dependencies(self) -> StableSet[Operator]:
-                return StableSet([output_node])
-
-        input_node._inputs = {
-            "async_input": AsyncInputHandle(
-                operator=input_node,
-                name="async_input",
-                value=self._input_table,
-            )
-        }
-
-        return table.promise_universe_is_subset_of(self._input_table)
+        return self._input_table._async_transformer(context)

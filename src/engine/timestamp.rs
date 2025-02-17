@@ -152,10 +152,16 @@ pub trait OriginalOrRetraction {
     fn is_retraction(&self) -> bool {
         !self.is_original()
     }
+    #[must_use]
+    fn next_retraction_time(&self) -> Self;
 }
 
 impl OriginalOrRetraction for Timestamp {
     fn is_original(&self) -> bool {
         self.0 % 2 == 0
+    }
+
+    fn next_retraction_time(&self) -> Self {
+        Self(self.0 + 1)
     }
 }

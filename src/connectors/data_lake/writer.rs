@@ -360,7 +360,7 @@ impl LakeWriter {
                 let struct_descriptor = ArrowFields::from(struct_fields);
                 ArrowDataType::Struct(struct_descriptor)
             }
-            Type::Any => return Err(WriteError::UnsupportedType(type_.clone())),
+            Type::Any | Type::Future(_) => return Err(WriteError::UnsupportedType(type_.clone())),
         })
     }
 

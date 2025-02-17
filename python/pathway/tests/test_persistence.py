@@ -1,5 +1,6 @@
 # Copyright © 2024 Pathway
 
+import asyncio
 import json
 import multiprocessing
 import os
@@ -10,8 +11,8 @@ from typing import Callable
 import pytest
 
 import pathway as pw
-from pathway.engine import SessionType
 from pathway.internals import api
+from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.tests.utils import (
     CsvPathwayChecker,
@@ -708,6 +709,13 @@ def test_deterministic_udf_not_persisted(tmp_path, mode):
     run(["a,b"], {"2,5,-1"})
 
 
+def get_checker(output_path: pathlib.Path, expected: set[str]) -> Callable:
+    def check() -> None:
+        assert_sets_equality_from_path(output_path, expected)
+
+    return LogicChecker(check)
+
+
 @pytest.mark.parametrize(
     "mode",
     [api.PersistenceMode.PERSISTING, api.PersistenceMode.OPERATOR_PERSISTING],
@@ -728,7 +736,7 @@ def test_buffer(tmp_path, mode):
         persistence_mode=mode,
     )
 
-    def setup(inputs: list[str]) -> None:
+    def wait_result(inputs: list[str], expected: set[str]) -> None:
         nonlocal count
         count += 1
         G.clear()
@@ -737,48 +745,18 @@ def test_buffer(tmp_path, mode):
         t_1 = pw.io.csv.read(input_path, schema=InputSchema, mode="streaming")
         res = t_1._buffer(pw.this.t + 10, pw.this.t)
         pw.io.csv.write(res, output_path)
+        wait_result_with_checker(
+            get_checker(output_path, expected),
+            timeout_sec=10,
+            target=run,
+            kwargs={"persistence_config": persistence_config},
+        )
 
-    def get_checker(expected: set[str]) -> Callable:
-        def check() -> None:
-            assert_sets_equality_from_path(output_path, expected)
-
-        return LogicChecker(check)
-
-    setup(["t", "1", "3", "11"])
-    wait_result_with_checker(
-        get_checker({"1,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "15", "16"])
-    wait_result_with_checker(
-        get_checker({"3,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "6", "21"])
-    wait_result_with_checker(
-        get_checker({"6,1", "11,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "9", "10"])
-    wait_result_with_checker(
-        get_checker({"9,1", "10,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "26"])
-    wait_result_with_checker(
-        get_checker({"15,1", "16,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
+    wait_result(["t", "1", "3", "11"], {"1,1"})
+    wait_result(["t", "15", "16"], {"3,1"})
+    wait_result(["t", "6", "21"], {"6,1", "11,1"})
+    wait_result(["t", "9", "10"], {"9,1", "10,1"})
+    wait_result(["t", "26"], {"15,1", "16,1"})
 
 
 @pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
@@ -817,7 +795,7 @@ def test_forget_streaming(tmp_path, mode):
         persistence_mode=mode,
     )
 
-    def setup(inputs: list[str]) -> None:
+    def wait_result(inputs: list[str], expected: set[str]) -> None:
         nonlocal count
         count += 1
         G.clear()
@@ -826,55 +804,19 @@ def test_forget_streaming(tmp_path, mode):
         t_1 = pw.io.csv.read(input_path, schema=InputSchema, mode="streaming")
         res = t_1._forget(pw.this.t + 10, pw.this.t, mark_forgetting_records=False)
         pw.io.csv.write(res, output_path)
+        wait_result_with_checker(
+            get_checker(output_path, expected),
+            timeout_sec=10,
+            target=run,
+            kwargs={"persistence_config": persistence_config},
+        )
 
-    def get_checker(expected: set[str]) -> Callable:
-        def check() -> None:
-            assert_sets_equality_from_path(output_path, expected)
-
-        return LogicChecker(check)
-
-    setup(["t", "1", "3", "11"])
-    wait_result_with_checker(
-        get_checker({"1,1", "3,1", "11,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "15", "16"])
-    wait_result_with_checker(
-        get_checker({"1,-1", "15,1", "16,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "6", "21"])
-    wait_result_with_checker(
-        get_checker({"3,-1", "21,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "9", "10"])
-    wait_result_with_checker(
-        get_checker({"11,-1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "26"])
-    wait_result_with_checker(
-        get_checker({"26,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
-    setup(["t", "22"])
-    wait_result_with_checker(
-        get_checker({"15,-1", "16,-1", "22,1"}),
-        timeout_sec=10,
-        target=run,
-        kwargs={"persistence_config": persistence_config},
-    )
+    wait_result(["t", "1", "3", "11"], {"1,1", "3,1", "11,1"})
+    wait_result(["t", "15", "16"], {"1,-1", "15,1", "16,1"})
+    wait_result(["t", "6", "21"], {"3,-1", "21,1"})
+    wait_result(["t", "9", "10"], {"11,-1"})
+    wait_result(["t", "26"], {"26,1"})
+    wait_result(["t", "22"], {"15,-1", "16,-1", "22,1"})
 
 
 @pytest.mark.parametrize(
@@ -923,3 +865,175 @@ def test_upsert_session_with_python_connector(tmp_path, mode):
     run_computation([{"a": 3, "b": 9}], {"3,10,-1", "3,9,1"})
     run_computation([{"a": 4, "b": 6}], {"4,6,1"})
     run_computation([{"a": 1, "b": 0}], {"1,4,-1", "1,0,1"})
+
+
+@pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@pytest.mark.parametrize("as_udf", [True, False])
+@needs_multiprocessing_fork
+def test_async_transformer_append_only(tmp_path, mode, as_udf):
+    class InputSchema(pw.Schema):
+        a: int
+
+    input_path = tmp_path / "1"
+    os.makedirs(input_path)
+    output_path = tmp_path / "out.csv"
+    persistent_storage_path = tmp_path / "p"
+    count = 0
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+        persistence_mode=mode,
+    )
+
+    can_pass = [True, True, False, False, True, True, True, False, True]
+
+    class OutputSchema(pw.Schema):
+        ret: int
+
+    if as_udf:
+
+        @pw.udf(executor=pw.udfs.fully_async_executor())
+        async def decrement(a: int) -> int:
+            while not can_pass[a]:
+                await asyncio.sleep(1)
+            return a - 1
+
+    else:
+
+        class Decrementer(pw.AsyncTransformer, output_schema=OutputSchema):
+            async def invoke(self, a) -> dict[str, int]:
+                while not can_pass[a]:
+                    await asyncio.sleep(1)
+                return {"ret": a - 1}
+
+    def wait_result(inputs: list[str], expected: set[str]) -> None:
+        nonlocal count
+        count += 1
+        G.clear()
+        path = input_path / str(count)
+        write_lines(path, inputs)
+        t_1 = pw.io.csv.read(input_path, schema=InputSchema, mode="streaming")
+        if as_udf:
+            res = t_1.select(ret=decrement(pw.this.a)).await_futures()
+        else:
+            res = Decrementer(t_1).successful
+        pw.io.csv.write(res, output_path)
+        wait_result_with_checker(
+            get_checker(output_path, expected),
+            timeout_sec=30,
+            target=run,
+            kwargs={"persistence_config": persistence_config},
+        )
+
+    wait_result(["a", "0", "1", "2"], {"-1,1", "0,1"})
+    can_pass[2] = True
+    can_pass[3] = True
+    wait_result(["a", "3"], {"1,1", "2,1"})
+    wait_result(["a", "4", "5"], {"3,1", "4,1"})
+    wait_result(["a", "6", "7"], {"5,1"})
+    can_pass[7] = True
+    wait_result(["a", "8"], {"6,1", "7,1"})
+
+
+def get_async_transformer_tester(
+    tmp_path: pathlib.Path,
+    input_path: pathlib.Path,
+    mode: api.PersistenceMode,
+    as_udf: bool,
+    can_pass: list[bool],
+) -> Callable[[list[str], set[str]], None]:
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        b: int
+
+    os.makedirs(input_path)
+    output_path = tmp_path / "out.csv"
+    persistent_storage_path = tmp_path / "p"
+    count = 0
+    persistence_config = pw.persistence.Config(
+        pw.persistence.Backend.filesystem(persistent_storage_path),
+        persistence_mode=mode,
+    )
+
+    class OutputSchema(pw.Schema):
+        a: int
+        b: int
+
+    if as_udf:
+
+        @pw.udf(executor=pw.udfs.fully_async_executor())
+        async def decrement(a: int) -> int:
+            while not can_pass[a]:
+                await asyncio.sleep(1)
+            return a - 1
+
+    else:
+
+        class Decrementer(pw.AsyncTransformer, output_schema=OutputSchema):
+            async def invoke(self, a, b) -> dict[str, int]:
+                while not can_pass[b]:
+                    await asyncio.sleep(1)
+                return {"a": a, "b": b - 1}
+
+    def wait_result(inputs: list[str], expected: set[str]) -> None:
+        nonlocal count
+        count += 1
+        G.clear()
+        path = input_path / str(count)
+        write_lines(path, inputs)
+        t_1 = pw.io.csv.read(input_path, schema=InputSchema, mode="streaming")
+        if as_udf:
+            res = t_1.select(a=pw.this.a, b=decrement(pw.this.b)).await_futures()
+        else:
+            res = Decrementer(t_1).successful
+        pw.io.csv.write(res, output_path)
+        wait_result_with_checker(
+            get_checker(output_path, expected),
+            timeout_sec=30,
+            target=run,
+            kwargs={"persistence_config": persistence_config},
+        )
+
+    return wait_result
+
+
+@pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_async_transformer(tmp_path, mode):
+    input_path = tmp_path / "1"
+    can_pass = [True, True, False, False, True, True, True, False, True]
+    wait_result = get_async_transformer_tester(
+        tmp_path, input_path, mode, False, can_pass
+    )
+    wait_result(["a,b", "0,0", "1,1", "2,2"], {"0,-1,1", "1,0,1"})
+    can_pass[2] = True
+    can_pass[3] = True
+    wait_result(["a,b", "3,3"], {"2,1,1", "3,2,1"})
+    wait_result(["a,b", "0,4", "2,3"], {"0,-1,-1", "2,1,-1", "0,3,1", "2,2,1"})
+    wait_result(["a,b", "6,6", "7,7"], {"6,5,1"})
+    os.remove(input_path / "4")
+    wait_result(["a,b", "8,8"], {"6,5,-1", "8,7,1"})
+    os.remove(input_path / "3")
+    wait_result(["a,b"], {"0,3,-1", "2,2,-1"})
+
+
+@pytest.mark.parametrize("mode", [api.PersistenceMode.OPERATOR_PERSISTING])
+@needs_multiprocessing_fork
+def test_fully_async_udf(tmp_path, mode):
+    input_path = tmp_path / "1"
+    can_pass = [True, True, False, False, True, True, True, False, True]
+    wait_result = get_async_transformer_tester(
+        tmp_path, input_path, mode, True, can_pass
+    )
+    wait_result(["a,b", "0,0", "1,1", "2,2"], {"0,-1,1", "1,0,1"})
+    can_pass[2] = True
+    can_pass[3] = True
+    wait_result(["a,b", "3,3"], {"2,1,1", "3,2,1"})
+    os.remove(input_path / "1")
+    wait_result(
+        ["a,b", "0,4", "2,3"], {"0,-1,-1", "2,1,-1", "0,3,1", "2,2,1", "1,0,-1"}
+    )
+    wait_result(["a,b", "6,6", "7,7"], {"6,5,1"})
+    os.remove(input_path / "4")
+    wait_result(["a,b", "8,8"], {"6,5,-1", "8,7,1"})
+    os.remove(input_path / "3")
+    wait_result(["a,b"], {"0,3,-1", "2,2,-1"})

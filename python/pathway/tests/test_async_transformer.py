@@ -26,7 +26,6 @@ from pathway.tests.utils import (
     run,
     wait_result_with_checker,
     write_csv,
-    xfail_on_multiple_threads,
 )
 
 
@@ -106,8 +105,6 @@ def test_file_io(monkeypatch, tmp_path: pathlib.Path):
     )
 
 
-@pytest.mark.flaky(reruns=2)
-@xfail_on_multiple_threads
 @needs_multiprocessing_fork
 def test_idempotency(monkeypatch):
     monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE", raising=False)
@@ -250,6 +247,7 @@ def test_disk_cache(tmp_path: pathlib.Path):
             expected,
             persistence_config=pw.persistence.Config(
                 pw.persistence.Backend.filesystem(cache_dir),
+                persistence_mode=pw.PersistenceMode.SELECTIVE_PERSISTING,
             ),
         )
 

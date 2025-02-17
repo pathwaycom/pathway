@@ -786,3 +786,23 @@ def test_remove_retractions_2(append_only_1, append_only_2):
     assert result._id_column.properties.append_only
     assert result.a._column.properties.append_only
     assert result.b._column.properties.append_only
+
+
+@pytest.mark.parametrize("append_only_1", [True, False])
+@pytest.mark.parametrize("append_only_2", [True, False])
+def test_fully_async_udf(append_only_1, append_only_2):
+    class Schema(pw.Schema):
+        a: int = pw.column_definition(append_only=append_only_1)
+        b: int = pw.column_definition(append_only=append_only_2)
+
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    def foo(a: int, b: int) -> int:
+        return a + b
+
+    table = table_from_datasource(TestDataSource(schema=Schema))
+    result = table.with_columns(c=foo(pw.this.a, pw.this.b))
+
+    assert result._id_column.properties.append_only == (append_only_1 or append_only_2)
+    assert result.a._column.properties.append_only == append_only_1
+    assert result.b._column.properties.append_only == append_only_2
+    assert result.c._column.properties.append_only is False

@@ -29,6 +29,7 @@ from pathway.internals.operator_mapping import (
     get_convert_operators_mapping,
     get_unary_expression,
 )
+from pathway.internals.schema import schema_from_types
 from pathway.internals.udfs import udf
 
 if TYPE_CHECKING:
@@ -203,6 +204,8 @@ class TypeVerifier(IdentityTransform):
             return val
 
         ret = test_type(expression)
+        assert isinstance(ret, expr.ApplyExpression)
+        ret._check_for_disallowed_types = False
         ret._dtype = dtype
 
         return ret
@@ -270,15 +273,16 @@ class RowwiseEvaluator(
 
         # START temporary solution for eval_async_apply
         for intermediate_storage in eval_state.storages:
-            [column] = intermediate_storage.get_columns()
             properties = self._table_properties(intermediate_storage)
-            engine_input_table = self.scope.override_table_universe(
-                eval_state.get_temporary_table(intermediate_storage),
+            # restrict instead of override because of edge case in fully async UDF
+            # with missing rows.
+            engine_input_table = self.scope.restrict_table(
                 engine_input_table,
+                eval_state.get_temporary_table(intermediate_storage),
                 properties,
             )
             input_storage = Storage.merge_storages(
-                self.context.universe, input_storage, intermediate_storage
+                self.context.universe, intermediate_storage, input_storage
             )
         # END temporary solution for eval_async_apply
 
@@ -307,7 +311,9 @@ class RowwiseEvaluator(
             output_columns.append(output_column)
 
         output_storage = Storage.flat(self.context.universe, output_columns)
-        engine_output_table = self.run(output_storage, old_path=None)
+        engine_output_table = self.run(
+            output_storage, old_path=None, disable_runtime_typechecking=True
+        )  # checks already added in the main call to run
         return (output_columns, output_storage, engine_output_table)
 
     def eval_expression(
@@ -467,6 +473,80 @@ class RowwiseEvaluator(
             expression._deterministic or input_storage.append_only,
             self._table_properties(output_storage),
             expression._dtype.to_engine(),
+        )
+
+        assert eval_state is not None
+        eval_state.set_temporary_table(output_storage, engine_table)
+        return self.eval_dependency(tmp_column, eval_state=eval_state)
+
+    def eval_fully_async_apply(
+        self,
+        expression: expr.FullyAsyncApplyExpression,
+        eval_state: RowwiseEvalState | None = None,
+    ):
+        fun, args = self._prepare_positional_apply(
+            fun=expression._fun,
+            args=expression._args,
+            kwargs=expression._kwargs,
+        )
+
+        columns, input_storage, engine_input_table = self.run_subexpressions(args)
+        tmp_column = clmn.MaterializedColumn(
+            self.context.universe, ColumnProperties(dtype=expression._dtype)
+        )
+        status_column = clmn.MaterializedColumn(
+            self.context.universe, ColumnProperties(dt.STR)
+        )
+        from pathway.stdlib.utils.async_transformer import (
+            _ASYNC_STATUS_COLUMN,
+            _BaseAsyncTransformer,
+        )
+
+        output_columns = {
+            "result": tmp_column,
+            _ASYNC_STATUS_COLUMN: status_column,
+        }
+        schema = schema_from_types(result=expression._dtype)
+
+        class Transformer(_BaseAsyncTransformer, output_schema=schema):
+            async def invoke(self, **kwargs) -> dict:
+                args = []
+                for i, (name, arg) in enumerate(kwargs.items()):
+                    if arg is api.ERROR:
+                        return dict(result=api.ERROR)
+                    if arg is None and expression._propagate_none:
+                        return dict(result=None)
+                    assert f"{i}" == name
+                    args.append(arg)
+                try:
+                    return dict(result=await fun(*args))
+                except (
+                    Exception
+                ):  # FIXME: remove when AsyncTransformer returns `api.ERROR` for failure
+                    self._connector._logger.error(
+                        "Exception in fully_async_udf:", exc_info=True
+                    )
+                    return dict(result=api.ERROR)
+
+        transformer = Transformer(expression.autocommit_duration_ms)
+
+        ordered_output_columns = [
+            output_columns[name]
+            for name in transformer.wrapped_output_schema._dtypes().keys()
+        ]
+        output_storage = Storage.flat(self.context.universe, ordered_output_columns)
+        paths = [input_storage.get_path(column) for column in columns]
+        datasource = transformer._get_datasource()
+        engine_table = self.scope.async_transformer(
+            engine_input_table,
+            paths,
+            transformer._connector.on_subscribe_change,
+            transformer._connector.on_subscribe_time_end,
+            transformer._connector.on_subscribe_end,
+            datasource.datastorage,
+            datasource.dataformat,
+            datasource.connector_properties,
+            skip_errors=False,
         )
 
         assert eval_state is not None
@@ -1345,8 +1425,10 @@ class SetSchemaContextEvaluator(
         return self.state.get_table(self.context.universe)
 
 
-class RemoveErrorsEvaluator(ExpressionEvaluator, context_type=clmn.RemoveErrorsContext):
-    context: clmn.RemoveErrorsContext
+class FilterOutValueEvaluator(
+    ExpressionEvaluator, context_type=clmn.FilterOutValueContext
+):
+    context: clmn.FilterOutValueContext
 
     def run(self, output_storage: Storage) -> api.Table:
         input_storage = self.state.get_storage(self.context.input_universe())
@@ -1356,9 +1438,10 @@ class RemoveErrorsEvaluator(ExpressionEvaluator, context_type=clmn.RemoveErrorsC
             path = input_storage.get_path(column.expression._column)
             column_paths.append(path)
         properties = self._table_properties(output_storage)
-        return self.scope.remove_errors_from_table(
+        return self.scope.remove_value_from_table(
             self.state.get_table(input_storage._universe),
             column_paths,
+            self.context.value_to_filter_out,
             properties,
         )
 
@@ -1374,4 +1457,27 @@ class RemoveRetractionsEvaluator(
         return self.scope.remove_retractions_from_table(
             self.state.get_table(input_storage._universe),
             properties,
+        )
+
+
+class AsyncTransformerEvaluator(
+    ExpressionEvaluator, context_type=clmn.AsyncTransformerContext
+):
+    context: clmn.AsyncTransformerContext
+
+    def run(self, output_storage: Storage) -> api.Table:
+        input_storage = self.state.get_storage(self.context.input_universe())
+        column_paths = [
+            input_storage.get_path(column) for column in self.context.input_columns
+        ]
+        return self.scope.async_transformer(
+            self.state.get_table(input_storage._universe),
+            column_paths,
+            self.context.on_change,
+            self.context.on_time_end,
+            self.context.on_end,
+            self.context.datasource.datastorage,
+            self.context.datasource.dataformat,
+            self.context.datasource.connector_properties,
+            skip_errors=True,
         )

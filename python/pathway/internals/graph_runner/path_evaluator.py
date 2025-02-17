@@ -22,11 +22,12 @@ def compute_paths(
     input_storages: dict[Universe, Storage],
     operator: op.Operator,
     context: clmn.Context,
+    table_columns: Iterable[clmn.Column],
 ):
     evaluator: PathEvaluator
     match operator:
         case op.InputOperator():
-            evaluator = FlatStoragePathEvaluator(context)
+            evaluator = FlatOrderedStoragePathEvaluator(context)
         case op.RowTransformerOperator():
             evaluator = FlatStoragePathEvaluator(context)
         case op.ContextualizedIntermediateOperator():
@@ -36,7 +37,7 @@ def compute_paths(
                 f"Operator {operator} in update_storage() but it shouldn't produce tables."
             )
     output_columns = list(output_columns)
-    return evaluator.compute(output_columns, input_storages).restrict_to(
+    return evaluator.compute(output_columns, input_storages, table_columns).restrict_to(
         output_columns, require_all=True
     )
 
@@ -77,6 +78,7 @@ class PathEvaluator(ABC):
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage: ...
 
     _context_mapping: ClassVar[dict[type[clmn.Context], type[PathEvaluator]]] = {}
@@ -93,12 +95,16 @@ class PathEvaluator(ABC):
 
 class FlatStoragePathEvaluator(
     PathEvaluator,
-    context_types=[clmn.GroupedContext, clmn.RemoveErrorsContext],
+    context_types=[
+        clmn.GroupedContext,
+        clmn.FilterOutValueContext,
+    ],
 ):
     def compute(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         return Storage.flat(self.context.universe, output_columns)
 
@@ -111,6 +117,7 @@ class DeduplicatePathEvaluator(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         return Storage.flat(self.context.universe, output_columns, shift=1)
 
@@ -162,6 +169,7 @@ class AddNewColumnsPathEvaluator(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         input_storage = input_storages[self.context.universe]
         output_columns = list(output_columns)
@@ -192,6 +200,7 @@ class SortingPathEvaluator(PathEvaluator, context_types=[clmn.SortingContext]):
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         input_storage = input_storages[self.context.universe]
         return Storage.merge_storages(
@@ -212,6 +221,7 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         context = self.context
         output_columns_list = list(output_columns)
@@ -275,6 +285,7 @@ class NoNewColumnsMultipleSourcesPathEvaluator(
         storage = evaluator.compute(
             output_columns_list,
             {source_universe: input_storages[source_universe]},
+            table_columns,
         )
 
         return storage.with_maybe_flattened_inputs(flattened_inputs)
@@ -315,6 +326,7 @@ class NoNewColumnsPathEvaluator(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         input_storage = input_storages[self.context.input_universe()]
         paths: dict[clmn.Column, ColumnPath] = {}
@@ -342,6 +354,7 @@ class NoNewColumnsWithDataStoredPathEvaluator(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         input_storage = input_storages[self.context.input_universe()]
         required_columns: StableSet[clmn.Column] = StableSet()
@@ -397,6 +410,7 @@ class UpdateCellsPathEvaluator(PathEvaluator, context_types=[clmn.UpdateCellsCon
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         left_storage, right_storage = self.maybe_flatten_input_storages(
             output_columns, input_storages
@@ -488,6 +502,7 @@ class JoinPathEvaluator(PathEvaluator, context_types=[clmn.JoinContext]):
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         output_columns = list(output_columns)
         left_input_storage, right_input_storage = self.maybe_flatten_input_storages(
@@ -496,11 +511,15 @@ class JoinPathEvaluator(PathEvaluator, context_types=[clmn.JoinContext]):
         join_storage = self.merge_storages(left_input_storage, right_input_storage)
         if self.context.assign_id:
             output_storage = AddNewColumnsPathEvaluator(self.context).compute(
-                output_columns, {self.context.universe: left_input_storage}
+                output_columns,
+                {self.context.universe: left_input_storage},
+                table_columns,
             )
         else:
             output_storage = FlatStoragePathEvaluator(self.context).compute(
-                output_columns, {}
+                output_columns,
+                {},
+                table_columns,
             )
         return output_storage.with_maybe_flattened_inputs(
             {
@@ -518,6 +537,7 @@ class FlattenPathEvaluator(PathEvaluator, context_types=[clmn.FlattenContext]):
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         prefixed_input_storage = input_storages[self.context.orig_universe].with_prefix(
             (0,)
@@ -555,6 +575,7 @@ class PromiseSameUniversePathEvaluator(
         self,
         output_columns: Iterable[clmn.Column],
         input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
     ) -> Storage:
         orig_storage_columns: StableSet[clmn.Column] = StableSet()
         newly_created_columns: StableSet[clmn.ColumnWithReference] = StableSet()
@@ -589,3 +610,18 @@ class PromiseSameUniversePathEvaluator(
                 {"orig_storage": orig_storage, "new_storage": new_storage}
             )
         )
+
+
+class FlatOrderedStoragePathEvaluator(
+    PathEvaluator,
+    context_types=[
+        clmn.AsyncTransformerContext,
+    ],
+):
+    def compute(
+        self,
+        output_columns: Iterable[clmn.Column],
+        input_storages: dict[Universe, Storage],
+        table_columns: Iterable[clmn.Column],
+    ) -> Storage:
+        return Storage.flat(self.context.universe, table_columns)

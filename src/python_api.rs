@@ -5,7 +5,8 @@
 
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::engine::graph::{
-    ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacksBuilder,
+    ErrorLogHandle, ExportedTable, OperatorProperties, SubscribeCallbacks,
+    SubscribeCallbacksBuilder, SubscribeConfig,
 };
 use crate::engine::license::{Error as LicenseError, License};
 use crate::engine::{
@@ -332,6 +333,9 @@ fn py_type_error(ob: &Bound<PyAny>, type_: &Type) -> PyErr {
 }
 
 pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
+    if ob.is_instance_of::<Error>() {
+        return Ok(Value::Error);
+    }
     let extracted = match type_ {
         Type::Any => ob.extract().ok(),
         Type::Optional(arg) => {
@@ -415,6 +419,13 @@ pub fn extract_value(ob: &Bound<PyAny>, type_: &Type) -> PyResult<Value> {
             };
             Some(Value::from(value.into_internal()))
         }
+        Type::Future(arg) => {
+            if ob.is_instance_of::<Pending>() {
+                Some(Value::Pending)
+            } else {
+                Some(extract_value(ob, arg)?)
+            }
+        }
     };
     extracted.ok_or_else(|| py_type_error(ob, type_))
 }
@@ -424,6 +435,10 @@ impl<'py> FromPyObject<'py> for Value {
         let py = ob.py();
         if ob.is_none() {
             Ok(Value::None)
+        } else if ob.is_exact_instance_of::<Error>() {
+            Ok(Value::Error)
+        } else if ob.is_exact_instance_of::<Pending>() {
+            Ok(Value::Pending)
         } else if let Ok(s) = ob.downcast_exact::<PyString>() {
             Ok(Value::from(s.to_str()?))
         } else if let Ok(b) = ob.downcast_exact::<PyBytes>() {
@@ -533,6 +548,7 @@ impl ToPyObject for Value {
             Self::Json(j) => json_to_py_object(py, j),
             Self::Error => ERROR.clone_ref(py).into_py(py),
             Self::PyObjectWrapper(op) => PyObjectWrapper::from_internal(py, op).into_py(py),
+            Self::Pending => PENDING.clone_ref(py).into_py(py),
         }
     }
 }
@@ -1682,6 +1698,10 @@ impl PathwayType {
     pub fn optional(wrapped: Type) -> Type {
         Type::Optional(wrapped.into())
     }
+    #[staticmethod]
+    pub fn future(wrapped: Type) -> Type {
+        Type::Future(wrapped.into())
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReadMethod")]
@@ -2041,6 +2061,30 @@ mod error {
     });
 }
 use error::{Error, ERROR};
+
+mod pending {
+    use once_cell::sync::Lazy;
+    use pyo3::prelude::*;
+
+    struct InnerPending;
+    #[pyclass(module = "pathway.engine", frozen)]
+    pub struct Pending(InnerPending);
+
+    #[pymethods]
+    impl Pending {
+        #[allow(clippy::unused_self)]
+        fn __repr__(&self) -> &'static str {
+            "Pending"
+        }
+    }
+
+    pub static PENDING: Lazy<Py<Pending>> = Lazy::new(|| {
+        Python::with_gil(|py| {
+            Py::new(py, Pending(InnerPending)).expect("creating PENDING should not fail")
+        })
+    });
+}
+use pending::{Pending, PENDING};
 
 impl<'py> FromPyObject<'py> for ColumnPath {
     fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
@@ -3165,33 +3209,16 @@ impl Scope {
         sort_by_indices: Option<Vec<usize>>,
     ) -> PyResult<()> {
         self_.borrow().register_unique_name(unique_name.as_ref())?;
-        let callbacks = SubscribeCallbacksBuilder::new()
-            .wrapper(BatchWrapper::WithGil)
-            .on_data(Box::new(move |key, values, time, diff| {
-                Python::with_gil(|py| {
-                    on_change.call1(py, (key, PyTuple::new_bound(py, values), time, diff))?;
-                    Ok(())
-                })
-            }))
-            .on_time_end(Box::new(move |new_time| {
-                Python::with_gil(|py| {
-                    on_time_end.call1(py, (new_time,))?;
-                    Ok(())
-                })
-            }))
-            .on_end(Box::new(move || {
-                Python::with_gil(|py| {
-                    on_end.call0(py)?;
-                    Ok(())
-                })
-            }))
-            .build();
+        let callbacks = build_subscribe_callback(on_change, on_time_end, on_end);
         self_.borrow().graph.subscribe_table(
             table.handle,
             column_paths,
             callbacks,
-            skip_persisted_batch,
-            skip_errors,
+            SubscribeConfig {
+                skip_persisted_batch,
+                skip_errors,
+                skip_pending: true,
+            },
             unique_name,
             sort_by_indices,
         )?;
@@ -3266,19 +3293,96 @@ impl Scope {
         Table::new(self_, table_handle)
     }
 
-    pub fn remove_errors_from_table(
+    pub fn remove_value_from_table(
         self_: &Bound<Self>,
         table: PyRef<Table>,
         #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        value: Value,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
-        let new_table_handle = self_.borrow().graph.remove_errors_from_table(
+        let new_table_handle = self_.borrow().graph.remove_value_from_table(
             table.handle,
             column_paths,
+            value,
             table_properties.0,
         )?;
         Table::new(self_, new_table_handle)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn async_transformer(
+        self_: &Bound<Self>,
+        table: PyRef<Table>,
+        #[pyo3(from_py_with = "from_py_iterable")] column_paths: Vec<ColumnPath>,
+        on_change: Py<PyAny>,
+        on_time_end: Py<PyAny>,
+        on_end: Py<PyAny>,
+        data_source: &Bound<DataStorage>,
+        data_format: &Bound<DataFormat>,
+        properties: ConnectorProperties,
+        skip_errors: bool,
+    ) -> PyResult<Py<Table>> {
+        let py = self_.py();
+
+        let callbacks = build_subscribe_callback(on_change, on_time_end, on_end);
+        let connector_index = *self_.borrow().total_connectors.borrow();
+        *self_.borrow().total_connectors.borrow_mut() += 1;
+        let (reader_impl, parallel_readers) = data_source.borrow().construct_reader(
+            py,
+            &data_format.borrow(),
+            connector_index,
+            self_.borrow().worker_index(),
+            self_.borrow().license.as_ref(),
+            false,
+        )?;
+        assert_eq!(parallel_readers, 1); // python connector that has parallel_readers == 1 has to be used
+
+        let parser_impl = data_format.borrow().construct_parser(py)?;
+        let commit_duration = properties
+            .commit_duration_ms
+            .map(time::Duration::from_millis);
+        let column_properties = properties.column_properties();
+
+        let table_handle = self_.borrow().graph.async_transformer(
+            table.handle,
+            column_paths,
+            callbacks,
+            reader_impl,
+            parser_impl,
+            commit_duration,
+            Arc::new(EngineTableProperties::flat(column_properties)),
+            skip_errors,
+        )?;
+        Table::new(self_, table_handle)
+    }
+}
+
+fn build_subscribe_callback(
+    on_change: Py<PyAny>,
+    on_time_end: Py<PyAny>,
+    on_end: Py<PyAny>,
+) -> SubscribeCallbacks {
+    SubscribeCallbacksBuilder::new()
+        .wrapper(BatchWrapper::WithGil)
+        .on_data(Box::new(move |key, values, time, diff| {
+            Python::with_gil(|py| {
+                on_change.call1(py, (key, PyTuple::new_bound(py, values), time, diff))?;
+                Ok(())
+            })
+        }))
+        .on_time_end(Box::new(move |new_time| {
+            Python::with_gil(|py| {
+                on_time_end.call1(py, (new_time,))?;
+                Ok(())
+            })
+        }))
+        .on_end(Box::new(move || {
+            Python::with_gil(|py| {
+                on_end.call0(py)?;
+                Ok(())
+            })
+        }))
+        .build()
 }
 
 type CapturedTableData = Arc<Mutex<Vec<DataRow>>>;
@@ -3306,8 +3410,11 @@ fn capture_table_data(
             table.handle,
             column_paths,
             callbacks,
-            false,
-            false,
+            SubscribeConfig {
+                skip_persisted_batch: false,
+                skip_errors: false,
+                skip_pending: false,
+            },
             None,
             None,
         )?;
@@ -5705,6 +5812,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<Done>()?;
     m.add_class::<PyExportedTable>()?;
     m.add_class::<Error>()?;
+    m.add_class::<Pending>()?;
 
     m.add_class::<PyExternalIndexFactory>()?;
     m.add_class::<PyExternalIndexData>()?;
@@ -5726,6 +5834,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
 
     m.add("DONE", &*DONE)?;
     m.add("ERROR", &*ERROR)?;
+    m.add("PENDING", &*PENDING)?;
 
     Ok(())
 }

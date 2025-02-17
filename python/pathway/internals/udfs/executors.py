@@ -8,7 +8,7 @@ import functools
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 import pathway.internals.expression as expr
 from pathway.internals.runtime_type_check import check_arg_types
@@ -30,6 +30,9 @@ class Executor(abc.ABC):
     @property
     @abc.abstractmethod
     def _apply_expression_type(self) -> type[expr.ApplyExpression]: ...
+
+    def additional_expression_args(self) -> dict[str, Any]:
+        return {}
 
 
 @dataclass
@@ -216,6 +219,104 @@ def async_executor(
     """
     return AsyncExecutor(
         capacity=capacity, timeout=timeout, retry_strategy=retry_strategy
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class FullyAsyncExecutor(AsyncExecutor):
+    autocommit_duration_ms: int | None
+
+    @property
+    def _apply_expression_type(self) -> type[expr.ApplyExpression]:
+        return expr.FullyAsyncApplyExpression
+
+    def additional_expression_args(self) -> dict[str, Any]:
+        return dict(autocommit_duration_ms=self.autocommit_duration_ms)
+
+
+def fully_async_executor(
+    *,
+    capacity: int | None = None,
+    timeout: float | None = None,
+    retry_strategy: AsyncRetryStrategy | None = None,
+    autocommit_duration_ms: int | None = 1500,
+) -> Executor:
+    """
+    Returns the fully asynchronous executor for Pathway UDFs.
+
+    Can be applied to a regular or an asynchronous function. If applied to a regular
+    function, it is executed in ``asyncio`` loop's ``run_in_executor``.
+
+    In contrast to regular asynchronous UDFs, these UDFs are fully asynchronous.
+    It means that computations from the next batch can start even if the previous batch hasn't
+    finished yet. When a UDF is started, instead of a result, a special ``Pending`` value
+    is emitted. When the function finishes, an update with the true return value is produced.
+
+    Using fully asynchronous UDFs allows processing time to advance even if the function
+    doesn't return. As a result downstream computations are not blocked.
+
+    The data type of column returned from the fully async UDF is ``Future[return_type]`` to
+    allow for ``Pending`` values. Columns of this type can be propagated further, but can't
+    be used in most expressions (e.g. arithmetic operations). They can be passed to the next
+    fully async UDF though. To strip the ``Future`` wrapper and wait for the result, you can
+    use :py:meth:`pathway.Table.await_futures` method on :py:class:`pathway.Table`. In practice,
+    it filters out the ``Pending`` values and produces a column with the data type as returned
+    by the fully async UDF.
+
+    Args:
+        capacity: Maximum number of concurrent operations allowed.
+            Defaults to None, indicating no specific limit.
+        timeout: Maximum time (in seconds) to wait for the function result. When both
+            ``timeout`` and ``retry_strategy`` are used, timeout applies to a single retry.
+            Defaults to None, indicating no time limit.
+        retry_strategy: Strategy for handling retries in case of failures.
+            Defaults to None, meaning no retries.
+
+    Example:
+
+    >>> import pathway as pw
+    >>> import asyncio
+    >>>
+    >>> t = pw.debug.table_from_markdown(
+    ...     '''
+    ...     a | b | __time__
+    ...     1 | 2 |     2
+    ...     3 | 4 |     4
+    ...     5 | 6 |     4
+    ... '''
+    ... )
+    >>>
+    >>> @pw.udf(executor=pw.udfs.fully_async_executor())
+    ... async def long_running_async_function(a: int, b: int) -> int:
+    ...     c = a * b
+    ...     await asyncio.sleep(0.1 * c)
+    ...     return c
+    ...
+    >>>
+    >>> result = t.with_columns(res=long_running_async_function(pw.this.a, pw.this.b))
+    >>> pw.debug.compute_and_print(result, include_id=False)
+    a | b | res
+    1 | 2 | 2
+    3 | 4 | 12
+    5 | 6 | 30
+    >>>
+    >>> pw.debug.compute_and_print_update_stream(result, include_id=False) # doctest: +SKIP
+    a | b | res     | __time__      | __diff__
+    1 | 2 | Pending | 2             | 1
+    3 | 4 | Pending | 4             | 1
+    5 | 6 | Pending | 4             | 1
+    1 | 2 | Pending | 1739290145300 | -1
+    1 | 2 | 2       | 1739290145300 | 1
+    3 | 4 | Pending | 1739290146300 | -1
+    3 | 4 | 12      | 1739290146300 | 1
+    5 | 6 | Pending | 1739290148100 | -1
+    5 | 6 | 30      | 1739290148100 | 1
+    """
+    return FullyAsyncExecutor(
+        capacity=capacity,
+        timeout=timeout,
+        retry_strategy=retry_strategy,
+        autocommit_duration_ms=autocommit_duration_ms,
     )
 
 

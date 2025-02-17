@@ -51,6 +51,8 @@ class PathwayType:
     PY_OBJECT_WRAPPER: PathwayType
     @staticmethod
     def optional(arg: PathwayType) -> PathwayType: ...
+    @staticmethod
+    def future(arg: PathwayType) -> PathwayType: ...
 
 class ConnectorMode(Enum):
     STATIC: ConnectorMode
@@ -693,10 +695,11 @@ class Scope:
     def error_log(self, properties: ConnectorProperties) -> tuple[Table, ErrorLog]: ...
     def set_error_log(self, error_log: ErrorLog | None) -> None: ...
     def set_operator_properties(self, id: int, depends_on_error_log: bool) -> None: ...
-    def remove_errors_from_table(
+    def remove_value_from_table(
         self,
         table: Table,
         column_paths: Iterable[ColumnPath],
+        value: Value,
         table_properties: TableProperties,
     ) -> Table: ...
     def remove_retractions_from_table(
@@ -704,10 +707,26 @@ class Scope:
         table: Table,
         table_properties: TableProperties,
     ) -> Table: ...
+    def async_transformer(
+        self,
+        table: Table,
+        column_paths: Iterable[ColumnPath],
+        on_change: Callable,
+        on_time_end: Callable,
+        on_end: Callable,
+        data_source: DataStorage,
+        data_format: DataFormat,
+        table_properties: ConnectorProperties,
+        skip_errors: bool,
+    ) -> Table: ...
 
 class Error: ...
 
 ERROR: Error
+
+class Pending: ...
+
+PENDING: Pending
 
 class Done:
     def __lt__(self, other: Frontier) -> bool: ...

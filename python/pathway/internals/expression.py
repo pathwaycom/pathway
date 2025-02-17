@@ -9,12 +9,12 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from pathway.internals import api, dtype as dt, helpers
-from pathway.internals.api import Value
 from pathway.internals.operator_input import OperatorInput
 from pathway.internals.shadows import operator
 from pathway.internals.trace import Trace
 
 if TYPE_CHECKING:
+    from pathway.internals.api import Value
     from pathway.internals.column import Column, ColumnWithExpression
     from pathway.internals.expressions import (
         DateTimeNamespace,
@@ -745,6 +745,7 @@ class ApplyExpression(ColumnExpression):
     _return_type: dt.DType
     _propagate_none: bool
     _deterministic: bool
+    _check_for_disallowed_types: bool
     _args: tuple[ColumnExpression, ...]
     _kwargs: dict[str, ColumnExpression]
     _fun: Callable
@@ -757,15 +758,14 @@ class ApplyExpression(ColumnExpression):
         deterministic: bool,
         args: tuple[ColumnExpression | Value, ...],
         kwargs: Mapping[str, ColumnExpression | Value],
+        _check_for_disallowed_types: bool = True,
     ):
         super().__init__()
         self._fun = fun
-        return_type = dt.wrap(return_type)
-        if propagate_none:
-            return_type = dt.Optional(return_type)
-        self._return_type = return_type
+        self._return_type = dt.wrap(return_type)
         self._propagate_none = propagate_none
         self._deterministic = deterministic
+        self._check_for_disallowed_types = _check_for_disallowed_types
 
         self._args = tuple(ColumnExpression._wrap(arg) for arg in args)
 
@@ -783,13 +783,38 @@ class ApplyExpression(ColumnExpression):
             self._return_type,
             self._propagate_none,
             self._deterministic,
+            self._check_for_disallowed_types,
             *self._args,
             **self._kwargs,
         )
 
+    @property
+    def _maybe_optional_return_type(self) -> dt.DType:
+        if self._propagate_none:
+            return dt.Optional(self._return_type)
+        else:
+            return self._return_type
+
 
 class AsyncApplyExpression(ApplyExpression):
     pass
+
+
+class FullyAsyncApplyExpression(ApplyExpression):
+    autocommit_duration_ms: int | None
+
+    def __init__(
+        self,
+        fun: Callable,
+        return_type: Any,
+        propagate_none: bool,
+        deterministic: bool,
+        autocommit_duration_ms: int | None,
+        args: tuple[ColumnExpression | Value, ...],
+        kwargs: Mapping[str, ColumnExpression | Value],
+    ):
+        super().__init__(fun, return_type, propagate_none, deterministic, args, kwargs)
+        self.autocommit_duration_ms = autocommit_duration_ms
 
 
 class CastExpression(ColumnExpression):

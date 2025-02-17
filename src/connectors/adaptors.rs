@@ -1,6 +1,4 @@
 // Copyright © 2024 Pathway
-
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use differential_dataflow::collection::AsCollection;
@@ -56,27 +54,7 @@ impl<Timestamp: TimelyTimestamp + Lattice + TotalOrder> UpsertSession<Timestamp>
     fn consolidate_buffer(&mut self) {
         let mut keep: HashMap<Key, (Value, Timestamp, isize)> = HashMap::new();
         for ((key, value), time, diff) in self.buffer.drain(..) {
-            if diff == 1 {
-                // If there's no entry, insert.
-                // If there's an entry that is an insertion, replace it with a newer insertion
-                // (both have the same timestamp).
-                // If there's an entry that is a deletion, replace it with a newer entry.
-                // It'll remove the old value (upsert) and insert a new one.
-                keep.insert(key, (value, time, diff));
-            } else {
-                assert_eq!(diff, -1);
-                match keep.entry(key) {
-                    Entry::Occupied(occupied_entry) => {
-                        // If there's an entry, remove it.
-                        occupied_entry.remove();
-                    }
-                    Entry::Vacant(vacant_entry) => {
-                        // If there's no entry, it means we remove entry from previous batches.
-                        // So we have to keep a deletion.
-                        vacant_entry.insert((value, time, diff));
-                    }
-                }
-            }
+            keep.insert(key, (value, time, diff));
         }
         self.buffer.extend(
             keep.into_iter()

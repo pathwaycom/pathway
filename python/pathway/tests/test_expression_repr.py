@@ -111,6 +111,48 @@ def test_apply():
     )
 
 
+def test_apply_udf():
+    @pw.udf
+    def foo(a: int) -> int:
+        return a
+
+    t = T(
+        """
+    pet  |  owner  | age
+     1   | Alice   | 10
+        """
+    )
+    assert repr(foo(t.age)) == "pathway.apply(foo, <table1>.age)"
+
+
+def test_async_apply_udf():
+    @pw.udf
+    async def foo(a: int) -> int:
+        return a
+
+    t = T(
+        """
+    pet  |  owner  | age
+     1   | Alice   | 10
+        """
+    )
+    assert repr(foo(t.age)) == "pathway.apply_async(foo, <table1>.age)"
+
+
+def test_fully_async_apply_udf():
+    @pw.udf(executor=pw.udfs.fully_async_executor())
+    async def foo(a: int) -> int:
+        return a
+
+    t = T(
+        """
+    pet  |  owner  | age
+     1   | Alice   | 10
+        """
+    )
+    assert repr(foo(t.age)) == "pathway.apply_fully_async(foo, <table1>.age)"
+
+
 def test_cast():
     t = T(
         """

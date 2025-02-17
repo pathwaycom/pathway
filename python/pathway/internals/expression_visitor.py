@@ -37,6 +37,7 @@ class ExpressionVisitor(ABC):
             expr.IsNoneExpression: self.eval_none,
             expr.UnwrapExpression: self.eval_unwrap,
             expr.FillErrorExpression: self.eval_fill_error,
+            expr.FullyAsyncApplyExpression: self.eval_fully_async_apply,
         }
         if not isinstance(expression, expr.ColumnExpression):
             return self.eval_any(expression, **kwargs)
@@ -108,6 +109,9 @@ class ExpressionVisitor(ABC):
     @abstractmethod
     def eval_fill_error(self, expression: expr.FillErrorExpression): ...
 
+    @abstractmethod
+    def eval_fully_async_apply(self, expression: expr.FullyAsyncApplyExpression): ...
+
     def eval_any(self, expression, **kwargs):
         expression = expr.ColumnConstExpression(expression)
         return self.eval_const(expression, **kwargs)
@@ -173,6 +177,7 @@ class IdentityTransform(ExpressionVisitor):
             deterministic=expression._deterministic,
             args=expr_args,
             kwargs=expr_kwargs,
+            _check_for_disallowed_types=expression._check_for_disallowed_types,
         )
 
     def eval_async_apply(
@@ -188,6 +193,24 @@ class IdentityTransform(ExpressionVisitor):
             expression._return_type,
             propagate_none=expression._propagate_none,
             deterministic=expression._deterministic,
+            args=tuple(expr_args),
+            kwargs=expr_kwargs,
+        )
+
+    def eval_fully_async_apply(
+        self, expression: expr.FullyAsyncApplyExpression, **kwargs
+    ) -> expr.FullyAsyncApplyExpression:
+        expr_args = [self.eval_expression(arg, **kwargs) for arg in expression._args]
+        expr_kwargs = {
+            name: self.eval_expression(arg, **kwargs)
+            for name, arg in expression._kwargs.items()
+        }
+        return expr.FullyAsyncApplyExpression(
+            expression._fun,
+            expression._return_type,
+            propagate_none=expression._propagate_none,
+            deterministic=expression._deterministic,
+            autocommit_duration_ms=expression.autocommit_duration_ms,
             args=tuple(expr_args),
             kwargs=expr_kwargs,
         )

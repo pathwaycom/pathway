@@ -34,6 +34,7 @@ Value: TypeAlias = Union[
     dict[str, _Value],
     tuple[_Value, ...],
     Error,
+    Pending,
 ]
 CapturedTable = dict[Pointer, tuple[Value, ...]]
 CapturedStream = list[DataRow]

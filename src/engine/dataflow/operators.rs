@@ -419,6 +419,7 @@ where
     R: Semigroup,
 {
     fn reshard(&self) -> Collection<S, D, R>;
+    fn reshard_to_first_worker(&self) -> Collection<S, D, R>;
 }
 
 impl<S, D, R> Reshard<S, D, R> for Collection<S, D, R>
@@ -431,5 +432,9 @@ where
         self.inner
             .exchange(|(data, _time, _diff)| data.shard())
             .as_collection()
+    }
+
+    fn reshard_to_first_worker(&self) -> Collection<S, D, R> {
+        self.inner.exchange(|_| 0).as_collection()
     }
 }

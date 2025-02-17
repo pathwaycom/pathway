@@ -196,7 +196,7 @@ impl IcebergTableParams {
                 let array_type = IcebergListType::new(nested_type.into());
                 IcebergType::List(array_type)
             }
-            Type::Any | Type::Array(_, _) | Type::Tuple(_) => {
+            Type::Any | Type::Array(_, _) | Type::Tuple(_) | Type::Future(_) => {
                 return Err(WriteError::UnsupportedType(type_.clone()))
             }
         };

@@ -225,6 +225,7 @@ pub enum Value {
     Json(Handle<JsonValue>),
     Error,
     PyObjectWrapper(Handle<PyObjectWrapper>),
+    Pending,
 }
 
 const _: () = assert!(align_of::<Value>() <= 16);
@@ -362,6 +363,7 @@ impl Display for Value {
             Self::Json(json) => write!(fmt, "{json}"),
             Self::Error => write!(fmt, "Error"),
             Self::PyObjectWrapper(ob) => write!(fmt, "{ob}"),
+            Self::Pending => write!(fmt, "Pending"),
         }
     }
 }
@@ -501,6 +503,7 @@ pub enum Kind {
     Json,
     Error,
     PyObjectWrapper,
+    Pending,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,6 +524,7 @@ pub enum Type {
     List(Arc<Type>),
     PyObjectWrapper,
     Optional(Arc<Type>),
+    Future(Arc<Type>),
 }
 
 impl Type {
@@ -565,6 +569,7 @@ impl Display for Type {
             Type::List(arg) => write!(f, "list[{arg}]"),
             Type::PyObjectWrapper => write!(f, "PyObjectWrapper"),
             Type::Optional(arg) => write!(f, "{arg} | None"),
+            Type::Future(arg) => write!(f, "Future[{arg}]"),
         }
     }
 }
@@ -589,6 +594,7 @@ impl Value {
             Self::Json(_) => Kind::Json,
             Self::Error => Kind::Error,
             Self::PyObjectWrapper(_) => Kind::PyObjectWrapper,
+            Self::Pending => Kind::Pending,
         }
     }
 }
@@ -733,6 +739,7 @@ impl HashInto for Value {
             Self::Json(json) => json.hash_into(hasher),
             Self::Error => panic!("trying to hash error"), // FIXME
             Self::PyObjectWrapper(ob) => ob.hash_into(hasher),
+            Self::Pending => panic!("trying to hash pending"), // FIXME
         }
     }
 }

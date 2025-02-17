@@ -23,7 +23,7 @@ use crate::engine::dataflow::maybe_total::MaybeTotalScope;
 use crate::engine::dataflow::operators::stateful_reduce::StatefulReduce;
 use crate::engine::dataflow::operators::MapWrapped;
 use crate::engine::dataflow::shard::Shard;
-use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell};
+use crate::engine::dataflow::{MaybeUpdate, Poller, SortingCell, Tuple};
 use crate::engine::reduce::IntSumState;
 use crate::engine::{Key, Result, Timestamp, Value};
 use crate::persistence::config::PersistenceManagerConfig;
@@ -204,6 +204,7 @@ pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyIsizeIsize(Collection<S, (Key, isize), isize>),
     KeyKeyValueKeyValueIsize(Collection<S, (Key, (Key, Value), (Key, Value)), isize>),
     KeyVecValueIsize(Collection<S, (Key, Vec<Value>), isize>),
+    KeyTupleIsize(Collection<S, (Key, Tuple), isize>),
 }
 
 macro_rules! impl_conversion {
@@ -291,6 +292,7 @@ impl_conversion!(
     (Key, Vec<Value>),
     isize
 );
+impl_conversion!(PersistableCollection::KeyTupleIsize, (Key, Tuple), isize);
 
 pub struct TimestampBasedPersistenceWrapper {
     persistence_config: PersistenceManagerConfig,
@@ -423,6 +425,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             PersistableCollection::KeyVecValueIsize(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
+            PersistableCollection::KeyTupleIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
         }
     }
 
@@ -480,6 +485,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
                 generic_filter_out_persisted(&collection)
             }
             PersistableCollection::KeyVecValueIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyTupleIsize(collection) => {
                 generic_filter_out_persisted(&collection)
             }
         }

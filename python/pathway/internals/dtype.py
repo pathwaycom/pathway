@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import datetime
 import functools
@@ -16,8 +17,8 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from pathway.engine import PathwayType
 from pathway.internals import api, datetime_types, json as js
+from pathway.internals.api import PathwayType
 
 if typing.TYPE_CHECKING:
     from pathway.internals.schema import SchemaMetaclass
@@ -457,6 +458,35 @@ class List(DType):
         return math.inf
 
 
+class Future(DType):
+    wrapped: DType
+
+    def __repr__(self):
+        return f"Future({self.wrapped})"
+
+    def __new__(cls, arg: DType) -> Future:
+        arg = wrap(arg)
+        if isinstance(arg, Future):
+            return arg
+        return super().__new__(cls, arg)
+
+    def _set_args(self, wrapped):
+        self.wrapped = wrapped
+
+    def to_engine(self) -> PathwayType:
+        return api.PathwayType.future(self.wrapped.to_engine())
+
+    def is_value_compatible(self, arg):
+        return arg is api.PENDING or self.wrapped.is_value_compatible(arg)
+
+    @cached_property
+    def typehint(self) -> type[asyncio.Future]:
+        return asyncio.Future[self.wrapped.typehint]  # type: ignore[name-defined]
+
+    def max_size(self) -> float:
+        return self.wrapped.max_size()
+
+
 class _DateTimeNaive(DType):
     def __repr__(self):
         return "DATE_TIME_NAIVE"
@@ -658,6 +688,10 @@ def wrap(input_type) -> DType:
         )
     elif input_type == datetime.timedelta:
         raise TypeError(f"Unsupported type {input_type}, use pw.DURATION")
+    elif typing.get_origin(input_type) == asyncio.Future:
+        args = get_args(input_type)
+        (arg,) = args
+        return Future(wrap(arg))
     else:
         dtype = {
             int: INT,

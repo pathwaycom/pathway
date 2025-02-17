@@ -1185,7 +1185,7 @@ impl PsqlWriter {
                 }
                 return Err(WriteError::UnsupportedType(type_.clone()));
             }
-            Type::Any | Type::Array(_, _) => {
+            Type::Any | Type::Array(_, _) | Type::Future(_) => {
                 return Err(WriteError::UnsupportedType(type_.clone()))
             }
         })
@@ -1299,6 +1299,7 @@ mod to_sql {
                     try_forward!(Vec<u8>, bincode::serialize(self).map_err(|e| *e)?);
                     "python object"
                 }
+                Self::Pending => "pending",
             };
             Err(Box::new(WrongPathwayType {
                 pathway_type: pathway_type.to_owned(),

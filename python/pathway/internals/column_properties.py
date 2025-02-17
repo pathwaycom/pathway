@@ -1,4 +1,4 @@
-# Copyright © 2024 Pathway
+# Copyright © 2025 Pathway
 
 from __future__ import annotations
 
@@ -7,10 +7,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from pathway.internals import dtype as dt
-
 if TYPE_CHECKING:
-    import pathway.internals.column as clmn
+    from pathway.internals import column as clmn, dtype as dt
 
 
 @dataclass(frozen=True)
@@ -39,13 +37,29 @@ class DefaultPropsEvaluator(ColumnPropertiesEvaluator):
 
 class PreserveDependenciesPropsEvaluator(ColumnPropertiesEvaluator):
     def _append_only(self, column: clmn.ColumnWithContext):
-        return self._has_property(column, "append_only", True)
+        maybe_append_only = self._check_expression(column)
+        return maybe_append_only and self._has_property(column, "append_only", True)
 
     def _has_property(self, column: clmn.ColumnWithContext, name: str, value: Any):
         return all(
             getattr(col.properties, name) == value
             for col in column.column_dependencies()
         )
+
+    def _check_expression(self, column: clmn.ColumnWithContext) -> bool:
+        from pathway.internals.column import ColumnWithExpression
+        from pathway.internals.expression_props_evaluator import (
+            ExpressionPropsEvaluator,
+            PropsEvaluatorState,
+        )
+
+        if isinstance(column, ColumnWithExpression):
+            evaluator = ExpressionPropsEvaluator()
+            props = PropsEvaluatorState(True)
+            evaluator.eval_expression(column.expression, props=props)
+            return props.append_only
+        else:
+            return True
 
 
 class UpdateRowsPropsEvaluator(ColumnPropertiesEvaluator):

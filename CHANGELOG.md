@@ -11,10 +11,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `pw.io.python.write` accepting `ConnectorObserver` as an alternative to `pw.io.subscribe`.
 - `pw.io.iceberg.read` and `pw.io.iceberg.write` now support S3 as data backend and AWS Glue catalog implementations.
 - All output connectors now support the `sort_by` field for ordering output within a single minibatch.
+- A new UDF executor `pw.udfs.fully_async_executor`. It allows for creation of non-blocking asynchronous UDFs which results can be returned in the future processing time.
+- A Future data type to represent results of fully asynchronous UDFs.
+- `pw.Table.await_futures` method to wait for results of fully asynchronous UDFs.
 
 ### Changed
 - **BREAKING**: Changed the interface of `LLMReranker`, the `use_logit_bias`, `cache_strategy`, `retry_strategy` and `kwargs` arguments are no longer supported.
 - **BREAKING**: LLMReranker no longer inherits from pw.UDF
+- **BREAKING**: `pw.stdlib.utils.AsyncTransformer.output_table` now returns a table with columns with Future data type.
 
 ## [0.18.0] - 2025-02-07
 

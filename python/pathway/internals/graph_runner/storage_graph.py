@@ -237,6 +237,7 @@ class OperatorStorageGraph:
                 storages,
                 operator,
                 table._id_column.context,
+                table._columns.values(),
             )
             if path_storage.max_depth > 3:
                 # TODO: 3 is arbitrarily specified number. Check what's best.
@@ -253,11 +254,13 @@ class OperatorStorageGraph:
         self, operator: Operator, storages: dict[Universe, Storage]
     ) -> None:
         for table in operator.output_tables:
+            output_columns = self.column_deps_at_output[operator][table]
             path_storage = path_evaluator.compute_paths(
-                table._columns.values(),
+                output_columns,
                 {},
                 operator,
                 table._id_column.context,
+                table._columns.values(),
             )
             self.output_storages[operator][table] = path_storage
             assert table._universe not in storages

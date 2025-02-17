@@ -3,6 +3,7 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::non_canonical_partial_ord_impl)] // False positive with Derivative
 
+mod async_transformer;
 mod complex_columns;
 pub mod config;
 mod export;
@@ -85,6 +86,7 @@ use timely::progress::timestamp::Refines;
 use timely::progress::Timestamp as TimestampTrait;
 use xxhash_rust::xxh3::Xxh3 as Hasher;
 
+use self::async_transformer::async_transformer;
 use self::complex_columns::complex_columns;
 use self::export::{export_table, import_table};
 use self::maybe_total::MaybeTotalScope;
@@ -99,7 +101,9 @@ use self::variable::SafeVariable;
 use super::error::{DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
-use super::graph::{DataRow, ExportedTable, OperatorProperties, SubscribeCallbacks};
+use super::graph::{
+    DataRow, ExportedTable, OperatorProperties, SubscribeCallbacks, SubscribeConfig,
+};
 use super::http_server::maybe_run_http_server_thread;
 use super::license::License;
 use super::progress_reporter::{maybe_run_reporter, MonitoringLevel};
@@ -853,6 +857,17 @@ enum Tuple {
     More(Arc<[Value]>),
 }
 
+impl Tuple {
+    fn with_appended(self, value: Value) -> Self {
+        match self {
+            Tuple::Zero => Tuple::One(value),
+            Tuple::One(old_value) => Tuple::Two([old_value, value]),
+            Tuple::Two([value_1, value_2]) => Tuple::More(Arc::new([value_1, value_2, value])),
+            Tuple::More(values) => Tuple::More(values.iter().cloned().chain([value]).collect()),
+        }
+    }
+}
+
 impl Deref for Tuple {
     type Target = [Value];
 
@@ -993,6 +1008,16 @@ impl<S: MaybeTotalScope> FilterOutErrors for Collection<S, (Key, Tuple)> {
             }
             !contains_errors
         })
+    }
+}
+
+trait FilterOutPending {
+    fn filter_out_pending(&self) -> Self;
+}
+
+impl<S: MaybeTotalScope> FilterOutPending for Collection<S, (Key, Tuple)> {
+    fn filter_out_pending(&self) -> Self {
+        self.filter(move |(_key, values)| !values.as_value_slice().contains(&Value::Pending))
     }
 }
 
@@ -3090,17 +3115,18 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         Ok(())
     }
 
-    fn remove_errors_from_table(
+    fn remove_value_from_table(
         &mut self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        value: Value,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let new_values = self
             .extract_columns(table_handle, column_paths)?
             .as_collection()
-            .filter_out_errors(None)
-            .map_named("remove_errors_from_table", |(key, tuple)| {
+            .filter(move |(_key, values)| !values.as_value_slice().contains(&value))
+            .map_named("remove_value_from_table", |(key, tuple)| {
                 (key, Value::from(tuple.as_value_slice()))
             });
 
@@ -3616,35 +3642,37 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .alloc(Table::from_collection(values).with_properties(table_properties)))
     }
 
-    fn new_upsert_collection(
+    fn maybe_persisted_upsert_collection(
         &mut self,
         collection: &Collection<S, (Key, Value)>,
     ) -> Result<Collection<S, (Key, Value)>> {
-        collection.maybe_persist_with_logic(
-            self,
-            "upsert_collection",
-            |collection| {
-                let upsert_stream = collection.inner.map(|((key, value), time, diff)| {
-                    // same behavior for new and persisted variants
-                    let value = match value {
-                        OldOrNew::Old(value) | OldOrNew::New(value) => value,
-                    };
-                    let value_for_upsert = if diff == 1 {
-                        Some(value)
-                    } else {
-                        assert_eq!(diff, -1);
-                        None
-                    };
-                    (key, value_for_upsert, time)
-                });
-                arrange_from_upsert::<S, Spine<Rc<OrdValBatch<Key, Value, Timestamp, isize>>>>(
-                    &upsert_stream,
-                    "UpsertSession",
-                )
-                .as_collection(|k, v| (*k, v.clone()))
-            },
-            |d| d,
-        )
+        collection
+            .maybe_persist_with_logic(
+                self,
+                "upsert_collection",
+                |collection| {
+                    let upsert_stream = collection.inner.map(|((key, value), time, diff)| {
+                        // same behavior for new and persisted variants
+                        let value = match value {
+                            OldOrNew::Old(value) | OldOrNew::New(value) => value,
+                        };
+                        let value_for_upsert = if diff == 1 {
+                            Some(value)
+                        } else {
+                            assert_eq!(diff, -1);
+                            None
+                        };
+                        (key, value_for_upsert, time)
+                    });
+                    arrange_from_upsert::<S, Spine<Rc<OrdValBatch<Key, Value, Timestamp, isize>>>>(
+                        &upsert_stream,
+                        "UpsertSession",
+                    )
+                    .as_collection(|k, v| (*k, v.clone()))
+                },
+                |d| d,
+            )?
+            .filter_out_persisted(&mut self.persistence_wrapper)
     }
 
     fn new_collection(
@@ -3663,7 +3691,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             SessionType::Upsert => {
                 let mut upsert_session = UpsertSession::new();
                 let collection = upsert_session.to_collection(&mut self.scope);
-                let collection = self.new_upsert_collection(&collection)?;
+                let collection = self.maybe_persisted_upsert_collection(&collection)?;
                 Ok((Box::new(upsert_session), collection))
             }
         }
@@ -4096,15 +4124,19 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     fn subscribe_table(
         &mut self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
-        skip_persisted_batch: bool,
-        skip_errors: bool,
+        config: SubscribeConfig,
         unique_name: Option<UniqueName>,
         sort_by_indices: Option<Vec<usize>>,
+        logic: impl FnOnce(
+            &mut DataflowGraphInner<S>,
+            Collection<S, (Key, Tuple)>,
+        ) -> Result<Collection<S, (Key, Tuple)>>,
     ) -> Result<()> {
         let worker_index = self.scope.index();
 
@@ -4117,7 +4149,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .persistence_wrapper
             .get_worker_persistent_storage()
             .cloned();
-        let skip_initial_time = skip_persisted_batch && worker_persistent_storage.is_some();
+        let skip_initial_time = config.skip_persisted_batch && worker_persistent_storage.is_some();
 
         let error_reporter = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
@@ -4128,6 +4160,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             mut on_data,
             mut on_time_end,
             mut on_end,
+            mut on_frontier,
         } = callbacks;
         let wrapper_2 = wrapper.clone();
 
@@ -4138,12 +4171,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         let output_columns = self
             .extract_columns(table_handle, column_paths)?
             .as_collection();
-        let output_columns = if skip_errors {
+        let output_columns = if config.skip_errors {
             output_columns.filter_out_errors(Some(error_logger))
         } else {
             output_columns
         };
-        output_columns
+        let output_columns = if config.skip_pending {
+            output_columns.filter_out_pending()
+        } else {
+            output_columns
+        };
+        logic(self, output_columns)?
             .consolidate_for_output(true)
             .inspect(move |batch| {
                 if batch.time.is_from_persistence() && skip_initial_time {
@@ -4178,10 +4216,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 // the first inspect for this frontier.
                 if let Err(frontier) = event {
                     stats.on_time_committed(frontier.first().copied().map(|t| t.0));
-                    if worker_index == 0 && frontier.is_empty() {
-                        if let Some(on_end) = on_end.as_mut() {
+                    if worker_index == 0 {
+                        if frontier.is_empty() {
+                            if let Some(on_end) = on_end.as_mut() {
+                                wrapper_2
+                                    .run(on_end)
+                                    .unwrap_with_reporter(&error_reporter_2);
+                            }
+                        } else if let Some(on_frontier) = on_frontier.as_mut() {
+                            assert_eq!(frontier.len(), 1);
                             wrapper_2
-                                .run(on_end)
+                                .run(|| on_frontier(frontier[0]))
                                 .unwrap_with_reporter(&error_reporter_2);
                         }
                     }
@@ -4940,8 +4985,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _column_paths: Vec<ColumnPath>,
         _callbacks: SubscribeCallbacks,
-        _skip_persisted_batch: bool,
-        _skip_errors: bool,
+        _config: SubscribeConfig,
         _unique_name: Option<UniqueName>,
         _sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
@@ -5326,15 +5370,33 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         Err(Error::IoNotPossible)
     }
 
-    fn remove_errors_from_table(
+    fn remove_value_from_table(
         &self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        value: Value,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .remove_errors_from_table(table_handle, column_paths, table_properties)
+        self.0.borrow_mut().remove_value_from_table(
+            table_handle,
+            column_paths,
+            value,
+            table_properties,
+        )
+    }
+
+    fn async_transformer(
+        &self,
+        _table_handle: TableHandle,
+        _column_paths: Vec<ColumnPath>,
+        _callbacks: SubscribeCallbacks,
+        _reader: Box<dyn ReaderBuilder>,
+        _parser: Box<dyn Parser>,
+        _commit_duration: Option<Duration>,
+        _table_properties: Arc<TableProperties>,
+        _skip_errors: bool,
+    ) -> Result<TableHandle> {
+        Err(Error::IoNotPossible)
     }
 }
 
@@ -5534,8 +5596,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         callbacks: SubscribeCallbacks,
-        skip_persisted_batch: bool,
-        skip_errors: bool,
+        config: SubscribeConfig,
         unique_name: Option<UniqueName>,
         sort_by_indices: Option<Vec<usize>>,
     ) -> Result<()> {
@@ -5543,10 +5604,10 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_handle,
             column_paths,
             callbacks,
-            skip_persisted_batch,
-            skip_errors,
+            config,
             unique_name,
             sort_by_indices,
+            |_graph, collection| Ok(collection),
         )
     }
 
@@ -5980,15 +6041,43 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0.borrow_mut().import_table(table)
     }
 
-    fn remove_errors_from_table(
+    fn remove_value_from_table(
         &self,
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
+        value: Value,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
-        self.0
-            .borrow_mut()
-            .remove_errors_from_table(table_handle, column_paths, table_properties)
+        self.0.borrow_mut().remove_value_from_table(
+            table_handle,
+            column_paths,
+            value,
+            table_properties,
+        )
+    }
+
+    fn async_transformer(
+        &self,
+        table_handle: TableHandle,
+        column_paths: Vec<ColumnPath>,
+        callbacks: SubscribeCallbacks,
+        reader: Box<dyn ReaderBuilder>,
+        parser: Box<dyn Parser>,
+        commit_duration: Option<Duration>,
+        table_properties: Arc<TableProperties>,
+        skip_errors: bool,
+    ) -> Result<TableHandle> {
+        async_transformer(
+            &mut self.0.borrow_mut(),
+            table_handle,
+            column_paths,
+            callbacks,
+            reader,
+            parser,
+            commit_duration,
+            table_properties,
+            skip_errors,
+        )
     }
 }
 

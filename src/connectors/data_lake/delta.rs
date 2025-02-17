@@ -167,7 +167,7 @@ impl DeltaBatchWriter {
                 DeltaTableKernelType::Struct(struct_descriptor.into())
             }
             Type::Optional(wrapped) => return Self::delta_table_type(wrapped),
-            Type::Any => return Err(WriteError::UnsupportedType(type_.clone())),
+            Type::Any | Type::Future(_) => return Err(WriteError::UnsupportedType(type_.clone())),
         };
         Ok(delta_type)
     }

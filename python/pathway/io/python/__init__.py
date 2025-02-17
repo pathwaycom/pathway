@@ -27,7 +27,6 @@ from pathway.io._utils import (
     _get_unique_name,
     assert_schema_not_none,
     get_data_format_type,
-    internal_read_method,
     read_schema,
 )
 
@@ -314,6 +313,47 @@ class ConnectorSubject(ABC):
         return True
 
 
+def _create_python_datasource(
+    subject: ConnectorSubject,
+    *,
+    schema: type[Schema],
+    autocommit_duration_ms: int | None = 1500,
+    name: str | None = None,
+    _stacklevel: int = 1,
+    **kwargs,
+) -> datasource.GenericDataSource:
+    schema, api_schema = read_schema(schema)
+    data_format = api.DataFormat(
+        **api_schema,
+        format_type="transparent",
+        session_type=subject._session_type,
+    )
+    data_storage = api.DataStorage(
+        storage_type="python",
+        python_subject=api.PythonSubject(
+            start=subject.start,
+            seek=subject.seek,
+            on_persisted_run=subject.on_persisted_run,
+            read=subject._read,
+            end=subject.end,
+            is_internal=subject._is_internal(),
+            deletions_enabled=subject._deletions_enabled,
+        ),
+    )
+    data_source_options = datasource.DataSourceOptions(
+        commit_duration_ms=autocommit_duration_ms,
+        unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 1),
+    )
+    return datasource.GenericDataSource(
+        datastorage=data_storage,
+        dataformat=data_format,
+        data_source_options=data_source_options,
+        schema=schema,
+        datasource_name=subject._datasource_name,
+        append_only=not subject._deletions_enabled,
+    )
+
+
 @check_arg_types
 @trace_user_frame
 def read(
@@ -404,37 +444,14 @@ def read(
             schema |= MetadataSchema
 
     schema = assert_schema_not_none(schema, data_format_type)
-    schema, api_schema = read_schema(schema)
-    data_format = api.DataFormat(
-        **api_schema,
-        format_type="transparent",
-        session_type=subject._session_type,
-    )
-    data_storage = api.DataStorage(
-        storage_type="python",
-        python_subject=api.PythonSubject(
-            start=subject.start,
-            seek=subject.seek,
-            on_persisted_run=subject.on_persisted_run,
-            read=subject._read,
-            end=subject.end,
-            is_internal=subject._is_internal(),
-            deletions_enabled=subject._deletions_enabled,
-        ),
-        read_method=internal_read_method(format),
-    )
-    data_source_options = datasource.DataSourceOptions(
-        commit_duration_ms=autocommit_duration_ms,
-        unique_name=_get_unique_name(name, kwargs, stacklevel=_stacklevel + 5),
-    )
     return table_from_datasource(
-        datasource.GenericDataSource(
-            datastorage=data_storage,
-            dataformat=data_format,
-            data_source_options=data_source_options,
+        _create_python_datasource(
+            subject,
             schema=schema,
-            datasource_name=subject._datasource_name,
-            append_only=not subject._deletions_enabled,
+            autocommit_duration_ms=autocommit_duration_ms,
+            name=name,
+            _stacklevel=_stacklevel + 5,
+            **kwargs,
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )

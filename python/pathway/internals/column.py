@@ -13,12 +13,15 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import pathway.internals as pw
 from pathway.engine import ExternalIndexFactory
 from pathway.internals import column_properties as cp, dtype as dt, trace
+from pathway.internals.datasource import GenericDataSource
 from pathway.internals.expression import ColumnExpression, ColumnReference
 from pathway.internals.helpers import SetOnceProperty, StableSet
 from pathway.internals.parse_graph import G
+from pathway.internals.schema import Schema
 from pathway.internals.universe import Universe
 
 if TYPE_CHECKING:
+    from pathway.internals import api
     from pathway.internals.expression import InternalColRef
     from pathway.internals.operator import OutputHandle
     from pathway.internals.table import Table
@@ -159,6 +162,23 @@ class MaterializedIdColumn(IdColumn):
     @property
     def properties(self) -> cp.ColumnProperties:
         return self._properties
+
+
+class ColumnWithoutExpression(ColumnWithContext):
+    _dtype: dt.DType
+
+    def __init__(
+        self,
+        context: Context,
+        universe: Universe,
+        dtype: dt.DType,
+    ) -> None:
+        super().__init__(context, universe)
+        self._dtype = dtype
+
+    @cached_property
+    def context_dtype(self) -> dt.DType:
+        return self._dtype
 
 
 class ColumnWithExpression(ColumnWithContext):
@@ -1103,12 +1123,16 @@ class SortingContext(Context):
 
 
 @dataclass(eq=False, frozen=True)
-class RemoveErrorsContext(
+class FilterOutValueContext(
     Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
 ):
-    """Context of `table.remove_errors() operation."""
+    """Context of operations that filter all columns of the table.
+
+    Used in `table.remove_errors()` and ``table.await_futures()`
+    """
 
     orig_id_column: IdColumn
+    value_to_filter_out: api.Value
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]
@@ -1144,3 +1168,31 @@ class RemoveRetractionsContext(
     @cached_property
     def universe(self) -> Universe:
         return self.id_column_to_filter.universe.superset()
+
+
+@dataclass(eq=False, frozen=True)
+class AsyncTransformerContext(
+    Context, column_properties_evaluator=cp.PreserveDependenciesPropsEvaluator
+):
+    """Context of `AsyncTransformer` operation."""
+
+    input_id_column: IdColumn
+    input_columns: list[Column]
+    schema: type[Schema]
+    on_change: Callable
+    on_time_end: Callable
+    on_end: Callable
+    datasource: GenericDataSource
+
+    def column_dependencies_external(self) -> Iterable[Column]:
+        return [self.input_id_column] + self.input_columns
+
+    def input_universe(self) -> Universe:
+        return self.input_id_column.universe
+
+    def id_column_type(self) -> dt.DType:
+        return self.input_id_column.dtype
+
+    @cached_property
+    def universe(self) -> Universe:
+        return self.input_id_column.universe.subset()

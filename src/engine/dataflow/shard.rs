@@ -31,6 +31,12 @@ impl<T, U> Shard for (Key, T, U) {
     }
 }
 
+impl<T, U, V> Shard for (Key, T, U, V) {
+    fn shard(&self) -> u64 {
+        self.0.shard()
+    }
+}
+
 impl Shard for i32 {
     #[allow(clippy::cast_sign_loss)]
     fn shard(&self) -> u64 {

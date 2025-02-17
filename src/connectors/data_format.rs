@@ -423,6 +423,12 @@ pub enum FormatterError {
     #[error("Error value is not bson-serializable")]
     ErrorValueNonBsonSerializable,
 
+    #[error("Pending value is not json-serializable")]
+    PendingValueNonJsonSerializable,
+
+    #[error("Pending value is not bson-serializable")]
+    PendingValueNonBsonSerializable,
+
     #[error("this connector doesn't support this value type")]
     UnsupportedValueType,
 
@@ -1235,6 +1241,7 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
             Ok(json!(encoded))
         }
         Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable),
+        Value::Pending => Err(FormatterError::PendingValueNonJsonSerializable),
     }
 }
 
@@ -2062,6 +2069,7 @@ fn serialize_value_to_bson(value: &Value) -> Result<BsonValue, FormatterError> {
         Value::PyObjectWrapper(_) => Err(FormatterError::TypeNonBsonSerializable {
             type_: Type::PyObjectWrapper,
         }),
+        Value::Pending => Err(FormatterError::PendingValueNonBsonSerializable),
     }
 }
 
