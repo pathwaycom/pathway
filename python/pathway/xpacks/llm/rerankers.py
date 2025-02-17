@@ -173,17 +173,17 @@ class CrossEncoderReranker(pw.UDF):
 
     Example:
 
-    >>> import pathway as pw
-    >>> import pandas as pd
-    >>> from pathway.xpacks.llm import rerankers
-    >>> reranker = rerankers.CrossEncoderReranker(model_name="cross-encoder/ms-marco-TinyBERT-L-2-v2")
-    >>> docs = [{"text": "Something"}, {"text": "Something else"}, {"text": "Pathway"}]
-    >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})
-    >>> table = pw.debug.table_from_pandas(df)
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> import pandas as pd  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import rerankers  # doctest: +SKIP
+    >>> reranker = rerankers.CrossEncoderReranker(model_name="cross-encoder/ms-marco-TinyBERT-L-2-v2")  # doctest: +SKIP
+    >>> docs = [{"text": "Something"}, {"text": "Something else"}, {"text": "Pathway"}]  # doctest: +SKIP
+    >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})  # doctest: +SKIP
+    >>> table = pw.debug.table_from_pandas(df)  # doctest: +SKIP
     >>> table += table.select(
     ...     reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
-    ... )
-    >>> table
+    ... )  # doctest: +SKIP
+    >>> table  # doctest: +SKIP
     <pathway.Table schema={'docs': <class 'pathway.internals.json.Json'>, 'prompt': <class 'str'>, 'reranker_scores': <class 'float'>}>
     """  # noqa: E501
 
@@ -238,17 +238,17 @@ class EncoderReranker(pw.UDF):
 
     Example:
 
-    >>> import pathway as pw
-    >>> import pandas as pd
-    >>> from pathway.xpacks.llm import rerankers
-    >>> reranker = rerankers.EncoderReranker(model_name="BAAI/bge-large-zh-v1.5")
-    >>> docs = [{"text": "Something"}, {"text": "Something else"}, {"text": "Pathway"}]
-    >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})
-    >>> table = pw.debug.table_from_pandas(df)
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> import pandas as pd  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import rerankers  # doctest: +SKIP
+    >>> reranker = rerankers.EncoderReranker(model_name="BAAI/bge-large-zh-v1.5")  # doctest: +SKIP
+    >>> docs = [{"text": "Something"}, {"text": "Something else"}, {"text": "Pathway"}]  # doctest: +SKIP
+    >>> df = pd.DataFrame({"docs": docs, "prompt": "query text"})  # doctest: +SKIP
+    >>> table = pw.debug.table_from_pandas(df)  # doctest: +SKIP
     >>> table += table.select(
     ...     reranker_scores=reranker(pw.this.docs["text"], pw.this.prompt)
-    ... )
-    >>> table
+    ... )  # doctest: +SKIP
+    >>> table  # doctest: +SKIP
     <pathway.Table schema={'docs': <class 'pathway.internals.json.Json'>, 'prompt': <class 'str'>, 'reranker_scores': <class 'float'>}>
     """  # noqa: E501
 

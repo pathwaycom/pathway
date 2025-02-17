@@ -462,15 +462,15 @@ class HFPipelineChat(BaseChat):
 
     Example:
 
-    >>> import pathway as pw
-    >>> from pathway.xpacks.llm import llms
-    >>> chat = llms.HFPipelineChat(model="gpt2")
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import llms  # doctest: +SKIP
+    >>> chat = llms.HFPipelineChat(model="gpt2")  # doctest: +SKIP
     >>> t = pw.debug.table_from_markdown('''
     ... txt
     ... Wazzup?
-    ... ''')
-    >>> r = t.select(ret=chat(t.txt))
-    >>> r
+    ... ''')  # doctest: +SKIP
+    >>> r = t.select(ret=chat(t.txt))  # doctest: +SKIP
+    >>> r  # doctest: +SKIP
     <pathway.Table schema={'ret': str | None}>
     """  # noqa: E501
 

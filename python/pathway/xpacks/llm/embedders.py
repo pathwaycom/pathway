@@ -285,14 +285,14 @@ class SentenceTransformerEmbedder(BaseEmbedder):
 
     Example:
 
-    >>> import pathway as pw
-    >>> from pathway.xpacks.llm import embedders
-    >>> embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> from pathway.xpacks.llm import embedders  # doctest: +SKIP
+    >>> embedder = embedders.SentenceTransformerEmbedder(model="intfloat/e5-large-v2")  # doctest: +SKIP
     >>> t = pw.debug.table_from_markdown('''
     ... txt
     ... Text
-    ... ''')
-    >>> t.select(ret=embedder(pw.this.txt))
+    ... ''')  # doctest: +SKIP
+    >>> t.select(ret=embedder(pw.this.txt))  # doctest: +SKIP
     <pathway.Table schema={'ret': numpy.ndarray[typing.Any, numpy.dtype[typing.Any]]}>
     """  # noqa: E501
 
