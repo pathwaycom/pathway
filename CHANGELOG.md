@@ -14,6 +14,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - A new UDF executor `pw.udfs.fully_async_executor`. It allows for creation of non-blocking asynchronous UDFs which results can be returned in the future processing time.
 - A Future data type to represent results of fully asynchronous UDFs.
 - `pw.Table.await_futures` method to wait for results of fully asynchronous UDFs.
+- `pw.io.deltalake.write` now supports partition columns specification.
 
 ### Changed
 - **BREAKING**: Changed the interface of `LLMReranker`, the `use_logit_bias`, `cache_strategy`, `retry_strategy` and `kwargs` arguments are no longer supported.

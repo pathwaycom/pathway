@@ -3896,3 +3896,58 @@ def test_output_column_sorting_foreign_columns_error_subscribe(tmp_path: pathlib
         match="The column <table1>.v doesn't belong to the target table *",
     ):
         pw.io.subscribe(table_1, lambda **kwargs: print(kwargs), sort_by=[table_2.v])
+
+
+@only_with_license_key
+def test_deltalake_partition_columns(tmp_path: pathlib.Path):
+    data = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    input_path = tmp_path / "input.csv"
+    output_path = tmp_path / "output"
+    write_csv(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, str(output_path), partition_columns=[table.k])
+    run_all()
+
+    delta_table = DeltaTable(output_path)
+    assert delta_table._table.metadata().partition_columns == ["k"]
+    pd_table_from_delta = (
+        delta_table.to_pandas().drop("time", axis=1).drop("diff", axis=1)
+    )
+
+    assert_table_equality(
+        table,
+        pw.debug.table_from_pandas(
+            pd_table_from_delta,
+            schema=InputSchema,
+        ),
+    )
+
+
+@only_with_license_key
+def test_deltalake_partition_columns_unknown(tmp_path: pathlib.Path):
+    input_path_1 = tmp_path / "input_1.csv"
+    input_path_2 = tmp_path / "input_2.csv"
+    output_path = tmp_path / "output"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+        vv: str
+
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema, mode="static")
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema, mode="static")
+    with pytest.raises(
+        ValueError,
+        match="The suggested partition column <table1>.v doesn't belong to the table *",
+    ):
+        pw.io.deltalake.write(table_1, output_path, partition_columns=[table_2.v])

@@ -52,8 +52,9 @@ impl DeltaBatchWriter {
         path: &str,
         value_fields: &Vec<ValueField>,
         storage_options: HashMap<String, String>,
+        partition_columns: Vec<String>,
     ) -> Result<Self, WriteError> {
-        let table = Self::open_table(path, value_fields, storage_options)?;
+        let table = Self::open_table(path, value_fields, storage_options, partition_columns)?;
         let writer = DTRecordBatchWriter::for_table(&table)?;
         Ok(Self { table, writer })
     }
@@ -62,6 +63,7 @@ impl DeltaBatchWriter {
         path: &str,
         schema_fields: &Vec<ValueField>,
         storage_options: HashMap<String, String>,
+        partition_columns: Vec<String>,
     ) -> Result<DeltaTable, WriteError> {
         let mut struct_fields = Vec::new();
         for field in schema_fields {
@@ -87,7 +89,8 @@ impl DeltaBatchWriter {
                     .with_save_mode(DeltaTableSaveMode::Append)
                     .with_columns(struct_fields)
                     .with_configuration_property(TableProperty::AppendOnly, Some("true"))
-                    .with_storage_options(storage_options.clone());
+                    .with_storage_options(storage_options.clone())
+                    .with_partition_columns(partition_columns);
 
                 builder.await
             })

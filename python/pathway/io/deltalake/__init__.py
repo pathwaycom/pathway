@@ -189,6 +189,7 @@ def write(
     s3_connection_settings: (
         AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
     ) = None,
+    partition_columns: Iterable[ColumnReference] | None = None,
     min_commit_frequency: int | None = 60_000,
     name: str | None = None,
     sort_by: Iterable[ColumnReference] | None = None,
@@ -214,6 +215,8 @@ def write(
             endpoint, which is necessary for buckets hosted outside of Amazon AWS. If the
             custom endpoint is left blank, the authorized user's credentials for S3 will
             be used.
+        partition_columns: Partition columns for the table. Used if the table is created by
+            Pathway.
         min_commit_frequency: Specifies the minimum time interval between two data commits in
             storage, measured in milliseconds. If set to None, finalized minibatches will
             be committed as soon as possible. Keep in mind that each commit in Delta Lake
@@ -271,6 +274,15 @@ def write(
         s3_connection_settings
     )
 
+    prepared_partition_columns = []
+    if partition_columns is not None:
+        for column in partition_columns:
+            if column._table != table:
+                raise ValueError(
+                    f"The suggested partition column {column} doesn't belong to the table {table}"
+                )
+            prepared_partition_columns.append(column._name)
+
     uri = fspath(uri)
     data_storage = api.DataStorage(
         storage_type="deltalake",
@@ -279,6 +291,7 @@ def write(
             uri, prepared_connection_settings
         ),
         min_commit_frequency=min_commit_frequency,
+        partition_columns=prepared_partition_columns,
     )
     data_format = api.DataFormat(
         format_type="identity",

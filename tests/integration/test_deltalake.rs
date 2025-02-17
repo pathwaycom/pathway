@@ -40,6 +40,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         test_storage_path.to_str().unwrap(),
         &value_fields,
         HashMap::new(),
+        Vec::new(),
     )?;
     let mut writer = LakeWriter::new(Box::new(batch_writer), &value_fields, None)?;
     let mut formatter = IdentityFormatter::new();

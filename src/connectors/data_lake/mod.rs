@@ -36,7 +36,12 @@ pub use delta::DeltaBatchWriter;
 pub use iceberg::IcebergBatchWriter;
 pub use writer::LakeWriter;
 
-const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [("time", Type::Int), ("diff", Type::Int)];
+const SPECIAL_FIELD_TIME: &str = "time";
+const SPECIAL_FIELD_DIFF: &str = "diff";
+const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [
+    (SPECIAL_FIELD_TIME, Type::Int),
+    (SPECIAL_FIELD_DIFF, Type::Int),
+];
 
 pub struct LakeWriterSettings {
     pub use_64bit_size_type: bool,

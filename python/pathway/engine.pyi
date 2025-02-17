@@ -785,6 +785,7 @@ class DataStorage:
     table_name: str | None
     sql_writer_init_mode: SqlWriterInitMode
     topic_name_index: int | None
+    partition_columns: list[str] | None
 
     def __init__(self, *args, **kwargs): ...
 

@@ -3885,6 +3885,7 @@ pub struct DataStorage {
     namespace: Option<Vec<String>>,
     sql_writer_init_mode: SqlWriterInitMode,
     topic_name_index: Option<usize>,
+    partition_columns: Option<Vec<String>>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4202,6 +4203,7 @@ impl DataStorage {
         namespace = None,
         sql_writer_init_mode = SqlWriterInitMode::Default,
         topic_name_index = None,
+        partition_columns = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4232,6 +4234,7 @@ impl DataStorage {
         namespace: Option<Vec<String>>,
         sql_writer_init_mode: SqlWriterInitMode,
         topic_name_index: Option<usize>,
+        partition_columns: Option<Vec<String>>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4261,6 +4264,7 @@ impl DataStorage {
             namespace,
             sql_writer_init_mode,
             topic_name_index,
+            partition_columns,
         }
     }
 }
@@ -5101,13 +5105,17 @@ impl DataStorage {
     ) -> PyResult<Box<dyn Writer>> {
         let path = self.path()?;
         let mut value_fields = Vec::new();
+        let partition_columns = self.partition_columns.clone().unwrap_or_default();
         for field in &data_format.value_fields {
             value_fields.push(field.borrow(py).clone());
         }
-        let batch_writer =
-            DeltaBatchWriter::new(path, &value_fields, self.delta_storage_options(py)?).map_err(
-                |e| PyIOError::new_err(format!("Unable to create DeltaTable writer: {e}")),
-            )?;
+        let batch_writer = DeltaBatchWriter::new(
+            path,
+            &value_fields,
+            self.delta_storage_options(py)?,
+            partition_columns,
+        )
+        .map_err(|e| PyIOError::new_err(format!("Unable to create DeltaTable writer: {e}")))?;
         let writer = LakeWriter::new(
             Box::new(batch_writer),
             &value_fields,
