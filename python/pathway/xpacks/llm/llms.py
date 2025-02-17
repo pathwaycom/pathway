@@ -394,10 +394,12 @@ class LiteLLMChat(BaseChat):
 
         kwargs = {**self.kwargs, **kwargs}
 
+        verbose = kwargs.pop("verbose", False)
+
         event = {
             "_type": "litellm_chat_request",
             "kwargs": copy.deepcopy(kwargs),
-            "messages": messages_decoded,
+            "messages": _prep_message_log(messages_decoded, verbose),
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
@@ -408,7 +410,7 @@ class LiteLLMChat(BaseChat):
 
         event = {
             "_type": "litellm_chat_response",
-            "response": response,
+            "response": response if verbose else response[:50] + "...",
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
