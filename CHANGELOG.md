@@ -20,6 +20,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **BREAKING**: Changed the interface of `LLMReranker`, the `use_logit_bias`, `cache_strategy`, `retry_strategy` and `kwargs` arguments are no longer supported.
 - **BREAKING**: LLMReranker no longer inherits from pw.UDF
 - **BREAKING**: `pw.stdlib.utils.AsyncTransformer.output_table` now returns a table with columns with Future data type.
+- `pw.io.deltalake.read` can now read append-only tables without requiring explicit specification of primary key fields.
 
 ## [0.18.0] - 2025-02-07
 

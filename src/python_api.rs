@@ -4857,12 +4857,6 @@ impl DataStorage {
         data_format: &DataFormat,
         license: Option<&License>,
     ) -> PyResult<(Box<dyn ReaderBuilder>, usize)> {
-        if data_format.key_field_names.is_none() {
-            return Err(PyValueError::new_err(
-                "DeltaLake reader requires explicit primary key fields specification",
-            ));
-        }
-
         if let Some(license) = license {
             license.check_entitlements(["deltalake"])?;
         }
@@ -4874,6 +4868,7 @@ impl DataStorage {
             data_format.value_fields_type_map(py),
             self.mode,
             self.start_from_timestamp_ms,
+            data_format.key_field_names.is_some(),
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to connect to DeltaLake: {e}")))?;
         Ok((Box::new(reader), 1))

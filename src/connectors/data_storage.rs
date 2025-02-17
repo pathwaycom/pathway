@@ -281,6 +281,9 @@ pub enum ReadError {
 
     #[error("deletion vectors in delta tables are not supported")]
     DeltaDeletionVectorsNotSupported,
+
+    #[error("explicit primary key specification is required for non-append-only tables")]
+    PrimaryKeyRequired,
 }
 
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]

@@ -3280,7 +3280,8 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
 
 
 @only_with_license_key
-def test_deltalake_roundtrip(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("has_primary_key", [True, False])
+def test_deltalake_roundtrip(has_primary_key: bool, tmp_path: pathlib.Path):
     data = """
         k | v
         1 | foo
@@ -3293,7 +3294,7 @@ def test_deltalake_roundtrip(tmp_path: pathlib.Path):
     write_csv(input_path, data)
 
     class InputSchema(pw.Schema):
-        k: int = pw.column_definition(primary_key=True)
+        k: int = pw.column_definition(primary_key=has_primary_key)
         v: str
 
     table = pw.io.csv.read(str(input_path), schema=InputSchema, mode="static")
@@ -3550,15 +3551,26 @@ def test_persistence_one_worker_has_no_committed_timestamp(tmp_path):
 
 @only_with_license_key
 def test_deltalake_no_primary_key(tmp_path: pathlib.Path):
+    data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
+    df = pd.DataFrame(data).set_index("k")
+    lake_path = str(tmp_path / "lake")
+    output_path = str(tmp_path / "output.csv")
+    write_deltalake(lake_path, df)
+
     class InputSchema(pw.Schema):
         k: int
         v: str
 
+    table = pw.io.deltalake.read(lake_path, schema=InputSchema)
+    pw.io.jsonlines.write(table, output_path)
     with pytest.raises(
-        ValueError,
-        match="DeltaLake reader requires explicit primary key fields specification",
+        OSError,
+        match=(
+            "Failed to connect to DeltaLake: explicit primary key specification is "
+            "required for non-append-only tables"
+        ),
     ):
-        pw.io.deltalake.read(tmp_path / "lake", schema=InputSchema)
+        pw.run()
 
 
 def test_iceberg_no_primary_key():

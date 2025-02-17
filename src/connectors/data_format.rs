@@ -503,7 +503,7 @@ pub struct DsvParser {
 // more ways to represent a boolean value in the string.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-enum AdvancedBoolParseError {
+pub enum AdvancedBoolParseError {
     #[error("provided string was not parsable as a boolean value")]
     StringNotParsable,
 }
@@ -513,7 +513,7 @@ enum AdvancedBoolParseError {
 /// Related doc: `https://www.postgresql.org/docs/16/datatype-boolean.html`
 ///
 /// We also support "t", "f", "y", "n" as single-letter prefixes
-fn parse_bool_advanced(raw_value: &str) -> Result<bool, AdvancedBoolParseError> {
+pub fn parse_bool_advanced(raw_value: &str) -> Result<bool, AdvancedBoolParseError> {
     let raw_value_lowercase = raw_value.trim().to_ascii_lowercase();
     match raw_value_lowercase.as_str() {
         "true" | "yes" | "on" | "1" | "t" | "y" => Ok(true),

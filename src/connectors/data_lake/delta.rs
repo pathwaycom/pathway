@@ -30,6 +30,7 @@ use super::{
     parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
+use crate::connectors::data_format::parse_bool_advanced;
 use crate::connectors::data_storage::ConnectorMode;
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{
@@ -248,6 +249,7 @@ pub struct DeltaTableReader {
     current_event_type: DataEventType,
 }
 
+const APPEND_ONLY_PROPERTY_NAME: &str = "delta.appendOnly";
 const DELTA_LAKE_INITIAL_POLL_DURATION: Duration = Duration::from_millis(5);
 const DELTA_LAKE_MAX_POLL_DURATION: Duration = Duration::from_millis(100);
 const DELTA_LAKE_POLL_BACKOFF: u32 = 2;
@@ -260,10 +262,23 @@ impl DeltaTableReader {
         column_types: HashMap<String, Type>,
         streaming_mode: ConnectorMode,
         start_from_timestamp_ms: Option<i64>,
+        has_primary_key: bool,
     ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
         let mut table =
             runtime.block_on(async { open_delta_table(path, storage_options).await })?;
+        let table_props = &table.metadata()?.configuration;
+        let append_only_property = table_props.get(APPEND_ONLY_PROPERTY_NAME);
+        let is_append_only = {
+            if let Some(Some(append_only_property)) = append_only_property {
+                parse_bool_advanced(append_only_property).unwrap_or(false)
+            } else {
+                false
+            }
+        };
+        if !has_primary_key && !is_append_only {
+            return Err(ReadError::PrimaryKeyRequired);
+        }
         let mut current_version = table.version();
         let mut parquet_files_queue = Self::get_reader_actions(&table, path)?;
 
