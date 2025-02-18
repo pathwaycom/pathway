@@ -181,8 +181,7 @@ def test_async_embedder_preserves_params():
     assert call_count == 4  # dimension x 2 (no cache used), doc, query
 
 
-@pytest.mark.environment_changes  # unstructured parser adds env vars after first use
-@pytest.mark.parametrize("parser_cls", [parsers.UnstructuredParser])
+@pytest.mark.parametrize("parser_cls", [parsers.Utf8Parser])
 def test_vs_parsing(parser_cls):
     def fake_embeddings_model(x: str) -> list[float]:
         return [1.0, 1.0, 0.0]
