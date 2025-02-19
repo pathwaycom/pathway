@@ -867,12 +867,14 @@ class ForgetEvaluator(ExpressionEvaluator, context_type=clmn.ForgetContext):
         input_storage = self.state.get_storage(self.context.input_universe())
         threshold_column_path = input_storage.get_path(self.context.threshold_column)
         time_column_path = input_storage.get_path(self.context.time_column)
+        instance_column_path = input_storage.get_path(self.context.instance_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.forget(
             self.state.get_table(input_storage._universe),
             threshold_column_path,
             time_column_path,
+            instance_column_path,
             self.context.mark_forgetting_records,
             properties,
         )
@@ -982,12 +984,14 @@ class FreezeEvaluator(ExpressionEvaluator, context_type=clmn.FreezeContext):
         input_storage = self.state.get_storage(self.context.input_universe())
         threshold_column_path = input_storage.get_path(self.context.threshold_column)
         time_column_path = input_storage.get_path(self.context.time_column)
+        instance_column_path = input_storage.get_path(self.context.instance_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.freeze(
             self.state.get_table(input_storage._universe),
             threshold_column_path,
             time_column_path,
+            instance_column_path,
             properties,
         )
 
@@ -999,12 +1003,14 @@ class BufferEvaluator(ExpressionEvaluator, context_type=clmn.BufferContext):
         input_storage = self.state.get_storage(self.context.input_universe())
         threshold_column_path = input_storage.get_path(self.context.threshold_column)
         time_column_path = input_storage.get_path(self.context.time_column)
+        instance_column_path = input_storage.get_path(self.context.instance_column)
         properties = self._table_properties(output_storage)
 
         return self.scope.buffer(
             self.state.get_table(input_storage._universe),
             threshold_column_path,
             time_column_path,
+            instance_column_path,
             properties,
         )
 

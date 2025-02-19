@@ -19,6 +19,9 @@ use differential_dataflow::trace::{BatchReader, TraceReader};
 use differential_dataflow::{AsCollection, Collection, Data, Diff, ExchangeData, Hashable};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ord;
+use std::collections::hash_map::{Entry, Keys};
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::rc::Rc;
 use timely::communication::Push;
 use timely::dataflow::channels::pact::Pipeline;
@@ -33,11 +36,13 @@ type KeyValArr<G, K, V, R> =
     Arranged<G, TraceAgent<Spine<Rc<OrdValBatch<K, V, <G as ScopeParent>::Timestamp, R>>>>>;
 
 #[derive(Debug, Default, Hash, Clone, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct TimeKey<CT, K> {
+pub struct TimeKey<I, CT, K> {
+    pub instance: I,
     pub time: CT,
     pub key: K,
 }
-impl<CT, K> Shard for TimeKey<CT, K>
+
+impl<I, CT, K> Shard for TimeKey<I, CT, K>
 where
     K: ExchangeData + Shard,
 {
@@ -69,17 +74,21 @@ pub trait TimeColumnSortable<
     R: ExchangeData + Abelian,
     CT: Ord + ExchangeData,
     CTE,
+    I: ExchangeData,
+    IE,
 >
 {
-    fn prepend_time_to_key(
+    fn prepend_instance_and_time_to_key(
         &self,
         time_column_extractor: CTE,
-    ) -> Collection<G, (TimeKey<CT, K>, V), R>
+        instance_extractor: IE,
+    ) -> Collection<G, (TimeKey<I, CT, K>, V), R>
     where
         CTE: Fn(&V) -> CT + 'static;
 }
 
-impl<G, K, V, R, CT, CTE> TimeColumnSortable<G, K, V, R, CT, CTE> for Collection<G, (K, V), R>
+impl<G, K, V, R, CT, CTE, I, IE> TimeColumnSortable<G, K, V, R, CT, CTE, I, IE>
+    for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
     K: ExchangeData + Shard,
@@ -87,14 +96,18 @@ where
     CT: ExchangeData,
     R: ExchangeData + Abelian,
     CTE: Fn(&V) -> CT + 'static,
+    I: ExchangeData,
+    IE: Fn(&V) -> I + 'static,
 {
-    fn prepend_time_to_key(
+    fn prepend_instance_and_time_to_key(
         &self,
         time_column_extractor: CTE,
-    ) -> Collection<G, (TimeKey<CT, K>, V), R> {
+        instance_extractor: IE,
+    ) -> Collection<G, (TimeKey<I, CT, K>, V), R> {
         self.map_ex(move |(k, v)| {
             (
                 TimeKey {
+                    instance: instance_extractor(&v),
                     time: time_column_extractor(&v),
                     key: k,
                 },
@@ -120,6 +133,50 @@ impl MaxTimestamp for i32 {
     }
 }
 
+#[derive(Debug, Clone)]
+struct MaxTimePerInstance<I, T> {
+    map: HashMap<I, T>,
+}
+
+impl<I, T> MaxTimePerInstance<I, T>
+where
+    I: Eq + Hash,
+    T: PartialOrd,
+{
+    fn new() -> Self {
+        MaxTimePerInstance {
+            map: HashMap::new(),
+        }
+    }
+
+    fn update(&mut self, instance: I, time: T) {
+        match self.map.entry(instance) {
+            Entry::Occupied(mut entry) => {
+                if *entry.get() < time {
+                    entry.insert(time);
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(time);
+            }
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        for (instance, time) in other.map {
+            self.update(instance, time);
+        }
+    }
+
+    fn get(&self, instance: &I) -> Option<&T> {
+        self.map.get(instance)
+    }
+
+    fn instances(&self) -> Keys<'_, I, T> {
+        self.map.keys()
+    }
+}
+
 pub trait TimeColumnBuffer<
     G: Scope,
     K: ExchangeData + Shard,
@@ -128,13 +185,17 @@ pub trait TimeColumnBuffer<
     CT: Ord + ExchangeData,
     TTE,
     CTE,
+    I: ExchangeData + Hash,
+    IE,
 >
 {
+    #[allow(clippy::too_many_arguments)]
     fn postpone(
         &self,
         scope: G,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        instance_extractor: IE,
         flush_on_end: bool,
         update_time_before_emitting: bool,
         additional_logic: impl FnOnce(Collection<G, (K, V), R>) -> Result<Collection<G, (K, V), R>>,
@@ -143,10 +204,11 @@ pub trait TimeColumnBuffer<
         G: MaybeTotalScope,
         G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
-        CTE: Fn(&V) -> CT + 'static;
+        CTE: Fn(&V) -> CT + 'static,
+        IE: Fn(&V) -> I + 'static;
 }
 
-impl<G, K, V, R, CT, TTE, CTE> TimeColumnBuffer<G, K, V, R, CT, TTE, CTE>
+impl<G, K, V, R, CT, TTE, CTE, I, IE> TimeColumnBuffer<G, K, V, R, CT, TTE, CTE, I, IE>
     for Collection<G, (K, V), R>
 where
     G: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
@@ -154,13 +216,15 @@ where
     V: ExchangeData,
     CT: ExchangeData,
     R: ExchangeData + Abelian,
-    TimeKey<CT, K>: Hashable,
+    I: ExchangeData + Hash,
+    TimeKey<I, CT, K>: Hashable,
 {
     fn postpone(
         &self,
         mut scope: G,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        instance_extractor: IE,
         flush_on_end: bool,
         update_time_before_emitting: bool,
         additional_logic: impl FnOnce(Collection<G, (K, V), R>) -> Result<Collection<G, (K, V), R>>,
@@ -169,6 +233,7 @@ where
         G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
+        IE: Fn(&V) -> I + 'static,
     {
         let retractions = Variable::new(&mut scope, Timestamp::epsilon());
 
@@ -176,7 +241,7 @@ where
 
         let ret_in_buffer_timespace_col = postpone_core(
             additional_logic(self_with_retractions)?
-                .prepend_time_to_key(threshold_time_extractor)
+                .prepend_instance_and_time_to_key(threshold_time_extractor, instance_extractor)
                 .arrange(),
             current_time_extractor,
             flush_on_end,
@@ -223,20 +288,22 @@ fn push_key_values_to_output<K, C: Cursor, P>(
 }
 
 fn move_cursor_to_key<
-    C: Cursor<Key = TimeKey<CT, K>>,
+    C: Cursor<Key = TimeKey<I, CT, K>>,
+    I: ExchangeData,
     CT: ExchangeData,
     K: ExchangeData + Shard,
 >(
     input_wrapper: &mut CursorStorageWrapper<C>,
-    key: &Option<TimeKey<CT, K>>,
+    key: Option<&TimeKey<I, CT, K>>,
+    step_to_next: bool,
 ) {
     input_wrapper.cursor.rewind_keys(input_wrapper.storage);
     if key.is_some() {
         input_wrapper
             .cursor
-            .seek_key(input_wrapper.storage, key.as_ref().unwrap());
+            .seek_key(input_wrapper.storage, key.unwrap());
         let found = input_wrapper.cursor.get_key(input_wrapper.storage);
-        if found.is_some() && found.as_ref().unwrap() == &key.as_ref().unwrap() {
+        if step_to_next && found.is_some() && found == key {
             input_wrapper.cursor.step_key(input_wrapper.storage);
         }
     }
@@ -245,8 +312,8 @@ fn move_cursor_to_key<
 //TODO: maybe we can separate out some blocks to remove the allow(clippy::too_many_lines)
 // perhaps could be done while implementing support for complex times
 #[allow(clippy::too_many_lines)]
-pub fn postpone_core<G, CT, K, V, R, CTE>(
-    mut input_arrangement: KeyValArr<G, TimeKey<CT, K>, V, R>,
+pub fn postpone_core<G, CT, K, V, R, CTE, I>(
+    mut input_arrangement: KeyValArr<G, TimeKey<I, CT, K>, V, R>,
     current_time_extractor: CTE,
     flush_on_end: bool,
     update_time_before_emitting: bool,
@@ -259,18 +326,27 @@ where
     V: ExchangeData,
     R: ExchangeData + Abelian + Diff,
     CTE: Fn(&V) -> CT + 'static,
+    I: ExchangeData + Hash,
 {
     let stream = {
         input_arrangement.stream.unary_frontier(
             Pipeline,
             "buffer",
             move |outer_cap, _operator_info| {
-                let mut input_buffer: Vec<Rc<OrdValBatch<TimeKey<CT, K>, V, G::Timestamp, R>>> =
+                let mut input_buffer: Vec<Rc<OrdValBatch<TimeKey<I, CT, K>, V, G::Timestamp, R>>> =
                     Vec::new();
-                let mut already_released_column_time: Option<CT> = None;
-                let mut release_threshold_column_time: Option<CT> = None;
-                let mut last_arrangement_key: Option<TimeKey<CT, K>> = None;
+                let mut already_released_column_times: MaxTimePerInstance<I, CT> =
+                    MaxTimePerInstance::new();
+                let mut release_threshold_column_times: MaxTimePerInstance<I, CT> =
+                    MaxTimePerInstance::new();
+                // remember first in instance to jump to a proper starting place for each instance in the arrangement
+                let mut first_in_instance: HashMap<I, TimeKey<I, CT, K>> = HashMap::new();
+                // remember last emitted arrangement key per instance to start from its upper bound after current time advancement
+                let mut last_arrangement_keys: HashMap<I, TimeKey<I, CT, K>> = HashMap::new();
+                // maybe_cap to emit records kept in the buffer on time end
                 let mut maybe_cap = Some(outer_cap.delayed(&G::Timestamp::get_max_timestamp()));
+                // remember instances updated previously to revisit them after time advancemet caused by them takes effect
+                let mut previousuly_updated_instances: HashSet<I> = HashSet::new();
                 move |input, output| {
                     input.for_each(|capability, batches| {
                         batches.swap(&mut input_buffer);
@@ -288,34 +364,30 @@ where
                             if time.is_retraction() {
                                 continue;
                             }
-                            let mut future_release_threshold_column_time: Option<CT> = None;
-                            for (_key, val, _time, _diff) in &entries {
-                                future_release_threshold_column_time = [
-                                    &future_release_threshold_column_time,
-                                    &Some(current_time_extractor(val)),
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .max()
-                                .cloned();
+                            let mut future_release_threshold_column_times: MaxTimePerInstance<
+                                I,
+                                CT,
+                            > = MaxTimePerInstance::new();
+                            for (key, val, _time, _diff) in &entries {
+                                future_release_threshold_column_times
+                                    .update(key.instance.clone(), current_time_extractor(val));
                             }
 
                             if update_time_before_emitting {
-                                release_threshold_column_time = [
-                                    &release_threshold_column_time,
-                                    &future_release_threshold_column_time,
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .max()
-                                .cloned();
+                                release_threshold_column_times
+                                    .merge(future_release_threshold_column_times.clone());
                             }
 
+                            let mut updated_instances: HashSet<I> = HashSet::new();
                             for (key, val, _time, diff) in &entries {
                                 //pass entries that are late for buffering
-                                if already_released_column_time.is_some()
-                                    && already_released_column_time.as_ref().unwrap() >= &key.time
-                                    && Some(key) < last_arrangement_key.as_ref()
+                                let instance = &key.instance;
+                                let already_released_time =
+                                    already_released_column_times.get(instance);
+                                let last_arrangement_key = last_arrangement_keys.get(instance);
+                                if already_released_time.is_some()
+                                    && already_released_time.unwrap() >= &key.time
+                                    && Some(key) < last_arrangement_key
                                 // only emit those entries that won't be emitted while iterating over the arrangement below
                                 {
                                     output.session(&capability.delayed(&time)).give((
@@ -324,6 +396,17 @@ where
                                         diff.clone(),
                                     ));
                                 }
+                                match first_in_instance.entry(instance.clone()) {
+                                    Entry::Occupied(mut occupied_entry) => {
+                                        if occupied_entry.get() > key {
+                                            occupied_entry.insert(key.clone());
+                                        }
+                                    }
+                                    Entry::Vacant(vacant_entry) => {
+                                        vacant_entry.insert(key.clone());
+                                    }
+                                }
+                                updated_instances.insert(instance.clone());
                             }
 
                             let (mut cursor, storage) = input_arrangement.trace.cursor();
@@ -336,40 +419,57 @@ where
                             // 2. entries to keep for later
                             // 3. entries to emit while processing this batch
 
-                            if release_threshold_column_time.is_some() {
-                                move_cursor_to_key(&mut input_wrapper, &last_arrangement_key);
-                                while input_wrapper.cursor.key_valid(input_wrapper.storage) {
-                                    let tk = input_wrapper.cursor.key(input_wrapper.storage);
-
-                                    //if threshold is larger than current 'now', all subsequent entries
-                                    //will have too large threshold to be emitted
-                                    if &tk.time > release_threshold_column_time.as_ref().unwrap() {
-                                        break;
-                                    }
-                                    last_arrangement_key = Some(tk.clone());
-                                    push_key_values_to_output(
+                            for instance in updated_instances
+                                .iter()
+                                .chain(previousuly_updated_instances.iter())
+                            {
+                                let release_threshold_column_time =
+                                    release_threshold_column_times.get(instance);
+                                if release_threshold_column_time.is_some() {
+                                    let mut last_arrangement_key = None;
+                                    move_cursor_to_key(
                                         &mut input_wrapper,
-                                        output,
-                                        &capability.delayed(&time),
-                                        &tk.key,
-                                        &Some(time.clone()),
+                                        last_arrangement_keys
+                                            .get(instance)
+                                            .or_else(|| first_in_instance.get(instance)),
+                                        last_arrangement_keys.contains_key(instance),
                                     );
-                                    input_wrapper.cursor.step_key(input_wrapper.storage);
+                                    while input_wrapper.cursor.key_valid(input_wrapper.storage) {
+                                        let tk = input_wrapper.cursor.key(input_wrapper.storage);
+
+                                        //if threshold is larger than current 'now', all subsequent entries
+                                        //will have too large threshold to be emitted
+                                        if tk.instance != *instance
+                                            || &tk.time
+                                                > release_threshold_column_time.as_ref().unwrap()
+                                        {
+                                            break;
+                                        }
+                                        last_arrangement_key = Some(tk.clone());
+                                        push_key_values_to_output(
+                                            &mut input_wrapper,
+                                            output,
+                                            &capability.delayed(&time),
+                                            &tk.key,
+                                            &Some(time.clone()),
+                                        );
+                                        input_wrapper.cursor.step_key(input_wrapper.storage);
+                                    }
+                                    if let Some(last_arrangement_key_entry) = last_arrangement_key {
+                                        last_arrangement_keys
+                                            .insert(instance.clone(), last_arrangement_key_entry);
+                                    }
                                 }
                             }
 
-                            already_released_column_time.clone_from(&release_threshold_column_time);
+                            already_released_column_times
+                                .merge(release_threshold_column_times.clone());
 
                             if !update_time_before_emitting {
-                                release_threshold_column_time = [
-                                    &release_threshold_column_time,
-                                    &future_release_threshold_column_time,
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .max()
-                                .cloned();
+                                release_threshold_column_times
+                                    .merge(future_release_threshold_column_times);
                             }
+                            previousuly_updated_instances = updated_instances;
 
                             if !upper_limit.is_empty() {
                                 input_arrangement
@@ -391,19 +491,30 @@ where
                                 storage: &storage,
                             };
 
-                            move_cursor_to_key(&mut input_wrapper, &last_arrangement_key);
-
-                            while input_wrapper.cursor.key_valid(input_wrapper.storage) {
-                                let tk = input_wrapper.cursor.key(input_wrapper.storage);
-                                push_key_values_to_output(
+                            for instance in release_threshold_column_times.instances() {
+                                move_cursor_to_key(
                                     &mut input_wrapper,
-                                    output,
-                                    maybe_cap.as_ref().unwrap(),
-                                    &tk.key,
-                                    &Some(maybe_cap.as_ref().unwrap().time().clone()),
+                                    last_arrangement_keys
+                                        .get(instance)
+                                        .or_else(|| first_in_instance.get(instance)),
+                                    last_arrangement_keys.contains_key(instance),
                                 );
 
-                                input_wrapper.cursor.step_key(input_wrapper.storage);
+                                while input_wrapper.cursor.key_valid(input_wrapper.storage) {
+                                    let tk = input_wrapper.cursor.key(input_wrapper.storage);
+                                    if tk.instance != *instance {
+                                        break;
+                                    }
+                                    push_key_values_to_output(
+                                        &mut input_wrapper,
+                                        output,
+                                        maybe_cap.as_ref().unwrap(),
+                                        &tk.key,
+                                        &Some(maybe_cap.as_ref().unwrap().time().clone()),
+                                    );
+
+                                    input_wrapper.cursor.step_key(input_wrapper.storage);
+                                }
                             }
                         }
 
@@ -431,12 +542,15 @@ pub trait TimeColumnForget<
     CT: Ord + ExchangeData,
     TTE,
     CTE,
+    I: ExchangeData + Hash,
+    IE,
 >
 {
     fn forget(
         &self,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        instance_extractor: IE,
         mark_forgetting_records: bool,
         additional_logic: impl FnOnce(Collection<G, (K, V), R>) -> Result<Collection<G, (K, V), R>>,
     ) -> Result<Collection<G, (K, V), R>>
@@ -444,10 +558,11 @@ pub trait TimeColumnForget<
         G: MaybeTotalScope,
         G::Timestamp: MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
-        CTE: Fn(&V) -> CT + 'static;
+        CTE: Fn(&V) -> CT + 'static,
+        IE: Fn(&V) -> I + 'static;
 }
 
-impl<G, K, V, R, CT, TTE, CTE> TimeColumnForget<G, K, V, R, CT, TTE, CTE>
+impl<G, K, V, R, CT, TTE, CTE, I, IE> TimeColumnForget<G, K, V, R, CT, TTE, CTE, I, IE>
     for Collection<G, (K, V), R>
 where
     G: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>,
@@ -455,12 +570,14 @@ where
     V: ExchangeData,
     CT: ExchangeData,
     R: ExchangeData + Abelian,
-    TimeKey<CT, K>: Hashable,
+    TimeKey<I, CT, K>: Hashable,
+    I: ExchangeData + Hash,
 {
     fn forget(
         &self,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        instance_extractor: IE,
         mark_forgetting_records: bool,
         additional_logic: impl FnOnce(Collection<G, (K, V), R>) -> Result<Collection<G, (K, V), R>>,
     ) -> Result<Collection<G, (K, V), R>>
@@ -468,11 +585,13 @@ where
         G::Timestamp: Epsilon + MaxTimestamp,
         TTE: Fn(&V) -> CT + 'static,
         CTE: Fn(&V) -> CT + 'static,
+        IE: Fn(&V) -> I + 'static,
     {
         let forgetting_stream = self.negate().postpone(
             self.scope(),
             threshold_time_extractor,
             current_time_extractor,
+            instance_extractor,
             false,
             false,
             additional_logic,
@@ -514,20 +633,25 @@ pub trait TimeColumnFreeze<
     CT: Ord + ExchangeData,
     CTE,
     TTE,
+    I,
+    IE,
 >
 {
     fn freeze(
         &self,
         threshold_time_extractor: TTE,
         current_column_extractor: CTE,
+        instance_extractor: IE,
     ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
     where
         G::Timestamp: Epsilon,
         TTE: Fn(&V) -> CT + 'static,
-        CTE: Fn(&V) -> CT + 'static;
+        CTE: Fn(&V) -> CT + 'static,
+        I: Eq + Hash + 'static,
+        IE: Fn(&V) -> I + 'static;
 }
 
-impl<G, K, V, R, CT, CTE, TTE> TimeColumnFreeze<G, K, V, R, CT, CTE, TTE>
+impl<G, K, V, R, CT, CTE, TTE, I, IE> TimeColumnFreeze<G, K, V, R, CT, CTE, TTE, I, IE>
     for Collection<G, (K, V), R>
 where
     G: Scope + MaybeTotalScope,
@@ -536,26 +660,34 @@ where
     V: ExchangeData,
     CT: ExchangeData,
     R: ExchangeData + Abelian,
-    TimeKey<CT, K>: Hashable,
 {
     fn freeze(
         &self,
         threshold_time_extractor: TTE,
         current_time_extractor: CTE,
+        instance_extractor: IE,
     ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
     where
         G::Timestamp: Epsilon,
         CTE: Fn(&V) -> CT + 'static,
         TTE: Fn(&V) -> CT + 'static,
+        I: Eq + Hash + 'static,
+        IE: Fn(&V) -> I + 'static,
     {
-        ignore_late(self, threshold_time_extractor, current_time_extractor)
+        ignore_late(
+            self,
+            threshold_time_extractor,
+            current_time_extractor,
+            instance_extractor,
+        )
     }
 }
 
-pub fn ignore_late<G, CT, K, V, R, CTE, TTE>(
+pub fn ignore_late<G, CT, K, V, R, CTE, TTE, I, IE>(
     input_collection: &Collection<G, (K, V), R>,
     threshold_time_extractor: TTE,
     current_time_extractor: CTE,
+    instance_extractor: IE,
 ) -> (Collection<G, (K, V), R>, Collection<G, (K, V), R>)
 where
     G: MaybeTotalScope,
@@ -566,6 +698,8 @@ where
     R: ExchangeData + Abelian + Diff,
     TTE: Fn(&V) -> CT + 'static,
     CTE: Fn(&V) -> CT + 'static,
+    I: Eq + Hash + 'static,
+    IE: Fn(&V) -> I + 'static,
 {
     let input_arrangement: ArrangedBySelf<G, (K, V), R> = input_collection.arrange_sharded(|_| 0);
     let mut builder =
@@ -577,7 +711,7 @@ where
 
     builder.build(move |_| {
         let mut input_buffer = Vec::new();
-        let mut max_column_time: Option<CT> = None;
+        let mut max_column_times: MaxTimePerInstance<I, CT> = MaxTimePerInstance::new();
 
         move |_frontiers| {
             let mut output_handle = output.activate();
@@ -588,19 +722,13 @@ where
                     (key_val.clone(), time.clone(), diff.clone())
                 });
                 for data in grouped.into_values() {
-                    let mut future_max_column_time: Option<CT> = None;
+                    let mut future_max_column_times: MaxTimePerInstance<I, CT> =
+                        MaxTimePerInstance::new();
                     for ((key, val), time, weight) in &data {
-                        future_max_column_time =
-                            [&future_max_column_time, &Some(current_time_extractor(val))]
-                                .into_iter()
-                                .flatten()
-                                .max()
-                                .cloned();
-
+                        let instance = instance_extractor(val);
+                        let max_time = max_column_times.get(&instance);
                         let threshold = threshold_time_extractor(val);
-                        if max_column_time.is_none()
-                            || max_column_time.as_ref().unwrap() < &threshold
-                        {
+                        if max_time.is_none() || max_time.unwrap() < &threshold {
                             output_handle.session(&capability).give((
                                 (key.clone(), val.clone()),
                                 time.clone(),
@@ -613,12 +741,9 @@ where
                                 weight.clone(),
                             ));
                         }
+                        future_max_column_times.update(instance, current_time_extractor(val));
                     }
-                    max_column_time = [&max_column_time, &future_max_column_time]
-                        .into_iter()
-                        .flatten()
-                        .max()
-                        .cloned();
+                    max_column_times.merge(future_max_column_times);
                 }
             });
         }

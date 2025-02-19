@@ -616,9 +616,10 @@ class TimeColumnContext(Context):
     orig_id_column: IdColumn
     threshold_column: ColumnWithExpression
     time_column: ColumnWithExpression
+    instance_column: ColumnWithExpression
 
     def column_dependencies_internal(self) -> Iterable[Column]:
-        return [self.threshold_column, self.time_column]
+        return [self.threshold_column, self.time_column, self.instance_column]
 
     def column_dependencies_external(self) -> Iterable[Column]:
         return [self.orig_id_column]

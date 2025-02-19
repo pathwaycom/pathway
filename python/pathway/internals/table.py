@@ -668,11 +668,15 @@ id_type=<class 'pathway.engine.Pointer'>>
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
         mark_forgetting_records: bool,
+        instance_column: expr.ColumnExpression | None = None,
     ) -> Table:
+        if instance_column is None:
+            instance_column = expr.ColumnConstExpression(None)
         context = clmn.ForgetContext(
             self._id_column,
             self._eval(threshold_column),
             self._eval(time_column),
+            self._eval(instance_column),
             mark_forgetting_records,
         )
         return self._table_with_context(context)
@@ -708,13 +712,17 @@ id_type=<class 'pathway.engine.Pointer'>>
         self,
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
+        instance_column: expr.ColumnExpression | None = None,
     ) -> Table:
         # FIXME: freeze can be incorrect if the input is not append-only
         # we may produce insertion but never produce deletion
+        if instance_column is None:
+            instance_column = expr.ColumnConstExpression(None)
         context = clmn.FreezeContext(
             self._id_column,
             self._eval(threshold_column),
             self._eval(time_column),
+            self._eval(instance_column),
         )
         return self._table_with_context(context)
 
@@ -726,11 +734,15 @@ id_type=<class 'pathway.engine.Pointer'>>
         self,
         threshold_column: expr.ColumnExpression,
         time_column: expr.ColumnExpression,
+        instance_column: expr.ColumnExpression | None = None,
     ) -> Table:
+        if instance_column is None:
+            instance_column = expr.ColumnConstExpression(None)
         context = clmn.BufferContext(
             self._id_column,
             self._eval(threshold_column),
             self._eval(time_column),
+            self._eval(instance_column),
         )
         return self._table_with_context(context)
 

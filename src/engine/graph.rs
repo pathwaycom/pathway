@@ -763,6 +763,7 @@ pub trait Graph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         mark_forgetting_records: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
@@ -784,6 +785,7 @@ pub trait Graph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -792,6 +794,7 @@ pub trait Graph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>;
 
@@ -1249,6 +1252,7 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         mark_forgetting_records: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
@@ -1257,6 +1261,7 @@ impl Graph for ScopedGraph {
                 table_handle,
                 threshold_time_column_path,
                 current_time_column_path,
+                instance_column_path,
                 mark_forgetting_records,
                 table_properties,
             )
@@ -1300,6 +1305,7 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1307,6 +1313,7 @@ impl Graph for ScopedGraph {
                 table_handle,
                 threshold_time_column_path,
                 current_time_column_path,
+                instance_column_path,
                 table_properties,
             )
         })
@@ -1317,6 +1324,7 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1324,6 +1332,7 @@ impl Graph for ScopedGraph {
                 table_handle,
                 threshold_time_column_path,
                 current_time_column_path,
+                instance_column_path,
                 table_properties,
             )
         })

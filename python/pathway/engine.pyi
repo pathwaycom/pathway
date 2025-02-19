@@ -525,6 +525,7 @@ class Scope:
         table: Table,
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
+        instance_path: ColumnPath,
         mark_forgetting_records: bool,
         table_properties: TableProperties,
     ) -> Table: ...
@@ -543,6 +544,7 @@ class Scope:
         table: Table,
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
+        instance_path: ColumnPath,
         table_properties: TableProperties,
     ) -> Table: ...
     def buffer(
@@ -550,6 +552,7 @@ class Scope:
         table: Table,
         threshold_time_path: ColumnPath,
         current_time_path: ColumnPath,
+        instance_path: ColumnPath,
         table_properties: TableProperties,
     ) -> Table: ...
     def intersect_tables(

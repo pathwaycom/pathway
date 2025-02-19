@@ -2743,6 +2743,7 @@ impl Scope {
         table: PyRef<Table>,
         threshold_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         mark_forgetting_records: bool,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
@@ -2750,6 +2751,7 @@ impl Scope {
             table.handle,
             threshold_column_path,
             current_time_column_path,
+            instance_column_path,
             mark_forgetting_records,
             table_properties.0,
         )?;
@@ -2785,12 +2787,14 @@ impl Scope {
         table: PyRef<Table>,
         threshold_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let new_table_handle = self_.borrow().graph.freeze(
             table.handle,
             threshold_column_path,
             current_time_column_path,
+            instance_column_path,
             table_properties.0,
         )?;
         Table::new(self_, new_table_handle)
@@ -2837,12 +2841,14 @@ impl Scope {
         table: PyRef<Table>,
         threshold_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: TableProperties,
     ) -> PyResult<Py<Table>> {
         let new_table_handle = self_.borrow().graph.buffer(
             table.handle,
             threshold_column_path,
             current_time_column_path,
+            instance_column_path,
             table_properties.0,
         )?;
         Table::new(self_, new_table_handle)

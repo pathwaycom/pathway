@@ -2086,6 +2086,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle>
     where
@@ -2102,6 +2103,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let (on_time, _late) = table.values().freeze(
             move |val| threshold_time_column_path.extract_from_value(val).unwrap(),
             move |val| current_time_column_path.extract_from_value(val).unwrap(),
+            move |val| instance_column_path.extract_from_value(val).unwrap(),
         );
 
         Ok(self
@@ -3817,6 +3819,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let table = self
@@ -3826,6 +3829,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
         let error_reporter_1 = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
+        let error_reporter_3 = self.error_reporter.clone();
 
         let new_table = table
             .values()
@@ -3841,6 +3845,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     current_time_column_path
                         .extract_from_value(val)
                         .unwrap_with_reporter(&error_reporter_2)
+                },
+                move |val| {
+                    instance_column_path
+                        .extract_from_value(val)
+                        .unwrap_with_reporter(&error_reporter_3)
                 },
                 true,
                 true,
@@ -3858,6 +3867,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         mark_forgetting_records: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
@@ -3868,6 +3878,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
         let error_reporter_1 = self.error_reporter.clone();
         let error_reporter_2 = self.error_reporter.clone();
+        let error_reporter_3 = self.error_reporter.clone();
 
         let new_table = table
             .values()
@@ -3882,6 +3893,11 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     current_time_column_path
                         .extract_from_value(val)
                         .unwrap_with_reporter(&error_reporter_2)
+                },
+                move |val| {
+                    instance_column_path
+                        .extract_from_value(val)
+                        .unwrap_with_reporter(&error_reporter_3)
                 },
                 mark_forgetting_records,
                 |collection| collection.maybe_persist(self, "forget"),
@@ -5018,6 +5034,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _threshold_time_column_path: ColumnPath,
         _current_time_column_path: ColumnPath,
+        _instance_column_path: ColumnPath,
         _mark_forgetting_records: bool,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
@@ -5045,6 +5062,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _threshold_time_column_path: ColumnPath,
         _current_time_column_path: ColumnPath,
+        _instance_column_path: ColumnPath,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::NotSupportedInIteration)
@@ -5055,6 +5073,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _table_handle: TableHandle,
         _threshold_time_column_path: ColumnPath,
         _current_time_column_path: ColumnPath,
+        _instance_column_path: ColumnPath,
         _table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         Err(Error::NotSupportedInIteration)
@@ -5637,6 +5656,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         mark_forgetting_records: bool,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
@@ -5644,6 +5664,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_handle,
             threshold_time_column_path,
             current_time_column_path,
+            instance_column_path,
             mark_forgetting_records,
             table_properties,
         )
@@ -5674,12 +5695,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().freeze(
             table_handle,
             threshold_time_column_path,
             current_time_column_path,
+            instance_column_path,
             table_properties,
         )
     }
@@ -5689,12 +5712,14 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         threshold_time_column_path: ColumnPath,
         current_time_column_path: ColumnPath,
+        instance_column_path: ColumnPath,
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().buffer(
             table_handle,
             threshold_time_column_path,
             current_time_column_path,
+            instance_column_path,
             table_properties,
         )
     }
