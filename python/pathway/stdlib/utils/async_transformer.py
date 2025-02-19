@@ -264,7 +264,7 @@ class _AsyncConnector(io.python.ConnectorSubject):
     def _upsert(
         self, key: Pointer, data: dict, task_id: Pointer, status=_AsyncStatus.SUCCESS
     ) -> None:
-        data[_ASYNC_STATUS_COLUMN] = status.value
+        data = {**data, _ASYNC_STATUS_COLUMN: status.value}
         self._add_inner(task_id, data)
 
     def _remove_by_key(self, key: Pointer, task_id: Pointer) -> None:

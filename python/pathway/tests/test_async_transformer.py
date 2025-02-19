@@ -27,6 +27,7 @@ from pathway.tests.utils import (
     wait_result_with_checker,
     write_csv,
 )
+from pathway.udfs import InMemoryCache
 
 
 def test_simple(monkeypatch):
@@ -625,3 +626,44 @@ def test_commits_even_if_nothing_to_process(tmp_path):
     # 9 = 4 x 2 + 1 (4 from a, 2 non-blocked from b, 1 header)
     # checks if values from stream `a` are joined with `b` after all
     # values are inserted to `b` from AsyncTransformer
+
+
+def test_simple_memory_cache(monkeypatch):
+    monkeypatch.delenv("PATHWAY_PERSISTENT_STORAGE", raising=False)
+
+    class OutputSchema(pw.Schema):
+        ret: int
+
+    class TestAsyncTransformer(pw.AsyncTransformer, output_schema=OutputSchema):
+        async def invoke(self, value: int) -> dict[str, Any]:
+            await asyncio.sleep(random.uniform(0, 0.1))
+            return dict(ret=value + 1)
+
+    input_table = T(
+        """
+            | value
+        1   | 1
+        2   | 1
+        3   | 3
+        """
+    )
+
+    result = (
+        TestAsyncTransformer(input_table=input_table)
+        .with_options(cache_strategy=InMemoryCache())
+        .successful
+    )
+
+    assert result._universe.is_subset_of(input_table._universe)
+
+    assert_table_equality(
+        result,
+        T(
+            """
+            | ret
+        1   | 2
+        2   | 2
+        3   | 4
+        """
+        ),
+    )
