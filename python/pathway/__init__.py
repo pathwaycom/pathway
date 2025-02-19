@@ -1,8 +1,9 @@
-# Copyright © 2024 Pathway
+# Copyright © 2025 Pathway
 
 from __future__ import annotations
 
 import pathway._engine_finder  # noqa: F401  # isort: split
+from pathway.internals import warnings  # noqa: F401  # isort: split
 
 import pathway.reducers as reducers
 import pathway.universes as universes
