@@ -3,6 +3,8 @@
 Pathway embedder UDFs.
 """
 import asyncio
+import logging
+from typing import Literal
 
 import numpy as np
 
@@ -10,6 +12,7 @@ import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm._utils import _coerce_sync
+from pathway.xpacks.llm.constants import OPENAI_EMBEDDERS_MAX_TOKENS
 
 __all__ = [
     "OpenAIEmbedder",
@@ -102,6 +105,11 @@ class OpenAIEmbedder(BaseEmbedder):
             see all of your available models, or see
             `Model overview <https://platform.openai.com/docs/models/overview>`_ for
             descriptions of them.
+        truncation_keep_strategy: Strategy to keep the part of the text if truncation is necessary.
+            If set, only documents that are longer than model's supported context will be truncated.
+            Can be ``"start"``, ``"end"`` or ``None``. ``"start"`` will keep the first part of the text
+            and remove the rest. ``"end"`` will keep the last part of the text.
+            If `None`, no truncation will be applied to any of the documents, this may cause API exceptions.
         encoding_format: The format to return the embeddings in. Can be either `float` or
             `base64 <https://pypi.org/project/pybase64/>`_.
         user: A unique identifier representing your end-user, which can help OpenAI to monitor
@@ -145,6 +153,7 @@ class OpenAIEmbedder(BaseEmbedder):
         retry_strategy: udfs.AsyncRetryStrategy | None = None,
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "text-embedding-3-small",
+        truncation_keep_strategy: Literal["start", "end"] | None = "start",
         **openai_kwargs,
     ):
         with optional_imports("xpack-llm"):
@@ -156,6 +165,7 @@ class OpenAIEmbedder(BaseEmbedder):
             executor=executor,
             cache_strategy=cache_strategy,
         )
+        self.truncation_keep_strategy = truncation_keep_strategy
         self.kwargs = dict(openai_kwargs)
         if model is not None:
             self.kwargs["model"] = model
@@ -170,11 +180,71 @@ class OpenAIEmbedder(BaseEmbedder):
         """
         import openai
 
+        input = input or "."
+
         kwargs = {**self.kwargs, **kwargs}
+
+        if kwargs.get("model") is None:
+            raise ValueError(
+                "`model` parameter is missing in `OpenAIEmbedder`. "
+                "Please provide the model name either in the constructor or in the function call."
+            )
+
         api_key = kwargs.pop("api_key", None)
         client = openai.AsyncOpenAI(api_key=api_key)
-        ret = await client.embeddings.create(input=[input or "."], **kwargs)
+
+        if self.truncation_keep_strategy:
+            input = self.truncate_context(
+                kwargs["model"], input, self.truncation_keep_strategy
+            )
+
+        ret = await client.embeddings.create(input=[input], **kwargs)
         return np.array(ret.data[0].embedding)
+
+    @staticmethod
+    def truncate_context(
+        model: str, text: str, strategy: Literal["start", "end"]
+    ) -> str:
+        """Maybe truncate the given text from the end, or from the start.
+        ``"strategy"`` determines which part of the text will be kept.
+
+        """
+        with optional_imports("xpack-llm"):
+            import tiktoken
+
+        expected_strategies: tuple = ("start", "end")
+
+        if strategy not in expected_strategies:
+            raise ValueError(
+                f"Given truncation strategy {strategy} is not supported. \
+                             Strategy must be one of {expected_strategies}"
+            )
+
+        try:
+            max_tokens = OPENAI_EMBEDDERS_MAX_TOKENS[model]
+        except KeyError as err:
+
+            logging.error(
+                f"Couldn't find max permitted tokens for the embedder model: `{model}`. \
+                          Skipping truncation. This may lead to errors in the pipeline. \
+                            {str(err)}"
+            )
+            return text
+
+        tokenizer = tiktoken.encoding_for_model(model)
+        tokens = tokenizer.encode(text)
+        num_tokens = len(tokens)
+
+        if num_tokens > max_tokens:
+            if strategy == "start":
+                tokens = tokens[:max_tokens]
+            else:
+                tokens = tokens[-max_tokens:]
+            logging.info(
+                f"Input of length {num_tokens} truncated to length {len(tokens)}."
+            )
+
+        return tokenizer.decode(tokens)
 
 
 class LiteLLMEmbedder(BaseEmbedder):
@@ -332,6 +402,7 @@ class GeminiEmbedder(BaseEmbedder):
 
     The ``capacity``, ``retry_strategy`` and ``cache_strategy`` need to be specified during object
     construction. All other arguments can be overridden during application.
+    Gemini API truncates the content in case the text length is larger than model's context length.
 
     Args:
         capacity: Maximum number of concurrent operations allowed.
