@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.19.0] - 2025-02-20
+
 ### Added
 - `LLMReranker` now supports custom prompts as well as custom response parsers allowing for other ranking scales apart from default 1-5.
 - `pw.io.kafka.write` and `pw.io.nats.write` now support `ColumnReference` as a topic name. When a `ColumnReference` is provided, each message's topic is determined by the corresponding column value.
