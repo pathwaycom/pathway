@@ -1,6 +1,6 @@
 # flake8: noqa: E501
 
-eval_questions = [
+EVAL_QUESTIONS = [
     "Parties-Answer",
     "Agreement Date-Answer",
     "Effective Date-Answer",
@@ -17,7 +17,7 @@ eval_questions = [
     "Cap On Liability-Answer",
 ]
 
-eval_questions += [i.replace("-Answer", "") for i in eval_questions]
+EVAL_QUESTIONS += [i.replace("-Answer", "") for i in EVAL_QUESTIONS]
 
 
 question_mapper = {

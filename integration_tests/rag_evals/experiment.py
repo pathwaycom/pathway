@@ -6,24 +6,19 @@ from datetime import datetime
 
 import mlflow
 import pandas as pd
+from connector import RagConnector
+from constants import CuadMissingData
+from dataset import DatasetUtils
+from evaluator import LLMAnswerEvaluator, RAGEvaluator  # , StringSimEvaluator
+from logging_utils import get_run_params
 from ragas import EvaluationDataset
-
-from .connector import RagConnector
-from .dataset import DatasetUtils
-from .eval_questions import eval_questions, question_mapper
-from .evaluator import RAGEvaluator, compare_sim_with_date
-from .logging_utils import get_run_params
-from .ragas_utils import (
+from ragas_utils import (
     create_ragas_dataset,
+    create_ragas_dataset_from_cuad,
     ragas_dataset_to_eval,
     run_ragas_evaluations,
 )
-from .utils import save_pivot_table_as_confusion
-
-MLFLOW_URI: str | None = os.environ.get("MLFLOW_URI")
-assert MLFLOW_URI is not None, "`MLFLOW_URI` is not set in the environ."
-
-mlflow.set_tracking_uri(MLFLOW_URI)  # setting to None doesn't raise exception
+from utils import CuadDataset, CuadDatasetUtils, save_pivot_table_as_confusion
 
 EXPERIMENT_NAME = "CI RAG Evals"
 RUN_RAGAS_EVALS: bool = True
@@ -70,7 +65,7 @@ def run_ragas_evals(
     ragas_dataset: EvaluationDataset, subfolder_name: str, dataset_name: str
 ):
     CORRECTNESS_CUTOFF: float = 0.65  # TODO: adjust
-    # ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
+
     cleaned_dataset_name = dataset_name.split(".")[0]
 
     ragas_evals_dataset = run_ragas_evaluations(ragas_dataset)
@@ -103,7 +98,12 @@ def run_eval_experiment(
     config_file_path: str = "app.yaml",
     cleanup_dir_on_exit: bool = False,
 ) -> float:
-    """Run & log eval results, return total accuracy."""
+    """Run & log eval results, return total accuracy for CUAD dataset."""
+    MLFLOW_URI: str | None = os.environ.get("MLFLOW_URI")
+    if not MLFLOW_URI:
+        raise RuntimeError("`MLFLOW_URI` is not set in the environ.")
+
+    mlflow.set_tracking_uri(MLFLOW_URI)  # setting to None doesn't raise exception
 
     if not experiment:
         experiment = datetime.now().strftime("%d-%m-%Y %H:%M")
@@ -122,9 +122,9 @@ def run_eval_experiment(
 
     conn = RagConnector(base_url=base_url)
 
-    df = pd.read_csv(dataset_path, sep="\t")
+    ds = CuadDataset.from_tsv(dataset_path)
+    cuad_dataset = ds.prepare_dataset()
 
-    question_mapping_dict = question_mapper  # new_questions_long
     os.makedirs(dataset_name, exist_ok=True)  # folder for results & logs
 
     for param_dict in get_run_params():
@@ -132,58 +132,59 @@ def run_eval_experiment(
 
     mlflow.log_artifact(config_file_path)
 
-    new_dataset: list[dict] = []
-
-    # prep df
-    for question in eval_questions:
-        for index, row in df.iterrows():
-            data_elem = {
-                "file": row["file"],
-                "question": question,
-                "label": row[question],
-            }
-
-            new_dataset.append(data_elem)
-
-    for d in new_dataset:
-        d["reworded_question"] = question_mapping_dict[
-            d["question"]
-        ]  # map dataset questions to natural language format for gpt
-
-    evaluator = RAGEvaluator(new_dataset, compare_sim_with_date, conn)
+    evaluator = RAGEvaluator(cuad_dataset, conn)
 
     evaluator.apredict_dataset()
 
     evaluator.save_predicted_dataset(dataset_name + "/predicted_dataset.json")
 
-    retrieval_metrics = evaluator.calculate_retrieval_metrics()
+    logging.info(f"Total dataset size: {len(evaluator.predicted_dataset_as_dict_list)}")
+
+    retrieval_dataset, answer_dataset = (
+        CuadDatasetUtils.split_retrieval_answer_datasets(
+            evaluator.predicted_dataset_as_dict_list
+        )
+    )
+
+    retrieval_dataset = CuadDatasetUtils.prepare_retrieval_dataset(retrieval_dataset)
+
+    retrieval_metrics = evaluator.calculate_retrieval_metrics(retrieval_dataset)
     mlflow.log_metrics(retrieval_metrics)
     DatasetUtils.save_dataset(
         retrieval_metrics, dataset_name + "/retrieval_metrics.json"
     )
 
-    df = pd.DataFrame(evaluator.predicted_dataset_as_dict_list)
-    df = df.fillna("")  # Cyber holding effective start date is Nan, + some others
+    # full_dataset_df = pd.DataFrame(evaluator.predicted_dataset_as_dict_list).fillna("")
+    # Cyber holding effective start date is Nan, + some others also missing
 
-    df["sim"] = df.apply(
-        lambda row: compare_sim_with_date(row["pred"], row["label"]),
+    answer_dataset = CuadDatasetUtils.prepare_answer_dataset(answer_dataset)
+
+    answer_df = pd.DataFrame(answer_dataset).fillna(CuadMissingData.ANSWER_LABEL)
+
+    logging.info(
+        f"Calculating accuracy metrics for dataset of length: {len(answer_df)}."
+    )
+
+    llm_answer_evaluator = LLMAnswerEvaluator()
+    answer_df["sim"] = answer_df.apply(
+        lambda row: llm_answer_evaluator.evaluate(str(row["pred"]), str(row["label"])),
         axis=1,
     )
 
-    accuracy = df["sim"].mean()
+    accuracy = answer_df["sim"].mean()
     logging.info(f"Total accuracy: {accuracy}")
     mlflow.log_metric("Total RAG Accuracy", value=accuracy)
 
     file_eval_path = f"{dataset_name}/file_based_eval_scores.json"
-    (df.groupby("file")["sim"].mean()).to_json(file_eval_path, indent=4)
+    (answer_df.groupby("file")["sim"].mean()).to_json(file_eval_path, indent=4)
 
     question_eval_path = f"{dataset_name}/question_based_eval_scores.json"
-    (df.groupby("question")["sim"].mean()).to_json(question_eval_path, indent=4)
+    (answer_df.groupby("question")["sim"].mean()).to_json(question_eval_path, indent=4)
 
     mlflow.log_artifact(file_eval_path)
     mlflow.log_artifact(question_eval_path)
 
-    pivot_table = df.pivot_table(
+    pivot_table = answer_df.pivot_table(
         index="file", columns="question", values="sim", aggfunc="max", fill_value=0
     )
 
@@ -191,15 +192,24 @@ def run_eval_experiment(
     save_pivot_table_as_confusion(pivot_table, confusion_matrix_path)
     mlflow.log_artifact(confusion_matrix_path)
 
+    # full_dataset_df
     mlflow.log_table(
-        df[["label", "question", "pred", "file", "sim", "reworded_question"]],
+        answer_df[["label", "question", "pred", "file", "sim", "reworded_question"]],
         subfolder_name + "/predicted_dataset_artifact.json",
     )
 
     experiment_name: str = experiment.replace(":", "_")
 
     if RUN_RAGAS_EVALS:
-        ragas_dataset = create_ragas_dataset(evaluator.predicted_dataset)
+        cuad_preds_ds = [
+            i
+            for i in evaluator.predicted_dataset
+            if isinstance(i.pred, str)
+            and isinstance(i.label, str)
+            and "-Answer" in i.question_category
+        ]
+        logging.info(f"Length of pred_ds: {len(cuad_preds_ds)}")
+        ragas_dataset = create_ragas_dataset_from_cuad(cuad_preds_ds)
 
         run_ragas_evals(ragas_dataset, experiment_name, dataset_name="main_dataset")
 
@@ -217,9 +227,10 @@ def run_eval_experiment(
 
         logging.info(f"Running predictions for: {eval_dataset_name}")
 
-        evaluator = RAGEvaluator(eval_dict_dataset, compare_sim_with_date, conn)
+        evaluator = RAGEvaluator(eval_dict_dataset, conn)
         logging.info(f"eval_dataset sample-{str(evaluator.dataset[: 4])}")
         evaluator.apredict_dataset()
+
         logging.info(
             f"predicted_dataset sample-{str(evaluator.predicted_dataset[: 4])}"
         )

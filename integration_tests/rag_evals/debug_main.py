@@ -2,14 +2,13 @@ import logging
 import os
 
 from dotenv import load_dotenv
+from experiment import run_eval_experiment
 from pydantic import BaseModel, ConfigDict, InstanceOf, computed_field
 
 import pathway as pw
 from pathway.tests.utils import wait_result_with_checker
 from pathway.xpacks.llm.question_answering import SummaryQuestionAnswerer
 from pathway.xpacks.llm.servers import QASummaryRestServer
-
-from .experiment import run_eval_experiment
 
 EVAL_GDRIVE_ID = "1ErwN5WajWsEdIRMBIjyBfncNUmkxRfRy"
 

@@ -1,26 +1,34 @@
-import ast
 import asyncio
 import logging
 import re
+from abc import abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from difflib import SequenceMatcher
 from itertools import product
-from typing import Callable
 
 import numpy as np
 import pandas as pd
+from connector import RagConnector
+from constants import CuadMissingData
+from dataset import DatasetUtils
+from pydantic import BaseModel
+from structured_llm import OpenAIStructuredChat
 from tqdm import tqdm
+from utils import create_file_filter
 
-from .connector import RagConnector
-from .dataset import DatasetUtils
-from .utils import create_file_filter
+import pathway as pw
+from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy
+from pathway.xpacks.llm._utils import _coerce_sync
 
-STRDIFF_MIN_SIMILARITY: float = 0.68
+STRDIFF_MIN_SIMILARITY: float = 0.65
+SEQUENCE_MATCH_MIN_THRESHOLD: float = 0.4  # for answer correctness via str similarity
+BERT_SIMILARITY_CUTOFF: float = 0.6
 
 
 @dataclass
 class Data:
+    question_category: str
     question: str
     label: str
     file: str
@@ -34,13 +42,93 @@ class PredictedData(Data):
     docs: list[dict] = field(default_factory=lambda: [])
 
 
-def is_date(date_str: str) -> bool:
-    pattern = r"\b(0?[1-9]|1[0-2])/(0?[1-9]|[12]\d|3[01])/\d{2}\b"
-    return bool(re.match(pattern, date_str))
+class BaseAnswerEvaluator:
+    @abstractmethod
+    def evaluate(self, pred: str, label: str) -> bool: ...
 
 
-def parse_date(date_str) -> datetime | None:
-    try:
+class AnswerCorrectness(BaseModel):
+    is_correct: bool
+
+
+@dataclass
+class LLMAnswerEvaluator(BaseAnswerEvaluator):
+    model_name: str = "gpt-4o-mini"
+    temperature: float = 0.0
+    verbose: bool = False
+
+    def evaluate(self, pred: str, label: str) -> bool:
+        return _coerce_sync(self.aevaluate)(pred, label)
+
+    async def aevaluate(self, pred: str, label: str) -> bool:
+
+        llm = OpenAIStructuredChat(
+            model=self.model_name,
+            retry_strategy=ExponentialBackoffRetryStrategy(max_retries=3),
+            cache_strategy=DiskCache(),
+            temperature=self.temperature,
+            verbose=self.verbose,
+        )
+
+        SYS = (
+            "Your task is to determine the answer correctness in a RAG system. "
+            "You will be given a prediction and a label. "
+            "You will return a bool denoting if answer is True or False. "
+            "Differences in wording, date format or the verbosity between the prediction "
+            "and the label are fine. You can consider a case as `True` as long as answer "
+            " is correct."
+            "For instance, if the reference is `01/01/2021` and the answer is "
+            "`According to this and that, date is 1st of January 2021.`, "
+            "return `True`."
+            "If the label is one of the following: '', 'nan' or 'no information', "
+            "this means that the answer cannot be deduced. So, if the system's response is "
+            "along the lines with 'I don't know.' or 'No information.', also return `True`."
+        )
+
+        messages = [
+            {"role": "system", "content": SYS},
+            {
+                "role": "user",
+                "content": f"Prediction: {pred}\nLabel: {label}",
+            },
+        ]
+
+        response: dict = (
+            await llm.func(
+                messages,
+                response_format=pw.PyObjectWrapper(AnswerCorrectness),
+            )
+        ).value
+        return AnswerCorrectness(**response).is_correct
+
+
+@dataclass
+class StringSimEvaluator(BaseAnswerEvaluator):
+    min_sequence_match: float = SEQUENCE_MATCH_MIN_THRESHOLD
+
+    def evaluate(
+        self,
+        pred: str,
+        label: str,
+    ) -> bool:
+        pred, label = pred.lower(), label.lower()
+
+        if self._check_if_not_found_true_pred(pred, label):
+            return True
+
+        if self.is_date(label):
+            return self.compare_dates(pred, label)
+
+        a = "".join(e for e in pred if e.isalnum())
+        b = "".join(e for e in label if e.isalnum())
+
+        return SequenceMatcher(None, a, b).ratio() > self.min_sequence_match
+
+    def is_date(self, date_str: str) -> bool:
+        pattern = r"\b(0?[1-9]|1[0-2])/(0?[1-9]|[12]\d|3[01])/\d{2}\b"
+        return bool(re.match(pattern, date_str))
+
+    def parse_date(self, date_str) -> datetime | None:
         formats = ["%d %B %Y", "%B %d, %Y", "%m %d, %Y"]
         for fmt in formats:
             try:
@@ -49,43 +137,36 @@ def parse_date(date_str) -> datetime | None:
             except ValueError:
                 continue
         return None
-    except ValueError:
-        return date_str
+
+    def compare_dates(self, pred: str, label: str) -> bool:
+        pred_date = self.parse_date(pred)
+        if pred_date:
+            formatted_date: str = pred_date.strftime("%-m/%-d/%y")
+
+            return formatted_date == label
+
+        return False
+
+    def _check_if_not_found_true_pred(self, pred: str, label: str) -> bool:
+        # maybe we should just switch to LLMs
+        if "no information" in pred or "don't know" in pred or "do not know" in pred:
+            return label in (
+                CuadMissingData.ANSWER_LABEL,
+                CuadMissingData.CONTEXT_LABEL,
+            )
+        return False
 
 
-def compare_dates(pred: str, label: str) -> bool:
-    pred_date = parse_date(pred)
-    if pred_date:
-        formatted_date: str = pred_date.strftime("%-m/%-d/%y")
+@dataclass
+class BertScoreEvaluator(BaseAnswerEvaluator):
+    sim_cutoff: float = BERT_SIMILARITY_CUTOFF
 
-        return formatted_date == label
+    def evaluate(self, pred, label) -> bool:
+        from evaluate import load
 
-    return False
-
-
-def compare_sim_with_date(
-    pred: str, label: str, min_sequence_match: float = 0.4
-) -> bool:
-    if "No information" in str(pred) and str(label) == "nan":
-        return True
-
-    if is_date(label):
-        return compare_dates(pred, label)
-
-    pred, label = pred.lower(), label.lower()
-
-    a = "".join(e for e in pred if e.isalnum())
-    b = "".join(e for e in label if e.isalnum())
-
-    return SequenceMatcher(None, a, b).ratio() > min_sequence_match
-
-
-def compare_bert_score(pred: str, label: str) -> float:
-    from evaluate import load
-
-    bertscore = load("bertscore")
-    results = bertscore.compute(predictions=[pred], references=[label], lang="en")
-    return results["f1"]
+        bertscore = load("bertscore")
+        results = bertscore.compute(predictions=[pred], references=[label], lang="en")
+        return results["f1"] > self.sim_cutoff
 
 
 def compare_ls_bert_score(preds: list[str], labels: list[str]) -> list[float]:
@@ -114,13 +195,11 @@ class RAGEvaluator:
     def __init__(
         self,
         dataset: list[dict],
-        compare: Callable[[str, str], bool],
         connector: RagConnector,
     ) -> None:
         self.predicted_dataset: list[PredictedData] = []  # file, question, label
 
         self.dataset: list[Data] = [Data(**dc) for dc in dataset]
-        self.compare = compare
         self.connector = connector
 
         self.result_metrics: dict = {}
@@ -145,17 +224,6 @@ class RAGEvaluator:
             filter,
         )
         return answer
-
-    # def predict_dataset(self) -> None:
-    #     """Populate `predicted_dataset`."""
-    #     for dc in tqdm(self.dataset):
-    #         question = dc["reworded_question"]
-    #         file = dc["file"]
-    #         answer = self._predict_single(question, file)
-
-    #         dc["pred"] = answer["response"]
-    #         dc["docs"] = answer["docs"]
-    #         self.predicted_dataset.append(dc)
 
     async def _apredict_dataset(self) -> list[dict]:
         tasks = []
@@ -184,6 +252,7 @@ class RAGEvaluator:
             api_response: dict = results[idx]
 
             pred = PredictedData(
+                question_category=dc.question_category,
                 question=question,
                 label=dc.label,
                 file=file,
@@ -199,11 +268,8 @@ class RAGEvaluator:
         logging.info("Finished running `apredict_dataset`.")
 
     def calculate_retrieval_metrics(self, dataset: list[dict] | None = None):
-        dataset = dataset or [
-            i
-            for i in self.predicted_dataset_as_dict_list
-            if "-Answer" not in i["question"]
-        ]
+        if dataset is None:
+            dataset = self.predicted_dataset_as_dict_list
         return self._calculate_dataset_retrieval_metrics(dataset=dataset)
 
     def _calculate_dataset_retrieval_metrics(self, dataset: list[dict]) -> dict:
@@ -247,15 +313,7 @@ class RAGEvaluator:
 
         for i in dataset:
             text_ls = list(map(lambda d: d["text"], i["docs"]))
-            label = i["label"]
-
-            try:
-                labels = ast.literal_eval(label)
-            except Exception:
-                labels = []
-
-            assert isinstance(labels, list)
-            labels += [" ".join(labels)]
+            labels = i["label"]
 
             hit_k = get_hit_index(text_ls, labels)
 
@@ -288,14 +346,6 @@ class RAGEvaluator:
     def get_dataset_as_df(self) -> pd.DataFrame:
         return pd.DataFrame(self.predicted_dataset_as_dict_list)
 
-    def get_file_metrics(self, compare=None) -> dict:
-        if compare is None:
-            compare = self.compare
-        df = self.get_dataset_as_df()
-
-        df["tp"] = df.apply(lambda row: compare(row["pred"], row["label"]), axis=1)
-        return (df.groupby("file")["tp"].sum() / df.question.nunique()).to_dict()
-
 
 # document retrieval metrics
 
@@ -319,7 +369,7 @@ def get_hit_k(hit_list: list[int | None], k: int = 3) -> float:
     """Calculate the average hit@k (rank of the True Positive)."""
     k -= 1
 
-    def is_hit(elem, k):
+    def is_hit(elem, k) -> bool:
         if elem is not None:
             return elem <= k
         return False

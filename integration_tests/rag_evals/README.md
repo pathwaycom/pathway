@@ -9,7 +9,7 @@ Tests consist of two main categories, "retrieval metrics" and "RAGAS". App confi
 
 Currently, [CUAD](https://www.atticusprojectai.org/cuad) and synthetic data is used in the evals. See our blogpost to see how we created the synthetic data.
 
-To view the triplets of file-question-response in CUAD dataset, visit [this sheet](https://docs.google.com/spreadsheets/d/1ZlpEyc61dV4UeRYrejwcCISBoh_zRUlQ9BEYZcdwTyU/edit?pli=1#gid=1675078663) and switch to tab `Eval Data`.
+To view the triplets of file-question-response in CUAD dataset, visit [this sheet](https://docs.google.com/spreadsheets/d/1ZlpEyc61dV4UeRYrejwcCISBoh_zRUlQ9BEYZcdwTyU/edit?usp=sharing) and switch to tab `Eval Data`.
 
 To use the dataset, download the sheet:
 > File -> Download -> Tab Separated Values (.tsv)

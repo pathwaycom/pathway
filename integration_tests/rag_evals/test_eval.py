@@ -3,7 +3,9 @@ import os
 import sys
 import time
 
+from connector import RagConnector
 from dotenv import load_dotenv
+from experiment import run_eval_experiment
 from pydantic import BaseModel, ConfigDict, InstanceOf, computed_field
 
 import pathway as pw
@@ -11,8 +13,9 @@ from pathway.tests.utils import wait_result_with_checker
 from pathway.xpacks.llm.question_answering import SummaryQuestionAnswerer
 from pathway.xpacks.llm.servers import QASummaryRestServer
 
-from .connector import RagConnector
-from .experiment import run_eval_experiment
+load_dotenv()
+
+os.environ["PATHWAY_PERSISTENT_STORAGE"] = "./Cache"
 
 PATHWAY_HOST = "127.0.0.1"
 
@@ -37,7 +40,7 @@ console_handler.setFormatter(
 
 log_file = (
     "/integration_tests/rag_integration_test_cache/rag_eval_logs.txt"
-    if LOCAL_RUN
+    if not LOCAL_RUN
     else "rag_eval_logs.txt"
 )
 file_handler = logging.FileHandler(log_file)
@@ -50,8 +53,6 @@ file_handler.setFormatter(
 
 logging.getLogger().addHandler(console_handler)
 logging.getLogger().addHandler(file_handler)
-
-load_dotenv()
 
 
 class App(BaseModel):
@@ -132,7 +133,7 @@ def test_rag_app_accuracy(port: int):
         return False
 
     def checker() -> bool:
-        MIN_ACCURACY: float = 0.0
+        MIN_ACCURACY: float = 0.5
 
         logging.info("starting checker")
 
