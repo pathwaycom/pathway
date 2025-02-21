@@ -17,7 +17,17 @@ if TYPE_CHECKING:
 
 
 class DesugaringTransform(IdentityTransform):
+    def eval_tuple_of_maybe_expressions(self, expression: tuple, **kwargs):
+        result = [self.eval_expression(e) for e in expression]
+
+        if any(isinstance(e, expr.ColumnExpression) for e in result):
+            return expr.MakeTupleExpression(*result)
+
+        return expression
+
     def eval_any(self, expression, **kwargs):
+        if isinstance(expression, tuple):
+            return self.eval_tuple_of_maybe_expressions(expression, **kwargs)
         return expression
 
 

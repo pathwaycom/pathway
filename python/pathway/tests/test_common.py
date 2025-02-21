@@ -6529,3 +6529,163 @@ def test_doesnt_warn_if_all_operators_used():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         warn_if_some_operators_unused()
+
+
+def test_python_tuple_select():
+    t = T(
+        """
+        a | b
+        1 | 2
+        3 | 4
+        5 | 6
+    """
+    )
+    t1 = t.select(c=(pw.this.a, pw.this.b), d=(pw.this.a, 2))
+    t2 = t.select(c=(t.a, pw.this.b), d=(t.a, 2))
+    t3 = t.select(c=(pw.this.a, t.b), d=(pw.this.a, 2))
+    expected = t.select(
+        c=pw.make_tuple(pw.this.a, pw.this.b), d=pw.make_tuple(pw.this.a, 2)
+    )
+    assert_table_equality(t1, expected)
+    assert_table_equality(t2, expected)
+    assert_table_equality(t3, expected)
+
+
+def test_python_tuple_comparison():
+    t = T(
+        """
+        a | b
+        1 | 2
+        4 | 3
+        5 | 5
+    """
+    )
+    t1 = t.select(
+        x=pw.make_tuple(pw.this.a, pw.this.b) < (pw.this.b, pw.this.a),
+        y=(pw.this.a, pw.this.b) < pw.make_tuple(pw.this.b, pw.this.a),
+        z=pw.make_tuple(pw.this.a, pw.this.b) > (pw.this.b, pw.this.a),
+        t=(pw.this.a, pw.this.b) > pw.make_tuple(pw.this.b, pw.this.a),
+        e=pw.make_tuple(pw.this.a, pw.this.b) == (pw.this.b, pw.this.a),
+        n=(pw.this.a, pw.this.b) != pw.make_tuple(pw.this.b, pw.this.a),
+    )
+    expected = T(
+        """
+            x |     y |     z |     t |     e |     n
+         True |  True | False | False | False |  True
+        False | False |  True |  True | False |  True
+        False | False | False | False |  True | False
+    """
+    )
+
+    assert_table_equality(t1, expected)
+
+
+def test_python_tuple_inside_udf():
+    t = T(
+        """
+        a | b | c
+        1 | 2 | 3
+        4 | 3 | 3
+        5 | 5 | 3
+    """
+    )
+
+    @pw.udf
+    def foo(x: tuple) -> int:
+        return sum(x)
+
+    res = t.select(s=foo((pw.this.a, pw.this.c, pw.this.b)))
+
+    expected = T(
+        """
+         s
+         6
+        10
+        13
+    """
+    )
+    assert_table_equality(res, expected)
+
+
+def test_python_tuple_if_else():
+    t = T(
+        """
+        a | b | c
+        0 | 2 | 3
+        1 | 3 | 0
+        1 | 4 | 5
+        0 | 5 | 2
+    """
+    )
+    res = t.select(
+        z=pw.if_else(
+            pw.this.a == 1, (pw.this.b, pw.this.c), (pw.this.c, pw.this.b)
+        ).get(0)
+    )
+    expected = T(
+        """
+        z
+        3
+        3
+        4
+        2
+    """
+    )
+    assert_table_equality(res, expected)
+
+
+def test_python_tuple_stateful_reducer():
+    @pw.reducers.stateful_single  # type: ignore[arg-type]
+    def sum2d(state: int | None, values: tuple[int, int]) -> int:
+        if state is None:
+            state = 0
+        state += values[0] + values[1]
+        return state
+
+    t = T(
+        """
+        a | b
+        1 | 2
+        3 | 4
+    """
+    )
+    res = t.reduce(s=sum2d((pw.this.a, pw.this.b)))
+    expected = T(
+        """
+        s
+        10
+    """
+    )
+    assert_table_equality_wo_index_types(res, expected)
+
+
+def test_python_tuple_sorting():
+    t = T(
+        """
+        a | b | c
+        1 | 3 | 2
+        2 | 4 | 1
+        3 | 3 | 6
+        4 | 2 | 8
+        5 | 5 | 6
+        6 | 1 | 4
+        7 | 2 | 2
+        8 | 3 | 3
+    """
+    )
+    sorted = t.sort(key=(pw.this.b, pw.this.c))
+    result = t.select(pw.this.a, prev_a=t.ix(sorted.prev, optional=True).a)
+    expected = T(
+        """
+        a | prev_a
+        1 |      4
+        2 |      3
+        3 |      8
+        4 |      7
+        5 |      2
+        6 |
+        7 |      6
+        8 |      1
+    """
+    )
+    assert_table_equality(result, expected)

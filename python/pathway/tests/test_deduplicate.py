@@ -540,3 +540,36 @@ def test_selective_persistence_no_name_set_or_different_names_set(
     assert_stream_equality_wo_index(
         result, expected_2, persistence_config=persistence_config
     )
+
+
+def test_deduplicate_python_tuple():
+    t = pw.debug.table_from_markdown(
+        """
+        a | b | __time__
+        1 | 1 |     2
+        1 | 2 |     4
+        3 | 1 |     6
+        3 | 0 |     8
+        4 | 2 |    10
+        4 | 2 |    12
+        4 | 1 |    14
+    """
+    )
+
+    def acceptor(new_value: tuple, old_value: tuple) -> bool:
+        return new_value > old_value
+
+    res = t.deduplicate(value=(pw.this.a, pw.this.b), acceptor=acceptor)
+    expected = pw.debug.table_from_markdown(
+        """
+        a | b | __time__ | __diff__
+        1 | 1 |     2    |     1
+        1 | 1 |     4    |    -1
+        1 | 2 |     4    |     1
+        1 | 2 |     6    |    -1
+        3 | 1 |     6    |     1
+        3 | 1 |    10    |    -1
+        4 | 2 |    10    |     1
+    """
+    )
+    assert_stream_equality_wo_index(res, expected)

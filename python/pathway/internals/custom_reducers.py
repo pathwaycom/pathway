@@ -28,7 +28,8 @@ def mark_stub(fun):
 
 class ReducerProtocol(Protocol):
     def __call__(
-        self, *args: expr.ColumnExpression | api.Value
+        self,
+        *args: expr.ColumnExpression | api.Value | tuple[expr.ColumnExpression, ...],
     ) -> expr.ColumnExpression: ...
 
 
@@ -95,7 +96,9 @@ def stateful_many(
     for group 2 (at processing times 2, 4, 6).
     """
 
-    def wrapper(*args: expr.ColumnExpression | api.Value) -> expr.ColumnExpression:
+    def wrapper(
+        *args: expr.ColumnExpression | api.Value | tuple[expr.ColumnExpression, ...],
+    ) -> expr.ColumnExpression:
         return expr.ReducerExpression(StatefulManyReducer(combine_many), *args)
 
     return wrapper

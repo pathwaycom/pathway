@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - Added structure-aware chunking for `DoclingParser`
 - Added `table_parsing_strategy` for `DoclingParser`
+- Support for python tuples in expressions.
 
 ### Changed
 - **BREAKING**: Changed the argument in `DoclingParser` from `parse_images` (bool) into `image_parsing_strategy` (Literal["llm"] | None)

@@ -108,7 +108,11 @@ class ColumnExpression(OperatorInput, ABC):
         return ExpressionFormatter().eval_expression(self)
 
     @staticmethod
-    def _wrap(arg: ColumnExpression | Value) -> ColumnExpression:
+    def _wrap(
+        arg: ColumnExpression | Value | tuple[ColumnExpression, ...]
+    ) -> ColumnExpression:
+        if isinstance(arg, tuple):
+            return MakeTupleExpression(*arg) if arg else ColumnConstExpression(())
         if not isinstance(arg, ColumnExpression):
             return ColumnConstExpression(arg)
         return arg
@@ -713,8 +717,8 @@ class ReducerExpression(ColumnExpression):
     def __init__(
         self,
         reducer: Reducer,
-        *args: ColumnExpression | Value,
-        **kwargs: ColumnExpression | Value,
+        *args: ColumnExpression | Value | tuple[ColumnExpression, ...],
+        **kwargs: ColumnExpression | Value | tuple[ColumnExpression, ...],
     ):
         super().__init__()
         self._reducer = reducer
