@@ -89,9 +89,19 @@ Unstructured chunking is character-based rather than token-based, meaning you do
 
 It is recommended to use this parser when extracting **text**, **tables**, and **images** from PDFs.
 
+DoclingParser offers structure-aware chunking functionality. It separates tables and images into distinct chunks, merges all list items into a single chunk, and ensures each chunk is wrapped with markdown headings at the top and appropriate captions at the bottom when available (e.g., for tables and images).
+
+### Table parsing
+
+There are two main approaches for parsing tables: (1) using Docling engine or (2) parsing using multimodal LLM. The first one will run Docling OCR on the top of table that is in the pdf and transform it into markdown format. The second one will transform the table into an image and send it to multimodal LLM and ask for parsing it. As of now we only support LLMs having same API interface as OpenAI.
+
+In order to choose between these two you must set `table_parsing_strategy` to either `llm` or `docling`.
+If you don't want to parse tables simply set this argument to `None`.
+
+
 ### Image parsing
 
-If `parse_images=True`, the parser detects images within the document, processes them with a multimodal LLM (such as OpenAI's GPT-4o), and embeds its descriptions in the Markdown output. If disabled, images are replaced with placeholders.
+If `image_parsing_strategy="llm"`, the parser detects images within the document, processes them with a multimodal LLM (such as OpenAI's GPT-4o), and embeds its descriptions in the Markdown output. If disabled, images are replaced with placeholders.
 
 ::if{path="/llm-xpack/"}
 Example:
@@ -103,7 +113,7 @@ from pathway.xpacks.llm.llms import OpenAIChat
 multimodal_llm = OpenAIChat(model="gpt-4o-mini")
 
 parser = DoclingParser(
-    parse_images=True,
+    image_parsing_strategy="llm",
     multimodal_llm=multimodal_llm,
     pdf_pipeline_options={  # use it to override our default options for parsing pdfs with docling
         "do_formula_enrichment": True,

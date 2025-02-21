@@ -540,5 +540,9 @@ Make sure column and row names are understandable.
 If it is not a table, return 'No table.'."""
 
 DEFAULT_IMAGE_PARSE_PROMPT = """Explain the given image in detail.
-If there is text, make sure to spell out all the text.
-If info is formatted as table, your output should be also formatted."""
+If there is text, make sure to spell out all the text."""
+
+DEFAULT_TABLE_PARSE_PROMPT = """OCR the given table in markdown format.
+Make sure to include all the details, units and metrics.
+Carefully analyze the structure and contents of the table.
+If it is not a table, return 'No table.'."""
