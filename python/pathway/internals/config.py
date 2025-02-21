@@ -70,6 +70,9 @@ class PathwayConfig:
         "PATHWAY_TERMINATE_ON_ERROR", default="true"
     )
     process_id: str = _env_field("PATHWAY_PROCESS_ID", default="0")
+    suppress_other_worker_errors: bool = _env_bool_field(
+        "PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"
+    )
 
     @property
     def replay_config(

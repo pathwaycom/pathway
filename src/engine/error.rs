@@ -93,6 +93,9 @@ pub enum Error {
     #[error("worker panic: {0}")]
     WorkerPanic(String),
 
+    #[error("other worker panicked")]
+    OtherWorkerPanic,
+
     #[error("dataflow error: {0}")]
     Dataflow(String),
 
@@ -137,6 +140,12 @@ pub enum Error {
     },
 }
 
+const OTHER_WORKER_ERROR_MESSAGES: [&str; 3] = [
+    "MergeQueue poisoned.",
+    "timely communication error: reading data: socket closed",
+    "Send thread panic: Any { .. }",
+];
+
 impl Error {
     pub fn from_panic_payload(panic_payload: Box<dyn Any + Send + 'static>) -> Self {
         let message = match panic_payload.downcast::<&'static str>() {
@@ -146,7 +155,11 @@ impl Error {
                 Err(panic_payload) => format!("{panic_payload:?}"),
             },
         };
-        Self::WorkerPanic(message)
+        if OTHER_WORKER_ERROR_MESSAGES.contains(&message.as_str()) {
+            Self::OtherWorkerPanic
+        } else {
+            Self::WorkerPanic(message)
+        }
     }
 
     pub fn downcast<E: error::Error + 'static>(self) -> Result<E, Self> {
@@ -330,4 +343,22 @@ impl From<DynError> for DataError {
             Err(other) => Self::Other(other),
         }
     }
+}
+
+pub fn register_custom_panic_hook() {
+    // custom hook to avoid polluting output with "MergeQueue poisoned"
+    // messages that result from a different worker failure
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let payload = panic_info.payload();
+        let message = match payload.downcast_ref::<&'static str>() {
+            Some(message) => Some(*message),
+            None => payload.downcast_ref::<String>().map(String::as_str),
+        };
+        if message.map_or(true, |message| {
+            !OTHER_WORKER_ERROR_MESSAGES.contains(&message)
+        }) {
+            prev(panic_info);
+        }
+    }));
 }

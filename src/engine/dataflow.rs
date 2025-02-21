@@ -98,7 +98,7 @@ use self::operators::{ArrangeWithTypes, FlatMapWithDeletionsFirst, MapWrapped};
 use self::operators::{MaybeTotal, Reshard};
 use self::shard::Shard;
 use self::variable::SafeVariable;
-use super::error::{DataError, DataResult, DynError, DynResult, Trace};
+use super::error::{register_custom_panic_hook, DataError, DataResult, DynError, DynResult, Trace};
 use super::expression::AnyExpression;
 use super::external_index_wrappers::{ExternalIndexData, ExternalIndexQuery};
 use super::graph::{
@@ -6134,6 +6134,8 @@ where
     if !YOLO.is_empty() {
         info!("Running in YOLO mode: {}", YOLO.iter().format(", "));
     }
+
+    register_custom_panic_hook();
 
     let config = Arc::new(config);
     let (error_reporter, error_receiver) = ErrorReporter::create();

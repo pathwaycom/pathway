@@ -99,6 +99,7 @@ def spawn_program(
             env["PATHWAY_FIRST_PORT"] = str(first_port)
             env["PATHWAY_PROCESS_ID"] = str(process_id)
             env["PATHWAY_RUN_ID"] = str(run_id)
+            env["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
             handle = subprocess.Popen([program] + list(arguments), env=env)
             process_handles.append(handle)
         for handle in process_handles:

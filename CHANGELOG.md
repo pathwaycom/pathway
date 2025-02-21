@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - **BREAKING**: Changed the argument in `DoclingParser` from `parse_images` (bool) into `image_parsing_strategy` (Literal["llm"] | None)
+- Better error messages when using `pathway spawn` with multiple workers. Now error messages are printed only from the worker experiencing the error directly.
 
 ### Removed
 

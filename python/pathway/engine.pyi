@@ -159,6 +159,9 @@ class EngineErrorWithTrace(Exception):
     "Marker class to indicate engine error with trace"
     args: tuple[Exception, Trace | None]
 
+class OtherWorkerError(Exception):
+    "Marker class to indicate engine error resulting from other worker failure"
+
 class Reducer:
     ARG_MIN: Reducer
     MIN: Reducer

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
 import warnings
 from collections.abc import Callable, Collection, Iterable
@@ -224,6 +225,11 @@ class GraphRunner:
                             ),
                         )
                     raise error from None
+                except api.OtherWorkerError:
+                    if pathway_config.suppress_other_worker_errors:
+                        sys.exit(1)
+                    else:
+                        raise
 
     def _get_run_id(self):
         run_id = os.environ.get("PATHWAY_RUN_ID")

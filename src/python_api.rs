@@ -715,6 +715,7 @@ impl From<EngineError> for PyErr {
                 | EngineError::InconsistentColumnProperties
                 | EngineError::IdInTableProperties => PyValueError::type_object_bound(py),
                 EngineError::ReaderFailed(ReadError::Py(e)) => return e,
+                EngineError::OtherWorkerPanic => OTHER_WORKER_ERROR.bind(py).clone(),
                 _ => ENGINE_ERROR_TYPE.bind(py).clone(),
             };
             let message = error.to_string();
@@ -2146,6 +2147,19 @@ static ENGINE_ERROR_WITH_TRACE_TYPE: Lazy<Py<PyType>> = Lazy::new(|| {
             None,
         )
         .expect("creating EngineErrorWithTrace type should not fail")
+    })
+});
+
+static OTHER_WORKER_ERROR: Lazy<Py<PyType>> = Lazy::new(|| {
+    Python::with_gil(|py| {
+        PyErr::new_type_bound(
+            py,
+            "pathway.engine.OtherWorkerError",
+            None,
+            Some(&PyException::type_object_bound(py)),
+            None,
+        )
+        .expect("creating OtherWorkerError type should not fail")
     })
 });
 
@@ -5840,6 +5854,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;
     m.add("EngineErrorWithTrace", &*ENGINE_ERROR_WITH_TRACE_TYPE)?;
+    m.add("OtherWorkerError", &*OTHER_WORKER_ERROR)?;
 
     m.add("DONE", &*DONE)?;
     m.add("ERROR", &*ERROR)?;
