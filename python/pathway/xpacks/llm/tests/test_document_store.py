@@ -19,6 +19,7 @@ from pathway.stdlib.indexing import (
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm.document_store import DocumentStore
 from pathway.xpacks.llm.servers import DocumentStoreServer
+from pathway.xpacks.llm.tests import mocks
 
 
 class DebugStatsInputSchema(DocumentStore.StatisticsQuerySchema):
@@ -663,3 +664,84 @@ def test_docstore_on_tables_with_different_schemas():
     (val,) = rows["result"].values()
     assert isinstance(val, pw.Json)
     assert len(val.as_list()) == 2
+
+
+def test_docstore_post_processor():
+
+    def add_baz(text: str, metadata: dict) -> tuple:
+        return (text + "baz", metadata)
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"foo": "bar"},
+            )
+        ],
+    )
+
+    index_factory = BruteForceKnnFactory(
+        dimensions=3,
+        reserved_space=10,
+        embedder=mocks.fake_embeddings_model,
+        metric=BruteForceKnnMetricKind.COS,
+    )
+
+    vector_server = DocumentStore(
+        docs, retriever_factory=index_factory, doc_post_processors=[add_baz]
+    )
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=DocumentStore.RetrieveQuerySchema,
+        rows=[("Foo", 1, None, None)],
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["text"] == "testbaz"
+
+
+def test_docstore_metadata_post_processor():
+
+    def add_id(text: str, metadata: dict) -> tuple:
+        metadata["id"] = 1
+        return (text, metadata)
+
+    docs = pw.debug.table_from_rows(
+        schema=pw.schema_from_types(data=bytes, _metadata=dict),
+        rows=[
+            (
+                "test".encode("utf-8"),
+                {"foo": "bar"},
+            )
+        ],
+    )
+
+    index_factory = BruteForceKnnFactory(
+        dimensions=3,
+        reserved_space=10,
+        embedder=mocks.fake_embeddings_model,
+        metric=BruteForceKnnMetricKind.COS,
+    )
+
+    vector_server = DocumentStore(
+        docs, retriever_factory=index_factory, doc_post_processors=[add_id]
+    )
+
+    retrieve_queries = pw.debug.table_from_rows(
+        schema=DocumentStore.RetrieveQuerySchema,
+        rows=[("Foo", 1, None, None)],
+    )
+
+    retrieve_outputs = vector_server.retrieve_query(retrieve_queries)
+    _, rows = pw.debug.table_to_dicts(retrieve_outputs)
+    (val,) = rows["result"].values()
+    assert isinstance(val, pw.Json)
+    (query_result,) = val.as_list()  # extract the single match
+    assert isinstance(query_result, dict)
+    assert query_result["metadata"]["id"] == 1

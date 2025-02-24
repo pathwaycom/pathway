@@ -19,6 +19,7 @@ import pathway.xpacks.llm.splitters
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.retrievers import AbstractRetrieverFactory
 from pathway.stdlib.ml.classifiers import _knn_lsh
+from pathway.xpacks.llm._utils import _wrap_doc_post_processor
 from pathway.xpacks.llm.utils import combine_metadata
 
 from ._utils import _wrap_udf
@@ -46,7 +47,8 @@ class DocumentStore:
         parser: callable that parses file contents into a list of documents.
         splitter: callable that splits long documents.
         doc_post_processors: optional list of callables that modify parsed files and metadata.
-            any callable takes two arguments (text: str, metadata: dict) and returns them as a tuple.
+            Each doc_post_processor is a Callable that takes two arguments
+            (text: str, metadata: dict) and returns them as a tuple.
     """
 
     def __init__(
@@ -56,7 +58,7 @@ class DocumentStore:
         parser: Callable[[bytes], list[tuple[str, dict]]] | pw.UDF | None = None,
         splitter: Callable[[str], list[tuple[str, dict]]] | pw.UDF | None = None,
         doc_post_processors: (
-            list[Callable[[str, dict], tuple[str, dict]] | pw.UDF] | None
+            list[Callable[[str, dict], tuple[str, dict]]] | None
         ) = None,
     ):
         self.docs = docs
@@ -67,7 +69,9 @@ class DocumentStore:
             else pathway.xpacks.llm.parsers.Utf8Parser()
         )
         self.doc_post_processors: list[pw.UDF] = (
-            [_wrap_udf(p) for p in doc_post_processors] if doc_post_processors else []
+            [_wrap_doc_post_processor(p) for p in doc_post_processors]
+            if doc_post_processors
+            else []
         )
         self.splitter: pw.UDF = (
             _wrap_udf(splitter)
@@ -247,6 +251,21 @@ class DocumentStore:
         # `metadata` column: old_meta_dict -> old_meta_dict | new_meta_dict
         return combine_metadata(processed_docs)
 
+    @pw.table_transformer
+    def apply_doc_post_processor(
+        self, table: pw.Table, processor: pw.UDF
+    ) -> pw.Table[_DocumentSchema]:
+
+        processed_docs: pw.Table[DocumentStore._DocumentSchema] = table.select(
+            text=processor(pw.this.text, pw.this.metadata)
+            # some processors might split document into multiple parts so we flatten the results
+            # metadata will be propagated to all new rows
+        ).select(text=pw.this.text[0], metadata=pw.this.text[1])
+        # combine_metadata will transform our columns as follows:
+        # `text` column: tuple[str, new_meta_dict] -> str
+        # `metadata` column: new_meta_dict
+        return processed_docs
+
     def build_pipeline(self):
 
         cleaned_tables = self._clean_tables(self.docs)
@@ -272,13 +291,13 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         # POST PROCESSING
         self.post_processed_docs = self.parsed_docs
         for post_processor in self.doc_post_processors:
-            self.post_processed_docs = self.apply_processor(
+            self.post_processed_docs = self.apply_doc_post_processor(
                 self.post_processed_docs, post_processor
             )
 
         # CHUNKING
         self.chunked_docs: pw.Table[DocumentStore._DocumentSchema] = (
-            self.apply_processor(self.parsed_docs, self.splitter)
+            self.apply_processor(self.post_processed_docs, self.splitter)
         )
 
         # INDEXING

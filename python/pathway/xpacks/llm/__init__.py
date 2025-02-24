@@ -2,6 +2,7 @@
 from ._typing import Doc, DocTransformer, DocTransformerCallable  # isort: skip
 
 from . import (
+    document_store,
     embedders,
     llms,
     parsers,
@@ -13,6 +14,7 @@ from . import (
 )
 
 __all__ = [
+    "document_store",
     "embedders",
     "llms",
     "parsers",

@@ -13,10 +13,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - **BREAKING**: Changed the argument in `DoclingParser` from `parse_images` (bool) into `image_parsing_strategy` (Literal["llm"] | None)
+- **BREAKING**: `doc_post_processors` argument in the `pw.xpacks.llm.document_store.DocumentStore` now longer accepts `pw.UDF`.
 - Better error messages when using `pathway spawn` with multiple workers. Now error messages are printed only from the worker experiencing the error directly.
 
-### Removed
-
+### Fixed
+- `doc_post_processors` argument in the `pw.xpacks.llm.document_store.DocumentStore` had no effect. This is now fixed.
 
 ## [0.19.0] - 2025-02-20
 

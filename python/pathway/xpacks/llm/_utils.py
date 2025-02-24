@@ -98,3 +98,12 @@ def _to_dict(element: dict | pw.Json):
         return element.as_dict()
     else:
         return element
+
+
+def _wrap_doc_post_processor(fun: Callable[[str, dict], tuple[str, dict]]) -> pw.UDF:
+    @pw.udf
+    def wrapper(text: str, metadata: pw.Json) -> tuple[str, dict]:
+        metadata_dict = metadata.as_dict()
+        return fun(text, metadata_dict)
+
+    return wrapper
