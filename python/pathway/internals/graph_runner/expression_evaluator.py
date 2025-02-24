@@ -26,7 +26,7 @@ from pathway.internals.operator_mapping import (
     get_binary_expression,
     get_binary_operators_mapping_optionals,
     get_cast_operators_mapping,
-    get_convert_operators_mapping,
+    get_convert_operator,
     get_unary_expression,
 )
 from pathway.internals.schema import schema_from_types
@@ -587,7 +587,9 @@ class RowwiseEvaluator(
         expression: expr.ConvertExpression,
         eval_state: RowwiseEvalState | None = None,
     ):
-        arg = self.eval_expression(expression._expr, eval_state=eval_state)
+        expr = self.eval_expression(expression._expr, eval_state=eval_state)
+        default = self.eval_expression(expression._default, eval_state=eval_state)
+        unwrap = expression._unwrap
         source_type = expression._expr._dtype
         target_type = expression._return_type
 
@@ -597,10 +599,11 @@ class RowwiseEvaluator(
             or (source_type == dt.NONE and isinstance(target_type, dt.Optional))
             or target_type == dt.ANY
         ):
-            return arg
+            return expr
+
         if (
-            result_expression := get_convert_operators_mapping(
-                arg, source_type, target_type
+            result_expression := get_convert_operator(
+                expr, default, source_type, target_type, unwrap
             )
         ) is not None:
             return result_expression

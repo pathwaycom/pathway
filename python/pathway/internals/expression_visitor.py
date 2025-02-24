@@ -248,8 +248,12 @@ class IdentityTransform(ExpressionVisitor):
     def eval_convert(
         self, expression: expr.ConvertExpression, **kwargs
     ) -> expr.ConvertExpression:
-        result = self.eval_expression(expression._expr, **kwargs)
-        return expr.ConvertExpression(return_type=expression._return_type, expr=result)
+        return expr.ConvertExpression(
+            return_type=expression._return_type,
+            expr=self.eval_expression(expression._expr, **kwargs),
+            default=self.eval_expression(expression._default, **kwargs),
+            unwrap=expression._unwrap,
+        )
 
     def eval_declare(
         self, expression: expr.DeclareTypeExpression, **kwargs

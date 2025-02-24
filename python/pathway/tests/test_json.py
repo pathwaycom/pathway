@@ -1080,3 +1080,231 @@ def test_json_unpack_col_null(_type):
 
     with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
         run_all()
+
+
+@pytest.mark.parametrize(
+    "value,default,method",
+    [
+        (42, "foo", pw.ColumnExpression.as_int),
+        (1.1, "bar", pw.ColumnExpression.as_float),
+        ("foo", 42, pw.ColumnExpression.as_str),
+        (False, 1, pw.ColumnExpression.as_bool),
+    ],
+)
+def test_json_convert_default_wrong_value(value, default, method):
+    class Schema(pw.Schema):
+        data: pw.Json
+
+    input = pw.debug.table_from_rows(
+        Schema,
+        [(pw.Json(value),), (pw.Json(None),), (None,)],
+    )
+
+    with pytest.raises(TypeError, match=r"type of default.*is not compatible"):
+        input.select(result=method(pw.this.data, default=default))
+
+
+@pytest.mark.parametrize(
+    "value,default,method",
+    [
+        (42, "foo", pw.ColumnExpression.as_int),
+        (1.1, "bar", pw.ColumnExpression.as_float),
+        ("foo", 42, pw.ColumnExpression.as_str),
+        (False, 1, pw.ColumnExpression.as_bool),
+    ],
+)
+def test_json_convert_default_wrong_col(value, default, method):
+    InputSchema = pw.schema_builder(
+        columns={
+            "data": pw.column_definition(dtype=pw.Json),
+            "default": pw.column_definition(dtype=type(default)),
+        }
+    )
+
+    input = pw.debug.table_from_rows(
+        InputSchema,
+        [(pw.Json(value), default), (pw.Json(None), default), (None, default)],
+    )
+
+    with pytest.raises(TypeError, match=r"type of default.*is not compatible"):
+        input.select(result=method(pw.this.data, default=pw.this.default))
+
+
+@pytest.mark.parametrize(
+    "value,default,method",
+    [
+        (42, 2, pw.ColumnExpression.as_int),
+        (1.1, 3.14, pw.ColumnExpression.as_float),
+        ("foo", "bar", pw.ColumnExpression.as_str),
+        (False, True, pw.ColumnExpression.as_bool),
+    ],
+)
+def test_json_convert_default(value, default, method):
+    InputSchema = pw.schema_builder(
+        columns={
+            "data": pw.column_definition(dtype=pw.Json),
+            "a": pw.column_definition(dtype=type(default)),
+            "b": pw.column_definition(dtype=type(default) | None),
+        }
+    )
+
+    input = pw.debug.table_from_rows(
+        InputSchema,
+        [
+            (pw.Json(value), default, default),
+            (pw.Json(None), default, default),
+            (None, default, None),
+        ],
+    )
+
+    result = input.select(
+        val=method(pw.this.data, default=default),
+        a=method(pw.this.data, default=pw.this.a),
+        b=method(pw.this.data, default=pw.this.b),
+    )
+    expected_schema = pw.schema_builder(
+        columns={
+            "val": pw.column_definition(dtype=type(value)),
+            "a": pw.column_definition(dtype=type(value)),
+            "b": pw.column_definition(dtype=type(value) | None),
+        }
+    )
+    expected = pw.debug.table_from_rows(
+        expected_schema,
+        [(value, value, value), (default, default, default), (default, default, None)],
+    )
+    assert_table_equality(result, expected)
+
+
+def test_json_convert_unwrap():
+    class Schema(pw.Schema):
+        data: pw.Json
+
+    input = pw.debug.table_from_rows(
+        Schema,
+        [(pw.Json(42),)],
+    )
+
+    result = input.select(result=pw.this.data.as_int(unwrap=True))
+    expected_schema = pw.schema_builder(
+        columns={
+            "result": pw.column_definition(dtype=int),
+        }
+    )
+    expected = pw.debug.table_from_rows(
+        expected_schema,
+        [(42,)],
+    )
+    assert_table_equality(result, expected)
+
+
+@pytest.mark.parametrize(
+    "null_value",
+    [None, pw.Json(None)],
+)
+def test_json_convert_unwrap_null(
+    null_value,
+):
+    class Schema(pw.Schema):
+        data: pw.Json
+
+    input = pw.debug.table_from_rows(
+        Schema,
+        [(null_value,)],
+    )
+
+    input.select(result=pw.this.data.as_int(unwrap=True))
+
+    with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
+        run_all()
+
+
+@pytest.mark.parametrize(
+    "value,default,method",
+    [
+        (42, 2, pw.ColumnExpression.as_int),
+        (1.1, 3.14, pw.ColumnExpression.as_float),
+        ("foo", "bar", pw.ColumnExpression.as_str),
+        (False, True, pw.ColumnExpression.as_bool),
+    ],
+)
+def test_json_convert_default_unwrap(value, default, method):
+    InputSchema = pw.schema_builder(
+        columns={
+            "data": pw.column_definition(dtype=pw.Json),
+            "default": pw.column_definition(dtype=type(default) | None),
+        }
+    )
+
+    input = pw.debug.table_from_rows(
+        InputSchema,
+        [(pw.Json(value), default), (pw.Json(None), default), (None, default)],
+    )
+
+    result = input.select(
+        result=method(pw.this.data, default=pw.this.default, unwrap=True)
+    )
+
+    expected = pw.debug.table_from_rows(
+        pw.schema_builder(
+            columns={
+                "result": pw.column_definition(dtype=type(value)),
+            }
+        ),
+        [(value,), (default,), (default,)],
+    )
+
+    assert_table_equality(result, expected)
+
+
+@pytest.mark.parametrize(
+    "value,default,method",
+    [
+        (42, 2, pw.ColumnExpression.as_int),
+        (1.1, 3.14, pw.ColumnExpression.as_float),
+        ("foo", "bar", pw.ColumnExpression.as_str),
+        (False, True, pw.ColumnExpression.as_bool),
+    ],
+)
+def test_json_convert_default_unwrap_null(value, default, method):
+    InputSchema = pw.schema_builder(
+        columns={
+            "data": pw.column_definition(dtype=pw.Json),
+            "default": pw.column_definition(dtype=type(default) | None),
+        }
+    )
+
+    input = pw.debug.table_from_rows(
+        InputSchema,
+        [(pw.Json(value), default), (pw.Json(None), default), (None, None)],
+    )
+
+    input.select(result=method(pw.this.data, default=pw.this.default, unwrap=True))
+
+    with pytest.raises(ValueError, match="cannot unwrap if there is None value"):
+        run_all()
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        pw.ColumnExpression.as_int,
+        pw.ColumnExpression.as_float,
+        pw.ColumnExpression.as_str,
+        pw.ColumnExpression.as_bool,
+    ],
+)
+def test_json_convert_non_json(method):
+    class Schema(pw.Schema):
+        data: int
+
+    input = pw.debug.table_from_rows(
+        Schema,
+        [(42,)],
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=".*can only be applied to JSON columns, but column has type <class 'int'>.",
+    ):
+        input.select(result=method(pw.this.data))

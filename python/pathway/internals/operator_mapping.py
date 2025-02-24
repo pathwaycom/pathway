@@ -263,18 +263,19 @@ def get_cast_operators_mapping(
     return expression if expression is not None else default
 
 
-def get_convert_operators_mapping(
-    expr: api.Expression, source_type: dt.DType, target_type: dt.DType
+def get_convert_operator(
+    expr: api.Expression,
+    default: api.Expression,
+    source_type: dt.DType,
+    target_type: dt.DType,
+    unwrap: bool,
 ) -> api.Expression | None:
     source_type_engine = dt.unoptionalize(source_type).to_engine()
     target_type_engine = dt.unoptionalize(target_type).to_engine()
 
-    expression = api.Expression.convert_optional(
-        expr,
-        source_type_engine,
-        target_type_engine,
+    return api.Expression.convert(
+        expr, default, source_type_engine, target_type_engine, unwrap
     )
-    return expression
 
 
 def common_dtype_in_binary_operator(

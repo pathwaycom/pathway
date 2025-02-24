@@ -266,8 +266,12 @@ class Expression:
     def cast_optional(
         expr: Expression, source_type: PathwayType, target_type: PathwayType
     ) -> Expression | None: ...
-    def convert_optional(
-        expr: Expression, source_type: PathwayType, target_type: PathwayType
+    def convert(
+        expr: Expression,
+        default: Expression,
+        source_type: PathwayType,
+        target_type: PathwayType,
+        unwrap: bool,
     ) -> Expression | None: ...
     @staticmethod
     def if_else(if_: Expression, then: Expression, else_: Expression) -> Expression: ...

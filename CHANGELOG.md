@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - Added structure-aware chunking for `DoclingParser`
 - Added `table_parsing_strategy` for `DoclingParser`
+- Column expressions `as_int()`, `as_float()`, `as_str()`, and `as_bool()` now accept additional arguments, `unwrap` and `default`, to simplify null handling.
 - Support for python tuples in expressions.
 
 ### Changed

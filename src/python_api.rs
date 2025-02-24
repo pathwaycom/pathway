@@ -1431,12 +1431,24 @@ impl PyExpression {
     }
 
     #[staticmethod]
-    fn convert_optional(expr: &PyExpression, source_type: Type, target_type: Type) -> Option<Self> {
+    fn convert(
+        expr: &PyExpression,
+        default: &PyExpression,
+        source_type: Type,
+        target_type: Type,
+        unwrap: bool,
+    ) -> Option<Self> {
         type Tp = Type;
         match (&source_type, &target_type) {
-            (Tp::Json, Tp::Int | Tp::Float | Tp::Bool | Tp::String) => {
-                Some(unary_op!(AnyExpression::JsonToOptional, expr, target_type))
-            }
+            (Tp::Json, Tp::Int | Tp::Float | Tp::Bool | Tp::String) => Some(Self::new(
+                Arc::new(Expression::Any(AnyExpression::JsonToValue(
+                    expr.inner.clone(),
+                    default.inner.clone(),
+                    target_type,
+                    unwrap,
+                ))),
+                expr.gil || default.gil,
+            )),
             _ => None,
         }
     }

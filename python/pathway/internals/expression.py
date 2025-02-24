@@ -452,9 +452,20 @@ class ColumnExpression(OperatorInput, ABC):
             self,
         )
 
-    def as_int(self) -> ConvertExpression:
-        """Converts value to an int or None if not possible.
-        Currently works for Json columns only.
+    def as_int(
+        self, *, default: ColumnExpression | None = None, unwrap: bool = False
+    ) -> ConvertExpression:
+        """Converts the value to `int`. Currently, this is supported only for JSON columns.
+
+        The resulting column type will be `int | None`, unless `unwrap` is set to `True`
+        or `default` is non-optional.
+
+        Raises an exception for incompatible values.
+
+        Args:
+            default: The value to return in case of `Json.NULL` or `None`. Defaults to `None`.
+            unwrap: If `True`, the result column type will be non-optional. Raises an exception
+                if a `Json.NULL` or `None` value is encountered. Defaults to `False`.
 
         Example:
 
@@ -470,11 +481,22 @@ class ColumnExpression(OperatorInput, ABC):
         1
         2
         """
-        return ConvertExpression(dt.INT, self)
+        return ConvertExpression(dt.INT, self, default, unwrap)
 
-    def as_float(self) -> ConvertExpression:
-        """Converts value to a float or None if not possible.
-        Currently works for Json columns only.
+    def as_float(
+        self, default: ColumnExpression | None = None, unwrap: bool = False
+    ) -> ConvertExpression:
+        """Converts the value to `float`. Currently, this is supported only for JSON columns.
+
+        The resulting column type will be `float | None`, unless `unwrap` is set to `True`
+        or `default` is non-optional.
+
+        Raises an exception for incompatible values.
+
+        Args:
+            default: The value to return in case of `Json.NULL` or `None`. Defaults to `None`.
+            unwrap: If `True`, the result column type will be non-optional. Raises an exception
+                if a `Json.NULL` or `None` value is encountered. Defaults to `False`.
 
         Example:
 
@@ -490,11 +512,22 @@ class ColumnExpression(OperatorInput, ABC):
         1.5
         3.14
         """
-        return ConvertExpression(dt.FLOAT, self)
+        return ConvertExpression(dt.FLOAT, self, default, unwrap)
 
-    def as_str(self) -> ConvertExpression:
-        """Converts value to a string or None if not possible.
-        Currently works for Json columns only.
+    def as_str(
+        self, default: ColumnExpression | None = None, unwrap: bool = False
+    ) -> ConvertExpression:
+        """Converts the value to `str`. Currently, this is supported only for JSON columns.
+
+        The resulting column type will be `str | None`, unless `unwrap` is set to `True`
+        or `default` is non-optional.
+
+        Raises an exception for incompatible values.
+
+        Args:
+            default: The value to return in case of `Json.NULL` or `None`. Defaults to `None`.
+            unwrap: If `True`, the result column type will be non-optional. Raises an exception
+                if a `Json.NULL` or `None` value is encountered. Defaults to `False`.
 
         Example:
 
@@ -510,11 +543,22 @@ class ColumnExpression(OperatorInput, ABC):
         cat
         dog
         """
-        return ConvertExpression(dt.STR, self)
+        return ConvertExpression(dt.STR, self, default, unwrap)
 
-    def as_bool(self) -> ConvertExpression:
-        """Converts value to a bool or None if not possible.
-        Currently works for Json columns only.
+    def as_bool(
+        self, default: ColumnExpression | None = None, unwrap: bool = False
+    ) -> ConvertExpression:
+        """Converts the value to `bool`. Currently, this is supported only for JSON columns.
+
+        The resulting column type will be `bool | None`, unless `unwrap` is set to `True`
+        or `default` is non-optional.
+
+        Raises an exception for incompatible values
+
+        Args:
+            default: The value to return in case of `Json.NULL` or `None`. Defaults to `None`.
+            unwrap: If `True`, the result column type will be non-optional. Raises an exception
+                if a `Json.NULL` or `None` value is encountered. Defaults to `False`.
 
         Example:
 
@@ -530,7 +574,7 @@ class ColumnExpression(OperatorInput, ABC):
         False
         True
         """
-        return ConvertExpression(dt.BOOL, self)
+        return ConvertExpression(dt.BOOL, self, default, unwrap)
 
 
 class ColumnCallExpression(ColumnExpression):
@@ -841,18 +885,30 @@ class CastExpression(ColumnExpression):
 class ConvertExpression(ColumnExpression):
     _return_type: dt.DType
     _expr: ColumnExpression
+    _unwrap: bool
+    _default: ColumnExpression
 
-    def __init__(self, return_type: dt.DType, expr: ColumnExpression | Value):
+    def __init__(
+        self,
+        return_type: dt.DType,
+        expr: ColumnExpression | Value,
+        default: ColumnExpression | Value = None,
+        unwrap: bool = False,
+    ):
         super().__init__()
-        self._return_type = dt.Optional(return_type)
+        self._return_type = return_type
         self._expr = ColumnExpression._wrap(expr)
+        self._default = ColumnExpression._wrap(default)
+        self._unwrap = unwrap
 
     def _to_internal(self) -> InternalColExpr:
-        return InternalColExpr.build(type(self), self._return_type, self._expr)
+        return InternalColExpr.build(
+            type(self), self._return_type, self._expr, self._default, self._unwrap
+        )
 
     @property
     def _deps(self) -> tuple[ColumnExpression, ...]:
-        return (self._expr,)
+        return (self._expr, self._default)
 
 
 class DeclareTypeExpression(ColumnExpression):

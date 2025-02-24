@@ -329,7 +329,29 @@ class TypeInterpreter(IdentityTransform):
         **kwargs,
     ) -> expr.ConvertExpression:
         expression = super().eval_convert(expression, state=state, **kwargs)
-        return _wrap(expression, expression._return_type)
+        target_type = expression._return_type
+        default_type = expression._default._dtype
+
+        if dt.unoptionalize(expression._expr._dtype) is not dt.JSON:
+            raise TypeError(
+                f"{expression!r} can only be applied to JSON columns, "
+                f"but column has type {expression._expr._dtype.typehint}."
+            )
+
+        if default_type != dt.NONE and not dt.dtype_issubclass(
+            dt.unoptionalize(default_type), target_type
+        ):
+            raise TypeError(
+                f"type of default {default_type.typehint} "
+                f"is not compatible with {target_type.typehint}."
+            )
+
+        if not expression._unwrap and (
+            isinstance(default_type, dt.Optional) or default_type == dt.NONE
+        ):
+            target_type = dt.Optional(target_type)
+
+        return _wrap(expression, target_type)
 
     def eval_declare(
         self,

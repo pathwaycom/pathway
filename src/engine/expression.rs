@@ -112,7 +112,7 @@ pub enum AnyExpression {
     TupleGetItemChecked(Arc<Expression>, Arc<Expression>, Arc<Expression>),
     TupleGetItemUnchecked(Arc<Expression>, Arc<Expression>),
     JsonGetItem(Arc<Expression>, Arc<Expression>, Arc<Expression>),
-    JsonToOptional(Arc<Expression>, Type),
+    JsonToValue(Arc<Expression>, Arc<Expression>, Type, bool),
     ParseStringToInt(Arc<Expression>, bool),
     ParseStringToFloat(Arc<Expression>, bool),
     ParseStringToBool(Arc<Expression>, Vec<String>, Vec<String>, bool),
@@ -485,6 +485,15 @@ fn compare_tuples(lhs: &Arc<[Value]>, rhs: &Arc<[Value]>) -> DynResult<Ordering>
     }
 }
 
+fn unwrap(val: Value) -> DynResult<Value> {
+    match val {
+        Value::None => Err(DynError::from(DataError::ValueError(
+            "cannot unwrap if there is None value".into(),
+        ))),
+        _ => Ok(val),
+    }
+}
+
 impl AnyExpression {
     #[allow(clippy::too_many_lines)]
     pub fn eval(&self, values: &[Value]) -> DynResult<Value> {
@@ -613,34 +622,43 @@ impl AnyExpression {
                     "Cannot cast to float from {val:?}"
                 )))),
             }?,
-            Self::JsonToOptional(expr, type_) => match expr.eval(values)? {
-                Value::Json(json) => {
-                    if json.is_null() {
-                        Ok(Value::None)
-                    } else {
-                        let val = match type_ {
-                            Type::Int => json.as_i64().map(Value::from),
-                            Type::Float => json.as_f64().map(Value::from),
-                            Type::Bool => json.as_bool().map(Value::from),
-                            Type::String => json.as_str().map(Value::from),
-                            _ => {
-                                return Err(DynError::from(DataError::ValueError(format!(
-                                    "Cannot convert json {json} to {type_:?}"
-                                ))))
+            Self::JsonToValue(expr, default, type_, unwrap_) => {
+                let result = match expr.eval(values)? {
+                    Value::Json(json) => {
+                        if json.is_null() {
+                            default.eval(values)
+                        } else {
+                            match type_ {
+                                Type::Int => json.as_i64().map(Value::from),
+                                Type::Float => json.as_f64().map(Value::from),
+                                Type::Bool => json.as_bool().map(Value::from),
+                                Type::String => json.as_str().map(Value::from),
+                                _ => {
+                                    return Err(DynError::from(DataError::ValueError(format!(
+                                        "Cannot convert json {json} to {type_:?}"
+                                    ))));
+                                }
                             }
-                        };
-                        val.ok_or_else(|| {
-                            DynError::from(DataError::ValueError(format!(
-                                "Cannot convert json {json} to {type_:?}"
-                            )))
-                        })
+                            .ok_or_else(|| {
+                                DynError::from(DataError::ValueError(format!(
+                                    "Cannot convert json {json} to {type_:?}"
+                                )))
+                            })
+                        }
                     }
+                    Value::None => default.eval(values),
+                    val => {
+                        return Err(DynError::from(DataError::ValueError(format!(
+                            "Expected Json or None, found {val:?}"
+                        ))));
+                    }
+                };
+                if *unwrap_ {
+                    unwrap(result?)?
+                } else {
+                    result?
                 }
-                Value::None => Ok(Value::None),
-                val => Err(DynError::from(DataError::ValueError(format!(
-                    "Expected Json or None, found {val:?}"
-                )))),
-            }?,
+            }
             Self::MatMul(lhs, rhs) => {
                 let lhs_val = lhs.eval(values)?;
                 let rhs_val = rhs.eval(values)?;
@@ -658,13 +676,7 @@ impl AnyExpression {
             }
             Self::Unwrap(e) => {
                 let val = e.eval(values)?;
-                if val == Value::None {
-                    Err(DynError::from(DataError::ValueError(String::from(
-                        "cannot unwrap if there is None value",
-                    ))))
-                } else {
-                    Ok(val)
-                }?
+                unwrap(val)?
             }
             Self::FillError(e, replacement) => {
                 e.eval(values).or_else(|_| replacement.eval(values))?
