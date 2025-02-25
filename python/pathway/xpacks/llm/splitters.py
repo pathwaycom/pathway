@@ -5,6 +5,7 @@ A library of text spliiters - routines which slit a long text into smaller chunk
 """
 import abc
 import unicodedata
+from typing import TYPE_CHECKING
 
 import pathway as pw
 from pathway.optional_import import optional_imports
@@ -78,6 +79,83 @@ class BaseSplitter(pw.UDF):
     @abc.abstractmethod
     def chunk(self, text: str, metadata: dict = {}, **kwargs) -> list[tuple[str, dict]]:
         pass
+
+
+SEPARATORS = ["\n\n", "\n", " ", ""]
+
+
+# wrapper around Langchain splitter
+class RecursiveSplitter(BaseSplitter):
+    """
+    Splitter that splits a long text into smaller chunks based on a set of separators.
+    Chunking is performed recursively using first separator in the list and then second
+    separator in the list and so on, until the text is split into chunks of length smaller than ``chunk_size``.
+    Length of the chunks is measured by the number of characters in the text if none of
+    ``encoding_name``, ``model_name`` or ``hf_tokenizer`` is provided. Otherwise, the length of the
+    chunks is measured by the number of tokens that particular tokenizer would output.
+
+    Under the hood it is a wrapper around ``langchain_text_splitters.RecursiveTextSplitter`` (MIT license).
+
+    Args:
+        chunk_size: maximum size of a chunk in characters/tokens.
+        chunk_overlap: number of characters/tokens to overlap between chunks.
+        separators: list of strings to split the text on.
+        is_separator_regex: whether the separators are regular expressions.
+        encoding_name: name of the encoding from ``tiktoken``.
+            For the list of available encodings please refer to tiktoken documentation:
+            https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
+        model_name: name of the model from ``tiktoken``. See the link above for more details.
+        hf_tokenizer: Huggingface tokenizer to use for tokenization.
+    """
+
+    if TYPE_CHECKING:
+        from transformers import PreTrainedTokenizerBase
+
+    def __init__(
+        self,
+        chunk_size: int = 500,
+        chunk_overlap: int = 0,
+        separators: list[str] = SEPARATORS,
+        is_separator_regex: bool = False,
+        encoding_name: str | None = None,
+        model_name: str | None = None,
+        hf_tokenizer: "PreTrainedTokenizerBase | None" = None,
+    ):
+        super().__init__()
+
+        with optional_imports("xpack-llm"):
+            from langchain_text_splitters import (
+                RecursiveCharacterTextSplitter,
+                TextSplitter,
+            )
+
+        self.kwargs = dict(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=separators,
+            is_separator_regex=is_separator_regex,
+        )
+
+        self._splitter: TextSplitter
+
+        if encoding_name is not None:
+            self._splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                encoding_name=encoding_name, **self.kwargs
+            )
+        elif model_name is not None:
+            self._splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                model_name=model_name, **self.kwargs
+            )
+        elif hf_tokenizer is not None:
+            self._splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+                tokenizer=hf_tokenizer, **self.kwargs
+            )
+        else:
+            self._splitter = RecursiveCharacterTextSplitter(**self.kwargs)
+
+    def chunk(self, text: str, metadata: dict = {}, **kwargs) -> list[tuple[str, dict]]:
+        chunked = self._splitter.split_text(text)
+        return [(chunk, metadata) for chunk in chunked]
 
 
 class NullSplitter(BaseSplitter):
