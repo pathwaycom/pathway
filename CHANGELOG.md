@@ -5,14 +5,16 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.20.0] - 2025-02-25
+
 ### Added
-- Added structure-aware chunking for `DoclingParser`
-- Added `table_parsing_strategy` for `DoclingParser`
+- Added structure-aware chunking for `DoclingParser`.
+- Added `table_parsing_strategy` for `DoclingParser`.
 - Column expressions `as_int()`, `as_float()`, `as_str()`, and `as_bool()` now accept additional arguments, `unwrap` and `default`, to simplify null handling.
 - Support for python tuples in expressions.
 
 ### Changed
-- **BREAKING**: Changed the argument in `DoclingParser` from `parse_images` (bool) into `image_parsing_strategy` (Literal["llm"] | None)
+- **BREAKING**: Changed the argument in `DoclingParser` from `parse_images` (bool) into `image_parsing_strategy` (Literal["llm"] | None).
 - **BREAKING**: `doc_post_processors` argument in the `pw.xpacks.llm.document_store.DocumentStore` now longer accepts `pw.UDF`.
 - Better error messages when using `pathway spawn` with multiple workers. Now error messages are printed only from the worker experiencing the error directly.
 
