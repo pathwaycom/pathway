@@ -19,7 +19,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.16.2
+#       jupytext_version: 1.16.6
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -149,7 +149,7 @@
 # Install Pathway and all its optional packages.
 
 # + id="4hYX0Mb7a9aH"
-# _MD_SHOW_!pip install 'pathway[all]>=0.13.0'
+# _MD_SHOW_!pip install 'pathway[all]>=0.20.0'
 
 
 # + [markdown] id="dp6GwenS80Po"
@@ -175,33 +175,22 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 #
 # #### Key Imports:
 # - **pathway**: Main library for document processing and question answering.
-# - **logging**: Captures logs for debugging.
 #
 # #### Modules:
 # - **[udfs.DiskCache](/developers/api-docs/udfs#pathway.udfs.DiskCache), [udfs.ExponentialBackoffRetryStrategy](/developers/api-docs/udfs#pathway.udfs.ExponentialBackoffRetryStrategy)**: Modules for caching and retry strategies.
 # - **[xpacks.llm](/developers/user-guide/llm-xpack/overview)**: Various tools for leveraging Large Language Models effectively.
-# - **[llm.parsers.OpenParse](/developers/api-docs/pathway-xpacks-llm/parsers)**: The `DoclingParser` class efficiently handles document parsing tasks, including text extraction and table parsing, providing a streamlined approach for document analysis and content extraction.
+# - **[llm.parsers.DoclingParser](/developers/api-docs/pathway-xpacks-llm/parsers)**: The `DoclingParser` class efficiently handles document parsing tasks, including text extraction and table parsing, providing a streamlined approach for document analysis and content extraction.
 # - **[llm.question_answering.BaseRAGQuestionAnswerer](/developers/api-docs/pathway-xpacks-llm/question_answering)**: Sets up a base model for question answering using RAG.
 # - **[llm.vector_store.VectorStoreServer](/developers/api-docs/pathway-xpacks-llm/vectorstore)**: Handles document vector storage and retrieval.
 #
 
 # + id="_2spSj2kbDfW" colab={"base_uri": "https://localhost:8080/", "height": 17} outputId="d7a412a6-a295-4fcb-fb10-435d1e8b192d"
-import logging
-
-os.environ["TESSDATA_PREFIX"] = "/usr/share/tesseract/tessdata/"
 import pathway as pw
-from pathway.udfs import DiskCache, ExponentialBackoffRetryStrategy
+from pathway.udfs import DefaultCache, ExponentialBackoffRetryStrategy
 from pathway.xpacks.llm import embedders, llms, parsers, prompts, splitters
 from pathway.xpacks.llm.question_answering import BaseRAGQuestionAnswerer
-from pathway.xpacks.llm.vector_store import VectorStoreServer
+from pathway.xpacks.llm.document_store import DocumentStore
 
-
-# + id="OszIyJyOd_X7"
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
 # + [markdown] id="_iGdygT2uYQ1"
 # ### Document Processing and Question Answering Setup
@@ -209,7 +198,7 @@ logging.basicConfig(
 # + [markdown] id="ublsBY0GFAbk"
 # #### **Create Data Directory**
 #
-# Create a 'data' directory if it doesn't already exist. This is where the uploaded files will be stored. Then upload your pdf document.
+# Create a `data` directory if it doesn't already exist. This is where the uploaded files will be stored. Then upload your pdf document.
 #
 # You can also omit this cell if you are running locally on your system. Create a data folder in the current directory and copy the files. In that case please comment out this cell as this is for colab only.
 # Create the `data` folder if it doesn't exist
@@ -241,7 +230,7 @@ sources = [
 chat = llms.OpenAIChat(
     model="gpt-4o",
     retry_strategy=ExponentialBackoffRetryStrategy(max_retries=6),
-    cache_strategy=DiskCache(),
+    cache_strategy=DefaultCache(),
     temperature=0.0,
 )
 
@@ -254,15 +243,20 @@ chat = llms.OpenAIChat(
 # + id="ICYNrImFe4u9"
 app_host = "0.0.0.0"
 app_port = 8000
-# _MD_SHOW_parser = parsers.DoclingParser()
+# _MD_SHOW_parser = parsers.DoclingParser(
+# _MD_SHOW_    table_parsing_strategy="llm", 
+# _MD_SHOW_    image_parsing_strategy="llm", 
+# _MD_SHOW_    multimodal_llm=chat
+# _MD_SHOW_)
 splitter = splitters.TokenCountSplitter()
-embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())
+embedder = embedders.OpenAIEmbedder(cache_strategy=DefaultCache())
 
 
 # + id="gt3TlzSqfBoN" colab={"base_uri": "https://localhost:8080/"} outputId="4ddc1aef-a493-45b9-d2bf-638194926c2d"
-# _MD_SHOW_doc_store = VectorStoreServer(
-# _MD_SHOW_        *sources,
-# _MD_SHOW_        embedder=embedder,
+# _MD_SHOW_index = pw.indexing.BruteForceKnnFactory(embedder=embedder)
+# _MD_SHOW_doc_store = DocumentStore(
+# _MD_SHOW_        sources,
+# _MD_SHOW_        retriever_factory=index,
 # _MD_SHOW_        splitter=splitter,
 # _MD_SHOW_        parser=parser,
 # _MD_SHOW_    )
@@ -270,7 +264,6 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())
 # _MD_SHOW_        llm=chat,
 # _MD_SHOW_        indexer=doc_store,
 # _MD_SHOW_        search_topk=6,
-# _MD_SHOW_        short_prompt_template=prompts.prompt_qa,
 # _MD_SHOW_    )
 # _MD_SHOW_app.build_server(host=app_host, port=app_port)
 # app.run_server(with_cache=True, terminate_on_error=False)
@@ -297,7 +290,7 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DiskCache())
 # Make changes to the prompt and ask questions to get information from your documents
 
 # + id="RjsA8X0ayRUk" colab={"base_uri": "https://localhost:8080/"} outputId="87cbfc92-5832-43a0-f13b-76ebb6890ea2"
-# _MD_SHOW_!curl -X 'POST'   'http://0.0.0.0:8000/v1/pw_ai_answer'   -H 'accept: */*'   -H 'Content-Type: application/json'   -d '{"prompt": "what is the TotalStockholders equity as of December 31, 2022`"}'
+# _MD_SHOW_!curl -X 'POST'   'http://0.0.0.0:8000/v1/pw_ai_answer'   -H 'accept: */*'   -H 'Content-Type: application/json'   -d '{"prompt": "How much was Operating lease cost in 2021?"}'
 
 
 # + [markdown] id="S3zsr-NGop8B"
