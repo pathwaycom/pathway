@@ -189,6 +189,10 @@ id_type=<class 'pathway.engine.Pointer'>>
         """
         return self._schema
 
+    @property
+    def is_append_only(self) -> bool:
+        return all([col.properties.append_only for col in self._columns.values()])
+
     def _get_colref_by_name(self, name, exception_type) -> expr.ColumnReference:
         name = self._column_deprecation_rename(name)
         if name == "id":
