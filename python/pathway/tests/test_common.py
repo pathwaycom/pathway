@@ -19,7 +19,7 @@ import pytest
 import pathway as pw
 import pathway.internals.shadows.operator as operator
 from pathway.debug import table_from_pandas, table_to_pandas
-from pathway.internals import dtype as dt
+from pathway.internals import api, dtype as dt
 from pathway.internals.parse_graph import warn_if_some_operators_unused
 from pathway.internals.table_io import empty_from_schema
 from pathway.tests.utils import (
@@ -6689,3 +6689,36 @@ def test_python_tuple_sorting():
     """
     )
     assert_table_equality(result, expected)
+
+
+def test_table_to_pandas_with_id():
+    t = T(
+        """
+      | a
+    1 | 3
+    2 | 6
+    3 | 7
+    """
+    )
+
+    df = table_to_pandas(t)
+    expected = pd.DataFrame(
+        {"a": [3, 6, 7]},
+        index=[api.ref_scalar(1), api.ref_scalar(2), api.ref_scalar(3)],
+    )
+    assert all(df == expected)
+
+
+def test_table_to_pandas_without_id():
+    t = T(
+        """
+      | a
+    1 | 3
+    2 | 6
+    3 | 7
+    """
+    )
+
+    df = table_to_pandas(t, include_id=False)
+    expected = pd.DataFrame({"a": [3, 6, 7]})
+    assert all(df == expected)

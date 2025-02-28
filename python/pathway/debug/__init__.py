@@ -279,7 +279,8 @@ def table_to_pandas(table: Table, *, include_id: bool = True):
             vals = columns[name].values()
         series = pd.Series(vals, dtype=dtype)
         series_dict[name] = series
-    res = pd.DataFrame(series_dict, index=keys)
+    index = keys if include_id else None
+    res = pd.DataFrame(series_dict, index=index)
     return res
 
 
