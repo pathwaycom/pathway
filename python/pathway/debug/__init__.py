@@ -62,6 +62,22 @@ def table_to_dicts(
     table: Table,
     **kwargs,
 ) -> tuple[list[api.Pointer], dict[str, dict[api.Pointer, api.Value]]]:
+    """
+    Runs the computations needed to get the contents of the Pathway Table and converts it
+    to a dictionary representation, where each column is mapped to its respective values.
+
+    Args:
+        table (Table): The Pathway Table to be converted.
+        **kwargs: Additional keyword arguments to customize the behavior of the function.
+                  - terminate_on_error (bool): If True, the function will terminate execution upon
+                  encountering an error during the squashing of updates. Defaults to True.
+
+    Returns:
+        tuple: A tuple containing two elements: 1) list of keys (pointers) that represent
+        the rows in the table, and 2) a dictionary where each key is a column name,
+        and the value is another dictionary mapping row keys (pointers) to their respective
+        values in that column.
+    """
     captured = _compute_tables(table, **kwargs)[0]
     output_data = api.squash_updates(
         captured, terminate_on_error=kwargs.get("terminate_on_error", True)
@@ -443,6 +459,9 @@ def table_from_markdown(
     column ``__time__``, rows will be split into batches with timestamps from the column.
     A special column ``__diff__`` can be used to set an event type - with ``1`` treated
     as inserting the row and ``-1`` as removing it.
+
+    By default, it splits on whitespaces. To get a table containing
+    strings with whitespaces, use with ``split_on_whitespace = False``.
     """
     df = _markdown_to_pandas(table_def, split_on_whitespace)
     return table_from_pandas(

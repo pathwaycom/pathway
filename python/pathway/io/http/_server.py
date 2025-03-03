@@ -663,10 +663,10 @@ def rest_connector(
           If enabled, caches responses for the requests with the same ``schema``-defined payload.
 
     Returns:
-        table: the table read;
-        response_writer: a callable, where the result table should be provided. The
-            result table must contain columns `query_id` corresponding to the primary key of an
-            object from the input table and `result`, corresponding to the endpoint's return value.
+        tuple: A tuple containing two elements. The table read and a ``response_writer``,
+        a callable, where the result table should be provided. The ``id`` column of the result
+        table must contain the primary keys of the objects from the input
+        table and a ``result`` column, corresponding to the endpoint's return value.
 
     Example:
 

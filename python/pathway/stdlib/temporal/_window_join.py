@@ -817,7 +817,7 @@ def window_join_right(
         left_instance/right_instance: optional arguments describing partitioning of the data into separate instances
 
     Returns:
-        WindowJoinResult: a result of the window join. A method `.select()`
+        WindowJoinResult: a result of the window join. A method ``.select()``
         can be called on it to extract relevant columns from the result of a join.
 
     Examples:
