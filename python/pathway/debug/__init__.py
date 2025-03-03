@@ -23,7 +23,6 @@ import itertools
 import re
 from collections.abc import Iterable
 from os import PathLike
-from typing import Any
 from warnings import warn
 
 import pandas as pd
@@ -289,11 +288,10 @@ def table_to_pandas(table: Table, *, include_id: bool = True):
     for name in columns:
         dtype = _dtype_to_pandas(table.schema.typehints()[name])
         if include_id:
-            vals: Any = columns[name]
+            series = pd.Series(columns[name], dtype=dtype)
         else:
-            # we need to remove keys, otherwise pandas will use them to create index
-            vals = columns[name].values()
-        series = pd.Series(vals, dtype=dtype)
+            # we need to remove original keys, otherwise pandas will use them to create index
+            series = pd.Series(list(columns[name].values()), dtype=dtype)
         series_dict[name] = series
     index = keys if include_id else None
     res = pd.DataFrame(series_dict, index=index)

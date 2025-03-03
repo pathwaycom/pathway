@@ -6722,3 +6722,18 @@ def test_table_to_pandas_without_id():
     df = table_to_pandas(t, include_id=False)
     expected = pd.DataFrame({"a": [3, 6, 7]})
     assert all(df == expected)
+
+
+def test_table_to_pandas_without_id_optional():
+    t = T(
+        """
+      | a
+    1 | 3
+    2 |
+    3 | 7
+    """
+    )
+
+    df = table_to_pandas(t, include_id=False)
+    expected = pd.DataFrame({"a": [3, None, 7]})
+    assert all(df == expected)
