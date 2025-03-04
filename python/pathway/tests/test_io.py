@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import pickle
+import re
 import socket
 import sqlite3
 import sys
@@ -15,6 +16,7 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 import yaml
 from dateutil import tz
@@ -3963,3 +3965,113 @@ def test_deltalake_partition_columns_unknown(tmp_path: pathlib.Path):
         match="The suggested partition column <table1>.v doesn't belong to the table *",
     ):
         pw.io.deltalake.write(table_1, output_path, partition_columns=[table_2.v])
+
+
+@only_with_license_key
+def test_deltalake_schema_mismatch(tmp_path: pathlib.Path):
+    data_1 = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    data_2 = """
+        k | vv
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    data_3 = """
+        k | v
+        1 | 1
+        2 | 2
+        3 | 3
+    """
+    input_path_1 = tmp_path / "input_1.csv"
+    input_path_2 = tmp_path / "input_2.csv"
+    input_path_3 = tmp_path / "input_3.csv"
+    output_path = tmp_path / "output"
+    write_csv(input_path_1, data_1)
+    write_csv(input_path_2, data_2)
+    write_csv(input_path_3, data_3)
+
+    class InputSchema_1(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(input_path_1, schema=InputSchema_1, mode="static")
+    pw.io.deltalake.write(table, output_path)
+    run_all()
+
+    class InputSchema_2(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        vv: str
+
+    G.clear()
+    table = pw.io.csv.read(input_path_2, schema=InputSchema_2, mode="static")
+    pw.io.deltalake.write(table, output_path)
+    expected_message = (
+        "Unable to create DeltaTable writer: "
+        "delta table schema mismatch: "
+        'Fields in the provided schema that aren\'t present in the existing table: ["vv"]; '
+        'Fields in the existing table that aren\'t present in the provided schema: ["v"]'
+    )
+    with pytest.raises(TypeError, match=re.escape(expected_message)):
+        run_all()
+
+    class InputSchema_3(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: int
+
+    G.clear()
+    table = pw.io.csv.read(input_path_3, schema=InputSchema_3, mode="static")
+    pw.io.deltalake.write(table, output_path)
+    expected_message = (
+        "Unable to create DeltaTable writer: "
+        "delta table schema mismatch: "
+        'Fields with mismatching types: [field "v": data type differs (existing table=string, schema=long)]'
+    )
+    with pytest.raises(TypeError, match=re.escape(expected_message)):
+        run_all()
+
+
+@only_with_license_key
+def test_deltalake_schema_mismatch_with_optionality_and_metadata(
+    tmp_path: pathlib.Path,
+):
+    data = """
+        k | v
+        1 | one
+        2 | two
+        3 | three
+    """
+    input_path = tmp_path / "input.csv"
+    lake_path = tmp_path / "output"
+    write_csv(input_path, data)
+
+    lake_initial = [{"k": 0, "v": "zero", "time": 0, "diff": 1}]
+    df = pd.DataFrame(lake_initial).set_index("k")
+    schema = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field("v", pa.string(), nullable=True, metadata={"description": "test"}),
+            pa.field("time", pa.int64(), nullable=False),
+            pa.field("diff", pa.int64(), nullable=False),
+        ]
+    )
+    write_deltalake(lake_path, df, schema=schema)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, lake_path)
+    expected_message = (
+        "Unable to create DeltaTable writer: "
+        "delta table schema mismatch: "
+        'Fields with mismatching types: [field "v": nullability differs (existing table=true, schema=false)'
+        ', metadata differs (existing table={"description": String("test")}, schema={})]'
+    )
+    with pytest.raises(TypeError, match=re.escape(expected_message)):
+        run_all()

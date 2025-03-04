@@ -45,6 +45,7 @@ hyper = { version = "0.14", features = ["server"] }
 iceberg = "0.4.0"
 iceberg-catalog-rest = "0.4.0"
 id-arena = "2.2.1"
+indexmap = "2.7.1"
 itertools = "0.14.0"
 jemallocator = { version = "0.5.4", features = ["stats", "disable_initial_exec_tls"] }
 jmespath = "0.3.0"

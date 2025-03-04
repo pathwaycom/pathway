@@ -323,7 +323,7 @@ dependencies = [
  "arrow-schema",
  "chrono",
  "half",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "lexical-core",
  "num",
  "serde",
@@ -1146,7 +1146,7 @@ dependencies = [
  "base64 0.13.1",
  "bitvec",
  "hex",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "js-sys",
  "once_cell",
  "rand",
@@ -1798,7 +1798,7 @@ dependencies = [
  "arrow-schema",
  "half",
  "hashbrown 0.14.5",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "libc",
  "log",
  "object_store",
@@ -1859,7 +1859,7 @@ dependencies = [
  "datafusion-functions-aggregate-common",
  "datafusion-functions-window-common",
  "datafusion-physical-expr-common",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "paste",
  "recursive",
  "serde_json",
@@ -2028,7 +2028,7 @@ dependencies = [
  "datafusion-common",
  "datafusion-expr",
  "datafusion-physical-expr",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "itertools 0.13.0",
  "log",
  "recursive",
@@ -2054,7 +2054,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "half",
  "hashbrown 0.14.5",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "itertools 0.13.0",
  "log",
  "paste",
@@ -2116,7 +2116,7 @@ dependencies = [
  "futures",
  "half",
  "hashbrown 0.14.5",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "itertools 0.13.0",
  "log",
  "parking_lot",
@@ -2163,7 +2163,7 @@ dependencies = [
  "bigdecimal",
  "datafusion-common",
  "datafusion-expr",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "log",
  "recursive",
  "regex",
@@ -2189,7 +2189,7 @@ dependencies = [
  "delta_kernel_derive",
  "fix-hidden-lifetime-bug",
  "futures",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "itertools 0.13.0",
  "object_store",
  "parquet",
@@ -2294,7 +2294,7 @@ dependencies = [
  "fix-hidden-lifetime-bug",
  "futures",
  "hashbrown 0.15.2",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "itertools 0.14.0",
  "lazy_static",
  "libc",
@@ -2933,7 +2933,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "http 0.2.12",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "slab",
  "tokio",
  "tokio-util",
@@ -2952,7 +2952,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "http 1.1.0",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "slab",
  "tokio",
  "tokio-util",
@@ -3584,12 +3584,12 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.5.0"
+version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68b900aa2f7301e21c36462b170ee99994de34dff39a4a6a528e80e7376d07e5"
+checksum = "8c9c992b02b5b4c94ea26e32fe5bccb7aa7d9f390ab5c1221ff895bc7ea8b652"
 dependencies = [
  "equivalent",
- "hashbrown 0.14.5",
+ "hashbrown 0.15.2",
  "serde",
 ]
 
@@ -4860,6 +4860,7 @@ dependencies = [
  "iceberg",
  "iceberg-catalog-rest",
  "id-arena",
+ "indexmap 2.7.1",
  "itertools 0.14.0",
  "jemallocator",
  "jmespath",
@@ -4940,7 +4941,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
 ]
 
 [[package]]
@@ -6157,7 +6158,7 @@ version = "1.0.136"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "336a0c23cf42a38d9eaa7cd22c7040d04e1228a19a933890805ffd00a16437d2"
 dependencies = [
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "itoa",
  "memchr",
  "ryu",
@@ -6206,7 +6207,7 @@ dependencies = [
  "chrono",
  "hex",
  "indexmap 1.9.3",
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "serde",
  "serde_derive",
  "serde_json",
@@ -6366,7 +6367,7 @@ version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03c3c6b7927ffe7ecaa769ee0e3994da3b8cafc8f444578982c83ecb161af917"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.96",
@@ -7094,7 +7095,7 @@ version = "0.22.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ae48d6208a266e853d946088ed816055e556cc6028c5e8e2b84d9fa5dd7c7f5"
 dependencies = [
- "indexmap 2.5.0",
+ "indexmap 2.7.1",
  "toml_datetime",
  "winnow",
 ]

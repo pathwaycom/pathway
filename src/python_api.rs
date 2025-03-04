@@ -85,7 +85,7 @@ use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, NatsReader, NatsWriter, NullWriter,
     ObjectDownloader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, ReadError,
-    ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, Writer,
+    ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, WriteError, Writer,
 };
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
@@ -5142,7 +5142,13 @@ impl DataStorage {
             self.delta_storage_options(py)?,
             partition_columns,
         )
-        .map_err(|e| PyIOError::new_err(format!("Unable to create DeltaTable writer: {e}")))?;
+        .map_err(|e| {
+            let error_text = format!("Unable to create DeltaTable writer: {e}");
+            match e {
+                WriteError::DeltaTableSchemaMismatch(_) => PyTypeError::new_err(error_text),
+                _ => PyIOError::new_err(error_text),
+            }
+        })?;
         let writer = LakeWriter::new(
             Box::new(batch_writer),
             &value_fields,

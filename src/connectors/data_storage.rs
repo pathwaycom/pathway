@@ -81,7 +81,9 @@ use rusqlite::Error as SqliteError;
 use s3::bucket::Bucket as S3Bucket;
 use serde::{Deserialize, Serialize};
 
-pub use super::data_lake::delta::{DeltaTableReader, ObjectDownloader};
+pub use super::data_lake::delta::{
+    DeltaTableReader, ObjectDownloader, SchemaMismatchDetails as DeltaSchemaMismatchDetails,
+};
 pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 
@@ -623,6 +625,9 @@ pub enum WriteError {
 
     #[error("dynamic topic name is not a string field: {0}")]
     DynamicTopicIsNotAString(Value),
+
+    #[error("delta table schema mismatch: {0}")]
+    DeltaTableSchemaMismatch(DeltaSchemaMismatchDetails),
 }
 
 pub trait Writer: Send {

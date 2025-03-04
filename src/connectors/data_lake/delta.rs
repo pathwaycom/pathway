@@ -1,6 +1,7 @@
 use log::{info, warn};
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -23,6 +24,8 @@ use deltalake::protocol::SaveMode as DeltaTableSaveMode;
 use deltalake::table::PeekCommit as DeltaLakePeekCommit;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter as DTRecordBatchWriter};
 use deltalake::{open_table_with_storage_options as open_delta_table, DeltaTable, TableProperty};
+use indexmap::IndexMap;
+use itertools::Itertools;
 use s3::bucket::Bucket as S3Bucket;
 use tempfile::tempfile;
 
@@ -41,6 +44,83 @@ use crate::engine::Type;
 use crate::persistence::frontier::OffsetAntichain;
 use crate::python_api::ValueField;
 use crate::timestamp::current_unix_timestamp_ms;
+
+#[derive(Debug)]
+pub struct FieldMismatchDetails {
+    schema_field: DeltaTableStructField,
+    user_field: DeltaTableStructField,
+}
+
+impl fmt::Display for FieldMismatchDetails {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut error_parts = Vec::new();
+        if self.schema_field.data_type != self.user_field.data_type {
+            let error_part = format!(
+                "data type differs (existing table={}, schema={})",
+                self.schema_field.data_type, self.user_field.data_type
+            );
+            error_parts.push(error_part);
+        }
+        if self.schema_field.nullable != self.user_field.nullable {
+            let error_part = format!(
+                "nullability differs (existing table={}, schema={})",
+                self.schema_field.nullable, self.user_field.nullable
+            );
+            error_parts.push(error_part);
+        }
+        if self.schema_field.metadata != self.user_field.metadata {
+            let error_part = format!(
+                "metadata differs (existing table={:?}, schema={:?})",
+                self.schema_field.metadata, self.user_field.metadata
+            );
+            error_parts.push(error_part);
+        }
+        write!(
+            f,
+            "field \"{}\": {}",
+            self.schema_field.name,
+            error_parts.join(", ")
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct SchemaMismatchDetails {
+    columns_outside_existing_schema: Vec<String>,
+    columns_missing_in_user_schema: Vec<String>,
+    columns_mismatching_types: Vec<FieldMismatchDetails>,
+}
+
+impl fmt::Display for SchemaMismatchDetails {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut error_parts = Vec::new();
+        if !self.columns_outside_existing_schema.is_empty() {
+            let error_part = format!(
+                "Fields in the provided schema that aren't present in the existing table: {:?}",
+                self.columns_outside_existing_schema
+            );
+            error_parts.push(error_part);
+        }
+        if !self.columns_missing_in_user_schema.is_empty() {
+            let error_part = format!(
+                "Fields in the existing table that aren't present in the provided schema: {:?}",
+                self.columns_missing_in_user_schema
+            );
+            error_parts.push(error_part);
+        }
+        if !self.columns_mismatching_types.is_empty() {
+            let formatted_mismatched_types = self
+                .columns_mismatching_types
+                .iter()
+                .map(|item| format!("{item}"))
+                .join(", ");
+            let error_part =
+                format!("Fields with mismatching types: [{formatted_mismatched_types}]");
+            error_parts.push(error_part);
+        }
+        write!(f, "{}", error_parts.join("; "))
+    }
+}
 
 #[allow(clippy::module_name_repetitions)]
 pub struct DeltaBatchWriter {
@@ -88,7 +168,7 @@ impl DeltaBatchWriter {
                 let builder = DeltaTableCreateBuilder::new()
                     .with_location(path)
                     .with_save_mode(DeltaTableSaveMode::Append)
-                    .with_columns(struct_fields)
+                    .with_columns(struct_fields.clone())
                     .with_configuration_property(TableProperty::AppendOnly, Some("true"))
                     .with_storage_options(storage_options.clone())
                     .with_partition_columns(partition_columns);
@@ -104,7 +184,55 @@ impl DeltaBatchWriter {
                 }
             )?;
 
+        Self::ensure_schema_compliance(&table.schema().unwrap().fields, &struct_fields)?;
         Ok(table)
+    }
+
+    fn ensure_schema_compliance(
+        existing_schema: &IndexMap<String, DeltaTableStructField>,
+        user_schema: &[DeltaTableStructField],
+    ) -> Result<(), WriteError> {
+        let mut columns_outside_existing_schema: Vec<String> = Vec::new();
+        let mut columns_missing_in_user_schema: Vec<String> = Vec::new();
+        let mut columns_mismatching_types = Vec::new();
+        let mut has_error = false;
+
+        let mut defined_user_columns = HashSet::new();
+        for user_column in user_schema {
+            let name = &user_column.name;
+            defined_user_columns.insert(name.to_string());
+            let Some(schema_column) = existing_schema.get(name) else {
+                columns_outside_existing_schema.push(name.to_string());
+                has_error = true;
+                continue;
+            };
+            if user_column != schema_column {
+                columns_mismatching_types.push(FieldMismatchDetails {
+                    schema_field: schema_column.clone(),
+                    user_field: user_column.clone(),
+                });
+                has_error = true;
+            }
+        }
+        for schema_column in existing_schema.keys() {
+            if !defined_user_columns.contains(schema_column) {
+                columns_missing_in_user_schema.push(schema_column.to_string());
+                has_error = true;
+            }
+        }
+
+        if has_error {
+            let schema_mismatch_details = SchemaMismatchDetails {
+                columns_outside_existing_schema,
+                columns_missing_in_user_schema,
+                columns_mismatching_types,
+            };
+            Err(WriteError::DeltaTableSchemaMismatch(
+                schema_mismatch_details,
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn delta_table_type(type_: &Type) -> Result<DeltaTableKernelType, WriteError> {

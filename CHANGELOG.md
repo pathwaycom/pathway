@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - Added `RecursiveSplitter`
+- `pw.io.deltalake.write` now checks that the schema of the target table Delta Table corresponds to the schema of the Pathway table that is sent for the output. If the schemas differ, a human-readable error message is produced.
 
 
 
