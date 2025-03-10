@@ -347,6 +347,12 @@ class DoclingParser(pw.UDF):
             Required if ``parse_images`` is set to ``True``.
         cache_strategy (udfs.CacheStrategy | None): Defines the caching mechanism.
         pdf_pipeline_options (dict): Additional options for the ``DocumentConverter`` from ``docling``.
+            These options will be passed to the ``PdfPipelineOptions`` object and will override the defaults
+            that are dynamically created based on other arguments set in this constructor.
+            See original code for reference:
+            https://github.com/DS4SD/docling/blob/main/docling/datamodel/pipeline_options.py#L288
+            Keep in mind that you can also change lower-level configurations like TableStructureOptions; e.g.:
+            ``pdf_pipeline_options={"table_structure_options": {"mode": "accurate"}}``.
         chunk (bool): Whether to chunk parsed document into smaller structurally coherent parts.
             Under the hood it will use modified ``HybridChunker`` from ``docling`` library.
             Modification has been made to properly handle additional functionality of this class
@@ -382,7 +388,10 @@ class DoclingParser(pw.UDF):
         chunk: bool = True,
     ):
         with optional_imports("xpack-llm-docs"):
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.datamodel.pipeline_options import (
+                PdfPipelineOptions,
+                TableStructureOptions,
+            )
             from docling.document_converter import (
                 DocumentConverter,
                 InputFormat,
@@ -412,24 +421,38 @@ class DoclingParser(pw.UDF):
         self.image_parsing_strategy = image_parsing_strategy
         self.table_parsing_strategy = table_parsing_strategy
 
+        default_table_structure_options = {
+            # whether to perform cell matching; small impact on speed, noticeable impact on quality
+            "do_cell_matching": True,
+            # mode of table parsing; either `fast` or `accurate`; big impact on speed
+            # small impact on quality (might be useful for complex tables though)
+            "mode": "fast",
+        }
         default_pipeline_options = {
+            # whether to parse tables or not; big impact on speed
             "do_table_structure": (
                 True if table_parsing_strategy == "docling" else False
             ),
-            "generate_page_images": True if self.multimodal_llm else False,
+            # whether to make images of pages; small impact on speed
+            "generate_page_images": True if self.multimodal_llm is not None else False,
+            # whether to make images of pictures; small impact on speed
             "generate_picture_images": (
-                True if image_parsing_strategy == "llm" else False
+                True if self.multimodal_llm is not None else False
             ),
-            "generate_table_images": True if table_parsing_strategy == "llm" else False,
-            "do_ocr": True if table_parsing_strategy == "docling" else False,
+            # whether to perform OCR; big impact on speed
+            "do_ocr": False,
+            # scale of images; small impact on speed
             "images_scale": 2,
         }
 
         pipeline_options = PdfPipelineOptions(
             **(default_pipeline_options | pdf_pipeline_options)
         )
-        pipeline_options.table_structure_options.do_cell_matching = (
-            True if table_parsing_strategy == "docling" else False
+        pipeline_options.table_structure_options = TableStructureOptions(
+            **(
+                default_table_structure_options
+                | pdf_pipeline_options.get("table_structure_options", {})
+            )
         )
 
         # actual docling converter
