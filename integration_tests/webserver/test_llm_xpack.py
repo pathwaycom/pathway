@@ -606,7 +606,7 @@ def test_rag_client(port: int):
 
         for iter in range(retries):
             try:
-                docs = client.pw_list_documents()
+                docs = client.list_documents()
                 if docs and len(docs) >= EXPECTED_DOCS_COUNT:
                     return True
             except ConnectionError as conn_err:
@@ -625,15 +625,15 @@ def test_rag_client(port: int):
 
         wait_for_start(client)
 
-        response = client.pw_ai_answer("prompt")
+        response = client.answer("prompt")
 
         assert isinstance(response, dict)
         assert response.get("context_docs") is None
 
-        response = client.pw_ai_answer("prompt", return_context_docs=True)
+        response = client.answer("prompt", return_context_docs=True)
         assert response["context_docs"]
 
-        response = client.pw_ai_answer(
+        response = client.answer(
             "prompt",
             filters="globmatch(`test_module.py`, path)",
             return_context_docs=True,

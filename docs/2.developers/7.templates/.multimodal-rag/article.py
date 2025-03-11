@@ -244,8 +244,8 @@ chat = llms.OpenAIChat(
 app_host = "0.0.0.0"
 app_port = 8000
 # _MD_SHOW_parser = parsers.DoclingParser(
-# _MD_SHOW_    table_parsing_strategy="llm", 
-# _MD_SHOW_    image_parsing_strategy="llm", 
+# _MD_SHOW_    table_parsing_strategy="llm",
+# _MD_SHOW_    image_parsing_strategy="llm",
 # _MD_SHOW_    multimodal_llm=chat
 # _MD_SHOW_)
 splitter = splitters.TokenCountSplitter()
@@ -279,7 +279,7 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DefaultCache())
 # #### List Documents
 
 # + id="063pnlvpqB0q"
-# _MD_SHOW_!curl -X 'POST' 'http://0.0.0.0:8000/v1/pw_list_documents' -H 'accept: */*' -H 'Content-Type: application/json'
+# _MD_SHOW_!curl -X 'POST' 'http://0.0.0.0:8000/v2/list_documents' -H 'accept: */*' -H 'Content-Type: application/json'
 
 
 # + [markdown] id="BYNQh0JPGKBA"
@@ -290,7 +290,7 @@ embedder = embedders.OpenAIEmbedder(cache_strategy=DefaultCache())
 # Make changes to the prompt and ask questions to get information from your documents
 
 # + id="RjsA8X0ayRUk" colab={"base_uri": "https://localhost:8080/"} outputId="87cbfc92-5832-43a0-f13b-76ebb6890ea2"
-# _MD_SHOW_!curl -X 'POST'   'http://0.0.0.0:8000/v1/pw_ai_answer'   -H 'accept: */*'   -H 'Content-Type: application/json'   -d '{"prompt": "How much was Operating lease cost in 2021?"}'
+# _MD_SHOW_!curl -X 'POST'   'http://0.0.0.0:8000/v2/answer'   -H 'accept: */*'   -H 'Content-Type: application/json'   -d '{"prompt": "How much was Operating lease cost in 2021?"}'
 
 
 # + [markdown] id="S3zsr-NGop8B"

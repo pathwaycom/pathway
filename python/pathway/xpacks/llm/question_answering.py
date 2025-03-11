@@ -450,8 +450,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
     @pw.table_transformer
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
-        """Main function for RAG applications that answer questions
-        based on available information."""
+        """Answer a question based on the available information."""
 
         pw_ai_results = pw_ai_queries + self.indexer.retrieve_query(
             pw_ai_queries.select(
@@ -951,13 +950,13 @@ class RAGClient:
         """
         return self.index_client.get_vectorstore_statistics()
 
-    def pw_ai_answer(
+    def answer(
         self,
         prompt: str,
         filters: str | None = None,
         model: str | None = None,
         return_context_docs: bool | None = None,
-    ):
+    ) -> dict:
         """
         Return RAG answer based on a given prompt and optional filter.
 
@@ -967,7 +966,7 @@ class RAGClient:
                 means there will be no filter.
             model: Optional LLM model. If ``None``, app default will be used by the server.
         """
-        api_url = f"{self.url}/v1/pw_ai_answer"
+        api_url = f"{self.url}/v2/answer"
         payload = {
             "prompt": prompt,
         }
@@ -984,7 +983,14 @@ class RAGClient:
         response = send_post_request(api_url, payload, self.additional_headers)
         return response
 
-    def pw_ai_summary(
+    def pw_ai_answer(self, *args, **kwargs) -> dict:
+        warn(
+            "`pw_ai_answer` is being deprecated, please use `answer` instead.",
+            DeprecationWarning,
+        )
+        return self.answer(*args, **kwargs)
+
+    def summarize(
         self,
         text_list: list[str],
         model: str | None = None,
@@ -996,7 +1002,7 @@ class RAGClient:
             text_list: List of texts to summarize.
             model: Optional LLM model. If ``None``, app default will be used by the server.
         """
-        api_url = f"{self.url}/v1/pw_ai_summary"
+        api_url = f"{self.url}/v2/summarize"
         payload: dict = {
             "text_list": text_list,
         }
@@ -1007,18 +1013,23 @@ class RAGClient:
         response = send_post_request(api_url, payload, self.additional_headers)
         return response
 
-    def pw_list_documents(
-        self, filters: str | None = None, keys: list[str] | None = ["path"]
-    ):
+    def pw_ai_summary(self, *args, **kwargs):
+        warn(
+            "`pw_ai_summary` is being deprecated, please use `summarize` instead.",
+            DeprecationWarning,
+        )
+        return self.summarize(*args, **kwargs)
+
+    def list_documents(self, filters: str | None = None, keys: list[str] = ["path"]):
         """
-        List indexed documents from the vector store with optional filtering.
+        List indexed documents from the document store with optional filtering.
 
         Args:
             filters: Optional metadata filter for the documents.
             keys: List of metadata keys to be included in the response.
                 Defaults to ``["path"]``. Setting to ``None`` will retrieve all available metadata.
         """
-        api_url = f"{self.url}/v1/pw_list_documents"
+        api_url = f"{self.url}/v2/list_documents"
         payload = {}
 
         if filters:
@@ -1036,3 +1047,10 @@ class RAGClient:
         else:
             result = []
         return result
+
+    def pw_list_documents(self, *args, **kwargs):
+        warn(
+            "`pw_list_documents` is being deprecated, please use `list_documents` instead.",
+            DeprecationWarning,
+        )
+        return self.list_documents(*args, **kwargs)

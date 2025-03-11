@@ -153,7 +153,7 @@ class RagConnector:
         model=None,
         return_context_docs: bool | None = True,
     ) -> dict:
-        api_url = f"{self.base_url}/v1/pw_ai_answer"
+        api_url = f"{self.base_url}/v2/answer"
         payload = {
             "prompt": prompt,
         }
@@ -172,7 +172,7 @@ class RagConnector:
         return response
 
     def pw_list_documents(self, filter=None, keys=["path"]):
-        api_url = f"{self.base_url}/v1/pw_list_documents"
+        api_url = f"{self.base_url}/v2/list_documents"
         payload = {}
 
         if filter:
@@ -185,7 +185,7 @@ class RagConnector:
 
 # TODO: switch to this, replace asyncio.to_thread in evaluator
 class ARAGClient(RAGClient):
-    async def a_pw_list_documents(
+    async def a_list_documents(
         self, filters: str | None = None, keys: list[str] = ["path"]
     ):
         """
@@ -196,7 +196,7 @@ class ARAGClient(RAGClient):
             - keys: List of metadata keys to be included in the response.
                 Defaults to ``["path"]``. Setting to ``None`` will retrieve all available metadata.
         """
-        api_url = f"{self.url}/v1/pw_list_documents"
+        api_url = f"{self.url}/v2/list_documents"
         payload = {}
 
         if filters:
@@ -215,7 +215,7 @@ class ARAGClient(RAGClient):
             result = []
         return result
 
-    async def pw_ai_answer(
+    async def a_answer(
         self,
         prompt: str,
         filters: str | None = None,
@@ -231,7 +231,7 @@ class ARAGClient(RAGClient):
                 means there will be no filter.
             - model: Optional LLM model. If ``None``, app default will be used by the server.
         """
-        api_url = f"{self.url}/v1/pw_ai_answer"
+        api_url = f"{self.url}/v2/answer"
         payload = {
             "prompt": prompt,
         }

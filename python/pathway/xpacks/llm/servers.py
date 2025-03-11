@@ -145,6 +145,8 @@ class QARestServer(BaseRestServer):
     - ``/v1/statistics`` which is answered using ``statistics`` method,
     - ``/v1/pw_list_documents`` which is answered using ``list_documents`` method,
     - ``/v1/pw_ai_answer`` which is answered using ``answer_query`` method,
+    - ``/v2/list_documents`` which is answered using ``list_documents`` method,
+    - ``/v2/answer`` which is answered using ``answer_query`` method,
 
     Args:
         host: host on which server will run
@@ -188,6 +190,18 @@ class QARestServer(BaseRestServer):
             rag_question_answerer.answer_query,
             **rest_kwargs,
         )
+        self.serve(
+            "/v2/list_documents",
+            rag_question_answerer.InputsQuerySchema,
+            rag_question_answerer.list_documents,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v2/answer",
+            rag_question_answerer.AnswerQuerySchema,
+            rag_question_answerer.answer_query,
+            **rest_kwargs,
+        )
 
 
 class QASummaryRestServer(QARestServer):
@@ -199,6 +213,9 @@ class QASummaryRestServer(QARestServer):
     - ``/v1/pw_list_documents`` which is answered using ``list_documents`` method,
     - ``/v1/pw_ai_answer`` which is answered using ``answer`` method,
     - ``/v1/pw_ai_summary`` which is answered using ``summarize_query`` method.
+    - ``/v2/list_documents`` which is answered using ``list_documents`` method,
+    - ``/v2/answer`` which is answered using ``answer_query`` method,
+    - ``/v2/summarize`` which is answered using ``summarize_query`` method.
 
     Args:
         host: host on which server will run
@@ -219,6 +236,12 @@ class QASummaryRestServer(QARestServer):
 
         self.serve(
             "/v1/pw_ai_summary",
+            rag_question_answerer.SummarizeQuerySchema,
+            rag_question_answerer.summarize_query,
+            **rest_kwargs,
+        )
+        self.serve(
+            "/v2/summarize",
             rag_question_answerer.SummarizeQuerySchema,
             rag_question_answerer.summarize_query,
             **rest_kwargs,

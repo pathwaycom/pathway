@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.21.0] - 2025-04-11
+
+### Changed
+- **BREAKING**: Updated endpoints in `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer`:
+  - Deprecated: `/v1/pw_list_documents`, `/v1/pw_ai_answer`
+  - New: `/v2/list_documents`, `/v2/answer`
+- RAG methods under the `pw.xpacks.llm.question_answering.RAGClient` are re-named, and they now use the new endpoints. Old methods are deprecated and will be removed in the future.
+  - `pw_ai_summary` -> `summarize`
+  - `pw_ai_answer` -> `answer`
+  - `pw_list_documents` -> `list_documents`
+  
+
 ## [0.20.1] - 2025-03-07
 
 ### Added
