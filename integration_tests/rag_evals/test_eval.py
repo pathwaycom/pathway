@@ -1,11 +1,11 @@
 import logging
 import os
-import sys
 import time
 
 from connector import RagConnector
 from dotenv import load_dotenv
 from experiment import run_eval_experiment
+from logging_utils import setup_logging
 from pydantic import BaseModel, ConfigDict, InstanceOf, computed_field
 
 import pathway as pw
@@ -23,36 +23,8 @@ TEST_TIMEOUT: float = 60.0 * 20  # 20 minutes TODO: I think this doesn't work cu
 
 LOCAL_RUN: bool = os.environ.get("RUN_MODE", "CI") == "LOCAL"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 
-console_handler = logging.StreamHandler(sys.stderr)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(
-    logging.Formatter(
-        "%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
-)
-
-
-log_file = (
-    "/integration_tests/rag_integration_test_cache/rag_eval_logs.txt"
-    if not LOCAL_RUN
-    else "rag_eval_logs.txt"
-)
-file_handler = logging.FileHandler(log_file)
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(
-    logging.Formatter(
-        "%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
-)
-
-logging.getLogger().addHandler(console_handler)
-logging.getLogger().addHandler(file_handler)
+setup_logging(LOCAL_RUN)
 
 
 class App(BaseModel):
