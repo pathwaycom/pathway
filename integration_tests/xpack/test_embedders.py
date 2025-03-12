@@ -7,7 +7,9 @@ SHORT_TEXT = "A"
 LONG_TEXT = "B" * 50_000
 
 
-@pytest.mark.parametrize("text", [SHORT_TEXT, LONG_TEXT])
+@pytest.mark.parametrize(
+    "text", [SHORT_TEXT, LONG_TEXT], ids=["short_text", "long_text"]
+)
 @pytest.mark.parametrize(
     "model", [None, "text-embedding-ada-002", "text-embedding-3-small"]
 )
