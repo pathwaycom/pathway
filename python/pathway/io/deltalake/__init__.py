@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from os import PathLike, fspath
 from typing import Any, Iterable
+
+from deltalake import DeltaTable
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import (
@@ -14,7 +17,7 @@ from pathway.internals._io_helpers import (
 from pathway.internals.config import _check_entitlements
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
-from pathway.internals.schema import Schema
+from pathway.internals.schema import Schema, schema_from_dict
 from pathway.internals.table import Table
 from pathway.internals.table_io import table_from_datasource
 from pathway.internals.trace import trace_user_frame
@@ -26,6 +29,8 @@ from pathway.io._utils import (
 )
 from pathway.io.minio import MinIOSettings
 from pathway.io.s3 import DigitalOceanS3Settings, WasabiS3Settings
+
+_PATHWAY_COLUMN_META_FIELD = "pathway.column.metadata"
 
 
 def _engine_s3_connection_settings(
@@ -43,7 +48,7 @@ def _engine_s3_connection_settings(
 @trace_user_frame
 def read(
     uri: str | PathLike,
-    schema: type[Schema],
+    schema: type[Schema] | None = None,
     *,
     mode: str = "streaming",
     s3_connection_settings: (
@@ -65,7 +70,10 @@ def read(
 
     Args:
         uri: URI of the Delta Lake source that must be read.
-        schema: Schema of the resulting table.
+        schema: Defines the schema of the resulting table. You can omit this parameter
+            if the table is created using ``pw.io.deltalake.write``, as the schema
+            (excluding the special ``time`` and ``diff`` fields) will then be automatically
+            stored in the Delta Table's columns metadata.
         mode: Denotes how the engine polls the new data from the source. Currently
             ``"streaming"`` and ``"static"`` are supported. If set to ``"streaming"``
             the engine will wait for the updates in the specified lake. It will track
@@ -142,8 +150,6 @@ def read(
     )
 
     uri = fspath(uri)
-    schema, api_schema = read_schema(schema)
-
     data_storage = api.DataStorage(
         storage_type="deltalake",
         path=uri,
@@ -153,6 +159,14 @@ def read(
         ),
         start_from_timestamp_ms=start_from_timestamp_ms,
     )
+    if schema is None:
+        try:
+            storage_options = data_storage.delta_s3_storage_options()
+        except ValueError:
+            storage_options = {}
+        schema = _read_table_schema_from_metadata(uri, storage_options)
+    schema, api_schema = read_schema(schema)
+
     data_format = api.DataFormat(
         format_type="transparent",
         **api_schema,
@@ -173,6 +187,25 @@ def read(
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
+
+
+def _read_table_schema_from_metadata(
+    uri: str, storage_options: dict[str, str] | None
+) -> type[Schema]:
+    table = DeltaTable(uri, storage_options=storage_options)
+    schema = table.schema()
+    table_schema = {}
+    for field in schema.fields:
+        name = field.name
+        metadata = field.metadata.get(_PATHWAY_COLUMN_META_FIELD)
+        if metadata is None:
+            continue
+        table_schema[name] = json.loads(metadata)
+    if len(table_schema) == 0:
+        raise ValueError(
+            "No Pathway table schema is stored in the given Delta table's metadata"
+        )
+    return schema_from_dict(table_schema)
 
 
 @check_arg_types
@@ -198,9 +231,12 @@ def write(
     are for S3 storage, while all other paths use the filesystem.
 
     If the specified storage location doesn't exist, it will be created. The schema of
-    the new table is inferred from the ``table``'s schema. The output table must include
-    two additional integer columns: ``time``, representing the computation minibatch,
-    and ``diff``, indicating the type of change (``1`` for row addition and ``-1`` for row deletion).
+    the new table is inferred from the ``table``'s schema. Additionally, when the connector
+    creates a table, its Pathway schema is stored in the column metadata. This allows the
+    table to be read using ``pw.io.deltalake.read`` without explicitly specifying a ``schema``.
+    The output table must include two additional integer columns: ``time``, representing
+    the computation minibatch, and ``diff``, indicating the type of change
+    (``1`` for row addition and ``-1`` for row deletion).
 
     Args:
         table: Table to be written.

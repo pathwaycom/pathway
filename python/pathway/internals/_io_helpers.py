@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import boto3
 import boto3.session
 
@@ -129,13 +131,15 @@ def is_s3_path(path: str) -> bool:
 
 def _format_output_value_fields(table: Table) -> list[api.ValueField]:
     value_fields = []
-    for column_name, column_data in table._columns.items():
-        value_fields.append(
-            api.ValueField(
-                column_name,
-                column_data.dtype.to_engine(),
-            )
+    for column_name, column_data in table.schema.columns().items():
+        value_field = api.ValueField(
+            column_name,
+            column_data.dtype.to_engine(),
         )
+        value_field.set_metadata(
+            json.dumps(column_data.to_json_serializable_dict(), sort_keys=True)
+        )
+        value_fields.append(value_field)
 
     return value_fields
 

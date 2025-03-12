@@ -34,6 +34,7 @@ fn run_single_column_save(type_: Type, values: &[Value]) -> eyre::Result<()> {
         name: "field".to_string(),
         type_: Type::Optional(type_.clone().into()),
         default: None,
+        metadata: None,
     }];
 
     let batch_writer = DeltaBatchWriter::new(

@@ -8,6 +8,18 @@ from pathway.tests.utils import get_aws_s3_settings, get_minio_settings
 
 MINIO_BUCKET_NAME = "minio-integrationtest"
 S3_BUCKET_NAME = "aws-integrationtest"
+AWS_S3_SETTINGS = pw.io.s3.AwsS3Settings(
+    access_key=os.environ["AWS_S3_ACCESS_KEY"],
+    secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
+    bucket_name=S3_BUCKET_NAME,
+    region="eu-central-1",
+)
+MINIO_S3_SETTINGS = pw.io.minio.MinIOSettings(
+    bucket_name=MINIO_BUCKET_NAME,
+    access_key=os.environ["MINIO_S3_ACCESS_KEY"],
+    secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
+    endpoint="minio-api.deploys.pathway.com",
+)
 
 
 def put_aws_object(path, contents):

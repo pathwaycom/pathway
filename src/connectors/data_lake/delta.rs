@@ -30,7 +30,8 @@ use s3::bucket::Bucket as S3Bucket;
 use tempfile::tempfile;
 
 use super::{
-    parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, SPECIAL_OUTPUT_FIELDS,
+    parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, PATHWAY_COLUMN_META_FIELD,
+    SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::parse_bool_advanced;
@@ -148,11 +149,18 @@ impl DeltaBatchWriter {
     ) -> Result<DeltaTable, WriteError> {
         let mut struct_fields = Vec::new();
         for field in schema_fields {
-            struct_fields.push(DeltaTableStructField::new(
-                field.name.clone(),
-                Self::delta_table_type(&field.type_)?,
-                field.type_.can_be_none(),
-            ));
+            let mut metadata = Vec::new();
+            if let Some(field_metadata) = &field.metadata {
+                metadata.push((PATHWAY_COLUMN_META_FIELD, field_metadata.to_string()));
+            }
+            struct_fields.push(
+                DeltaTableStructField::new(
+                    field.name.clone(),
+                    Self::delta_table_type(&field.type_)?,
+                    field.type_.can_be_none(),
+                )
+                .with_metadata(metadata),
+            );
         }
         for (field, type_) in SPECIAL_OUTPUT_FIELDS {
             struct_fields.push(DeltaTableStructField::new(

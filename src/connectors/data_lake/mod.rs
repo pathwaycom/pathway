@@ -42,6 +42,7 @@ const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [
     (SPECIAL_FIELD_TIME, Type::Int),
     (SPECIAL_FIELD_DIFF, Type::Int),
 ];
+const PATHWAY_COLUMN_META_FIELD: &str = "pathway.column.metadata";
 
 pub struct LakeWriterSettings {
     pub use_64bit_size_type: bool,

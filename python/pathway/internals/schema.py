@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import dataclasses
 import itertools
@@ -17,7 +18,7 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 
-from pathway.internals import dtype as dt, trace
+from pathway.internals import api, dtype as dt, trace
 from pathway.internals.column_properties import ColumnProperties
 from pathway.internals.helpers import StableSet
 from pathway.internals.runtime_type_check import check_arg_types
@@ -311,6 +312,19 @@ class SchemaMetaclass(type):
 
     def column_names(self) -> list[str]:
         return list(self.keys())
+
+    def columns_to_json_serializable_dict(self) -> dict:
+        columns = {}
+        for column_name, column_schema in self.columns().items():
+            columns[column_name] = column_schema.to_json_serializable_dict()
+        return columns
+
+    def to_json_serializable_dict(self) -> dict:
+        """
+        Serialize schema in a JSON-serializable dict that can be further parsed back
+        with `schema_from_dict`.
+        """
+        return {"columns": self.columns_to_json_serializable_dict()}
 
     @property
     def _id_dtype(self):
@@ -656,7 +670,7 @@ class ColumnSchema:
     example: Any = None  # used in OpenAPI schema autogeneration
 
     def has_default_value(self) -> bool:
-        return self.default_value != _no_default_value_marker
+        return not isinstance(self.default_value, _Undefined)
 
     def to_definition(self) -> ColumnDefinition:
         return ColumnDefinition(
@@ -668,6 +682,26 @@ class ColumnSchema:
             description=self.description,
             example=self.example,
         )
+
+    def to_json_serializable_dict(self) -> dict:
+        result = {
+            "dtype": self.dtype.to_dict(),
+            "name": self.name,
+            "primary_key": self.primary_key,
+            "append_only": self.append_only,
+            "description": self.description,
+        }
+        if not isinstance(self.default_value, _Undefined):
+            default_value_base64 = base64.b64encode(
+                api.serialize(self.default_value)
+            ).decode("UTF-8")
+            result["_serialized_default_value"] = default_value_base64
+        if self.example is not None:
+            example_base64 = base64.b64encode(api.serialize(self.example)).decode(
+                "UTF-8"
+            )
+            result["_serialized_example"] = example_base64
+        return result
 
     @property
     def typehint(self):
@@ -701,6 +735,8 @@ def column_definition(
     append_only: bool | None = None,
     description: str | None = None,
     example: Any = None,
+    _serialized_default_value: Any | None = None,
+    _serialized_example: Any | None = None,
 ) -> Any:  # Return any so that mypy does not complain
     """Creates column definition
 
@@ -715,6 +751,10 @@ def column_definition(
             will be deduced from the attribute name.
         append_only: whether column is append-only. if unspecified, defaults to False
             or to value specified at the schema definition level
+        description: human-readable description for the column. Used by HTTP input
+            connector in automated OpenAPI schema generation.
+        example: example of the column value. Used by HTTP input connector in automated
+            OpenAPI schema generation.
 
     Returns:
         Column definition.
@@ -730,6 +770,19 @@ def column_definition(
     <pathway.Schema types={'key': <class 'int'>, '@timestamp': <class 'str'>, 'data': <class 'str'>}, \
 id_type=pathway.engine.Pointer[int]>
     """
+
+    if _serialized_default_value is not None:
+        if not isinstance(default_value, _Undefined):
+            raise ValueError(
+                "Maximum one of {'default_value', '_serialized_default_value'} must be specified"
+            )
+        default_value = api.deserialize(base64.b64decode(_serialized_default_value))
+    if _serialized_example is not None:
+        if example is not None:
+            raise ValueError(
+                "Maximum one of {'example', '_serialized_example'} must be specified"
+            )
+        example = api.deserialize(base64.b64decode(_serialized_example))
 
     return ColumnDefinition(
         dtype=dt.wrap(dtype) if dtype is not None else None,
@@ -809,6 +862,8 @@ def schema_from_dict(
     def get_dtype(dtype) -> dt.DType:
         if isinstance(dtype, str):
             dtype = locate(dtype)
+        if isinstance(dtype, dict):
+            dtype = dt.parse_dtype_from_dict(dtype)
         return dt.wrap(dtype)
 
     def create_column_definition(entry):

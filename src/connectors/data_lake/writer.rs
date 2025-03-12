@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,7 @@ use deltalake::arrow::datatypes::{
 };
 use ndarray::ArrayD;
 
-use super::LakeWriterSettings;
+use super::{LakeWriterSettings, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS};
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_lake::LakeBatchWriter;
 use crate::connectors::{WriteError, Writer};
@@ -25,8 +26,6 @@ use crate::engine::time::DateTime as EngineDateTime;
 use crate::engine::value::Handle;
 use crate::engine::{Type, Value};
 use crate::python_api::ValueField;
-
-const SPECIAL_OUTPUT_FIELDS: [(&str, Type); 2] = [("time", Type::Int), ("diff", Type::Int)];
 
 #[allow(clippy::module_name_repetitions)]
 pub struct LakeWriter {
@@ -370,11 +369,21 @@ impl LakeWriter {
     ) -> Result<ArrowSchema, WriteError> {
         let mut schema_fields: Vec<ArrowField> = Vec::new();
         for field in value_fields {
-            schema_fields.push(ArrowField::new(
-                field.name.clone(),
-                Self::arrow_data_type(&field.type_, settings)?,
-                field.type_.can_be_none(),
-            ));
+            let mut metadata = HashMap::new();
+            if let Some(field_metadata) = &field.metadata {
+                metadata.insert(
+                    PATHWAY_COLUMN_META_FIELD.to_string(),
+                    field_metadata.to_string(),
+                );
+            }
+            schema_fields.push(
+                ArrowField::new(
+                    field.name.clone(),
+                    Self::arrow_data_type(&field.type_, settings)?,
+                    field.type_.can_be_none(),
+                )
+                .with_metadata(metadata),
+            );
         }
         for (field, type_) in SPECIAL_OUTPUT_FIELDS {
             schema_fields.push(ArrowField::new(

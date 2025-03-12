@@ -28,6 +28,7 @@ from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
 from pathway.io.airbyte.logic import _PathwayAirbyteDestination
+from pathway.io.deltalake import _PATHWAY_COLUMN_META_FIELD
 from pathway.tests.test_persistence import only_with_license_key
 from pathway.tests.utils import (
     AIRBYTE_FAKER_CONNECTION_REL_PATH,
@@ -3283,7 +3284,10 @@ def test_airbyte_local_docker_run(env_vars, tmp_path_with_airbyte_config):
 
 @only_with_license_key
 @pytest.mark.parametrize("has_primary_key", [True, False])
-def test_deltalake_roundtrip(has_primary_key: bool, tmp_path: pathlib.Path):
+@pytest.mark.parametrize("use_stored_schema", [True, False])
+def test_deltalake_roundtrip(
+    has_primary_key: bool, use_stored_schema: bool, tmp_path: pathlib.Path
+):
     data = """
         k | v
         1 | foo
@@ -3304,7 +3308,10 @@ def test_deltalake_roundtrip(has_primary_key: bool, tmp_path: pathlib.Path):
     run_all()
 
     G.clear()
-    table = pw.io.deltalake.read(str(lake_path), schema=InputSchema, mode="static")
+    if use_stored_schema:
+        table = pw.io.deltalake.read(lake_path, mode="static")
+    else:
+        table = pw.io.deltalake.read(lake_path, schema=InputSchema, mode="static")
     pw.io.csv.write(table, output_path)
     run_all()
 
@@ -3636,8 +3643,8 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
         assert data["len"] == 4
 
 
-@pytest.mark.parametrize("data_format", ["delta", "json"])
-@only_with_license_key("data_format", ["delta"])
+@pytest.mark.parametrize("data_format", ["delta", "delta_stored_schema", "json"])
+@only_with_license_key("data_format", ["delta", "delta_stored_schema"])
 def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
     auxiliary_path = tmp_path / "auxiliary-storage"
@@ -3673,7 +3680,7 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
         tuple_data=tuple[bytes, bool],
         list_data=list[str | None],
     )
-    if data_format == "delta":
+    if data_format == "delta" or data_format == "delta_stored_schema":
         pw.io.deltalake.write(table, auxiliary_path)
     elif data_format == "json":
         pw.io.jsonlines.write(table, auxiliary_path)
@@ -3716,6 +3723,8 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
 
     if data_format == "delta":
         table = pw.io.deltalake.read(auxiliary_path, schema=InputSchema, mode="static")
+    elif data_format == "delta_stored_schema":
+        table = pw.io.deltalake.read(auxiliary_path, mode="static")
     elif data_format == "json":
         table = pw.io.jsonlines.read(auxiliary_path, schema=InputSchema, mode="static")
     else:
@@ -4029,7 +4038,7 @@ def test_deltalake_schema_mismatch(tmp_path: pathlib.Path):
     expected_message = (
         "Unable to create DeltaTable writer: "
         "delta table schema mismatch: "
-        'Fields with mismatching types: [field "v": data type differs (existing table=string, schema=long)]'
+        'Fields with mismatching types: [field "v": data type differs (existing table=string, schema=long)'
     )
     with pytest.raises(TypeError, match=re.escape(expected_message)):
         run_all()
@@ -4053,7 +4062,17 @@ def test_deltalake_schema_mismatch_with_optionality_and_metadata(
     df = pd.DataFrame(lake_initial).set_index("k")
     schema = pa.schema(
         [
-            pa.field("k", pa.int64(), nullable=False),
+            pa.field(
+                "k",
+                pa.int64(),
+                nullable=False,
+                metadata={
+                    _PATHWAY_COLUMN_META_FIELD: (
+                        '{"append_only": false, "description": null, "dtype": {"type": "INT"}, '
+                        '"name": "k", "primary_key": true}'
+                    )
+                },
+            ),
             pa.field("v", pa.string(), nullable=True, metadata={"description": "test"}),
             pa.field("time", pa.int64(), nullable=False),
             pa.field("diff", pa.int64(), nullable=False),
@@ -4071,7 +4090,19 @@ def test_deltalake_schema_mismatch_with_optionality_and_metadata(
         "Unable to create DeltaTable writer: "
         "delta table schema mismatch: "
         'Fields with mismatching types: [field "v": nullability differs (existing table=true, schema=false)'
-        ', metadata differs (existing table={"description": String("test")}, schema={})]'
+        ", metadata differs"
     )
     with pytest.raises(TypeError, match=re.escape(expected_message)):
         run_all()
+
+
+def test_deltalake_fails_to_reconstruct_schema(tmp_path: pathlib.Path):
+    data = [{"k": 1, "v": "one"}, {"k": 2, "v": "two"}, {"k": 3, "v": "three"}]
+    df = pd.DataFrame(data).set_index("k")
+    lake_path = tmp_path / "lake"
+    write_deltalake(lake_path, df)
+    with pytest.raises(
+        ValueError,
+        match="No Pathway table schema is stored in the given Delta table's metadata",
+    ):
+        pw.io.deltalake.read(lake_path)

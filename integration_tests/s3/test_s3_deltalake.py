@@ -9,9 +9,14 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 import pathway as pw
-from pathway.tests.utils import CsvLinesNumberChecker, wait_result_with_checker
+from pathway.internals.parse_graph import G
+from pathway.tests.utils import (
+    CsvLinesNumberChecker,
+    wait_result_with_checker,
+    write_csv,
+)
 
-from .base import MINIO_BUCKET_NAME, S3_BUCKET_NAME
+from .base import AWS_S3_SETTINGS, MINIO_BUCKET_NAME, MINIO_S3_SETTINGS, S3_BUCKET_NAME
 
 
 def get_deltalake_connection_options(storage_type):
@@ -56,18 +61,8 @@ def write_deltalake_with_auth(storage_type, s3_path, chunk, **kwargs):
 @pytest.mark.parametrize(
     "credentials",
     [
-        pw.io.s3.AwsS3Settings(
-            access_key=os.environ["AWS_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            bucket_name=S3_BUCKET_NAME,
-            region="eu-central-1",
-        ),
-        pw.io.minio.MinIOSettings(
-            bucket_name=MINIO_BUCKET_NAME,
-            access_key=os.environ["MINIO_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-            endpoint="minio-api.deploys.pathway.com",
-        ),
+        AWS_S3_SETTINGS,
+        MINIO_S3_SETTINGS,
         None,
     ],
 )
@@ -110,18 +105,8 @@ def test_streaming_from_deltalake(credentials, tmp_path, s3_path):
 @pytest.mark.parametrize(
     "credentials",
     [
-        pw.io.s3.AwsS3Settings(
-            access_key=os.environ["AWS_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            bucket_name=S3_BUCKET_NAME,
-            region="eu-central-1",
-        ),
-        pw.io.minio.MinIOSettings(
-            bucket_name=MINIO_BUCKET_NAME,
-            access_key=os.environ["MINIO_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-            endpoint="minio-api.deploys.pathway.com",
-        ),
+        AWS_S3_SETTINGS,
+        MINIO_S3_SETTINGS,
         None,
     ],
 )
@@ -162,18 +147,8 @@ def test_output(credentials, min_commit_frequency, tmp_path, s3_path):
 @pytest.mark.parametrize(
     "credentials",
     [
-        pw.io.s3.AwsS3Settings(
-            access_key=os.environ["AWS_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["AWS_S3_SECRET_ACCESS_KEY"],
-            bucket_name=S3_BUCKET_NAME,
-            region="eu-central-1",
-        ),
-        pw.io.minio.MinIOSettings(
-            bucket_name=MINIO_BUCKET_NAME,
-            access_key=os.environ["MINIO_S3_ACCESS_KEY"],
-            secret_access_key=os.environ["MINIO_S3_SECRET_ACCESS_KEY"],
-            endpoint="minio-api.deploys.pathway.com",
-        ),
+        AWS_S3_SETTINGS,
+        MINIO_S3_SETTINGS,
         None,
     ],
 )
@@ -201,4 +176,46 @@ def test_input(credentials, tmp_path, s3_path):
     pw.run()
 
     final = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    assert final.equals(original)
+
+
+@pytest.mark.parametrize("use_stored_schema", [False, True])
+def test_read_after_write(use_stored_schema, tmp_path, s3_path):
+    data = """
+        k | v
+        1 | foo
+        2 | bar
+        3 | baz
+    """
+    input_path = tmp_path / "input.csv"
+    lake_path = f"s3://{S3_BUCKET_NAME}/{s3_path}/lake"
+    output_path = tmp_path / "output.csv"
+    write_csv(input_path, data)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, lake_path, s3_connection_settings=AWS_S3_SETTINGS)
+    pw.run(monitoring_level=pw.MonitoringLevel.NONE)
+
+    G.clear()
+    if use_stored_schema:
+        table = pw.io.deltalake.read(
+            lake_path, mode="static", s3_connection_settings=AWS_S3_SETTINGS
+        )
+    else:
+        table = pw.io.deltalake.read(
+            lake_path,
+            schema=InputSchema,
+            mode="static",
+            s3_connection_settings=AWS_S3_SETTINGS,
+        )
+
+    pw.io.csv.write(table, output_path)
+    pw.run()
+
+    final = pd.read_csv(output_path, usecols=["k", "v"], index_col=["k"]).sort_index()
+    original = pd.read_csv(input_path, usecols=["k", "v"], index_col=["k"]).sort_index()
     assert final.equals(original)

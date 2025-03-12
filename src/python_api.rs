@@ -3602,6 +3602,14 @@ pub fn unsafe_make_pointer(value: KeyImpl) -> Key {
 }
 
 #[pyfunction]
+#[pyo3(signature = (value), name="serialize")]
+pub fn serialize(py: Python, value: Value) -> PyResult<Py<PyBytes>> {
+    let bytes = bincode::serialize(&value)
+        .map_err(|e| PyValueError::new_err(format!("failed to serialize: {e}")))?;
+    Ok(PyBytes::new_bound(py, &bytes).into())
+}
+
+#[pyfunction]
 #[pyo3(signature = (bytes), name="deserialize")]
 pub fn deserialize(bytes: &[u8]) -> PyResult<Value> {
     let value: Value = bincode::deserialize(bytes)
@@ -4162,6 +4170,8 @@ pub struct ValueField {
     pub type_: Type,
     #[pyo3(get)]
     pub default: Option<Value>,
+    #[pyo3(get)]
+    pub metadata: Option<String>,
 }
 
 impl ValueField {
@@ -4179,11 +4189,17 @@ impl ValueField {
             name,
             type_,
             default: None,
+            metadata: None,
         }
     }
 
     fn set_default(&mut self, ob: &Bound<PyAny>) -> PyResult<()> {
         self.default = Some(extract_value(ob, &self.type_)?);
+        Ok(())
+    }
+
+    fn set_metadata(&mut self, ob: &Bound<PyString>) -> PyResult<()> {
+        self.metadata = Some(ob.extract()?);
         Ok(())
     }
 }
@@ -4298,6 +4314,74 @@ impl DataStorage {
             topic_name_index,
             partition_columns,
         }
+    }
+
+    #[pyo3(signature = ())]
+    fn delta_s3_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
+        let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
+        let s3_settings = self
+            .aws_s3_settings
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err("S3 connection settings weren't specified for S3 data source")
+            })?
+            .borrow(py);
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "True".to_string());
+
+        let virtual_hosted_style_request_flag = {
+            // Virtually hosted-style requests are mutually exclusive with path-style requests
+            if s3_settings.with_path_style {
+                "False".to_string()
+            } else {
+                "True".to_string()
+            }
+        };
+        storage_options.insert(
+            "AWS_VIRTUAL_HOSTED_STYLE_REQUEST".to_string(),
+            virtual_hosted_style_request_flag,
+        );
+        storage_options.insert(
+            "AWS_BUCKET_NAME".to_string(),
+            s3_settings.final_bucket_name(bucket_name.as_deref())?,
+        );
+
+        if let Some(access_key) = &s3_settings.access_key {
+            storage_options.insert("AWS_ACCESS_KEY_ID".to_string(), access_key.to_string());
+        }
+        if let Some(secret_access_key) = &s3_settings.secret_access_key {
+            storage_options.insert(
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                secret_access_key.to_string(),
+            );
+        }
+        if let Some(session_token) = &s3_settings.session_token {
+            storage_options.insert("AWS_SESSION_TOKEN".to_string(), session_token.to_string());
+        }
+        if let Some(profile) = &s3_settings.profile {
+            storage_options.insert("AWS_PROFILE".to_string(), profile.to_string());
+        }
+
+        if let s3::Region::Custom { endpoint, region } = &s3_settings.region {
+            if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
+                storage_options.insert("AWS_ENDPOINT_URL".to_string(), endpoint.to_string());
+            } else {
+                storage_options.insert(
+                    "AWS_ENDPOINT_URL".to_string(),
+                    format!("https://{endpoint}"),
+                );
+            }
+            storage_options.insert("AWS_ALLOW_HTTP".to_string(), "True".to_string());
+            storage_options.insert("AWS_STORAGE_ALLOW_HTTP".to_string(), "True".to_string());
+            if region != endpoint {
+                storage_options.insert("AWS_REGION".to_string(), region.to_string());
+            }
+        } else {
+            storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
+        }
+
+        Ok(storage_options)
     }
 }
 
@@ -4538,73 +4622,6 @@ impl DataStorage {
             );
         }
         props
-    }
-
-    fn delta_s3_storage_options(&self, py: pyo3::Python) -> PyResult<HashMap<String, String>> {
-        let (bucket_name, _) = S3Scanner::deduce_bucket_and_path(self.path()?);
-        let s3_settings = self
-            .aws_s3_settings
-            .as_ref()
-            .ok_or_else(|| {
-                PyValueError::new_err("S3 connection settings weren't specified for S3 data source")
-            })?
-            .borrow(py);
-
-        let mut storage_options = HashMap::new();
-        storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "True".to_string());
-
-        let virtual_hosted_style_request_flag = {
-            // Virtually hosted-style requests are mutually exclusive with path-style requests
-            if s3_settings.with_path_style {
-                "False".to_string()
-            } else {
-                "True".to_string()
-            }
-        };
-        storage_options.insert(
-            "AWS_VIRTUAL_HOSTED_STYLE_REQUEST".to_string(),
-            virtual_hosted_style_request_flag,
-        );
-        storage_options.insert(
-            "AWS_BUCKET_NAME".to_string(),
-            s3_settings.final_bucket_name(bucket_name.as_deref())?,
-        );
-
-        if let Some(access_key) = &s3_settings.access_key {
-            storage_options.insert("AWS_ACCESS_KEY_ID".to_string(), access_key.to_string());
-        }
-        if let Some(secret_access_key) = &s3_settings.secret_access_key {
-            storage_options.insert(
-                "AWS_SECRET_ACCESS_KEY".to_string(),
-                secret_access_key.to_string(),
-            );
-        }
-        if let Some(session_token) = &s3_settings.session_token {
-            storage_options.insert("AWS_SESSION_TOKEN".to_string(), session_token.to_string());
-        }
-        if let Some(profile) = &s3_settings.profile {
-            storage_options.insert("AWS_PROFILE".to_string(), profile.to_string());
-        }
-
-        if let s3::Region::Custom { endpoint, region } = &s3_settings.region {
-            if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
-                storage_options.insert("AWS_ENDPOINT_URL".to_string(), endpoint.to_string());
-            } else {
-                storage_options.insert(
-                    "AWS_ENDPOINT_URL".to_string(),
-                    format!("https://{endpoint}"),
-                );
-            }
-            storage_options.insert("AWS_ALLOW_HTTP".to_string(), "True".to_string());
-            storage_options.insert("AWS_STORAGE_ALLOW_HTTP".to_string(), "True".to_string());
-            if region != endpoint {
-                storage_options.insert("AWS_REGION".to_string(), region.to_string());
-            }
-        } else {
-            storage_options.insert("AWS_REGION".to_string(), s3_settings.region.to_string());
-        }
-
-        Ok(storage_options)
     }
 
     fn kafka_client_config(&self) -> PyResult<ClientConfig> {
@@ -5868,6 +5885,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(unsafe_make_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(check_entitlements, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize, m)?)?;
+    m.add_function(wrap_pyfunction!(serialize, m)?)?;
 
     m.add("MissingValueError", &*MISSING_VALUE_ERROR_TYPE)?;
     m.add("EngineError", &*ENGINE_ERROR_TYPE)?;

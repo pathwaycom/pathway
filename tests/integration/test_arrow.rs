@@ -48,6 +48,7 @@ fn run_arrow_roadtrip(type_: Type, values: Vec<Value>) -> eyre::Result<()> {
         name: "value".to_string(),
         type_: type_.clone(),
         default: None,
+        metadata: None,
     };
     let (sender, receiver) = mpsc::channel();
     let batch_writer = ArrowBatchWriter::new(sender);

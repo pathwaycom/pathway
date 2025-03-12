@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import csv
 import importlib
+import json
 import pathlib
 import sys
 from typing import Any
 
+import numpy as np
 import pytest
+from dateutil import tz
 
 import pathway as pw
 from pathway.internals.schema import Schema
@@ -372,3 +375,61 @@ def test_schemas_not_to_be_called():
 def test_advanced_schemas_not_to_be_called():
     with pytest.raises(TypeError):
         (pw.Table.empty().schema | pw.Table.empty().schema)()
+
+
+def test_schema_defaults_serialization():
+    class InputSchema(pw.Schema):
+        boolean: bool = pw.column_definition(default_value=True, example=True)
+        integer: int = pw.column_definition(default_value=10, example=11)
+        double: float = pw.column_definition(default_value=-4.3, example=5.5)
+        string: str = pw.column_definition(default_value="abcd", example="efgh")
+        binary_data: bytes = pw.column_definition(
+            default_value=b"defgh", example=b"qwer"
+        )
+        datetime_naive: pw.DateTimeNaive = pw.column_definition(
+            default_value=pw.DateTimeNaive(year=2025, month=1, day=17),
+            example=pw.DateTimeNaive(year=2025, month=1, day=18),
+        )
+        datetime_utc_aware: pw.DateTimeUtc = pw.column_definition(
+            default_value=pw.DateTimeNaive(year=2025, month=1, day=17, tz=tz.UTC),
+            example=pw.DateTimeNaive(year=2025, month=1, day=19, tz=tz.UTC),
+        )
+        duration: pw.Duration = pw.column_definition(
+            default_value=pw.Duration(days=5), example=pw.Duration(hours=10)
+        )
+        ints: np.ndarray[None, int] = pw.column_definition(
+            default_value=np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=int),
+            example=np.array([[[11, 22], [33, 44]], [[55, 66], [77, 88]]], dtype=int),
+        )
+        floats: np.ndarray[None, float] = pw.column_definition(
+            default_value=np.array([[1.1, 2.2], [3.3, 4.4]], dtype=float),
+            example=np.array([[1.11, 2.22], [3.33, 4.44]], dtype=float),
+        )
+        ints_flat: np.ndarray[None, int] = pw.column_definition(
+            default_value=np.array([9, 9, 9], dtype=int),
+            example=np.array([99, 99, 99], dtype=int),
+        )
+        floats_flat: np.ndarray[None, float] = pw.column_definition(
+            default_value=np.array([1.1, 2.2, 3.3], dtype=float),
+            example=np.array([1.11, 2.22, 3.33], dtype=float),
+        )
+        json_data: pw.Json = pw.column_definition(
+            default_value=pw.Json.parse('{"a": 15, "b": "hello"}'),
+            example=pw.Json.parse('{"c": "world"}'),
+        )
+        tuple_data: tuple[bytes, bool] = pw.column_definition(
+            default_value=(b"world", True),
+            example=(b"World", False),
+        )
+        list_data: list[str | None] = pw.column_definition(
+            default_value=("lorem", None, "ipsum"),
+            example=("Lorem", None, "Ipsum"),
+        )
+
+    serialized_schema = InputSchema.to_json_serializable_dict()
+    serialized_schema_json = json.dumps(serialized_schema, sort_keys=True)
+    DeserializedSchema = pw.schema_from_dict(**serialized_schema)
+    roundtrip_schema_json = json.dumps(
+        DeserializedSchema.to_json_serializable_dict(), sort_keys=True
+    )
+    assert serialized_schema_json == roundtrip_schema_json

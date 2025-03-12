@@ -62,6 +62,12 @@ class DType(ABC):
         """The maximal size of a DType measured in the number of Value enums"""
         ...
 
+    def to_dict(self) -> dict:
+        """Serialize DType into a json-serializable dict."""
+        return {
+            "type": repr(self),
+        }
+
 
 class _SimpleDType(DType):
     wrapped: type
@@ -180,6 +186,11 @@ class Callable(DType):
     arg_types: EllipsisType | tuple[DType, ...]
     return_type: DType
 
+    def to_dict(self) -> dict:
+        raise RuntimeError(
+            "to_dict is implemented and must be used only for engine types"
+        )
+
     def __repr__(self):
         if isinstance(self.arg_types, EllipsisType):
             return f"Callable(..., {self.return_type})"
@@ -235,6 +246,13 @@ class Array(DType):
             return f"Array({args_str})"
         else:
             return "Array"
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "ARRAY",
+            "n_dim": self.n_dim,
+            "wrapped": self.wrapped.to_dict(),
+        }
 
     def _set_args(self, n_dim, wrapped):
         self.wrapped = wrapped
@@ -292,6 +310,11 @@ class Pointer(DType):
         else:
             return f"Pointer({', '.join(repr(arg) for arg in self.args)})"
 
+    def to_dict(self) -> dict:
+        return {
+            "type": "POINTER",
+        }
+
     def _set_args(self, args):
         self.args = args
 
@@ -335,6 +358,12 @@ class Optional(DType):
     def __repr__(self):
         return f"Optional({self.wrapped})"
 
+    def to_dict(self) -> dict:
+        return {
+            "type": "OPTIONAL",
+            "wrapped": self.wrapped.to_dict(),
+        }
+
     def _set_args(self, wrapped):
         self.wrapped = wrapped
 
@@ -368,6 +397,9 @@ class Tuple(DType):
 
     def __repr__(self):
         return f"Tuple({', '.join(str(arg) for arg in self.args)})"
+
+    def to_dict(self) -> dict:
+        return {"type": "TUPLE", "wrapped": [arg.to_dict() for arg in self.args]}
 
     def _set_args(self, args):
         self.args = args
@@ -436,6 +468,9 @@ class List(DType):
     def __repr__(self):
         return f"List({self.wrapped})"
 
+    def to_dict(self) -> dict:
+        return {"type": "LIST", "wrapped": self.wrapped.to_dict()}
+
     def __new__(cls, wrapped: DType) -> List:
         return super().__new__(cls, wrap(wrapped))
 
@@ -463,6 +498,9 @@ class Future(DType):
 
     def __repr__(self):
         return f"Future({self.wrapped})"
+
+    def to_dict(self) -> dict:
+        return {"type": "FUTURE", "wrapped": self.wrapped.to_dict()}
 
     def __new__(cls, arg: DType) -> Future:
         arg = wrap(arg)
@@ -582,6 +620,9 @@ class PyObjectWrapper(DType):
 
     def __repr__(self) -> str:
         return f"PyObjectWrapper({self.wrapped})"
+
+    def to_dict(self) -> dict:
+        return {"type": "PY_OBJECT_WRAPPER"}
 
     def is_value_compatible(self, arg):
         return isinstance(arg, api.PyObjectWrapper) and isinstance(
@@ -1011,3 +1052,35 @@ def is_hashable_in_python(dtype: DType) -> bool:
     if isinstance(dtype, Pointer):
         return True
     return dtype in _HASHABLE_DTYPES
+
+
+COMPOSITE_DTYPES = {
+    "ARRAY": lambda d: Array(d["n_dim"], parse_dtype_from_dict(d["wrapped"])),
+    "LIST": lambda d: List(parse_dtype_from_dict(d["wrapped"])),
+    "OPTIONAL": lambda d: Optional(parse_dtype_from_dict(d["wrapped"])),
+    "TUPLE": lambda d: Tuple(*(parse_dtype_from_dict(w) for w in d["wrapped"])),
+    "FUTURE": lambda d: Future(parse_dtype_from_dict(d["wrapped"])),
+}
+NON_COMPOSITE_DTYPES = {
+    "STR": STR,
+    "BOOL": BOOL,
+    "INT": INT,
+    "FLOAT": FLOAT,
+    "BYTES": BYTES,
+    "DATE_TIME_NAIVE": DATE_TIME_NAIVE,
+    "DATE_TIME_UTC": DATE_TIME_UTC,
+    "DURATION": DURATION,
+    "Json": JSON,
+    "NONE": NONE,
+    "ANY": ANY,
+    "PY_OBJECT_WRAPPER": ANY_PY_OBJECT_WRAPPER,
+}
+
+
+def parse_dtype_from_dict(data: dict) -> DType:
+    type_name = data["type"]
+    if type_name in NON_COMPOSITE_DTYPES:
+        return NON_COMPOSITE_DTYPES[type_name]
+    if type_name in COMPOSITE_DTYPES:
+        return COMPOSITE_DTYPES[type_name](data)
+    raise ValueError(f"Failed to parse DType from dict: {data}")
