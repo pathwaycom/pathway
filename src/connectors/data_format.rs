@@ -4,7 +4,6 @@ use std::any::type_name;
 use std::borrow::Cow;
 use std::clone::Clone;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::io::Write;
 use std::iter::zip;
 use std::mem::take;
@@ -437,6 +436,12 @@ pub enum FormatterError {
 
     #[error(transparent)]
     Bincode(#[from] BincodeError),
+
+    #[error(transparent)]
+    Csv(#[from] csv::Error),
+
+    #[error("CSV separator must be a 8-bit character, but '{0}' is provided")]
+    UnsupportedCsvSeparator(char),
 }
 
 pub trait Formatter: Send {
@@ -919,6 +924,20 @@ impl DsvFormatter {
             dsv_header_written: false,
         }
     }
+
+    fn format_csv_row(tokens: Vec<String>, separator: u8) -> Result<Vec<u8>, FormatterError> {
+        let mut writer = csv::WriterBuilder::new()
+            .delimiter(separator)
+            .terminator(csv::Terminator::Any(0)) // There is no option for not having a row terminator
+            .quote_style(csv::QuoteStyle::Always)
+            .from_writer(Vec::new());
+        writer.write_record(tokens)?;
+        let mut formatted = writer
+            .into_inner()
+            .expect("csv::Writer::into_inner can't fail for Vec<u8> as an underlying writer");
+        formatted.pop(); // Remove the row terminator character
+        Ok(formatted)
+    }
 }
 
 impl Formatter for DsvFormatter {
@@ -933,40 +952,35 @@ impl Formatter for DsvFormatter {
             return Err(FormatterError::ColumnsValuesCountMismatch);
         }
 
-        let mut sep_buf = [0; 4];
-        let sep = self.settings.separator.encode_utf8(&mut sep_buf);
-
+        let Ok(separator) = self.settings.separator.try_into() else {
+            return Err(FormatterError::UnsupportedCsvSeparator(
+                self.settings.separator,
+            ));
+        };
         let mut payloads = Vec::with_capacity(2);
-        if !self.dsv_header_written {
-            let mut header = Vec::new();
-            write!(
-                &mut header,
-                "{}",
-                self.settings
-                    .value_column_names
-                    .iter()
-                    .map(String::as_str)
-                    .chain(["time", "diff"])
-                    .format(sep)
-            )
-            .expect("writing to vector should not fail");
-            payloads.push(header);
 
+        if !self.dsv_header_written {
+            let header: Vec<_> = self
+                .settings
+                .value_column_names
+                .iter()
+                .map(std::string::ToString::to_string)
+                .chain(["time".to_string(), "diff".to_string()])
+                .collect();
+            payloads.push(Self::format_csv_row(header, separator)?);
             self.dsv_header_written = true;
         }
 
-        let mut line = Vec::new();
-        write!(
-            &mut line,
-            "{}",
-            values
-                .iter()
-                .map(|v| v as &dyn Display)
-                .chain([&time, &diff] as [&dyn Display; 2])
-                .format(sep)
-        )
-        .unwrap();
-        payloads.push(line);
+        let line: Vec<_> = values
+            .iter()
+            .map(|v| match v {
+                Value::String(v) => v.to_string(),
+                _ => format!("{v}"),
+            })
+            .map(|x| x.to_string())
+            .chain([format!("{time}").to_string(), format!("{diff}").to_string()])
+            .collect();
+        payloads.push(Self::format_csv_row(line, separator)?);
 
         Ok(FormatterContext::new(
             payloads,

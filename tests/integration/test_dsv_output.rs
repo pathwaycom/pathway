@@ -27,7 +27,10 @@ fn test_dsv_format_ok() -> eyre::Result<()> {
         1,
     )?;
 
-    let target_payloads = vec![b"b;c;time;diff".to_vec(), b"\"x\";\"y\";0;1".to_vec()];
+    let target_payloads = vec![
+        b"\"b\";\"c\";\"time\";\"diff\"".to_vec(),
+        b"\"x\";\"y\";\"0\";\"1\"".to_vec(),
+    ];
 
     assert_eq!(result.values, &[Value::from("x"), Value::from("y")]);
     assert_eq!(result.payloads.len(), target_payloads.len());

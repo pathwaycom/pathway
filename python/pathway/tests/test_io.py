@@ -3140,7 +3140,7 @@ def test_non_ascii_characters(tmp_path: pathlib.Path):
 
     result = pd.read_csv(output_path)
     answers = set(result["data"])
-    expected = ["a\\na", "ąęćśż", "قطة"]
+    expected = ["a\na", "ąęćśż", "قطة"]
     for word in expected:
         assert word in answers
 
@@ -4106,3 +4106,60 @@ def test_deltalake_fails_to_reconstruct_schema(tmp_path: pathlib.Path):
         match="No Pathway table schema is stored in the given Delta table's metadata",
     ):
         pw.io.deltalake.read(lake_path)
+
+
+def test_csv_escaping(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.csv"
+    test_text = 'ab,,":,,cdefgh\\ \'\' " hello ",, \\ \' "" s"d,sd ,"'
+    input_path.write_text(test_text)
+    table = pw.io.plaintext.read(input_path, mode="static")
+    pw.io.csv.write(table, output_path)
+    run_all()
+    result = pd.read_csv(output_path, usecols=["data"])
+    assert set(result["data"]) == {test_text}
+
+
+def test_json_csv_serialization(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "output.csv"
+    output_path_2 = tmp_path / "output_2.csv"
+    test_json_object = {
+        "int": 1,
+        "float": 1.1,
+        "string": "hello",
+        "bool_true": True,
+        "bool_false": False,
+        "list": ["one", "two", "three", "four", "five"],
+        "map": {
+            "one": "two",
+            "three": ["four", "five"],
+            "six": True,
+            "seven": False,
+            "nine": 9,
+            "ten": 10.01,
+            "eleven": {"twelve": "thirteen"},
+        },
+    }
+    data = {
+        "data": test_json_object,
+    }
+    input_path.write_text(json.dumps(data))
+
+    class InputSchema(pw.Schema):
+        data: pw.Json
+
+    table = pw.io.jsonlines.read(input_path, schema=InputSchema, mode="static")
+    pw.io.csv.write(table, output_path)
+    run_all()
+    result = pd.read_csv(output_path, usecols=["data"])
+    parsed_back_data = json.loads(result["data"][0])
+    assert parsed_back_data == test_json_object
+
+    G.clear()
+    table = pw.io.csv.read(output_path, schema=InputSchema, mode="static")
+    pw.io.csv.write(table, output_path_2)
+    run_all()
+    result = pd.read_csv(output_path_2, usecols=["data"])
+    parsed_back_data = json.loads(result["data"][0])
+    assert parsed_back_data == test_json_object
