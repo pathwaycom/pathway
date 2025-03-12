@@ -25,6 +25,7 @@ from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import _parser_utils, llms, prompts
+from pathway.xpacks.llm._utils import _prepare_executor
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
 if TYPE_CHECKING:
@@ -386,6 +387,8 @@ class DoclingParser(pw.UDF):
         cache_strategy: udfs.CacheStrategy | None = None,
         pdf_pipeline_options: dict = {},
         chunk: bool = True,
+        *,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
     ):
         with optional_imports("xpack-llm-docs"):
             from docling.datamodel.pipeline_options import (
@@ -467,7 +470,8 @@ class DoclingParser(pw.UDF):
         if chunk:
             self.chunker = _parser_utils._HybridChunker(merge_peers=True)
 
-        super().__init__(cache_strategy=cache_strategy)
+        executor = _prepare_executor(async_mode=async_mode)
+        super().__init__(cache_strategy=cache_strategy, executor=executor)
 
     def format_chunk(self, chunk: BaseChunk) -> tuple[str, dict]:
         text = ""
@@ -699,11 +703,15 @@ class ImageParser(pw.UDF):
             udfs.AsyncRetryStrategy | None
         ) = udfs.ExponentialBackoffRetryStrategy(max_retries=6),
         cache_strategy: udfs.CacheStrategy | None = None,
+        *,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
     ):
         with optional_imports("xpack-llm"):
             import openai
 
-        super().__init__(cache_strategy=cache_strategy)
+        executor = _prepare_executor(async_mode=async_mode)
+
+        super().__init__(cache_strategy=cache_strategy, executor=executor)
         self.llm = llm
         self.parse_prompt = parse_prompt
         self.detail_parse_schema = detail_parse_schema
@@ -847,6 +855,8 @@ class SlideParser(pw.UDF):
             udfs.AsyncRetryStrategy | None
         ) = udfs.ExponentialBackoffRetryStrategy(max_retries=6),
         cache_strategy: udfs.CacheStrategy | None = None,
+        *,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
     ):
         _check_entitlements("advanced-parser")
 
@@ -859,7 +869,9 @@ class SlideParser(pw.UDF):
         with optional_imports("xpack-llm"):
             import openai
 
-        super().__init__(cache_strategy=cache_strategy)
+        executor = _prepare_executor(async_mode=async_mode)
+
+        super().__init__(cache_strategy=cache_strategy, executor=executor)
         self.llm = llm
         self.parse_prompt = parse_prompt
         self.detail_parse_schema = detail_parse_schema

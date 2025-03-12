@@ -8,6 +8,8 @@ from collections.abc import Callable
 from typing import Any
 
 import pathway as pw
+from pathway.internals.udfs.executors import Executor, FullyAsyncExecutor
+from pathway.internals.udfs.retries import AsyncRetryStrategy
 
 
 # https://stackoverflow.com/a/75094151
@@ -107,3 +109,34 @@ def _wrap_doc_post_processor(fun: Callable[[str, dict], tuple[str, dict]]) -> pw
         return fun(text, metadata_dict)
 
     return wrapper
+
+
+def _coerce_fully_async(udf: pw.UDF) -> pw.UDF:
+    if isinstance(udf.executor, FullyAsyncExecutor):
+        return udf
+    else:
+        async_udf = pw.udf(
+            udf.__wrapped__,
+            **{**udf._get_config(), "executor": pw.udfs.fully_async_executor()},
+        )
+        return async_udf
+
+
+def _prepare_executor(
+    async_mode: str,
+    capacity: int | None = None,
+    timeout: int | None = None,
+    retry_strategy: AsyncRetryStrategy | None = None,
+) -> Executor:
+    if async_mode == "batch_async":
+        return pw.udfs.async_executor(
+            capacity=capacity, timeout=timeout, retry_strategy=retry_strategy
+        )
+    elif async_mode == "fully_async":
+        return pw.udfs.fully_async_executor(
+            capacity=capacity, timeout=timeout, retry_strategy=retry_strategy
+        )
+    else:
+        raise ValueError(
+            "`async_mode` should be set to either `batch_async` or `fully_async`"
+        )

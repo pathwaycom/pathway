@@ -478,6 +478,8 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
             )
         )
 
+        pw_ai_results = pw_ai_results.await_futures()
+
         @pw.udf
         def prepare_response(
             response: str, docs: list[dict], return_context_docs: bool

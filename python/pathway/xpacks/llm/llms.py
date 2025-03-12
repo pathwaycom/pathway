@@ -13,13 +13,13 @@ import logging
 import uuid
 from abc import abstractmethod
 from collections.abc import Coroutine
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 
-from ._utils import _check_model_accepts_arg
+from ._utils import _check_model_accepts_arg, _prepare_executor
 
 logger = logging.getLogger(__name__)
 
@@ -243,13 +243,14 @@ class OpenAIChat(BaseChat):
         retry_strategy: udfs.AsyncRetryStrategy | None = None,
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = "gpt-3.5-turbo",
+        *,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
         **openai_kwargs,
     ):
         with optional_imports("xpack-llm"):
             import openai  # noqa:F401
-        executor = udfs.async_executor(
-            capacity=capacity,
-            retry_strategy=retry_strategy,
+        executor = _prepare_executor(
+            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
         )
         super().__init__(
             executor=executor,
@@ -370,14 +371,14 @@ class LiteLLMChat(BaseChat):
         retry_strategy: udfs.AsyncRetryStrategy | None = None,
         cache_strategy: udfs.CacheStrategy | None = None,
         model: str | None = None,
+        *,
+        async_mode: Literal["batch_async", "fully_async"] = "batch_async",
         **litellm_kwargs,
     ):
         with optional_imports("xpack-llm"):
             import litellm  # noqa:F401
-
-        executor = udfs.async_executor(
-            capacity=capacity,
-            retry_strategy=retry_strategy,
+        executor = _prepare_executor(
+            async_mode=async_mode, capacity=capacity, retry_strategy=retry_strategy
         )
         super().__init__(
             executor=executor,

@@ -241,12 +241,16 @@ class DocumentStore:
         self, table: pw.Table, processor: pw.UDF
     ) -> pw.Table[_DocumentSchema]:
 
-        processed_docs: pw.Table[DocumentStore._DocumentWithMetaSchema] = table.select(
-            text=processor(pw.this.text),
-            metadata=pw.this.metadata,
-            # some processors might split document into multiple parts so we flatten the results
-            # metadata will be propagated to all new rows
-        ).flatten(pw.this.text)
+        processed_docs: pw.Table[DocumentStore._DocumentWithMetaSchema] = (
+            table.select(
+                text=processor(pw.this.text),
+                metadata=pw.this.metadata,
+                # some processors might split document into multiple parts so we flatten the results
+                # metadata will be propagated to all new rows
+            )
+            .await_futures()
+            .flatten(pw.this.text)
+        )
         # combine_metadata will transform our columns as follows:
         # `text` column: tuple[str, new_meta_dict] -> str
         # `metadata` column: old_meta_dict -> old_meta_dict | new_meta_dict

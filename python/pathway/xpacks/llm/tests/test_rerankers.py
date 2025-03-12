@@ -13,7 +13,7 @@ def _test_llm_reranker(llm, expected):
 
     reranker = LLMReranker(llm)
 
-    ranking = input.select(rank=reranker(input.doc, input.query))
+    ranking = input.select(rank=reranker(input.doc, input.query)).await_futures()
     assert_table_equality(
         ranking,
         pw.debug.table_from_rows(pw.schema_from_types(rank=float), [(expected,)]),
@@ -49,6 +49,16 @@ def test_llm_reranker():
             return "text"
 
     _test_llm_reranker_raises(LLM3())
+
+    class LLM4(llms.OpenAIChat):
+        def __init__(self):
+            super().__init__()
+            self.executor = pw.udfs.fully_async_executor()
+
+        async def __wrapped__(self, *args, **kwargs) -> str:
+            return '{"score": 5}'
+
+    _test_llm_reranker(LLM4(), 5.0)
 
 
 def test_rerank_topk_filter():

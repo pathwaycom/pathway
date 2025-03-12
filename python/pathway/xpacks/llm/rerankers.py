@@ -4,9 +4,10 @@ from typing import Callable
 import pathway as pw
 import pathway.xpacks.llm.prompts as prompts
 from pathway.internals import udfs
+from pathway.internals.udfs.executors import FullyAsyncExecutor
 from pathway.optional_import import optional_imports
 from pathway.xpacks.llm import Doc, llms
-from pathway.xpacks.llm._utils import _extract_value
+from pathway.xpacks.llm._utils import _coerce_fully_async, _extract_value
 from pathway.xpacks.llm.llms import prompt_chat_single_qa
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,10 @@ class LLMReranker:
             **call_kwargs,
         )
 
-        return self.parse_response_udf(response)
+        if isinstance(self.llm.executor, FullyAsyncExecutor):
+            return _coerce_fully_async(self.parse_response_udf)(response)
+        else:
+            return self.parse_response_udf(response)
 
     def _get_prompt_udf(self, prompt_template):
         if isinstance(prompt_template, pw.UDF) or callable(prompt_template):
