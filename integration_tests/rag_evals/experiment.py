@@ -41,7 +41,12 @@ FILE_TO_DATASET_META = {
         "name": "AlphabetQA",
         "original_file": "20230203_alphabet_10K.pdf",
         "version": "v1",
-    }
+    },
+    "20230203_alphabet_10K_tables.jsonl": {
+        "name": "AlphabetTables",
+        "original_file": "20230203_alphabet_10K.pdf",
+        "version": "v1",
+    },
 }
 
 
