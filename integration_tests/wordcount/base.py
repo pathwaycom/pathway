@@ -125,7 +125,7 @@ def check_output_correctness(
             for row in f:
                 n_rows += 1
                 if is_first_row:
-                    column_names = row.strip().split(",")
+                    column_names = row.strip().replace('"', "").split(",")
                     for col_idx, col_name in enumerate(column_names):
                         if col_name == "word":
                             word_column_index = col_idx
@@ -148,7 +148,7 @@ def check_output_correctness(
                 assert word_column_index is not None
                 assert count_column_index is not None
                 assert diff_column_index is not None
-                tokens = row.strip().split(",")
+                tokens = row.strip().replace('"', "").split(",")
                 try:
                     word = tokens[word_column_index].strip('"')
                     count = int(tokens[count_column_index])
