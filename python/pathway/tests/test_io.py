@@ -4045,7 +4045,7 @@ def test_deltalake_schema_mismatch(tmp_path: pathlib.Path):
 
 
 @only_with_license_key
-def test_deltalake_schema_mismatch_with_optionality_and_metadata(
+def test_deltalake_schema_mismatch_with_optionality(
     tmp_path: pathlib.Path,
 ):
     data = """
@@ -4089,8 +4089,7 @@ def test_deltalake_schema_mismatch_with_optionality_and_metadata(
     expected_message = (
         "Unable to create DeltaTable writer: "
         "delta table schema mismatch: "
-        'Fields with mismatching types: [field "v": nullability differs (existing table=true, schema=false)'
-        ", metadata differs"
+        'Fields with mismatching types: [field "v": nullability differs (existing table=true, schema=false)]'
     )
     with pytest.raises(TypeError, match=re.escape(expected_message)):
         run_all()
@@ -4163,3 +4162,50 @@ def test_json_csv_serialization(tmp_path: pathlib.Path):
     result = pd.read_csv(output_path_2, usecols=["data"])
     parsed_back_data = json.loads(result["data"][0])
     assert parsed_back_data == test_json_object
+
+
+@only_with_license_key
+def test_deltalake_schema_custom_metadata_flexibility(tmp_path: pathlib.Path):
+    data = """
+        k | v
+        1 | one
+        2 | two
+        3 | three
+    """
+    input_path = tmp_path / "input.csv"
+    lake_path = tmp_path / "output"
+    write_csv(input_path, data)
+
+    lake_initial = [{"k": 0, "v": "zero", "time": 0, "diff": 1}]
+    df = pd.DataFrame(lake_initial).set_index("k")
+    schema = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field(
+                "v", pa.string(), nullable=False, metadata={"description": "test"}
+            ),
+            pa.field("time", pa.int64(), nullable=False),
+            pa.field(
+                "diff",
+                pa.int64(),
+                nullable=False,
+                metadata={"description": "special field", "hello": "world"},
+            ),
+        ]
+    )
+    write_deltalake(lake_path, df, schema=schema)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.csv.read(input_path, schema=InputSchema, mode="static")
+    pw.io.deltalake.write(table, lake_path)
+    run_all()
+
+    delta_table = DeltaTable(lake_path)
+    pd_table_from_delta = (
+        delta_table.to_pandas().drop("time", axis=1).drop("diff", axis=1)
+    )
+    assert set(pd_table_from_delta["k"]) == {0, 1, 2, 3}
+    assert set(pd_table_from_delta["v"]) == {"zero", "one", "two", "three"}

@@ -30,8 +30,8 @@ use s3::bucket::Bucket as S3Bucket;
 use tempfile::tempfile;
 
 use super::{
-    parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, PATHWAY_COLUMN_META_FIELD,
-    SPECIAL_OUTPUT_FIELDS,
+    parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, MetadataPerColumn,
+    PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::parse_bool_advanced;
@@ -66,13 +66,6 @@ impl fmt::Display for FieldMismatchDetails {
             let error_part = format!(
                 "nullability differs (existing table={}, schema={})",
                 self.schema_field.nullable, self.user_field.nullable
-            );
-            error_parts.push(error_part);
-        }
-        if self.schema_field.metadata != self.user_field.metadata {
-            let error_part = format!(
-                "metadata differs (existing table={:?}, schema={:?})",
-                self.schema_field.metadata, self.user_field.metadata
             );
             error_parts.push(error_part);
         }
@@ -127,6 +120,7 @@ impl fmt::Display for SchemaMismatchDetails {
 pub struct DeltaBatchWriter {
     table: DeltaTable,
     writer: DTRecordBatchWriter,
+    metadata_per_column: MetadataPerColumn,
 }
 
 impl DeltaBatchWriter {
@@ -136,9 +130,14 @@ impl DeltaBatchWriter {
         storage_options: HashMap<String, String>,
         partition_columns: Vec<String>,
     ) -> Result<Self, WriteError> {
-        let table = Self::open_table(path, value_fields, storage_options, partition_columns)?;
+        let (table, metadata_per_column) =
+            Self::open_table(path, value_fields, storage_options, partition_columns)?;
         let writer = DTRecordBatchWriter::for_table(&table)?;
-        Ok(Self { table, writer })
+        Ok(Self {
+            table,
+            writer,
+            metadata_per_column,
+        })
     }
 
     pub fn open_table(
@@ -146,7 +145,7 @@ impl DeltaBatchWriter {
         schema_fields: &Vec<ValueField>,
         storage_options: HashMap<String, String>,
         partition_columns: Vec<String>,
-    ) -> Result<DeltaTable, WriteError> {
+    ) -> Result<(DeltaTable, MetadataPerColumn), WriteError> {
         let mut struct_fields = Vec::new();
         for field in schema_fields {
             let mut metadata = Vec::new();
@@ -192,8 +191,21 @@ impl DeltaBatchWriter {
                 }
             )?;
 
-        Self::ensure_schema_compliance(&table.schema().unwrap().fields, &struct_fields)?;
-        Ok(table)
+        let existing_schema = &table.schema().unwrap().fields;
+        let metadata_per_column: HashMap<_, _> = existing_schema
+            .into_iter()
+            .map(|(name, column)| {
+                let arrow_metadata = column
+                    .metadata()
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect();
+                (name.to_string(), arrow_metadata)
+            })
+            .collect();
+
+        Self::ensure_schema_compliance(existing_schema, &struct_fields)?;
+        Ok((table, metadata_per_column))
     }
 
     fn ensure_schema_compliance(
@@ -214,7 +226,9 @@ impl DeltaBatchWriter {
                 has_error = true;
                 continue;
             };
-            if user_column != schema_column {
+            let nullability_differs = user_column.nullable != schema_column.nullable;
+            let data_type_differs = user_column.data_type != schema_column.data_type;
+            if nullability_differs || data_type_differs {
                 columns_mismatching_types.push(FieldMismatchDetails {
                     schema_field: schema_column.clone(),
                     user_field: user_column.clone(),
@@ -327,6 +341,10 @@ impl LakeBatchWriter for DeltaBatchWriter {
             use_64bit_size_type: false,
             utc_timezone_name: "UTC".into(),
         }
+    }
+
+    fn metadata_per_column(&self) -> &MetadataPerColumn {
+        &self.metadata_per_column
     }
 
     fn name(&self) -> String {

@@ -15,6 +15,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - `pw_list_documents` -> `list_documents`
 - When `pw.io.deltalake.write` creates a table, it also stores its metadata in the columns of the created Delta table. This metadata can be used by Pathway when reading the table with `pw.io.deltalake.read` if no `schema` is specified.
 - The `schema` parameter is now optional for `pw.io.deltalake.read`. If the table was created by Pathway and the `schema` was not specified by user, it is read from the table metadata.
+- `pw.io.deltalake.write` now aligns the output metadata with the existing table's metadata, preserving any custom metadata in the sink.
 
 ### Fixed
 - `pw.io.csv.write` now correctly escapes quote characters.

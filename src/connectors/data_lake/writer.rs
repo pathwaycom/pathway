@@ -18,7 +18,7 @@ use deltalake::arrow::datatypes::{
 };
 use ndarray::ArrayD;
 
-use super::{LakeWriterSettings, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS};
+use super::{LakeWriterSettings, SPECIAL_OUTPUT_FIELDS};
 use crate::connectors::data_format::FormatterContext;
 use crate::connectors::data_lake::LakeBatchWriter;
 use crate::connectors::{WriteError, Writer};
@@ -42,10 +42,7 @@ impl LakeWriter {
         value_fields: &[ValueField],
         min_commit_frequency: Option<Duration>,
     ) -> Result<Self, WriteError> {
-        let schema = Arc::new(Self::construct_schema(
-            value_fields,
-            &batch_writer.settings(),
-        )?);
+        let schema = Arc::new(Self::construct_schema(value_fields, batch_writer.as_ref())?);
         let mut empty_buffered_columns = Vec::new();
         empty_buffered_columns.resize_with(schema.fields().len(), Vec::new);
         Ok(Self {
@@ -365,32 +362,34 @@ impl LakeWriter {
 
     pub fn construct_schema(
         value_fields: &[ValueField],
-        settings: &LakeWriterSettings,
+        writer: &dyn LakeBatchWriter,
     ) -> Result<ArrowSchema, WriteError> {
+        let settings = writer.settings();
+        let metadata_per_column = writer.metadata_per_column();
         let mut schema_fields: Vec<ArrowField> = Vec::new();
         for field in value_fields {
-            let mut metadata = HashMap::new();
-            if let Some(field_metadata) = &field.metadata {
-                metadata.insert(
-                    PATHWAY_COLUMN_META_FIELD.to_string(),
-                    field_metadata.to_string(),
-                );
-            }
+            let metadata = metadata_per_column
+                .get(&field.name)
+                .unwrap_or(&HashMap::new())
+                .clone();
             schema_fields.push(
                 ArrowField::new(
                     field.name.clone(),
-                    Self::arrow_data_type(&field.type_, settings)?,
+                    Self::arrow_data_type(&field.type_, &settings)?,
                     field.type_.can_be_none(),
                 )
                 .with_metadata(metadata),
             );
         }
         for (field, type_) in SPECIAL_OUTPUT_FIELDS {
-            schema_fields.push(ArrowField::new(
-                field,
-                Self::arrow_data_type(&type_, settings)?,
-                false,
-            ));
+            let metadata = metadata_per_column
+                .get(field)
+                .unwrap_or(&HashMap::new())
+                .clone();
+            schema_fields.push(
+                ArrowField::new(field, Self::arrow_data_type(&type_, &settings)?, false)
+                    .with_metadata(metadata),
+            );
         }
         Ok(ArrowSchema::new(schema_fields))
     }

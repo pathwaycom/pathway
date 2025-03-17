@@ -18,6 +18,7 @@ use deltalake::datafusion::parquet::record::List as ParquetList;
 use deltalake::parquet::record::Row as ParquetRow;
 use half::f16;
 use ndarray::ArrayD;
+use once_cell::sync::Lazy;
 
 use crate::connectors::data_storage::ConversionError;
 use crate::connectors::data_storage::ValuesMap;
@@ -49,8 +50,16 @@ pub struct LakeWriterSettings {
     pub utc_timezone_name: ArcStr,
 }
 
+pub type ArrowMetadata = HashMap<String, String>;
+pub type MetadataPerColumn = HashMap<String, ArrowMetadata>;
+static EMPTY_METADATA_PER_COLUMN: Lazy<MetadataPerColumn> = Lazy::new(HashMap::new);
+
 pub trait LakeBatchWriter: Send {
     fn write_batch(&mut self, batch: ArrowRecordBatch) -> Result<(), WriteError>;
+
+    fn metadata_per_column(&self) -> &MetadataPerColumn {
+        &EMPTY_METADATA_PER_COLUMN
+    }
 
     fn settings(&self) -> LakeWriterSettings;
 
