@@ -102,7 +102,7 @@ pub fn parquet_value_into_pathway_value(
         )),
         (ParquetValue::Double(f), Type::Float | Type::Any) => Some(Value::Float((*f).into())),
         (ParquetValue::Str(s), Type::String | Type::Any) => Some(Value::String(s.into())),
-        (ParquetValue::Str(s), Type::Pointer) => parse_pathway_pointer(s),
+        (ParquetValue::Str(s), Type::Pointer) => parse_pathway_pointer(s).ok(),
         (ParquetValue::Str(s), Type::Json) => serde_json::from_str::<serde_json::Value>(s)
             .ok()
             .map(Value::from),
@@ -440,11 +440,13 @@ fn convert_arrow_string_array<OffsetType: OffsetSizeTrait>(
                             expected_type,
                         ))
                     }),
-                Type::Pointer => parse_pathway_pointer(v).ok_or(Box::new(conversion_error(
-                    &limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
-                    name,
-                    expected_type,
-                ))),
+                Type::Pointer => parse_pathway_pointer(v).map_err(|_| {
+                    Box::new(conversion_error(
+                        &limit_length(v.to_string(), STANDARD_OBJECT_LENGTH_LIMIT),
+                        name,
+                        expected_type,
+                    ))
+                }),
                 _ => unreachable!("must not be used for type {expected_type}"),
             },
             None => Ok(Value::None),

@@ -128,7 +128,7 @@ pub enum ParseError {
         requested: Vec<String>,
     },
 
-    #[error("failed to parse value {value:?} at field {field_name:?} according to the type {type_} in schema: {error}")]
+    #[error("failed to parse value {} at field {field_name:?} according to the type {type_} in schema: {error}", limit_length(format!("{value:?}"), STANDARD_OBJECT_LENGTH_LIMIT))]
     SchemaNotSatisfied {
         value: String,
         field_name: String,
@@ -185,6 +185,15 @@ pub enum ParseError {
 
     #[error("no value for {field_name:?} field and no default specified")]
     NoDefault { field_name: String },
+
+    #[error(transparent)]
+    Bincode(#[from] BincodeError),
+
+    #[error(transparent)]
+    Base64(#[from] base64::DecodeError),
+
+    #[error("malformed complex field JSON representation")]
+    MalformedComplexField,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -527,6 +536,52 @@ pub fn parse_bool_advanced(raw_value: &str) -> Result<bool, AdvancedBoolParseErr
     }
 }
 
+fn parse_str_with_type(raw_value: &str, type_: &Type) -> Result<Value, DynError> {
+    match type_.unoptionalize() {
+        Type::Any | Type::String => Ok(Value::from(raw_value)),
+        Type::Bool => Ok(Value::Bool(parse_bool_advanced(raw_value)?)),
+        Type::Int => Ok(Value::Int(raw_value.parse()?)),
+        Type::Float => Ok(Value::Float(raw_value.parse()?)),
+        Type::Json => {
+            let json: JsonValue = serde_json::from_str(raw_value)?;
+            Ok(Value::from(json))
+        }
+        Type::PyObjectWrapper => {
+            let value = parse_bincoded_value(raw_value)?;
+            Ok(value)
+        }
+        Type::Pointer => {
+            let value = parse_pathway_pointer(raw_value)?;
+            Ok(value)
+        }
+        Type::DateTimeUtc => {
+            let dt = DateTimeUtc::strptime(raw_value, "%Y-%m-%dT%H:%M:%S%.f%z")?;
+            Ok(dt.into())
+        }
+        Type::DateTimeNaive => {
+            let dt = DateTimeNaive::strptime(raw_value, "%Y-%m-%dT%H:%M:%S%.f")?;
+            Ok(dt.into())
+        }
+        Type::Duration => {
+            let duration_ns: i64 = raw_value.parse()?;
+            let engine_duration = EngineDuration::new_with_unit(duration_ns, "ns")
+                .expect("new_with_unit can't fail when 'ns' is used as a unit");
+            Ok(engine_duration.into())
+        }
+        Type::Bytes => {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(raw_value)?;
+            Ok(Value::Bytes(bytes.into()))
+        }
+        Type::Array(_, _) | Type::List(_) | Type::Tuple(_) => {
+            let json: JsonValue = serde_json::from_str(raw_value)?;
+            let value =
+                parse_value_from_json(&json, type_).ok_or(ParseError::MalformedComplexField)?;
+            Ok(value)
+        }
+        _ => Err(ParseError::UnparsableType(type_.clone()).into()),
+    }
+}
+
 fn parse_with_type(
     raw_value: &str,
     schema: &InnerSchemaField,
@@ -539,44 +594,13 @@ fn parse_with_type(
         }
     }
 
-    match schema.type_.unoptionalize() {
-        Type::Any | Type::String => Ok(Value::from(raw_value)),
-        Type::Bool => Ok(Value::Bool(parse_bool_advanced(raw_value).map_err(
-            |e| ParseError::SchemaNotSatisfied {
-                field_name: field_name.to_string(),
-                value: raw_value.to_string(),
-                type_: schema.type_.clone(),
-                error: Box::new(e),
-            },
-        )?)),
-        Type::Int => Ok(Value::Int(raw_value.parse().map_err(|e| {
-            ParseError::SchemaNotSatisfied {
-                field_name: field_name.to_string(),
-                value: raw_value.to_string(),
-                type_: schema.type_.clone(),
-                error: Box::new(e),
-            }
-        })?)),
-        Type::Float => Ok(Value::Float(raw_value.parse().map_err(|e| {
-            ParseError::SchemaNotSatisfied {
-                field_name: field_name.to_string(),
-                value: raw_value.to_string(),
-                type_: schema.type_.clone(),
-                error: Box::new(e),
-            }
-        })?)),
-        Type::Json => {
-            let json: JsonValue =
-                serde_json::from_str(raw_value).map_err(|e| ParseError::SchemaNotSatisfied {
-                    field_name: field_name.to_string(),
-                    value: raw_value.to_string(),
-                    type_: schema.type_.clone(),
-                    error: Box::new(e),
-                })?;
-            Ok(Value::from(json))
-        }
-        _ => Err(ParseError::UnparsableType(schema.type_.clone()).into()),
-    }
+    let result = parse_str_with_type(raw_value, &schema.type_);
+    Ok(result.map_err(|e| ParseError::SchemaNotSatisfied {
+        field_name: field_name.to_string(),
+        value: raw_value.to_string(),
+        type_: schema.type_.clone(),
+        error: e,
+    })?)
 }
 
 fn ensure_all_fields_in_schema(
@@ -971,13 +995,23 @@ impl Formatter for DsvFormatter {
             self.dsv_header_written = true;
         }
 
-        let line: Vec<_> = values
-            .iter()
-            .map(|v| match v {
+        let mut prepared_values = Vec::with_capacity(values.len());
+        for v in values {
+            let prepared = match v {
                 Value::String(v) => v.to_string(),
+                Value::PyObjectWrapper(_) => create_bincoded_value(v)?,
+                Value::Bytes(b) => base64::engine::general_purpose::STANDARD.encode(b),
+                Value::Duration(d) => format!("{}", d.nanoseconds()),
+                Value::IntArray(_) | Value::FloatArray(_) | Value::Tuple(_) => {
+                    let json_value = serialize_value_to_json(v)?;
+                    json_value.to_string()
+                }
                 _ => format!("{v}"),
-            })
-            .map(|x| x.to_string())
+            };
+            prepared_values.push(prepared);
+        }
+        let line: Vec<_> = prepared_values
+            .into_iter()
             .chain([format!("{time}").to_string(), format!("{diff}").to_string()])
             .collect();
         payloads.push(Self::format_csv_row(line, separator)?);
@@ -1118,6 +1152,17 @@ fn parse_ndarray_from_json(value: &JsonMap<String, JsonValue>, dtype: &Type) -> 
     }
 }
 
+fn create_bincoded_value(value: &Value) -> Result<String, FormatterError> {
+    let raw_bytes = bincode::serialize(value).map_err(|e| *e)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
+    Ok(encoded)
+}
+
+fn parse_bincoded_value(s: &str) -> Result<Value, ParseError> {
+    let raw_bytes = base64::engine::general_purpose::STANDARD.decode(s)?;
+    Ok(bincode::deserialize::<Value>(&raw_bytes).map_err(|e| *e)?)
+}
+
 /// Parses a value of type `dtype` from JSON variable `value`.
 /// If the field is not present or has incorrect format in the
 /// given payload, returns `None`. This `None` is further converted
@@ -1143,12 +1188,9 @@ fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
         }
         (Type::Duration, JsonValue::Number(v)) => {
             let duration_ns = v.as_i64()?;
-            let engine_duration = EngineDuration::new_with_unit(duration_ns, "ns");
-            if let Ok(engine_duration) = engine_duration {
-                Some(Value::Duration(engine_duration))
-            } else {
-                None
-            }
+            let engine_duration = EngineDuration::new_with_unit(duration_ns, "ns")
+                .expect("new_with_unit can't fail when 'ns' is used as a unit");
+            Some(Value::Duration(engine_duration))
         }
         (Type::Any, JsonValue::Number(v)) => {
             if let Some(parsed_i64) = v.as_i64() {
@@ -1167,17 +1209,8 @@ fn parse_value_from_json(value: &JsonValue, dtype: &Type) -> Option<Value> {
                 None
             }
         }
-        (Type::PyObjectWrapper, JsonValue::String(s)) => {
-            let Ok(raw_bytes) = base64::engine::general_purpose::STANDARD.decode(s) else {
-                return None;
-            };
-            if let Ok(value) = bincode::deserialize::<Value>(&raw_bytes) {
-                Some(value)
-            } else {
-                None
-            }
-        }
-        (Type::Pointer, JsonValue::String(s)) => parse_pathway_pointer(s),
+        (Type::PyObjectWrapper, JsonValue::String(s)) => parse_bincoded_value(s).ok(),
+        (Type::Pointer, JsonValue::String(s)) => parse_pathway_pointer(s).ok(),
         (Type::DateTimeUtc, JsonValue::String(s)) => {
             let engine_datetime = DateTimeUtc::strptime(s, "%Y-%m-%dT%H:%M:%S%.f%z");
             if let Ok(engine_datetime) = engine_datetime {
@@ -1250,8 +1283,7 @@ fn serialize_value_to_json(value: &Value) -> Result<JsonValue, FormatterError> {
         Value::Duration(d) => Ok(json!(d.nanoseconds())),
         Value::Json(j) => Ok((**j).clone()),
         Value::PyObjectWrapper(_) => {
-            let raw_bytes = bincode::serialize(value).map_err(|e| *e)?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(raw_bytes);
+            let encoded = create_bincoded_value(value)?;
             Ok(json!(encoded))
         }
         Value::Error => Err(FormatterError::ErrorValueNonJsonSerializable),

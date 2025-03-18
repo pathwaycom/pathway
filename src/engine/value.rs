@@ -758,14 +758,24 @@ impl HashInto for PyObjectWrapper {
     }
 }
 
-pub fn parse_pathway_pointer(serialized: &str) -> Option<Value> {
+#[derive(Debug, thiserror::Error)]
+pub enum PointerParseError {
+    #[error("the given value is not a base 32 string")]
+    MalformedBase32String,
+
+    #[error("the decoded array has a length different from 16")]
+    IncorrectLength,
+}
+
+pub fn parse_pathway_pointer(serialized: &str) -> Result<Value, PointerParseError> {
     let encoded_pointer = &serialized[1..];
-    let decoded = base32::decode(BASE32_ALPHABET, encoded_pointer)?;
+    let decoded = base32::decode(BASE32_ALPHABET, encoded_pointer)
+        .ok_or(PointerParseError::MalformedBase32String)?;
     if decoded.len() == 16 {
         let decoded: [u8; 16] = decoded.try_into().unwrap();
         let key = KeyImpl::from_le_bytes(decoded);
-        Some(Value::Pointer(Key(key)))
+        Ok(Value::Pointer(Key(key)))
     } else {
-        None
+        Err(PointerParseError::IncorrectLength)
     }
 }

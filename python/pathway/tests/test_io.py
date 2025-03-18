@@ -3599,7 +3599,7 @@ def test_iceberg_no_primary_key():
         )
 
 
-@pytest.mark.parametrize("data_format", ["delta", "json"])
+@pytest.mark.parametrize("data_format", ["delta", "json", "csv"])
 @only_with_license_key("data_format", ["delta"])
 def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
@@ -3615,6 +3615,8 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
         pw.io.deltalake.write(table, auxiliary_path)
     elif data_format == "json":
         pw.io.jsonlines.write(table, auxiliary_path)
+    elif data_format == "csv":
+        pw.io.csv.write(table, auxiliary_path)
     else:
         raise ValueError(f"Unknown data format: {data_format}")
     run_all()
@@ -3632,6 +3634,8 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
         table = pw.io.deltalake.read(auxiliary_path, schema=InputSchema, mode="static")
     elif data_format == "json":
         table = pw.io.jsonlines.read(auxiliary_path, schema=InputSchema, mode="static")
+    elif data_format == "csv":
+        table = pw.io.csv.read(auxiliary_path, schema=InputSchema, mode="static")
     else:
         raise ValueError(f"Unknown data format: {data_format}")
     table = table.select(len=use_python_object(pw.this.fun, pw.this.data))
@@ -3643,7 +3647,7 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
         assert data["len"] == 4
 
 
-@pytest.mark.parametrize("data_format", ["delta", "delta_stored_schema", "json"])
+@pytest.mark.parametrize("data_format", ["delta", "delta_stored_schema", "json", "csv"])
 @only_with_license_key("data_format", ["delta", "delta_stored_schema"])
 def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     input_path = tmp_path / "input.jsonl"
@@ -3666,6 +3670,7 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
         "json_data": pw.Json.parse('{"a": 15, "b": "hello"}'),
         "tuple_data": (b"world", True),
         "list_data": ("lorem", None, "ipsum"),
+        "ptr": api.ref_scalar(42),
     }
     table = pw.io.plaintext.read(input_path, mode="static")
     table = table.select(
@@ -3684,6 +3689,8 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
         pw.io.deltalake.write(table, auxiliary_path)
     elif data_format == "json":
         pw.io.jsonlines.write(table, auxiliary_path)
+    elif data_format == "csv":
+        pw.io.csv.write(table, auxiliary_path)
     else:
         raise ValueError(f"Unknown data format: {data_format}")
 
@@ -3707,6 +3714,7 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
         json_data: pw.Json
         tuple_data: tuple[bytes, bool]
         list_data: list[str | None]
+        ptr: api.Pointer
 
     class Checker:
         def __init__(self):
@@ -3727,6 +3735,8 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
         table = pw.io.deltalake.read(auxiliary_path, mode="static")
     elif data_format == "json":
         table = pw.io.jsonlines.read(auxiliary_path, schema=InputSchema, mode="static")
+    elif data_format == "csv":
+        table = pw.io.csv.read(auxiliary_path, schema=InputSchema, mode="static")
     else:
         raise ValueError(f"Unknown data format: {data_format}")
 

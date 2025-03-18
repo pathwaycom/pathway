@@ -16,23 +16,26 @@ use super::helpers::assert_document_raw_byte_contents;
 fn test_dsv_format_ok() -> eyre::Result<()> {
     let mut formatter = DsvFormatter::new(DsvSettings::new(
         Some(vec!["a".to_string()]),
-        vec!["b".to_string(), "c".to_string()],
+        vec!["b".to_string(), "c".to_string(), "d".to_string()],
         ';',
     ));
 
     let result = formatter.format(
         &Key::for_value(&Value::from("1")),
-        &[Value::from("x"), Value::from("y")],
+        &[Value::from("x"), Value::from("y"), Value::Bool(true)],
         Timestamp(0),
         1,
     )?;
 
     let target_payloads = vec![
-        b"\"b\";\"c\";\"time\";\"diff\"".to_vec(),
-        b"\"x\";\"y\";\"0\";\"1\"".to_vec(),
+        b"\"b\";\"c\";\"d\";\"time\";\"diff\"".to_vec(),
+        b"\"x\";\"y\";\"True\";\"0\";\"1\"".to_vec(),
     ];
 
-    assert_eq!(result.values, &[Value::from("x"), Value::from("y")]);
+    assert_eq!(
+        result.values,
+        &[Value::from("x"), Value::from("y"), Value::Bool(true)]
+    );
     assert_eq!(result.payloads.len(), target_payloads.len());
     for (result_payload, target_payload) in zip(result.payloads, target_payloads) {
         assert_document_raw_byte_contents(&result_payload, &target_payload);
