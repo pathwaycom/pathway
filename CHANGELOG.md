@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 - All Pathway types can now be serialized to CSV using `pw.io.csv.write` and deserialized back using `pw.io.csv.read`.
+- `pw.io.csv.read` now parses null-values in data when it can be done unambiguously.
 
 ### Changed
 - **BREAKING**: Updated endpoints in `pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer`:

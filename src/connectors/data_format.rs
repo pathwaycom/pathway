@@ -536,7 +536,32 @@ pub fn parse_bool_advanced(raw_value: &str) -> Result<bool, AdvancedBoolParseErr
     }
 }
 
+fn can_represent_null_value(raw_value: &str) -> bool {
+    let raw_value_lowercase = raw_value.trim().to_ascii_lowercase();
+    matches!(raw_value_lowercase.as_str(), "null" | "none" | "")
+}
+
 fn parse_str_with_type(raw_value: &str, type_: &Type) -> Result<Value, DynError> {
+    if type_.is_optional() && can_represent_null_value(raw_value) {
+        let type_unopt = type_.unoptionalize();
+        match type_unopt {
+            Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::PyObjectWrapper
+            | Type::Pointer
+            | Type::DateTimeUtc
+            | Type::DateTimeNaive
+            | Type::Duration
+            | Type::Array(_, _)
+            | Type::List(_)
+            | Type::Tuple(_) => return Ok(Value::None),
+            // "null" is ambiguous, since it can also correspond to a serialized JSON
+            // Anything else can be safely treated as a `Value::None`
+            Type::Json if raw_value != "null" => return Ok(Value::None),
+            _ => {}
+        };
+    }
     match type_.unoptionalize() {
         Type::Any | Type::String => Ok(Value::from(raw_value)),
         Type::Bool => Ok(Value::Bool(parse_bool_advanced(raw_value)?)),

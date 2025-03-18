@@ -3648,12 +3648,16 @@ def test_py_object_wrapper_serialization(tmp_path: pathlib.Path, data_format):
 
 
 @pytest.mark.parametrize("data_format", ["delta", "delta_stored_schema", "json", "csv"])
+@pytest.mark.parametrize("with_optionals", [False, True])
 @only_with_license_key("data_format", ["delta", "delta_stored_schema"])
-def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
+def test_different_types_serialization(
+    tmp_path: pathlib.Path, data_format, with_optionals
+):
     input_path = tmp_path / "input.jsonl"
     auxiliary_path = tmp_path / "auxiliary-storage"
     input_path.write_text("test")
 
+    n_expected_rows = 1
     column_values = {
         "boolean": True,
         "integer": 123,
@@ -3672,19 +3676,38 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
         "list_data": ("lorem", None, "ipsum"),
         "ptr": api.ref_scalar(42),
     }
+    known_columns = {"test": column_values}
+    composite_types = {
+        "ints": np.ndarray[None, int],
+        "floats": np.ndarray[None, float],
+        "ints_flat": np.ndarray[None, int],
+        "floats_flat": np.ndarray[None, float],
+        "tuple_data": tuple[bytes, bool],
+        "list_data": list[str | None],
+    }
     table = pw.io.plaintext.read(input_path, mode="static")
     table = table.select(
         data=pw.this.data,
         **column_values,
     )
-    table = table.update_types(
-        ints=np.ndarray[None, int],
-        floats=np.ndarray[None, float],
-        ints_flat=np.ndarray[None, int],
-        floats_flat=np.ndarray[None, float],
-        tuple_data=tuple[bytes, bool],
-        list_data=list[str | None],
-    )
+    if with_optionals:
+        n_expected_rows += 1
+        none_column_values = {
+            "data": "test_with_optionals",
+        }
+        for key in column_values.keys():
+            none_column_values[key] = None
+        table_with_optionals = pw.io.plaintext.read(input_path, mode="static")
+        table_with_optionals = table_with_optionals.select(**none_column_values)
+        pw.universes.promise_are_pairwise_disjoint(table, table_with_optionals)
+        table = table.concat(table_with_optionals)
+        optional_composite_types = {}
+        for field_name, field_type in composite_types.items():
+            optional_composite_types[field_name] = field_type | None
+        composite_types = optional_composite_types
+        known_columns[none_column_values["data"]] = none_column_values
+
+    table = table.update_types(**composite_types)
     if data_format == "delta" or data_format == "delta_stored_schema":
         pw.io.deltalake.write(table, auxiliary_path)
     elif data_format == "json":
@@ -3697,24 +3720,47 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     run_all()
     G.clear()
 
-    class InputSchema(pw.Schema):
-        data: str = pw.column_definition(primary_key=True)
-        boolean: bool
-        integer: int
-        double: float
-        string: str
-        binary_data: bytes
-        datetime_naive: pw.DateTimeNaive
-        datetime_utc_aware: pw.DateTimeUtc
-        duration: pw.Duration
-        ints: np.ndarray[None, int]
-        floats: np.ndarray[None, float]
-        ints_flat: np.ndarray[None, int]
-        floats_flat: np.ndarray[None, float]
-        json_data: pw.Json
-        tuple_data: tuple[bytes, bool]
-        list_data: list[str | None]
-        ptr: api.Pointer
+    if with_optionals:
+
+        class InputSchema(pw.Schema):
+            data: str = pw.column_definition(primary_key=True)
+            boolean: bool | None
+            integer: int | None
+            double: float | None
+            string: str | None
+            binary_data: bytes | None
+            datetime_naive: pw.DateTimeNaive | None
+            datetime_utc_aware: pw.DateTimeUtc | None
+            duration: pw.Duration | None
+            ints: np.ndarray[None, int] | None
+            floats: np.ndarray[None, float] | None
+            ints_flat: np.ndarray[None, int] | None
+            floats_flat: np.ndarray[None, float] | None
+            json_data: pw.Json | None
+            tuple_data: tuple[bytes, bool] | None
+            list_data: list[str | None] | None
+            ptr: api.Pointer | None
+
+    else:
+
+        class InputSchema(pw.Schema):
+            data: str = pw.column_definition(primary_key=True)
+            boolean: bool
+            integer: int
+            double: float
+            string: str
+            binary_data: bytes
+            datetime_naive: pw.DateTimeNaive
+            datetime_utc_aware: pw.DateTimeUtc
+            duration: pw.Duration
+            ints: np.ndarray[None, int]
+            floats: np.ndarray[None, float]
+            ints_flat: np.ndarray[None, int]
+            floats_flat: np.ndarray[None, float]
+            json_data: pw.Json
+            tuple_data: tuple[bytes, bool]
+            list_data: list[str | None]
+            ptr: api.Pointer
 
     class Checker:
         def __init__(self):
@@ -3722,12 +3768,22 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
 
         def __call__(self, key, row, time, is_addition):
             self.n_processed_rows += 1
+            column_values = known_columns[row["data"]]
             for field, expected_value in column_values.items():
                 if isinstance(expected_value, np.ndarray):
                     assert row[field].shape == expected_value.shape
                     assert (row[field] == expected_value).all()
                 else:
-                    assert row[field] == expected_value
+                    expected_values = [expected_value]
+                    if data_format == "csv" and expected_value is None:
+                        # Impossible to parse unambiguosly, hence allowing string "None"
+                        # or base64-decoded option
+                        if field == "string":
+                            expected_values.append("None")
+                        elif field == "binary_data":
+                            expected_values.append(base64.b64decode("None"))
+
+                    assert row[field] in expected_values
 
     if data_format == "delta":
         table = pw.io.deltalake.read(auxiliary_path, schema=InputSchema, mode="static")
@@ -3743,7 +3799,7 @@ def test_different_types_serialization(tmp_path: pathlib.Path, data_format):
     checker = Checker()
     pw.io.subscribe(table, on_change=checker)
     run_all()
-    assert checker.n_processed_rows == 1
+    assert checker.n_processed_rows == n_expected_rows
 
 
 @only_with_license_key
