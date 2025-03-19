@@ -20,6 +20,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - When `pw.io.deltalake.write` creates a table, it also stores its metadata in the columns of the created Delta table. This metadata can be used by Pathway when reading the table with `pw.io.deltalake.read` if no `schema` is specified.
 - The `schema` parameter is now optional for `pw.io.deltalake.read`. If the table was created by Pathway and the `schema` was not specified by user, it is read from the table metadata.
 - `pw.io.deltalake.write` now aligns the output metadata with the existing table's metadata, preserving any custom metadata in the sink.
+- **BREAKING**: The `Bytes` type is now serialized and deserialized with base64 encoding and decoding when the CSV format is used.
+- **BREAKING**: The `Duration` type is now serialized and deserialized as a number of nanoseconds when the CSV format is used.
+- **BREAKING**: The `tuple` and `np.ndarray` types are now serialized and deserialized as their JSON representations when the CSV format is used.
 
 ### Fixed
 - `pw.io.csv.write` now correctly escapes quote characters.
