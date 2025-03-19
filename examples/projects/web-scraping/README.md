@@ -1,10 +1,10 @@
 # Web Scraping with Pathway
 
-This project demonstrates how to create a real-time web scraper using Pathway, a powerful data processing framework. The implementation fetches and processes news articles from websites, making it possible to continuously monitor and analyze web content.
+This project demonstrates how to create a real-time web scraper using Pathway, a powerful data processing framework. The implementation fetches and processes news articles from websites, making it possible to continuously monitor and analyze the web content.
 
 ## Overview
 
-The project consists of two main Python files:
+This project consists of two main Python files:
 
 - `scraping_python.py`: Contains the core web scraping functionality using the `newspaper4k` and `news-please` libraries
 - `scraping_pathway.py`: Implements a Pathway connector that integrates the scraper with Pathway's data processing pipeline
@@ -13,7 +13,6 @@ The project consists of two main Python files:
 
 - Dynamically fetch articles from news websites
 - Extract article content and metadata
-- Support for both static (one-time) and streaming (continuous) modes
 - Configurable refresh intervals
 - Output to JSON Lines format
 
@@ -39,10 +38,7 @@ This provides the core scraping functionality:
 2. **Content Extraction**: Uses `news-please` to fetch and parse article content
 3. **Data Processing**: Cleans and normalizes article data
 
-The main function `scrape_articles()` is a generator that yields article data with options for:
-- Including or excluding metadata
-- Operating in static or streaming mode
-- Configuring refresh intervals
+The main function `scrape_articles()` is a generator that yields article data with the configurable refresh intervals.
 
 ### scraping_pathway.py
 
@@ -54,7 +50,6 @@ This file integrates the scraper with Pathway:
 4. **Pipeline**: Sets up a data pipeline that:
     - Reads data from websites
     - Outputs articles to a JSONL file
-    - Logs each scraped article
 
 
 ## Running the Scraper
@@ -82,10 +77,7 @@ python scraping_pathway.py
 In `scraping_pathway.py`, you can configure:
 
 - `website_urls`: List of websites to scrape
-- `with_metadata`: Whether to include article metadata
-- `mode`: "streaming" for continuous updates or "static" for one-time scraping
 - `refresh_interval`: Time between scraping cycles (in seconds)
-- `skip_article_urls`: URLs to exclude from scraping
 
 ## Example Output
 
