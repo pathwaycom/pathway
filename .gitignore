@@ -11,6 +11,7 @@ __pycache__/
 /docs/**/article.md
 /docs/2.developers/?.API-docs
 /docs/2.developers/?.documentation
+/docs/2.developers/?.templates/_readmes
 .yarn
 *.csv
 !output_stream.csv
