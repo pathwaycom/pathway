@@ -1134,3 +1134,46 @@ def test_asof_now_on_numpy_arrays(factory):
     ).select(coords=pw.left.coords, nn=pw.apply(sort_arrays, pw.right.coords))
 
     assert_table_equality_wo_index(result, expected)
+
+
+def test_brute_force_knn_multi_removal():
+    class InputSchema(pw.Schema):
+        a: int = pw.column_definition(primary_key=True)
+        v: np.ndarray
+
+    data = pw.debug.table_from_rows(
+        InputSchema,
+        [
+            (1, np.array([1, 1, 1]), 2, 1),
+            (1, np.array([1, 1, 1]), 4, -1),
+            (1, np.array([1, 2, 3]), 4, 1),
+            (1, np.array([1, 2, 3]), 6, -1),
+            (1, np.array([1, 1, 1]), 6, 1),
+        ],
+        is_stream=True,
+    )
+    queries = pw.debug.table_from_rows(
+        InputSchema,
+        [(1, np.array([1, 2, 2]), 4, 1), (2, np.array([1, 2, 2]), 6, 1)],
+        is_stream=True,
+    )
+
+    index = BruteForceKnn(
+        data.v,
+        metadata_column=None,
+        dimensions=3,
+        reserved_space=0,
+        metric=BruteForceKnnMetricKind.COS,
+    )
+    data_index = DataIndex(data, index)
+    result = data_index.query_as_of_now(
+        queries.v, number_of_matches=1, collapse_rows=False
+    ).select(q=pw.left.a, d=pw.right.a)
+    expected = pw.debug.table_from_markdown(
+        """
+        q | d
+        1 | 1
+        2 | 1
+    """
+    ).update_types(d=int | None)
+    assert_table_equality_wo_index(result, expected)

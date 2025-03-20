@@ -153,15 +153,17 @@ impl NonFilteringExternalIndex<Vec<f64>, Vec<f64>> for BruteForceKNNIndex {
                     .unwrap();
                 match self.key_to_id_mapper.remove_key(key) {
                     Ok(removed_key_id) => {
-                        let last_row = &self.index_array.row(self.current_size - 1).to_owned();
                         self.current_size -= 1;
-                        self.index_array
-                            .row_mut(usize::try_from(removed_key_id).unwrap())
-                            .assign(last_row);
-
-                        self.key_to_id_mapper
-                            .assign_key(last_row_key, removed_key_id);
                         self.key_to_id_mapper.decrement_next_free_id();
+                        if last_row_key != key {
+                            // if the last row had a different key, put its entry to the removed position
+                            let last_row = &self.index_array.row(self.current_size).to_owned();
+                            self.index_array
+                                .row_mut(usize::try_from(removed_key_id).unwrap())
+                                .assign(last_row);
+                            self.key_to_id_mapper
+                                .assign_key(last_row_key, removed_key_id);
+                        }
                         (key, Ok(()))
                     }
                     Err(error) => (key, Err(error)),
