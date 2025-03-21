@@ -108,6 +108,7 @@ fn read_with_connector(path: &str, type_: &Type) -> Result<Vec<Value>> {
         ConnectorMode::Static,
         None,
         true,
+        Vec::new(),
     )
     .unwrap();
     let parser =

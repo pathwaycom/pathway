@@ -5,11 +5,16 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use deltalake::arrow::array::RecordBatch as ArrowRecordBatch;
+use deltalake::datafusion::execution::context::SessionContext as DeltaSessionContext;
+use deltalake::datafusion::logical_expr::col;
 use deltalake::datafusion::parquet::file::reader::SerializedFileReader as DeltaLakeParquetReader;
+use deltalake::datafusion::prelude::Expr;
+use deltalake::datafusion::scalar::ScalarValue;
 use deltalake::kernel::Action as DeltaLakeAction;
 use deltalake::kernel::ArrayType as DeltaTableArrayType;
 use deltalake::kernel::DataType as DeltaTableKernelType;
@@ -28,22 +33,24 @@ use indexmap::IndexMap;
 use itertools::Itertools;
 use s3::bucket::Bucket as S3Bucket;
 use tempfile::tempfile;
+use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
-    parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings, MetadataPerColumn,
-    PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
+    columns_into_pathway_values, parquet_row_into_values_map, LakeBatchWriter, LakeWriterSettings,
+    MetadataPerColumn, PATHWAY_COLUMN_META_FIELD, SPECIAL_OUTPUT_FIELDS,
 };
 use crate::async_runtime::create_async_tokio_runtime;
 use crate::connectors::data_format::parse_bool_advanced;
-use crate::connectors::data_storage::ConnectorMode;
+use crate::connectors::data_storage::{ConnectorMode, ValuesMap};
 use crate::connectors::scanner::S3Scanner;
 use crate::connectors::{
     DataEventType, OffsetKey, OffsetValue, ReadError, ReadResult, Reader, ReaderContext,
     StorageType, WriteError,
 };
-use crate::engine::Type;
+use crate::engine::time::DateTime;
+use crate::engine::{Type, Value};
 use crate::persistence::frontier::OffsetAntichain;
-use crate::python_api::ValueField;
+use crate::python_api::{BackfillingThreshold, ValueField};
 use crate::timestamp::current_unix_timestamp_ms;
 
 #[derive(Debug)]
@@ -401,6 +408,7 @@ pub struct DeltaTableReader {
     rows_read_within_version: i64,
     parquet_files_queue: VecDeque<DeltaReaderAction>,
     current_event_type: DataEventType,
+    backfilling_entries_queue: VecDeque<ValuesMap>,
 }
 
 const APPEND_ONLY_PROPERTY_NAME: &str = "delta.appendOnly";
@@ -409,6 +417,7 @@ const DELTA_LAKE_MAX_POLL_DURATION: Duration = Duration::from_millis(100);
 const DELTA_LAKE_POLL_BACKOFF: u32 = 2;
 
 impl DeltaTableReader {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         path: &str,
         object_downloader: ObjectDownloader,
@@ -417,6 +426,7 @@ impl DeltaTableReader {
         streaming_mode: ConnectorMode,
         start_from_timestamp_ms: Option<i64>,
         has_primary_key: bool,
+        backfilling_thresholds: Vec<BackfillingThreshold>,
     ) -> Result<Self, ReadError> {
         let runtime = create_async_tokio_runtime()?;
         let mut table =
@@ -435,8 +445,10 @@ impl DeltaTableReader {
         }
         let mut current_version = table.version();
         let mut parquet_files_queue = Self::get_reader_actions(&table, path)?;
+        let mut backfilling_entries_queue = VecDeque::new();
 
         if let Some(start_from_timestamp_ms) = start_from_timestamp_ms {
+            assert!(backfilling_thresholds.is_empty()); // Checked upstream in python_api.rs
             let current_timestamp = current_unix_timestamp_ms();
             if start_from_timestamp_ms > current_timestamp.try_into().unwrap() {
                 warn!("The timestamp {start_from_timestamp_ms} is greater than the current timestamp {current_timestamp}. All new entries will be read.");
@@ -470,6 +482,16 @@ impl DeltaTableReader {
             }
         }
 
+        if !backfilling_thresholds.is_empty() {
+            parquet_files_queue.clear();
+            backfilling_entries_queue = Self::create_backfilling_files_queue(
+                &runtime,
+                table.clone(),
+                backfilling_thresholds,
+                &column_types,
+            )?;
+        }
+
         Ok(Self {
             table,
             column_types,
@@ -480,10 +502,76 @@ impl DeltaTableReader {
             object_downloader,
             last_fully_read_version: None,
             reader: None,
+            backfilling_entries_queue,
             parquet_files_queue,
             rows_read_within_version: 0,
             current_event_type: DataEventType::Insert,
         })
+    }
+
+    fn create_backfilling_files_queue(
+        runtime: &TokioRuntime,
+        table: DeltaTable,
+        backfilling_thresholds: Vec<BackfillingThreshold>,
+        column_types: &HashMap<String, Type>,
+    ) -> Result<VecDeque<ValuesMap>, ReadError> {
+        let backfilling_started_at = Instant::now();
+        let ctx = DeltaSessionContext::new();
+        ctx.register_table("table", Arc::new(table))?;
+        let mut df = runtime.block_on(async { ctx.table("table").await })?;
+        for threshold in backfilling_thresholds {
+            let literal = Expr::Literal(Self::scalar_value_for_queries(&threshold.threshold));
+            let column = col(threshold.field);
+            df = match threshold.comparison_op.as_str() {
+                ">=" => df.filter(column.gt_eq(literal))?,
+                "<=" => df.filter(column.lt_eq(literal))?,
+                "<" => df.filter(column.lt(literal))?,
+                ">" => df.filter(column.gt(literal))?,
+                "==" => df.filter(column.eq(literal))?,
+                "!=" => df.filter(column.not_eq(literal))?,
+                _ => panic!(
+                    "Unsupported comparison operation: {}",
+                    threshold.comparison_op
+                ),
+            };
+        }
+        let mut backfilling_entries_queue = VecDeque::new();
+        runtime.block_on(async {
+            let results = df.collect().await?;
+            for entry in results {
+                let value_maps = columns_into_pathway_values(&entry, column_types);
+                for value_map in value_maps {
+                    backfilling_entries_queue.push_back(value_map);
+                }
+            }
+            log::info!(
+                "DeltaLake backfilling entries count: {} (elapsed time: {:?})",
+                backfilling_entries_queue.len(),
+                backfilling_started_at.elapsed()
+            );
+            Ok::<(), ReadError>(())
+        })?;
+        warn!("Backfilling thresholds won't be applied for any data the follows after the initially read batch.");
+        Ok(backfilling_entries_queue)
+    }
+
+    fn scalar_value_for_queries(value: &Value) -> ScalarValue {
+        match value {
+            Value::Bool(b) => ScalarValue::Boolean(Some(*b)),
+            Value::Int(i) => ScalarValue::Int64(Some(*i)),
+            Value::Float(f) => ScalarValue::Float64(Some((*f).into())),
+            Value::String(s) => ScalarValue::Utf8(Some(s.to_string())),
+            Value::Bytes(b) => ScalarValue::Binary(Some(b.to_vec())),
+            Value::DateTimeNaive(dt) => {
+                ScalarValue::TimestampMicrosecond(Some(dt.timestamp_microseconds()), None)
+            }
+            Value::DateTimeUtc(dt) => ScalarValue::TimestampMicrosecond(
+                Some(dt.timestamp_microseconds()),
+                Some("UTC".into()),
+            ),
+            Value::Duration(dt) => ScalarValue::DurationMicrosecond(Some(dt.microseconds())),
+            _ => todo!("querying is not supported for {value:?}"),
+        }
     }
 
     fn get_reader_actions(
@@ -613,13 +701,17 @@ impl DeltaTableReader {
 
 impl Reader for DeltaTableReader {
     fn read(&mut self) -> Result<ReadResult, ReadError> {
-        let parquet_row = match self.read_next_row_native(self.streaming_mode.is_polling_enabled())
-        {
-            Ok(row) => row,
-            Err(ReadError::NoObjectsToRead) => return Ok(ReadResult::Finished),
-            Err(other) => return Err(other),
+        let row_map = if let Some(row_map) = self.backfilling_entries_queue.pop_front() {
+            row_map
+        } else {
+            let parquet_row =
+                match self.read_next_row_native(self.streaming_mode.is_polling_enabled()) {
+                    Ok(row) => row,
+                    Err(ReadError::NoObjectsToRead) => return Ok(ReadResult::Finished),
+                    Err(other) => return Err(other),
+                };
+            parquet_row_into_values_map(&parquet_row, &self.column_types)
         };
-        let row_map = parquet_row_into_values_map(&parquet_row, &self.column_types);
 
         self.rows_read_within_version += 1;
         Ok(ReadResult::Data(

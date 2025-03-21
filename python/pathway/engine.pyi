@@ -775,6 +775,13 @@ class DataFormat:
 
     def __init__(self, *args, **kwargs): ...
 
+class BackfillingThreshold:
+    field: str
+    threshold: Value
+    comparison_op: str
+
+    def __init__(self, *args, **kwargs): ...
+
 class DataStorage:
     storage_type: str
     path: str | None

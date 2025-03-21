@@ -26,6 +26,7 @@ use std::time::Duration;
 use arcstr::ArcStr;
 use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::error::ArrowError;
+use deltalake::datafusion::common::DataFusionError;
 use deltalake::datafusion::parquet::record::Field as ParquetValue;
 use deltalake::parquet::errors::ParquetError;
 use deltalake::DeltaTableError;
@@ -265,6 +266,9 @@ pub enum ReadError {
 
     #[error(transparent)]
     Iceberg(#[from] IcebergError),
+
+    #[error(transparent)]
+    Datafusion(#[from] DataFusionError),
 
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),

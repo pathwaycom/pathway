@@ -3926,6 +3926,7 @@ pub struct DataStorage {
     sql_writer_init_mode: SqlWriterInitMode,
     topic_name_index: Option<usize>,
     partition_columns: Option<Vec<String>>,
+    backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "PersistenceMode")]
@@ -4204,6 +4205,31 @@ impl ValueField {
     }
 }
 
+#[derive(Clone, Debug)]
+#[pyclass(module = "pathway.engine", frozen, get_all)]
+pub struct BackfillingThreshold {
+    pub field: String,
+    pub threshold: Value,
+    pub comparison_op: String, // TODO: enum?
+}
+
+#[pymethods]
+impl BackfillingThreshold {
+    #[new]
+    #[pyo3(signature = (field, threshold, comparison_op))]
+    fn new(field: String, threshold: Value, comparison_op: String) -> PyResult<Self> {
+        let allowed_comparison_ops = vec![">", "<", ">=", "<=", "==", "!="];
+        if !allowed_comparison_ops.contains(&comparison_op.as_str()) {
+            return Err(PyValueError::new_err(format!("Unknown 'comparison_op': only {} are supported, but '{comparison_op}' was specified.", allowed_comparison_ops.into_iter().map(|x| format!("'{x}'")).format(", "))));
+        }
+        Ok(BackfillingThreshold {
+            field,
+            threshold,
+            comparison_op,
+        })
+    }
+}
+
 #[pyclass(module = "pathway.engine", frozen, get_all)]
 pub struct DataFormat {
     format_type: String,
@@ -4252,6 +4278,7 @@ impl DataStorage {
         sql_writer_init_mode = SqlWriterInitMode::Default,
         topic_name_index = None,
         partition_columns = None,
+        backfilling_thresholds = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4283,6 +4310,7 @@ impl DataStorage {
         sql_writer_init_mode: SqlWriterInitMode,
         topic_name_index: Option<usize>,
         partition_columns: Option<Vec<String>>,
+        backfilling_thresholds: Option<Vec<BackfillingThreshold>>,
     ) -> Self {
         DataStorage {
             storage_type,
@@ -4313,6 +4341,7 @@ impl DataStorage {
             sql_writer_init_mode,
             topic_name_index,
             partition_columns,
+            backfilling_thresholds,
         }
     }
 
@@ -4909,7 +4938,11 @@ impl DataStorage {
         if let Some(license) = license {
             license.check_entitlements(["deltalake"])?;
         }
+        let backfilling_thresholds = self.backfilling_thresholds.clone().unwrap_or_default();
 
+        if self.start_from_timestamp_ms.is_some() && !backfilling_thresholds.is_empty() {
+            return Err(PyValueError::new_err("The simultaneous use of 'start_from_timestamp_ms' and 'backfilling_thresholds' is not supported."));
+        }
         let reader = DeltaTableReader::new(
             self.path()?,
             self.object_downloader(py)?,
@@ -4918,6 +4951,7 @@ impl DataStorage {
             self.mode,
             self.start_from_timestamp_ms,
             data_format.key_field_names.is_some(),
+            backfilling_thresholds,
         )
         .map_err(|e| PyIOError::new_err(format!("Failed to connect to DeltaLake: {e}")))?;
         Ok((Box::new(reader), 1))
@@ -5862,6 +5896,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PySnapshotAccess>()?;
     m.add_class::<PySnapshotEvent>()?;
     m.add_class::<TelemetryConfig>()?;
+    m.add_class::<BackfillingThreshold>()?;
 
     m.add_class::<ConnectorProperties>()?;
     m.add_class::<ColumnProperties>()?;

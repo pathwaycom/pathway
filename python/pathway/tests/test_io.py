@@ -3427,7 +3427,8 @@ def test_deltalake_read_after_modification(tmp_path):
 
 @needs_multiprocessing_fork
 @only_with_license_key
-def test_streaming_from_deltalake(tmp_path):
+@pytest.mark.parametrize("with_backfilling_thresholds", [False, True])
+def test_streaming_from_deltalake(tmp_path, with_backfilling_thresholds):
     lake_path = str(tmp_path / "lake")
     output_path = tmp_path / "output.csv"
 
@@ -3448,9 +3449,20 @@ def test_streaming_from_deltalake(tmp_path):
 
     t = threading.Thread(target=create_new_versions, args=(1, 10))
     t.start()
-    table = pw.io.deltalake.read(
-        lake_path, schema=InputSchema, autocommit_duration_ms=10
-    )
+    if with_backfilling_thresholds:
+        backfilling_thresholds = [
+            api.BackfillingThreshold(field="k", comparison_op=">=", threshold=0),
+        ]
+        table = pw.io.deltalake.read(
+            lake_path,
+            schema=InputSchema,
+            autocommit_duration_ms=10,
+            backfilling_thresholds=backfilling_thresholds,
+        )
+    else:
+        table = pw.io.deltalake.read(
+            lake_path, schema=InputSchema, autocommit_duration_ms=10
+        )
     pw.io.csv.write(table, output_path)
     wait_result_with_checker(CsvLinesNumberChecker(output_path, 10), 30)
 
@@ -4275,3 +4287,38 @@ def test_deltalake_schema_custom_metadata_flexibility(tmp_path: pathlib.Path):
     )
     assert set(pd_table_from_delta["k"]) == {0, 1, 2, 3}
     assert set(pd_table_from_delta["v"]) == {"zero", "one", "two", "three"}
+
+
+@only_with_license_key
+def test_deltalake_backfilling_thresholds(tmp_path: pathlib.Path):
+    input_path = tmp_path / "input"
+    output_path = tmp_path / "output.csv"
+    lake_initial = [
+        {"k": 0, "v": "zero"},
+        {"k": 1, "v": "one"},
+        {"k": 2, "v": "two"},
+        {"k": 3, "v": "three"},
+    ]
+    df = pd.DataFrame(lake_initial).set_index("k")
+    write_deltalake(input_path, df)
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        v: str
+
+    table = pw.io.deltalake.read(
+        input_path,
+        InputSchema,
+        mode="static",
+        _backfilling_thresholds=[
+            api.BackfillingThreshold(
+                field="k",
+                comparison_op=">",
+                threshold=1,
+            )
+        ],
+    )
+    pw.io.csv.write(table, output_path)
+    run_all()
+    result = pd.read_csv(output_path, usecols=["v"])
+    assert set(result["v"]) == {"two", "three"}

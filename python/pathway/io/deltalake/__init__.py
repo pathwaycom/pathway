@@ -58,6 +58,7 @@ def read(
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     debug_data: Any = None,
+    _backfilling_thresholds: list[api.BackfillingThreshold] | None = None,
     **kwargs,
 ) -> Table:
     """
@@ -158,6 +159,7 @@ def read(
             uri, prepared_connection_settings
         ),
         start_from_timestamp_ms=start_from_timestamp_ms,
+        backfilling_thresholds=_backfilling_thresholds,
     )
     if schema is None:
         try:
