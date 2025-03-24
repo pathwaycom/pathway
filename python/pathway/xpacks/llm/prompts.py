@@ -219,77 +219,36 @@ def prompt_qa(
     return prompt
 
 
-# prompt for `answer_with_geometric_rag_strategy`, it is the same as in the research project
-# docs` argument will be deprecated in favor of `context: str` argument
-# this will require the use of `BaseContextProcessor`
 @pw.udf
 def prompt_qa_geometric_rag(
+    context: str,
     query: str,
-    docs: list[pw.Json] | list[str],
     information_not_found_response="No information found.",
     additional_rules: str = "",
-    strict_prompt: bool = False,  # instruct LLM to return json for local models, improves performance
 ):
-    context_pieces = []
 
-    for i, doc in enumerate(docs, 1):
-        if isinstance(doc, str):
-            context_pieces.append(f"Source {i}: {doc}")
-        else:
-            context_pieces.append(f"Source {i}: {doc['text']}")  # type: ignore
-    context_str = "\n".join(context_pieces)
-
-    if strict_prompt:
-        prompt = f"""
-        Use the below articles to answer the subsequent question. If the answer cannot be found in the articles, write "{information_not_found_response}" Do not explain.
-        ONLY RESPOND IN PARSABLE JSON WITH THE ONLY KEY `answer`.
-        When referencing information from a source, cite the appropriate source(s) using their corresponding numbers. Every answer should include at least one source citation.
-        Only cite a source when you are explicitly referencing it.
-        For example:
-        Given following sources and query
-        Example 1: "Source 1: The sky is red in the evening and blue in the morning.\nSource 2: Water is wet when the sky is red.
-        Query: When is water wet?
-        Response: {{"answer": "When the sky is red [2], which occurs in the evening [1]."}}
-        Example 2: "Source 1: LLM stands for Large language models.
-        Query: Who is the current pope?
-        Response: {{"answer": "{information_not_found_response}"}}
-        """  # noqa
-    else:
-        prompt = f"""
-        Use the below articles to answer the subsequent question. If the answer cannot be found in the articles, write "{information_not_found_response}" Do not answer in full sentences.
-        When referencing information from a source, cite the appropriate source(s) using their corresponding numbers. Every answer should include at least one source citation.
-        Only cite a source when you are explicitly referencing it. For example:
-        "Source 1:
-        The sky is red in the evening and blue in the morning.
-        Source 2:
-        Water is wet when the sky is red.\n
-        Query: When is water wet?
-        Answer: When the sky is red [2], which occurs in the evening [1]."
-        """  # noqa
+    prompt = f"""
+    Use the below articles to answer the subsequent question. If the answer cannot be found in the articles, write "{information_not_found_response}" Do not explain.
+    For example:
+    Given following sources and query
+    Example 1: "Source 1: The sky is red in the evening and blue in the morning.\nSource 2: Water is wet when the sky is red.
+    Query: When is water wet?
+    Answer: "When the sky is red [2], which occurs in the evening [1]."
+    Example 2: "Source 1: LLM stands for Large language models.
+    Query: Who is the current pope?
+    Answer: {information_not_found_response}
+    """  # noqa
 
     prompt += additional_rules + " "
 
-    if strict_prompt:  # further instruction is needed for smaller models
-        prompt += (
-            "\n------\n"
-            f"{context_str}"
-            f"Query: {query}\n"
-            "ONLY RESPOND IN PARSABLE JSON WITH THE ONLY KEY `answer` containing your response. "
-        )
-
-        response_str = "Response"
-    else:
-        prompt += (
-            "Now it's your turn. "
-            "\n------\n"
-            f"{context_str}"
-            "\n------\n"
-            f"Query: {query}\n"
-        )
-
-        response_str = "Answer"
-
-    prompt += f"{response_str}:"
+    prompt += (
+        "Now it's your turn. "
+        "\n------\n"
+        f"{context}"
+        "\n------\n"
+        f"Query: {query}\n"
+        "Answer: "
+    )
     return prompt
 
 

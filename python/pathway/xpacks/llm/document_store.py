@@ -31,6 +31,21 @@ if TYPE_CHECKING:
     import llama_index.core.schema
 
 
+@pw.udf
+def _get_jmespath_filter(metadata_filter: str, filepath_globpattern: str) -> str | None:
+    ret_parts = []
+    if metadata_filter:
+        metadata_filter = (
+            metadata_filter.replace("'", r"\'").replace("`", "'").replace('"', "")
+        )
+        ret_parts.append(f"({metadata_filter})")
+    if filepath_globpattern:
+        ret_parts.append(f"globmatch('{filepath_globpattern}', path)")
+    if ret_parts:
+        return " && ".join(ret_parts)
+    return None
+
+
 class DocumentStore:
     """
     Builds a document indexing pipeline for processing documents and querying closest documents
@@ -360,24 +375,6 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
     @staticmethod
     def merge_filters(queries: pw.Table):
-        @pw.udf
-        def _get_jmespath_filter(
-            metadata_filter: str, filepath_globpattern: str
-        ) -> str | None:
-            ret_parts = []
-            if metadata_filter:
-                metadata_filter = (
-                    metadata_filter.replace("'", r"\'")
-                    .replace("`", "'")
-                    .replace('"', "")
-                )
-                ret_parts.append(f"({metadata_filter})")
-            if filepath_globpattern:
-                ret_parts.append(f"globmatch('{filepath_globpattern}', path)")
-            if ret_parts:
-                return " && ".join(ret_parts)
-            return None
-
         queries = queries.without(
             *DocumentStore.FilterSchema.__columns__.keys()
         ) + queries.select(

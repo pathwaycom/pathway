@@ -255,7 +255,6 @@ result = query.select(
         n_starting_documents=2,
         factor=2,
         max_iterations=4,
-        strict_prompt=True,  # needed for open source models, instructs LLM to give JSON output strictly
     ),
 )
 

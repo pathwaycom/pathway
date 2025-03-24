@@ -11,9 +11,12 @@ import pathway as pw
 from pathway.internals import ColumnReference, Table, udfs
 from pathway.stdlib.indexing import DataIndex
 from pathway.xpacks.llm import Doc, llms, prompts
-from pathway.xpacks.llm.document_store import DocumentStore, SlidesDocumentStore
+from pathway.xpacks.llm.document_store import (
+    DocumentStore,
+    SlidesDocumentStore,
+    _get_jmespath_filter,
+)
 from pathway.xpacks.llm.llms import BaseChat, prompt_chat_single_qa
-from pathway.xpacks.llm.prompts import prompt_qa_geometric_rag
 from pathway.xpacks.llm.vector_store import (
     SlidesVectorStoreServer,
     VectorStoreClient,
@@ -25,197 +28,12 @@ if TYPE_CHECKING:
 
 
 @pw.udf
-def _limit_documents(documents: list[str], k: int) -> list[str]:
+def _limit_documents(documents: list[pw.Json], k: int) -> list[pw.Json]:
     return documents[:k]
 
 
 _answer_not_known = "I could not find an answer."
 _answer_not_known_open_source = "No information available."
-
-
-def _query_chat_strict_json(chat: BaseChat, t: Table) -> pw.Table:
-
-    t += t.select(
-        prompt=prompt_qa_geometric_rag(
-            t.query, t.documents, _answer_not_known_open_source, strict_prompt=True
-        )
-    )
-    answer = t.select(answer=chat(prompt_chat_single_qa(t.prompt)))
-
-    @pw.udf
-    def extract_answer(response: str) -> str:
-        response = response.strip()  # mistral-7b occasionally puts empty spaces
-        json_start, json_finish = response.find("{"), response.find(
-            "}"
-        )  # remove unparsable part, mistral sometimes puts `[sources]` after the json
-
-        unparsed_json = response[json_start : json_finish + 1]
-        answer_dict = json.loads(unparsed_json)
-        return " ".join(answer_dict.values())
-
-    answer = answer.select(answer=extract_answer(pw.this.answer))
-
-    @pw.udf
-    def check_no_information(pred: str) -> bool:
-        return "No information" in pred
-
-    answer = answer.select(
-        answer=pw.if_else(check_no_information(pw.this.answer), None, pw.this.answer)
-    )
-    return answer
-
-
-def _query_chat_gpt(chat: BaseChat, t: Table) -> pw.Table:
-    t += t.select(
-        prompt=prompt_qa_geometric_rag(t.query, t.documents, _answer_not_known)
-    )
-    answer = t.select(answer=chat(prompt_chat_single_qa(t.prompt)))
-
-    answer = answer.select(
-        answer=pw.if_else(pw.this.answer == _answer_not_known, None, pw.this.answer)
-    )
-    return answer
-
-
-def _query_chat(chat: BaseChat, t: Table, strict_prompt: bool) -> pw.Table:
-    if strict_prompt:
-        return _query_chat_strict_json(chat, t)
-    else:
-        return _query_chat_gpt(chat, t)
-
-
-def _query_chat_with_k_documents(
-    chat: BaseChat, k: int, t: pw.Table, strict_prompt: bool
-) -> pw.Table:
-    limited_documents = t.select(
-        pw.this.query, documents=_limit_documents(t.documents, k)
-    )
-    result = _query_chat(chat, limited_documents, strict_prompt)
-    return result
-
-
-def answer_with_geometric_rag_strategy(
-    questions: ColumnReference,
-    documents: ColumnReference,
-    llm_chat_model: BaseChat,
-    n_starting_documents: int,
-    factor: int,
-    max_iterations: int,
-    strict_prompt: bool = False,
-) -> ColumnReference:
-    """
-    Function for querying LLM chat while providing increasing number of documents until an answer
-    is found. Documents are taken from `documents` argument. Initially first `n_starting_documents` documents
-    are embedded in the query. If the LLM chat fails to find an answer, the number of documents
-    is multiplied by `factor` and the question is asked again.
-
-    Args:
-        questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
-        documents (ColumnReference[list[str]]): Column with documents to be provided along
-             with a question to the LLM chat.
-        llm_chat_model: Chat model which will be queried for answers
-        n_starting_documents: Number of documents embedded in the first query.
-        factor: Factor by which a number of documents increases in each next query, if
-            an answer is not found.
-        max_iterations: Number of times to ask a question, with the increasing number of documents.
-        strict_prompt: If LLM should be instructed strictly to return json.
-            Increases performance in small open source models, not needed in OpenAI GPT models.
-
-    Returns:
-        A column with answers to the question. If answer is not found, then None is returned.
-
-    Example:
-
-    >>> import pandas as pd
-    >>> import pathway as pw
-    >>> from pathway.xpacks.llm.llms import OpenAIChat
-    >>> from pathway.xpacks.llm.question_answering import answer_with_geometric_rag_strategy
-    >>> chat = OpenAIChat()
-    >>> df = pd.DataFrame(
-    ...     {
-    ...         "question": ["How do you connect to Kafka from Pathway?"],
-    ...         "documents": [
-    ...             [
-    ...                 "`pw.io.csv.read reads a table from one or several files with delimiter-separated values.",
-    ...                 "`pw.io.kafka.read` is a seneralized method to read the data from the given topic in Kafka.",
-    ...             ]
-    ...         ],
-    ...     }
-    ... )
-    >>> t = pw.debug.table_from_pandas(df)
-    >>> answers = answer_with_geometric_rag_strategy(t.question, t.documents, chat, 1, 2, 2)
-    """
-    n_documents = n_starting_documents
-    t = Table.from_columns(query=questions, documents=documents)
-    t = t.with_columns(answer=None)
-    for _ in range(max_iterations):
-        rows_without_answer = t.filter(pw.this.answer.is_none())
-        results = _query_chat_with_k_documents(
-            llm_chat_model, n_documents, rows_without_answer, strict_prompt
-        )
-        new_answers = rows_without_answer.with_columns(answer=results.answer)
-        t = t.update_rows(new_answers)
-        n_documents *= factor
-    return t.answer
-
-
-def answer_with_geometric_rag_strategy_from_index(
-    questions: ColumnReference,
-    index: DataIndex,
-    documents_column: str | ColumnReference,
-    llm_chat_model: BaseChat,
-    n_starting_documents: int,
-    factor: int,
-    max_iterations: int,
-    metadata_filter: pw.ColumnExpression | None = None,
-    strict_prompt: bool = False,
-) -> ColumnReference:
-    """
-    Function for querying LLM chat while providing increasing number of documents until an answer
-    is found. Documents are taken from `index`. Initially first `n_starting_documents` documents
-    are embedded in the query. If the LLM chat fails to find an answer, the number of documents
-    is multiplied by `factor` and the question is asked again.
-
-    Args:
-        questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
-        index: Index from which closest documents are obtained.
-        documents_column: name of the column in table passed to index, which contains documents.
-        llm_chat_model: Chat model which will be queried for answers
-        n_starting_documents: Number of documents embedded in the first query.
-        factor: Factor by which a number of documents increases in each next query, if
-            an answer is not found.
-        max_iterations: Number of times to ask a question, with the increasing number of documents.
-        strict_prompt: If LLM should be instructed strictly to return json.
-            Increases performance in small open source models, not needed in OpenAI GPT models.
-
-    Returns:
-        A column with answers to the question. If answer is not found, then None is returned.
-    """
-    max_documents = n_starting_documents * (factor ** (max_iterations - 1))
-
-    if isinstance(documents_column, ColumnReference):
-        documents_column_name = documents_column.name
-    else:
-        documents_column_name = documents_column
-
-    query_context = questions.table + index.query_as_of_now(
-        questions,
-        number_of_matches=max_documents,
-        collapse_rows=True,
-        metadata_filter=metadata_filter,
-    ).select(
-        documents_list=pw.coalesce(pw.this[documents_column_name], ()),
-    )
-
-    return answer_with_geometric_rag_strategy(
-        questions,
-        query_context.documents_list,
-        llm_chat_model,
-        n_starting_documents,
-        factor,
-        max_iterations,
-        strict_prompt=strict_prompt,
-    )
 
 
 class BaseContextProcessor(ABC):
@@ -283,6 +101,288 @@ class SimpleContextProcessor(BaseContextProcessor):
         )
 
         return context
+
+
+@pw.udf
+def _prepare_RAG_response(
+    response: str, docs: list[dict], return_context_docs: bool
+) -> pw.Json:
+    api_response: dict = {"response": response}
+    if return_context_docs:
+        api_response["context_docs"] = docs
+
+    return pw.Json(api_response)
+
+
+def _get_RAG_prompt_udf(prompt_template: str | Callable[[str, str], str] | pw.UDF):
+    if isinstance(prompt_template, pw.UDF) or callable(prompt_template):
+        verified_template: prompts.BasePromptTemplate = (
+            prompts.RAGFunctionPromptTemplate(function_template=prompt_template)
+        )
+    elif isinstance(prompt_template, str):
+        verified_template = prompts.RAGPromptTemplate(template=prompt_template)
+    else:
+        raise ValueError(
+            f"Prompt template is not of expected type. Got: {type(prompt_template)}."
+        )
+
+    return verified_template.as_udf()
+
+
+def _get_context_processor_udf(
+    context_processor: (
+        BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
+    )
+) -> pw.UDF:
+    if isinstance(context_processor, BaseContextProcessor):
+        return context_processor.as_udf()
+    elif isinstance(context_processor, pw.UDF):
+        return context_processor
+    elif callable(context_processor):
+        return pw.udf(context_processor)
+    else:
+        raise ValueError(
+            "Context processor must be type of one of the following: \
+            ~BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | ~pw.UDF"
+        )
+
+
+def _query_chat(
+    chat: BaseChat,
+    t: Table,
+    prompt_udf: pw.UDF,
+    no_answer_string: str,
+    context_processor: pw.UDF,
+) -> pw.Table:
+    t = t.with_columns(context=context_processor(t.documents))
+    t += t.select(prompt=prompt_udf(t.context, t.query))
+    answer = t.select(answer=chat(prompt_chat_single_qa(t.prompt)))
+
+    answer = answer.select(
+        answer=pw.if_else(pw.this.answer == no_answer_string, None, pw.this.answer)
+    )
+    return answer
+
+
+def _query_chat_with_k_documents(
+    chat: BaseChat,
+    k: int,
+    t: pw.Table,
+    prompt_udf: pw.UDF,
+    no_answer_string: str,
+    context_processor: pw.UDF,
+) -> pw.Table:
+    limited_documents = t.select(
+        pw.this.query, documents=_limit_documents(t.documents, k)
+    )
+    result = _query_chat(
+        chat, limited_documents, prompt_udf, no_answer_string, context_processor
+    ).with_columns(documents=limited_documents.documents)
+    return result
+
+
+def answer_with_geometric_rag_strategy(
+    questions: ColumnReference,
+    documents: ColumnReference,
+    llm_chat_model: BaseChat,
+    *,
+    prompt_template: (
+        str | Callable[[str, str], str] | pw.UDF
+    ) = prompts.prompt_qa_geometric_rag,
+    no_answer_string: str = "No information found.",
+    context_processor: (
+        BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
+    ) = SimpleContextProcessor(),
+    n_starting_documents: int = 2,
+    factor: int = 2,
+    max_iterations: int = 4,
+    return_context_docs: pw.ColumnExpression | bool = False,
+) -> ColumnReference:
+    """
+    Function for querying LLM chat while providing increasing number of documents until an answer
+    is found. Documents are taken from `documents` argument. Initially first `n_starting_documents` documents
+    are embedded in the query. If the LLM chat fails to find an answer, the number of documents
+    is multiplied by `factor` and the question is asked again.
+
+    Args:
+        questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
+        documents (ColumnReference[list[str]]): Column with documents to be provided along
+             with a question to the LLM chat.
+        llm_chat_model: Chat model which will be queried for answers
+        prompt_template: Template for document question answering with short response.
+            Either string template, callable or a pw.udf function is expected.
+            Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+            String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
+            For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
+            when information is not found.
+        no_answer_string: string that will be return by the LLM when information is not found.
+        context_processor: Utility for representing the fetched documents to the LLM. Callable,
+            UDF or ``BaseContextProcessor`` is expected.
+            Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata
+            and joins the documents with double new lines.
+        n_starting_documents: Number of documents embedded in the first query.
+        factor: Factor by which a number of documents increases in each next query, if
+            an answer is not found.
+        max_iterations: Number of times to ask a question, with the increasing number of documents.
+        return_context_docs: A flag indicating whether context documents are to be returned
+            in the answer.
+
+    Returns:
+        A column with answers to the question. The answer is returned as a dictionary
+        that has a key ``"response"`` with the answer as a string. Additionally, if
+        ``return_context_docs == True``, then it has additionally a key ``"context_docs"``
+        with the list of documents that were used as a context for the question.
+
+    Example:
+
+    >>> import pandas as pd
+    >>> import pathway as pw
+    >>> from pathway.xpacks.llm.llms import OpenAIChat
+    >>> from pathway.xpacks.llm.question_answering import answer_with_geometric_rag_strategy
+    >>> chat = OpenAIChat()
+    >>> df = pd.DataFrame(
+    ...     {
+    ...         "question": ["How do you connect to Kafka from Pathway?"],
+    ...         "documents": [
+    ...             [
+    ...                 "`pw.io.csv.read reads a table from one or several files with delimiter-separated values.",
+    ...                 "`pw.io.kafka.read` is a seneralized method to read the data from the given topic in Kafka.",
+    ...             ]
+    ...         ],
+    ...     }
+    ... )
+    >>> t = pw.debug.table_from_pandas(df)
+    >>> answers = answer_with_geometric_rag_strategy(t.question, t.documents, chat)
+    """
+
+    @pw.udf
+    def make_json(docs: list[str]) -> list[dict]:
+        return [{"text": doc} for doc in docs]
+
+    prompt_udf = _get_RAG_prompt_udf(prompt_template)
+    n_documents = n_starting_documents
+    t = Table.from_columns(query=questions, documents=documents)
+    t = t.with_columns(
+        answer=None,
+        documents_used=None,
+        return_context_docs=return_context_docs,
+        documents=make_json(documents),
+    )
+    context_processor = _get_context_processor_udf(context_processor)
+    for _ in range(max_iterations):
+        rows_without_answer = t.filter(pw.this.answer.is_none())
+        results = _query_chat_with_k_documents(
+            llm_chat_model,
+            n_documents,
+            rows_without_answer,
+            prompt_udf,
+            no_answer_string,
+            context_processor=context_processor,
+        )
+        new_answers = rows_without_answer.with_columns(
+            answer=results.answer, documents_used=results.documents
+        )
+        t = t.update_rows(new_answers)
+        n_documents *= factor
+
+    t = t.select(
+        answer=pw.if_else(
+            pw.this.answer.is_none(),
+            _prepare_RAG_response(
+                no_answer_string, pw.this.documents, pw.this.return_context_docs
+            ),
+            _prepare_RAG_response(
+                pw.this.answer, pw.this.documents_used, pw.this.return_context_docs
+            ),
+        )
+    )
+
+    return t.answer
+
+
+def answer_with_geometric_rag_strategy_from_index(
+    questions: ColumnReference,
+    index: DataIndex,
+    documents_column: str | ColumnReference,
+    llm_chat_model: BaseChat,
+    *,
+    prompt_template: (
+        str | Callable[[str, str], str] | pw.UDF
+    ) = prompts.prompt_qa_geometric_rag,
+    no_answer_string: str = "No information found.",
+    context_processor: (
+        BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
+    ) = SimpleContextProcessor(),
+    n_starting_documents: int = 2,
+    factor: int = 2,
+    max_iterations: int = 4,
+    return_context_docs: pw.ColumnExpression | bool = False,
+    metadata_filter: pw.ColumnExpression | None = None,
+) -> ColumnReference:
+    """
+    Function for querying LLM chat while providing increasing number of documents until an answer
+    is found. Documents are taken from `index`. Initially first `n_starting_documents` documents
+    are embedded in the query. If the LLM chat fails to find an answer, the number of documents
+    is multiplied by `factor` and the question is asked again.
+
+    Args:
+        questions (ColumnReference[str]): Column with questions to be asked to the LLM chat.
+        index: Index from which closest documents are obtained.
+        documents_column: name of the column in table passed to index, which contains documents.
+        llm_chat_model: Chat model which will be queried for answers
+        prompt_template: Template for document question answering with short response.
+            Either string template, callable or a pw.udf function is expected.
+            Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+            String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
+            For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
+            when information is not found.
+        no_answer_string: string that will be return by the LLM when information is not found.
+        context_processor: Utility for representing the fetched documents to the LLM. Callable,
+            UDF or ``BaseContextProcessor`` is expected.
+            Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata
+            and joins the documents with double new lines.
+        n_starting_documents: Number of documents embedded in the first query.
+        factor: Factor by which a number of documents increases in each next query, if
+            an answer is not found.
+        max_iterations: Number of times to ask a question, with the increasing number of documents.
+        return_context_docs: A flag indicating whether context documents are to be returned
+            in the answer.
+        metadata_filter: Metadata filter used when retrieving documents from the index.
+
+    Returns:
+        A column with answers to the question. The answer is returned as a dictionary
+        that has a key ``"response"`` with the answer as a string. Additionally, if
+        ``return_context_docs == True``, then it has additionally a key ``"context_docs"``
+        with the list of documents that were used as a context for the question.
+    """
+    max_documents = n_starting_documents * (factor ** (max_iterations - 1))
+
+    if isinstance(documents_column, ColumnReference):
+        documents_column_name = documents_column.name
+    else:
+        documents_column_name = documents_column
+
+    query_context = questions.table + index.query_as_of_now(
+        questions,
+        number_of_matches=max_documents,
+        collapse_rows=True,
+        metadata_filter=_get_jmespath_filter(metadata_filter, ""),
+    ).select(
+        documents_list=pw.coalesce(pw.this[documents_column_name], ()),
+    )
+
+    return answer_with_geometric_rag_strategy(
+        questions,
+        query_context.documents_list,
+        llm_chat_model,
+        n_starting_documents=n_starting_documents,
+        factor=factor,
+        max_iterations=max_iterations,
+        return_context_docs=return_context_docs,
+        prompt_template=prompt_template,
+        no_answer_string=no_answer_string,
+        context_processor=context_processor,
+    )
 
 
 class BaseQuestionAnswerer:
@@ -395,7 +495,7 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         self._init_schemas(default_llm_name)
 
-        self.prompt_udf = self._get_prompt_udf(prompt_template)
+        self.prompt_udf = _get_RAG_prompt_udf(prompt_template)
 
         if isinstance(context_processor, BaseContextProcessor):
             self.docs_to_context_transformer = context_processor.as_udf()
@@ -414,20 +514,6 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
         self.summarize_template = summarize_template
         self.search_topk = search_topk
         self.server: None | QASummaryRestServer = None
-
-    def _get_prompt_udf(self, prompt_template):
-        if isinstance(prompt_template, pw.UDF) or callable(prompt_template):
-            verified_template: prompts.BasePromptTemplate = (
-                prompts.RAGFunctionPromptTemplate(function_template=prompt_template)
-            )
-        elif isinstance(prompt_template, str):
-            verified_template = prompts.RAGPromptTemplate(template=prompt_template)
-        else:
-            raise ValueError(
-                f"Template is not of expected type. Got: {type(prompt_template)}."
-            )
-
-        return verified_template.as_udf()
 
     def _init_schemas(self, default_llm_name: str | None = None) -> None:
         """Initialize API schemas with optional and non-optional arguments."""
@@ -480,18 +566,8 @@ class BaseRAGQuestionAnswerer(SummaryQuestionAnswerer):
 
         pw_ai_results = pw_ai_results.await_futures()
 
-        @pw.udf
-        def prepare_response(
-            response: str, docs: list[dict], return_context_docs: bool
-        ) -> pw.Json:
-            api_response: dict = {"response": response}
-            if return_context_docs:
-                api_response["context_docs"] = docs
-
-            return pw.Json(api_response)
-
         pw_ai_results += pw_ai_results.select(
-            result=prepare_response(
+            result=_prepare_RAG_response(
                 pw.this.response, pw.this.docs, pw.this.return_context_docs
             )
         )
@@ -655,13 +731,20 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         indexer: Indexing object for search & retrieval to be used for context augmentation.
         default_llm_name: Default LLM model to be used in queries, only used if ``model`` parameter in post request is not specified.
             Omitting or setting this to ``None`` will default to the model name set during LLM's initialization.
+        prompt_template: Template for document question answering with short response.
+            Either string template, callable or a pw.udf function is expected.
+            Defaults to ``pathway.xpacks.llm.prompts.prompt_qa``.
+            String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
+            For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
+            when information is not found.
+        no_answer_string: string that will be return by the LLM when information is not found.
+        context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
+            Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.
         n_starting_documents: Number of documents embedded in the first query.
         factor: Factor by which a number of documents increases in each next query, if
             an answer is not found.
         max_iterations: Number of times to ask a question, with the increasing number of documents.
-        strict_prompt: If LLM should be instructed strictly to return json.
-            Increases performance in small open source models, not needed in OpenAI GPT models.
 
 
     Example:
@@ -707,22 +790,30 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
         indexer: VectorStoreServer | DocumentStore,
         *,
         default_llm_name: str | None = None,
+        prompt_template: (
+            str | Callable[[str, str], str] | pw.UDF
+        ) = prompts.prompt_qa_geometric_rag,
+        no_answer_string: str = "No information found.",
+        context_processor: (
+            BaseContextProcessor | Callable[[list[dict] | list[Doc]], str] | pw.UDF
+        ) = SimpleContextProcessor(),
         summarize_template: pw.UDF = prompts.prompt_summarize,
         n_starting_documents: int = 2,
         factor: int = 2,
         max_iterations: int = 4,
-        strict_prompt: bool = False,
     ) -> None:
         super().__init__(
             llm,
             indexer,
             default_llm_name=default_llm_name,
             summarize_template=summarize_template,
+            context_processor=context_processor,
         )
+        self.prompt_template = prompt_template
         self.n_starting_documents = n_starting_documents
         self.factor = factor
         self.max_iterations = max_iterations
-        self.strict_prompt = strict_prompt
+        self.no_answer_string = no_answer_string
 
     @pw.table_transformer
     def answer_query(self, pw_ai_queries: pw.Table) -> pw.Table:
@@ -735,7 +826,6 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             data_column_name = "text"
 
         result = pw_ai_queries.select(
-            *pw.this,
             result=answer_with_geometric_rag_strategy_from_index(
                 pw_ai_queries.prompt,
                 index,
@@ -744,17 +834,13 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
                 n_starting_documents=self.n_starting_documents,
                 factor=self.factor,
                 max_iterations=self.max_iterations,
-                strict_prompt=self.strict_prompt,
+                prompt_template=self.prompt_template,
+                no_answer_string=self.no_answer_string,
+                context_processor=self.docs_to_context_transformer,
                 metadata_filter=pw_ai_queries.filters,
+                return_context_docs=pw_ai_queries.return_context_docs,
             ),
         )
-
-        @pw.udf
-        def prepare_response(response: str) -> pw.Json:
-            api_response: dict = {"response": response}
-            return pw.Json(api_response)
-
-        result = result.with_columns(result=prepare_response(pw.this.result))
 
         return result
 
