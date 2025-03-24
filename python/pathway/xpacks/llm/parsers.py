@@ -442,6 +442,9 @@ class DoclingParser(pw.UDF):
             "generate_picture_images": (
                 True if self.multimodal_llm is not None else False
             ),
+            "generate_table_images": (
+                True if self.multimodal_llm is not None else False
+            ),
             # whether to perform OCR; big impact on speed
             "do_ocr": False,
             # scale of images; small impact on speed

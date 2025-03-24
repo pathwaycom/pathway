@@ -28,6 +28,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - `pw.io.csv.write` now correctly escapes quote characters.
+- `table_parsing_strategy="llm"` in `DoclingParser` now works correctly
 
 ## [0.20.1] - 2025-03-07
 
