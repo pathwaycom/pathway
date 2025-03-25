@@ -88,6 +88,8 @@ impl StartedConnectorState {
     }
 }
 
+const MAX_PARSE_ERRORS_IN_LOG: usize = 128;
+
 pub struct Connector {
     commit_duration: Option<Duration>,
     current_timestamp: Timestamp,
@@ -95,6 +97,8 @@ pub struct Connector {
     current_frontier: OffsetAntichain,
     skip_all_errors: bool,
     error_logger: Rc<dyn LogError>,
+    n_parse_attempts: usize,
+    n_parse_errors_in_log: usize,
 }
 
 #[derive(Debug)]
@@ -201,6 +205,8 @@ impl Connector {
             current_frontier: OffsetAntichain::new(),
             skip_all_errors,
             error_logger,
+            n_parse_attempts: 0,
+            n_parse_errors_in_log: 0,
         }
     }
 
@@ -624,7 +630,10 @@ impl Connector {
                 }
                 ReadResult::Data(reader_context, offset) => {
                     let mut parsed_entries = match parser.parse(&reader_context) {
-                        Ok(entries) => entries,
+                        Ok(entries) => {
+                            self.log_parse_success();
+                            entries
+                        }
                         Err(e) => {
                             self.log_parse_error(e);
                             return;
@@ -815,12 +824,24 @@ impl Connector {
         }
     }
 
-    fn log_parse_error(&self, error: DynError) {
+    fn log_parse_error(&mut self, error: DynError) {
+        self.n_parse_attempts += 1;
         if self.skip_all_errors {
-            error!("Parse error: {error}");
+            self.n_parse_errors_in_log += 1;
+            let needs_error_log = self.n_parse_errors_in_log <= MAX_PARSE_ERRORS_IN_LOG
+                || self.n_parse_errors_in_log * 10 <= self.n_parse_attempts;
+            if needs_error_log {
+                error!("Parse error: {error}");
+            } else if self.n_parse_errors_in_log == MAX_PARSE_ERRORS_IN_LOG + 1 {
+                error!("Too many parse errors, some of them will be omitted...");
+            }
         } else {
             self.error_logger.log_error(error.into());
         }
+    }
+
+    fn log_parse_success(&mut self) {
+        self.n_parse_attempts += 1;
     }
 }
 
