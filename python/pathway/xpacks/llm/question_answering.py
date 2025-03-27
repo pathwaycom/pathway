@@ -2,7 +2,7 @@
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from warnings import warn
 
 import requests
@@ -1118,7 +1118,7 @@ class RAGClient:
                 Defaults to ``["path"]``. Setting to ``None`` will retrieve all available metadata.
         """
         api_url = f"{self.url}/v2/list_documents"
-        payload = {}
+        payload: dict[str, Any] = {"return_status": True}
 
         if filters:
             payload["metadata_filter"] = filters

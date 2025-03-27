@@ -9,7 +9,8 @@ multiple methods for querying.
 import json
 import warnings
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Iterable, TypeAlias
+from enum import Enum
+from typing import TYPE_CHECKING, Iterable
 
 import jmespath
 import requests
@@ -44,6 +45,11 @@ def _get_jmespath_filter(metadata_filter: str, filepath_globpattern: str) -> str
     if ret_parts:
         return " && ".join(ret_parts)
     return None
+
+
+class IndexingStatus(str, Enum):
+    INDEXED = "INDEXED"
+    INGESTED = "INGESTED"
 
 
 class DocumentStore:
@@ -213,7 +219,17 @@ class DocumentStore:
             default_value=None, description="An optional Glob pattern for the file path"
         )
 
-    InputsQuerySchema: TypeAlias = FilterSchema
+    class InputsQuerySchema(pw.Schema):
+        metadata_filter: str | None = pw.column_definition(
+            default_value=None, description="Metadata filter in JMESPath format"
+        )
+        filepath_globpattern: str | None = pw.column_definition(
+            default_value=None, description="An optional Glob pattern for the file path"
+        )
+        return_status: bool = pw.column_definition(
+            default_value=False,
+            description="Flag whether _indexing_status should be returned for each file",
+        )
 
     class InputsResultSchema(pw.Schema):
         result: list[pw.Json]
@@ -298,9 +314,18 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
 
         docs = pw.Table.concat_reindex(*cleaned_tables)
 
+        @pw.udf
+        def add_file_id(metadata: pw.Json, id) -> dict:
+            metadata_dict = metadata.as_dict()
+            id = str(id)
+            metadata_dict["_file_id"] = id
+            return metadata_dict
+
         # rename columns to be consistent with the rest of the pipeline
         self.input_docs: pw.Table[DocumentStore._RawDocumentSchema] = docs.select(
-            text=pw.this.data, metadata=pw.this._metadata
+            text=pw.this.data,
+            metadata=add_file_id(pw.this._metadata, pw.this.id),
+            # path=pw.this.metadata["path"].as_str(),
         )
 
         # PARSING
@@ -325,6 +350,32 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             self.chunked_docs.text,
             self.chunked_docs,
             metadata_column=self.chunked_docs.metadata,
+        )
+
+        progress_table = self.input_docs.select(
+            file_id=pw.this.metadata["_file_id"].as_str(),
+            metadata=pw.this.metadata,
+        )
+        chunked_stats = (
+            self.chunked_docs.with_columns(
+                file_id=pw.this.metadata["_file_id"].as_str()
+            )
+            .groupby(pw.this.file_id)
+            .reduce(
+                file_id=pw.this.file_id,
+                chunks=pw.reducers.count(),
+            )
+        )
+        self.progress_table = (
+            progress_table.join_left(
+                chunked_stats,
+                progress_table.file_id == chunked_stats.file_id,
+            )
+            .select(
+                *pw.left,
+                chunks=pw.right.chunks,
+            )
+            .with_columns(is_parsed=pw.this.chunks.is_not_none())
         )
 
         parsed_docs_with_metadata = self.parsed_docs.with_columns(
@@ -394,34 +445,68 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
         # TODO: compare this approach to first joining queries to dicuments, then filtering,
         # then grouping to get each response.
         # The "dumb" tuple approach has more work precomputed for an all inputs query
-        all_metas = self.input_docs.reduce(
-            metadatas=pw.reducers.tuple(pw.this.metadata)
+        all_metas = self.progress_table.reduce(
+            metadatas=pw.reducers.tuple(pw.this.metadata),
+            is_parsed=pw.reducers.tuple(pw.this.is_parsed),
         )
 
         input_queries = self.merge_filters(input_queries)
 
         @pw.udf
         def format_inputs(
-            metadatas: list[pw.Json] | None, metadata_filter: str | None
+            metadatas: list[pw.Json] | None,
+            metadata_filter: str | None,
+            return_status: bool,
+            is_parsed: list[bool],
         ) -> list[pw.Json]:
             metadatas = metadatas if metadatas is not None else []
             assert metadatas is not None
+
+            def remove_id(m):
+                metadata_dict = m.as_dict()
+                del metadata_dict["_file_id"]
+                return pw.Json(metadata_dict)
+
+            metadatas = [remove_id(m) for m in metadatas]
             if metadata_filter:
                 metadatas = [
                     m
                     for m in metadatas
                     if jmespath.search(
-                        metadata_filter, m.value, options=_knn_lsh._glob_options
+                        metadata_filter, m.as_dict(), options=_knn_lsh._glob_options
                     )
+                ]
+
+            if return_status:
+                metadatas = [
+                    pw.Json(
+                        {
+                            "_indexing_status": (
+                                IndexingStatus.INDEXED
+                                if status
+                                else IndexingStatus.INGESTED
+                            ),
+                            **m.as_dict(),
+                        }
+                    )
+                    for (m, status) in zip(metadatas, is_parsed)
                 ]
 
             return metadatas
 
         input_results = input_queries.join_left(all_metas, id=input_queries.id).select(
-            all_metas.metadatas, input_queries.metadata_filter
+            all_metas.metadatas,
+            input_queries.metadata_filter,
+            input_queries.return_status,
+            all_metas.is_parsed,
         )
         input_results = input_results.select(
-            result=format_inputs(pw.this.metadatas, pw.this.metadata_filter)
+            result=format_inputs(
+                pw.this.metadatas,
+                pw.this.metadata_filter,
+                pw.this.return_status,
+                pw.this.is_parsed,
+            )
         )
         return input_results
 
@@ -623,6 +708,7 @@ class DocumentStoreClient:
         self,
         metadata_filter: str | None = None,
         filepath_globpattern: str | None = None,
+        return_status: bool = False,
     ):
         """
         Fetch information on documents in the the vector store.
@@ -633,6 +719,8 @@ class DocumentStoreClient:
                 satisfying this filtering.
             filepath_globpattern: optional glob pattern specifying which documents
                 will be searched for this query.
+            return_status: flag telling whether `_indexing_status` should be returned
+                for each document
         """
         url = self.url + "/v1/inputs"
         response = requests.post(
@@ -640,6 +728,7 @@ class DocumentStoreClient:
             json={
                 "metadata_filter": metadata_filter,
                 "filepath_globpattern": filepath_globpattern,
+                "return_status": return_status,
             },
             headers=self._get_request_headers(),
             timeout=self.timeout,

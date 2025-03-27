@@ -66,7 +66,7 @@ def _test_vs(fake_embeddings_model):
     input_queries = pw.debug.table_from_rows(
         schema=DocumentStore.InputsQuerySchema,
         rows=[
-            (None, "**/*.py"),
+            (None, "**/*.py", False),
         ],
     )
 
