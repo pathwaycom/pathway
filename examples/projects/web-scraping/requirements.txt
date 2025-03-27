@@ -1,2 +1,2 @@
-newspaper4k 
-news-please
+newspaper4k==0.9.3.1
+news-please==1.6.14

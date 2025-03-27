@@ -146,7 +146,7 @@ def scrape_articles(
         expand_articles = [i for i in expand_articles if i not in indexed_articles]
 
         article_ls: list = list(
-            NewsPlease.from_urls(expand_articles, timeout=60).values()
+            NewsPlease.from_urls(expand_articles, request_args={"timeout": 60}).values()
         )  # key: url, value: article. May have None entries
 
         articles: list[NewsArticle] = [
