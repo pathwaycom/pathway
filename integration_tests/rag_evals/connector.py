@@ -137,7 +137,7 @@ class VectorStoreClient:
 
 
 class RagConnector:
-    """Rag connector for evals. Returns context docs in `pw_ai_answer_question`."""
+    """Rag connector for evals. Returns context docs in `answer_question`."""
 
     def __init__(self, base_url: str):
         self.base_url = base_url
@@ -146,7 +146,7 @@ class RagConnector:
             url=base_url,
         )
 
-    def pw_ai_answer_question(
+    def answer_question(
         self,
         prompt,
         filter=None,
@@ -171,7 +171,7 @@ class RagConnector:
 
         return response
 
-    def pw_list_documents(self, filter=None, keys=["path"]):
+    def list_documents(self, filter=None, keys=["path"]):
         api_url = f"{self.base_url}/v2/list_documents"
         payload = {}
 

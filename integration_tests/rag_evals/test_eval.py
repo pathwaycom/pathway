@@ -85,7 +85,7 @@ def test_rag_app_accuracy(port: int):
             )
             logging.info(f"Indexed documents: {docs}")
             try:
-                docs = conn.pw_list_documents()
+                docs = conn.list_documents()
                 if docs and len(docs) >= EXPECTED_DOCS_COUNT:
                     logging.info(
                         f"Fetched docs: ({len(docs)}) List: {docs}, \
@@ -115,7 +115,7 @@ def test_rag_app_accuracy(port: int):
             logging.error("Server was not started properly.")
             return False
 
-        docs = conn.pw_list_documents()
+        docs = conn.list_documents()
 
         logging.info(f"Indexed test documents: {docs}")
 

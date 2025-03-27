@@ -210,7 +210,7 @@ class RAGEvaluator:
 
     def _predict_single(self, question: str, file: str) -> dict:
         filter = create_file_filter(file)
-        answer = self.connector.pw_ai_answer_question(
+        answer = self.connector.answer_question(
             question,
             filter,
         )
@@ -219,7 +219,7 @@ class RAGEvaluator:
     async def _apredict_single(self, question: str, file: str) -> dict:
         filter = create_file_filter(file)
         answer = await asyncio.to_thread(  # TODO: convert to await with async client
-            self.connector.pw_ai_answer_question,
+            self.connector.answer_question,
             question,
             filter,
         )
