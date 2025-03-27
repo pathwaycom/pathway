@@ -18,6 +18,7 @@ A better method is to chunk the text by tokens, ensuring each chunk makes sense 
 ## TokenCountSplitter
 Pathway offers a [`TokenCountSplitter`](/developers/api-docs/pathway-xpacks-llm/splitters#pathway.xpacks.llm.splitters.TokenCountSplitter) for token-based chunking. Here's how to use it:
 
+::if{path="/llm-xpack/"}
 ```python
 from pathway.xpacks.llm.splitters import TokenCountSplitter
 
@@ -27,6 +28,15 @@ text_splitter = TokenCountSplitter(
     encoding_name="cl100k_base"
 )
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+splitter: pw.xpacks.llm.splitters.TokenCountSplitter
+  min_tokes: 100
+  max_tokens: 500
+  encoding_name: "cl100k_base"
+```
+::
 
 This configuration creates chunks of 100–500 tokens using the `cl100k_base` tokenizer, compatible with OpenAI's embedding models.
 
@@ -42,6 +52,7 @@ However, the way it determines split points differs.
 The splitter continues this process until all chunks are smaller than `chunk_size`.
 Additionally, you can introduce overlapping chunks by setting the `chunk_overlap` parameter. This is particularly useful if you want to capture different contexts in your chunks. However, keep in mind that enabling overlap increases the total number of chunks retrieved, which could impact performance.
 
+::if{path="/llm-xpack/"}
 ```python
 splitter = RecursiveSplitter(
     chunk_size=400,
@@ -50,3 +61,17 @@ splitter = RecursiveSplitter(
     model_name="gpt-4o-mini",
 )
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+splitter: pw.xpacks.llm.splitters.RecursiveSplitter
+  chunk_size: 400
+  chunk_overlap: 200
+  separators:
+    - "\n#
+    - "\n##"
+    - "\n\n"
+    - "\n"
+  model_name: "gpt-4o-mini"
+```
+::

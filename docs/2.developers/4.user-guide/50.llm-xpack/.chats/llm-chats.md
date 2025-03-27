@@ -9,12 +9,23 @@ keywords: ['LLM', 'GPT', 'OpenAI', 'Gemini', 'LiteLLM', 'Wrapper']
 
 # LLM Chats
 
-Out of the box, the LLM xpack provides wrappers for text generation and embedding LLMs. For text generation, you can use native wrappers for the OpenAI chat model and HuggingFace models running locally. Many other popular models, including Azure OpenAI, HuggingFace (when using their API) or Gemini can be used with the [`LiteLLM`](/developers/user-guide/llm-xpack/llm-chats#litellm) wrapper. To check the full list of providers supported by LiteLLM check [LiteLLM documentation](https://docs.litellm.ai/docs/providers). Currently, Pathway provides wrappers for the following LLMs:
+Out of the box, the LLM xpack provides wrappers for text generation and embedding LLMs. For text generation, you can use native wrappers for the OpenAI chat model and HuggingFace models running locally. Many other popular models, including Azure OpenAI, HuggingFace (when using their API) or Gemini can be used with the [`LiteLLM`](/developers/user-guide/llm-xpack/llm-chats#litellm) wrapper. To check the full list of providers supported by LiteLLM check [LiteLLM documentation](https://docs.litellm.ai/docs/providers). 
+::if{path="/llm-xpack/"}
+Currently, Pathway provides wrappers for the following LLMs:
 - [OpenAI](/developers/user-guide/llm-xpack/llm-chats#openaichat)
 - [LiteLLM](/developers/user-guide/llm-xpack/llm-chats#litellm)
 - [Hugging Face Pipeline](/developers/user-guide/llm-xpack/llm-chats#hugging-face-pipeline)
 - [Cohere](/developers/user-guide/llm-xpack/llm-chats#cohere)
+::
+::if{path="/ai-pipelines/"}
+Currently, Pathway provides wrappers for the following LLMs:
+- [OpenAI](/developers/user-guide/llm-xpack/llm-chats#openaichat)
+- [LiteLLM](/developers/user-guide/llm-xpack/llm-chats#litellm)
+- [Hugging Face Pipeline](/developers/user-guide/llm-xpack/llm-chats#hugging-face-pipeline)
+::
 
+
+::if{path="/llm-xpack/"}
 To use a wrapper, first create an instance of the wrapper, which you can then apply to a column containing prompts.
 
 We create a Pathway table to be used in the examples below:
@@ -28,17 +39,21 @@ How many 'r' there are in 'strawberry'? | 400
     split_on_whitespace=False,
 )
 ```
+::
 
+::if{path="/llm-xpack/"}
 ## UDFs
 
 Each wrapper is a [UDF](/developers/api-docs/pathway#pathway.UDF) (User Defined Function), which allows users to define their own functions to interact with Pathway objects. A UDF, in general, is any function that takes some input, processes it, and returns an output. In the context of the Pathway library, UDFs enable seamless integration of custom logic, such as invoking LLMs for specific tasks.
 
 In particular a UDF can serve as a wrapper for LLM calls, allowing users to pass prompts or other inputs to a model and retrieve the corresponding outputs. This design makes it easy to interact with Pathway tables and columns while incorporating the power of LLMs.
+::
 
 ## OpenAIChat
 
  For OpenAI, you create a wrapper using the [`OpenAIChat` class](/developers/api-docs/pathway-xpacks-llm/llms#pathway.xpacks.llm.llms.OpenAIChat).
 
+::if{path="/llm-xpack/"}
 ```python
 from pathway.xpacks.llm import llms
 
@@ -51,7 +66,17 @@ responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.quest
 # Run the computations (including sending requests to OpenAI) and print the output table
 pw.debug.compute_and_print(responses)
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+chat: !pw.xpacks.llm.llms.OpenAIChat
+  model: "gpt-4o-mini
+  api_key: $OPENAI_API_KEY
+```
+::
 
+
+::if{path="/llm-xpack/"}
 ### Message format
 `OpenAIChat` expects messages to be in the format required by [OpenAI API](https://platform.openai.com/docs/api-reference/chat/create) - that is a list of dictionaries, where each dictionary is one message in the conversation so far. For asking a single question, you can use [`pw.xpacks.llm.llm.prompt_chat_single_qa`](/developers/api-docs/pathway-xpacks-llm/llms#pathway.xpacks.llm.llms.prompt_chat_single_qa) to wrap a string so that it matches the format expected by OpenAI API. Our example above presents that use case.
 
@@ -88,10 +113,12 @@ responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.quest
 responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.questions), max_tokens(pw.this.max_tokens)))
 pw.debug.compute_and_print(responses)
 ```
+::
 
 ## LiteLLM
 Pathway has a wrapper for LiteLLM - [`LiteLLMChat`](/developers/api-docs/pathway-xpacks-llm/llms#pathway.xpacks.llm.llms.LiteLLMChat). For example, to use Gemini with LiteLLM, create an instance of `LiteLLMChat` and then apply it to the column with messages to be sent over API.
 
+::if{path="/llm-xpack/"}
 ```python
 from pathway.xpacks.llm import llms
 
@@ -103,12 +130,20 @@ model = llms.LiteLLMChat(
 responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.questions)))
 pw.debug.compute_and_print(responses)
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+llm: !pw.xpacks.llm.llms.LiteLLMChat
+  model: "gemini/gemini-pro", # Choose the model you want
+``` 
+::
 
 With the wrapper for LiteLLM, Pathway allows you to use many popular LLMs.
 
 ## Hugging Face pipeline
 For models from Hugging Face that you want to run locally, Pathway gives a separate wrapper called `HFPipelineChat` (for calling HuggingFace through API, use LiteLLM wrapper). When an instance of this wrapper is created, it initializes a HuggingFace `pipeline`, so any [arguments to the `pipeline`](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline) - including the name of the model - must be set during the initialization of `HFPipelineChat`. Any parameters to `pipeline.__call__` can be as before set during initialization or overridden during application.
 
+::if{path="/llm-xpack/"}
 ```python
 from pathway.xpacks.llm import llms
 
@@ -118,10 +153,21 @@ model = llms.HFPipelineChat(
 responses = queries.select(result=model(pw.this.questions))
 pw.debug.compute_and_print(responses)
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+llm: !pw.xpacks.llm.llms.HFPipelineChat
+  model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0", # Choose the model you want
+``` 
+::
 
 Note that format of questions used in Hugging Face pipeline depends on the model. Some models, like [`gpt2`](https://huggingface.co/openai-community/gpt2), expect a prompt string, whereas conversation models also accept messages as a list of dicts. The model's prompt template will be used if a conversation with a list of dicts is passed.
+::if{path="/ai-pipelines/"}
+Note that Pathway AI pipelines expect conversation models, so models like `gpt2` cannot be used. 
+::
 For more information, see [pipeline docs](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.TextGenerationPipeline.__call__.text_inputs). 
 
+::if{path="/llm-xpack/"}
 For example for model [`TinyLlama/TinyLlama-1.1B-Chat-v1.0`](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0), you can use it with:
 
 ```python
@@ -133,8 +179,9 @@ model = llms.HFPipelineChat(
 responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.questions)))
 pw.debug.compute_and_print(responses)
 ```
+::
 
-
+::if{path="/llm-xpack/"}
 ## Cohere
 Pathway has a wrapper for the [`Cohere Chat Services`](https://docs.cohere.com/docs/command-beta). The wrapper allows for augmenting the query with documents. The result contains cited documents along with the response.
 
@@ -163,6 +210,7 @@ r = queries_with_docs.select(
 parsed_table = r.select(response=pw.this.ret[0], citations=pw.this.ret[1])
 pw.debug.compute_and_print(parsed_table)
 ```
+::
 
 ## Wrappers are asynchronous
 Wrapper for OpenAI and LiteLLM, both for chat and embedding, are asynchronous, and Pathway allows you to set three parameters to set their behavior. These are:
@@ -172,6 +220,7 @@ Wrapper for OpenAI and LiteLLM, both for chat and embedding, are asynchronous, a
 
 These three parameters need to be set during the initialization of the wrapper. You can read more about them in the [UDFs guide](/developers/user-guide/data-transformation/user-defined-functions#asyncexecutor).
 
+::if{path="/llm-xpack/"}
 ```python
 model = llms.OpenAIChat(
     # maximum concurrent operations is 10
@@ -188,3 +237,15 @@ model = llms.OpenAIChat(
 responses = queries.select(result=model(prompt_chat_single_qa(pw.this.questions)))
 pw.debug.compute_and_print(responses)
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+chat: !pw.xpacks.llm.llms.OpenAIChat
+  model: "gpt-4o-mini
+  capacity: 10
+  retry_strategy: !pw.udfs.ExponentialBackoffRetryStrategy
+    max_retries: 5
+    initial_delay: 1000
+    backoff_factor: 2
+```
+::

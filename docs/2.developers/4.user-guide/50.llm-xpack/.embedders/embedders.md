@@ -21,6 +21,7 @@ The following embedding wrappers are available through the Pathway xpack:
 ## OpenAIEmbedder
 The default model for [`OpenAIEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.OpenAIEmbedder) is `text-embedding-3-small`.
 
+::if{path="/llm-xpack/"}
 ```python
 import os
 import pathway as pw
@@ -44,10 +45,18 @@ documents = documents.select(text=pw.this.elements[0], metadata=pw.this.elements
 embedder = OpenAIEmbedder(api_key=os.environ["OPENAI_API_KEY"])
 embeddings = documents.select(embedding=embedder(pw.this.text))
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
+  model: "text-embedding-3-small"
+```
+::
 
 ## LiteLLMEmbedder
 The model for [`LiteLLMEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.LiteLLMEmbedder) has to be specified during initialization. No default is provided.
 
+::if{path="/llm-xpack/"}
 ```python
 from pathway.xpacks.llm import embedders
 
@@ -63,12 +72,20 @@ Here is some text
 )
 res = t.select(ret=embedder(pw.this.text_column))
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+embedder: !pw.xpacks.llm.embedders.LiteLLMEmbedder
+  model: "text-embedding-3-small"
+```
+::
 
 ## SentenceTransformerEmbedder
 This [`SentenceTransformerEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.SentenceTransformerEmbedder) embedder allows you to use the models from the Hugging Face Sentence Transformer models.
 
 The model is specified during initialization. Here is a list of [`available models`](https://www.sbert.net/docs/sentence_transformer/pretrained_models.html).
 
+::if{path="/llm-xpack/"}
 ```python
 import pathway as pw
 from pathway.xpacks.llm import embedders
@@ -84,10 +101,18 @@ Some text to embed
 # Extract the embedded text
 t.select(ret=embedder(pw.this.txt))
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+embedder: !pw.xpacks.llm.embedders.SentenceTransformerEmbedder
+  model: "intfloat/e5-large-v2"
+```
+::
 
-## GemeniEmbedder
-[`GemeniEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.GeminiEmbedder) is the embedder for Google's Gemeni Embedding Services. Available models can be found [`here`](https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding).
+## GeminiEmbedder
+[`GeminiEmbedder`](/developers/api-docs/pathway-xpacks-llm/embedders/#pathway.xpacks.llm.embedders.GeminiEmbedder) is the embedder for Google's Gemini Embedding Services. Available models can be found [`here`](https://ai.google.dev/gemini-api/docs/models/gemini#text-embedding-and-embedding).
 
+::if{path="/llm-xpack/"}
 ```python
 import pathway as pw
 from pathway.xpacks.llm import embedders
@@ -102,3 +127,10 @@ Some text to embed
 
 t.select(ret=embedder(pw.this.txt))
 ```
+::
+::if{path="/ai-pipelines/"}
+```yaml
+embedder: !pw.xpacks.llm.embedders.GeminiEmbedder
+  model: "models/text-embedding-004"
+```
+::
