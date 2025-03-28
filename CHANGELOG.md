@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.21.1] - 2025-03-28
+
 ### Changed
 - Input connectors now throttle parsing error messages if their share is more than 10% of the parsing attempts.
 - New flag `return_status` for `inputs_query` method in `pw.xpacks.llm.DocumentStore`. If set to True, DocumentStore returns the status of indexing for each file.
