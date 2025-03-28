@@ -31,11 +31,10 @@ $embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
   cache_strategy: !pw.udfs.DefaultCache
 
 $splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
-  min_tokens: 150
-  max_tokens: 400
+  min_tokens: 250
+  max_tokens: 600
 
-$parser: !pw.xpacks.llm.parsers.UnstructuredParser
-  cache_strategy: !pw.udfs.DefaultCache
+$parser: !pw.xpacks.llm.parsers.DoclingParser
 
 $knn_index: !pw.stdlib.indexing.BruteForceKnnFactory
   reserved_space: 1000
@@ -68,7 +67,7 @@ question_answerer: !pw.xpacks.llm.question_answering.BaseRAGQuestionAnswerer
   llm: $llm
   indexer: $document_store
   prompt_template: $prompt_template
-  # search_topk: 6
+  search_topk: 8
 
 # Cache configuration
 with_cache: true
