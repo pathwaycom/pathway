@@ -19,6 +19,18 @@ from pathway.tests.utils import (
 )
 
 
+@pw.udf
+def extract_trace_line(trace: str) -> str:
+    match = re.search(r"^\s*Line:\s*(.*)$", trace, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def global_errors() -> pw.Table:
+    return pw.global_error_log().select(
+        pw.this.message, line=extract_trace_line(pw.this.trace)
+    )
+
+
 def test_division_by_zero():
     t1 = T(
         """
@@ -46,14 +58,15 @@ def test_division_by_zero():
     )
     expected_errors = T(
         """
-        message
-        division by zero
-        division by zero
+        message          | line
+        division by zero | t2 = t1.select(x=pw.this.a // pw.this.b)
+        division by zero | t3 = t1.select(y=pw.this.a // pw.this.c)
     """,
         split_on_whitespace=False,
     )
+
     assert_table_equality_wo_index(
-        (t4, pw.global_error_log().select(pw.this.message)),
+        (t4, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -81,15 +94,14 @@ def test_removal_of_error():
     )
     expected_errors = T(
         """
-        message
-        division by zero
-        division by zero
+        message          | line
+        division by zero | t2 = t1.with_columns(c=pw.this.a // pw.this.b)
+        division by zero | t2 = t1.with_columns(c=pw.this.a // pw.this.b)
     """,
         split_on_whitespace=False,
     )
-
     assert_table_equality_wo_index(
-        (t2, pw.global_error_log().select(pw.this.message)),
+        (t2, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -119,14 +131,14 @@ def test_filter_with_error_in_condition():
     )
     expected_errors = T(
         """
-        message
-        division by zero
-        Error value encountered in filter condition, skipping the row
+        message          | line
+        division by zero | t2 = t1.with_columns(x=pw.this.a // pw.this.b)
+        Error value encountered in filter condition, skipping the row | res = t2.filter(pw.this.x > 0)
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -157,15 +169,15 @@ def test_filter_with_error_in_other_column():
     )
     expected_errors = T(
         """
-        message
-        division by zero
+        message          | line
+        division by zero | t2 = t1.with_columns(x=pw.this.a // pw.this.b)
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
         (
             res.with_columns(x=pw.fill_error(pw.this.x, -1)),
-            pw.global_error_log().select(pw.this.message),
+            global_errors(),
         ),
         (expected, expected_errors),
         terminate_on_error=False,
@@ -180,7 +192,8 @@ def test_inner_join_with_error_in_condition():
         2 | 0
         3 | 1
     """
-    ).with_columns(a=pw.this.a // pw.this.c)
+    )
+    t1 = t1.with_columns(a=pw.this.a // pw.this.c)
     t2 = pw.debug.table_from_markdown(
         """
         b
@@ -189,7 +202,8 @@ def test_inner_join_with_error_in_condition():
         2
     """
     )
-    res = t1.join(t2, pw.left.a == pw.right.b).select(pw.left.a, pw.left.c, pw.right.b)
+    res = t1.join(t2, pw.left.a == pw.right.b)
+    res = res.select(pw.left.a, pw.left.c, pw.right.b)
 
     expected = T(
         """
@@ -200,14 +214,14 @@ def test_inner_join_with_error_in_condition():
     )
     expected_errors = T(
         """
-        message
-        division by zero
-        Error value encountered in join condition, skipping the row
+        message          | line
+        division by zero | t1 = t1.with_columns(a=pw.this.a // pw.this.c)
+        Error value encountered in join condition, skipping the row | res = t1.join(t2, pw.left.a == pw.right.b)
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -221,7 +235,8 @@ def test_left_join_with_error_in_condition():
         2 | 0
         3 | 1
     """
-    ).with_columns(a=pw.this.a // pw.this.c)
+    )
+    t1 = t1.with_columns(a=pw.this.a // pw.this.c)
     t2 = pw.debug.table_from_markdown(
         """
         b
@@ -231,9 +246,9 @@ def test_left_join_with_error_in_condition():
         2
     """
     )
-    res = t1.join_left(t2, pw.left.a == pw.right.b).select(
-        a=pw.fill_error(pw.left.a, -1), c=pw.left.c, b=pw.right.b
-    )
+    res = t1.join_left(t2, pw.left.a == pw.right.b)
+    res = res.select(a=pw.fill_error(pw.left.a, -1), c=pw.left.c, b=pw.right.b)
+
     expected = T(
         """
         a | c | b
@@ -246,14 +261,14 @@ def test_left_join_with_error_in_condition():
     )
     expected_errors = T(
         """
-        message
-        division by zero
-        Error value encountered in join condition, skipping the row
+        message          | line
+        division by zero | t1 = t1.with_columns(a=pw.this.a // pw.this.c)
+        Error value encountered in join condition, skipping the row | res = t1.join_left(t2, pw.left.a == pw.right.b)
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -383,13 +398,13 @@ def test_udf(sync: bool) -> None:
     )
     expected_errors = T(
         """
-        message
-        ZeroDivisionError: integer division or modulo by zero
+        message | line
+        ZeroDivisionError: integer division or modulo by zero | t2 = t1.select(pw.this.a, x=div(pw.this.a, pw.this.b))
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -403,19 +418,18 @@ def test_udf_return_type():
         else:
             return a  # type: ignore[return-value]
 
-    res = (
-        T(
+    res = T(
+        """
+            a
+            1
+            2
+            3
+            4
             """
-        a
-        1
-        2
-        3
-        4
-    """
-        )
-        .select(a=f(pw.this.a))
-        .select(a=pw.fill_error(pw.this.a, "xx"))
     )
+    res = res.select(a=f(pw.this.a))
+    res = res.select(a=pw.fill_error(pw.this.a, "xx"))
+
     expected = T(
         """
         a
@@ -427,14 +441,14 @@ def test_udf_return_type():
     )
     expected_err = T(
         """
-        message
-        TypeError: cannot create an object of type String from value 1
-        TypeError: cannot create an object of type String from value 3
+        message | line
+        TypeError: cannot create an object of type String from value 1 | res = res.select(a=f(pw.this.a))
+        TypeError: cannot create an object of type String from value 3 | res = res.select(a=f(pw.this.a))
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_err),
         terminate_on_error=False,
     )
@@ -472,6 +486,7 @@ def test_concat():
          5 | 1  | 1
     """
     ).select(a=pw.this.a // pw.this.e, b=pw.this.b // pw.this.e)
+
     # column e used to produce ERROR in the first row
     with pytest.warns(
         UserWarning,
@@ -513,13 +528,13 @@ def test_left_join_preserving_id():
     )
     expected_errors = T(
         """
-        message
-        duplicate key: ^X1MXHYYG4YM0DB900V28XN5T4W
+        message | line
+        duplicate key: ^X1MXHYYG4YM0DB900V28XN5T4W | t1.join_left(t2, pw.left.a == pw.right.b, id=pw.left.id)
         """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -558,13 +573,13 @@ def test_restrict():
     )
     expected_errors = T(
         """
-        message
-        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4
+        message | line
+        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4 | res = t1.restrict(t2)
         """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -603,15 +618,15 @@ def test_with_universe_of():
     )
     expected_errors = T(
         """
-        message
-        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4
-        key missing in input table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4
-        key missing in output table: ^3HN31E1PBT7YHH5PWVKTZCPRJ8
+        message | line
+        key missing in output table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4 | res = t1.with_universe_of(t2)
+        key missing in input table: ^3S2X6B265PV8BRY8MZJ91KQ0Z4  | res = t1.with_universe_of(t2)
+        key missing in output table: ^3HN31E1PBT7YHH5PWVKTZCPRJ8 | res = t1.with_universe_of(t2)
         """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -648,13 +663,13 @@ def test_ix():
     )
     expected_errors = T(
         """
-        message
-        key missing in output table: ^Z3QWT294JQSHPSR8KTPG9ECE4W
+        message | line
+        key missing in output table: ^Z3QWT294JQSHPSR8KTPG9ECE4W | res = t1.select(pw.this.a, c=t2.ix(pw.this.ap).c)
         """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -769,9 +784,11 @@ def test_groupby_with_error_in_grouping_column():
     """
     )
     t2 = t1.select(x=pw.this.a // pw.this.b, y=pw.this.a // pw.this.c)
-    res = t2.groupby(pw.this.x, pw.this.y).reduce(
-        pw.this.x, pw.this.y, cnt=pw.reducers.count()
-    )
+    trace_line_1 = "t2 = t1.select(x=pw.this.a // pw.this.b, y=pw.this.a // pw.this.c)"
+    res = t2.groupby(pw.this.x, pw.this.y)
+    res = res.reduce(pw.this.x, pw.this.y, cnt=pw.reducers.count())
+    trace_line_2 = "res = res.reduce(pw.this.x, pw.this.y, cnt=pw.reducers.count())"
+
     expected = T(
         """
         x | y | cnt
@@ -780,17 +797,17 @@ def test_groupby_with_error_in_grouping_column():
     """
     )
     expected_errors = T(
-        """
-        message
-        division by zero
-        division by zero
-        Error value encountered in grouping columns, skipping the row
-        Error value encountered in grouping columns, skipping the row
-    """,
+        f"""
+        message | line
+        division by zero | {trace_line_1}
+        division by zero | {trace_line_1}
+        Error value encountered in grouping columns, skipping the row | {trace_line_2}
+        Error value encountered in grouping columns, skipping the row | {trace_line_2}
+        """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -812,6 +829,8 @@ def test_deduplicate_with_error_in_instance():
         return new_value > old_value
 
     res = t1.deduplicate(value=pw.this.a, instance=2 / pw.this.b, acceptor=acceptor)
+    trace_line = "res = t1.deduplicate(value=pw.this.a, instance=2 / pw.this.b, acceptor=acceptor)"
+
     expected = T(
         """
         a | b
@@ -820,22 +839,21 @@ def test_deduplicate_with_error_in_instance():
     """
     )
     expected_errors = T(
-        """
-        message
-        division by zero
-        Error value encountered in deduplicate instance, skipping the row
-    """,
+        f"""
+        message | line
+        division by zero | {trace_line}
+        Error value encountered in deduplicate instance, skipping the row | {trace_line}
+        """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
 
 
 def test_groupby_skip_errors():
-
     @pw.reducers.stateful_single  # type: ignore[arg-type]
     def stateful_sum(state: int | None, val: int) -> int:
         if state is None:
@@ -851,7 +869,8 @@ def test_groupby_skip_errors():
         2 | 4 | 4.5 | 1 | 1
         2 | 5 | 5.5 | 1 | 0
     """
-    ).with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+    )
+    t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
     res = (
         t.groupby(
             pw.this.a,
@@ -877,7 +896,18 @@ def test_groupby_skip_errors():
         2 |   9   |  4.5  |   4   |  4.5  |  4.5  |  4.5  |  2  |   9
     """
     )
-    assert_table_equality_wo_index(res, expected, terminate_on_error=False)
+    expected_errors = T(
+        """
+        message          | line
+        division by zero | t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+        division by zero | t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+        division by zero | t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, global_errors()), (expected, expected_errors), terminate_on_error=False
+    )
 
 
 def test_groupby_propagate_errors():
@@ -897,7 +927,8 @@ def test_groupby_propagate_errors():
         2 | 4 | 4.5 | 1 | 1
         2 | 5 | 5.5 | 1 | 0
     """
-    ).with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+    )
+    t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
     res = (
         t.groupby(pw.this.a, _skip_errors=False)
         .reduce(
@@ -920,7 +951,18 @@ def test_groupby_propagate_errors():
         2 |   9   |  4.5  |   4   |  -1   |  -1   |  -1   |  2  |   9
     """
     ).update_types(f_sum=float, f_avg=float, f_min=float)
-    assert_table_equality_wo_index(res, expected, terminate_on_error=False)
+    expected_errors = T(
+        """
+        message          | line
+        division by zero | t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+        division by zero | t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+        division by zero | t = t.with_columns(b=pw.this.b // pw.this.d, c=pw.this.c / pw.this.e)
+        """,
+        split_on_whitespace=False,
+    )
+    assert_table_equality_wo_index(
+        (res, global_errors()), (expected, expected_errors), terminate_on_error=False
+    )
 
 
 def test_groupby_stateful_with_error():
@@ -942,11 +984,11 @@ def test_groupby_stateful_with_error():
         1 | 5
     """
     )
-    res = (
-        t.groupby(pw.this.a)
-        .reduce(pw.this.a, b=pw.fill_error(stateful_sum(pw.this.b), -1))
-        .update_types(b=int)
-    )
+
+    res = t.groupby(pw.this.a)
+    res = res.reduce(pw.this.a, b=pw.fill_error(stateful_sum(pw.this.b), -1))
+    res = res.update_types(b=int)
+
     expected = T(
         """
         a |  b
@@ -956,13 +998,13 @@ def test_groupby_stateful_with_error():
     )
     expected_errors = T(
         """
-        message
-        ValueError: Value 2 encountered
+        message | line
+        ValueError: Value 2 encountered | res = res.reduce(pw.this.a, b=pw.fill_error(stateful_sum(pw.this.b), -1))
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -1070,13 +1112,13 @@ def test_deduplicate_with_error_in_acceptor():
     )
     expected_errors = T(
         """
-        message
-        ValueError: encountered 4
+        message | line
+        ValueError: encountered 4 | res = t1.deduplicate(value=pw.this.a, acceptor=acceptor)
     """,
         split_on_whitespace=False,
     )
     assert_table_equality_wo_index(
-        (res, pw.global_error_log().select(pw.this.message)),
+        (res, global_errors()),
         (expected, expected_errors),
         terminate_on_error=False,
     )
@@ -1104,6 +1146,116 @@ def test_unique_reducer():
     """
     )
     assert_stream_equality_wo_index(res, expected, terminate_on_error=False)
+
+
+def test_update_cells():
+    old = T(
+        """
+            | pet  | owner   | age
+        1   |  1   | Alice   | 10
+        2   |  2   | Alice   | 10
+        """
+    )
+    update = T(
+        """
+            | pet  | owner   | age
+        5   |  0   | Eve     | 10
+        2   |  2   | Eve     | 10
+        2   |  3   | Eve     | 10
+        """
+    )
+    old.promise_universe_is_equal_to(update)
+    res = old.update_cells(update)
+    res = res.remove_errors()
+
+    expected = T(
+        """
+            | pet  | owner   | age
+        1   |  1   | Alice   | 10
+        """
+    )
+    expected_errors = T(
+        """
+        message | line
+        updating a row that does not exist, key: ^3S2X6B265PV8BRY8MZJ91KQ0Z4 | res = old.update_cells(update)
+        duplicate key: ^Z3QWT294JQSHPSR8KTPG9ECE4W | res = old.update_cells(update)
+        """,
+        split_on_whitespace=False,
+    )
+
+    assert_table_equality_wo_index(
+        (res, global_errors()), (expected, expected_errors), terminate_on_error=False
+    )
+
+
+def test_update_rows():
+    t1 = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        2
+        3
+    """
+    ).with_id_from(pw.this.a)
+    t2 = pw.debug.table_from_markdown(
+        """
+        a
+        1
+        1
+        2
+    """
+    ).with_id_from(pw.this.a)
+
+    res = t1.update_rows(t2)
+
+    expected = T(
+        """
+        a
+        2
+        3
+        """
+    )
+    expected_errors = T(
+        """
+        message | line
+        duplicate key: ^YYY4HABTRW7T8VX2Q429ZYV70W | res = t1.update_rows(t2)
+        """,
+        split_on_whitespace=False,
+    )
+
+    assert_table_equality_wo_index(
+        (res, global_errors()), (expected, expected_errors), terminate_on_error=False
+    )
+
+
+def test_with_id_from():
+    table = T(
+        """
+        a | b
+        1 | 0
+        2 | 1
+        """
+    ).with_id_from(pw.this.a / pw.this.b)
+
+    expected = T(
+        """
+        a | b
+        2 | 1
+        """
+    )
+
+    expected_errors = T(
+        """
+        message | line
+        division by zero | ).with_id_from(pw.this.a / pw.this.b)
+        Error value encountered in reindex as new id, skipping the row | ).with_id_from(pw.this.a / pw.this.b)
+        """,
+        split_on_whitespace=False,
+    )
+
+    assert_table_equality_wo_index(
+        (table, global_errors()), (expected, expected_errors), terminate_on_error=False
+    )
 
 
 def generate_csv(path: Path):

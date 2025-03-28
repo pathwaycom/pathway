@@ -849,6 +849,7 @@ id_type=<class 'pathway.engine.Pointer'>>
 
         return self._table_with_context(context)
 
+    @trace_user_frame
     @check_arg_types
     def restrict(self, other: TableLike) -> Table[TSchema]:
         """Restrict self universe to keys appearing in other.

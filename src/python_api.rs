@@ -2606,7 +2606,6 @@ impl Scope {
             universe_ref.handle,
             column_handles,
             properties.0,
-            EngineTrace::Empty,
         )?;
         Column::new(universe, handle)
     }
@@ -2650,7 +2649,6 @@ impl Scope {
             table.handle,
             column_paths,
             properties.0,
-            EngineTrace::Empty,
             append_only_or_deterministic,
         )?;
         Table::new(self_, table_handle)
@@ -5482,13 +5480,11 @@ impl ColumnProperties {
         trace: Option<Py<Trace>>,
         append_only: bool,
     ) -> PyResult<Py<Self>> {
-        let trace = trace
-            .clone()
-            .map_or(Ok(EngineTrace::Empty), |t| t.extract(py))?;
+        let trace = trace.map_or(Ok(EngineTrace::Empty), |t| t.extract(py))?;
         let inner = Arc::new(EngineColumnProperties {
             append_only,
             dtype: dtype.extract(py)?,
-            trace,
+            trace: Arc::new(trace),
         });
         let res = Py::new(py, Self(inner))?;
         Ok(res)
@@ -5521,12 +5517,13 @@ impl TableProperties {
             ColumnPath,
             ColumnProperties,
         )>,
+        trace: Option<Py<Trace>>,
     ) -> PyResult<Py<Self>> {
         let column_properties: Vec<_> = column_properties
             .into_iter()
             .map(|(path, props)| (path, props.0))
             .collect();
-
+        let trace = trace.map_or(Ok(EngineTrace::Empty), |t| t.extract(py))?;
         let table_properties = EngineTableProperties::from_paths(
             column_properties
                 .into_iter()
@@ -5534,6 +5531,7 @@ impl TableProperties {
                     (path, EngineTableProperties::Column(column_properties))
                 })
                 .collect(),
+            &Arc::new(trace),
         )?;
 
         TableProperties::new(py, Arc::new(table_properties))

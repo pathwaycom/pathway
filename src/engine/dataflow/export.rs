@@ -9,6 +9,7 @@ use scopeguard::guard;
 use timely::dataflow::operators::{Inspect as _, Probe as _};
 use timely::progress::Timestamp as _;
 
+use crate::engine::error::Trace;
 use crate::engine::report_error::ReportErrorExt as _;
 use crate::engine::{
     ColumnPath, DataRow, Error, ExportedTable as ExportedTableTrait, ExportedTableCallback, Result,
@@ -124,6 +125,7 @@ where
             .iter()
             .map(|path| path.extract_properties(&table.properties))
             .try_collect()?,
+        Arc::new(Trace::Empty),
     ));
 
     let exported_table = Arc::new(ExportedTable::new(properties));

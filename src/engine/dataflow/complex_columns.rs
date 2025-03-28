@@ -19,7 +19,7 @@ use super::maybe_total::MaybeTotalScope;
 use super::operators::{ArrangeWithTypes, MapWrapped, MaybeTotal};
 use super::shard::Shard;
 use super::{ArrangedByKey, ArrangedBySelf, Column, DataflowGraphInner, UnwrapWithReporter};
-use crate::engine::error::DynResult;
+use crate::engine::error::{DynResult, Trace};
 use crate::engine::{
     ColumnHandle, ComplexColumn, Computer, Context as ContextTrait, Error, Key, Result,
     UniverseHandle, Value,
@@ -358,7 +358,11 @@ impl Output {
                     }
                     _ => None,
                 });
-                graph.assert_input_keys_match_output_keys(universe.keys(), &values)?;
+                graph.assert_input_keys_match_output_keys(
+                    universe.keys(),
+                    &values,
+                    Arc::new(Trace::Empty),
+                )?;
                 Ok(graph
                     .columns
                     .alloc(Column::from_collection(universe_handle, values)))

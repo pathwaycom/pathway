@@ -121,7 +121,9 @@ class ExpressionEvaluator(ABC):
                 properties.append(
                     (storage.get_path(column), self.column_properties(column))
                 )
-        return api.TableProperties.from_column_properties(properties)
+        return api.TableProperties.from_column_properties(
+            properties, self.context.trace.to_engine()
+        )
 
 
 class RowwiseEvalState:

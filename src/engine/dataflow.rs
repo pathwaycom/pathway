@@ -970,6 +970,7 @@ trait ReplaceDuplicatesWithError {
         &self,
         error_logic: impl FnMut(&Value) -> Value + 'static,
         error_logger: Box<dyn LogError>,
+        trace: Arc<Trace>,
     ) -> Self;
 }
 
@@ -978,13 +979,14 @@ impl<S: MaybeTotalScope> ReplaceDuplicatesWithError for Collection<S, (Key, Valu
         &self,
         mut error_logic: impl FnMut(&Value) -> Value + 'static,
         error_logger: Box<dyn LogError>,
+        trace: Arc<Trace>,
     ) -> Self {
         self.reduce(move |key, input, output| {
             let res = match input {
                 [(value, 1)] => (*value).clone(),
                 [] => unreachable!(),
                 [(value, _), ..] => {
-                    error_logger.log_error(DataError::DuplicateKey(*key));
+                    error_logger.log_error_with_trace(DataError::DuplicateKey(*key).into(), &trace);
                     error_logic(value)
                 }
             };
@@ -1380,6 +1382,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &self,
         input_keys: &Keys<S>,
         output_collection: impl Deref<Target = Collection<S, (Key, Value)>>,
+        trace: Arc<Trace>,
     ) -> Result<()> {
         let error_logger = self.create_error_logger()?;
         input_keys
@@ -1392,9 +1395,15 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .inspect(move |(key, _time, diff)| {
                 assert_ne!(diff, &0);
                 if diff > &0 {
-                    error_logger.log_error(DataError::KeyMissingInOutputTable(*key));
+                    error_logger.log_error_with_trace(
+                        DataError::KeyMissingInOutputTable(*key).into(),
+                        &trace,
+                    );
                 } else {
-                    error_logger.log_error(DataError::KeyMissingInInputTable(*key));
+                    error_logger.log_error_with_trace(
+                        DataError::KeyMissingInInputTable(*key).into(),
+                        &trace,
+                    );
                 }
             });
         Ok(())
@@ -1404,6 +1413,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         &self,
         input_values: &Values<S>,
         output_collection: &Collection<S, (Key, Value)>,
+        trace: Arc<Trace>,
     ) -> Result<Collection<S, (Key, Value)>> {
         let leftover_values = input_values.concat(
             &output_collection
@@ -1419,12 +1429,14 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .negate(),
         );
         let error_logger = self.create_error_logger()?;
-
         Ok(
             output_collection.concat(&leftover_values.consolidate().map_named(
                 "restrict_or_override_table_universe::fill",
                 move |(key, new_values)| {
-                    error_logger.log_error(DataError::KeyMissingInOutputTable(key));
+                    error_logger.log_error_with_trace(
+                        DataError::KeyMissingInOutputTable(key).into(),
+                        &trace,
+                    );
                     (key, Value::from([new_values, Value::Error].as_slice()))
                 },
             )),
@@ -1467,7 +1479,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         if !self.ignore_asserts {
             // verify the universe
-            self.assert_input_keys_match_output_keys(universe.keys(), &values)?;
+            self.assert_input_keys_match_output_keys(
+                universe.keys(),
+                &values,
+                column_properties.trace.clone(),
+            )?;
         };
 
         let column_handle = self.columns.alloc(
@@ -1562,7 +1578,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         universe_handle: UniverseHandle,
         column_handles: &[ColumnHandle],
         column_properties: Arc<ColumnProperties>,
-        trace: Trace,
     ) -> Result<ColumnHandle> where {
         if column_handles.is_empty() {
             let universe = self
@@ -1592,6 +1607,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             }
             return Ok(column_handle);
         }
+        let trace = column_properties.trace.clone();
         let error_reporter = self.error_reporter.clone();
         let name = format!("Expression {wrapper:?} {expression:?}");
         let new_values = self
@@ -1643,7 +1659,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         .eval(&args)
                         .unwrap_or_log_with_trace(
                             error_logger.as_ref(),
-                            expression_data.properties.trace(),
+                            expression_data.properties.trace().as_ref(),
                             Value::Error,
                         );
                     result
@@ -1722,7 +1738,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                                             .eval(&args)
                                             .unwrap_or_log_with_trace(
                                                 error_logger.as_ref(),
-                                                expression_data.properties.trace(),
+                                                expression_data.properties.trace().as_ref(),
                                                 Value::Error,
                                             );
                                         if !expression_data.deterministic {
@@ -1769,7 +1785,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .iter()
             .map(|expression_data| expression_data.properties.as_ref().clone())
             .collect();
-        let properties = TableProperties::Table(properties.as_slice().into());
+        let properties =
+            TableProperties::Table(properties.as_slice().into(), Arc::new(Trace::Empty));
 
         let new_values = if append_only_or_deterministic {
             self.expression_table_deterministic(table_handle, column_paths, expressions, wrapper)
@@ -1804,7 +1821,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             })
             .collect();
 
-        Ok(TableProperties::Table(properties?.as_slice().into()))
+        Ok(TableProperties::Table(
+            properties?.as_slice().into(),
+            Arc::new(Trace::Empty),
+        ))
     }
 
     fn columns_to_table(
@@ -1914,7 +1934,10 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     // FIXME: unwrap_or needed now to support ExternalMaterializedColumns in iterate
                     (key, Value::Tuple(new_values))
                 });
-        let properties = Arc::new(TableProperties::Table(properties?.as_slice().into()));
+        let properties = Arc::new(TableProperties::Table(
+            properties?.as_slice().into(),
+            Arc::new(Trace::Empty),
+        ));
         let table_handle = self
             .tables
             .alloc(Table::from_collection(table_values).with_properties(properties));
@@ -1927,7 +1950,6 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
-        trace: Trace,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         let table = self
@@ -1936,7 +1958,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
         let error_logger: Rc<dyn LogError> = self.create_error_logger()?.into();
-        let trace = Arc::new(trace);
+        let trace = table_properties.trace();
         let closure = move |(key, values)| {
             let args: Vec<Value> = column_paths
                 .iter()
@@ -2034,16 +2056,17 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace().clone();
 
         let new_table = table.values().flat_map(move |(key, values)| {
             if filtering_column_path
                 .extract(&key, &values)
-                .unwrap_with_reporter(&error_reporter)
+                .unwrap_with_reporter_and_trace(&error_reporter, &trace)
                 .into_result()
                 .map_err(|_err| DataError::ErrorInFilter)
-                .unwrap_or_log(error_logger.as_ref(), Value::Bool(false))
+                .unwrap_or_log_with_trace(error_logger.as_ref(), &trace, Value::Bool(false))
                 .as_bool()
-                .unwrap_with_reporter(&error_reporter)
+                .unwrap_with_reporter_and_trace(&error_reporter, &trace)
             {
                 Some((key, values))
             } else {
@@ -2127,11 +2150,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         if column.universe == universe_handle {
             return Ok(column_handle);
         }
+        let trace = column.properties.trace();
         let new_values = universe
             .keys_arranged()
             .join_core(column.values_arranged(), |k, (), v| once((*k, v.clone())));
         if !self.ignore_asserts {
-            self.assert_input_keys_match_output_keys(universe.keys(), &new_values)?;
+            self.assert_input_keys_match_output_keys(universe.keys(), &new_values, trace)?;
         };
         let new_column_handle = self
             .columns
@@ -2167,10 +2191,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             })
             .filter_out_persisted(&mut self.persistence_wrapper)?;
 
-        let result = self.make_output_keys_match_input_keys(new_table.values(), &result)?;
+        let trace = table_properties.trace();
+        let result =
+            self.make_output_keys_match_input_keys(new_table.values(), &result, trace.clone())?;
 
         if !self.ignore_asserts && same_universes {
-            self.assert_input_keys_match_output_keys(original_table.keys(), &result)?;
+            self.assert_input_keys_match_output_keys(original_table.keys(), &result, trace)?;
         };
 
         Ok(self
@@ -2224,6 +2250,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
 
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
 
         let new_values = table.values().flat_map(move |(key, values)| {
             let value = reindexing_column_path
@@ -2231,7 +2258,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .unwrap_with_reporter(&error_reporter);
             match value {
                 Value::Error => {
-                    error_logger.log_error(DataError::ErrorInReindex);
+                    error_logger.log_error_with_trace(DataError::ErrorInReindex.into(), &trace);
                     None
                 }
                 value => Some((
@@ -2469,6 +2496,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         table_properties: Arc<TableProperties>,
     ) -> Result<TableHandle> {
         let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
         let updated_values: ValuesArranged<S> = both_arranged.reduce_abelian(
@@ -2481,7 +2509,8 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         new_values
                     }
                     _ => {
-                        error_logger.log_error(DataError::DuplicateKey(*key));
+                        error_logger
+                            .log_error_with_trace(DataError::DuplicateKey(*key).into(), &trace);
                         return;
                     }
                 };
@@ -2509,6 +2538,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let both_arranged = self.update_rows_arrange(table_handle, update_handle)?;
 
         let error_reporter = self.error_reporter.clone();
+        let trace = table_properties.trace();
 
         let updated_values: ValuesArranged<S> = both_arranged.reduce_abelian(
             "update_cells_table::updated",
@@ -2528,15 +2558,15 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         (MaybeUpdate::Update(_), _),
                         ..
                     ] => { // if there's exactly one original entry, keep it to preserve the universe keys
-                        error_logger.log_error(DataError::DuplicateKey(*key));
+                        error_logger.log_error_with_trace(DataError::DuplicateKey(*key).into(), &trace);
                         (original_values, &Value::Error, &update_paths)
                     },
                     [(MaybeUpdate::Update(_), 1)] => {
-                        error_logger.log_error(DataError::UpdatingNonExistingRow(*key));
+                        error_logger.log_error_with_trace(DataError::UpdatingNonExistingRow(*key).into(), &trace);
                         return;
                     }
                     _ => {
-                        error_logger.log_error(DataError::DuplicateKey(*key));
+                        error_logger.log_error_with_trace(DataError::DuplicateKey(*key).into(), &trace);
                         return;
                     }
                 };
@@ -2710,7 +2740,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .tables
                 .get(key_handle)
                 .ok_or(Error::InvalidTableHandle)?;
-            self.make_output_keys_match_input_keys(key_table.values(), &new_table)?
+            self.make_output_keys_match_input_keys(
+                key_table.values(),
+                &new_table,
+                table_properties.trace(),
+            )?
         };
 
         Ok(self
@@ -2779,12 +2813,13 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             shard_policy: ShardPolicy,
             error_reporter: &ErrorReporter,
             error_logger: &mut dyn LogError,
+            trace: &Arc<Trace>,
         ) -> Option<Key> {
             let join_key_parts: DataResult<Vec<_>> = column_paths
                 .iter()
                 .map(|path| path.extract(key, values))
                 .collect::<Result<Vec<_>>>()
-                .unwrap_with_reporter(error_reporter)
+                .unwrap_with_reporter_and_trace(error_reporter, trace)
                 .into_iter()
                 .map(|v| v.into_result().map_err(|_err| DataError::ErrorInJoin))
                 .try_collect();
@@ -2794,7 +2829,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     Some(join_key)
                 }
                 Err(error) => {
-                    error_logger.log_error(error);
+                    error_logger.log_error_with_trace(error.into(), trace);
                     None
                 }
             }
@@ -2815,6 +2850,9 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let mut error_logger_left = self.create_error_logger()?;
         let mut error_logger_right = self.create_error_logger()?;
 
+        let table_properties_left = table_properties.clone();
+        let table_properties_right = table_properties.clone();
+
         let left_with_join_key =
             left_table
                 .values()
@@ -2826,6 +2864,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         shard_policy,
                         &error_reporter_left,
                         error_logger_left.as_mut(),
+                        &table_properties_left.trace(),
                     );
                     (join_key, (key, values))
                 });
@@ -2849,6 +2888,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                         shard_policy,
                         &error_reporter_right,
                         error_logger_right.as_mut(),
+                        &table_properties_right.trace(),
                     );
                     (join_key, (key, values))
                 });
@@ -2994,9 +3034,12 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         let result = if matches!(join_type, JoinType::LeftKeysFull | JoinType::LeftKeysSubset) {
             let error_logger = self.create_error_logger()?;
             let error_reporter = self.error_reporter.clone();
+            let trace = table_properties.trace();
             result_left_right.replace_duplicates_with_error(
                 move |value| {
-                    let tuple = value.as_tuple().unwrap_with_reporter(&error_reporter);
+                    let tuple = value
+                        .as_tuple()
+                        .unwrap_with_reporter_and_trace(&error_reporter, &trace);
                     Value::from(
                         [
                             tuple[0].clone(), // left key
@@ -3008,6 +3051,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                     )
                 },
                 error_logger,
+                table_properties.trace(),
             )
         } else {
             result_left_right
@@ -3456,6 +3500,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .try_collect()?;
 
         let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
         let with_new_key = table.values().flat_map(move |(key, values)| {
             let new_key_parts: Vec<Value> = grouping_columns_paths
                 .iter()
@@ -3463,7 +3508,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
                 .collect::<Result<_>>()
                 .unwrap_with_reporter(&error_reporter_1);
             let new_key = if new_key_parts.contains(&Value::Error) {
-                error_logger.log_error(DataError::ErrorInGroupby);
+                error_logger.log_error_with_trace(DataError::ErrorInGroupby.into(), &trace);
                 None
             } else if set_id {
                 Some(
@@ -3555,6 +3600,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
 
         let error_reporter = self.error_reporter.clone();
         let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
         let with_new_keys = table
             .values()
             .flat_map(move |(key, values)| {
@@ -3565,7 +3611,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                     .unwrap_with_reporter(&error_reporter);
 
                 if new_key_parts.contains(&Value::Error) {
-                    error_logger.log_error(DataError::ErrorInDeduplicate);
+                    error_logger.log_error_with_trace(DataError::ErrorInDeduplicate.into(), &trace);
                     None
                 } else {
                     let new_values: Vec<_> = reduced_column_paths
@@ -3581,6 +3627,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
             .filter_out_persisted(&mut self.persistence_wrapper)?; // needed if used with regular persistence
 
         let error_logger = self.create_error_logger()?;
+        let trace = table_properties.trace();
         let new_values = with_new_keys
             .maybe_persisted_stateful_reduce(
                 self,
@@ -3590,7 +3637,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 move |state, values| match (combine_fn)(state, values) {
                     Ok(new_state) => new_state,
                     Err(error) => {
-                        error_logger.log_error(error.into());
+                        error_logger.log_error_with_trace(error, &trace);
                         state.cloned()
                     }
                 },
@@ -4901,7 +4948,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
         column_properties: Arc<ColumnProperties>,
-        trace: Trace,
     ) -> Result<ColumnHandle> {
         self.0.borrow_mut().expression_column(
             wrapper,
@@ -4909,7 +4955,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             universe_handle,
             &column_handles,
             column_properties,
-            trace,
         )
     }
 
@@ -4983,7 +5028,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
-        trace: Trace,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().async_apply_table(
@@ -4991,7 +5035,6 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
             table_handle,
             column_paths,
             table_properties,
-            trace,
             append_only_or_deterministic,
         )
     }
@@ -5519,7 +5562,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
         column_properties: Arc<ColumnProperties>,
-        trace: Trace,
     ) -> Result<ColumnHandle> {
         self.0.borrow_mut().expression_column(
             wrapper,
@@ -5527,7 +5569,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             universe_handle,
             &column_handles,
             column_properties,
-            trace,
         )
     }
 
@@ -5597,7 +5638,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
-        trace: Trace,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().async_apply_table(
@@ -5605,7 +5645,6 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             table_handle,
             column_paths,
             table_properties,
-            trace,
             append_only_or_deterministic,
         )
     }

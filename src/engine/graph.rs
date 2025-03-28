@@ -168,7 +168,7 @@ impl ColumnPath {
                 let mut table_properties = table_properties;
                 for i in path {
                     match table_properties {
-                        TableProperties::Table(inner) => {
+                        TableProperties::Table(inner, _) => {
                             table_properties = inner
                                 .get(*i)
                                 .ok_or_else(|| Error::InvalidColumnPath(self.clone()))?;
@@ -341,12 +341,12 @@ impl ComplexColumn {
 pub struct ColumnProperties {
     pub dtype: Type,
     pub append_only: bool,
-    pub trace: Trace,
+    pub trace: Arc<Trace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableProperties {
-    Table(Arc<[TableProperties]>),
+    Table(Arc<[TableProperties]>, Arc<Trace>),
     Column(Arc<ColumnProperties>),
     Empty,
 }
@@ -358,13 +358,17 @@ impl TableProperties {
             .map(TableProperties::Column)
             .collect();
 
-        TableProperties::Table(column_properties.into())
+        TableProperties::Table(column_properties.into(), Arc::new(Trace::Empty))
     }
 
-    pub fn from_paths(properties: Vec<(ColumnPath, TableProperties)>) -> Result<TableProperties> {
+    pub fn from_paths(
+        properties: Vec<(ColumnPath, TableProperties)>,
+        trace: &Arc<Trace>,
+    ) -> Result<TableProperties> {
         fn produce_nested_tuple(
             props: &[(Vec<usize>, TableProperties)],
             depth: usize,
+            trace: &Arc<Trace>,
         ) -> Result<TableProperties> {
             if !props.is_empty() && props.first().unwrap().0.len() == depth {
                 let first = &props.first().unwrap().1;
@@ -392,11 +396,14 @@ impl TableProperties {
                     continue;
                 }
                 assert!(begin < end);
-                result.push(produce_nested_tuple(&props[begin..end], depth + 1)?);
+                result.push(produce_nested_tuple(&props[begin..end], depth + 1, trace)?);
                 begin = end;
             }
 
-            Ok(TableProperties::Table(result.as_slice().into()))
+            Ok(TableProperties::Table(
+                result.as_slice().into(),
+                trace.clone(),
+            ))
         }
 
         let mut properties: Vec<(Vec<usize>, TableProperties)> = properties
@@ -409,13 +416,14 @@ impl TableProperties {
 
         properties.sort_unstable_by(|(left_path, _), (right_path, _)| left_path.cmp(right_path));
 
-        produce_nested_tuple(properties.as_slice(), 0)
+        produce_nested_tuple(properties.as_slice(), 0, trace)
     }
 
-    pub fn trace(&self) -> &Trace {
+    pub fn trace(&self) -> Arc<Trace> {
         match self {
-            Self::Column(properties) => &properties.trace,
-            _ => &Trace::Empty,
+            Self::Column(properties) => properties.trace.clone(),
+            Self::Table(_, trace) => trace.clone(),
+            Self::Empty => Arc::new(Trace::Empty),
         }
     }
 }
@@ -685,7 +693,6 @@ pub trait Graph {
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
         column_properties: Arc<ColumnProperties>,
-        trace: Trace,
     ) -> Result<ColumnHandle>;
 
     fn expression_table(
@@ -730,7 +737,6 @@ pub trait Graph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
-        trace: Trace,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle>;
 
@@ -1118,7 +1124,6 @@ impl Graph for ScopedGraph {
         universe_handle: UniverseHandle,
         column_handles: Vec<ColumnHandle>,
         column_properties: Arc<ColumnProperties>,
-        trace: Trace,
     ) -> Result<ColumnHandle> {
         self.try_with(|g| {
             g.expression_column(
@@ -1127,7 +1132,6 @@ impl Graph for ScopedGraph {
                 universe_handle,
                 column_handles,
                 column_properties,
-                trace,
             )
         })
     }
@@ -1194,7 +1198,6 @@ impl Graph for ScopedGraph {
         table_handle: TableHandle,
         column_paths: Vec<ColumnPath>,
         table_properties: Arc<TableProperties>,
-        trace: Trace,
         append_only_or_deterministic: bool,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
@@ -1203,7 +1206,6 @@ impl Graph for ScopedGraph {
                 table_handle,
                 column_paths,
                 table_properties,
-                trace,
                 append_only_or_deterministic,
             )
         })

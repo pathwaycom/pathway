@@ -91,7 +91,8 @@ class TableProperties:
     def column(column_prroperties: ColumnProperties) -> TableProperties: ...
     @staticmethod
     def from_column_properties(
-        column_properties: Iterable[tuple[ColumnPath, ColumnProperties]]
+        column_properties: Iterable[tuple[ColumnPath, ColumnProperties]],
+        trace: Trace | None = None,
     ) -> TableProperties: ...
 
 @dataclasses.dataclass(frozen=True)

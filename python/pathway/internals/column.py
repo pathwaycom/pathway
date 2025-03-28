@@ -269,6 +269,10 @@ class Context(ABC):
         return IdColumn(self)
 
     @property
+    def trace(self) -> trace.Trace:
+        return self.id_column.trace
+
+    @property
     @abstractmethod
     def universe(self) -> Universe: ...
 

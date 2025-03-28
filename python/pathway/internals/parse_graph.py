@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pathway.internals import operator
 from pathway.internals.datasource import ErrorLogDataSource
 from pathway.internals.helpers import FunctionSpec, StableSet
-from pathway.internals.json import Json
 from pathway.internals.schema import Schema
 from pathway.internals.universe_solver import UniverseSolver
 
@@ -238,7 +237,7 @@ class ParseGraph:
 class ErrorLogSchema(Schema):
     operator_id: int
     message: str
-    trace: Json | None
+    trace: str
 
 
 G = ParseGraph()

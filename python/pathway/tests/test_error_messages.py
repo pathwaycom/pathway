@@ -719,3 +719,32 @@ def test_this():
         match=re.escape("You cannot instantiate `this` class."),
     ):
         pw.this()  # cause
+
+
+def test_restrict():
+    t1 = pw.debug.table_from_markdown(
+        """
+          | a | b
+        1 | 6 | 2
+       """
+    )
+    t2 = pw.debug.table_from_markdown(
+        """
+            | c
+          2 | 2
+        """
+    )
+
+    with _assert_error_trace(
+        ValueError,
+        match=re.escape("other universe has to be a subset of self universe."),
+    ):
+        t1.restrict(t2)  # cause
+
+    with _assert_error_trace(
+        KeyError,
+        match=re.escape("key missing in output table"),
+    ):
+        pw.universes.promise_is_subset_of(t2, t1)
+        t1.restrict(t2)  # cause
+        run_all()
