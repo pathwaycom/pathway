@@ -2066,7 +2066,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .ok_or(Error::InvalidTableHandle)?;
 
         let new_table = table
-            .values()
+            .values_consolidated()
             .inner
             .flat_map(|(data, time, diff)| {
                 if diff > 0 {
