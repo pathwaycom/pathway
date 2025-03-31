@@ -57,6 +57,7 @@ jobs:
           command: build
           args: --release --strip
           manylinux: auto
+          container: "quay.io/pypa/manylinux2014_x86_64:2025.03.23-1"
           sccache: true
           before-script-linux: yum install -y perl-core
 
