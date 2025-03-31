@@ -42,7 +42,6 @@ This configuration creates chunks of 100–500 tokens using the `cl100k_base` to
 
 For more on token encodings, refer to [OpenAI's tiktoken guide](https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken#encodings).
 
-
 ## RecursiveSplitter
 
 Another kind of splitter that you can use to chunk your documents in [`RecursiveSplitter`](/developers/api-docs/pathway-xpacks-llm/splitters#pathway.xpacks.llm.splitters.RecursiveSplitter). 
@@ -75,3 +74,16 @@ splitter: pw.xpacks.llm.splitters.RecursiveSplitter
   model_name: "gpt-4o-mini"
 ```
 ::
+
+
+## DoclingParser
+
+The `DoclingParser` takes a different approach by leveraging the document's inherent structure to determine chunk boundaries. Instead of relying solely on token or character counts, it analyzes elements like headings, paragraphs, lists, and other document-specific markers. This allows for more meaningful segmentation, preserving logical sections of content and ensuring each chunk retains coherent context. For example, it prevents from splitting the table in the middle.
+By structuring the text according to its original format, `DoclingParser` improves retrieval accuracy while maintaining the integrity of the document's narrative flow.
+
+As of now, this chunking approach can produce chunks of varying length since it does not split text based on token count. If you require more evenly sized chunks, you can always apply the `TokenCountSplitter` or `RecursiveSplitter` on top of DoclingParser to enforce more uniform segmentation.
+
+By default chunking is always enabled; in order to turn it off simply set `chunking=False` in the constructor.
+
+Additionally, each chunk is wrapped with additional elements like headings and captions if any are available (like it is in case of images and tables). 
+It can greatly help in retrieval as it attaches some additional context to the chunk.
