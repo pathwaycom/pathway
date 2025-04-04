@@ -7,6 +7,7 @@ use std::result;
 
 use super::ColumnPath;
 use super::{Key, Value};
+use crate::connectors::synchronization::Error as InputSynchronizationError;
 use crate::persistence::Error as PersistenceBackendError;
 
 use crate::connectors::data_storage::{ReadError, WriteError};
@@ -138,6 +139,9 @@ pub enum Error {
         name: String,
         schema_keys: Vec<String>,
     },
+
+    #[error("input synchronization failed: {0}")]
+    InputSynchronization(#[from] InputSynchronizationError),
 }
 
 const OTHER_WORKER_ERROR_MESSAGES: [&str; 3] = [

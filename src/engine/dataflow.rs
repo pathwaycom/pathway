@@ -17,6 +17,9 @@ use crate::connectors::adaptors::{InputAdaptor, UpsertSession};
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::{ConnectorMonitor, ConnectorStats, OutputConnectorStats};
+use crate::connectors::synchronization::{
+    ConnectorGroupDescriptor, ConnectorSynchronizer, SharedConnectorSynchronizer,
+};
 use crate::connectors::{Connector, PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::operators::external_index::UseExternalIndexAsOfNow;
 use crate::engine::dataflow::operators::gradual_broadcast::GradualBroadcast;
@@ -42,7 +45,7 @@ use std::ops::{ControlFlow, Deref};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{Builder, JoinHandle};
 use std::time::{Duration, SystemTime};
 use std::{env, slice};
@@ -847,6 +850,7 @@ struct DataflowGraphInner<S: MaybeTotalScope> {
     current_error_log: Option<ErrorLog>,
     current_operator_properties: Option<OperatorProperties>,
     reducer_factory: Box<dyn CreateDataflowReducer<S>>,
+    connector_synchronizer: SharedConnectorSynchronizer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1292,6 +1296,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         terminate_on_error: bool,
         default_error_log: Option<ErrorLog>,
         reducer_factory: Box<dyn CreateDataflowReducer<S>>,
+        connector_synchronizer: SharedConnectorSynchronizer,
     ) -> Result<Self> {
         Ok(Self {
             scope,
@@ -1316,6 +1321,7 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             current_error_log: None,
             current_operator_properties: None,
             reducer_factory,
+            connector_synchronizer,
         })
     }
 
@@ -3746,6 +3752,8 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         }
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     fn connector_table(
         &mut self,
         reader: Box<dyn ReaderBuilder>,
@@ -3754,6 +3762,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
+        synchronization_group: Option<&ConnectorGroupDescriptor>,
     ) -> Result<TableHandle> {
         let effective_persistent_id = effective_persistent_id(
             &mut self.persistence_wrapper,
@@ -3788,6 +3797,17 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 .persistence_wrapper
                 .get_worker_persistent_storage()
                 .is_some();
+
+        let group = if let Some(synchronization_group) = &synchronization_group {
+            Some(
+                self.connector_synchronizer
+                    .lock()
+                    .unwrap()
+                    .ensure_synchronization_group(synchronization_group, self.pollers.len())?,
+            )
+        } else {
+            None
+        };
 
         if realtime_reader_needed || persisted_table {
             let persistent_id = internal_persistent_id;
@@ -3839,6 +3859,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 persistence_mode,
                 snapshot_access,
                 self.error_reporter.clone(),
+                group,
             )?;
 
             self.pollers.push(state.poller);
@@ -4343,6 +4364,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> DataflowGraphInner<S> 
                 self.config.clone(),
                 self.terminate_on_error,
                 self.current_error_log.clone(),
+                Arc::new(Mutex::new(ConnectorSynchronizer::new(false))), // doesn't matter since table creation is impossible in iterate
             )?;
             let mut subgraph_ref = subgraph.0.borrow_mut();
             let mut state = BeforeIterate::new(self, &mut subgraph_ref, step);
@@ -4869,6 +4891,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
         config: Arc<Config>,
         terminate_on_error: bool,
         default_error_log: Option<ErrorLog>,
+        connector_synchronizer: SharedConnectorSynchronizer,
     ) -> Result<Self> {
         Ok(Self(RefCell::new(DataflowGraphInner::new(
             scope,
@@ -4879,6 +4902,7 @@ impl<S: MaybeTotalScope> InnerDataflowGraph<S> {
             terminate_on_error,
             default_error_log,
             Box::new(NotTotalReducerFactory),
+            connector_synchronizer,
         )?)))
     }
 }
@@ -5374,6 +5398,7 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         _parallel_readers: usize,
         _table_properties: Arc<TableProperties>,
         _unique_name: Option<&UniqueName>,
+        _synchronization_group: Option<&ConnectorGroupDescriptor>,
     ) -> Result<TableHandle> {
         Err(Error::IoNotPossible)
     }
@@ -5474,6 +5499,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
         persistence_config: Option<PersistenceManagerOuterConfig>,
         config: Arc<Config>,
         terminate_on_error: bool,
+        connector_synchronizer: SharedConnectorSynchronizer,
     ) -> Result<Self> {
         let worker_idx = scope.index();
         let total_workers = scope.peers();
@@ -5493,6 +5519,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> OuterDataflowGraph<S> 
             terminate_on_error,
             None,
             Box::new(TimestampReducerFactory),
+            connector_synchronizer,
         )?)))
     }
 }
@@ -6029,6 +6056,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
+        synchronization_group: Option<&ConnectorGroupDescriptor>,
     ) -> Result<TableHandle> {
         self.0.borrow_mut().connector_table(
             reader,
@@ -6037,6 +6065,7 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
             parallel_readers,
             table_properties,
             unique_name,
+            synchronization_group,
         )
     }
 
@@ -6180,6 +6209,9 @@ where
     let (error_reporter, error_receiver) = ErrorReporter::create();
     let failed = Arc::new(AtomicBool::new(false));
     let failed_2 = failed.clone();
+    let is_multiprocessed = config.processes() > 1;
+    let connector_synchronizer =
+        Arc::new(Mutex::new(ConnectorSynchronizer::new(is_multiprocessed)));
 
     let guards = execute(config.to_timely_config(), move |worker| {
         catch_unwind(AssertUnwindSafe(|| {
@@ -6213,6 +6245,7 @@ where
                     persistence_config.clone(),
                     config.clone(),
                     terminate_on_error,
+                    connector_synchronizer.clone(),
                 )
                 .unwrap_with_reporter(&error_reporter);
                 let telemetry_runner = maybe_run_telemetry_thread(&graph, telemetry_config.clone());

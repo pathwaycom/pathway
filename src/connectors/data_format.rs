@@ -48,8 +48,8 @@ fn is_commit_literal(value: &DynResult<Value>) -> bool {
     }
 }
 
-type KeyFieldsWithErrors = Option<DynResult<Vec<Value>>>;
-type ValueFieldsWithErrors = Vec<DynResult<Value>>;
+pub type KeyFieldsWithErrors = Option<DynResult<Vec<Value>>>;
+pub type ValueFieldsWithErrors = Vec<DynResult<Value>>;
 pub type ErrorRemovalLogic = Box<dyn Fn(ValueFieldsWithErrors) -> DynResult<Vec<Value>>>;
 
 #[derive(Debug)]

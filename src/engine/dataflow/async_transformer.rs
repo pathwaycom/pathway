@@ -173,6 +173,7 @@ where
         PersistenceMode::Batch, // default value from connector_table
         SnapshotAccess::Full,   // default value from connector_table
         graph.error_reporter.clone(),
+        None,
     )?;
 
     graph.pollers.push(state.poller);

@@ -88,6 +88,7 @@ use crate::connectors::data_storage::{
     ReadMethod, ReaderBuilder, SqlWriterInitMode, SqliteReader, WriteError, Writer,
 };
 use crate::connectors::scanner::S3Scanner;
+use crate::connectors::synchronization::ConnectorGroupDescriptor;
 use crate::connectors::{PersistenceMode, SessionType, SnapshotAccess};
 use crate::engine::dataflow::Config;
 use crate::engine::error::{DataError, DynError, DynResult, Trace as EngineTrace};
@@ -926,6 +927,33 @@ fn wrap_stateful_combine(combine: Py<PyAny>) -> StatefulCombineFn {
     Arc::new(move |state, values| {
         Python::with_gil(|py| Ok(combine.bind(py).call1((state, values))?.extract()?))
     })
+}
+
+#[pyclass(module = "pathway.engine", frozen, name = "ConnectorGroupDescriptor")]
+struct PyConnectorGroupDescriptor(ConnectorGroupDescriptor);
+
+#[pymethods]
+impl PyConnectorGroupDescriptor {
+    #[new]
+    fn new(name: String, column_index: usize, max_difference: Value) -> Self {
+        Self(ConnectorGroupDescriptor {
+            name,
+            column_index,
+            max_difference,
+        })
+    }
+}
+
+impl<'py> FromPyObject<'py> for ConnectorGroupDescriptor {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(ob.extract::<PyRef<PyConnectorGroupDescriptor>>()?.0.clone())
+    }
+}
+
+impl IntoPy<PyObject> for ConnectorGroupDescriptor {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        PyConnectorGroupDescriptor(self).into_py(py)
+    }
 }
 
 #[pyclass(module = "pathway.engine", frozen, name = "ReducerData")]
@@ -2474,11 +2502,11 @@ impl Scope {
         self_: &Bound<Self>,
         data_source: &Bound<DataStorage>,
         data_format: &Bound<DataFormat>,
-        properties: ConnectorProperties,
+        properties: &Bound<ConnectorProperties>,
     ) -> PyResult<Py<Table>> {
         let py = self_.py();
 
-        let unique_name = properties.unique_name.clone();
+        let unique_name = properties.borrow().unique_name.clone();
         self_.borrow().register_unique_name(unique_name.as_ref())?;
         let connector_index = *self_.borrow().total_connectors.borrow();
         *self_.borrow().total_connectors.borrow_mut() += 1;
@@ -2493,17 +2521,18 @@ impl Scope {
 
         let parser_impl = data_format.borrow().construct_parser(py)?;
 
-        let column_properties = properties.column_properties();
-
+        let column_properties = properties.borrow().column_properties();
         let table_handle = self_.borrow().graph.connector_table(
             reader_impl,
             parser_impl,
             properties
+                .borrow()
                 .commit_duration_ms
                 .map(time::Duration::from_millis),
             parallel_readers,
             Arc::new(EngineTableProperties::flat(column_properties)),
             unique_name.as_ref(),
+            properties.borrow().synchronization_group.borrow().as_ref(),
         )?;
         Table::new(self_, table_handle)
     }
@@ -5550,6 +5579,8 @@ pub struct ConnectorProperties {
     column_properties: Vec<ColumnProperties>,
     #[pyo3(get)]
     unique_name: Option<UniqueName>,
+    #[pyo3(get)]
+    synchronization_group: Option<ConnectorGroupDescriptor>,
 }
 
 #[pymethods]
@@ -5559,19 +5590,22 @@ impl ConnectorProperties {
         commit_duration_ms = None,
         unsafe_trusted_ids = false,
         column_properties = vec![],
-        unique_name = None
+        unique_name = None,
+        synchronization_group = None,
     ))]
     fn new(
         commit_duration_ms: Option<u64>,
         unsafe_trusted_ids: bool,
         #[pyo3(from_py_with = "from_py_iterable")] column_properties: Vec<ColumnProperties>,
         unique_name: Option<String>,
+        synchronization_group: Option<ConnectorGroupDescriptor>,
     ) -> Self {
         Self {
             commit_duration_ms,
             unsafe_trusted_ids,
             column_properties,
             unique_name,
+            synchronization_group,
         }
     }
 }
@@ -5893,6 +5927,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<PyPersistenceMode>()?;
     m.add_class::<PySnapshotAccess>()?;
     m.add_class::<PySnapshotEvent>()?;
+    m.add_class::<PyConnectorGroupDescriptor>()?;
     m.add_class::<TelemetryConfig>()?;
     m.add_class::<BackfillingThreshold>()?;
 

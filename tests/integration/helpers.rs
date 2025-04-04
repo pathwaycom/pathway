@@ -12,7 +12,8 @@ use pathway_engine::persistence::config::{PersistenceManagerOuterConfig, Persist
 use pathway_engine::persistence::tracker::WorkerPersistentStorage;
 
 use pathway_engine::connectors::data_format::{
-    ErrorRemovalLogic, FormattedDocument, ParseResult, ParsedEvent, ParsedEventWithErrors, Parser,
+    ErrorRemovalLogic, FormattedDocument, KeyFieldsWithErrors, ParseResult, ParsedEvent,
+    ParsedEventWithErrors, Parser, ValueFieldsWithErrors,
 };
 use pathway_engine::connectors::data_storage::{
     DataEventType, ReadResult, Reader, ReaderBuilder, ReaderContext,
@@ -40,6 +41,30 @@ impl ReportError for PanicErrorReporter {
     fn report(&self, error: Error) {
         panic!("Error: {error:?}");
     }
+}
+
+pub fn key_from_fields_with_errors(key: &KeyFieldsWithErrors) -> Option<Vec<Value>> {
+    if let Some(ref key_result) = key {
+        if let Ok(key) = key_result {
+            Some(key.clone())
+        } else {
+            panic!("bad key")
+        }
+    } else {
+        None
+    }
+}
+
+pub fn value_from_fields_with_errors(values: &ValueFieldsWithErrors) -> Vec<Value> {
+    let mut new_values = Vec::new();
+    for value in values {
+        let value = match value {
+            Ok(v) => v.clone(),
+            Err(_) => Value::Error,
+        };
+        new_values.push(value);
+    }
+    new_values
 }
 
 pub fn full_cycle_read(
@@ -81,7 +106,14 @@ pub fn full_cycle_read(
     .unwrap();
 
     let reporter = PanicErrorReporter::default();
-    Connector::read_realtime_updates(&mut *reader, &sender, &main_thread, &reporter);
+    Connector::read_realtime_updates(
+        &mut *reader,
+        &mut *parser,
+        &sender,
+        &main_thread,
+        &reporter,
+        None,
+    );
     let result = get_entries_in_receiver(receiver);
 
     let has_persistent_storage = persistent_storage.is_some();
@@ -92,21 +124,24 @@ pub fn full_cycle_read(
     let mut rewind_finish_sentinel_seen = false;
     for entry in &result {
         match entry {
-            Entry::Realtime(_) => assert!(rewind_finish_sentinel_seen),
-            Entry::RewindFinishSentinel(_) => {
-                assert!(!rewind_finish_sentinel_seen);
-                rewind_finish_sentinel_seen = true;
-            }
-            Entry::Snapshot(_) => assert!(!rewind_finish_sentinel_seen),
-        }
-
-        match entry {
-            Entry::Realtime(ReadResult::Data(raw_data, (offset_key, offset_value))) => {
+            Entry::RealtimeEntries(events, (offset_key, offset_value)) => {
+                assert!(rewind_finish_sentinel_seen);
                 frontier.advance_offset(offset_key.clone(), offset_value.clone());
 
-                let events = parser.parse(raw_data).unwrap();
                 for event in events {
-                    let event = event.replace_errors();
+                    let event = match event {
+                        ParsedEventWithErrors::AdvanceTime => ParsedEvent::AdvanceTime,
+                        ParsedEventWithErrors::Insert((key, values)) => {
+                            let key = key_from_fields_with_errors(key);
+                            let values = value_from_fields_with_errors(values);
+                            ParsedEvent::Insert((key, values))
+                        }
+                        ParsedEventWithErrors::Delete((key, values)) => {
+                            let key = key_from_fields_with_errors(key);
+                            let values = value_from_fields_with_errors(values);
+                            ParsedEvent::Delete((key, values))
+                        }
+                    };
                     if let Some(ref mut snapshot_writer) = snapshot_writer {
                         let snapshot_event = match event {
                             // Random key generation is used only for testing purposes and
@@ -128,17 +163,18 @@ pub fn full_cycle_read(
                     new_parsed_entries.push(event);
                 }
             }
-            Entry::Realtime(ReadResult::FinishedSource { .. }) => continue,
-            Entry::Realtime(ReadResult::NewSource(metadata)) => {
-                parser.on_new_source_started(metadata);
+            Entry::RealtimeEvent(_) => {
+                assert!(rewind_finish_sentinel_seen);
             }
             Entry::Snapshot(snapshot_entry) => {
+                assert!(!rewind_finish_sentinel_seen);
                 snapshot_entries.push(snapshot_entry.clone());
             }
             Entry::RewindFinishSentinel(_) => {
+                assert!(!rewind_finish_sentinel_seen);
                 rewind_finish_sentinel_seen = true;
             }
-            _ => {}
+            Entry::RealtimeParsingError(e) => panic!("{e}"),
         }
     }
 

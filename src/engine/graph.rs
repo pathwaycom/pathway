@@ -19,6 +19,7 @@ use scopeguard::defer;
 use crate::connectors::data_format::{Formatter, Parser};
 use crate::connectors::data_storage::{ReaderBuilder, Writer};
 use crate::connectors::monitoring::ConnectorStats;
+use crate::connectors::synchronization::ConnectorGroupDescriptor;
 use crate::external_integration::ExternalIndex;
 use crate::persistence::UniqueName;
 use crate::python_api::extract_value;
@@ -952,6 +953,7 @@ pub trait Graph {
         column_path: ColumnPath,
     ) -> Result<()>;
 
+    #[allow(clippy::too_many_arguments)]
     fn connector_table(
         &self,
         reader: Box<dyn ReaderBuilder>,
@@ -960,6 +962,7 @@ pub trait Graph {
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
+        synchronization_group: Option<&ConnectorGroupDescriptor>,
     ) -> Result<TableHandle>;
 
     fn output_table(
@@ -1591,6 +1594,7 @@ impl Graph for ScopedGraph {
         parallel_readers: usize,
         table_properties: Arc<TableProperties>,
         unique_name: Option<&UniqueName>,
+        synchronization_group: Option<&ConnectorGroupDescriptor>,
     ) -> Result<TableHandle> {
         self.try_with(|g| {
             g.connector_table(
@@ -1600,6 +1604,7 @@ impl Graph for ScopedGraph {
                 parallel_readers,
                 table_properties,
                 unique_name,
+                synchronization_group,
             )
         })
     }

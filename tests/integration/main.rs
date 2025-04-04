@@ -8,6 +8,7 @@ mod test_bson;
 mod test_bytes;
 mod test_cached_object_storage;
 mod test_connector_field_defaults;
+mod test_connector_sync;
 mod test_dd_distinct_total;
 mod test_debezium;
 mod test_deltalake;

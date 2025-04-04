@@ -7,6 +7,7 @@ use log::{error, info, warn};
 use scopeguard::guard;
 use std::cell::RefCell;
 use std::env;
+use std::mem::take;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender, TryRecvError};
@@ -26,6 +27,7 @@ pub mod monitoring;
 pub mod offset;
 pub mod posix_like;
 pub mod scanner;
+pub mod synchronization;
 
 use crate::connectors::monitoring::ConnectorMonitor;
 use crate::engine::error::{DynError, Trace};
@@ -34,6 +36,7 @@ use crate::engine::report_error::{
 };
 use crate::engine::{DataError, Key, Value};
 
+use crate::connectors::synchronization::ConnectorGroupAccessor;
 use crate::engine::Error as EngineError;
 use crate::engine::Timestamp;
 use crate::persistence::config::ReadersQueryPurpose;
@@ -105,7 +108,9 @@ pub struct Connector {
 pub enum Entry {
     Snapshot(SnapshotEvent),
     RewindFinishSentinel(OffsetAntichain),
-    Realtime(ReadResult),
+    RealtimeEntries(Vec<ParsedEventWithErrors>, Offset),
+    RealtimeEvent(ReadResult),
+    RealtimeParsingError(DynError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -297,11 +302,14 @@ impl Connector {
         frontier
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn read_realtime_updates(
         reader: &mut dyn Reader,
+        parser: &mut dyn Parser,
         sender: &Sender<Entry>,
         main_thread: &Thread,
         error_reporter: &(impl ReportError + 'static),
+        mut group: Option<&mut ConnectorGroupAccessor>,
     ) {
         let use_rare_wakeup = env::var("PATHWAY_YOLO_RARE_WAKEUPS") == Ok("1".to_string());
         let mut amt_send = 0;
@@ -311,8 +319,69 @@ impl Connector {
             let finished = matches!(row_read_result, Ok(ReadResult::Finished));
 
             match row_read_result {
-                Ok(read_result) => {
-                    let send_res = sender.send(Entry::Realtime(read_result));
+                Ok(ReadResult::Data(reader_context, offset)) => {
+                    match parser.parse(&reader_context) {
+                        Ok(entries) => {
+                            if let Some(group) = group.as_mut() {
+                                let mut entries_for_sending = Vec::new();
+                                let mut approvals = Vec::new();
+                                let mut disconnected = false;
+                                for entry in entries {
+                                    let mut can_be_sent = group.can_entry_be_sent(&entry);
+                                    while can_be_sent.is_wait() {
+                                        entries_for_sending
+                                            .push(ParsedEventWithErrors::AdvanceTime);
+                                        let send_res = sender.send(Entry::RealtimeEntries(
+                                            take(&mut entries_for_sending),
+                                            offset.clone(),
+                                        ));
+                                        if send_res.is_err() {
+                                            disconnected = true;
+                                            break;
+                                        }
+                                        if !approvals.is_empty() {
+                                            group.report_entries_sent(take(&mut approvals));
+                                        }
+                                        let retry_future = can_be_sent.expect_wait();
+                                        futures::executor::block_on(retry_future)
+                                            .expect("retry sender must not drop");
+                                        can_be_sent = group.can_entry_be_sent(&entry);
+                                    }
+                                    if disconnected {
+                                        break;
+                                    }
+                                    let approval = can_be_sent.expect_approved();
+                                    entries_for_sending.push(entry);
+                                    approvals.push(approval);
+                                }
+                                let send_res = sender.send(Entry::RealtimeEntries(
+                                    take(&mut entries_for_sending),
+                                    offset,
+                                ));
+                                if disconnected || send_res.is_err() {
+                                    break;
+                                }
+                                group.report_entries_sent(take(&mut approvals));
+                            } else {
+                                let send_res = sender.send(Entry::RealtimeEntries(entries, offset));
+                                if send_res.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let send_res = sender.send(Entry::RealtimeParsingError(e));
+                            if send_res.is_err() {
+                                break;
+                            }
+                        }
+                    };
+                }
+                Ok(other_read_result) => {
+                    if let ReadResult::NewSource(ref metadata) = other_read_result {
+                        parser.on_new_source_started(metadata);
+                    }
+                    let send_res = sender.send(Entry::RealtimeEvent(other_read_result));
                     if send_res.is_err() {
                         break;
                     }
@@ -443,6 +512,7 @@ impl Connector {
         persistence_mode: PersistenceMode,
         snapshot_access: SnapshotAccess,
         error_reporter: impl ReportError + 'static,
+        mut group: Option<ConnectorGroupAccessor>,
     ) -> Result<StartedConnectorState, EngineError> {
         assert_eq!(self.num_columns, parser.column_count());
 
@@ -455,6 +525,7 @@ impl Connector {
             parser.short_description()
         );
         let reader_name = reader.name(unique_name);
+        let session_type = parser.session_type();
 
         let mut snapshot_writer = Self::snapshot_writer(
             reader.as_ref(),
@@ -486,7 +557,14 @@ impl Connector {
                 )
                 .map_err(EngineError::ReaderFailed)?;
                 if realtime_reader_needed {
-                    Self::read_realtime_updates(&mut *reader, &sender, &main_thread, reporter);
+                    Self::read_realtime_updates(
+                        &mut *reader,
+                        &mut *parser,
+                        &sender,
+                        &main_thread,
+                        reporter,
+                        group.as_mut(),
+                    );
                 }
 
                 Ok(())
@@ -525,7 +603,7 @@ impl Connector {
                             &mut values_to_key,
                             &mut snapshot_writer,
                             &mut Some(&mut *connector_monitor.borrow_mut()),
-                            parser.session_type(),
+                            session_type,
                         );
                     }
 
@@ -540,7 +618,7 @@ impl Connector {
                     return ControlFlow::Continue(next_commit_at);
                 }
                 match receiver.try_recv() {
-                    Ok(Entry::Realtime(ReadResult::Finished)) => {
+                    Ok(Entry::RealtimeEvent(ReadResult::Finished)) => {
                         if let Some(snapshot_writer) = &snapshot_writer {
                             let snapshot_event = SnapshotEvent::AdvanceTime(
                                 Timestamp(self.current_timestamp.0 + 2),
@@ -566,7 +644,7 @@ impl Connector {
                         self.handle_input_entry(
                             entry,
                             &mut backfilling_finished,
-                            &mut parser,
+                            session_type,
                             input_session.as_mut(),
                             &mut values_to_key,
                             &mut snapshot_writer,
@@ -594,7 +672,7 @@ impl Connector {
         &mut self,
         entry: Entry,
         backfilling_finished: &mut bool,
-        parser: &mut Box<dyn Parser>,
+        session_type: SessionType,
         input_session: &mut dyn InputAdaptor<Timestamp>,
         values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
         snapshot_writer: &mut Option<SharedSnapshotWriter>,
@@ -602,10 +680,9 @@ impl Connector {
         commit_allowed: &mut bool,
     ) {
         let has_persistent_storage = snapshot_writer.is_some();
-        let session_type = parser.session_type();
 
         match entry {
-            Entry::Realtime(read_result) => match read_result {
+            Entry::RealtimeEvent(read_result) => match read_result {
                 ReadResult::Finished => {}
                 ReadResult::FinishedSource {
                     commit_allowed: commit_allowed_external,
@@ -626,42 +703,36 @@ impl Connector {
                 }
                 ReadResult::NewSource(metadata) => {
                     *commit_allowed &= metadata.commits_allowed_in_between();
-                    parser.on_new_source_started(&metadata);
                 }
-                ReadResult::Data(reader_context, offset) => {
-                    let mut parsed_entries = match parser.parse(&reader_context) {
-                        Ok(entries) => {
-                            self.log_parse_success();
-                            entries
-                        }
-                        Err(e) => {
-                            self.log_parse_error(e);
-                            return;
-                        }
-                    };
-
-                    if !*backfilling_finished {
-                        parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
-                    }
-
-                    self.on_parsed_data(
-                        parsed_entries,
-                        Some(&offset.clone()),
-                        input_session,
-                        values_to_key,
-                        snapshot_writer,
-                        connector_monitor,
-                        session_type,
-                    );
-
-                    let (offset_key, offset_value) = offset;
-                    if has_persistent_storage {
-                        assert!(*backfilling_finished);
-                        self.current_frontier
-                            .advance_offset(offset_key, offset_value);
-                    }
+                ReadResult::Data(_, _) => {
+                    unreachable!("ReadResult::Data must be a part of RealtimeEntries event")
                 }
             },
+            Entry::RealtimeParsingError(e) => {
+                self.log_parse_error(e);
+            }
+            Entry::RealtimeEntries(mut parsed_entries, offset) => {
+                if !*backfilling_finished {
+                    parsed_entries.retain(|x| !matches!(x, ParsedEventWithErrors::AdvanceTime));
+                }
+
+                self.on_parsed_data(
+                    parsed_entries,
+                    Some(&offset.clone()),
+                    input_session,
+                    values_to_key,
+                    snapshot_writer,
+                    connector_monitor,
+                    session_type,
+                );
+
+                let (offset_key, offset_value) = offset;
+                if has_persistent_storage {
+                    assert!(*backfilling_finished);
+                    self.current_frontier
+                        .advance_offset(offset_key, offset_value);
+                }
+            }
             Entry::RewindFinishSentinel(restored_frontier) => {
                 assert!(!*backfilling_finished);
                 *backfilling_finished = true;
@@ -690,38 +761,6 @@ impl Connector {
                         unreachable!()
                     }
                 };
-            }
-        }
-    }
-
-    /*
-        The implementation for push model of data acquisition: the source of the data notifies us, when the new
-        data arrive.
-
-        The callback takes the read result, which is basically the string of raw data.
-    */
-    #[allow(clippy::too_many_arguments)]
-    pub fn on_data(
-        &mut self,
-        raw_read_data: &ReaderContext,
-        offset: Option<&Offset>,
-        parser: &mut dyn Parser,
-        input_session: &mut dyn InputAdaptor<Timestamp>,
-        values_to_key: impl FnMut(Option<&Vec<Value>>, Option<&Offset>) -> Key,
-        snapshot_writer: &mut Option<SharedSnapshotWriter>,
-    ) {
-        match parser.parse(raw_read_data) {
-            Ok(entries) => self.on_parsed_data(
-                entries,
-                offset,
-                input_session,
-                values_to_key,
-                snapshot_writer,
-                &mut None,
-                parser.session_type(),
-            ),
-            Err(e) => {
-                error!("Read data parsed unsuccessfully. {e}");
             }
         }
     }
@@ -758,7 +797,10 @@ impl Connector {
         }; // logic to handle errors in values
         for entry in parsed_entries {
             let entry = match entry.remove_errors(&error_handling_logic) {
-                Ok(entry) => entry,
+                Ok(entry) => {
+                    self.log_parse_success();
+                    entry
+                }
                 Err(err) => {
                     let err = if self.skip_all_errors {
                         err
@@ -882,7 +924,11 @@ pub fn read_persisted_state(
                 SnapshotEvent::Delete(key, values) => input_session.remove((key, values)),
                 SnapshotEvent::AdvanceTime(_, _) | SnapshotEvent::Finished => unreachable!(),
             },
-            Ok(Entry::Realtime(_)) => unreachable!(),
+            Ok(
+                Entry::RealtimeEvent(_)
+                | Entry::RealtimeEntries(_, _)
+                | Entry::RealtimeParsingError(_),
+            ) => unreachable!(),
             Ok(Entry::RewindFinishSentinel(_)) | Err(_) => return ControlFlow::Break(()),
         }
     });

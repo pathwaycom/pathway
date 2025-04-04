@@ -4322,3 +4322,155 @@ def test_deltalake_backfilling_thresholds(tmp_path: pathlib.Path):
     run_all()
     result = pd.read_csv(output_path, usecols=["v"])
     assert set(result["v"]) == {"two", "three"}
+
+
+def test_synchronization_group_errors(tmp_path):
+    input_path_1 = tmp_path / "1.csv"
+    input_path_2 = tmp_path / "2.csv"
+
+    class InputSchema(pw.Schema):
+        k: int = pw.column_definition(primary_key=True)
+        m: int
+        v: str
+
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    table_3 = table_2.select(k=pw.this.k + 1)
+
+    with pytest.raises(
+        ValueError,
+        match="Only unchanged columns of an input tables can be used in input synchronization groups",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.k, table_3.k, max_difference=10
+        )
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="Only one column from a table can be used in a synchronization group",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.k, table_2.k, table_1.m, max_difference=10
+        )
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="At least two columns must participate in a connector group",
+    ):
+        pw.io.register_input_synchronization_group(table_1.k, max_difference=10)
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError, match="Fields of type STR are not supported in connector groups"
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.v, table_2.v, max_difference=10
+        )
+
+
+@needs_multiprocessing_fork
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {
+            "source_1": [
+                {"k": 1, "v": "one"},
+                {"k": 2, "v": "two"},
+                {"k": 3, "v": "three"},
+                {"k": 10, "v": "ten"},
+            ],
+            "source_2": [
+                {"k": 1, "v": "ONE"},
+                {"k": 2, "v": "TWO"},
+                {"k": 5, "v": "FIVE"},
+                {"k": 30, "v": "THIRTY"},
+            ],
+            "expected_entries": 7,
+        },
+        {
+            "source_1": [
+                {"k": 1, "v": "one"},
+            ],
+            "source_2": [
+                {"k": 1, "v": "ONE"},
+                {"k": 2, "v": "TWO"},
+                {"k": 3, "v": "FIVE"},
+                {"k": 11, "v": "ELEVEN"},
+                {"k": 12, "v": "TWELVE"},
+            ],
+            "expected_entries": 5,
+        },
+        {
+            "source_1": [
+                {"k": 1, "v": "one"},
+                {"k": 12, "v": "twelve"},
+            ],
+            "source_2": [
+                {"k": 1, "v": "ONE"},
+                {"k": 12, "v": "TWELVE"},
+            ],
+            "expected_entries": 4,
+        },
+        {
+            "source_1": [
+                {"k": 1, "v": "one"},
+                {"k": 2, "v": "two"},
+                {"k": 3, "v": "three"},
+                {"k": 4, "v": "four"},
+                {"k": 5, "v": "five"},
+            ],
+            "source_2": [{"k": 1, "v": "ONE"}, {"k": 15, "v": "FIFTEEN"}],
+            "expected_entries": 7,
+        },
+    ],
+)
+def test_synchronization_group(tmp_path, plan):
+    input_path_1 = tmp_path / "input_1"
+    input_path_2 = tmp_path / "input_2"
+    os.mkdir(input_path_1)
+    os.mkdir(input_path_2)
+
+    def stream_inputs(input_path: pathlib.Path, plan: list[dict]):
+        time.sleep(1)
+        for index, entry in enumerate(plan):
+            with open(input_path / f"{index}.jsonl", "w") as f:
+                json.dump(entry, f)
+            time.sleep(0.5)
+
+    output_path = tmp_path / "output.csv"
+
+    class InputSchema(pw.Schema):
+        k: int
+        v: str
+
+    table_1 = pw.io.jsonlines.read(
+        input_path_1, schema=InputSchema, autocommit_duration_ms=20
+    )
+    table_2 = pw.io.jsonlines.read(
+        input_path_2, schema=InputSchema, autocommit_duration_ms=20
+    )
+    table_1.promise_universes_are_disjoint(table_2)
+    table_merged = table_1.concat(table_2)
+    pw.io.register_input_synchronization_group(table_1.k, table_2.k, max_difference=10)
+    pw.io.csv.write(table_merged, output_path)
+
+    inputs_thread_1 = threading.Thread(
+        target=stream_inputs, args=(input_path_1, plan["source_1"]), daemon=True
+    )
+    inputs_thread_1.start()
+    inputs_thread_2 = threading.Thread(
+        target=stream_inputs, args=(input_path_2, plan["source_2"]), daemon=True
+    )
+    inputs_thread_2.start()
+
+    wait_result_with_checker(
+        CsvLinesNumberChecker(output_path, plan["expected_entries"]), 30
+    )

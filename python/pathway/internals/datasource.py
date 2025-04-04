@@ -18,6 +18,13 @@ class DataSourceOptions:
     commit_duration_ms: int | None = None
     unsafe_trusted_ids: bool | None = False
     unique_name: str | None = None
+    synchronization_group: api.ConnectorGroupDescriptor | None = None
+
+    def set_synchronization_group(self, group: api.ConnectorGroupDescriptor | None):
+        if self.synchronization_group is None:
+            object.__setattr__(self, "synchronization_group", group)
+        else:
+            raise ValueError("synchronization_group can only be set once")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,6 +48,7 @@ class DataSource(ABC):
             unsafe_trusted_ids=self.data_source_options.unsafe_trusted_ids,
             column_properties=columns,
             unique_name=self.data_source_options.unique_name,
+            synchronization_group=self.data_source_options.synchronization_group,
         )
 
     def get_effective_schema(self) -> type[Schema]:

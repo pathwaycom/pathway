@@ -101,6 +101,7 @@ class ConnectorProperties:
     unsafe_trusted_ids: bool | None = False
     column_properties: list[ColumnProperties] = []
     unique_name: str | None = None
+    synchronization_group: ConnectorGroupDescriptor | None = None
 
 class Column:
     """A Column holds data and conceptually is a Dict[Universe elems, dt]
@@ -830,6 +831,9 @@ class ElasticSearchParams:
     def __init__(self, *args, **kwargs): ...
 
 class PersistenceConfig:
+    def __init__(self, *args, **kwargs): ...
+
+class ConnectorGroupDescriptor:
     def __init__(self, *args, **kwargs): ...
 
 class PersistenceMode(Enum):

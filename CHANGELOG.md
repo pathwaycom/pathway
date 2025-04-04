@@ -5,8 +5,10 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Changed
+### Added
+- Added synchronization group mechanism to align multiple data sources based on selected columns. It can be accessed with `pw.io.register_input_synchronization_group`.
 
+### Changed
 - Enhanced error reporting for runtime errors across most operators, providing a trace that simplifies identifying the root cause.
 
 
