@@ -11,6 +11,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - Enhanced error reporting for runtime errors across most operators, providing a trace that simplifies identifying the root cause.
 
+### Fixed
+- Bugfix for problem with list_documents() when no documents present in store
+
 
 ## [0.21.1] - 2025-03-28
 

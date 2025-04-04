@@ -21,10 +21,8 @@ import pathway.xpacks.llm.splitters
 from pathway.stdlib.indexing.data_index import _SCORE, DataIndex
 from pathway.stdlib.indexing.retrievers import AbstractRetrieverFactory
 from pathway.stdlib.ml.classifiers import _knn_lsh
-from pathway.xpacks.llm._utils import _wrap_doc_post_processor
+from pathway.xpacks.llm._utils import _wrap_doc_post_processor, _wrap_udf
 from pathway.xpacks.llm.utils import combine_metadata
-
-from ._utils import _wrap_udf
 
 if TYPE_CHECKING:
     import langchain_core.documents
@@ -457,10 +455,12 @@ pw.io.fs.read('./sample_docs', format='binary', mode='static', with_metadata=Tru
             metadatas: list[pw.Json] | None,
             metadata_filter: str | None,
             return_status: bool,
-            is_parsed: list[bool],
+            is_parsed: list[bool] | None,
         ) -> list[pw.Json]:
             metadatas = metadatas if metadatas is not None else []
+            is_parsed = is_parsed if is_parsed is not None else []
             assert metadatas is not None
+            assert is_parsed is not None
 
             def remove_id(m):
                 metadata_dict = m.as_dict()
