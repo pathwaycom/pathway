@@ -141,9 +141,9 @@ $parser: !pw.xpacks.llm.parsers.DoclingParser
 See [PdfPipelineOptions](https://github.com/DS4SD/docling/blob/6875913e34abacb8d71b5d31543adbf7b5bd5e92/docling/datamodel/pipeline_options.py#L217) for reference of possible configuration, like OCR options, picture classification, code OCR, scientific formula enrichment, etc.
 
 
-### Other references
+<!-- ### Other references -->
 
-Want to learn more? Have a look on our special [blog post](/blog/docling-parser) about DoclingParser.
+<!-- Want to learn more? Have a look on our special [blog post](/blog/docling-parser) about DoclingParser. -->
 
 ## PypdfParser
 
