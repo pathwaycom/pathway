@@ -43,8 +43,6 @@ def test_airbyte_remote_run(gcp_job_name, env_vars, tmp_path):
     assert total_lines == 500
 
 
-# https://github.com/airbytehq/airbyte-protocol/issues/124
-@pytest.mark.xfail(reason="depends of airbyte-protocol which is broken at the moment")
 def test_airbyte_full_refresh_streams(tmp_path):
     input_path = tmp_path / "input.csv"
     connection_path = tmp_path / "connection.yaml"
