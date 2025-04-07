@@ -4430,6 +4430,18 @@ def test_synchronization_group_errors(tmp_path):
             "source_2": [{"k": 1, "v": "ONE"}, {"k": 15, "v": "FIFTEEN"}],
             "expected_entries": 7,
         },
+        {
+            "source_1": [
+                {"k": 50, "v": "fifty"},
+                {"k": 10, "v": "ten"},
+                {"k": 100, "v": "hundred"},
+            ],
+            "source_2": [
+                {"k": 10, "v": "TEN"},
+                {"k": 1000, "v": "THOUSAND"},
+            ],
+            "expected_entries": 4,
+        },
     ],
 )
 def test_synchronization_group(tmp_path, plan):

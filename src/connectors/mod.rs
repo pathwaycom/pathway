@@ -329,18 +329,18 @@ impl Connector {
                                 for entry in entries {
                                     let mut can_be_sent = group.can_entry_be_sent(&entry);
                                     while can_be_sent.is_wait() {
-                                        entries_for_sending
-                                            .push(ParsedEventWithErrors::AdvanceTime);
-                                        let send_res = sender.send(Entry::RealtimeEntries(
-                                            take(&mut entries_for_sending),
-                                            offset.clone(),
-                                        ));
-                                        if send_res.is_err() {
-                                            disconnected = true;
-                                            break;
-                                        }
-                                        if !approvals.is_empty() {
-                                            group.report_entries_sent(take(&mut approvals));
+                                        if !entries_for_sending.is_empty() {
+                                            let send_res = sender.send(Entry::RealtimeEntries(
+                                                take(&mut entries_for_sending),
+                                                offset.clone(),
+                                            ));
+                                            if send_res.is_err() {
+                                                disconnected = true;
+                                                break;
+                                            }
+                                            if !approvals.is_empty() {
+                                                group.report_entries_sent(take(&mut approvals));
+                                            }
                                         }
                                         let retry_future = can_be_sent.expect_wait();
                                         futures::executor::block_on(retry_future)
@@ -577,6 +577,7 @@ impl Connector {
         let connector_monitor = Rc::new(RefCell::new(ConnectorMonitor::new(reader_name)));
         let cloned_connector_monitor = connector_monitor.clone();
         let mut commit_allowed = true;
+        let mut deferred_new_source_event = None;
         let poller = Box::new(move || {
             let iteration_start = SystemTime::now();
             if matches!(persistence_mode, PersistenceMode::SpeedrunReplay)
@@ -641,16 +642,29 @@ impl Connector {
                         return ControlFlow::Continue(Some(iteration_start));
                     }
                     Ok(entry) => {
-                        self.handle_input_entry(
-                            entry,
-                            &mut backfilling_finished,
-                            session_type,
-                            input_session.as_mut(),
-                            &mut values_to_key,
-                            &mut snapshot_writer,
-                            &mut Some(&mut *connector_monitor.borrow_mut()),
-                            &mut commit_allowed,
-                        );
+                        if matches!(entry, Entry::RealtimeEvent(ReadResult::NewSource(_))) {
+                            deferred_new_source_event = Some(entry);
+                            continue;
+                        }
+                        let mut events = Vec::with_capacity(2);
+                        if let Some(deferred_new_source_event) =
+                            take(&mut deferred_new_source_event)
+                        {
+                            events.push(deferred_new_source_event);
+                        }
+                        events.push(entry);
+                        for entry in events {
+                            self.handle_input_entry(
+                                entry,
+                                &mut backfilling_finished,
+                                session_type,
+                                input_session.as_mut(),
+                                &mut values_to_key,
+                                &mut snapshot_writer,
+                                &mut Some(&mut *connector_monitor.borrow_mut()),
+                                &mut commit_allowed,
+                            );
+                        }
                     }
                     Err(TryRecvError::Empty) => return ControlFlow::Continue(next_commit_at),
                     Err(TryRecvError::Disconnected) => {
