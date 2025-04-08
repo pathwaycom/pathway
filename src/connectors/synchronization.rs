@@ -377,8 +377,17 @@ impl ConnectorGroup {
     // Calculates the threshold value, if the maximum sent value is `value`
     fn offset_by_max_difference(&self, value: &Value) -> Value {
         match value {
-            Value::Int(int_value) => Value::Int(int_value + self.max_difference.as_int().unwrap()), // TODO
-            _ => panic!("Unsupported type for sync group field"), // TODO
+            Value::Int(int_value) => Value::Int(int_value + self.max_difference.as_int().unwrap()),
+            Value::Duration(duration_value) => {
+                Value::Duration(*duration_value + self.max_difference.as_duration().unwrap())
+            }
+            Value::DateTimeNaive(dt_value) => {
+                Value::DateTimeNaive(*dt_value + self.max_difference.as_duration().unwrap())
+            }
+            Value::DateTimeUtc(dt_value) => {
+                Value::DateTimeUtc(*dt_value + self.max_difference.as_duration().unwrap())
+            }
+            _ => panic!("Unsupported type for sync group field"),
         }
     }
 

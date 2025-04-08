@@ -577,7 +577,7 @@ impl Connector {
         let connector_monitor = Rc::new(RefCell::new(ConnectorMonitor::new(reader_name)));
         let cloned_connector_monitor = connector_monitor.clone();
         let mut commit_allowed = true;
-        let mut deferred_new_source_event = None;
+        let mut deferred_events = Vec::new();
         let poller = Box::new(move || {
             let iteration_start = SystemTime::now();
             if matches!(persistence_mode, PersistenceMode::SpeedrunReplay)
@@ -642,18 +642,18 @@ impl Connector {
                         return ControlFlow::Continue(Some(iteration_start));
                     }
                     Ok(entry) => {
-                        if matches!(entry, Entry::RealtimeEvent(ReadResult::NewSource(_))) {
-                            deferred_new_source_event = Some(entry);
+                        let need_to_defer_processing = match entry {
+                            Entry::RealtimeEvent(ReadResult::NewSource(ref metadata)) => {
+                                !metadata.commits_allowed_in_between()
+                            }
+                            Entry::RealtimeEvent(ReadResult::FinishedSource { .. }) => false,
+                            _ => !deferred_events.is_empty(),
+                        };
+                        deferred_events.push(entry);
+                        if need_to_defer_processing {
                             continue;
                         }
-                        let mut events = Vec::with_capacity(2);
-                        if let Some(deferred_new_source_event) =
-                            take(&mut deferred_new_source_event)
-                        {
-                            events.push(deferred_new_source_event);
-                        }
-                        events.push(entry);
-                        for entry in events {
+                        for entry in take(&mut deferred_events) {
                             self.handle_input_entry(
                                 entry,
                                 &mut backfilling_finished,

@@ -1,6 +1,7 @@
 # Copyright © 2024 Pathway
 
 import base64
+import datetime
 import json
 import os
 import pathlib
@@ -4332,6 +4333,8 @@ def test_synchronization_group_errors(tmp_path):
         k: int = pw.column_definition(primary_key=True)
         m: int
         v: str
+        dt_naive: pw.DateTimeNaive
+        dt_utc: pw.DateTimeUtc
 
     table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
     table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
@@ -4369,10 +4372,69 @@ def test_synchronization_group_errors(tmp_path):
     table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
     table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
     with pytest.raises(
-        ValueError, match="Fields of type STR are not supported in connector groups"
+        ValueError,
+        match="Fields of type <class 'str'> are not supported in connector groups",
     ):
         pw.io.register_input_synchronization_group(
             table_1.v, table_2.v, max_difference=10
+        )
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="If max_difference is a Duration, the values of a column must either "
+        "have a type of DateTimeUtc, DateTimeNaive or Duration. "
+        "However, the column '<table1>.k' has type '<class 'int'>'",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.k, table_2.k, max_difference=datetime.timedelta(minutes=10)
+        )
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="All synchronization group column types must coincide. "
+        "However several types have been detected: 'DATE_TIME_NAIVE', 'DATE_TIME_UTC'",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.dt_naive,
+            table_2.dt_utc,
+            max_difference=datetime.timedelta(minutes=10),
+        )
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="The 'max_difference' must either be an integer or a datetime.timedelta",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.dt_naive,
+            table_2.dt_naive,
+            max_difference="ten minutes",
+        )
+    with pytest.raises(
+        ValueError,
+        match="The 'max_difference' can't be negative",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.k, table_2.k, max_difference=datetime.timedelta(microseconds=-5)
+        )
+
+    G.clear()
+    table_1 = pw.io.csv.read(input_path_1, schema=InputSchema)
+    table_2 = pw.io.csv.read(input_path_2, schema=InputSchema)
+    with pytest.raises(
+        ValueError,
+        match="The 'max_difference' can't be negative",
+    ):
+        pw.io.register_input_synchronization_group(
+            table_1.k, table_2.k, max_difference=-10
         )
 
 
@@ -4444,24 +4506,128 @@ def test_synchronization_group_errors(tmp_path):
         },
     ],
 )
-def test_synchronization_group(tmp_path, plan):
+@pytest.mark.parametrize("type_", ["Int", "Duration", "DateTimeUtc", "DateTimeNaive"])
+def test_synchronization_group(tmp_path, plan, type_):
     input_path_1 = tmp_path / "input_1"
     input_path_2 = tmp_path / "input_2"
     os.mkdir(input_path_1)
     os.mkdir(input_path_2)
 
+    if type_ == "Int":
+        max_difference = 10
+    elif type_ in ("DateTimeUtc", "DateTimeNaive", "Duration"):
+        max_difference = datetime.timedelta(seconds=10)
+    else:
+        raise ValueError(f"Unexpected type: {type_}")
+
     def stream_inputs(input_path: pathlib.Path, plan: list[dict]):
         time.sleep(1)
         for index, entry in enumerate(plan):
+            raw_value = entry["k"]
+            prepared_entry = {"v": entry["v"]}
+            if type_ == "Int":
+                prepared_entry["k"] = raw_value
+            elif type_ == "Duration":
+                prepared_entry["k"] = raw_value * 1_000_000_000
+            elif type_ == "DateTimeUtc":
+                prepared_entry["k"] = datetime.datetime.fromtimestamp(
+                    raw_value, tz=datetime.timezone.utc
+                ).isoformat()
+            elif type_ == "DateTimeNaive":
+                prepared_entry["k"] = datetime.datetime.fromtimestamp(
+                    raw_value
+                ).isoformat()
+            else:
+                raise ValueError(f"Unexpected type: {type_}")
             with open(input_path / f"{index}.jsonl", "w") as f:
-                json.dump(entry, f)
+                json.dump(prepared_entry, f)
             time.sleep(0.5)
 
     output_path = tmp_path / "output.csv"
 
+    if type_ == "Int":
+        TrackedFieldType = int
+    elif type_ == "Duration":
+        TrackedFieldType = pw.Duration
+    elif type_ == "DateTimeUtc":
+        TrackedFieldType = pw.DateTimeUtc
+    elif type_ == "DateTimeNaive":
+        TrackedFieldType = pw.DateTimeNaive
+    else:
+        raise ValueError(f"Unexpected type: {type_}")
+
+    class InputSchema(pw.Schema):
+        k: TrackedFieldType
+        v: str
+
+    table_1 = pw.io.jsonlines.read(
+        input_path_1, schema=InputSchema, autocommit_duration_ms=20
+    )
+    table_2 = pw.io.jsonlines.read(
+        input_path_2, schema=InputSchema, autocommit_duration_ms=20
+    )
+    table_1.promise_universes_are_disjoint(table_2)
+    table_merged = table_1.concat(table_2)
+    pw.io.register_input_synchronization_group(
+        table_1.k, table_2.k, max_difference=max_difference
+    )
+    pw.io.csv.write(table_merged, output_path)
+
+    inputs_thread_1 = threading.Thread(
+        target=stream_inputs, args=(input_path_1, plan["source_1"]), daemon=True
+    )
+    inputs_thread_1.start()
+    inputs_thread_2 = threading.Thread(
+        target=stream_inputs, args=(input_path_2, plan["source_2"]), daemon=True
+    )
+    inputs_thread_2.start()
+
+    wait_result_with_checker(
+        CsvLinesNumberChecker(output_path, plan["expected_entries"]), 30
+    )
+
+
+@needs_multiprocessing_fork
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {
+            "source_1": [[{"k": 1, "v": "one"}, {"k": 20, "v": "twenty"}]],
+            "source_2": [
+                [{"k": 1, "v": "ONE"}],
+            ],
+            # The first file couldn't pass in full, file reads are atomic, hence only record at the output
+            "expected_entries": 1,
+        },
+        {
+            "source_1": [[{"k": 1, "v": "one"}, {"k": 20, "v": "twenty"}]],
+            "source_2": [
+                [{"k": 1, "v": "ONE"}],
+                [{"k": 15, "v": "FIFTEEN"}],
+            ],
+            "expected_entries": 4,
+        },
+    ],
+)
+def test_synchronization_groups_respect_atomicity(tmp_path, plan):
+    input_path_1 = tmp_path / "input_1"
+    input_path_2 = tmp_path / "input_2"
+    output_path = tmp_path / "output.csv"
+    os.mkdir(input_path_1)
+    os.mkdir(input_path_2)
+
     class InputSchema(pw.Schema):
         k: int
         v: str
+
+    def stream_inputs(input_path: pathlib.Path, plan: list[dict]):
+        time.sleep(1)
+        for index, jsonlines in enumerate(plan):
+            with open(input_path / f"{index}.jsonl", "w") as f:
+                for jsonline in jsonlines:
+                    f.write(json.dumps(jsonline))
+                    f.write("\n")
+            time.sleep(0.5)
 
     table_1 = pw.io.jsonlines.read(
         input_path_1, schema=InputSchema, autocommit_duration_ms=20

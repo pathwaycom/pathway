@@ -1,10 +1,17 @@
+import datetime
+
 from pathway.internals import api, dtype
 from pathway.internals.datasource import GenericDataSource
 from pathway.internals.expression import ColumnReference
 from pathway.internals.operator import InputOperator
 from pathway.internals.parse_graph import G
 
-_SUPPORTED_COLUMN_DTYPES = [dtype.INT]
+_SUPPORTED_COLUMN_DTYPES = [
+    dtype.INT,
+    dtype.DATE_TIME_NAIVE,
+    dtype.DATE_TIME_UTC,
+    dtype.DURATION,
+]
 
 
 def register_input_synchronization_group(
@@ -26,18 +33,20 @@ def register_input_synchronization_group(
     and ``max_difference`` must be the result of subtracting values from two columns.
 
     The logic of synchronization group is the following:
-    - If a data source lags behind, the engine will read more data from it to align
-      its values with the others and will continue reading from the other sources
+    - If a data source lags behind, the engine will read more data from it to align \
+      its values with the others and will continue reading from the other sources \
       only after the lagging one has caught up.
-    - If a data source is too fast compared to others, the engine will delay its reading
-      until the slower sources (i.e., those with lower values in their specified columns)
+    - If a data source is too fast compared to others, the engine will delay its reading \
+      until the slower sources (i.e., those with lower values in their specified columns) \
       catch up.
 
     Limitations:
-    - This mechanism currently works only in runs that use a single Pathway process. The
+    - This mechanism currently works only in runs that use a single Pathway process. The \
       multi-processing support will be added soon.
-    - Currently, only ``int`` fields are supported. Support for ``DateTimeNaive`` and
-      ``DateTimeUtc`` will be added soon.
+    - Currently, ``int``, ``DateTimeNaive``, ``DateTimeUtc`` and ``Duration`` field types \
+      are supported.
+
+    Please note that all columns within the synchronization group must have the same type.
 
     Args:
         columns: A list of columns that will be monitored and synchronized.
@@ -98,14 +107,14 @@ def register_input_synchronization_group(
     column, and ``max_difference`` set to 600 seconds (10 minutes).
 
     - Initially, both sources send a record with timestamp ``T``.
-    - Later, the first source sends a record with ``T + 1h``.
-        This record is not yet forwarded for processing because it exceeds ``max_difference``.
-    - If the second source then sends a record with ``T + 1h``, the system detects a 1-hour gap.
-        Since both sources have moved beyond ``T``, the synchronization group accepts ``T + 1h``
-        as the new baseline and continues processing from there.
-    - However, if the second source instead sends a record with ``T + 5m``, this record
-        is processed normally. The system will continue waiting for the first source to
-        catch up before advancing further.
+    - Later, the first source sends a record with ``T + 1h``. \
+      This record is not yet forwarded for processing because it exceeds ``max_difference``.
+    - If the second source then sends a record with ``T + 1h``, the system detects a 1-hour gap. \
+      Since both sources have moved beyond ``T``, the synchronization group accepts ``T + 1h`` \
+      as the new baseline and continues processing from there.
+    - However, if the second source instead sends a record with ``T + 5m``, this record \
+      is processed normally. The system will continue waiting for the first source to \
+      catch up before advancing further.
 
     This behavior ensures that data gaps do not cause deadlocks but are properly detected and handled.
     """
@@ -113,12 +122,24 @@ def register_input_synchronization_group(
     if len(columns) < 2:
         raise ValueError("At least two columns must participate in a connector group")
 
+    if not isinstance(max_difference, int) and not isinstance(
+        max_difference, datetime.timedelta
+    ):
+        raise ValueError(
+            "The 'max_difference' must either be an integer or a datetime.timedelta"
+        )
+
+    if isinstance(max_difference, int) and max_difference < 0:
+        raise ValueError("The 'max_difference' can't be negative")
+    if isinstance(
+        max_difference, datetime.timedelta
+    ) and max_difference < datetime.timedelta(0):
+        raise ValueError("The 'max_difference' can't be negative")
+
+    column_types = set()
     for column in columns:
-        column_type = column._column.dtype
-        if column_type not in _SUPPORTED_COLUMN_DTYPES:
-            raise ValueError(
-                f"Fields of type {column_type} are not supported in connector groups"
-            )
+        column_types.add(column._column.dtype)
+        _check_column_type(column, max_difference)
 
         column_idx = None
         for index, field in enumerate(column._table._schema.column_names()):
@@ -151,3 +172,34 @@ def register_input_synchronization_group(
             raise ValueError(
                 "Only unchanged columns of an input tables can be used in input synchronization groups"
             )
+
+    if len(column_types) > 1:
+        raise ValueError(
+            "All synchronization group column types must coincide. "
+            "However several types have been detected: {}".format(
+                ", ".join(sorted([f"'{t}'" for t in column_types]))
+            )
+        )
+
+
+def _check_column_type(column, max_difference):
+    column_type = column._column.dtype
+    if column_type not in _SUPPORTED_COLUMN_DTYPES:
+        raise ValueError(
+            f"Fields of type {column_type.typehint} are not supported in connector groups"
+        )
+    if isinstance(max_difference, int) and column_type != dtype.INT:
+        raise ValueError(
+            "If max_difference is an integer value, the values of a column must have a type of "
+            f"int. However, the column '{column}' has type '{column_type.typehint}'"
+        )
+    if isinstance(max_difference, datetime.timedelta) and column_type not in (
+        dtype.DATE_TIME_NAIVE,
+        dtype.DATE_TIME_UTC,
+        dtype.DURATION,
+    ):
+        raise ValueError(
+            "If max_difference is a Duration, the values of a column must either have a type of "
+            f"DateTimeUtc, DateTimeNaive or Duration. However, the column '{column}' "
+            f"has type '{column_type.typehint}'"
+        )
