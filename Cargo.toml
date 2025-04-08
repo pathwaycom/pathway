@@ -86,7 +86,7 @@ tantivy = "0.22.0"
 tempfile = "3.15.0"
 thiserror = "1.0.63"
 timely = { path = "./external/timely-dataflow/timely", features = ["bincode"] }
-tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.43.1", features = ["rt-multi-thread"] }
 tonic = { version = "0.12.3", features = ["tls-native-roots"] }
 usearch = "2.15.3"
 uuid = { version = "1.12.0", features = ["v4"] }
