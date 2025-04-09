@@ -4489,6 +4489,10 @@ impl DataFormat {
             key_generation_policy,
         }
     }
+
+    fn is_native_session_used(&self) -> bool {
+        matches!(self.session_type, SessionType::Native)
+    }
 }
 
 #[derive(Clone)]

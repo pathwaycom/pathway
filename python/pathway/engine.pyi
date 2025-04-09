@@ -776,6 +776,7 @@ class DataFormat:
     value_fields: list[ValueField]
 
     def __init__(self, *args, **kwargs): ...
+    def is_native_session_used(self) -> bool: ...
 
 class BackfillingThreshold:
     field: str

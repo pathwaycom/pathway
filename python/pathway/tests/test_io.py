@@ -25,6 +25,7 @@ from deltalake import DeltaTable, write_deltalake
 from fs import open_fs
 
 import pathway as pw
+from pathway.engine import DebeziumDBType
 from pathway.internals import api
 from pathway.internals.api import SessionType
 from pathway.internals.parse_graph import G
@@ -4652,3 +4653,25 @@ def test_synchronization_groups_respect_atomicity(tmp_path, plan):
     wait_result_with_checker(
         CsvLinesNumberChecker(output_path, plan["expected_entries"]), 30
     )
+
+
+def test_kafka_append_only():
+    table = pw.io.kafka.simple_read("server", "topic")
+    assert table.is_append_only
+
+    class InputSchema(pw.Schema):
+        data: str
+
+    # Also uses Kafka, yet a different connector
+    table = pw.io.debezium.read(
+        rdkafka_settings={},
+        topic_name="topic",
+        db_type=DebeziumDBType.MONGO_DB,
+        schema=InputSchema,
+    )
+    assert not table.is_append_only
+
+    table = pw.io.debezium.read(
+        rdkafka_settings={}, topic_name="topic", schema=InputSchema
+    )
+    assert not table.is_append_only

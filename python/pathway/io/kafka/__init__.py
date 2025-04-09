@@ -266,6 +266,7 @@ def read(
             data_source_options=data_source_options,
             schema=schema,
             datasource_name="kafka",
+            append_only=data_format.is_native_session_used(),  # simple comparison wouldn't work
         ),
         debug_datasource=datasource.debug_datasource(debug_data),
     )
