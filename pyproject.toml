@@ -113,7 +113,7 @@ airbyte = [
 [project.urls]
 "Homepage" = "https://pathway.com/"
 "Source code" = "https://github.com/pathwaycom/pathway/"
-"Documentation" = "https://pathway.com/developers/"
+"Documentation" = "https://pathway.com/developers/user-guide/introduction/welcome"
 "Troubleshooting" = "https://pathway.com/troubleshooting/"
 
 [project.scripts]

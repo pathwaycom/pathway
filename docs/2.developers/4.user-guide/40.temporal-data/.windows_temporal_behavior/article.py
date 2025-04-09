@@ -134,7 +134,7 @@ pw.debug.compute_and_print_update_stream(result_cutoff)
 
 pw.debug.compute_and_print(result_cutoff)
 
-# If you set `keep_results=False`, however, once the window is past its cutoff, the record for this window is removed from the result Table, so, in the end, you are left only with the last few windows. The example use case is [log monitoring](/developers/templates/realtime-log-monitoring), where you want to raise alerts based only on very recent windows.
+# If you set `keep_results=False`, however, once the window is past its cutoff, the record for this window is removed from the result Table, so, in the end, you are left only with the last few windows. The example use case is [log monitoring](/developers/templates/etl/realtime-log-monitoring), where you want to raise alerts based only on very recent windows.
 
 result_keep_results = t.windowby(
     t.event_time,
