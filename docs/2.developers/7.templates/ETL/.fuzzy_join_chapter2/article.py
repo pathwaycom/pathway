@@ -31,7 +31,7 @@
 #
 # In this article, we are going to show you how Pathway interacts with incremental data flows with a **feedback loop**.
 #
-# In the [another showcase](/developers/templates/etl/fuzzy_join/fuzzy_join_chapter1) we explained how `smart_fuzzy_join` may be helpful in bookkeeping.
+# In the [another showcase](/developers/templates/etl/fuzzy_join_chapter1) we explained how `smart_fuzzy_join` may be helpful in bookkeeping.
 # Previously, we had a simple pipeline that matched entries of two different tables, such as two logs of bank transfers, in two different formats.
 # Many matchings can be inferred automatically, but some can be really tricky without help: while the fans of Harry Potter can instantaneously make the connection between 'You-Know-Who' and 'Voldemort', it is impossible for a computer to do so, at least without help.
 #
@@ -79,7 +79,7 @@
 #
 # ## Automatic reconciliation
 # Let's see how many records we can match without any human help.
-# We reuse code from [Part 1 of this showcase](/developers/templates/etl/fuzzy_join/fuzzy_join_chapter1).
+# We reuse code from [Part 1 of this showcase](/developers/templates/etl/fuzzy_join_chapter1).
 # %%
 import pandas as pd
 

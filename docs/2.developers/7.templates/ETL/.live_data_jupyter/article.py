@@ -294,7 +294,7 @@ pw.run()
 # ## What else can you do with Pathway?
 #
 # * Perform machine learning in real time. e.g. [ real-time
-# Classification](/developers/templates/etl/lsh/lsh_chapter1/) , [real-time fuzzy joins](/developers/templates/etl/fuzzy_join/fuzzy_join_chapter2/)
+# Classification](/developers/templates/etl/lsh_chapter1/) , [real-time fuzzy joins](/developers/templates/etl/fuzzy_join_chapter2/)
 #
 # * Transform unstructured data to structured data using [live LLM pipelines](https://github.com/pathwaycom/llm-app)
 #
