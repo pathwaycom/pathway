@@ -526,6 +526,7 @@ impl Connector {
         );
         let reader_name = reader.name(unique_name);
         let session_type = parser.session_type();
+        let in_connector_group = group.is_some();
 
         let mut snapshot_writer = Self::snapshot_writer(
             reader.as_ref(),
@@ -644,7 +645,11 @@ impl Connector {
                     Ok(entry) => {
                         let need_to_defer_processing = match entry {
                             Entry::RealtimeEvent(ReadResult::NewSource(ref metadata)) => {
-                                !metadata.commits_allowed_in_between()
+                                // Deferring events is only necessary when the data source
+                                // belongs to a connector group. In such cases, the data might be
+                                // partially read and waiting to proceed, which can block autocommits
+                                // from happening for an indefinite amount of time.
+                                in_connector_group && !metadata.commits_allowed_in_between()
                             }
                             Entry::RealtimeEvent(ReadResult::FinishedSource { .. }) => false,
                             _ => !deferred_events.is_empty(),
