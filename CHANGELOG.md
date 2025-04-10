@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.21.2] - 2025-04-10
+
 ### Added
 - Added synchronization group mechanism to align multiple data sources based on selected columns. It can be accessed with `pw.io.register_input_synchronization_group`.
 - `pw.io.register_input_synchronization_group` now supports the following types of columns: `pw.DateTimeUtc`, `pw.DateTimeNaive`, `pw.DateTimeDuration`, and `int`.
@@ -13,9 +15,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Enhanced error reporting for runtime errors across most operators, providing a trace that simplifies identifying the root cause.
 
 ### Fixed
-- Bugfix for problem with list_documents() when no documents present in store
+- Bugfix for problem with list_documents() when no documents present in store.
 - The append-only property of tables created by `pw.io.kafka.read` is now set correctly.
-
 
 ## [0.21.1] - 2025-03-28
 
