@@ -69,10 +69,10 @@ xpack-llm = [
 xpack-llm-local = [  # requirements that allow local ML inference
     "unstructured[all-docs] >= 0.16, < 0.16.15",
     "sentence_transformers", 
-    "transformers >= 4.42.0",
+    "transformers >= 4.42.0, <= 4.49.0",  # >= 4.50.2, this can be updated after docling updates
 ]
 xpack-llm-docs = [
-    "docling >= 2.15, <3.0",
+    "docling >= 2.15, < 3.0.0",
     "python-docx >= 1.1.2",
     "unstructured >= 0.16, < 0.16.12",
     "pdf2image",
