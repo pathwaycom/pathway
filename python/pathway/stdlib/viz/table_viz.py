@@ -58,11 +58,15 @@ def show(
         col_names.append("diff")
 
     def _format_types(x):
+        if pd.isna(x):
+            return None
         if isinstance(x, api.Pointer):
             s = str(x)
             if len(s) > 8 and short_pointers:
                 s = s[:8] + "..."
             return s
+        if isinstance(x, pd.Timestamp):
+            return x.strftime("%Y-%m-%d %H:%M:%S%z")
         if isinstance(x, pw.Json):
             s = str(x)
             if len(s) > 64:
@@ -77,7 +81,7 @@ def show(
         sorters = []
     sorters += (
         []
-        if bounded
+        if bounded or snapshot
         else [
             {"field": "time", "dir": "desc"},
             {"field": "diff", "dir": "desc"},
@@ -90,6 +94,8 @@ def show(
         show_index=False,
         height=400,
         sorters=sorters,
+        pagination="local",
+        page_size=10,
     )
 
     def color_negative_red(row):

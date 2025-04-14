@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 - The performance of input connectors is optimized in certain cases.
+- The panel widget for table visualization does now a better formatting for timestamps and missing values. The pagination was also updated to better fit the widget and the default sorters in snapshot mode have been fixed.
 
 ## [0.21.2] - 2025-04-10
 
