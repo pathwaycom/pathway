@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Iterable
+from typing import Iterable, Literal
 
 import pathway as pw
 from pathway.internals.expression import ColumnReference
@@ -20,7 +20,7 @@ def read(
     *,
     schema: type[pw.Schema] | None = None,
     csv_settings: CsvParserSettings | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     object_pattern: str = "*",
     with_metadata: bool = False,
     autocommit_duration_ms: int | None = 1500,

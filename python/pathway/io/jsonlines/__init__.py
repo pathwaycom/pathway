@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from os import PathLike
-from typing import Iterable
+from typing import Iterable, Literal
 
 import pathway as pw
 from pathway.internals.expression import ColumnReference
@@ -19,7 +19,7 @@ def read(
     path: str | PathLike,
     *,
     schema: type[Schema] | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     json_field_paths: dict[str, str] | None = None,
     object_pattern: str = "*",
     with_metadata: bool = False,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pathway.internals import datasource
 from pathway.internals._io_helpers import AwsS3Settings
@@ -98,7 +98,7 @@ def read(
     *,
     aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
@@ -308,7 +308,7 @@ def read_from_digital_ocean(
     format: str,
     *,
     schema: type[Schema] | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
@@ -438,7 +438,7 @@ def read_from_wasabi(
     format: str,
     *,
     schema: type[Schema] | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,

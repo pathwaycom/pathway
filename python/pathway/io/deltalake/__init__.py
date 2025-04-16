@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from os import PathLike, fspath
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from deltalake import DeltaTable
 
@@ -50,7 +50,7 @@ def read(
     uri: str | PathLike,
     schema: type[Schema] | None = None,
     *,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     s3_connection_settings: (
         AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
     ) = None,

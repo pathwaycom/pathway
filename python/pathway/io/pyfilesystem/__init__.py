@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from typing import Literal
 
 from fs.base import FS
 from fs.errors import ResourceNotFound as FSResourceNotFound
@@ -144,7 +145,7 @@ def read(
     *,
     path: str = "",
     refresh_interval: float = 30,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     with_metadata: bool = False,
     name: str | None = None,
 ) -> Table:

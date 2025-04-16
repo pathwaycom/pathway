@@ -10,7 +10,7 @@ import time
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, NewType
+from typing import Any, Literal, NewType
 
 from google.oauth2.service_account import Credentials as ServiceCredentials
 from googleapiclient.discovery import build
@@ -340,7 +340,7 @@ class _GDriveSubject(ConnectorSubject):
 def read(
     object_id: str,
     *,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     object_size_limit: int | None = None,
     refresh_interval: int = 30,
     service_user_credentials_file: str,

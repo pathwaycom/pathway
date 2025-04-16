@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Added
+- `pw.io.kafka.read` and `pw.io.redpanda.read` now support static mode.
+
 ## [0.21.3] - 2025-04-16
 
 ### Fixed

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals._io_helpers import AwsS3Settings, _format_output_value_fields
@@ -29,7 +29,7 @@ def read(
     table_name: str,
     schema: type[Schema],
     *,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     s3_connection_settings: (
         AwsS3Settings | MinIOSettings | WasabiS3Settings | DigitalOceanS3Settings | None
     ) = None,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
@@ -62,7 +62,7 @@ def read(
     format: str,
     *,
     schema: type[Schema] | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     with_metadata: bool = False,
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,

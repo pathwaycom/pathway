@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from os import PathLike, fspath
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from pathway.internals import Schema, api, datasink, datasource
 from pathway.internals._io_helpers import _format_output_value_fields
@@ -34,7 +34,7 @@ def read(
     format: str,
     *,
     schema: type[Schema] | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     csv_settings: CsvParserSettings | None = None,
     json_field_paths: dict[str, str] | None = None,
     object_pattern: str = "*",

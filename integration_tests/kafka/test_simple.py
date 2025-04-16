@@ -51,6 +51,26 @@ def test_kafka_raw(with_metadata, tmp_path, kafka_context):
 
 
 @pytest.mark.flaky(reruns=3)
+def test_kafka_static_mode(tmp_path, kafka_context):
+    kafka_context.fill(["foo", "bar"])
+
+    table = pw.io.kafka.read(
+        rdkafka_settings=kafka_context.default_rdkafka_settings(),
+        topic=kafka_context.input_topic,
+        format="plaintext",
+        autocommit_duration_ms=100,
+        mode="static",
+    )
+    pw.io.jsonlines.write(table, tmp_path / "output.jsonl")
+    pw.run()
+    result = set()
+    with open(tmp_path / "output.jsonl", "r") as f:
+        for row in f:
+            result.add(json.loads(row)["data"])
+    assert result == set({"foo", "bar"})
+
+
+@pytest.mark.flaky(reruns=3)
 def test_kafka_message_metadata(tmp_path, kafka_context):
     kafka_context.fill(["foo", "bar"])
 

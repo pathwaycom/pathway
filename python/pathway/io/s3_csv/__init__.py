@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pathway.internals.runtime_type_check import check_arg_types
 from pathway.internals.schema import Schema
 from pathway.internals.table import Table
@@ -18,7 +20,7 @@ def read(
     aws_s3_settings: AwsS3Settings | None = None,
     schema: type[Schema] | None = None,
     csv_settings: CsvParserSettings | None = None,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     autocommit_duration_ms: int | None = 1500,
     name: str | None = None,
     debug_data=None,

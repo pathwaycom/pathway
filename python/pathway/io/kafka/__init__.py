@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 import warnings
-from typing import Iterable
+from typing import Iterable, Literal
 
 from pathway.internals import api, datasink, datasource
 from pathway.internals.expression import ColumnReference
@@ -19,6 +19,7 @@ from pathway.io._utils import (
     check_deprecated_kwargs,
     check_raw_and_plaintext_only_kwargs_for_message_queues,
     construct_schema_and_data_format,
+    internal_connector_mode,
 )
 
 
@@ -29,6 +30,7 @@ def read(
     topic: str | list[str] | None = None,
     *,
     schema: type[Schema] | None = None,
+    mode: Literal["streaming", "static"] = "streaming",
     format: str = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
@@ -59,6 +61,11 @@ def read(
             <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic: Name of topic in Kafka from which the data should be read.
         schema: Schema of the resulting table.
+        mode: Specifies how the engine retrieves data from the topic. The default value is
+            ``"streaming"``, which means the engine will constantly wait for new messages,
+            process them as they arrive, and send them into the engine. Alternatively,
+            if set to ``"static"``, the engine will only read and process the data that
+            is already available at the time of execution.
         format: format of the input data, "raw", "plaintext", or "json".
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
@@ -244,7 +251,7 @@ def read(
         topic=topic,
         parallel_readers=parallel_readers,
         start_from_timestamp_ms=start_from_timestamp_ms,
-        mode=api.ConnectorMode.STREAMING,
+        mode=internal_connector_mode(mode),
     )
     schema, data_format = construct_schema_and_data_format(
         "binary" if format == "raw" else format,

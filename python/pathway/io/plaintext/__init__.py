@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from os import PathLike
+from typing import Literal
 
 import pathway as pw
 from pathway.internals.runtime_type_check import check_arg_types
@@ -15,7 +16,7 @@ from pathway.internals.trace import trace_user_frame
 def read(
     path: str | PathLike,
     *,
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     object_pattern: str = "*",
     with_metadata: bool = False,
     name: str | None = None,

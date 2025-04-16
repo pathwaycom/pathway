@@ -5,7 +5,7 @@ import random
 import time
 import uuid
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 import requests
 import yaml
@@ -110,7 +110,7 @@ def read(
     streams: Sequence[str],
     *,
     execution_type: str = "local",
-    mode: str = "streaming",
+    mode: Literal["streaming", "static"] = "streaming",
     env_vars: dict[str, str] | None = None,
     service_user_credentials_file: str | None = None,
     gcp_region: str = "europe-west1",

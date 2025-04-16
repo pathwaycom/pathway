@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Literal
 
 from pathway.internals.expression import ColumnReference
 from pathway.internals.runtime_type_check import check_arg_types
@@ -20,6 +20,7 @@ def read(
     topic: str | list[str] | None = None,
     *,
     schema: type[Schema] | None = None,
+    mode: Literal["streaming", "static"] = "streaming",
     format: str = "raw",
     debug_data=None,
     autocommit_duration_ms: int | None = 1500,
@@ -36,6 +37,11 @@ def read(
             `librdkafka <https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md>`_.
         topic: Name of topic in Redpanda from which the data should be read.
         schema: Schema of the resulting table.
+        mode: Specifies how the engine retrieves data from the topic. The default value is
+            ``"streaming"``, which means the engine will constantly wait for new messages,
+            process them as they arrive, and send them into the engine. Alternatively,
+            if set to ``"static"``, the engine will only read and process the data that
+            is already available at the time of execution.
         format: format of the input data, "raw", "csv", or "json"
         debug_data: Static data replacing original one when debug mode is active.
         autocommit_duration_ms:the maximum time between two commits. Every
@@ -192,6 +198,7 @@ def read(
         rdkafka_settings=rdkafka_settings,
         topic=topic,
         schema=schema,
+        mode=mode,
         format=format,
         debug_data=debug_data,
         autocommit_duration_ms=autocommit_duration_ms,
