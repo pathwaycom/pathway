@@ -705,6 +705,6 @@ def prompt_chat_single_qa(question: str) -> pw.Json:
     >>> r = t.select(prompt=llms.prompt_chat_single_qa(t.txt))
     >>> pw.debug.compute_and_print(r, include_id=False)
     prompt
-    [{"role": "system", "content": "Wazzup?"}]
+    [{"role": "user", "content": "Wazzup?"}]
     """
-    return pw.Json([dict(role="system", content=question)])
+    return pw.Json([dict(role="user", content=question)])
