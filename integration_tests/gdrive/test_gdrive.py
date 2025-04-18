@@ -10,16 +10,17 @@ FOLDER_WITH_ONE_FILE_ID = "1XisWrSjKMCx2jfUW8OSgt6L8veq8c4Mh"
 FOLDER_WITH_SYMLINK_ID = "1wS3IdC1oNLxeTV5ZOqGEmz8z15kRmsBt"
 FOLDER_WITH_TYPES = "19B2X3HxfCsCh2NQ8-uzrvkuKUV2gqzdj"
 # https://drive.google.com/drive/u/0/folders/19B2X3HxfCsCh2NQ8-uzrvkuKUV2gqzdj
-TEST_GDRIVE_CREDS = "/".join(__file__.split("/")[:-1]) + "/credentials.json"
 
 
 @pytest.mark.parametrize("object_size_limit", [None, 100, 2000000])
 @pytest.mark.parametrize("with_metadata", [False, True])
-def test_single_file_read_with_constraints(object_size_limit, with_metadata, tmp_path):
+def test_single_file_read_with_constraints(
+    object_size_limit, with_metadata, tmp_path, credentials_dir
+):
     files_table = pw.io.gdrive.read(
         FOLDER_WITH_ONE_FILE_ID,
         mode="static",
-        service_user_credentials_file=TEST_GDRIVE_CREDS,
+        service_user_credentials_file=str(credentials_dir / "credentials.json"),
         object_size_limit=object_size_limit,
         with_metadata=with_metadata,
     )
@@ -45,11 +46,11 @@ def test_single_file_read_with_constraints(object_size_limit, with_metadata, tmp
 
 @pytest.mark.parametrize("object_size_limit", [None, 100, 2000000])
 @pytest.mark.parametrize("with_metadata", [True, False])
-def test_gdrive_symlink(object_size_limit, with_metadata, tmp_path):
+def test_gdrive_symlink(object_size_limit, with_metadata, tmp_path, credentials_dir):
     files_table = pw.io.gdrive.read(
         FOLDER_WITH_SYMLINK_ID,
         mode="static",
-        service_user_credentials_file=TEST_GDRIVE_CREDS,
+        service_user_credentials_file=str(credentials_dir / "credentials.json"),
         object_size_limit=object_size_limit,
         with_metadata=with_metadata,
     )
@@ -81,7 +82,9 @@ def test_gdrive_symlink(object_size_limit, with_metadata, tmp_path):
         None,
     ],
 )
-def test_name_pattern_single_filter(with_metadata, name_pattern, tmp_path):
+def test_name_pattern_single_filter(
+    with_metadata, name_pattern, tmp_path, credentials_dir
+):
     object_size_limit = None
 
     NUM_TXT_FILES = 2
@@ -92,7 +95,7 @@ def test_name_pattern_single_filter(with_metadata, name_pattern, tmp_path):
     files_table = pw.io.gdrive.read(
         FOLDER_WITH_TYPES,
         mode="static",
-        service_user_credentials_file=TEST_GDRIVE_CREDS,
+        service_user_credentials_file=str(credentials_dir / "credentials.json"),
         object_size_limit=object_size_limit,
         with_metadata=with_metadata,
         file_name_pattern=name_pattern,

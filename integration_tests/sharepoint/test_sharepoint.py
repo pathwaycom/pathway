@@ -7,12 +7,14 @@ import pytest
 import pathway as pw
 from pathway.xpacks.connectors import sharepoint as sharepoint_connector
 
+from ..conftest import CREDENTIALS_DIR
+
 TEST_FILE_SIZE = 1550383
 TEST_LINK_SIZE = 170
 FOLDER_WITH_ONE_FILE_ID = "Shared Documents/IntegrationTests/simple"
 FOLDER_WITH_SYMLINK_ID = "Shared Documents/IntegrationTests/symlink"
 FOLDER_WITH_NESTED_FOLDERS_ID = "Shared Documents/IntegrationTests/recursive"
-TEST_SHAREPOINT_CREDS = "/".join(__file__.split("/")[:-1]) + "/certificate.pem"
+TEST_SHAREPOINT_CREDS = str(CREDENTIALS_DIR / "certificate.pem")
 
 
 def connector_table(root_path, **kwargs):

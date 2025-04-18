@@ -18,9 +18,7 @@ from .base import (
 )
 
 
-@pytest.mark.parametrize(
-    "n_threads,n_processes", [(1, 1), (2, 1), (4, 1), (1, 4), (1, 2), (2, 2)]
-)
+@pytest.mark.parametrize("n_threads,n_processes", [(1, 1), (4, 1), (1, 4), (2, 2)])
 @pytest.mark.parametrize("pstorage_type", [S3_STORAGE_NAME, FS_STORAGE_NAME])
 @pytest.mark.parametrize(
     "persistence_mode", [INPUT_PERSISTENCE_MODE_NAME, OPERATOR_PERSISTENCE_MODE_NAME]

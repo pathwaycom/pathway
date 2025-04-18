@@ -10,8 +10,6 @@ from pathway.xpacks.llm.parsers import DoclingParser, UnstructuredParser
 
 FOLDER_WITH_ONE_FILE_ID = "1XisWrSjKMCx2jfUW8OSgt6L8veq8c4Mh"
 
-TEST_GDRIVE_CREDS = "/".join(__file__.split("/")[:-1]) + "/credentials.json"
-
 
 @pytest.mark.environment_changes
 def test_parse_unstructured(monkeypatch):
@@ -57,11 +55,11 @@ def test_parse_unstructured_unk_exception(monkeypatch):
     assert "FileType.UNK" in exception_msg
 
 
-def test_single_file_read_with_constraints(tmp_path):
+def test_single_file_read_with_constraints(tmp_path, credentials_dir):
     files_table = pw.io.gdrive.read(
         FOLDER_WITH_ONE_FILE_ID,
         mode="static",
-        service_user_credentials_file=TEST_GDRIVE_CREDS,
+        service_user_credentials_file=str(credentials_dir / "credentials.json"),
         object_size_limit=None,
         with_metadata=True,
     )

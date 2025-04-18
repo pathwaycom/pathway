@@ -88,7 +88,8 @@ def test_iceberg_read_after_write(backend, tmp_path):
     input_path = tmp_path / "input.txt"
     output_path = tmp_path / "output.txt"
     pstorage_path = tmp_path / "pstorage"
-    table_name = str(uuid.uuid4()).replace("-", "")
+    table_name = uuid.uuid4().hex
+    namespace = uuid.uuid4().hex
 
     def run_single_iteration(seq_number: int):
         input_path.write_text(INPUT_CONTENTS[seq_number])
@@ -110,7 +111,7 @@ def test_iceberg_read_after_write(backend, tmp_path):
         pw.io.iceberg.write(
             table,
             catalog_uri=CATALOG_URI[backend],
-            namespace=["my_database"],
+            namespace=[namespace],
             table_name=table_name,
             warehouse=_get_warehouse_path(backend, table_name),
             s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
@@ -121,7 +122,7 @@ def test_iceberg_read_after_write(backend, tmp_path):
         G.clear()
         table = pw.io.iceberg.read(
             catalog_uri=CATALOG_URI[backend],
-            namespace=["my_database"],
+            namespace=[namespace],
             table_name=table_name,
             mode="static",
             schema=InputSchema,
@@ -149,7 +150,8 @@ def test_iceberg_read_after_write(backend, tmp_path):
 @pytest.mark.parametrize("backend", [LOCAL_BACKEND_NAME, S3_BACKEND_NAME])
 def test_iceberg_several_runs(backend, tmp_path):
     input_path = tmp_path / "input.txt"
-    table_name = str(uuid.uuid4()).replace("-", "")
+    table_name = uuid.uuid4().hex
+    namespace = uuid.uuid4().hex
     all_ids = set()
     all_names = set()
 
@@ -173,15 +175,14 @@ def test_iceberg_several_runs(backend, tmp_path):
         pw.io.iceberg.write(
             table,
             catalog_uri=CATALOG_URI[backend],
-            namespace=["my_database"],
+            namespace=[namespace],
             table_name=table_name,
             warehouse=_get_warehouse_path(backend, table_name),
             s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
         )
         run()
 
-        iceberg_table_name = f"my_database.{table_name}"
-        pandas_table = _get_pandas_table(backend, iceberg_table_name)
+        pandas_table = _get_pandas_table(backend, f"{namespace}.{table_name}")
         assert pandas_table.shape == (4 * seq_number, 4)
         assert set(pandas_table["user_id"]) == all_ids
         assert set(pandas_table["name"]) == all_names
@@ -198,14 +199,15 @@ def test_iceberg_several_runs(backend, tmp_path):
 def test_iceberg_streaming(backend, tmp_path):
     inputs_path = tmp_path / "inputs"
     inputs_path.mkdir()
-    table_name = str(uuid.uuid4()).replace("-", "")
+    table_name = uuid.uuid4().hex
+    namespace = uuid.uuid4().hex
 
     def stream_inputs():
         for i in range(1, len(INPUT_CONTENTS) + 1):
             input_path = inputs_path / f"{i}.txt"
             input_path.write_text(INPUT_CONTENTS[i])
             wait_result_with_checker(
-                IcebergEntriesCountChecker(backend, f"my_database.{table_name}", 4 * i),
+                IcebergEntriesCountChecker(backend, f"{namespace}.{table_name}", 4 * i),
                 30,
                 step=1,
                 target=None,
@@ -223,7 +225,7 @@ def test_iceberg_streaming(backend, tmp_path):
     pw.io.iceberg.write(
         table,
         catalog_uri=CATALOG_URI[backend],
-        namespace=["my_database"],
+        namespace=[namespace],
         table_name=table_name,
         min_commit_frequency=1000,
         warehouse=_get_warehouse_path(backend, table_name),
@@ -234,7 +236,7 @@ def test_iceberg_streaming(backend, tmp_path):
     t.start()
     wait_result_with_checker(
         IcebergEntriesCountChecker(
-            backend, f"my_database.{table_name}", 4 * len(INPUT_CONTENTS)
+            backend, f"{namespace}.{table_name}", 4 * len(INPUT_CONTENTS)
         ),
         30,
     )
@@ -247,8 +249,7 @@ def test_iceberg_streaming(backend, tmp_path):
             all_ids.add(data["user_id"])
             all_names.add(data["name"])
 
-    iceberg_table_name = f"my_database.{table_name}"
-    pandas_table = _get_pandas_table(backend, iceberg_table_name)
+    pandas_table = _get_pandas_table(backend, f"{namespace}.{table_name}")
     assert pandas_table.shape == (4 * len(INPUT_CONTENTS), 4)
     assert set(pandas_table["user_id"]) == all_ids
     assert set(pandas_table["name"]) == all_names
@@ -260,7 +261,8 @@ def test_iceberg_streaming(backend, tmp_path):
 def test_py_object_wrapper_in_iceberg(backend, tmp_path):
     input_path = tmp_path / "input.jsonl"
     output_path = tmp_path / "output.jsonl"
-    iceberg_table_name = str(uuid.uuid4()).replace("-", "")
+    table_name = uuid.uuid4().hex
+    namespace = uuid.uuid4().hex
     input_path.write_text("test")
 
     table = pw.io.plaintext.read(input_path, mode="static")
@@ -271,9 +273,9 @@ def test_py_object_wrapper_in_iceberg(backend, tmp_path):
     pw.io.iceberg.write(
         table,
         catalog_uri=CATALOG_URI[backend],
-        namespace=["my_database"],
-        table_name=iceberg_table_name,
-        warehouse=_get_warehouse_path(backend, iceberg_table_name),
+        namespace=[namespace],
+        table_name=table_name,
+        warehouse=_get_warehouse_path(backend, table_name),
         s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     run()
@@ -289,11 +291,11 @@ def test_py_object_wrapper_in_iceberg(backend, tmp_path):
 
     table = pw.io.iceberg.read(
         catalog_uri=CATALOG_URI[backend],
-        namespace=["my_database"],
-        table_name=iceberg_table_name,
+        namespace=[namespace],
+        table_name=table_name,
         mode="static",
         schema=InputSchema,
-        warehouse=_get_warehouse_path(backend, iceberg_table_name),
+        warehouse=_get_warehouse_path(backend, table_name),
         s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     table = table.select(len=use_python_object(pw.this.fun, pw.this.data))
@@ -308,7 +310,8 @@ def test_py_object_wrapper_in_iceberg(backend, tmp_path):
 @pytest.mark.parametrize("backend", ["local", "s3"])
 def test_iceberg_different_types_serialization(backend, tmp_path):
     input_path = tmp_path / "input.jsonl"
-    iceberg_table_name = str(uuid.uuid4()).replace("-", "")
+    table_name = uuid.uuid4().hex
+    namespace = uuid.uuid4().hex
     input_path.write_text("test")
 
     column_values = {
@@ -330,9 +333,9 @@ def test_iceberg_different_types_serialization(backend, tmp_path):
     pw.io.iceberg.write(
         table,
         catalog_uri=CATALOG_URI[backend],
-        namespace=["my_database"],
-        table_name=iceberg_table_name,
-        warehouse=_get_warehouse_path(backend, iceberg_table_name),
+        namespace=[namespace],
+        table_name=table_name,
+        warehouse=_get_warehouse_path(backend, table_name),
         s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     run()
@@ -361,11 +364,11 @@ def test_iceberg_different_types_serialization(backend, tmp_path):
 
     table = pw.io.iceberg.read(
         catalog_uri=CATALOG_URI[backend],
-        namespace=["my_database"],
-        table_name=iceberg_table_name,
+        namespace=[namespace],
+        table_name=table_name,
         mode="static",
         schema=InputSchema,
-        warehouse=_get_warehouse_path(backend, iceberg_table_name),
+        warehouse=_get_warehouse_path(backend, table_name),
         s3_connection_settings=S3_CONNECTION_SETTINGS[backend],
     )
     checker = Checker()

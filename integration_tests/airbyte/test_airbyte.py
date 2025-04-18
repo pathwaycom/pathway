@@ -1,5 +1,6 @@
 import os
 import threading
+import uuid
 
 import pytest
 import yaml
@@ -12,7 +13,6 @@ from pathway.tests.utils import (
     write_lines,
 )
 
-CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), "credentials.json")
 TEST_FAKER_CONNECTION_PATH = os.path.join(
     os.path.dirname(__file__), "test-faker-connection.yaml"
 )
@@ -21,13 +21,15 @@ TEST_FILE_CONNECTION_PATH = os.path.join(
 )
 
 
-@pytest.mark.parametrize("gcp_job_name", [None, "pw-integration-custom-gcp-job-name"])
+@pytest.mark.parametrize("gcp_job_name", [None, "pw-custom"])
 @pytest.mark.parametrize("env_vars", [None, {"''": "\"''''\"\""}, {"KEY": "VALUE"}])
-def test_airbyte_remote_run(gcp_job_name, env_vars, tmp_path):
+def test_airbyte_remote_run(gcp_job_name, env_vars, tmp_path, credentials_dir):
+    if gcp_job_name is not None:
+        gcp_job_name = f"{gcp_job_name}-{uuid.uuid4().hex}"
     table = pw.io.airbyte.read(
         TEST_FAKER_CONNECTION_PATH,
         ["Users"],
-        service_user_credentials_file=CREDENTIALS_PATH,
+        service_user_credentials_file=str(credentials_dir / "credentials.json"),
         mode="static",
         execution_type="remote",
         env_vars=env_vars,
