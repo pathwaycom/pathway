@@ -4,3 +4,4 @@ seaborn
 mlflow
 ragas==0.2.7
 langchain-openai
+torch>=2.6.0 # not directly required, pinned by Snyk to avoid a vulnerability
