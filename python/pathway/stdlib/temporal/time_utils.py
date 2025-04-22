@@ -6,6 +6,8 @@ from functools import cache
 
 import pathway.internals as pw
 from pathway import io
+from pathway.internals.runtime_type_check import check_arg_types
+from pathway.internals.trace import trace_user_frame
 
 
 class TimestampSchema(pw.Schema):
@@ -19,9 +21,13 @@ class TimestampSubject(io.python.ConnectorSubject):
         super().__init__()
         self._refresh_rate = refresh_rate
 
+    @property
+    def _deletions_enabled(self) -> bool:
+        return False
+
     def run(self) -> None:
         while True:
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            now_utc = datetime.datetime.now(tz=datetime.timezone.utc)
             self.next(timestamp_utc=now_utc)
             self.commit()
             time.sleep(self._refresh_rate.total_seconds())
@@ -49,77 +55,124 @@ def utc_now(refresh_rate: datetime.timedelta = datetime.timedelta(seconds=60)):
     )
 
 
+def _get_now_timestamp_utc(for_test_only: pw.Pointer | None) -> pw.DateTimeUtc:
+    return pw.DateTimeUtc(datetime.datetime.now(tz=datetime.timezone.utc))
+
+
+@check_arg_types
+@trace_user_frame
 def inactivity_detection(
-    event_time_column: pw.ColumnReference,
+    self: pw.Table,
     allowed_inactivity_period: pw.Duration,
     refresh_rate: pw.Duration = pw.Duration(seconds=1),
-    instance: pw.ColumnReference | None = None,
-) -> tuple[pw.Table, pw.Table]:
-    """Detects periods of inactivity in a given table and identifies when activity resumes.
+    instance: pw.ColumnExpression | None = None,
+) -> pw.Table:
+    """Monitor append only table additions to detect inactivity periods and
+    identify when activity resumes, optionally with `instance` argument.
 
-    This function monitors a stream of events defined by a timestamp column and detects
-    inactivity periods that exceed a specified threshold. Additionally, it identifies
-    the first event that resumes activity after each period of inactivity.
+    This function periodically checks for table additions according to
+    the provided refresh rate. It is limited to append only tables since the function
+    is mostly intended to monitor input data streams. Inactivity periods that exceed
+    the specified threshold are reported. The output table lists the inactivity periods
+    with the UTC timestamp of the last detected activity before the threshold was
+    exceeded and the UTC timestamp of the first detected activity that ends the
+    inactivity period, or `None` if the inactivity period not yet ended.
 
-    Note: Assumes that the ingested timestamps (event_time_column) follow current UTC time
-    and that the latency of the system is negligible compared to the `allowed_inactivity_period`.
+    Note: the inactivity period limits may differ from the actual values when the
+    refresh rate is lower than the table update rate. It is also assumed that the
+    system latency is neglectable compared to the specified threshold. When used with
+    `instance`, an inactivity period since the stream start (*i.e.* no incoming data)
+    is reported with a `None` value in the `instance` column.
 
     Args:
-        event_time_column: A reference to the column containing
-            UTC timestamps of events in the monitored table.
-        allowed_inactivity_period: The maximum allowed period of
-            inactivity. If no events occur within this duration, an inactivity
-            period is flagged.
-        refresh_rate: The frequency at which the current time
-            is refreshed for inactivity detection. Defaults to 1 second.
-        instance:
-            The inactivity periods are computed separately per each `instance` value
+        allowed_inactivity_period (pw.Duration): maximum allowed inactivity duration.
+            If no activity occurs within this duration, an inactivity period is flagged.
+        refresh_rate (pw.Duration, optional): frequency with which table activities are
+            checked to detect an inactivity period. Defaults to 1 second.
+        instance (pw.ColumnExpression | None, optional): group column to detect
+            inactivity periods separately. Defaults to None.
 
     Returns:
-        Tuple of tables:
-            - **inactivities** (`pw.Table`): A table containing timestamps (`inactive_t`)
-              where periods of inactivity begin (i.e., the last timestamp before inactivity
-              was detected).
-            - **resumed_activities** (`pw.Table`): A table containing the earliest
-              timestamps (`resumed_t`) of resumed activity following each period
-              of inactivity.
+        Table: inactivity periods table with `inactivity_timestamp_utc` and
+            `resumed_activity_timestamp_utc` columns, optionally `instance` column.
     """
+    assert self.is_append_only, "Table must be append only to use inactivity_detection"
 
-    events_t = event_time_column.table.select(t=event_time_column, instance=instance)
-
-    now_t = utc_now(refresh_rate=refresh_rate)
-    latest_t = (
-        events_t.groupby(pw.this.instance)
-        .reduce(pw.this.instance, latest_t=pw.reducers.max(pw.this.t))
-        .filter(
-            pw.this.latest_t > datetime.datetime.now(datetime.timezone.utc)
-        )  # filter to avoid alerts during backfilling
-    )
-    inactivities = (
-        now_t.asof_now_join(latest_t)
-        .select(pw.left.timestamp_utc, pw.right.instance, pw.right.latest_t)
-        .filter(pw.this.latest_t + allowed_inactivity_period < pw.this.timestamp_utc)
-        .groupby(
-            pw.this.latest_t, pw.this.instance
-        )  # todo: memoryless alert deduplication
-        .reduce(pw.this.latest_t, pw.this.instance)
-        .select(instance=pw.this.instance, inactive_t=pw.this.latest_t)
+    utc_now_table = utc_now(refresh_rate=refresh_rate).reduce(
+        timestamp_utc=pw.reducers.latest(pw.this.timestamp_utc)
     )
 
-    latest_inactivity = inactivities.groupby(pw.this.instance).reduce(
-        pw.this.instance, inactive_t=pw.reducers.latest(pw.this.inactive_t)
-    )
-    resumed_activities = (
-        events_t.asof_now_join(
-            latest_inactivity, events_t.instance == latest_inactivity.instance
+    @pw.udf(deterministic=True)
+    def get_now_timestamp_utc(for_test_only: pw.Pointer) -> pw.DateTimeUtc:
+        return _get_now_timestamp_utc(for_test_only)
+
+    latest_activities = (
+        self.select(instance=instance, timestamp_utc=get_now_timestamp_utc(pw.this.id))
+        .groupby(pw.this.instance)
+        .reduce(
+            pw.this.instance, timestamp_utc=pw.reducers.latest(pw.this.timestamp_utc)
         )
-        .select(pw.left.t, pw.left.instance, pw.right.inactive_t)
-        .groupby(
-            pw.this.inactive_t, pw.this.instance
-        )  # todo: memoryless alert deduplication
-        .reduce(pw.this.instance, resumed_t=pw.reducers.min(pw.this.t))
     )
+
+    start_timestamp_utc = _get_now_timestamp_utc(None)
+    latest_inactivities = (
+        latest_activities.join_right(utc_now_table)
+        .select(pw.left.instance, pw.left.timestamp_utc, now_utc=pw.right.timestamp_utc)
+        .with_columns(
+            timestamp_utc=pw.coalesce(pw.this.timestamp_utc, start_timestamp_utc)
+        )
+        .filter(pw.this.timestamp_utc + allowed_inactivity_period < pw.this.now_utc)
+        .select(pw.this.instance, inactivity_timestamp_utc=pw.this.timestamp_utc)
+    )
+
+    inactivities = (
+        latest_inactivities._remove_retractions()
+        .groupby(pw.this.instance, pw.this.inactivity_timestamp_utc)
+        .reduce(pw.this.instance, pw.this.inactivity_timestamp_utc)
+    )
+
+    latest_resumed_activities = (
+        inactivities.groupby(pw.this.instance)
+        .reduce(
+            pw.this.instance,
+            inactivity_timestamp_utc=pw.reducers.latest(
+                pw.this.inactivity_timestamp_utc
+            ),
+        )
+        .join_inner(latest_activities, pw.left.instance == pw.right.instance)
+        .select(
+            pw.left.instance,
+            pw.left.inactivity_timestamp_utc,
+            latest_activity_timestamp_utc=pw.right.timestamp_utc,
+        )
+        .filter(
+            pw.this.inactivity_timestamp_utc < pw.this.latest_activity_timestamp_utc
+        )
+    )
+
+    resumed_activities = (
+        latest_resumed_activities._remove_retractions()
+        .groupby(pw.this.instance, pw.this.inactivity_timestamp_utc)
+        .reduce(
+            pw.this.instance,
+            pw.this.inactivity_timestamp_utc,
+            resumed_activity_timestamp_utc=pw.reducers.earliest(
+                pw.this.latest_activity_timestamp_utc
+            ),
+        )
+    )
+
+    inactivities = inactivities.join_left(
+        resumed_activities,
+        pw.left.instance == pw.right.instance,
+        pw.left.inactivity_timestamp_utc == pw.right.inactivity_timestamp_utc,
+    ).select(
+        pw.left.instance,
+        pw.left.inactivity_timestamp_utc,
+        pw.right.resumed_activity_timestamp_utc,
+    )
+
     if instance is None:
         inactivities = inactivities.without(pw.this.instance)
-        resumed_activities = resumed_activities.without(pw.this.instance)
-    return inactivities, resumed_activities
+
+    return inactivities

@@ -3,138 +3,204 @@
 from __future__ import annotations
 
 import datetime
+from typing import Callable
 from unittest.mock import patch
+
+import pandas as pd
 
 import pathway as pw
 from pathway.tests.utils import T, assert_stream_equality_wo_index
 
 
+def fake_utc_now(total_duration_ms: int) -> Callable[[pw.Duration], pw.Table]:
+    def faked(refresh_rate: pw.Duration) -> pw.Table:
+        return pw.debug.table_from_rows(
+            pw.schema_from_types(timestamp_utc=int),
+            [
+                (time_ms, time_ms, 1)
+                for time_ms in range(
+                    0, total_duration_ms, int(refresh_rate.total_seconds() * 1000)
+                )
+            ],
+            is_stream=True,
+        ).select(timestamp_utc=pw.this.timestamp_utc.dt.utc_from_timestamp(unit="ms"))
+
+    return faked
+
+
+@patch("pathway.stdlib.temporal.time_utils._get_now_timestamp_utc")
 @patch("pathway.stdlib.temporal.time_utils.utc_now")
-def test_inactivity_detection_instance(utc_now_mock):
-    now = datetime.datetime.now(datetime.timezone.utc)
-    now_ms = int((int(now.timestamp() * 1000) // 1000) * 1000) + 100000
-    events = T(
-        f"""
-            | t             | instance | __time__
-        1   | {now_ms}      |        A | {now_ms}
-        2   | {now_ms+50}   |        A | {now_ms+50}
-        3   | {now_ms+150}  |        A | {now_ms+150}
-        4   | {now_ms+200}  |        A | {now_ms+200}
-        5   | {now_ms+900}  |        A | {now_ms+900}
-        6   | {now_ms+1000} |        A | {now_ms+1000}
-        7   | {now_ms}      |        B | {now_ms}
-        8   | {now_ms+200}  |        B | {now_ms+200}
-        9   | {now_ms+400}  |        B | {now_ms+400}
-       10   | {now_ms+1000} |        B | {now_ms+1000}
+def test_inactivity_detection(utc_now_mock, get_now_timestamp_utc_mock):
+    t = T(
+        """
+  | now_utc | __time__
+0 |       0 |        0
+1 |      50 |       50
+2 |     150 |      150
+3 |     200 |      200
+4 |     900 |      900
+5 |    1000 |     1000
+        """
+    )
+
+    now_utc = pw.debug.table_to_pandas(t).now_utc.to_dict()
+
+    utc_now_mock.side_effect = fake_utc_now(1400)
+    get_now_timestamp_utc_mock.side_effect = lambda ptr: pd.Timestamp(
+        now_utc[ptr] if ptr is not None else 0, unit="ms", tz=datetime.timezone.utc
+    )
+    inactivities = t.inactivity_detection(
+        allowed_inactivity_period=pw.Duration(milliseconds=300),
+        refresh_rate=pw.Duration(milliseconds=50),
+    )
+
+    expected_inactivities = T(
+        """
+inactivity_timestamp_utc | resumed_activity_timestamp_utc | __time__ | __diff__
+                    200  |                                |      550 |        1
+                    200  |                                |      900 |       -1
+                    200  |                            900 |      900 |        1
+                   1000  |                                |     1350 |        1
+        """
+    ).with_columns(
+        inactivity_timestamp_utc=pw.this.inactivity_timestamp_utc.dt.utc_from_timestamp(
+            unit="ms"
+        ),
+        resumed_activity_timestamp_utc=pw.require(
+            pw.this.resumed_activity_timestamp_utc.dt.utc_from_timestamp(unit="ms"),
+            pw.this.resumed_activity_timestamp_utc,
+        ),
+    )
+
+    assert_stream_equality_wo_index(inactivities, expected_inactivities)
 
 
+@patch("pathway.stdlib.temporal.time_utils._get_now_timestamp_utc")
+@patch("pathway.stdlib.temporal.time_utils.utc_now")
+def test_inactivity_detection_instance(utc_now_mock, get_now_timestamp_utc_mock):
+    t = T(
+        """
+  | instance | now_utc | __time__
+0 |        A |       0 |        0
+1 |        A |      50 |       50
+2 |        A |     150 |      150
+3 |        A |     200 |      200
+4 |        A |     900 |      900
+5 |        A |    1000 |     1000
+6 |        B |       0 |        0
+7 |        B |     200 |      200
+8 |        B |     400 |      400
+9 |        B |    1000 |     1000
+        """
+    )
 
-    """
-    ).with_columns(t=pw.this.t.dt.utc_from_timestamp(unit="ms"))
+    now_utc = pw.debug.table_to_pandas(t).now_utc.to_dict()
 
-    utc_now_mock.side_effect = lambda refresh_rate: pw.debug.table_from_rows(
-        pw.schema_from_types(t=int),
-        [
-            (time_ms, time_ms, 1)
-            for time_ms in range(
-                now_ms, now_ms + 1400, int(refresh_rate.total_seconds() * 1000)
-            )
-        ],
-        is_stream=True,
-    ).select(timestamp_utc=pw.this.t.dt.utc_from_timestamp(unit="ms"))
-
-    inactivities, resumed_activities = pw.temporal.inactivity_detection(
-        events.t,
-        pw.Duration(milliseconds=300),
+    utc_now_mock.side_effect = fake_utc_now(1400)
+    get_now_timestamp_utc_mock.side_effect = lambda ptr: pd.Timestamp(
+        now_utc[ptr] if ptr is not None else 0, unit="ms", tz=datetime.timezone.utc
+    )
+    inactivities = t.inactivity_detection(
+        allowed_inactivity_period=pw.Duration(milliseconds=300),
         refresh_rate=pw.Duration(milliseconds=50),
         instance=pw.this.instance,
     )
 
-    expected_inactivities = T(
-        f"""
-             instance | inactive_t    | __time__      | __diff__
-                    A | {now_ms+200}  | {now_ms+550}  | 1
-                    A | {now_ms+1000} | {now_ms+1350} | 1
-                    B | {now_ms+400}  | {now_ms+750}  | 1
-                    B | {now_ms+1000} | {now_ms+1350} | 1
+    expected_inactivities = (
+        T(
+            """
+instance | inactivity_timestamp_utc | resumed_activity_timestamp_utc | __time__ | __diff__
+       A |                      200 |                                |      550 |        1
+       A |                      200 |                                |      900 |       -1
+       A |                      200 |                           900  |      900 |        1
+       A |                     1000 |                                |     1350 |        1
+       B |                      400 |                                |      750 |        1
+       B |                      400 |                                |     1000 |       -1
+       B |                      400 |                          1000  |     1000 |        1
+       B |                     1000 |                                |     1350 |        1
         """
-    )
-    expected_resumes = T(
-        f"""
-             instance | resumed_t     | __time__      | __diff__
-                    A | {now_ms+900}  | {now_ms+900}  | 1
-                    B | {now_ms+1000} | {now_ms+1000} | 1
-        """
-    )
-    assert_stream_equality_wo_index(
-        (
-            inactivities.with_columns(
-                inactive_t=pw.cast(int, pw.this.inactive_t.dt.timestamp(unit="ms"))
+        )
+        .update_types(instance=str | None)
+        .with_columns(
+            inactivity_timestamp_utc=pw.this.inactivity_timestamp_utc.dt.utc_from_timestamp(
+                unit="ms"
             ),
-            resumed_activities.with_columns(
-                resumed_t=pw.cast(int, pw.this.resumed_t.dt.timestamp(unit="ms"))
+            resumed_activity_timestamp_utc=pw.require(
+                pw.this.resumed_activity_timestamp_utc.dt.utc_from_timestamp(unit="ms"),
+                pw.this.resumed_activity_timestamp_utc,
             ),
-        ),
-        (expected_inactivities, expected_resumes),
+        )
     )
 
+    assert_stream_equality_wo_index(inactivities, expected_inactivities)
 
+
+@patch("pathway.stdlib.temporal.time_utils._get_now_timestamp_utc")
 @patch("pathway.stdlib.temporal.time_utils.utc_now")
-def test_inactivity_detection(utc_now_mock):
-    now = datetime.datetime.now(datetime.timezone.utc)
-    now_ms = int((int(now.timestamp() * 1000) // 1000) * 1000) + 100000
-    events = T(
-        f"""
-            | t             | __time__
-        1   | {now_ms}      | {now_ms}
-        2   | {now_ms+50}   | {now_ms+50}
-        3   | {now_ms+150}  | {now_ms+150}
-        4   | {now_ms+200}  | {now_ms+200}
-        5   | {now_ms+900}  | {now_ms+900}
-        6   | {now_ms+1000} | {now_ms+1000}
-
-
-    """
-    ).with_columns(t=pw.this.t.dt.utc_from_timestamp(unit="ms"))
-
-    utc_now_mock.side_effect = lambda refresh_rate: pw.debug.table_from_rows(
-        pw.schema_from_types(t=int),
-        [
-            (time_ms, time_ms, 1)
-            for time_ms in range(
-                now_ms, now_ms + 1400, int(refresh_rate.total_seconds() * 1000)
-            )
-        ],
-        is_stream=True,
-    ).select(timestamp_utc=pw.this.t.dt.utc_from_timestamp(unit="ms"))
-
-    inactivities, resumed_activities = pw.temporal.inactivity_detection(
-        events.t,
-        pw.Duration(milliseconds=300),
+def test_inactivity_detection_empty(utc_now_mock, get_now_timestamp_utc_mock):
+    t = pw.Table.empty(value=str)
+    utc_now_mock.side_effect = fake_utc_now(500)
+    get_now_timestamp_utc_mock.side_effect = lambda _: pd.Timestamp(
+        0, unit="ms", tz=datetime.timezone.utc
+    )
+    inactivities = t.inactivity_detection(
+        allowed_inactivity_period=pw.Duration(milliseconds=300),
         refresh_rate=pw.Duration(milliseconds=50),
     )
 
-    expected_inactivities = T(
-        f"""
-            inactive_t    | __time__      | __diff__
-            {now_ms+200}  | {now_ms+550}  | 1
-            {now_ms+1000} | {now_ms+1350} | 1
+    expected_inactivities = (
+        T(
+            """
+inactivity_timestamp_utc | resumed_activity_timestamp_utc | __time__ | __diff__
+                      0  |                                |      350 |        1
         """
+        )
+        .update_types(resumed_activity_timestamp_utc=int | None)
+        .with_columns(
+            inactivity_timestamp_utc=pw.this.inactivity_timestamp_utc.dt.utc_from_timestamp(
+                unit="ms"
+            ),
+            resumed_activity_timestamp_utc=pw.require(
+                pw.this.resumed_activity_timestamp_utc.dt.utc_from_timestamp(unit="ms"),
+                pw.this.resumed_activity_timestamp_utc,
+            ),
+        )
     )
-    expected_resumes = T(
-        f"""
-            resumed_t     | __time__      | __diff__
-            {now_ms+900}  | {now_ms+900}  | 1
+
+    assert_stream_equality_wo_index(inactivities, expected_inactivities)
+
+
+@patch("pathway.stdlib.temporal.time_utils._get_now_timestamp_utc")
+@patch("pathway.stdlib.temporal.time_utils.utc_now")
+def test_inactivity_detection_empty_instance(utc_now_mock, get_now_timestamp_utc_mock):
+    t = pw.Table.empty(instance=str, value=str)
+    utc_now_mock.side_effect = fake_utc_now(500)
+    get_now_timestamp_utc_mock.side_effect = lambda _: pd.Timestamp(
+        0, unit="ms", tz=datetime.timezone.utc
+    )
+    inactivities = t.inactivity_detection(
+        allowed_inactivity_period=pw.Duration(milliseconds=300),
+        refresh_rate=pw.Duration(milliseconds=50),
+        instance=pw.this.instance,
+    )
+
+    expected_inactivities = (
+        T(
+            """
+instance | inactivity_timestamp_utc | resumed_activity_timestamp_utc | __time__ | __diff__
+         |                       0  |                                |      350 |        1
         """
-    )
-    assert_stream_equality_wo_index(
-        (
-            inactivities.with_columns(
-                inactive_t=pw.cast(int, pw.this.inactive_t.dt.timestamp(unit="ms"))
+        )
+        .update_types(instance=str | None, resumed_activity_timestamp_utc=int | None)
+        .with_columns(
+            inactivity_timestamp_utc=pw.this.inactivity_timestamp_utc.dt.utc_from_timestamp(
+                unit="ms"
             ),
-            resumed_activities.with_columns(
-                resumed_t=pw.cast(int, pw.this.resumed_t.dt.timestamp(unit="ms"))
+            resumed_activity_timestamp_utc=pw.require(
+                pw.this.resumed_activity_timestamp_utc.dt.utc_from_timestamp(unit="ms"),
+                pw.this.resumed_activity_timestamp_utc,
             ),
-        ),
-        (expected_inactivities, expected_resumes),
+        )
     )
+
+    assert_stream_equality_wo_index(inactivities, expected_inactivities)

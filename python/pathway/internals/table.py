@@ -81,6 +81,7 @@ class Table(
             asof_now_join,
             asof_now_join_inner,
             asof_now_join_left,
+            inactivity_detection,
             interval_join,
             interval_join_inner,
             interval_join_left,

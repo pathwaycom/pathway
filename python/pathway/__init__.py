@@ -209,3 +209,5 @@ Table.diff = ordered.diff
 Table.plot = viz.plot
 Table.show = viz.show
 Table._repr_mimebundle_ = viz._repr_mimebundle_
+
+Table.inactivity_detection = temporal.inactivity_detection

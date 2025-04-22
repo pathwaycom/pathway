@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - `pw.io.kafka.read` and `pw.io.redpanda.read` now support static mode.
 
+### Changed
+- The `inactivity_detection` function is now a method for append only tables. It no longer relies on an event timestamp column but now uses table processing times to detect inactivity periods.
+
 ## [0.21.3] - 2025-04-16
 
 ### Fixed
