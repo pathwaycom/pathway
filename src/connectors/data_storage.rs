@@ -146,6 +146,10 @@ impl ValuesMap {
         self.map.get(key)
     }
 
+    pub fn remove(&mut self, key: &str) {
+        self.map.remove(key);
+    }
+
     pub fn to_pure_hashmap(self) -> DynResult<HashMap<String, Value>> {
         self.map
             .into_iter()

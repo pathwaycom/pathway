@@ -65,6 +65,10 @@ def read(
     Reads a table from Delta Lake. Currently, local and S3 lakes are supported. The table
     doesn't have to be append only, however, the deletion vectors are not supported yet.
 
+    Reads are atomic with respect to the data version. This means that if a data update -
+    such as inserting, deleting, or modifying rows - is made within a single Delta transaction,
+    all those changes will be applied together, as one atomic operation, in a single minibatch.
+
     Note that the connector requires either the table to be append-only or the primary key
     fields to be specified in the schema. You can define the primary key fields using the
     ``pw.column_definition`` function.

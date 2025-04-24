@@ -60,7 +60,6 @@ pub enum OffsetValue {
     DeltaTablePosition {
         version: i64,
         rows_read_within_version: i64,
-        last_fully_read_version: Option<i64>,
     },
     IcebergSnapshot {
         snapshot_id: IcebergSnapshotId,
@@ -131,14 +130,9 @@ impl HashInto for OffsetValue {
             OffsetValue::DeltaTablePosition {
                 version,
                 rows_read_within_version,
-                last_fully_read_version,
             } => {
                 version.hash_into(hasher);
                 rows_read_within_version.hash_into(hasher);
-                last_fully_read_version.is_some().hash_into(hasher);
-                last_fully_read_version
-                    .unwrap_or_default()
-                    .hash_into(hasher);
             }
             OffsetValue::NatsReadEntriesCount(count) => count.hash_into(hasher),
             OffsetValue::IcebergSnapshot { snapshot_id } => {
