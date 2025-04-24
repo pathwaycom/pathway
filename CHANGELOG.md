@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.io.deltalake.read` now processes Delta table version updates atomically, applying all changes together in a single minibatch.
+
 ## [0.21.4] - 2025-04-24
 
 ### Added
@@ -12,7 +15,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - The `inactivity_detection` function is now a method for append only tables. It no longer relies on an event timestamp column but now uses table processing times to detect inactivity periods.
-- `pw.io.deltalake.read` now processes Delta table version updates atomically, applying all changes together in a single minibatch.
 
 ## [0.21.3] - 2025-04-16
 
