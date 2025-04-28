@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.io.deltalake.read` now processes Delta table version updates atomically, applying all changes together in a single minibatch.
+- The panel widget for table visualization now has a horizontal scroll bar for large tables.
 
 ## [0.21.4] - 2025-04-24
 

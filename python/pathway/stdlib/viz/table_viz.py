@@ -96,6 +96,7 @@ def show(
         sorters=sorters,
         pagination="local",
         page_size=10,
+        sizing_mode="stretch_width",
     )
 
     def color_negative_red(row):
