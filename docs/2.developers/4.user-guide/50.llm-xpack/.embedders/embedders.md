@@ -46,7 +46,7 @@ embedder = OpenAIEmbedder(api_key=os.environ["OPENAI_API_KEY"])
 embeddings = documents.select(embedding=embedder(pw.this.text))
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
   model: "text-embedding-3-small"
@@ -73,7 +73,7 @@ Here is some text
 res = t.select(ret=embedder(pw.this.text_column))
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 embedder: !pw.xpacks.llm.embedders.LiteLLMEmbedder
   model: "text-embedding-3-small"
@@ -102,7 +102,7 @@ Some text to embed
 t.select(ret=embedder(pw.this.txt))
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 embedder: !pw.xpacks.llm.embedders.SentenceTransformerEmbedder
   model: "intfloat/e5-large-v2"
@@ -128,7 +128,7 @@ Some text to embed
 t.select(ret=embedder(pw.this.txt))
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 embedder: !pw.xpacks.llm.embedders.GeminiEmbedder
   model: "models/text-embedding-004"

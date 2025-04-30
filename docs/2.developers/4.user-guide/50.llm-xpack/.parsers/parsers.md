@@ -69,7 +69,7 @@ result = data_sources.with_columns(parsed=parser(data_sources.data))
 ```
 ::
 
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 Example of YAML configuration
 ```yaml
 $parser: !pw.xpacks.llm.parsers.UnstructuredParser
@@ -123,7 +123,7 @@ parser = DoclingParser(
 ```
 ::
 
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 Example of YAML configuration
 ```yaml
 $multimodal_llm: !pw.xpacks.llm.llms.OpenAIChat

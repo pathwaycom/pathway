@@ -17,7 +17,7 @@ Currently, Pathway provides wrappers for the following LLMs:
 - [Hugging Face Pipeline](/developers/user-guide/llm-xpack/llm-chats#hugging-face-pipeline)
 - [Cohere](/developers/user-guide/llm-xpack/llm-chats#cohere)
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 Currently, Pathway provides wrappers for the following LLMs:
 - [OpenAI](/developers/user-guide/llm-xpack/llm-chats#openaichat)
 - [LiteLLM](/developers/user-guide/llm-xpack/llm-chats#litellm)
@@ -67,7 +67,7 @@ responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.quest
 pw.debug.compute_and_print(responses)
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 chat: !pw.xpacks.llm.llms.OpenAIChat
   model: "gpt-4o-mini
@@ -131,7 +131,7 @@ responses = queries.select(result=model(llms.prompt_chat_single_qa(pw.this.quest
 pw.debug.compute_and_print(responses)
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 llm: !pw.xpacks.llm.llms.LiteLLMChat
   model: "gemini/gemini-pro", # Choose the model you want
@@ -141,7 +141,7 @@ llm: !pw.xpacks.llm.llms.LiteLLMChat
 With the wrapper for LiteLLM, Pathway allows you to use many popular LLMs.
 
 ## Hugging Face pipeline
-For models from Hugging Face that you want to run locally, Pathway gives a separate wrapper called `HFPipelineChat` (for calling HuggingFace through API, use LiteLLM wrapper). When an instance of this wrapper is created, it initializes a HuggingFace `pipeline`, so any [arguments to the `pipeline`](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline) - including the name of the model - must be set during the initialization of `HFPipelineChat`. Any parameters to `pipeline.__call__` can be as before set during initialization or overridden during application.
+For models from Hugging Face that you want to run locally, Pathway gives a separate wrapper called `HFPipelineChat` (for calling HuggingFace through API, use LiteLLM wrapper). When an instance of this wrapper is created, it initializes a HuggingFace `pipeline`, so any [argument to the `pipeline`](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.pipeline) - including the name of the model - must be set during the initialization of `HFPipelineChat`. Any parameters to `pipeline.__call__` can be as before set during initialization or overridden during application.
 
 ::if{path="/llm-xpack/"}
 ```python
@@ -154,7 +154,7 @@ responses = queries.select(result=model(pw.this.questions))
 pw.debug.compute_and_print(responses)
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 llm: !pw.xpacks.llm.llms.HFPipelineChat
   model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0", # Choose the model you want
@@ -162,7 +162,7 @@ llm: !pw.xpacks.llm.llms.HFPipelineChat
 ::
 
 Note that format of questions used in Hugging Face pipeline depends on the model. Some models, like [`gpt2`](https://huggingface.co/openai-community/gpt2), expect a prompt string, whereas conversation models also accept messages as a list of dicts. The model's prompt template will be used if a conversation with a list of dicts is passed.
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 Note that Pathway AI pipelines expect conversation models, so models like `gpt2` cannot be used. 
 ::
 For more information, see [pipeline docs](https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.TextGenerationPipeline.__call__.text_inputs). 
@@ -238,7 +238,7 @@ responses = queries.select(result=model(prompt_chat_single_qa(pw.this.questions)
 pw.debug.compute_and_print(responses)
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 chat: !pw.xpacks.llm.llms.OpenAIChat
   model: "gpt-4o-mini

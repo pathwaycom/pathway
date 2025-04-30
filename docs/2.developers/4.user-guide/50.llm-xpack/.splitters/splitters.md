@@ -29,7 +29,7 @@ text_splitter = TokenCountSplitter(
 )
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 splitter: pw.xpacks.llm.splitters.TokenCountSplitter
   min_tokes: 100
@@ -61,7 +61,7 @@ splitter = RecursiveSplitter(
 )
 ```
 ::
-::if{path="/ai-pipelines/"}
+::if{path="/templates/"}
 ```yaml
 splitter: pw.xpacks.llm.splitters.RecursiveSplitter
   chunk_size: 400
@@ -83,7 +83,7 @@ By structuring the text according to its original format, `DoclingParser` improv
 
 As of now, this chunking approach can produce chunks of varying length since it does not split text based on token count. If you require more evenly sized chunks, you can always apply the `TokenCountSplitter` or `RecursiveSplitter` on top of DoclingParser to enforce more uniform segmentation.
 
-By default chunking is always enabled; in order to turn it off simply set `chunking=False` in the constructor.
+By default chunking is always enabled; in order to turn it off simply set `chunk=False` in the constructor.
 
 Additionally, each chunk is wrapped with additional elements like headings and captions if any are available (like it is in case of images and tables). 
 It can greatly help in retrieval as it attaches some additional context to the chunk.

@@ -215,7 +215,7 @@ def answer_with_geometric_rag_strategy(
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
             For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
             when information is not found.
-        no_answer_string: string that will be return by the LLM when information is not found.
+        no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable,
             UDF or ``BaseContextProcessor`` is expected.
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata
@@ -336,7 +336,7 @@ def answer_with_geometric_rag_strategy_from_index(
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
             For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
             when information is not found.
-        no_answer_string: string that will be return by the LLM when information is not found.
+        no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable,
             UDF or ``BaseContextProcessor`` is expected.
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata
@@ -737,7 +737,7 @@ class AdaptiveRAGQuestionAnswerer(BaseRAGQuestionAnswerer):
             String template needs to have ``context`` and ``query`` placeholders in curly brackets ``{}``.
             For Adaptive RAG to work, prompt needs to instruct, to return `no_answer_string`
             when information is not found.
-        no_answer_string: string that will be return by the LLM when information is not found.
+        no_answer_string: string that will be returned by the LLM when information is not found.
         context_processor: Utility for representing the fetched documents to the LLM. Callable, UDF or ``BaseContextProcessor`` is expected.
             Defaults to ``SimpleContextProcessor`` that keeps the 'path' metadata and joins the documents with double new lines.
         summarize_template: Template for text summarization. Defaults to ``pathway.xpacks.llm.prompts.prompt_summarize``.

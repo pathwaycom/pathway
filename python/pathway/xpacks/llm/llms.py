@@ -2,7 +2,7 @@
 """
 Pathway UDFs for calling LLMs
 
-This momdule contains UDFs for calling LLMs chat services:
+This module contains UDFs for calling LLMs chat services:
 1. wrappers over LLM APIs
 2. prompt building tools
 """
