@@ -94,7 +94,7 @@ def inactivity_detection(
 
     Returns:
         Table: inactivity periods table with `inactivity_timestamp_utc` and
-            `resumed_activity_timestamp_utc` columns, optionally `instance` column.
+        `resumed_activity_timestamp_utc` columns, optionally `instance` column.
     """
     assert self.is_append_only, "Table must be append only to use inactivity_detection"
 
