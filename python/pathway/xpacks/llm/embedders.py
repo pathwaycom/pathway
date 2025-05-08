@@ -191,7 +191,7 @@ class OpenAIEmbedder(BaseEmbedder):
             )
 
         api_key = kwargs.pop("api_key", None)
-        client = openai.AsyncOpenAI(api_key=api_key)
+        client = openai.AsyncOpenAI(api_key=api_key, max_retries=0)
 
         if self.truncation_keep_strategy:
             input = self.truncate_context(

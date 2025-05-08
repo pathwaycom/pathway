@@ -280,7 +280,7 @@ class OpenAIChat(BaseChat):
         }
         logger.info(json.dumps(event, ensure_ascii=False))
 
-        client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+        client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
         ret = await client.chat.completions.create(messages=messages_decoded, **kwargs)  # type: ignore
         response: str | None = ret.choices[0].message.content
 
