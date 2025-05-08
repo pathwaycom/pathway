@@ -35,10 +35,19 @@ class ExpressionFormatter(ExpressionVisitor):
         )
 
     def eval_column_val(self, expression: expr.ColumnReference):
-        from pathway.internals.thisclass import ThisMetaclass
+        from pathway.internals.thisclass import ThisMetaclass, left, right, this
 
         if isinstance(expression._table, ThisMetaclass):
-            return f"{expression._table}.{expression._name}"
+            if expression._table == this:
+                prefix = "this"
+            elif expression._table == left:
+                prefix = "left"
+            elif expression._table == right:
+                prefix = "right"
+            else:
+                prefix = f"{expression._table}"
+
+            return f"pathway.{prefix}.{expression._name}"
         else:
             return f"<table{self.table_numbers[expression._table]}>.{expression._name}"
 

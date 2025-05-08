@@ -43,14 +43,18 @@ def test_session_simple():
         min_t=pw.reducers.min(pw.this.t),
         max_v=pw.reducers.max(pw.this.v),
         count=pw.reducers.count(),
+        t_with_min_v=pw.this.ix(pw.reducers.argmin(pw.this.v)).t,
+        t_with_max_v=pw.this.ix(pw.reducers.argmax(pw.this.v)).t,
     )
+    # t_with_min_v and t_with_max_v can be done easier by just passing v and t to a argmin
+    # but here we test if the id is returned correctly
     res = T(
         """
-        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_v | count
-        0            | 1                | 2              | 1     | 10    | 2
-        0            | 4                | 4              | 4     | 3     | 1
-        0            | 8                | 10             | 8     | 8     | 3
-        1            | 1                | 2              | 1     | 16    | 2
+        _pw_instance | _pw_window_start | _pw_window_end | min_t | max_v | count | t_with_min_v | t_with_max_v
+        0            | 1                | 2              | 1     | 10    | 2     | 2            | 1
+        0            | 4                | 4              | 4     | 3     | 1     | 4            | 4
+        0            | 8                | 10             | 8     | 8     | 3     | 8            | 10
+        1            | 1                | 2              | 1     | 16    | 2     | 1            | 2
     """
     )
     assert_table_equality_wo_index(result, res)
@@ -1047,3 +1051,89 @@ def test_latest_reducer():
     """
     )
     assert_table_equality_wo_index(res, expected)
+
+
+def test_sliding_argmin_argmax():
+    tab = T(
+        """
+        t | a
+        1 | 1
+        2 | 2
+        3 | 3
+    """
+    )
+
+    res = (
+        tab.windowby(pw.this.t, window=pw.temporal.sliding(hop=1, duration=2))
+        .reduce(
+            t=pw.this._pw_window_start,
+            min_id=pw.reducers.argmin(pw.this.a),
+            max_id=pw.reducers.argmax(pw.this.a),
+        )
+        .select(
+            pw.this.t, min_a=tab.ix(pw.this.min_id).a, max_a=tab.ix(pw.this.max_id).a
+        )
+    )
+    expected = T(
+        """
+        t | min_a | max_a
+        0 |     1 |     1
+        1 |     1 |     2
+        2 |     2 |     3
+        3 |     3 |     3
+    """
+    )
+    assert_table_equality_wo_index(res, expected)
+
+
+def test_intervals_over_argmin_argmax():
+    t = T(
+        """
+        | t |  v
+    1   | 1 |  10
+    2   | 2 |  1
+    3   | 3 |  3
+    4   | 8 |  2
+    5   | 9 |  4
+    6   | 10|  8
+    7   | 1 |  9
+    8   | 2 |  16
+    """
+    )
+    probes = T(
+        """
+    t
+    2
+    4
+    6
+    8
+    10
+    """
+    )
+    result = pw.temporal.windowby(
+        t,
+        t.t,
+        window=pw.temporal.intervals_over(
+            at=probes.t, lower_bound=-2, upper_bound=1, is_outer=False
+        ),
+    ).reduce(
+        pw.this._pw_window_location,
+        min_id=pw.reducers.argmin(pw.this.v),
+        max_id=pw.reducers.argmax(pw.this.v),
+    )
+    result = result.select(
+        pw.this._pw_window_location,
+        min_v=t.ix(pw.this.min_id).v,
+        max_v=t.ix(pw.this.max_id).v,
+    )
+    expected = T(
+        """
+        _pw_window_location | min_v | max_v
+        2                   | 1     | 16
+        4                   | 1     | 16
+        8                   | 2     | 4
+        10                  | 2     | 8
+    """
+    )
+
+    assert_table_equality_wo_index(result, expected)

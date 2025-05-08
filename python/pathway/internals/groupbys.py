@@ -190,8 +190,16 @@ class GroupedTable(GroupedJoinable, OperatorInput):
         output_expressions = {}
         state = _ReducerExpressionState()
         splitter = _ReducerExpressionSplitter()
+        substitution_desugaring: SubstitutionDesugaring | None = None
+        if self._is_window:
+            id_subs: dict[expr.InternalColRef, expr.ColumnExpression] = {
+                self._joinable_to_group.id._to_internal(): self._joinable_to_group._pw_original_id
+            }
+            substitution_desugaring = SubstitutionDesugaring(id_subs)
         for name, expression in kwargs.items():
             self._validate_expression(expression)
+            if substitution_desugaring is not None:
+                expression = substitution_desugaring.eval_expression(expression)
             output_expressions[name] = splitter.eval_expression(
                 expression, eval_state=state
             )

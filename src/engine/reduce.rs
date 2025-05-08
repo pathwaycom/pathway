@@ -361,11 +361,11 @@ impl UnaryReducerImpl for MinReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct ArgMinReducer;
 
-impl UnaryReducerImpl for ArgMinReducer {
-    type State = (Value, Key);
+impl ReducerImpl for ArgMinReducer {
+    type State = (Value, Value);
 
-    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
-        Ok((value.clone(), *key))
+    fn init(&self, _key: &Key, values: &[Value]) -> DynResult<Self::State> {
+        Ok((values[0].clone(), values[1].clone()))
     }
 
     fn combine<'a>(
@@ -381,7 +381,7 @@ impl UnaryReducerImpl for ArgMinReducer {
     }
 
     fn finish(&self, state: Self::State) -> Value {
-        Value::Pointer(state.1)
+        state.1
     }
 }
 
@@ -451,11 +451,11 @@ impl UnaryReducerImpl for MaxReducer {
 #[derive(Debug, Clone, Copy)]
 pub struct ArgMaxReducer;
 
-impl UnaryReducerImpl for ArgMaxReducer {
-    type State = (Value, Key);
+impl ReducerImpl for ArgMaxReducer {
+    type State = (Value, Value);
 
-    fn init_unary(&self, key: &Key, value: &Value) -> DynResult<Self::State> {
-        Ok((value.clone(), *key))
+    fn init(&self, _key: &Key, values: &[Value]) -> DynResult<Self::State> {
+        Ok((values[0].clone(), values[1].clone()))
     }
 
     fn combine<'a>(
@@ -471,7 +471,7 @@ impl UnaryReducerImpl for ArgMaxReducer {
     }
 
     fn finish(&self, state: Self::State) -> Value {
-        Value::Pointer(state.1)
+        state.1
     }
 }
 

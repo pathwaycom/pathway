@@ -94,8 +94,14 @@ def test_reducer():
         == "pathway.reducers.tuple(<table1>.pet, skip_nones=True)"
     )
     assert repr(pw.reducers.count()) == "pathway.reducers.count()"
-    assert repr(pw.reducers.argmin(t.pet)) == "pathway.reducers.argmin(<table1>.pet)"
-    assert repr(pw.reducers.argmax(t.pet)) == "pathway.reducers.argmax(<table1>.pet)"
+    assert (
+        repr(pw.reducers.argmin(t.pet))
+        == "pathway.reducers.argmin(<table1>.pet, pathway.this.id)"
+    )
+    assert (
+        repr(pw.reducers.argmax(t.pet))
+        == "pathway.reducers.argmax(<table1>.pet, pathway.this.id)"
+    )
 
 
 def test_apply():

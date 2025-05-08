@@ -205,6 +205,7 @@ pub(super) enum PersistableCollection<S: MaybeTotalScope> {
     KeyKeyValueKeyValueIsize(Collection<S, (Key, (Key, Value), (Key, Value)), isize>),
     KeyVecValueIsize(Collection<S, (Key, Vec<Value>), isize>),
     KeyTupleIsize(Collection<S, (Key, Tuple), isize>),
+    KeyOptionValueValueIsize(Collection<S, (Key, Option<(Value, Value)>), isize>),
 }
 
 macro_rules! impl_conversion {
@@ -293,6 +294,11 @@ impl_conversion!(
     isize
 );
 impl_conversion!(PersistableCollection::KeyTupleIsize, (Key, Tuple), isize);
+impl_conversion!(
+    PersistableCollection::KeyOptionValueValueIsize,
+    (Key, Option<(Value, Value)>),
+    isize
+);
 
 pub struct TimestampBasedPersistenceWrapper {
     persistence_config: PersistenceManagerConfig,
@@ -428,6 +434,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
             PersistableCollection::KeyTupleIsize(collection) => {
                 self.generic_maybe_persist(&collection, name, persistent_id)
             }
+            PersistableCollection::KeyOptionValueValueIsize(collection) => {
+                self.generic_maybe_persist(&collection, name, persistent_id)
+            }
         }
     }
 
@@ -488,6 +497,9 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> PersistenceWrapper<S>
                 generic_filter_out_persisted(&collection)
             }
             PersistableCollection::KeyTupleIsize(collection) => {
+                generic_filter_out_persisted(&collection)
+            }
+            PersistableCollection::KeyOptionValueValueIsize(collection) => {
                 generic_filter_out_persisted(&collection)
             }
         }

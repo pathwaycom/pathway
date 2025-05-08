@@ -3110,6 +3110,35 @@ def test_argmin_argmax_tie():
     assert_table_equality_wo_index(res, expected)
 
 
+def test_argmin_argmax_different_column():
+    table = T(
+        """
+       name   | age
+      Charlie |  18
+      Alice   |  18
+      Bob     |  18
+      David   |  19
+      Erin    |  19
+      Frank   |  20
+    """,
+        unsafe_trusted_ids=True,
+    )
+
+    res = table.reduce(
+        min=pw.reducers.argmin(table.age, table.name),
+        max=pw.reducers.argmax(table.age, table.name),
+    )
+
+    expected = T(
+        """
+          min |  max
+        Alice | Frank
+        """
+    )
+
+    assert_table_equality_wo_index(res, expected)
+
+
 def test_avg_reducer():
     t1 = T(
         """

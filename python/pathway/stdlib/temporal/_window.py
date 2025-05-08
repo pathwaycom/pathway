@@ -129,6 +129,7 @@ class _SessionWindow(Window):
             tmp.ix_ref(target._pw_window)._pw_window_start,
             tmp.ix_ref(target._pw_window)._pw_window_end,
             _pw_instance=instance,
+            _pw_original_id=pw.this.id,
         ).groupby(
             pw.this._pw_window,
             pw.this._pw_window_start,
@@ -355,7 +356,7 @@ class _SlidingWindow(Window):
             ),
             _pw_key=key,
         )
-        target = target.flatten(target._pw_window)
+        target = target.flatten(target._pw_window, origin_id="_pw_original_id")
         target = target.with_columns(
             _pw_instance=pw.this._pw_window.get(0),
             _pw_window_start=pw.this._pw_window.get(1),
@@ -553,6 +554,7 @@ class _IntervalsOverWindow(Window):
                 _pw_window_end=pw.left[at.name] + self.upper_bound,
                 _pw_instance=instance,
                 _pw_key=key,
+                _pw_original_id=pw.right.id,
                 *pw.right,
             )
             .groupby(

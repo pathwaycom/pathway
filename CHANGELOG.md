@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.io.deltalake.read` now processes Delta table version updates atomically, applying all changes together in a single minibatch.
 - The panel widget for table visualization now has a horizontal scroll bar for large tables.
+- Added the possibility to return value from any column from `pw.reducers.argmax` and `pw.reducers.argmin`, not only `id`.
+
+### Fixed
+- `pw.reducers.argmax` and `pw.reducers.argmin` work correctly with the result of `pw.Table.windowby`.
 
 ## [0.21.4] - 2025-04-24
 

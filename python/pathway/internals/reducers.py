@@ -9,7 +9,7 @@ from warnings import warn
 
 import numpy as np
 
-from pathway.internals import api, dtype as dt, expression as expr
+from pathway.internals import api, dtype as dt, expression as expr, thisclass
 from pathway.internals.column import ColumnExpression, GroupedContext, IdColumn
 
 
@@ -72,13 +72,18 @@ class UnaryReducerWithDefault(UnaryReducer):
         return self._engine_reducer
 
 
-class IdTypeUnaryReducer(UnaryReducerWithDefault):
+class ArgReducer(Reducer):
+    _engine_reducer: api.Reducer
 
     def __init__(self, *, name: str, engine_reducer: api.Reducer):
-        super().__init__(name=name, engine_reducer=engine_reducer)
+        super().__init__(name=name)
+        self._engine_reducer = engine_reducer
 
-    def return_type_unary(self, arg_type: dt.DType, id_type: dt.DType) -> dt.DType:
-        return id_type
+    def return_type(self, arg_types: list[dt.DType], id_type: dt.DType) -> dt.DType:
+        return arg_types[1]
+
+    def engine_reducer(self, arg_types: list[dt.DType]) -> api.Reducer:
+        return self._engine_reducer
 
 
 class TypePreservingUnaryReducer(UnaryReducerWithDefault):
@@ -246,8 +251,6 @@ def _ndarray(skip_nones: bool):
     )
 
 
-_argmin = IdTypeUnaryReducer(name="argmin", engine_reducer=api.Reducer.ARG_MIN)
-_argmax = IdTypeUnaryReducer(name="argmax", engine_reducer=api.Reducer.ARG_MAX)
 _unique = TypePreservingUnaryReducer(name="unique", engine_reducer=api.Reducer.UNIQUE)
 _any = TypePreservingUnaryReducer(name="any", engine_reducer=api.Reducer.ANY)
 _earliest = TimeBasedTypePreservingUnaryReducer(
@@ -357,11 +360,17 @@ def sum(arg: expr.ColumnExpression) -> expr.ReducerExpression:
     return _apply_unary_reducer(_sum, arg)
 
 
-def argmin(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+def argmin(
+    arg: expr.ColumnExpression, id: expr.ColumnExpression = thisclass.this.id
+) -> expr.ReducerExpression:
     """
     Returns the index of the minimum aggregated value.
 
-    Example:
+    By default it returns the index. You can modify this behavior by setting the `id`
+    argument to another column. Then a value from this column will be returned
+    from a row where `arg` is a minimum.
+
+    Examples:
 
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown('''
@@ -386,15 +395,39 @@ def argmin(arg: expr.ColumnExpression) -> expr.ReducerExpression:
     argmin      | min
     ^X1MXHYY... | -1
     ^3CZ78B4... | 4
+    >>>
+    >>> table = pw.debug.table_from_markdown(
+    ...     '''
+    ...     name    | age
+    ...     Charlie |  18
+    ...     Alice   |  18
+    ...     Bob     |  18
+    ...     David   |  19
+    ...     Erin    |  19
+    ...     Frank   |  20
+    ... '''
+    ... )
+    >>> res = table.reduce(min=pw.reducers.argmin(table.age, table.name))
+    >>> pw.debug.compute_and_print(res, include_id=False)
+    min
+    Alice
     """
-    return _apply_unary_reducer(_argmin, arg)
+    return expr.ReducerExpression(
+        ArgReducer(name="argmin", engine_reducer=api.Reducer.ARG_MIN), arg, id
+    )
 
 
-def argmax(arg: expr.ColumnExpression) -> expr.ReducerExpression:
+def argmax(
+    arg: expr.ColumnExpression, id: expr.ColumnExpression = thisclass.this.id
+) -> expr.ReducerExpression:
     """
     Returns the index of the maximum aggregated value.
 
-    Example:
+    By default it returns the index. You can modify this behavior by setting the `id`
+    argument to another column. Then a value from this column will be returned
+    from a row where `arg` is a maximum.
+
+    Examples:
 
     >>> import pathway as pw
     >>> t = pw.debug.table_from_markdown('''
@@ -419,8 +452,26 @@ def argmax(arg: expr.ColumnExpression) -> expr.ReducerExpression:
     argmax      | max
     ^Z3QWT29... | 2
     ^3S2X6B2... | 7
+    >>>
+    >>> table = pw.debug.table_from_markdown(
+    ...     '''
+    ...     name    | age
+    ...     Charlie |  18
+    ...     Alice   |  18
+    ...     Bob     |  18
+    ...     David   |  19
+    ...     Erin    |  19
+    ...     Frank   |  20
+    ... '''
+    ... )
+    >>> res = table.reduce(max=pw.reducers.argmax(table.age, table.name))
+    >>> pw.debug.compute_and_print(res, include_id=False)
+    max
+    Frank
     """
-    return _apply_unary_reducer(_argmax, arg)
+    return expr.ReducerExpression(
+        ArgReducer(name="argmax", engine_reducer=api.Reducer.ARG_MAX), arg, id
+    )
 
 
 def unique(arg: expr.ColumnExpression) -> expr.ReducerExpression:
