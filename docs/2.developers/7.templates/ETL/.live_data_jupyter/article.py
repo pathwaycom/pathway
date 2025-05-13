@@ -7,10 +7,8 @@
 #   description: Developer Advocate
 #   img: /assets/pictures/image_avril.png
 #   linkedin: https://www.linkedin.com/in/avrilaysha/
-# article:
-#   date: '2023-11-29'
-#   thumbnail: ''
-#   tags: ['tutorial', 'data-pipeline', 'showcase']
+# date: '2023-11-29'
+# tags: ['tutorial', 'data-pipeline', 'showcase']
 # keywords: ['Jupyter notebook', 'interactivity', 'bokeh', 'panel', 'Bollinger bands', 'vizualization', 'Weighted Average', 'rolling statistics', 'dashboard', 'notebook', 'Docker']
 # notebook_export_path: notebooks/showcases/live-data-jupyter.ipynb
 # docker_github_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/from_jupyter_to_deploy/part4_deployment"

@@ -4,11 +4,11 @@
 # notebook_export_path: notebooks/tutorials/upsampling.ipynb
 # author: 'olivier'
 # aside: true
-# article:
-#   date: '2023-10-18'
-#   thumbnail: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
-#   tags: ['tutorial', 'Time Series']
-#   related: ['/blog/signal-processing', '/developers/templates/etl/gaussian_filtering_python']
+# date: '2023-10-18'
+# thumbnail:
+#   src: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
+# tags: ['tutorial', 'Time Series']
+# related: ['/blog/signal-processing', '/developers/templates/etl/gaussian_filtering_python']
 # popular: true
 # keywords: ['signal processing', 'upsampling', 'out-of-order data', 'resampling', 'interpolation', 'intervals_over', 'window', 'notebook']
 # ---

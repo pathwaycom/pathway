@@ -2,11 +2,11 @@
 # title: "Computing the Option Greeks using Pathway and Databento"
 # description: "Computing the Option Greeks using Pathway and Databento, in the Black Model"
 # author: 'luca'
-# article:
-#   thumbnail: '/assets/content/showcases/option-greeks/option-greeks.png'
-#   thumbnailFit: 'contain'
-#   date: '2024-08-06'
-#   tags: ['tutorial', 'data-pipeline']
+# thumbnail:
+#   src: '/assets/content/showcases/option-greeks/option-greeks.png'
+#   contain: true
+# date: '2024-08-06'
+# tags: ['tutorial', 'data-pipeline']
 # keywords: ['Option Greeks', 'Databento', 'Delta', 'Gamma', 'Theta', 'Rho', 'quant', 'Black model', 'notebook']
 # notebook_export_path: notebooks/tutorials/option-greeks.ipynb
 # docker_github_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/option-greeks"

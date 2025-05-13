@@ -3,10 +3,10 @@
 # description: Event stream processing
 # author: 'przemek'
 # aside: true
-# article:
-#   date: '2022-11-01'
-#   thumbnail: '/assets/content/blog/th-time-between-events-in-a-multi-topic-event-stream.png'
-#   tags: ['tutorial', 'data-pipeline']
+# date: '2022-11-01'
+# thumbnail:
+#   src: '/assets/content/blog/th-time-between-events-in-a-multi-topic-event-stream.png'
+# tags: ['tutorial', 'data-pipeline']
 # keywords: ['event stream', 'multi-topic', 'Debezium', 'ordering', 'sort']
 # jupyter:
 #   jupytext:

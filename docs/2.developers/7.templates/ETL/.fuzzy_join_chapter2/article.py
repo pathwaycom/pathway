@@ -3,11 +3,11 @@
 # description: Article introducing Fuzzy Join.
 # notebook_export_path: notebooks/showcases/fuzzy_join_part2.ipynb
 # aside: true
-# article:
-#   date: '2022-10-19'
-#   thumbnail: '/assets/content/showcases/fuzzy_join/reconciliation_chapter3_trim.png'
-#   thumbnailFit: 'contain'
-#   tags: ['tutorial', 'data-pipeline']
+# date: '2022-10-19'
+# thumbnail:
+#   src: '/assets/content/showcases/fuzzy_join/reconciliation_chapter3_trim.png'
+#   contain: true
+# tags: ['tutorial', 'data-pipeline']
 # keywords: ['Fuzzy join', 'reconciliation', 'unstructured', 'notebook']
 # author: 'pathway'
 # jupyter:

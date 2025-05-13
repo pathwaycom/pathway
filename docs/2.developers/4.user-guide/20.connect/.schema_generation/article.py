@@ -2,7 +2,8 @@
 # title: 'Automatic Generation of Schema Class'
 # description: 'Tutorial on generating Schema from sample CSV file or definition in JSON'
 # date: '2023-11-08'
-# thumbnail: '/assets/content/blog/th-custom-connectors.png'
+# thumbnail:
+#   src: '/assets/content/blog/th-custom-connectors.png'
 # tags: ['tutorial', 'table']
 # keywords: ['schema', 'type', 'JSON', 'connectors']
 # notebook_export_path: notebooks/tutorials/schema-generation.ipynb

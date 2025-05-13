@@ -2,17 +2,17 @@
 # title: 'Adaptive RAG: cut your LLM costs without sacrificing accuracy'
 # description: 'This article presents Adaptive RAG: a new technique to decrease the cost of RAGs without sacrificing accuracy'
 # aside: true
-# article:
-#     thumbnail: '/assets/content/blog/adaptive-rag-plots/visual-abstract.png'
-#     thumbnailFit: 'contain'
-#     tags: ['showcase', 'ai-pipelines']
-#     date: '2024-03-28'
-#     related: false
+# thumbnail:
+#   src: '/assets/content/blog/adaptive-rag-plots/visual-abstract.png'
+#   contain: true
+# tags: ['showcase', 'ai-pipelines']
+# date: '2024-03-28'
 # notebook_export_path: notebooks/showcases/adaptive_rag_question_answering.ipynb
 # author:
 #   name: Jan Chorowski
 #   description: CTO
 #   img: "/assets/authors/jan-chorowski.jpg"
+#   provider: "s3"
 #   linkedin: "https://www.linkedin.com/in/janchorowski/"
 #   extra_info: joint work with Jacek Kowalski, Szymon Dudycz
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'prompt', 'explainability', 'notebook', 'Docker']

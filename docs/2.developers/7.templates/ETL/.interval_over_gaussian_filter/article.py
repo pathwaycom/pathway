@@ -4,11 +4,11 @@
 # notebook_export_path: notebooks/tutorials/gaussian-filtering-python.ipynb
 # author: 'olivier'
 # aside: true
-# article:
-#   date: '2023-10-17'
-#   thumbnail: '/assets/content/tutorials/time_series/thumbnail-gaussian.png'
-#   tags: ['tutorial', 'Time Series']
-#   related: ['/blog/signal-processing', '/developers/templates/etl/upsampling']
+# date: '2023-10-17'
+# thumbnail:
+#   src: '/assets/content/tutorials/time_series/thumbnail-gaussian.png'
+# tags: ['tutorial', 'Time Series']
+# related: ['/blog/signal-processing', '/developers/templates/etl/upsampling']
 # keywords: ['signal processing', 'Gaussian filter', 'out-of-order data', 'irregular sampling', 'intervals_over', 'window', 'notebook']
 # ---
 

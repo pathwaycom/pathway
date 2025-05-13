@@ -2,10 +2,10 @@
 # title: Real-Time Shortest Paths on Dynamic Networks with Bellman-Ford in Pathway
 # description: Article explaining step-by-step how to implement the Bellman-Ford algorithm in Pathway.
 # aside: true
-# article:
-#   date: '2022-11-03'
-#   thumbnail: '/assets/content/blog/th-bellman-ford.png'
-#   tags: ['tutorial', 'machine-learning']
+# date: '2022-11-03'
+# thumbnail:
+#   src: '/assets/content/blog/th-bellman-ford.png'
+# tags: ['tutorial', 'machine-learning']
 # author: 'pathway'
 # notebook_export_path: notebooks/tutorials/bellman_ford.ipynb
 # keywords: ['iterate', 'fixed-point', 'shortest-path', 'graph', 'notebook']

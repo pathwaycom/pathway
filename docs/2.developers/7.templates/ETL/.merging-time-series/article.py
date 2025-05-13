@@ -2,10 +2,10 @@
 # title: "Sensor Fusion in real-time: combining time series data with Pathway"
 # description: "Learn how to combine between two time series with different timestamps in Pathway."
 # aside: true
-# article:
-#   date: '2023-04-28'
-#   thumbnail: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
-#   tags: ['Time Series']
+# date: '2023-04-28'
+# thumbnail:
+#   src: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
+# tags: ['Time Series']
 # keywords: ['time series', 'multiple data sources', 'interpolation', 'connectors', 'notebook']
 # author: 'olivier'
 # notebook_export_path: notebooks/tutorials/combining-time-series.ipynb

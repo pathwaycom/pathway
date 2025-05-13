@@ -4,9 +4,8 @@
 # notebook_export_path: notebooks/tutorials/alert-deduplication.ipynb
 # author: 'mateusz'
 # aside: true
-# article:
-#   date: '2023-11-16'
-#   tags: ['tutorial', 'data-pipeline']
+# date: '2023-11-16'
+# tags: ['tutorial', 'data-pipeline']
 # keywords: ['alert', 'deduplication', 'monitoring', 'notebook']
 # jupyter:
 #   jupytext:

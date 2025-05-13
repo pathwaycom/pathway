@@ -4,10 +4,10 @@
 # notebook_export_path: notebooks/showcases/lsh.ipynb
 # author: 'olivier'
 # aside: true
-# article:
-#   date: '2022-10-25'
-#   thumbnail: '/assets/content/blog/th-realtime-classification.png'
-#   tags: ['tutorial', 'machine-learning']
+# date: '2022-10-25'
+# thumbnail:
+#   src: '/assets/content/blog/th-realtime-classification.png'
+# tags: ['tutorial', 'machine-learning']
 # keywords: ['Classification', 'KNN', 'LSH', 'index', 'Locality Sensitive Hashing', 'MNIST', 'euclidean distance', 'unstructured', 'notebook']
 # jupyter:
 #   jupytext:

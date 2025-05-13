@@ -4,10 +4,10 @@
 # notebook_export_path: notebooks/tutorials/suspicious_user_activity.ipynb
 # author: 'przemek'
 # aside: true
-# article:
-#   date: '2023-05-30'
-#   thumbnail: '/assets/content/blog/th-shield.png'
-#   tags: ['tutorial', 'machine-learning']
+# date: '2023-05-30'
+# thumbnail:
+#   src: '/assets/content/blog/th-shield.png'
+# tags: ['tutorial', 'machine-learning']
 # keywords: ['window', 'tumbling', 'alert', 'notebook']
 # jupyter:
 #   jupytext:

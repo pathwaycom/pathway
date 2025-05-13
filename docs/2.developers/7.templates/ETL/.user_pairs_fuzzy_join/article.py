@@ -3,10 +3,10 @@
 # description: An example of a cryptocurrency exchange
 # author: 'przemek'
 # aside: true
-# article:
-#   date: '2023-01-09'
-#   thumbnail: '/assets/content/blog/th-mining-hidden-user-pair-activity-with-fuzzy-join.png'
-#   tags: ['tutorial', 'data-pipeline']
+# date: '2023-01-09'
+# thumbnail:
+#   src: '/assets/content/blog/th-mining-hidden-user-pair-activity-with-fuzzy-join.png'
+# tags: ['tutorial', 'data-pipeline']
 # keywords: ['fuzzy join', 'alert', 'cryptocurrency', 'bitcoin', 'BTC', 'ETH', 'Ethereum']
 # jupyter:
 #   jupytext:

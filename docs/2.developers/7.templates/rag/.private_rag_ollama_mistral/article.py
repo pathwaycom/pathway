@@ -2,12 +2,12 @@
 # title: 'Private RAG with Connected Data Sources using Mistral, Ollama, and Pathway'
 # description: 'Adaptive RAG with fully local models'
 # aside: true
-# article:
-#     thumbnail: '/assets/content/blog/local-adaptive-rag/local_adaptive.png'
-#     thumbnailFit: 'contain'
-#     tags: ['showcase', 'ai-pipelines']
-#     date: '2024-04-23'
-#     related: ['/developers/templates/rag/adaptive-rag', '/developers/templates/rag/demo-question-answering']
+# thumbnail:
+#   src: '/assets/content/blog/local-adaptive-rag/local_adaptive.png'
+#   contain: true
+# tags: ['showcase', 'ai-pipelines']
+# date: '2024-04-23'
+# related: ['/developers/templates/rag/adaptive-rag', '/developers/templates/rag/demo-question-answering']
 # notebook_export_path: notebooks/showcases/mistral_adaptive_rag_question_answering.ipynb
 # author: 'berke'
 # keywords: ['LLM', 'RAG', 'Adaptive RAG', 'prompt engineering', 'explainability', 'mistral', 'ollama', 'private rag', 'local rag', 'ollama rag', 'notebook', 'docker']
