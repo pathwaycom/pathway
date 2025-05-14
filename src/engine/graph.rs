@@ -944,13 +944,11 @@ pub trait Graph {
 
     fn complex_columns(&self, inputs: Vec<ComplexColumn>) -> Result<Vec<ColumnHandle>>;
 
-    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()>;
-
-    fn debug_column(
+    fn debug_table(
         &self,
         tag: String,
         table_handle: TableHandle,
-        column_path: ColumnPath,
+        columns: Vec<(String, ColumnPath)>,
     ) -> Result<()>;
 
     #[allow(clippy::too_many_arguments)]
@@ -1573,17 +1571,13 @@ impl Graph for ScopedGraph {
         self.try_with(|g| g.complex_columns(inputs))
     }
 
-    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
-        self.try_with(|g| g.debug_universe(tag, table_handle))
-    }
-
-    fn debug_column(
+    fn debug_table(
         &self,
         tag: String,
         table_handle: TableHandle,
-        column_path: ColumnPath,
+        columns: Vec<(String, ColumnPath)>,
     ) -> Result<()> {
-        self.try_with(|g| g.debug_column(tag, table_handle, column_path))
+        self.try_with(|g| g.debug_table(tag, table_handle, columns))
     }
 
     fn connector_table(

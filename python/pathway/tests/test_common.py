@@ -8,6 +8,7 @@ import multiprocessing
 import os
 import pathlib
 import re
+import subprocess as sp
 import warnings
 from typing import Any, Optional
 from unittest import mock
@@ -32,6 +33,7 @@ from pathway.tests.utils import (
     needs_multiprocessing_fork,
     run_all,
     warns_here,
+    xfail_on_multiple_threads,
 )
 
 
@@ -6766,3 +6768,18 @@ def test_table_to_pandas_without_id_optional():
     df = table_to_pandas(t, include_id=False)
     expected = pd.DataFrame({"a": [3, None, 7]})
     assert all(df == expected)
+
+
+@xfail_on_multiple_threads  # worker ids mismatch
+def test_debug_operator():
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    p = sp.run(
+        ["python3", f"{test_dir}/programs/debug.py"], capture_output=True, check=True
+    )
+    expected_output = """[0][foo] @Timestamp(2) +1 id=^X1MXHYYG4YM0DB900V28XN5T4W, a=Int(1), t=Int(2)
+[0][foo] @Timestamp(2) +1 id=^YYY4HABTRW7T8VX2Q429ZYV70W, a=Int(2), t=Int(2)
+[0][foo] @Timestamp(6) +1 id=^Z3QWT294JQSHPSR8KTPG9ECE4W, a=Int(10), t=Int(5)
+[0][foo] @Timestamp(8) +1 id=^3CZ78B48PASGNT231ZECWPER90, a=Int(3), t=Int(8)
+[0][foo] @Timestamp(8) +1 id=^3HN31E1PBT7YHH5PWVKTZCPRJ8, a=Int(5), t=Int(7)
+"""
+    assert p.stdout.decode() == expected_output

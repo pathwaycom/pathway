@@ -259,12 +259,11 @@ class DebugOperatorHandler(
         table = operator.table
         input_storage = self.state.get_storage(table._universe)
         engine_table = self.state.get_table(table._universe)
-        for name, column in table._columns.items():
-            self.scope.debug_column(
-                f"{operator.name}.{name}", engine_table, input_storage.get_path(column)
-            )
-
-        self.scope.debug_universe(operator.name, engine_table)
+        columns = [
+            (name, input_storage.get_path(column))
+            for name, column in table._columns.items()
+        ]
+        self.scope.debug_table(operator.name, engine_table, columns)
 
 
 class IterateOperatorHandler(

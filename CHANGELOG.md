@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+### Changed
+- `pw.Table.debug` now prints a whole row in a single line instead of printing each cell separately.
+
 ## [0.21.5] - 2025-05-09
 
 ### Changed

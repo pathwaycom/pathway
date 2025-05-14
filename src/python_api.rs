@@ -3166,29 +3166,17 @@ impl Scope {
         Ok(columns)
     }
 
-    pub fn debug_universe<'py>(
+    pub fn debug_table<'py>(
         self_: &'py Bound<Self>,
         name: String,
         table: &'py Bound<Table>,
+        columns: Vec<(String, ColumnPath)>,
     ) -> PyResult<()> {
         check_identity(self_, &table.borrow().scope, "scope mismatch")?;
         Ok(self_
             .borrow()
             .graph
-            .debug_universe(name, table.borrow().handle)?)
-    }
-
-    pub fn debug_column<'py>(
-        self_: &'py Bound<Self>,
-        name: String,
-        table: &'py Bound<Table>,
-        column_path: ColumnPath,
-    ) -> PyResult<()> {
-        check_identity(self_, &table.borrow().scope, "scope mismatch")?;
-        Ok(self_
-            .borrow()
-            .graph
-            .debug_column(name, table.borrow().handle, column_path)?)
+            .debug_table(name, table.borrow().handle, columns)?)
     }
 
     pub fn update_rows_table(

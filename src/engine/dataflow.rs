@@ -3072,24 +3072,11 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
         complex_columns(self, inputs)
     }
 
-    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
-        let worker = self.scope.index();
-        let table = self
-            .tables
-            .get(table_handle)
-            .ok_or(Error::InvalidTableHandle)?;
-        // println!("[{worker}][{tag}] {table_handle:?}");
-        table.keys().inspect(move |(key, time, diff)| {
-            println!("[{worker}][{tag}] @{time:?} {diff:+} {key}");
-        });
-        Ok(())
-    }
-
-    fn debug_column(
+    fn debug_table(
         &self,
         tag: String,
         table_handle: TableHandle,
-        column_path: ColumnPath,
+        columns: Vec<(String, ColumnPath)>,
     ) -> Result<()> {
         let worker = self.scope.index();
         let table = self
@@ -3097,20 +3084,16 @@ impl<S: MaybeTotalScope> DataflowGraphInner<S> {
             .get(table_handle)
             .ok_or(Error::InvalidTableHandle)?;
         let error_reporter = self.error_reporter.clone();
-        // println!("[{worker}][{tag}] {table_handle:?} {column_path:?}");
-        table
-            .values()
-            .map_named("debug_column", move |(key, values)| {
-                (
-                    key,
-                    column_path
-                        .extract(&key, &values)
-                        .unwrap_with_reporter(&error_reporter),
-                )
-            })
-            .inspect(move |((key, value), time, diff)| {
-                println!("[{worker}][{tag}] @{time:?} {diff:+} {key} {value}");
-            });
+        table.values().inspect(move |((key, values), time, diff)| {
+            let mut values_str = String::new();
+            for (name, column_path) in &columns {
+                let column_value = column_path
+                    .extract(key, values)
+                    .unwrap_with_reporter(&error_reporter);
+                values_str.push_str(&format!(", {name}={column_value:?}"));
+            }
+            println!("[{worker}][{tag}] @{time:?} {diff:+} id={key}{values_str}");
+        });
         Ok(())
     }
 
@@ -5377,17 +5360,13 @@ impl<S: MaybeTotalScope> Graph for InnerDataflowGraph<S> {
         self.0.borrow_mut().complex_columns(inputs)
     }
 
-    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
-        self.0.borrow().debug_universe(tag, table_handle)
-    }
-
-    fn debug_column(
+    fn debug_table(
         &self,
         tag: String,
         table_handle: TableHandle,
-        column_path: ColumnPath,
+        columns: Vec<(String, ColumnPath)>,
     ) -> Result<()> {
-        self.0.borrow().debug_column(tag, table_handle, column_path)
+        self.0.borrow().debug_table(tag, table_handle, columns)
     }
 
     fn connector_table(
@@ -6035,17 +6014,13 @@ impl<S: MaybeTotalScope<MaybeTotalTimestamp = Timestamp>> Graph for OuterDataflo
         self.0.borrow_mut().complex_columns(inputs)
     }
 
-    fn debug_universe(&self, tag: String, table_handle: TableHandle) -> Result<()> {
-        self.0.borrow().debug_universe(tag, table_handle)
-    }
-
-    fn debug_column(
+    fn debug_table(
         &self,
         tag: String,
         table_handle: TableHandle,
-        column_path: ColumnPath,
+        columns: Vec<(String, ColumnPath)>,
     ) -> Result<()> {
-        self.0.borrow().debug_column(tag, table_handle, column_path)
+        self.0.borrow().debug_table(tag, table_handle, columns)
     }
 
     fn connector_table(
