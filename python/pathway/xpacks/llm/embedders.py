@@ -11,7 +11,7 @@ import numpy as np
 import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm._utils import _coerce_sync
+from pathway.xpacks.llm._utils import _coerce_sync, _extract_value_inside_dict
 from pathway.xpacks.llm.constants import OPENAI_EMBEDDERS_MAX_TOKENS
 
 __all__ = [
@@ -183,6 +183,7 @@ class OpenAIEmbedder(BaseEmbedder):
         input = input or "."
 
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
 
         if kwargs.get("model") is None:
             raise ValueError(
@@ -333,6 +334,7 @@ class LiteLLMEmbedder(BaseEmbedder):
         import litellm
 
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
         ret = await litellm.aembedding(input=[input or "."], **kwargs)
         return np.array(ret.data[0]["embedding"])
 
@@ -394,6 +396,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
               <https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode>`_.
         """  # noqa: E501
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
         return self.model.encode(input, **kwargs)
 
 
@@ -473,6 +476,7 @@ class GeminiEmbedder(BaseEmbedder):
         import google.generativeai as genai
 
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
         model = kwargs.pop("model", None)
 
         api_key = kwargs.pop("api_key", None)

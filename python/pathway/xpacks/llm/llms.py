@@ -19,7 +19,11 @@ import pathway as pw
 from pathway.internals import udfs
 from pathway.optional_import import optional_imports
 
-from ._utils import _check_model_accepts_arg, _prepare_executor
+from ._utils import (
+    _check_model_accepts_arg,
+    _extract_value_inside_dict,
+    _prepare_executor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +269,7 @@ class OpenAIChat(BaseChat):
 
         messages_decoded = _prepare_messages(messages)
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
 
         verbose = kwargs.pop("verbose", False)
         api_key = kwargs.pop("api_key", None)
@@ -394,6 +399,7 @@ class LiteLLMChat(BaseChat):
         messages_decoded = _prepare_messages(messages)
 
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
 
         verbose = kwargs.pop("verbose", False)
 
@@ -501,6 +507,7 @@ class HFPipelineChat(BaseChat):
             messages_decoded = _prepare_messages(messages)
 
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
 
         output = self.pipeline(messages_decoded, **kwargs)
         result = output[0]["generated_text"]
@@ -636,6 +643,7 @@ class CohereChat(BaseChat):
             docs = documents
 
         kwargs = {**self.kwargs, **kwargs}
+        kwargs = _extract_value_inside_dict(kwargs)
         api_key = kwargs.pop("api_key", None)
 
         client = cohere.Client(api_key=api_key)

@@ -66,6 +66,10 @@ def _extract_value(data: Any | pw.Json) -> Any:
     return data
 
 
+def _extract_value_inside_dict(data: dict[str, Any]) -> dict[str, Any]:
+    return {k: _extract_value(v) for k, v in data.items()}
+
+
 def _unwrap_udf(func: pw.UDF | Callable) -> Callable:
     """Turn a Pathway UDF function into regular callable function."""
     if isinstance(func, pw.UDF):
