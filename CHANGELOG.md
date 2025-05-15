@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 - `pw.Table.debug` now prints a whole row in a single line instead of printing each cell separately.
+- **BREAKING**: Functions without arguments in YAML configurations files are now not called by `pw.load_yaml` - instead a function object is passed. To call the function a mapping needs to be passed, e.g. empty mapping as `{}`.
 
 ## [0.21.5] - 2025-05-09
 

@@ -27,6 +27,10 @@ def baz(a, b, c):
     return Foo(a, b, c)
 
 
+def qux():
+    return Foo(1, 2, "foo")
+
+
 def test_class_initialization():
     yaml_config = """
 foo: !pw.tests.test_yaml.Foo
@@ -169,3 +173,25 @@ bar_list:
     config = Config(**d)
     assert config.foo == Foo(2)
     assert config.bar_list == [Bar(Foo(1, 2, "bar")), Bar(Foo(2))]
+
+
+def test_calling_functions_without_arguments():
+    yaml_config = """
+foo: !pw.tests.test_yaml.qux {}
+"""
+
+    d = load_yaml(yaml_config)
+    assert "foo" in d.keys()
+    assert len(d.keys()) == 1
+    assert d["foo"] == Foo(1, 2, "foo")
+
+
+def test_function_without_calling():
+    yaml_config = """
+foo: !pw.tests.test_yaml.qux
+"""
+
+    d = load_yaml(yaml_config)
+    assert "foo" in d.keys()
+    assert len(d.keys()) == 1
+    assert d["foo"] == qux
