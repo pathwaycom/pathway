@@ -9,6 +9,7 @@ from . import (
     prompts,
     question_answering,
     rerankers,
+    servers,
     splitters,
     vector_store,
 )
@@ -26,4 +27,5 @@ __all__ = [
     "Doc",
     "DocTransformer",
     "DocTransformerCallable",
+    "servers",
 ]

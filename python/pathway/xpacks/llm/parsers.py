@@ -24,7 +24,7 @@ import pathway as pw
 from pathway.internals import udfs
 from pathway.internals.config import _check_entitlements
 from pathway.optional_import import optional_imports
-from pathway.xpacks.llm import _parser_utils, llms, prompts
+from pathway.xpacks.llm import llms, prompts
 from pathway.xpacks.llm._utils import _prepare_executor
 from pathway.xpacks.llm.constants import DEFAULT_VISION_MODEL
 
@@ -401,6 +401,8 @@ class DoclingParser(pw.UDF):
                 PdfFormatOption,
             )
 
+        from pathway.xpacks.llm import _parser_utils
+
         self.chunker: _parser_utils._HybridChunker | None = None
         self.multimodal_llm: llms.OpenAIChat | llms.LiteLLMChat | None = None
 
@@ -566,6 +568,8 @@ class DoclingParser(pw.UDF):
             prompt (str): The prompt used by the language model for parsing.
         """
 
+        from pathway.xpacks.llm import _parser_utils
+
         if not self.multimodal_llm:
             raise ValueError(
                 "Image parsing is not enabled, cannot replace images with descriptions."
@@ -712,6 +716,8 @@ class ImageParser(pw.UDF):
         with optional_imports("xpack-llm"):
             import openai
 
+        from pathway.xpacks.llm import _parser_utils
+
         executor = _prepare_executor(async_mode=async_mode)
 
         super().__init__(cache_strategy=cache_strategy, executor=executor)
@@ -765,6 +771,8 @@ class ImageParser(pw.UDF):
 
     async def __wrapped__(self, contents: bytes) -> list[tuple[str, dict]]:
         """Parse image bytes with GPT-v model."""
+
+        from pathway.xpacks.llm import _parser_utils
 
         images: list[Image.Image] = [Image.open(BytesIO(contents))]
 
@@ -872,6 +880,8 @@ class SlideParser(pw.UDF):
         with optional_imports("xpack-llm"):
             import openai
 
+        from pathway.xpacks.llm import _parser_utils
+
         executor = _prepare_executor(async_mode=async_mode)
 
         super().__init__(cache_strategy=cache_strategy, executor=executor)
@@ -928,6 +938,8 @@ class SlideParser(pw.UDF):
 
         from pdf2image import convert_from_bytes
         from unstructured.file_utils.filetype import FileType, detect_filetype
+
+        from pathway.xpacks.llm import _parser_utils
 
         byte_file = io.BytesIO(contents)
         filetype = detect_filetype(
