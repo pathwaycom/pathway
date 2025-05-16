@@ -22,13 +22,13 @@ $llm: !pw.xpacks.llm.llms.OpenAIChat
   model: "gpt-4o-mini"
   retry_strategy: !pw.udfs.ExponentialBackoffRetryStrategy
     max_retries: 6
-  cache_strategy: !pw.udfs.DefaultCache
+  cache_strategy: !pw.udfs.DefaultCache {}
   temperature: 0
   capacity: 8
 
 $embedder: !pw.xpacks.llm.embedders.OpenAIEmbedder
   model: "text-embedding-ada-002"
-  cache_strategy: !pw.udfs.DefaultCache
+  cache_strategy: !pw.udfs.DefaultCache {}
 
 $splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
   min_tokens: 250
