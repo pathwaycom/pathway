@@ -34,14 +34,14 @@ $splitter: !pw.xpacks.llm.splitters.TokenCountSplitter
   min_tokens: 250
   max_tokens: 600
 
-$parser: !pw.xpacks.llm.parsers.DoclingParser
+$parser: !pw.xpacks.llm.parsers.DoclingParser {}
 
 $knn_index: !pw.stdlib.indexing.BruteForceKnnFactory
   reserved_space: 1000
   embedder: $embedder
   metric: !pw.engine.BruteForceKnnMetricKind.COS
 
-$bm25_index: !pw.stdlib.indexing.TantivyBM25Factory
+$bm25_index: !pw.stdlib.indexing.TantivyBM25Factory {}
 
 $retriever_factory: !pw.stdlib.indexing.HybridIndexFactory
   retriever_factories:

@@ -91,7 +91,18 @@ class PathwayYamlLoader(yaml.Loader):
         constructor = import_object(tag)
 
         match node:
-            case yaml.ScalarNode(value=""):
+            case yaml.ScalarNode(value="") if callable(constructor):
+                warnings.warn(
+                    (
+                        "Using Callables in YAML configuration file without providing any mapping is now deprecated, "
+                        "as it's behavior will change in the future. To use Callables provide "
+                        "explicitly a matching, for example `{}` as an empty one."
+                    ),
+                    DeprecationWarning,
+                )
+                kwargs: dict[str | Variable, object] = {}
+                return Value(constructor, kwargs)
+            case yaml.ScalarNode(value="") if not callable(constructor):
                 return Value(constructed=True, value=constructor)
             case yaml.MappingNode() if callable(constructor):
                 kwargs = verify_dict_keys(self.construct_mapping(node))

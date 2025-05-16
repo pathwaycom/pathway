@@ -191,7 +191,5 @@ def test_function_without_calling():
 foo: !pw.tests.test_yaml.qux
 """
 
-    d = load_yaml(yaml_config)
-    assert "foo" in d.keys()
-    assert len(d.keys()) == 1
-    assert d["foo"] == qux
+    with pytest.warns(DeprecationWarning):
+        load_yaml(yaml_config)
