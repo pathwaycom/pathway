@@ -1,5 +1,7 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::fmt::Write;
 use std::fs;
 use std::time::Duration;
 
@@ -189,7 +191,15 @@ impl KeygenLicenseChecker {
                 "entitlements": entitlements
             }))
             .send()
-            .map_err(|e| Error::LicenseValidationError(e.to_string()))?;
+            .map_err(|e| {
+                let mut source = e.source();
+                let mut report = format!("{e}");
+                while let Some(source_inner) = source {
+                    let _ = write!(report, "\nSource: {source_inner}");
+                    source = source_inner.source();
+                }
+                Error::LicenseValidationError(report)
+            })?;
 
         if response.status().is_success() {
             let result = response

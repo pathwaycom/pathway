@@ -102,11 +102,23 @@ def spawn_program(
             env["PATHWAY_SUPPRESS_OTHER_WORKER_ERRORS"] = "1"
             handle = subprocess.Popen([program] + list(arguments), env=env)
             process_handles.append(handle)
-        for handle in process_handles:
-            handle.wait()
+        has_process_with_error = False
+        while not has_process_with_error:
+            has_working_process = False
+            for handle in process_handles:
+                try:
+                    maybe_exit_code = handle.wait(1.0)
+                except subprocess.TimeoutExpired:
+                    has_working_process = True
+                    continue
+                if maybe_exit_code != 0:
+                    has_process_with_error = True
+            if not has_working_process:
+                break
     finally:
         for handle in process_handles:
             handle.terminate()
+            handle.wait()
     sys.exit(max(handle.returncode for handle in process_handles))
 
 

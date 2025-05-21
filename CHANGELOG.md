@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - `pw.Table.debug` now prints a whole row in a single line instead of printing each cell separately.
 - Calling functions without arguments in YAML configurations files is now deprecated in `pw.load_yaml`. To call the function a mapping should be passed, e.g. empty mapping as `{}`. In the future `!` syntax without any mapping will be used to pass function objects without calling them.
+- The license check error message now provides a more detailed explanation of the failure.
+- When code is run using `pathway spawn` with multiple processes, if one process terminates with an error, all other processes will also be terminated.
 
 ## [0.21.5] - 2025-05-09
 
