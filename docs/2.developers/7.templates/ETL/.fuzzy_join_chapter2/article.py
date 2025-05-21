@@ -10,6 +10,7 @@
 # tags: ['tutorial', 'data-pipeline']
 # keywords: ['Fuzzy join', 'reconciliation', 'unstructured', 'notebook']
 # author: 'pathway'
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent

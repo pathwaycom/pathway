@@ -9,6 +9,7 @@
 # keywords: ['time series', 'multiple data sources', 'interpolation', 'connectors', 'notebook']
 # author: 'olivier'
 # notebook_export_path: notebooks/tutorials/combining-time-series.ipynb
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent

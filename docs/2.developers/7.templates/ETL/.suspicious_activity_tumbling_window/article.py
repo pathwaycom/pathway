@@ -9,6 +9,7 @@
 #   src: '/assets/content/blog/th-shield.png'
 # tags: ['tutorial', 'machine-learning']
 # keywords: ['window', 'tumbling', 'alert', 'notebook']
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent

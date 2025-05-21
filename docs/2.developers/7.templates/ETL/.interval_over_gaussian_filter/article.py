@@ -5,6 +5,7 @@
 # author: 'olivier'
 # aside: true
 # date: '2023-10-17'
+# layout: 'template'
 # thumbnail:
 #   src: '/assets/content/tutorials/time_series/thumbnail-gaussian.png'
 # tags: ['tutorial', 'Time Series']

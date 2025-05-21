@@ -13,6 +13,7 @@
 # notebook_export_path: notebooks/showcases/live-data-jupyter.ipynb
 # docker_github_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/from_jupyter_to_deploy/part4_deployment"
 # popular: true
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent

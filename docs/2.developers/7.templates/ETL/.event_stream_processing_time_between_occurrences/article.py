@@ -4,6 +4,7 @@
 # author: 'przemek'
 # aside: true
 # date: '2022-11-01'
+# layout: 'template'
 # thumbnail:
 #   src: '/assets/content/blog/th-time-between-events-in-a-multi-topic-event-stream.png'
 # tags: ['tutorial', 'data-pipeline']

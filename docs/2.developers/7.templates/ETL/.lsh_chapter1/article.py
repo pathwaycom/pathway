@@ -9,6 +9,7 @@
 #   src: '/assets/content/blog/th-realtime-classification.png'
 # tags: ['tutorial', 'machine-learning']
 # keywords: ['Classification', 'KNN', 'LSH', 'index', 'Locality Sensitive Hashing', 'MNIST', 'euclidean distance', 'unstructured', 'notebook']
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent,ipynb

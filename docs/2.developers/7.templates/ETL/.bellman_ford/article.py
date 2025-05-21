@@ -3,6 +3,7 @@
 # description: Article explaining step-by-step how to implement the Bellman-Ford algorithm in Pathway.
 # aside: true
 # date: '2022-11-03'
+# layout: 'template'
 # thumbnail:
 #   src: '/assets/content/blog/th-bellman-ford.png'
 # tags: ['tutorial', 'machine-learning']

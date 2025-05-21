@@ -9,6 +9,7 @@
 # tags: ['tutorial', 'machine-learning']
 # keywords: ['pagerank', 'graph', 'notebook']
 # author: 'pathway'
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent

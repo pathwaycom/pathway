@@ -8,6 +8,7 @@
 #   src: '/assets/content/blog/th-mining-hidden-user-pair-activity-with-fuzzy-join.png'
 # tags: ['tutorial', 'data-pipeline']
 # keywords: ['fuzzy join', 'alert', 'cryptocurrency', 'bitcoin', 'BTC', 'ETH', 'Ethereum']
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent

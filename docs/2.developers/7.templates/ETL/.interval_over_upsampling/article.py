@@ -5,6 +5,7 @@
 # author: 'olivier'
 # aside: true
 # date: '2023-10-18'
+# layout: 'template'
 # thumbnail:
 #   src: '/assets/content/tutorials/time_series/thumbnail-time-series.png'
 # tags: ['tutorial', 'Time Series']

@@ -11,6 +11,7 @@
 # notebook_export_path: notebooks/tutorials/option-greeks.ipynb
 # docker_github_link: "https://github.com/pathwaycom/pathway/tree/main/examples/projects/option-greeks"
 # aside: true
+# layout: 'template'
 # ---
 
 # # Option Greeks with Databento and Pathway

@@ -7,6 +7,7 @@
 # date: '2023-11-16'
 # tags: ['tutorial', 'data-pipeline']
 # keywords: ['alert', 'deduplication', 'monitoring', 'notebook']
+# layout: 'template'
 # jupyter:
 #   jupytext:
 #     formats: py:percent
