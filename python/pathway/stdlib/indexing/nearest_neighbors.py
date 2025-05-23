@@ -564,3 +564,19 @@ class LshKnnFactory(KnnIndexFactory):
             distance_type=self.distance_type,
             embedder=self.embedder,
         )
+
+
+@dataclass(kw_only=True)
+class DefaultKnnFactory(BruteForceKnnFactory):
+    """
+    Default factory for creating Knn index - uses the BruteForceKnn index.
+
+    Args:
+        dimensions (int): number of dimensions of vectors that are used by the index and
+            queries
+        reserved_space (int): initial capacity (in the number of entries) of the index
+        embedder: :py:class:`~pathway.UDF` used for calculating embeddings of string. It is needed, if index
+            is used for indexing texts.
+    """
+
+    ...

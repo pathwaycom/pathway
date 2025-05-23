@@ -13,6 +13,7 @@ from .hybrid_index import HybridIndex, HybridIndexFactory
 from .nearest_neighbors import (
     BruteForceKnn,
     BruteForceKnnFactory,
+    DefaultKnnFactory,
     LshKnn,
     LshKnnFactory,
     USearchKnn,
@@ -38,6 +39,7 @@ __all__ = [
     "BruteForceKnnMetricKind",
     "LshKnn",
     "LshKnnFactory",
+    "DefaultKnnFactory",
     "TantivyBM25",
     "TantivyBM25Factory",
     "HybridIndex",

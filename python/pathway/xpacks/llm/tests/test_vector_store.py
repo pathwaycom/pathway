@@ -10,6 +10,7 @@ import pytest
 import pathway as pw
 from pathway.tests.utils import assert_table_equality
 from pathway.xpacks.llm import parsers
+from pathway.xpacks.llm.tests import mocks
 from pathway.xpacks.llm.vector_store import VectorStoreServer
 
 
@@ -53,9 +54,9 @@ def _test_vs(fake_embeddings_model, **run_kwargs):
     )
 
     input_queries = pw.debug.table_from_rows(
-        schema=VectorStoreServer.InputsQuerySchema,
+        schema=VectorStoreServer.InputsQuerySchema,  # filter, pattern, return_status
         rows=[
-            (None, "**/*.py"),
+            (None, "**/*.py", False),
         ],
     )
 
@@ -109,11 +110,8 @@ def _test_vs(fake_embeddings_model, **run_kwargs):
 
 
 def test_sync_embedder():
-    @pw.udf
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
-    _test_vs(fake_embeddings_model)
+    _test_vs(mocks.fake_embeddings_model)
 
 
 def test_async_embedder():
@@ -183,8 +181,6 @@ def test_async_embedder_preserves_params():
 
 @pytest.mark.parametrize("parser_cls", [parsers.Utf8Parser])
 def test_vs_parsing(parser_cls):
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes, _metadata=dict),
@@ -199,7 +195,7 @@ def test_vs_parsing(parser_cls):
     vector_server = VectorStoreServer(
         docs,
         parser=parser_cls(),
-        embedder=fake_embeddings_model,
+        embedder=mocks.fake_embeddings_model,
     )
 
     retrieve_queries = pw.debug.table_from_markdown(
@@ -229,8 +225,6 @@ def test_vs_parsing(parser_cls):
     ],
 )
 def test_vs_filtering(glob_filter):
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes, _metadata=dict),
@@ -244,7 +238,7 @@ def test_vs_filtering(glob_filter):
 
     vector_server = VectorStoreServer(
         docs,
-        embedder=fake_embeddings_model,
+        embedder=mocks.fake_embeddings_model,
     )
 
     # parse_graph.G.clear()
@@ -277,8 +271,6 @@ def test_vs_filtering(glob_filter):
     ],
 )
 def test_vs_filtering_negatives(glob_filter):
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes, _metadata=dict),
@@ -292,7 +284,7 @@ def test_vs_filtering_negatives(glob_filter):
 
     vector_server = VectorStoreServer(
         docs,
-        embedder=fake_embeddings_model,
+        embedder=mocks.fake_embeddings_model,
     )
 
     # parse_graph.G.clear()
@@ -325,8 +317,6 @@ def test_vs_filtering_negatives(glob_filter):
     ],
 )
 def test_vs_filtering_metadata(metadata_filter):
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes, _metadata=dict),
@@ -343,7 +333,7 @@ def test_vs_filtering_metadata(metadata_filter):
 
     vector_server = VectorStoreServer(
         docs,
-        embedder=fake_embeddings_model,
+        embedder=mocks.fake_embeddings_model,
     )
 
     retrieve_queries = pw.debug.table_from_rows(
@@ -373,8 +363,6 @@ def test_vs_filtering_metadata(metadata_filter):
 )
 @pytest.mark.parametrize("globbing_filter", [None, "*.pdf"])
 def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes, _metadata=dict),
@@ -390,7 +378,7 @@ def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
 
     vector_server = VectorStoreServer(
         docs,
-        embedder=fake_embeddings_model,
+        embedder=mocks.fake_embeddings_model,
     )
 
     retrieve_queries = pw.debug.table_from_rows(
@@ -408,9 +396,6 @@ def test_vs_filtering_edge_cases(metadata_filter, globbing_filter):
 
 
 def test_docstore_on_table_without_metadata():
-    @pw.udf
-    def fake_embeddings_model(x: str) -> list[float]:
-        return [1.0, 1.0, 0.0]
 
     docs = pw.debug.table_from_rows(
         schema=pw.schema_from_types(data=bytes),
@@ -419,7 +404,7 @@ def test_docstore_on_table_without_metadata():
 
     vector_server = VectorStoreServer(
         docs,
-        embedder=fake_embeddings_model,
+        embedder=mocks.fake_embeddings_model,
     )
 
     retrieve_queries = pw.debug.table_from_rows(

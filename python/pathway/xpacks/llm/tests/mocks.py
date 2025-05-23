@@ -1,3 +1,5 @@
+import numpy as np
+
 import pathway as pw
 from pathway.xpacks.llm import llms
 
@@ -21,5 +23,5 @@ class FakeChatModel(llms.BaseChat):
 
 
 @pw.udf
-def fake_embeddings_model(x: str) -> list[float]:
-    return [1.0, 1.0, 0.0]
+def fake_embeddings_model(x: str, *args, **kwargs) -> np.ndarray:
+    return np.array([1.0, 1.0, 0.0])
